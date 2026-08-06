@@ -1109,7 +1109,9 @@ dependencies = [
 
 [[package]]
 name = "reactor-webrtc"
-version = "0.4.2"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e09d4e8be822023335c61319b8f2b4d7bf4445c935b750b4e898e6cc22e257ae"
 dependencies = [
  "prost",
  "reactor-webrtc-sys",
@@ -1117,7 +1119,9 @@ dependencies = [
 
 [[package]]
 name = "reactor-webrtc-sys"
-version = "0.4.2"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "262a6006d3d8a4f73f52c23e1043a388c62a1908bb5595766afc5562da940da1"
 dependencies = [
  "cc",
 ]

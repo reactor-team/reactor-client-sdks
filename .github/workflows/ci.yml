@@ -27,11 +27,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # mise.lock drift check diffs against the merge-base
-      - name: Checkout reactor-webrtc (path dependency)
-        run: |
-          git clone --depth 1 \
-            https://github.com/reactor-team/reactor-webrtc.git \
-            "$(dirname "$GITHUB_WORKSPACE")/reactor-webrtc"
       - uses: actions-rust-lang/setup-rust-toolchain@v1   # reads rust-toolchain.toml
         with:
           cache-on-failure: true
