@@ -8,7 +8,9 @@ repository.workspace = true
 
 [features]
 default = []
-# Provides `runtime::TokioPlatform` for native hosts.
+# Provides `runtime::TokioPlatform` for tokio-based hosts.
+# Enable this feature in native hosts (FFI, Go, Swift, Kotlin).
+# Keep optional so the core stays portable to WASM and embedded targets.
 tokio-platform = ["dep:tokio"]
 
 [dependencies]
