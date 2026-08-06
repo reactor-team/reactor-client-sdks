@@ -180,9 +180,17 @@ ON_STRING_FN = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_void_p)
 # (const char*, const char*, void*) -> void  [on_track]
 ON_TRACK_FN = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p)
 
-# (const uint8_t*, uint32_t, uint32_t, void*) -> void  [on_frame]
+# (data, width, height, frame_id, timestamp_us, user_data, user_data_len, userdata)
 ON_FRAME_FN = ctypes.CFUNCTYPE(
-    None, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p
+    None,
+    ctypes.c_void_p,    # data (BGRA bytes)
+    ctypes.c_uint32,    # width
+    ctypes.c_uint32,    # height
+    ctypes.c_uint64,    # frame_id   (0 = no metadata)
+    ctypes.c_uint64,    # timestamp_us (0 = no metadata)
+    ctypes.c_void_p,    # user_data  (NULL = no metadata)
+    ctypes.c_uint32,    # user_data_len
+    ctypes.c_void_p,    # userdata
 )
 
 # (const int16_t*, uint32_t, uint32_t, uint32_t, void*) -> void  [on_audio]
