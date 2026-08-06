@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
 """
-Frame metadata example — inspect incoming video frames.
+Frame metadata example — read per-frame metadata from an incoming video track.
 
-Registers an on_frame callback that logs width, height, and byte size for
-every frame received.  With --numpy, converts each frame to a numpy array
-(shape: height × width × 4, dtype uint8, BGRA channel order) and prints the
-first pixel's BGRA values as a sanity check.
+Reactor models can attach a FrameMetadata trailer to each encoded video frame.
+The trailer carries:
+  - frame_id     : monotonically-increasing counter set by the sender
+  - timestamp_us : wall-clock time in microseconds (set by the sender)
+  - user_data    : arbitrary application bytes (UTF-8 text, JSON, binary, …)
 
-With --display, opens a pygame window showing the live video feed.
-Requires: pip install numpy pygame   (numpy is already a dependency)
+This example connects to a model, receives frames from a named track, and
+prints the metadata fields for every frame that carries a trailer.  Frames
+without metadata (trailer absent) are counted but not printed unless --verbose.
 
 Usage:
-    # Print per-frame metadata
-    python examples/frame_metadata.py --duration 10
+    python examples/frame_metadata.py --track video_output
 
-    # Also show numpy shape / first pixel
-    python examples/frame_metadata.py --duration 10 --numpy
+    # Also print raw frame dimensions and BGRA pixel stats
+    python examples/frame_metadata.py --track video_output --verbose
 
-    # Live display window (requires pygame)
-    python examples/frame_metadata.py --display
+    # Run for a custom duration
+    python examples/frame_metadata.py --track video_output --duration 30
 
 Environment variables (overridden by flags):
     REACTOR_API_URL, REACTOR_MODEL, REACTOR_JWT, REACTOR_LOCAL
@@ -38,45 +39,24 @@ from .reactor_client import make_reactor
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Inspect incoming Reactor video frames")
-    p.add_argument("--duration", metavar="SECS", type=float, default=15.0,
-                   help="How long to run (default: 15 s)")
-    p.add_argument("--numpy", action="store_true",
-                   help="Convert each frame to a numpy array and print first-pixel info")
-    p.add_argument("--display", action="store_true",
-                   help="Show live video in a pygame window (requires pygame)")
-    p.add_argument("--track", metavar="NAME", default=None,
-                   help="Track name to listen for (default: first recvonly video track)")
-    p.add_argument("--model", metavar="NAME", help="Model name (overrides REACTOR_MODEL)")
+    p = argparse.ArgumentParser(
+        description="Print per-frame metadata from a Reactor video track"
+    )
+    p.add_argument("--track", metavar="NAME", required=True,
+                   help="Name of the recvonly video track to listen on")
+    p.add_argument("--duration", metavar="SECS", type=float, default=30.0,
+                   help="How long to run (default: 30 s)")
+    p.add_argument("--verbose", action="store_true",
+                   help="Also print dimensions and first-pixel BGRA for every frame")
+    p.add_argument("--model", metavar="NAME")
     p.add_argument("--api-url", metavar="URL")
     p.add_argument("--jwt", metavar="TOKEN")
     p.add_argument("--local", action="store_true", default=None)
     return p.parse_args()
 
 
-async def main() -> None:  # noqa: C901
+async def main() -> None:
     args = _parse_args()
-
-    # Optional imports
-    np = None
-    if args.numpy or args.display:
-        try:
-            import numpy as _np
-            np = _np
-        except ImportError:
-            print("numpy is required for --numpy / --display.  pip install numpy",
-                  file=sys.stderr)
-            sys.exit(1)
-
-    pygame = None
-    screen = None
-    if args.display:
-        try:
-            import pygame as _pg
-            pygame = _pg
-        except ImportError:
-            print("pygame is required for --display.  pip install pygame", file=sys.stderr)
-            sys.exit(1)
 
     reactor = make_reactor(
         api_url=args.api_url,
@@ -84,84 +64,62 @@ async def main() -> None:  # noqa: C901
         jwt=args.jwt,
         local=args.local if args.local else None,
     )
+    reactor.on("error", lambda e: print(f"[error] {e}", file=sys.stderr))
 
-    # Stats
-    frame_count = 0
-    last_w = last_h = 0
+    total_frames = 0
+    frames_with_meta = 0
     t0 = time.monotonic()
-    log_interval = 1.0
-    last_log = t0
 
-    def on_frame(data: bytes, width: int, height: int) -> None:
-        nonlocal frame_count, last_w, last_h, last_log
+    def on_frame(
+        data: bytes,
+        width: int,
+        height: int,
+        frame_id: int,
+        timestamp_us: int,
+        user_data: bytes,
+    ) -> None:
+        nonlocal total_frames, frames_with_meta
+        total_frames += 1
+        has_meta = frame_id != 0 or timestamp_us != 0 or len(user_data) > 0
 
-        frame_count += 1
-        last_w, last_h = width, height
-        now = time.monotonic()
-
-        if args.numpy and np is not None:
-            arr = np.frombuffer(data, dtype=np.uint8).reshape(height, width, 4)
-            # arr shape: (H, W, 4)  channels: B, G, R, A
-            b, g, r, a = arr[0, 0]
+        if has_meta:
+            frames_with_meta += 1
+            ud_str = user_data.decode(errors="replace") if user_data else ""
             print(
-                f"frame #{frame_count:5d}  {width}×{height}  "
-                f"shape={arr.shape} dtype={arr.dtype}  "
-                f"pixel[0,0] B={b} G={g} R={r} A={a}"
+                f"frame #{frame_id:<6}  ts={timestamp_us / 1_000_000:.6f}s"
+                f"  user_data={ud_str!r:<30}"
+                + (f"  {width}×{height}" if args.verbose else "")
             )
-        elif now - last_log >= log_interval:
-            elapsed = now - t0
-            fps = frame_count / elapsed if elapsed > 0 else 0.0
+        elif args.verbose:
+            elapsed = time.monotonic() - t0
             print(
-                f"t={elapsed:6.1f}s  frames={frame_count:5d}  "
-                f"{width}×{height}  bytes={len(data)}  avg {fps:.1f} fps"
+                f"frame #{total_frames:<6}  (no metadata)  "
+                f"{width}×{height}  t={elapsed:.2f}s"
             )
-            last_log = now
-
-        if args.display and np is not None and pygame is not None and screen is not None:
-            arr = np.frombuffer(data, dtype=np.uint8).reshape(height, width, 4)
-            # Convert BGRA → RGB for pygame
-            rgb = arr[:, :, [2, 1, 0]]
-            surf = pygame.surfarray.make_surface(rgb.transpose(1, 0, 2))
-            scaled = pygame.transform.scale(surf, screen.get_size())
-            screen.blit(scaled, (0, 0))
-            pygame.display.flip()
 
     reactor.on("frame", on_frame)
-    reactor.on("error", lambda e: print(f"[error] {e}", file=sys.stderr))
 
     ready = asyncio.Event()
     reactor.on("status_changed", lambda s: ready.set() if s == "ready" else None)
 
     print("Connecting…", file=sys.stderr)
     await reactor.connect()
-    print("Waiting for ready…", file=sys.stderr)
     await asyncio.wait_for(ready.wait(), timeout=60)
-    print("Ready — collecting frames…", file=sys.stderr)
-
-    if args.display and pygame is not None:
-        pygame.init()
-        screen = pygame.display.set_mode((1280, 720))
-        pygame.display.set_caption("Reactor frame_metadata")
-
-    deadline = asyncio.get_event_loop().time() + args.duration
-    while asyncio.get_event_loop().time() < deadline:
-        if args.display and pygame is not None:
-            for ev in pygame.event.get():
-                if ev.type == pygame.QUIT or (
-                    ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE
-                ):
-                    break
-        await asyncio.sleep(0.016)
-
-    elapsed = time.monotonic() - t0
-    fps = frame_count / elapsed if elapsed > 0 else 0.0
     print(
-        f"\nSummary: {frame_count} frames in {elapsed:.1f}s  "
-        f"({fps:.1f} fps)  last size: {last_w}×{last_h}"
+        f"Ready. Listening on '{args.track}' for {args.duration:.0f}s…",
+        file=sys.stderr,
     )
 
-    if args.display and pygame is not None:
-        pygame.quit()
+    await asyncio.sleep(args.duration)
+
+    elapsed = time.monotonic() - t0
+    fps = total_frames / elapsed if elapsed > 0 else 0.0
+    print(
+        f"\n── Summary ──────────────────────────────────\n"
+        f"  total frames  : {total_frames}\n"
+        f"  with metadata : {frames_with_meta}\n"
+        f"  duration      : {elapsed:.1f}s  ({fps:.1f} fps)\n"
+    )
 
     await reactor.disconnect()
     reactor.close()
