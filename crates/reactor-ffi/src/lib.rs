@@ -62,7 +62,8 @@ pub struct ReactorCallbacks {
     pub on_track: Option<unsafe extern "C" fn(*const c_char, *const c_char, *mut c_void)>,
     pub on_capabilities: Option<unsafe extern "C" fn(*const c_char, *mut c_void)>,
     pub on_session_id: Option<unsafe extern "C" fn(*const c_char, *mut c_void)>,
-    pub on_frame: Option<unsafe extern "C" fn(*const u8, u32, u32, *mut c_void)>,
+    pub on_frame:
+        Option<unsafe extern "C" fn(*const u8, u32, u32, u64, u64, *const u8, u32, *mut c_void)>,
     pub on_audio: Option<unsafe extern "C" fn(*const i16, u32, u32, u32, *mut c_void)>,
     pub userdata: *mut c_void,
 }
@@ -250,9 +251,23 @@ unsafe fn create_impl(
         let c = &*callbacks;
         if let Some(frame_fn) = c.on_frame {
             let userdata_usize = c.userdata as usize;
-            peer_transport = peer_transport.with_frame_callback(move |data, w, h| unsafe {
-                frame_fn(data.as_ptr(), w, h, userdata_usize as *mut c_void)
-            });
+            peer_transport =
+                peer_transport.with_frame_callback(move |data, w, h, frame_id, ts, ud| unsafe {
+                    frame_fn(
+                        data.as_ptr(),
+                        w,
+                        h,
+                        frame_id,
+                        ts,
+                        if ud.is_empty() {
+                            std::ptr::null()
+                        } else {
+                            ud.as_ptr()
+                        },
+                        ud.len() as u32,
+                        userdata_usize as *mut c_void,
+                    )
+                });
         }
         if let Some(audio_fn) = c.on_audio {
             let userdata_usize = c.userdata as usize;

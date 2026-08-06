@@ -58,7 +58,13 @@ typedef void (*reactor_on_capabilities_fn)(const char *caps_json, void *userdata
 typedef void (*reactor_on_session_id_fn)(const char *session_id_or_null, void *userdata);
 
 /* Raw video frame in BGRA format (B, G, R, A bytes).  width * height * 4 bytes. */
-typedef void (*reactor_on_frame_fn)(const uint8_t *data, uint32_t width, uint32_t height, void *userdata);
+typedef void (*reactor_on_frame_fn)(
+    const uint8_t *data, uint32_t width, uint32_t height,
+    uint64_t frame_id,       /* 0 when no metadata trailer present */
+    uint64_t timestamp_us,   /* wall-clock µs; 0 when no metadata  */
+    const uint8_t *user_data, uint32_t user_data_len, /* NULL/0 when no metadata */
+    void *userdata
+);
 
 /* Audio frame callback: interleaved int16 PCM, total sample count, sample rate (Hz), channels. */
 typedef void (*reactor_on_audio_fn)(const int16_t *samples, uint32_t num_samples, uint32_t sample_rate, uint32_t channels, void *userdata);
