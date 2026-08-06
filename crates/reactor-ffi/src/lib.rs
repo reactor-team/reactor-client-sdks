@@ -388,8 +388,10 @@ pub unsafe extern "C" fn reactor_connect(
                 session_id: sid,
                 connection_id: None,
             })
-            .await
-            .map(|_| None)
+            .await?;
+            let r2 = r.clone();
+            runtime().spawn(async move { r2.run_heartbeat().await });
+            Ok(None)
         }
     );
 }
@@ -412,7 +414,10 @@ pub unsafe extern "C" fn reactor_reconnect(
     userdata: *mut c_void,
 ) {
     async_op!(handle, completion, userdata, |r: Arc<Reactor>| async move {
-        r.reconnect().await.map(|_| None)
+        r.reconnect().await?;
+        let r2 = r.clone();
+        runtime().spawn(async move { r2.run_heartbeat().await });
+        Ok(None)
     });
 }
 
