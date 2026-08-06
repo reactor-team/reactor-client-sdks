@@ -2,10 +2,10 @@
 //! client and the host's WebRTC engine together into the session state
 //! machine shared by all Reactor SDKs.
 //!
-//! Threading model: all state lives behind a non-async `Mutex` (locks are
-//! never held across `await`s), so methods can be called from any task and
-//! the host can pump [`PeerEvent`]s concurrently with an in-flight
-//! `connect()`.
+//! Threading model: all state lives behind a non-async `std::sync::Mutex`
+//! (locks are **never** held across `await`s).  The guard check and the
+//! corresponding status update always happen in the **same** lock
+//! acquisition so that two concurrent callers cannot both pass the guard.
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Mutex;
@@ -65,6 +65,9 @@ pub struct ReactorOptions {
     /// When true, use the local HTTP runtime API (`/start_session` etc.)
     /// instead of the cloud coordinator API.
     pub local: bool,
+    /// How often to send a keep-alive ping while the session is ready.
+    /// Set to `Duration::ZERO` to disable the heartbeat.
+    pub heartbeat_interval: Duration,
 }
 
 impl ReactorOptions {
@@ -82,6 +85,7 @@ impl ReactorOptions {
             session_poll: PollConfig::session(),
             sdp_poll: PollConfig::sdp(),
             local: false,
+            heartbeat_interval: Duration::from_secs(30),
         }
     }
 }
@@ -116,6 +120,9 @@ struct State {
     ice_ready: bool,
     paused_tracks: HashSet<String>,
     closing: bool,
+    /// Incremented on every `connect()` / `reconnect()`.  Each `run_heartbeat`
+    /// instance captures the epoch at spawn time and exits when it changes.
+    heartbeat_epoch: u64,
 }
 
 /// The Reactor client core. See the crate docs for the host contract.
@@ -209,9 +216,14 @@ impl Reactor {
                     state.status
                 )));
             }
+            // Atomically guard + update: both happen in the same lock acquisition
+            // so that two concurrent connect() calls cannot both pass the check.
             state.closing = false;
+            state.status = ReactorStatus::Connecting;
+            state.heartbeat_epoch = state.heartbeat_epoch.wrapping_add(1);
         }
-        self.set_status(ReactorStatus::Connecting);
+        self.dispatcher
+            .dispatch(ReactorEvent::StatusChanged(ReactorStatus::Connecting));
 
         match self.connect_inner(connect_options).await {
             Ok(()) => Ok(()),
@@ -273,18 +285,15 @@ impl Reactor {
 
     pub async fn reconnect(&self) -> Result<(), CoreError> {
         let session_id = {
-            let state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap();
             if state.status == ReactorStatus::Ready {
                 return Err(CoreError::InvalidState("reconnect() while ready".into()));
             }
-            state
+            let sid = state
                 .session_id
                 .clone()
-                .ok_or_else(|| CoreError::InvalidState("reconnect() without a session".into()))?
-        };
-        self.set_status(ReactorStatus::Connecting);
-        {
-            let mut state = self.state.lock().unwrap();
+                .ok_or_else(|| CoreError::InvalidState("reconnect() without a session".into()))?;
+            // Reset transport state and bump epoch atomically with the guard check.
             state.closing = false;
             state.peer_connected = false;
             state.data_open = false;
@@ -293,7 +302,12 @@ impl Reactor {
             state.ice_gathering_complete = false;
             state.ice_final_sent = false;
             state.ice_ready = false;
-        }
+            state.status = ReactorStatus::Connecting;
+            state.heartbeat_epoch = state.heartbeat_epoch.wrapping_add(1);
+            sid
+        };
+        self.dispatcher
+            .dispatch(ReactorEvent::StatusChanged(ReactorStatus::Connecting));
         self.set_status(ReactorStatus::Waiting);
 
         match self.establish_transport(&session_id, true, None).await {
@@ -823,6 +837,39 @@ impl Reactor {
     }
 
     // ------------------------------------------------------------------
+    // Keep-alive
+    // ------------------------------------------------------------------
+
+    /// Run a periodic ping loop for the lifetime of the current connection.
+    ///
+    /// Callers (e.g. the FFI layer) spawn this as a background task after
+    /// `connect()` or `reconnect()` returns `Ok`.  It exits automatically
+    /// when the connection closes or a new `connect`/`reconnect` starts.
+    ///
+    /// Disabled when `ReactorOptions::heartbeat_interval` is zero.
+    pub async fn run_heartbeat(&self) {
+        let interval = self.options.heartbeat_interval;
+        if interval.is_zero() {
+            return;
+        }
+        let my_epoch = self.state.lock().unwrap().heartbeat_epoch;
+        loop {
+            self.platform.sleep(interval).await;
+            let (current_epoch, ready) = {
+                let state = self.state.lock().unwrap();
+                let ready = !state.closing && state.status == ReactorStatus::Ready;
+                (state.heartbeat_epoch, ready)
+            };
+            if current_epoch != my_epoch || !ready {
+                break;
+            }
+            if let Err(e) = self.ping() {
+                log::warn!("[reactor] heartbeat ping failed: {e}");
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Internals
     // ------------------------------------------------------------------
 
@@ -917,5 +964,223 @@ impl Reactor {
         };
         self.state.lock().unwrap().last_error = Some(error.clone());
         self.dispatcher.dispatch(ReactorEvent::Error(error));
+    }
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::sync::Arc;
+
+    use futures::StreamExt;
+
+    use crate::http::{AuthProvider, HttpClient, HttpRequest, HttpResponse};
+    use crate::peer::{PeerTransport, PreparedOffer};
+    use crate::protocol::session::TrackCapability;
+    use crate::protocol::webrtc::IceServer;
+    use crate::runtime::Platform;
+    use crate::state::ReactorStatus;
+    use crate::{BoxFut, SharedAuth, SharedHttp, SharedPeer, SharedPlatform};
+
+    // ── Minimal mocks ─────────────────────────────────────────────────────────
+
+    #[derive(Default)]
+    struct TestPlatform;
+
+    impl Platform for TestPlatform {
+        fn sleep(&self, d: Duration) -> BoxFut<'static, ()> {
+            Box::pin(tokio::time::sleep(d))
+        }
+        fn now_ms(&self) -> f64 {
+            0.0
+        }
+    }
+
+    struct NoAuth;
+
+    #[async_trait::async_trait]
+    impl AuthProvider for NoAuth {
+        async fn jwt(&self) -> Result<Option<String>, CoreError> {
+            Ok(None)
+        }
+    }
+
+    /// HTTP mock that never resolves — simulates a slow coordinator.
+    struct PendingHttp;
+
+    #[async_trait::async_trait]
+    impl HttpClient for PendingHttp {
+        async fn request(&self, _req: HttpRequest) -> Result<HttpResponse, CoreError> {
+            std::future::pending::<()>().await;
+            unreachable!()
+        }
+    }
+
+    struct NullPeer;
+
+    #[async_trait::async_trait]
+    impl PeerTransport for NullPeer {
+        async fn prepare(
+            &self,
+            _: &[IceServer],
+            _: &[TrackCapability],
+        ) -> Result<PreparedOffer, CoreError> {
+            Ok(PreparedOffer {
+                sdp_offer: String::new(),
+                track_mapping: vec![],
+            })
+        }
+        async fn set_remote_description(&self, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn send_data(&self, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn send_control(&self, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn set_track_direction(&self, _: &str, _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn close(&self) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    fn make_reactor() -> Arc<Reactor> {
+        make_reactor_opts(ReactorOptions::new("http://localhost", "test-model"))
+    }
+
+    fn make_reactor_heartbeat(interval: Duration) -> Arc<Reactor> {
+        let mut opts = ReactorOptions::new("http://localhost", "test-model");
+        opts.heartbeat_interval = interval;
+        make_reactor_opts(opts)
+    }
+
+    fn make_reactor_opts(opts: ReactorOptions) -> Arc<Reactor> {
+        Arc::new(Reactor::new(
+            ReactorDeps {
+                http: Arc::new(PendingHttp) as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: Arc::new(NullPeer) as SharedPeer,
+            },
+            opts,
+        ))
+    }
+
+    /// Wait for the first `StatusChanged` event that matches `expected`.
+    async fn wait_for_status(
+        events: &mut futures::channel::mpsc::UnboundedReceiver<ReactorEvent>,
+        expected: ReactorStatus,
+    ) {
+        let got = tokio::time::timeout(Duration::from_millis(500), async {
+            while let Some(ev) = events.next().await {
+                if let ReactorEvent::StatusChanged(s) = ev {
+                    if s == expected {
+                        return true;
+                    }
+                }
+            }
+            false
+        })
+        .await;
+        assert!(
+            matches!(got, Ok(true)),
+            "timed out waiting for StatusChanged({expected:?})"
+        );
+    }
+
+    // ── Race condition: connect() guard is atomic ─────────────────────────────
+
+    /// The guard check (`status == Disconnected`) and the status update
+    /// (`status = Connecting`) happen in the **same** lock acquisition.
+    /// This test verifies that a second concurrent `connect()` is rejected
+    /// because the first one already atomically set the status.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_connect_second_call_rejected() {
+        let reactor = make_reactor();
+        let mut events = reactor.subscribe();
+
+        let r = reactor.clone();
+        let h = tokio::spawn(async move {
+            let _ = r.connect(ConnectOptions::default()).await;
+        });
+
+        // Wait until the Connecting event is dispatched (fired synchronously
+        // after the status lock is released, before the first HTTP await).
+        wait_for_status(&mut events, ReactorStatus::Connecting).await;
+
+        let result = reactor.connect(ConnectOptions::default()).await;
+        assert!(
+            matches!(result, Err(CoreError::InvalidState(_))),
+            "concurrent connect() must be rejected, got {result:?}"
+        );
+
+        h.abort();
+    }
+
+    /// connect() while already Waiting (mid-connect) must be rejected.
+    #[tokio::test]
+    async fn connect_while_waiting_is_rejected() {
+        let reactor = make_reactor();
+        reactor.state.lock().unwrap().status = ReactorStatus::Waiting;
+        let result = reactor.connect(ConnectOptions::default()).await;
+        assert!(matches!(result, Err(CoreError::InvalidState(_))));
+    }
+
+    /// connect() while Ready must be rejected.
+    #[tokio::test]
+    async fn connect_while_ready_is_rejected() {
+        let reactor = make_reactor();
+        reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+        let result = reactor.connect(ConnectOptions::default()).await;
+        assert!(matches!(result, Err(CoreError::InvalidState(_))));
+    }
+
+    // ── Heartbeat ─────────────────────────────────────────────────────────────
+
+    /// run_heartbeat() exits after one interval when status is Disconnected.
+    #[tokio::test]
+    async fn heartbeat_exits_when_disconnected() {
+        let reactor = make_reactor_heartbeat(Duration::from_millis(20));
+
+        let completed =
+            tokio::time::timeout(Duration::from_millis(300), reactor.run_heartbeat()).await;
+
+        assert!(
+            completed.is_ok(),
+            "heartbeat should exit within one interval when not Ready"
+        );
+    }
+
+    /// A stale heartbeat exits when the epoch advances (new connect/reconnect).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn heartbeat_exits_when_epoch_changes() {
+        let reactor = make_reactor_heartbeat(Duration::from_millis(40));
+
+        // Force Ready so the heartbeat would otherwise keep looping.
+        reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+
+        let r = reactor.clone();
+        let hb = tokio::spawn(async move { r.run_heartbeat().await });
+
+        // Give the heartbeat a moment to start its first sleep.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        // Bump epoch — simulates a new connect() or reconnect().
+        {
+            let mut s = reactor.state.lock().unwrap();
+            s.heartbeat_epoch = s.heartbeat_epoch.wrapping_add(1);
+        }
+
+        // Heartbeat wakes up after ~40 ms, sees the epoch mismatch, and exits.
+        let result = tokio::time::timeout(Duration::from_millis(300), hb).await;
+        assert!(result.is_ok(), "heartbeat should stop after epoch change");
     }
 }
