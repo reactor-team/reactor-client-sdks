@@ -24,9 +24,15 @@ jobs:
     # exempting commits inline (the inline check can be spoofed via git config).
     if: github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
+      - name: Checkout
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git clone --filter=blob:none \
+            "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" .
+          git fetch --depth=1 origin \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}"
 
       - name: Verify Signed-off-by on every commit
         env:
