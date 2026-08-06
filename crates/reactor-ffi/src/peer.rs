@@ -20,10 +20,9 @@ use reactor_core::protocol::session::{TrackCapability, TrackDirection, TrackKind
 use reactor_core::protocol::webrtc::{IceCandidate, IceServer, TrackMappingEntry};
 
 use reactor_webrtc::{
-    AdmMode, ContinualGatheringPolicy, DataChannel, FrameTransform, IceGatheringState,
-    IceServer as RwIceServer, MediaKind, PeerConnection, PeerConnectionFactory,
-    PeerConnectionObserver, PeerConnectionState, RtcConfiguration, SdpType, SessionDescription,
-    Track, Transceiver, TransceiverDirection,
+    AdmMode, ContinualGatheringPolicy, DataChannel, IceGatheringState, IceServer as RwIceServer,
+    MediaKind, PeerConnection, PeerConnectionFactory, PeerConnectionObserver, PeerConnectionState,
+    RtcConfiguration, SdpType, SessionDescription, Track, Transceiver, TransceiverDirection,
 };
 
 fn peer_err(e: impl std::fmt::Display) -> CoreError {
@@ -69,7 +68,6 @@ struct PeerState {
     transceivers: Vec<Transceiver>,
     local_tracks: HashMap<String, Track>,
     recv_tracks: Arc<Mutex<Vec<Track>>>,
-    recv_transforms: Vec<FrameTransform>,
 }
 
 pub struct ReactorWebRtcPeerTransport {
@@ -179,7 +177,6 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             let recv = recv_tracks.clone();
             let name_mids = recv_name_mids.clone();
             let track_idx = recv_track_idx.clone();
-            let state_for_track = self.state.clone();
             obs = obs.on_track(move |kind, mut track| {
                 let idx = track_idx.fetch_add(1, Ordering::SeqCst);
                 let (name, mid) = name_mids
@@ -196,22 +193,10 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
                 match kind {
                     MediaKind::Video => {
                         if let Some(cb) = frame_cb.clone() {
-                            // Enable the receiver metadata transform so VideoFrame::metadata
-                            // is populated for every decoded frame that carried a trailer.
-                            let recv_tf = track.receiver_metadata_transform();
-                            {
-                                let mut guard = state_for_track.lock().unwrap();
-                                if let Some(mid_str) = &mid {
-                                    if let Some(tc) = guard
-                                        .transceivers
-                                        .iter()
-                                        .find(|t| t.mid().as_deref() == Some(mid_str.as_str()))
-                                    {
-                                        let _ = tc.set_receiver_transform(&recv_tf);
-                                    }
-                                }
-                                guard.recv_transforms.push(recv_tf);
-                            }
+                            // No transform to attach: reactor-webrtc negotiates
+                            // frame-metadata support in the SDP and installs the strip
+                            // step itself, so VideoFrame::metadata is populated whenever
+                            // the sender included a trailer and the peer agreed.
                             track.on_video_frame(move |f| {
                                 let (frame_id, ts, ud) = f
                                     .metadata
