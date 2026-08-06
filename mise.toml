@@ -1,0 +1,91 @@
+# mise is the task runner + toolchain manager.
+# Run `mise install` to install pinned tools, `mise run <task>` to run tasks.
+# `mise lock` refreshes the committed mise.lock.
+min_version = "2026.6.12"
+monorepo_root = true
+
+[tools]
+# THE ONLY [tools] TABLE IN THE REPO. Every entry is exact-pinned + locked.
+#
+# cargo-binstall (aqua-backed prebuilt) MUST be present so the cargo: backend
+# installs cargo-nextest as a prebuilt binary instead of compiling from source.
+"aqua:cargo-bins/cargo-binstall" = "1.21.0"
+"cargo:cargo-nextest" = "0.9.140"
+uv          = "0.11.31"
+ruff        = "0.15.22"
+shellcheck  = "0.11.0"
+# hk drives git hooks (pre-commit / pre-push / post-checkout).
+hk          = "1.52.0"
+# EXCEPTION: rustup may be "latest" — it is the installer, not the compiler.
+# The toolchain (channel / components / targets) is pinned by rust-toolchain.toml.
+# CI never uses mise's rustup (MISE_DISABLE_TOOLS + actions-rust-lang/setup-rust-toolchain).
+"aqua:rust-lang/rustup" = "latest"
+
+[settings]
+experimental = true
+lockfile = true
+lockfile_platforms = ["macos-arm64", "macos-x64", "linux-x64", "linux-arm64"]
+idiomatic_version_file_enable_tools = ["rust"]
+task.source_freshness_hash_contents = true
+
+[env]
+REPO_ROOT = "{{ env.REPO_ROOT | default(value=config_root) }}"
+
+# ── Rust ──────────────────────────────────────────────────────────────────────
+
+[tasks.fmt]
+description = "[Format] Format all Rust code"
+run = "cargo fmt --all"
+
+[tasks."fmt:check"]
+description = "[Format] Check Rust formatting"
+run = "cargo fmt --all -- --check"
+
+[tasks.check]
+description = "[Build] cargo check the workspace"
+run = "cargo check --workspace"
+
+[tasks.clippy]
+description = "[Quality] Clippy with warnings denied"
+# reactor-ffi requires prebuilt libwebrtc (reactor-webrtc-sys) — exclude from
+# workspace clippy so the lint job doesn't try to compile native WebRTC.
+run = "cargo clippy --workspace --exclude reactor-ffi -- -D warnings"
+
+[tasks.test]
+description = "[Testing] Workspace tests via nextest + doctests"
+run = [
+    "cargo nextest run --workspace --no-tests=pass",
+    "cargo test --workspace --doc",
+]
+
+# ── Lints ─────────────────────────────────────────────────────────────────────
+
+[tasks."lint:mise-lock"]
+description = "[Quality] Verify mise.lock covers every declared tool + lockfile platform"
+run = "python3 scripts/check-mise-lock.py"
+
+[tasks."lint:mise-tools-root"]
+description = "[Quality] Enforce a single root [tools] table (no module-declared tools)"
+run = "python3 scripts/check-mise-tools-root.py"
+
+[tasks."lint:shell"]
+description = "[Quality] Lint shell scripts with shellcheck"
+run = "git ls-files '*.sh' | xargs -r shellcheck --shell=bash"
+
+[tasks.lint]
+description = "[Quality] Run all linters"
+depends = ["fmt:check", "clippy", "lint:shell", "lint:mise-tools-root", "lint:mise-lock"]
+
+[tasks.ci]
+description = "[Quality] Everything the CI lint job runs"
+depends = ["lint"]
+
+# ── Setup ─────────────────────────────────────────────────────────────────────
+
+[tasks.install-hooks]
+description = "[Setup] Install git hooks via hk"
+run = "hk install --mise"
+
+[tasks.uninstall-hooks]
+description = "[Setup] Remove hk-managed git hooks"
+run = "hk uninstall"

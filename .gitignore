@@ -1,0 +1,11 @@
+/target/
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+*.egg-info/
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
