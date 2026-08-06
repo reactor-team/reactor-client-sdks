@@ -599,7 +599,7 @@ impl Reactor {
             }
         }
         let payload = encode_command(command, data, scope, uploads, self.peer.max_message_bytes())?;
-        self.peer.send_data(&payload).map_err(|error| {
+        self.peer.send_data(&payload).inspect_err(|error| {
             self.emit_error(
                 codes::MESSAGE_SEND_FAILED,
                 error.to_string(),
@@ -607,7 +607,6 @@ impl Reactor {
                 false,
                 None,
             );
-            error
         })
     }
 
@@ -623,7 +622,7 @@ impl Reactor {
         self.ensure_ready()?;
         self.control_request("publish_track", json!({ "name": name }))
             .await
-            .map_err(|error| {
+            .inspect_err(|error| {
                 self.emit_error(
                     codes::TRACK_PUBLISH_FAILED,
                     error.to_string(),
@@ -631,7 +630,6 @@ impl Reactor {
                     false,
                     None,
                 );
-                error
             })
     }
 
