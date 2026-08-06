@@ -1,10 +1,15 @@
 [package]
 name        = "reactor-core"
 description = "Platform-agnostic business logic of the Reactor client SDK: session lifecycle, WebRTC signaling, messaging, recording"
-version.workspace   = true
-edition.workspace   = true
-license.workspace   = true
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
 repository.workspace = true
+
+[features]
+default = []
+# Provides `runtime::TokioPlatform` for native hosts.
+tokio-platform = ["dep:tokio"]
 
 [dependencies]
 reactor-protocol = { workspace = true }
@@ -14,6 +19,7 @@ thiserror        = { workspace = true }
 async-trait      = { workspace = true }
 futures          = { workspace = true }
 log              = { workspace = true }
+tokio            = { version = "1", features = ["time"], optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "test-util", "sync"] }
