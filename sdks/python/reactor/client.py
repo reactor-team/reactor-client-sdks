@@ -213,13 +213,27 @@ class Reactor:
             sid = sid_bytes.decode() if sid_bytes else None
             r._fire("session_id_changed", sid)
 
-        def _on_frame(data_ptr: int, width: int, height: int, _ud: Any) -> None:
+        def _on_frame(
+            data_ptr: int,
+            width: int,
+            height: int,
+            frame_id: int,
+            timestamp_us: int,
+            user_data_ptr: int,
+            user_data_len: int,
+            _ud: Any,
+        ) -> None:
             r = weak()
             if r is None:
                 return
             n = width * height * 4
             frame = (ctypes.c_uint8 * n).from_address(data_ptr)
-            r._fire("frame", bytes(frame), width, height)
+            ud = (
+                bytes((ctypes.c_uint8 * user_data_len).from_address(user_data_ptr))
+                if user_data_ptr and user_data_len
+                else b""
+            )
+            r._fire("frame", bytes(frame), width, height, frame_id, timestamp_us, ud)
 
         def _on_audio(
             data_ptr: int, num_samples: int, sample_rate: int, channels: int, _ud: Any
