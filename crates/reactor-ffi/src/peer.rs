@@ -20,9 +20,10 @@ use reactor_core::protocol::session::{TrackCapability, TrackDirection, TrackKind
 use reactor_core::protocol::webrtc::{IceCandidate, IceServer, TrackMappingEntry};
 
 use reactor_webrtc::{
-    AdmMode, ContinualGatheringPolicy, DataChannel, IceGatheringState, IceServer as RwIceServer,
-    MediaKind, PeerConnection, PeerConnectionFactory, PeerConnectionObserver, PeerConnectionState,
-    RtcConfiguration, SdpType, SessionDescription, Track, Transceiver, TransceiverDirection,
+    AdmMode, ContinualGatheringPolicy, DataChannel, FrameTransform, IceGatheringState,
+    IceServer as RwIceServer, MediaKind, PeerConnection, PeerConnectionFactory,
+    PeerConnectionObserver, PeerConnectionState, RtcConfiguration, SdpType, SessionDescription,
+    Track, Transceiver, TransceiverDirection,
 };
 
 fn peer_err(e: impl std::fmt::Display) -> CoreError {
@@ -68,13 +69,14 @@ struct PeerState {
     transceivers: Vec<Transceiver>,
     local_tracks: HashMap<String, Track>,
     recv_tracks: Arc<Mutex<Vec<Track>>>,
+    recv_transforms: Vec<FrameTransform>,
 }
 
 pub struct ReactorWebRtcPeerTransport {
     event_tx: UnboundedSender<PeerEvent>,
     factory: PeerConnectionFactory,
     state: Arc<Mutex<PeerState>>,
-    frame_cb: Option<Arc<dyn Fn(&[u8], u32, u32) + Send + Sync + 'static>>,
+    frame_cb: Option<Arc<dyn Fn(&[u8], u32, u32, u64, u64, &[u8]) + Send + Sync + 'static>>,
     audio_cb: Option<Arc<dyn Fn(&[i16], u32, u32) + Send + Sync + 'static>>,
 }
 
@@ -97,7 +99,7 @@ impl ReactorWebRtcPeerTransport {
 
     pub fn with_frame_callback(
         mut self,
-        cb: impl Fn(&[u8], u32, u32) + Send + Sync + 'static,
+        cb: impl Fn(&[u8], u32, u32, u64, u64, &[u8]) + Send + Sync + 'static,
     ) -> Self {
         self.frame_cb = Some(Arc::new(cb));
         self
@@ -177,6 +179,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             let recv = recv_tracks.clone();
             let name_mids = recv_name_mids.clone();
             let track_idx = recv_track_idx.clone();
+            let state_for_track = self.state.clone();
             obs = obs.on_track(move |kind, mut track| {
                 let idx = track_idx.fetch_add(1, Ordering::SeqCst);
                 let (name, mid) = name_mids
@@ -186,11 +189,37 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
                     .map(|(n, m)| (Some(n.clone()), m.clone()))
                     .unwrap_or((None, None));
                 info!("[peer] track received  kind={kind:?}  name={name:?}  mid={mid:?}");
-                let _ = tx.unbounded_send(PeerEvent::TrackReceived { name, mid });
+                let _ = tx.unbounded_send(PeerEvent::TrackReceived {
+                    name,
+                    mid: mid.clone(),
+                });
                 match kind {
                     MediaKind::Video => {
                         if let Some(cb) = frame_cb.clone() {
-                            track.on_video_frame(move |f| cb(f.bgra, f.width, f.height));
+                            // Enable the receiver metadata transform so VideoFrame::metadata
+                            // is populated for every decoded frame that carried a trailer.
+                            let recv_tf = track.receiver_metadata_transform();
+                            {
+                                let mut guard = state_for_track.lock().unwrap();
+                                if let Some(mid_str) = &mid {
+                                    if let Some(tc) = guard
+                                        .transceivers
+                                        .iter()
+                                        .find(|t| t.mid().as_deref() == Some(mid_str.as_str()))
+                                    {
+                                        let _ = tc.set_receiver_transform(&recv_tf);
+                                    }
+                                }
+                                guard.recv_transforms.push(recv_tf);
+                            }
+                            track.on_video_frame(move |f| {
+                                let (frame_id, ts, ud) = f
+                                    .metadata
+                                    .as_ref()
+                                    .map(|m| (m.frame_id, m.timestamp, m.user_data.as_slice()))
+                                    .unwrap_or((0, 0, &[]));
+                                cb(f.bgra, f.width, f.height, frame_id, ts, ud);
+                            });
                         }
                     }
                     MediaKind::Audio => {
