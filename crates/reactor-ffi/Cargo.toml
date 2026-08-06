@@ -11,5 +11,25 @@ name       = "reactor_ffi"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-reactor-core = { workspace = true }
-log          = { workspace = true }
+reactor-core   = { workspace = true, features = ["tokio-platform"] }
+reactor-webrtc = { workspace = true }
+async-trait    = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+futures        = { workspace = true }
+log            = { workspace = true }
+env_logger     = { workspace = true }
+mime_guess     = { workspace = true }
+tokio          = { workspace = true }
+
+# iOS / Android: pure-Rust TLS (no clash with BoringSSL in libwebrtc)
+[target.'cfg(target_os = "ios")'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+jni     = "0.21"
+
+# Desktop: native TLS + http2/stream/charset
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "http2", "charset", "default-tls"] }

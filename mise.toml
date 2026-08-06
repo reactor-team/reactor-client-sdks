@@ -47,7 +47,9 @@ run = "cargo check --workspace"
 
 [tasks.clippy]
 description = "[Quality] Clippy with warnings denied"
-run = "cargo clippy --workspace -- -D warnings"
+# reactor-ffi requires prebuilt libwebrtc (reactor-webrtc-sys) — exclude from
+# workspace clippy so the lint job doesn't try to compile native WebRTC.
+run = "cargo clippy --workspace --exclude reactor-ffi -- -D warnings"
 
 [tasks.test]
 description = "[Testing] Workspace tests via nextest + doctests"
