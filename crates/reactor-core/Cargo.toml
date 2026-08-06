@@ -1,0 +1,19 @@
+[package]
+name        = "reactor-core"
+description = "Platform-agnostic business logic of the Reactor client SDK: session lifecycle, WebRTC signaling, messaging, recording"
+version.workspace   = true
+edition.workspace   = true
+license.workspace   = true
+repository.workspace = true
+
+[dependencies]
+reactor-protocol = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+thiserror        = { workspace = true }
+async-trait      = { workspace = true }
+futures          = { workspace = true }
+log              = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

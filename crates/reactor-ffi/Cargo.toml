@@ -1,0 +1,15 @@
+[package]
+name        = "reactor-ffi"
+description = "C ABI shared library — bridges reactor-core to native language SDKs via a stable C interface"
+version.workspace   = true
+edition.workspace   = true
+license.workspace   = true
+repository.workspace = true
+
+[lib]
+name       = "reactor_ffi"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+reactor-core = { workspace = true }
+log          = { workspace = true }
