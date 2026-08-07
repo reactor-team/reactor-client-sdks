@@ -144,6 +144,7 @@ class Reactor:
 
         # Build callback wrappers; capture self weakly via closure
         import weakref
+
         weak = weakref.ref(self)
 
         def _on_status(status_bytes: bytes, _ud: Any) -> None:
@@ -304,15 +305,11 @@ class Reactor:
     # Async completion bridge
     # ------------------------------------------------------------------
 
-    def _make_completion(
-        self, future: asyncio.Future
-    ) -> Any:
+    def _make_completion(self, future: asyncio.Future) -> Any:
         """Return a COMPLETION_FN that resolves ``future`` on the event loop."""
         loop = self._loop
 
-        def _cb(
-            ok: int, result_json: bytes | None, error_msg: bytes | None, _ud: Any
-        ) -> None:
+        def _cb(ok: int, result_json: bytes | None, error_msg: bytes | None, _ud: Any) -> None:
             if ok:
                 payload = json.loads(result_json) if result_json and result_json != b"{}" else None
                 loop.call_soon_threadsafe(future.set_result, payload)
@@ -348,20 +345,14 @@ class Reactor:
         sid = session_id.encode() if session_id else None
         handle = self._handle
 
-        await self._async_op(
-            lambda fn: lib.reactor_connect(
-                ctypes.c_void_p(handle), sid, fn, None
-            )
-        )
+        await self._async_op(lambda fn: lib.reactor_connect(ctypes.c_void_p(handle), sid, fn, None))
 
     async def reconnect(self) -> None:
         """Reconnect to the current session after a transient failure."""
         self._require_handle()
         handle = self._handle
         lib = get_lib()
-        await self._async_op(
-            lambda fn: lib.reactor_reconnect(ctypes.c_void_p(handle), fn, None)
-        )
+        await self._async_op(lambda fn: lib.reactor_reconnect(ctypes.c_void_p(handle), fn, None))
 
     async def disconnect(self) -> None:
         """Gracefully disconnect (session is preserved for reconnect)."""
@@ -369,9 +360,7 @@ class Reactor:
             return
         handle = self._handle
         lib = get_lib()
-        await self._async_op(
-            lambda fn: lib.reactor_disconnect(ctypes.c_void_p(handle), fn, None)
-        )
+        await self._async_op(lambda fn: lib.reactor_disconnect(ctypes.c_void_p(handle), fn, None))
 
     def close(self) -> None:
         """Synchronously destroy the underlying handle."""
@@ -420,9 +409,7 @@ class Reactor:
     def unpublish_track(self, name: str) -> int:
         """Deactivate a sendonly track (sync). Returns 0 on success."""
         self._require_handle()
-        return get_lib().reactor_unpublish_track(
-            ctypes.c_void_p(self._handle), name.encode()
-        )
+        return get_lib().reactor_unpublish_track(ctypes.c_void_p(self._handle), name.encode())
 
     async def pause_track(self, name: str) -> None:
         """Pause receiving a named track."""
@@ -454,10 +441,31 @@ class Reactor:
         data: bytes,
         width: int,
         height: int,
+        user_data: bytes | None = None,
     ) -> None:
-        """Push a raw BGRA video frame into a named sendonly track."""
+        """Push a raw BGRA video frame into a named sendonly track.
+
+        Pass ``user_data`` to tag the frame; it reaches the model as that frame's
+        metadata. The bytes are sent as they are — JSON, protobuf or anything
+        else is between you and the model.
+
+        A tag is dropped unless the far end declared that it reads them, so
+        tagging is safe whatever the model was built against.
+        """
         self._require_handle()
         buf = (ctypes.c_uint8 * len(data)).from_buffer_copy(data)
+        if user_data:
+            tag = (ctypes.c_uint8 * len(user_data)).from_buffer_copy(user_data)
+            get_lib().reactor_push_video_frame_with_metadata(
+                ctypes.c_void_p(self._handle),
+                track_name.encode(),
+                buf,
+                ctypes.c_uint32(width),
+                ctypes.c_uint32(height),
+                tag,
+                ctypes.c_uint32(len(user_data)),
+            )
+            return
         get_lib().reactor_push_video_frame(
             ctypes.c_void_p(self._handle),
             track_name.encode(),
@@ -477,6 +485,7 @@ class Reactor:
         """Push interleaved i16 PCM into a named sendonly audio track."""
         self._require_handle()
         import ctypes as ct
+
         n = samples_per_channel * num_channels
         buf = (ct.c_int16 * n).from_buffer_copy(data)
         get_lib().reactor_push_audio_frame(
