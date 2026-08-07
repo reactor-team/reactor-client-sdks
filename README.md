@@ -2,7 +2,7 @@
 
 <img src="assets/banner.png" alt="Reactor Client SDKs" width="100%" />
 
-**Client SDKs for real-time Reactor sessions, across every platform.**
+**Client SDKs for real-time world models — connect, watch it run, steer it live.**
 
 [🌐 Reactor](https://reactor.inc) · [⚙️ Runtime](https://github.com/reactor-team/reactor-runtime) · [🎥 WebRTC](https://github.com/reactor-team/reactor-webrtc) · [📖 Cookbook](https://github.com/reactor-team/reactor-cookbook)
 
@@ -14,9 +14,9 @@
 
 ---
 
-Reactor client SDKs connect an application to a live Reactor model over
-WebRTC: session lifecycle, audio/video tracks, application commands, and
-recording — behind one small API per language. Native platforms (Python,
+Use these SDKs to connect your app to a live Reactor world model: receive
+streaming video, push your own audio/video in, and send commands that
+steer what the model generates while it runs. Native platforms (Python,
 iOS, Android, Go) share one Rust implementation of the protocol logic, so
 behavior stays identical across them; the browser-native JavaScript SDK
 speaks the same wire protocol but is its own implementation, since a
