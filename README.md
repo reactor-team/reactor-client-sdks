@@ -19,25 +19,6 @@ its streaming video, and send commands that steer what it generates while
 it runs. Some models also accept your own audio/video as input over a
 dedicated track.
 
-```python
-import asyncio
-from reactor import Reactor
-
-async def main():
-    async with Reactor("https://api.reactor.inc", "my-model", jwt=TOKEN) as r:
-        r.on("frame", lambda data, w, h, *_: render(data, w, h))  # live video, as it's generated
-        await r.connect()
-
-        r.send_command("set_prompt", {"text": "a neon-lit city at night"})  # steer it, live
-        await asyncio.sleep(60)
-
-asyncio.run(main())
-```
-
-That's the whole loop — connect, watch, steer — in under 15 lines. See
-[`sdks/python/README.md`](sdks/python/README.md) for the full quick start
-(`render` above is just "however your app displays a BGRA frame").
-
 ## Getting started
 
 - 🐍 **[Python](sdks/python/README.md)** — install, quick start, full API reference.
