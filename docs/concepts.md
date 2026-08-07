@@ -10,8 +10,13 @@ Connecting establishes (or resumes) a **session** with a model over WebRTC.
 A session always moves through the same four states, reported through a
 `status_changed` event:
 
-```
-disconnected --connect()--> connecting --session created--> waiting --transport ready--> ready
+```mermaid
+stateDiagram-v2
+    [*] --> disconnected
+    disconnected --> connecting: connect()
+    connecting --> waiting: session created
+    waiting --> ready: transport ready
+    ready --> disconnected: disconnect() / fatal transport error
 ```
 
 - `connecting` — the session is being created (or adopted, if you passed a
