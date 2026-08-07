@@ -425,7 +425,9 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
     ) {
         let s = self.state.lock().unwrap();
         let Some(track) = s.local_tracks.get(track_name) else {
-            warn!("[peer] push_video_frame_with_metadata: no video source for track '{track_name}'");
+            warn!(
+                "[peer] push_video_frame_with_metadata: no video source for track '{track_name}'"
+            );
             return;
         };
         // Dropped by reactor-webrtc unless the peer declared that it strips the
