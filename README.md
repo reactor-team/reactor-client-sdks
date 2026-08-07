@@ -45,11 +45,18 @@ model you do need.
 package README), and full API reference:
 [`sdks/python/README.md`](sdks/python/README.md).
 
-**More platforms** — `reactor-ffi` already targets iOS and Android
+**More native platforms** — `reactor-ffi` already targets iOS and Android
 (`crates/reactor-ffi/Cargo.toml`), and `reactor-core`'s own docs list
 Swift, Kotlin and Go as bindings built on the same C ABI. None of those
 SDKs exist in this repo yet; when one lands it gets its own
 `sdks/<platform>/README.md` alongside this one.
+
+**JavaScript** — a browser SDK, `@reactor-team/js-sdk`, already exists and
+talks the same wire protocol (see
+[`crates/reactor-protocol/src/lib.rs`](crates/reactor-protocol/src/lib.rs)).
+It's maintained outside this repo and, being browser-native, doesn't go
+through `reactor-core`/`reactor-ffi` like the SDKs above — it speaks
+WebRTC directly via browser APIs.
 
 ## Documentation
 

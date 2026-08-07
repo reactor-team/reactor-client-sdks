@@ -57,11 +57,15 @@ through `send_command` and a few events — see
 
 ## One shared core, growing platform support
 
-Every SDK — Python today, with more native platforms planned on the same
-C interface — implements identical behavior because the session/signaling
-logic lives in one place underneath all of them. Practically, this means:
-protocol quirks and edge cases you learn on one platform hold on every
-other one too.
+The concepts on this page hold across every SDK, but they're not all built
+the same way. Python (this repo) and the native platforms planned on top
+of the same C interface (iOS, Android, ...) share one Rust implementation
+of session/signaling logic, so protocol quirks and edge cases you learn on
+one hold on every other one. The existing browser SDK,
+`@reactor-team/js-sdk`, is maintained separately and only shares the wire
+protocol (see [the root README](../README.md#getting-started)) — it should
+behave the same, but it isn't *guaranteed* identical the way the
+C-ABI-based SDKs are to each other.
 
 ## Callbacks run off your main thread
 
