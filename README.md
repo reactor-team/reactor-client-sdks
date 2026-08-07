@@ -17,12 +17,7 @@
 Use these SDKs to connect your app to a live Reactor world model: receive
 its streaming video, and send commands that steer what it generates while
 it runs. Some models also accept your own audio/video as input over a
-dedicated track. Native platforms (Python,
-iOS, Android, Go) share one Rust implementation of the protocol logic, so
-behavior stays identical across them; the browser-native JavaScript SDK
-speaks the same wire protocol but is its own implementation, since a
-browser drives WebRTC through its own APIs rather than through this repo's
-native code.
+dedicated track.
 
 ## Getting started
 
