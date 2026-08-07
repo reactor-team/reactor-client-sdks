@@ -1,10 +1,14 @@
 # reactor-sdk (Python)
 
-Async Python client for Reactor — a thin `ctypes` wrapper over the
-`reactor-ffi` C ABI. All session, signaling and reconnection logic lives in
-the Rust core; this package only adapts it to `asyncio`.
+Async Python client for [Reactor](https://reactor.inc) — connect to a live
+world model over WebRTC, receive its streaming video, and send commands
+that steer what it generates while it runs.
 
-## Install
+---
+
+## Quick Start
+
+### Installation
 
 ```bash
 pip install reactor-sdk
@@ -29,7 +33,7 @@ variable, `libreactor_ffi.{dylib,so}` / `reactor_ffi.dll` next to the
 - **`pip install reactor-sdk` from PyPI** into another project — set
   `REACTOR_FFI_LIB` to the library you built above.
 
-## Quick start
+### Basic Usage
 
 ```python
 import asyncio
@@ -52,7 +56,21 @@ Set `local=True` (or `REACTOR_LOCAL=1` in the examples) to talk to a
 `reactor-runtime` instance running on your machine instead of
 `api.reactor.inc`.
 
-## API reference
+---
+
+## Documentation & Resources
+
+| Resource | Covers |
+|---|---|
+| [`docs/concepts.md`](../../docs/concepts.md) | Sessions and connection state, tracks and capabilities, scopes, callback threading. Start here. |
+| [`docs/messaging.md`](../../docs/messaging.md) | Sending commands, receiving messages, capabilities negotiation, track publish/pause/resume. |
+| [`docs/recording.md`](../../docs/recording.md) | Requesting clips and full-session recordings. |
+| [`docs/frame-metadata.md`](../../docs/frame-metadata.md) | Tagging and reading per-frame metadata trailers on video tracks. |
+| API reference | Below, on this page. |
+
+---
+
+## API Reference
 
 ### `Reactor(api_url, model_name, *, jwt=None, local=False, adm_mode=None)`
 
@@ -101,7 +119,9 @@ that disconnects and closes the handle on exit.
 | `ReactorError` | `code, message, timestamp_ms, recoverable, component, retry_after_ms` |
 | `ReactorFFIError` | Raised when an async FFI operation (`connect`, `request_clip`, ...) fails. |
 
-## Examples
+---
+
+## Samples
 
 Runnable end-to-end scripts in [`examples/`](examples/), each driven by
 `REACTOR_API_URL` / `REACTOR_MODEL` / `REACTOR_JWT` / `REACTOR_LOCAL`
@@ -126,3 +146,16 @@ REACTOR_MODEL=my-model REACTOR_JWT=<token> python examples/main.py
 
 REACTOR_MODEL=my-model REACTOR_JWT=<token> python -m examples.push_video --track video_input
 ```
+
+---
+
+## Development and Contributing
+
+See the repo-wide [`CONTRIBUTING.md`](../../CONTRIBUTING.md) for dev setup,
+code style, and how to open a pull request.
+
+---
+
+## License
+
+Apache-2.0 — see [`LICENSE`](../../LICENSE).
