@@ -9,13 +9,13 @@ byte stream to the output file.
 
 Usage:
     # Clip of the last 10 seconds
-    python examples/record.py --clip 10
+    python -m examples.record --clip 10
 
     # Full-session recording
-    python examples/record.py --recording
+    python -m examples.record --recording
 
     # Download the clip segments to a file
-    python examples/record.py --clip 10 --download clip.ts
+    python -m examples.record --clip 10 --download clip.ts
 
 Environment variables (overridden by flags):
     REACTOR_API_URL, REACTOR_MODEL, REACTOR_JWT, REACTOR_LOCAL

@@ -13,13 +13,13 @@ prints the metadata fields for every frame that carries a trailer.  Frames
 without metadata (trailer absent) are counted but not printed unless --verbose.
 
 Usage:
-    python examples/frame_metadata.py --track video_output
+    python -m examples.frame_metadata --track video_output
 
     # Also print raw frame dimensions and BGRA pixel stats
-    python examples/frame_metadata.py --track video_output --verbose
+    python -m examples.frame_metadata --track video_output --verbose
 
     # Run for a custom duration
-    python examples/frame_metadata.py --track video_output --duration 30
+    python -m examples.frame_metadata --track video_output --duration 30
 
 Environment variables (overridden by flags):
     REACTOR_API_URL, REACTOR_MODEL, REACTOR_JWT, REACTOR_LOCAL
