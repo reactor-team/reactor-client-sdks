@@ -23,23 +23,6 @@ browser-native JavaScript SDK speaks the same wire protocol but is its own
 implementation, since a browser drives WebRTC through its own APIs rather
 than through this repo's native code.
 
-## Repository layout
-
-```
-crates/
-  reactor-protocol/   wire-protocol types shared by every SDK
-  reactor-core/       session lifecycle, signaling, messaging — platform-agnostic
-  reactor-ffi/        C ABI that exposes reactor-core to native language SDKs
-sdks/
-  python/             Python SDK (reactor-sdk on PyPI)
-```
-
-`reactor-protocol`, `reactor-core` and `reactor-ffi` are internal
-implementation crates, not published to crates.io — they exist to give
-every native SDK the same behavior for free. As an SDK consumer you never
-touch them directly; see [`docs/concepts.md`](docs/concepts.md) for the
-mental model you do need.
-
 ## Getting started
 
 **🐍 Python** — the only SDK shipping today. Quick start, install steps
