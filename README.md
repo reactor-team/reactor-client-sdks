@@ -59,7 +59,9 @@ SDKs exist in this repo yet; when one lands it gets its own
 - [`docs/messaging.md`](docs/messaging.md) — sending commands, receiving
   messages, capabilities negotiation, and track publish/pause/resume.
 - [`docs/recording.md`](docs/recording.md) — clips and full-session
-  recordings, and per-frame metadata trailers.
+  recordings.
+- [`docs/frame-metadata.md`](docs/frame-metadata.md) — tagging and reading
+  per-frame metadata trailers on video tracks.
 - [`docs/README.md`](docs/README.md) is the index if you're looking for
   something specific.
 

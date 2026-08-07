@@ -71,7 +71,7 @@ Set `local=True` (or `REACTOR_LOCAL=1` in the examples) to talk to a
 | `await publish_track(name)` | Activate a named `sendonly` track slot. |
 | `unpublish_track(name)` | Deactivate a `sendonly` track (sync). |
 | `await pause_track(name)` / `await resume_track(name)` | Pause / resume a `recvonly` track subscription. |
-| `push_video_frame(track_name, data, width, height, user_data=None)` | Push a raw **BGRA** frame into a `sendonly` video track. `user_data` tags the frame; see [`docs/recording.md`](../../docs/recording.md#frame-metadata). |
+| `push_video_frame(track_name, data, width, height, user_data=None)` | Push a raw **BGRA** frame into a `sendonly` video track. `user_data` tags the frame; see [`docs/frame-metadata.md`](../../docs/frame-metadata.md). |
 | `push_audio_frame(track_name, data, samples_per_channel, sample_rate=48000, num_channels=1)` | Push interleaved `int16` PCM into a `sendonly` audio track. |
 | `await request_clip(duration_seconds) -> Clip` | Request a clip of the last N seconds of the session. |
 | `await request_recording() -> Clip` | Request a clip covering the whole session so far. |
