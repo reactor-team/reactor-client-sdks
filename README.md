@@ -2,7 +2,7 @@
 
 <img src="assets/banner.png" alt="Reactor Client SDKs" width="100%" />
 
-**Native client SDKs for real-time Reactor sessions — one Rust core, thin bindings per platform.**
+**Client SDKs for real-time Reactor sessions, across every platform.**
 
 [🌐 Reactor](https://reactor.inc) · [⚙️ Runtime](https://github.com/reactor-team/reactor-runtime) · [🎥 WebRTC](https://github.com/reactor-team/reactor-webrtc) · [📖 Cookbook](https://github.com/reactor-team/reactor-cookbook)
 
@@ -16,10 +16,12 @@
 
 Reactor client SDKs connect an application to a live Reactor model over
 WebRTC: session lifecycle, audio/video tracks, application commands, and
-recording — behind one small API per language. All the protocol logic
-(signaling, reconnection, message framing) lives once in a Rust core; each
-language SDK is a thin binding on top, so behavior stays identical across
-platforms.
+recording — behind one small API per language. Native platforms
+(Python today; iOS, Android, Go planned) share one Rust implementation of
+the protocol logic, so behavior stays identical across those; the
+browser-native JavaScript SDK speaks the same wire protocol but is its own
+implementation, since a browser drives WebRTC through its own APIs rather
+than through this repo's native code.
 
 ## Repository layout
 
@@ -33,10 +35,10 @@ sdks/
 ```
 
 `reactor-protocol`, `reactor-core` and `reactor-ffi` are internal
-implementation crates, not published to crates.io — they exist to give every
-language SDK the same behavior for free. As an SDK consumer you never touch
-them directly; see [`docs/concepts.md`](docs/concepts.md) for the mental
-model you do need.
+implementation crates, not published to crates.io — they exist to give
+every native SDK the same behavior for free. As an SDK consumer you never
+touch them directly; see [`docs/concepts.md`](docs/concepts.md) for the
+mental model you do need.
 
 ## Getting started
 
@@ -45,18 +47,17 @@ model you do need.
 package README), and full API reference:
 [`sdks/python/README.md`](sdks/python/README.md).
 
+**JavaScript** — `@reactor-team/js-sdk` already exists and talks the same
+wire protocol (see
+[`crates/reactor-protocol/src/lib.rs`](crates/reactor-protocol/src/lib.rs)).
+It's planned to move into this repo alongside the other SDKs; until then
+it's maintained separately.
+
 **More native platforms** — `reactor-ffi` already targets iOS and Android
 (`crates/reactor-ffi/Cargo.toml`), and `reactor-core`'s own docs list
 Swift, Kotlin and Go as bindings built on the same C ABI. None of those
-SDKs exist in this repo yet; when one lands it gets its own
-`sdks/<platform>/README.md` alongside this one.
-
-**JavaScript** — a browser SDK, `@reactor-team/js-sdk`, already exists and
-talks the same wire protocol (see
-[`crates/reactor-protocol/src/lib.rs`](crates/reactor-protocol/src/lib.rs)).
-It's maintained outside this repo and, being browser-native, doesn't go
-through `reactor-core`/`reactor-ffi` like the SDKs above — it speaks
-WebRTC directly via browser APIs.
+SDKs exist in this repo yet; when one lands (native or JavaScript) it gets
+its own `sdks/<platform>/README.md` alongside this one.
 
 ## Documentation
 
