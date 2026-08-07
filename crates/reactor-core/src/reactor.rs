@@ -657,6 +657,20 @@ impl Reactor {
         self.peer.push_video_frame(track_name, data, width, height);
     }
 
+    /// Push a frame tagged with `user_data`, which reaches the far end as the
+    /// frame's metadata when both peers negotiated support for it.
+    pub fn push_video_frame_with_metadata(
+        &self,
+        track_name: &str,
+        data: &[u8],
+        width: u32,
+        height: u32,
+        user_data: &[u8],
+    ) {
+        self.peer
+            .push_video_frame_with_metadata(track_name, data, width, height, user_data);
+    }
+
     pub fn push_audio_frame(&self, track_name: &str, data: &[i16]) {
         self.peer.push_audio_frame(track_name, data);
     }

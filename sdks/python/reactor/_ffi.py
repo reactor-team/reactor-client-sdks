@@ -17,6 +17,7 @@ from pathlib import Path
 # Library loading
 # ---------------------------------------------------------------------------
 
+
 def _find_lib() -> str:
     if path := os.environ.get("REACTOR_FFI_LIB"):
         return path
@@ -53,11 +54,11 @@ def _load() -> ctypes.CDLL:
     # void*-returning functions need explicit restype
     lib.reactor_create.restype = ctypes.c_void_p
     lib.reactor_create.argtypes = [
-        ctypes.c_char_p,   # api_url
-        ctypes.c_char_p,   # model_name
-        ctypes.c_char_p,   # jwt (nullable)
-        ctypes.c_int,      # local
-        ctypes.c_void_p,   # callbacks (nullable)
+        ctypes.c_char_p,  # api_url
+        ctypes.c_char_p,  # model_name
+        ctypes.c_char_p,  # jwt (nullable)
+        ctypes.c_int,  # local
+        ctypes.c_void_p,  # callbacks (nullable)
     ]
 
     lib.reactor_create_with_adm.restype = ctypes.c_void_p
@@ -67,7 +68,7 @@ def _load() -> ctypes.CDLL:
         ctypes.c_char_p,
         ctypes.c_int,
         ctypes.c_void_p,
-        ctypes.c_int,      # adm_mode
+        ctypes.c_int,  # adm_mode
     ]
 
     lib.reactor_destroy.restype = None
@@ -75,10 +76,10 @@ def _load() -> ctypes.CDLL:
 
     lib.reactor_connect.restype = None
     lib.reactor_connect.argtypes = [
-        ctypes.c_void_p,   # handle
-        ctypes.c_char_p,   # session_id (nullable)
-        ctypes.c_void_p,   # completion (nullable)
-        ctypes.c_void_p,   # userdata
+        ctypes.c_void_p,  # handle
+        ctypes.c_char_p,  # session_id (nullable)
+        ctypes.c_void_p,  # completion (nullable)
+        ctypes.c_void_p,  # userdata
     ]
 
     lib.reactor_disconnect.restype = None
@@ -89,22 +90,34 @@ def _load() -> ctypes.CDLL:
 
     lib.reactor_publish_track.restype = None
     lib.reactor_publish_track.argtypes = [
-        ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
     ]
 
     lib.reactor_pause_track.restype = None
     lib.reactor_pause_track.argtypes = [
-        ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
     ]
 
     lib.reactor_resume_track.restype = None
     lib.reactor_resume_track.argtypes = [
-        ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
     ]
 
     lib.reactor_request_clip.restype = None
     lib.reactor_request_clip.argtypes = [
-        ctypes.c_void_p, ctypes.c_double, ctypes.c_void_p, ctypes.c_void_p
+        ctypes.c_void_p,
+        ctypes.c_double,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
     ]
 
     lib.reactor_request_recording.restype = None
@@ -112,18 +125,17 @@ def _load() -> ctypes.CDLL:
 
     lib.reactor_upload_file.restype = None
     lib.reactor_upload_file.argtypes = [
-        ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
     ]
 
     lib.reactor_send_command.restype = ctypes.c_int
-    lib.reactor_send_command.argtypes = [
-        ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p
-    ]
+    lib.reactor_send_command.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
 
     lib.reactor_send_runtime_command.restype = ctypes.c_int
-    lib.reactor_send_runtime_command.argtypes = [
-        ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p
-    ]
+    lib.reactor_send_runtime_command.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
 
     lib.reactor_unpublish_track.restype = ctypes.c_int
     lib.reactor_unpublish_track.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
@@ -139,21 +151,32 @@ def _load() -> ctypes.CDLL:
 
     lib.reactor_push_video_frame.restype = None
     lib.reactor_push_video_frame.argtypes = [
-        ctypes.c_void_p,    # handle
-        ctypes.c_char_p,    # track_name
-        ctypes.c_void_p,    # data
-        ctypes.c_uint32,    # width
-        ctypes.c_uint32,    # height
+        ctypes.c_void_p,  # handle
+        ctypes.c_char_p,  # track_name
+        ctypes.c_void_p,  # data
+        ctypes.c_uint32,  # width
+        ctypes.c_uint32,  # height
+    ]
+
+    lib.reactor_push_video_frame_with_metadata.restype = None
+    lib.reactor_push_video_frame_with_metadata.argtypes = [
+        ctypes.c_void_p,  # handle
+        ctypes.c_char_p,  # track_name
+        ctypes.c_void_p,  # data
+        ctypes.c_uint32,  # width
+        ctypes.c_uint32,  # height
+        ctypes.c_void_p,  # user_data (NULL = send untagged)
+        ctypes.c_uint32,  # user_data_len
     ]
 
     lib.reactor_push_audio_frame.restype = None
     lib.reactor_push_audio_frame.argtypes = [
-        ctypes.c_void_p,    # handle
-        ctypes.c_char_p,    # track_name
-        ctypes.c_void_p,    # data
-        ctypes.c_uint32,    # samples_per_channel
-        ctypes.c_uint32,    # sample_rate
-        ctypes.c_uint32,    # num_channels
+        ctypes.c_void_p,  # handle
+        ctypes.c_char_p,  # track_name
+        ctypes.c_void_p,  # data
+        ctypes.c_uint32,  # samples_per_channel
+        ctypes.c_uint32,  # sample_rate
+        ctypes.c_uint32,  # num_channels
     ]
 
     return lib
@@ -183,14 +206,14 @@ ON_TRACK_FN = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_
 # (data, width, height, frame_id, timestamp_us, user_data, user_data_len, userdata)
 ON_FRAME_FN = ctypes.CFUNCTYPE(
     None,
-    ctypes.c_void_p,    # data (BGRA bytes)
-    ctypes.c_uint32,    # width
-    ctypes.c_uint32,    # height
-    ctypes.c_uint64,    # frame_id   (0 = no metadata)
-    ctypes.c_uint64,    # timestamp_us (0 = no metadata)
-    ctypes.c_void_p,    # user_data  (NULL = no metadata)
-    ctypes.c_uint32,    # user_data_len
-    ctypes.c_void_p,    # userdata
+    ctypes.c_void_p,  # data (BGRA bytes)
+    ctypes.c_uint32,  # width
+    ctypes.c_uint32,  # height
+    ctypes.c_uint64,  # frame_id   (0 = no metadata)
+    ctypes.c_uint64,  # timestamp_us (0 = no metadata)
+    ctypes.c_void_p,  # user_data  (NULL = no metadata)
+    ctypes.c_uint32,  # user_data_len
+    ctypes.c_void_p,  # userdata
 )
 
 # (const int16_t*, uint32_t, uint32_t, uint32_t, void*) -> void  [on_audio]
@@ -211,14 +234,14 @@ COMPLETION_FN = ctypes.CFUNCTYPE(
 
 class ReactorCallbacks(ctypes.Structure):
     _fields_ = [
-        ("on_status",           ON_STRING_FN),
-        ("on_error",            ON_STRING_FN),
-        ("on_message",          ON_STRING_FN),
-        ("on_runtime_message",  ON_STRING_FN),
-        ("on_track",            ON_TRACK_FN),
-        ("on_capabilities",     ON_STRING_FN),
-        ("on_session_id",       ON_STRING_FN),
-        ("on_frame",            ON_FRAME_FN),
-        ("on_audio",            ON_AUDIO_FN),
-        ("userdata",            ctypes.c_void_p),
+        ("on_status", ON_STRING_FN),
+        ("on_error", ON_STRING_FN),
+        ("on_message", ON_STRING_FN),
+        ("on_runtime_message", ON_STRING_FN),
+        ("on_track", ON_TRACK_FN),
+        ("on_capabilities", ON_STRING_FN),
+        ("on_session_id", ON_STRING_FN),
+        ("on_frame", ON_FRAME_FN),
+        ("on_audio", ON_AUDIO_FN),
+        ("userdata", ctypes.c_void_p),
     ]

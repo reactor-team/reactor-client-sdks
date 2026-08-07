@@ -100,6 +100,22 @@ pub trait PeerTransport {
     /// Default implementation is a no-op — override in native transports.
     fn push_video_frame(&self, _track_name: &str, _data: &[u8], _width: u32, _height: u32) {}
 
+    /// Push a frame tagged with `user_data`, to arrive on the peer as the frame's
+    /// metadata.
+    ///
+    /// Defaults to dropping the tag and pushing the frame, so a transport that
+    /// cannot carry metadata still sends media.
+    fn push_video_frame_with_metadata(
+        &self,
+        track_name: &str,
+        data: &[u8],
+        width: u32,
+        height: u32,
+        _user_data: &[u8],
+    ) {
+        self.push_video_frame(track_name, data, width, height);
+    }
+
     /// Push interleaved i16 PCM audio into the named sendonly track.
     /// Default implementation is a no-op — override in native transports.
     fn push_audio_frame(&self, _track_name: &str, _data: &[i16]) {}

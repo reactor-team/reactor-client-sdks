@@ -657,6 +657,44 @@ pub unsafe extern "C" fn reactor_push_video_frame(
         .push_video_frame(&name, slice, width, height);
 }
 
+/// Push a BGRA frame tagged with `user_data`, which reaches the far end as the
+/// frame's metadata.
+///
+/// `user_data` may be null with `user_data_len` 0, which sends the frame untagged
+/// and is the same as [`reactor_push_video_frame`].
+///
+/// # Safety
+///
+/// `handle` must come from `reactor_new`, `track_name` must be a NUL-terminated C
+/// string, `data` must point to `width * height * 4` readable bytes, and
+/// `user_data` must point to `user_data_len` readable bytes. All are borrowed for
+/// the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_push_video_frame_with_metadata(
+    handle: *mut ReactorHandle,
+    track_name: *const c_char,
+    data: *const u8,
+    width: u32,
+    height: u32,
+    user_data: *const u8,
+    user_data_len: u32,
+) {
+    if handle.is_null() || track_name.is_null() || data.is_null() {
+        return;
+    }
+    let name = CStr::from_ptr(track_name).to_string_lossy();
+    let n = (width * height * 4) as usize;
+    let slice = std::slice::from_raw_parts(data, n);
+    let tag: &[u8] = if user_data.is_null() || user_data_len == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(user_data, user_data_len as usize)
+    };
+    (*handle)
+        .reactor
+        .push_video_frame_with_metadata(&name, slice, width, height, tag);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn reactor_push_audio_frame(
     handle: *mut ReactorHandle,
