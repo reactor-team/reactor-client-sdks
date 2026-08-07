@@ -40,22 +40,7 @@ That's the whole loop — connect, watch, steer — in under 15 lines. See
 
 ## Getting started
 
-**🐍 Python** — the only SDK shipping today. Quick start, install steps
-(the native library currently needs to be built from source — see why in the
-package README), and full API reference:
-[`sdks/python/README.md`](sdks/python/README.md).
-
-**JavaScript** — `@reactor-team/js-sdk` already exists and talks the same
-wire protocol (see
-[`crates/reactor-protocol/src/lib.rs`](crates/reactor-protocol/src/lib.rs)).
-It's planned to move into this repo alongside the other SDKs; until then
-it's maintained separately.
-
-**More native platforms** — `reactor-ffi` already targets iOS and Android
-(`crates/reactor-ffi/Cargo.toml`), and `reactor-core`'s own docs list
-Swift, Kotlin and Go as bindings built on the same C ABI. None of those
-SDKs exist in this repo yet; when one lands (native or JavaScript) it gets
-its own `sdks/<platform>/README.md` alongside this one.
+- 🐍 **[Python](sdks/python/README.md)** — install, quick start, full API reference.
 
 ## Documentation
 
