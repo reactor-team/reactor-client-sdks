@@ -1,5 +1,9 @@
 # reactor-sdk (Python)
 
+[![PyPI: reactor-sdk](https://img.shields.io/pypi/v/reactor-sdk.svg?label=reactor-sdk)](https://pypi.org/project/reactor-sdk/)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/reactor-sdk.svg?label=downloads)](https://pypi.org/project/reactor-sdk/)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](../../LICENSE)
+
 Async Python client for [Reactor](https://reactor.inc) — connect to a live
 world model over WebRTC, receive its streaming video, and send commands
 that steer what it generates while it runs.
