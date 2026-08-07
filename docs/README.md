@@ -1,9 +1,7 @@
 # Documentation
 
-Deep dives that don't fit in an SDK's own README. Start with
-[concepts.md](concepts.md) if you're new here — everything else builds on
-it. These guides are written for developers **consuming** an SDK — how
-things work and the concepts you need, not the Rust internals underneath.
+Start with [concepts.md](concepts.md) if you're new here — everything else
+builds on it.
 
 | Guide | Covers |
 |-------|--------|
