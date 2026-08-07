@@ -10,9 +10,9 @@ the Rust core; this package only adapts it to `asyncio`.
 pip install reactor-sdk
 ```
 
-`reactor-sdk` itself is pure Python — it does not yet ship a prebuilt native
-library in the wheel. You also need `libreactor_ffi` built from this repo
-and discoverable at runtime:
+`reactor-sdk` itself is pure Python — the wheel doesn't include the native
+library. You also need `libreactor_ffi` built from this repo and
+discoverable at runtime:
 
 ```bash
 git clone https://github.com/reactor-team/reactor-client-sdks
@@ -28,10 +28,6 @@ variable, `libreactor_ffi.{dylib,so}` / `reactor_ffi.dll` next to the
   to do; the walk-up finds `target/release` automatically.
 - **`pip install reactor-sdk` from PyPI** into another project — set
   `REACTOR_FFI_LIB` to the library you built above.
-
-A prebuilt wheel that embeds the native library (like `reactor-webrtc`
-already does) is planned; until then, building `reactor-ffi` yourself is
-the supported path.
 
 ## Quick start
 

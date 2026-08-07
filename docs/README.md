@@ -11,5 +11,5 @@ builds on it.
 | [frame-metadata.md](frame-metadata.md) | Tagging and reading per-frame metadata trailers on video tracks |
 
 For each SDK's own quick start and API reference, see its README:
-[`sdks/python`](../sdks/python/README.md) (the only one shipping today).
-For contributing to this repo, see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
+[`sdks/python`](../sdks/python/README.md). For contributing to this repo,
+see [`CONTRIBUTING.md`](../CONTRIBUTING.md).

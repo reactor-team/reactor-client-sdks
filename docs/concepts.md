@@ -58,9 +58,9 @@ through `send_command` and a few events — see
 ## One shared core, growing platform support
 
 The concepts on this page hold across every SDK, but they're not all built
-the same way. Python (this repo) and the native platforms planned on top
-of the same C interface (iOS, Android, ...) share one Rust implementation
-of session/signaling logic, so protocol quirks and edge cases you learn on
+the same way. Python and the other native platforms on the same C
+interface (iOS, Android, ...) share one Rust implementation of
+session/signaling logic, so protocol quirks and edge cases you learn on
 one hold on every other one. The JavaScript SDK, `@reactor-team/js-sdk`, is
 its own implementation — a browser drives WebRTC through its own APIs, not
 through this repo's native code — that only shares the wire protocol (see
