@@ -16,12 +16,12 @@
 
 Reactor client SDKs connect an application to a live Reactor model over
 WebRTC: session lifecycle, audio/video tracks, application commands, and
-recording — behind one small API per language. Native platforms
-(Python today; iOS, Android, Go planned) share one Rust implementation of
-the protocol logic, so behavior stays identical across those; the
-browser-native JavaScript SDK speaks the same wire protocol but is its own
-implementation, since a browser drives WebRTC through its own APIs rather
-than through this repo's native code.
+recording — behind one small API per language. Native platforms (Python,
+iOS, Android, Go) share one Rust implementation of the protocol logic, so
+behavior stays identical across them; the browser-native JavaScript SDK
+speaks the same wire protocol but is its own implementation, since a
+browser drives WebRTC through its own APIs rather than through this repo's
+native code.
 
 ## Getting started
 
