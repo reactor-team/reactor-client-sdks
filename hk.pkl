@@ -24,6 +24,18 @@ hooks {
         check = "mise run lint:mise-tools-root"
         exclusive = true
       }
+      ["python"] {
+        glob = List("*.py")
+        check = "mise run lint:python"
+        exclusive = true
+      }
+      // The ABI is declared in three hand-written places; this catches them
+      // drifting. Text-only, so it belongs in the fast hook.
+      ["abi-parity"] {
+        glob = List("crates/reactor-ffi/src/lib.rs", "crates/reactor-ffi/include/*.h", "sdks/python/reactor/_ffi.py")
+        check = "mise run lint:abi"
+        exclusive = true
+      }
     }
   }
   // Heavier checks before pushing: clippy compiles, and the lockfile drift
@@ -38,6 +50,11 @@ hooks {
       }
       ["mise-lock"] {
         check = "mise run lint:mise-lock"
+        exclusive = true
+      }
+      ["test"] {
+        glob = List("*.rs", "*.py")
+        check = "mise run test"
         exclusive = true
       }
     }

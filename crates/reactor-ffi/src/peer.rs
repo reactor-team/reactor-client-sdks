@@ -58,6 +58,15 @@ fn map_state(s: PeerConnectionState) -> CorePeerConnectionState {
     }
 }
 
+/// Sink for a decoded remote video frame: BGRA pixels, width, height, `frame_id`,
+/// capture timestamp in µs, and the sender's `user_data` (empty when the frame
+/// carried no metadata trailer).
+type FrameCallback = Arc<dyn Fn(&[u8], u32, u32, u64, u64, &[u8]) + Send + Sync + 'static>;
+
+/// Sink for a decoded remote audio frame: interleaved i16 PCM, sample rate in Hz,
+/// channel count.
+type AudioCallback = Arc<dyn Fn(&[i16], u32, u32) + Send + Sync + 'static>;
+
 #[derive(Default)]
 struct PeerState {
     pc: Option<Arc<PeerConnection>>,
@@ -74,8 +83,8 @@ pub struct ReactorWebRtcPeerTransport {
     event_tx: UnboundedSender<PeerEvent>,
     factory: PeerConnectionFactory,
     state: Arc<Mutex<PeerState>>,
-    frame_cb: Option<Arc<dyn Fn(&[u8], u32, u32, u64, u64, &[u8]) + Send + Sync + 'static>>,
-    audio_cb: Option<Arc<dyn Fn(&[i16], u32, u32) + Send + Sync + 'static>>,
+    frame_cb: Option<FrameCallback>,
+    audio_cb: Option<AudioCallback>,
 }
 
 impl ReactorWebRtcPeerTransport {

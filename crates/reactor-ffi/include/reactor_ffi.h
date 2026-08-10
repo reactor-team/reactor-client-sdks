@@ -9,15 +9,31 @@
  *
  * Thread safety
  * ─────────────
- * All event callbacks (on_status, on_error, …) are invoked on an internal
- * tokio thread.  The strings passed to them are valid only for the duration
- * of the callback (copy them if you need them later).
+ * No callback runs on the caller's thread, and callbacks may run concurrently.
+ * Strings and buffers handed to a callback are valid only for its duration —
+ * copy anything you need to keep.
  *
- * Completion callbacks (reactor_completion_fn) are also invoked on a tokio
- * thread, exactly once per call.
+ * The control callbacks (on_status, on_error, on_message, on_runtime_message,
+ * on_track, on_capabilities, on_session_id) and the completion callbacks
+ * (reactor_completion_fn, invoked exactly once per call) run on an internal
+ * tokio thread.
+ *
+ * on_frame and on_audio DO NOT.  They run on libwebrtc's media threads, which
+ * have deadlines: a callback that blocks there stalls decoding, and on the
+ * worker/network threads it can time out ICE.  Managed-runtime hosts must be
+ * especially careful, because taking the CPython GIL or attaching to the JVM
+ * blocks for as long as that runtime decides.  Copy the buffer, hand it to your
+ * own thread, and return.
  *
  * The caller is responsible for ensuring that `userdata` pointers are safe
  * to dereference from any thread that may call the callbacks.
+ *
+ * Teardown
+ * ────────
+ * reactor_destroy() does not currently stop the event pumps or wait for
+ * in-flight callbacks, so a callback may still fire after it returns.  Keep
+ * your callback context alive past destroy: releasing it there (a ctypes
+ * trampoline, a cgo.Handle, a JNI GlobalRef) is a use-after-free.
  */
 
 #ifndef REACTOR_FFI_H
@@ -79,8 +95,8 @@ typedef struct ReactorCallbacks {
     reactor_on_track_fn           on_track;            /* nullable */
     reactor_on_capabilities_fn    on_capabilities;     /* nullable */
     reactor_on_session_id_fn      on_session_id;       /* nullable */
-    reactor_on_frame_fn           on_frame;            /* nullable; called on Tokio thread at video rate */
-    reactor_on_audio_fn           on_audio;            /* nullable; decoded remote PCM (~10 ms/frame) */
+    reactor_on_frame_fn           on_frame;            /* nullable; libwebrtc media thread, video rate — must not block */
+    reactor_on_audio_fn           on_audio;            /* nullable; libwebrtc media thread, ~10 ms/frame — must not block */
     void                         *userdata;             /* passed through to every callback */
 } ReactorCallbacks;
 
@@ -291,6 +307,28 @@ void reactor_push_video_frame(
     const uint8_t *data,
     uint32_t       width,
     uint32_t       height
+);
+
+/*
+ * Push a BGRA frame tagged with `user_data`, which reaches the far end as that
+ * frame's metadata (see reactor_on_frame_fn's user_data parameter).
+ *
+ * The bytes are sent as-is — JSON, protobuf or anything else is between the
+ * caller and the model.  A tag is dropped unless the peer declared that it reads
+ * them, so tagging is safe whatever the far end supports.
+ *
+ * `user_data` may be NULL with `user_data_len` 0, which is identical to
+ * reactor_push_video_frame().  Same buffer requirements as that function:
+ * `data` must hold width * height * 4 bytes.
+ */
+void reactor_push_video_frame_with_metadata(
+    ReactorHandle *handle,
+    const char    *track_name,
+    const uint8_t *data,
+    uint32_t       width,
+    uint32_t       height,
+    const uint8_t *user_data,   /* nullable with user_data_len 0 */
+    uint32_t       user_data_len
 );
 
 /*

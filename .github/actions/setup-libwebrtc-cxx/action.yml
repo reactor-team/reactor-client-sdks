@@ -1,0 +1,53 @@
+name: Setup libwebrtc C++ toolchain
+description: >
+  Install a clang++ new enough to compile reactor-webrtc-sys's C++ glue and export
+  it as CXX. No-op off Linux.
+
+# Why this exists
+# ───────────────
+# reactor-webrtc-sys downloads a prebuilt libwebrtc, then compiles its own C++
+# glue against it. On Linux it does that with `-nostdinc++` plus the archive's
+# bundled libc++ headers, which track LLVM trunk — the distro clang++ on
+# ubuntu-latest is too old to parse them and fails with errors like:
+#
+#   __format/unicode.h:204:19: error: invalid operands to binary expression
+#     ('_Iterator' (aka '__wrap_iter<const char *>') and '_Iterator')
+#
+# The build script honours an explicit CXX, so pinning a recent clang from
+# apt.llvm.org is enough. macOS builds against the platform libc++ and needs
+# nothing, hence the guard.
+#
+# Only the compiler is installed: libc++.a and libc++abi.a ship inside the
+# prebuilt archive and are linked from there.
+
+inputs:
+  clang-version:
+    description: Major clang version to install from apt.llvm.org.
+    required: false
+    default: "20"
+
+runs:
+  using: composite
+  steps:
+    - name: Install clang ${{ inputs.clang-version }}
+      if: runner.os == 'Linux'
+      shell: bash
+      env:
+        CLANG_VERSION: ${{ inputs.clang-version }}
+      run: |
+        set -euo pipefail
+
+        # Already present on the image? Then skip the repository dance.
+        if ! command -v "clang++-${CLANG_VERSION}" >/dev/null; then
+          curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
+          chmod +x /tmp/llvm.sh
+          if ! sudo /tmp/llvm.sh "${CLANG_VERSION}"; then
+            echo "::error::clang-${CLANG_VERSION} is not installable from apt.llvm.org for $(lsb_release -cs)."
+            echo "Available clang++ on this image:"
+            ls -1 /usr/bin/clang++* 2>/dev/null || echo "  (none)"
+            exit 1
+          fi
+        fi
+
+        echo "CXX=clang++-${CLANG_VERSION}" >> "$GITHUB_ENV"
+        "clang++-${CLANG_VERSION}" --version

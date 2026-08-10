@@ -35,21 +35,47 @@ jobs:
           version: ${{ env.MISE_VERSION }}
       - run: hk validate
       - run: mise run fmt:check
+      - name: Install clang for the libwebrtc C++ glue
+        uses: ./.github/actions/setup-libwebrtc-cxx
+      # Covers reactor-ffi, which is why the clang above is needed.
       - run: mise run clippy
+      - run: mise run lint:python
+      - name: ABI parity (lib.rs / reactor_ffi.h / _ffi.py)
+        run: mise run lint:abi
       - run: mise run lint:shell
       - run: mise run lint:mise-tools-root
       - name: mise.lock drift (vs merge-base)
         run: mise run lint:mise-lock
 
+  test:
+    name: rust + python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1   # reads rust-toolchain.toml
+        with:
+          cache-on-failure: true
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Install clang for the libwebrtc C++ glue
+        uses: ./.github/actions/setup-libwebrtc-cxx
+      - run: mise run test:rust
+      # Builds the cdylib so the ctypes contract tests run instead of skipping —
+      # they are the only check that _ffi.py's argtypes match the compiled ABI.
+      - name: Build libreactor_ffi for the ctypes contract tests
+        run: cargo build -p reactor-ffi --release
+      - run: mise run test:python
+
   ci-complete:
     name: CI Complete
-    needs: [lint]
+    needs: [lint, test]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Verify no job failed
         run: |
-          for r in "${{ needs.lint.result }}"; do
+          for r in "${{ needs.lint.result }}" "${{ needs.test.result }}"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::a required job failed ($r)"; exit 1
             fi

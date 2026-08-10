@@ -41,23 +41,31 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from .reactor_client import make_reactor
 
 SAMPLE_RATE = 48_000
-CHUNK_SAMPLES = 480   # 10 ms at 48 kHz
+CHUNK_SAMPLES = 480  # 10 ms at 48 kHz
 CHUNK_SECS = CHUNK_SAMPLES / SAMPLE_RATE
 
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Push audio frames into a Reactor sendonly track")
-    p.add_argument("--track", metavar="NAME", required=True,
-                   help="Name of the sendonly audio track")
+    p.add_argument(
+        "--track", metavar="NAME", required=True, help="Name of the sendonly audio track"
+    )
 
     src = p.add_mutually_exclusive_group(required=True)
-    src.add_argument("--sine", metavar="HZ", type=float,
-                     help="Generate a sine tone at HZ (default: 440)")
-    src.add_argument("--wav", metavar="FILE",
-                     help="Push samples from a WAV file (resampled to 48 kHz mono i16)")
+    src.add_argument(
+        "--sine", metavar="HZ", type=float, help="Generate a sine tone at HZ (default: 440)"
+    )
+    src.add_argument(
+        "--wav", metavar="FILE", help="Push samples from a WAV file (resampled to 48 kHz mono i16)"
+    )
 
-    p.add_argument("--duration", metavar="SECS", type=float, default=None,
-                   help="Stop after N seconds (default: file duration or 30 s for sine)")
+    p.add_argument(
+        "--duration",
+        metavar="SECS",
+        type=float,
+        default=None,
+        help="Stop after N seconds (default: file duration or 30 s for sine)",
+    )
     p.add_argument("--model", metavar="NAME")
     p.add_argument("--api-url", metavar="URL")
     p.add_argument("--jwt", metavar="TOKEN")
@@ -97,7 +105,7 @@ def _wav_generator(path: str, chunk: int) -> Generator[bytes, None, None]:
         raw = w.readframes(n_frames)
 
     if sampwidth == 2:
-        fmt = f"<{len(raw)//2}h"
+        fmt = f"<{len(raw) // 2}h"
         samples_all: list[int] = list(struct.unpack(fmt, raw))
     elif sampwidth == 1:
         samples_all = [(b - 128) * 256 for b in raw]
@@ -115,8 +123,7 @@ def _wav_generator(path: str, chunk: int) -> Generator[bytes, None, None]:
         ratio = orig_rate / SAMPLE_RATE
         new_len = int(len(samples_all) / ratio)
         samples_all = [
-            samples_all[min(int(i * ratio), len(samples_all) - 1)]
-            for i in range(new_len)
+            samples_all[min(int(i * ratio), len(samples_all) - 1)] for i in range(new_len)
         ]
 
     # Yield in chunks, padding the last one with silence
