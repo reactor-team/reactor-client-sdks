@@ -296,6 +296,15 @@ class Reactor:
 
     def _destroy_handle(self) -> None:
         if self._handle is not None:
+            # Order is load-bearing, not incidental. reactor_destroy blocks until
+            # no callback is running and guarantees none starts afterwards, which
+            # is the only reason the CFUNCTYPE objects below can be released at
+            # all: they are the sole owners of the trampoline code the FFI holds
+            # raw pointers to. Dropping them while the library could still call
+            # one is a jump into freed memory.
+            #
+            # ctypes releases the GIL for the duration of the call, so a callback
+            # blocked waiting for it can finish and let destroy return.
             get_lib().reactor_destroy(ctypes.c_void_p(self._handle))
             self._handle = None
             self._callbacks_struct = None

@@ -30,10 +30,15 @@
  *
  * Teardown
  * ────────
- * reactor_destroy() does not currently stop the event pumps or wait for
- * in-flight callbacks, so a callback may still fire after it returns.  Keep
- * your callback context alive past destroy: releasing it there (a ctypes
- * trampoline, a cgo.Handle, a JNI GlobalRef) is a use-after-free.
+ * reactor_destroy() blocks until every callback in flight has returned, and no
+ * callback starts after it.  So it is the boundary to release your callback
+ * context on — a ctypes trampoline, a cgo.Handle, a JNI GlobalRef — and doing
+ * so any earlier is a use-after-free.
+ *
+ * Tear down while your runtime is still running.  A callback blocked inside a
+ * host that will never let it finish (CPython past the start of interpreter
+ * finalisation, say) cannot be waited for; destroy gives up after an internal
+ * timeout and logs a warning, and the pointers are unsafe to release then.
  */
 
 #ifndef REACTOR_FFI_H
