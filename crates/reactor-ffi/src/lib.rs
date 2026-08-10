@@ -24,9 +24,11 @@
 //!   concurrently. `userdata` is passed through untouched and must be safe to
 //!   access from any such thread.
 //! * **Callback lifetime.** Every pointer stays callable until
-//!   [`reactor_destroy`] returns, and none is called after. That is the boundary a
+//!   [`reactor_destroy`] returns 0, and none is called after. That is the boundary a
 //!   binding releases its callback context on — a ctypes trampoline, a
-//!   `cgo.Handle`, a JNI `GlobalRef`. See [`callbacks::CallbackGate`].
+//!   `cgo.Handle`, a JNI `GlobalRef`. A non-zero return means a callback could not
+//!   be waited for and the context must be kept alive instead. See
+//!   [`callbacks::CallbackGate`].
 //!
 //! ## Known gaps in this contract
 //!
@@ -57,7 +59,7 @@ use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions
 use reactor_core::runtime::TokioPlatform;
 use reactor_webrtc::AdmMode;
 
-use self::callbacks::CallbackGate;
+use self::callbacks::{CallbackGate, Quiescence};
 use self::http::ReqwestHttpClient;
 use self::peer::ReactorWebRtcPeerTransport;
 
@@ -465,29 +467,36 @@ unsafe fn create_impl(
 
 /// Release a handle, and with it the right to call back into the host.
 ///
-/// When this returns, no callback registered with this handle is running and none
-/// will start. That is the point at which a binding may release whatever its
-/// pointers refer to — a ctypes trampoline, a `cgo.Handle`, a JNI `GlobalRef`.
+/// Returns **0** when no callback is running and none will start. That is the only
+/// answer on which a binding may release whatever its callback pointers refer to —
+/// a ctypes trampoline, a `cgo.Handle`, a JNI `GlobalRef`.
 ///
-/// Blocks until callbacks already in progress return, bounded by an internal
-/// timeout that logs a warning if it expires. It only expires if the host is stuck,
-/// which in practice means teardown was left until the host runtime was already
-/// finalising; tear down before then.
+/// Returns **-1** when a callback is still executing and could not be waited for.
+/// The handle is still released, but the callback pointers must be kept alive;
+/// leaking them is correct, freeing them is a use-after-free. Two ways to get here:
+///
+/// * the host is wedged — a callback blocked on a lock this library cannot make it
+///   give up, such as a ctypes trampoline waiting on a GIL that an already
+///   finalising interpreter will never release. Tear down while the host runtime is
+///   still running and this does not arise.
+/// * this was called from inside one of the handle's own callbacks, which is
+///   therefore still on the stack. There is no way to wait for the caller.
 ///
 /// # Safety
 ///
 /// `handle` must be null or a live handle, and must not be used again afterwards.
+/// Null is accepted and returns 0.
 #[no_mangle]
-pub unsafe extern "C" fn reactor_destroy(handle: *mut ReactorHandle) {
+pub unsafe extern "C" fn reactor_destroy(handle: *mut ReactorHandle) -> c_int {
     if handle.is_null() {
-        return;
+        return 0;
     }
     let handle = Box::from_raw(handle);
 
     // Order matters. Close the gate and drain first: a pump blocked inside a host
     // callback has to come back out before its task can be stopped, and a task
     // aborted mid-callback would leave the count non-zero forever.
-    handle.gate.retire();
+    let quiescence = handle.gate.retire();
 
     // Then stop the pumps and the heartbeat. Nothing here can re-enter the host,
     // because the gate now turns every attempt away.
@@ -496,6 +505,11 @@ pub unsafe extern "C" fn reactor_destroy(handle: *mut ReactorHandle) {
     }
 
     drop(handle);
+
+    match quiescence {
+        Quiescence::Complete => 0,
+        Quiescence::Incomplete => -1,
+    }
 }
 
 // ── Async operations ─────────────────────────────────────────────────────────
@@ -1031,8 +1045,11 @@ mod tests {
                 -1
             );
 
-            // No-ops rather than returns: the assertion is that they do not abort.
-            reactor_destroy(std::ptr::null_mut());
+            // Nothing to quiesce, so destroying nothing reports success.
+            assert_eq!(reactor_destroy(std::ptr::null_mut()), 0);
+
+            // A no-op rather than a return value: the assertion is that it does not
+            // abort.
             reactor_free_string(std::ptr::null_mut());
         }
     }

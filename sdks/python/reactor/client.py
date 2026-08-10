@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -64,6 +65,15 @@ class ReactorError:
 
 class ReactorFFIError(Exception):
     """Raised when a reactor FFI async operation fails."""
+
+
+_log = logging.getLogger(__name__)
+
+# Callback trampolines belonging to handles that could not be confirmed quiesced on
+# destroy. Deliberately never emptied: the native library may still hold pointers
+# into them, and a small permanent leak beats a use-after-free. Growth here means
+# handlers are blocking or clients are being closed from inside a handler.
+_ORPHANED_CALLBACKS: list[tuple[Any, list[Any]]] = []
 
 
 # ---------------------------------------------------------------------------
@@ -295,20 +305,38 @@ class Reactor:
         self._handle = handle
 
     def _destroy_handle(self) -> None:
-        if self._handle is not None:
-            # Order is load-bearing, not incidental. reactor_destroy blocks until
-            # no callback is running and guarantees none starts afterwards, which
-            # is the only reason the CFUNCTYPE objects below can be released at
-            # all: they are the sole owners of the trampoline code the FFI holds
-            # raw pointers to. Dropping them while the library could still call
-            # one is a jump into freed memory.
-            #
-            # ctypes releases the GIL for the duration of the call, so a callback
-            # blocked waiting for it can finish and let destroy return.
-            get_lib().reactor_destroy(ctypes.c_void_p(self._handle))
-            self._handle = None
+        if self._handle is None:
+            return
+
+        # The CFUNCTYPE objects in _cb_refs solely own the trampoline code the FFI
+        # holds raw pointers to, so dropping them while the library could still
+        # call one is a jump into freed memory. reactor_destroy answers whether
+        # that is possible: 0 means no callback is running and none will start.
+        #
+        # ctypes releases the GIL for the duration of the call, so a callback
+        # blocked waiting for it can finish and let destroy return.
+        quiesced = get_lib().reactor_destroy(ctypes.c_void_p(self._handle)) == 0
+        self._handle = None
+
+        if quiesced:
             self._callbacks_struct = None
             self._cb_refs = []
+            return
+
+        # A callback is still running and could not be waited for — a blocking
+        # handler, or close() called from inside a handler. Leaking a handful of
+        # small objects is the right trade against a use-after-free, so park them
+        # somewhere that outlives this client and never free them.
+        _ORPHANED_CALLBACKS.append((self._callbacks_struct, self._cb_refs))
+        self._callbacks_struct = None
+        self._cb_refs = []
+        _log.warning(
+            "reactor_destroy could not confirm no callback was running; retaining "
+            "%d callback trampolines for the life of the process rather than "
+            "risking a use-after-free. Avoid blocking in handlers, and close the "
+            "client from outside one.",
+            len(_ORPHANED_CALLBACKS[-1][1]),
+        )
 
     # ------------------------------------------------------------------
     # Async completion bridge

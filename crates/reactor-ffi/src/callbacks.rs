@@ -8,13 +8,19 @@
 //!
 //! No binding can protect itself here on its own, because none of them can observe
 //! whether a callback is currently running or about to start. That has to come from
-//! this side, and [`CallbackGate`] is it: after [`retire`](CallbackGate::retire)
-//! returns, no callback is executing and none will start, so the host is free to
-//! release whatever its pointers refer to.
+//! this side, and [`CallbackGate`] is it.
+//!
+//! [`retire`](CallbackGate::retire) closes the gate and reports what it achieved.
+//! On [`Quiescence::Complete`] nothing is executing and nothing will start, so the
+//! host may release its pointers. On [`Quiescence::Incomplete`] a callback is still
+//! running and cannot be waited for — the host is wedged, or the caller *is* the
+//! callback — and the host must keep the pointers alive. Leaking them is the correct
+//! answer there; freeing them is the use-after-free this module exists to prevent.
 
-use std::cell::Cell;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
+use std::thread::{self, ThreadId};
 use std::time::Duration;
 
 use log::warn;
@@ -31,29 +37,58 @@ use log::warn;
 /// tearing down while the interpreter is still running.
 const QUIESCE_TIMEOUT: Duration = Duration::from_secs(5);
 
-thread_local! {
-    /// How many callbacks this thread is currently inside.
-    ///
-    /// Lets `retire` tell "another thread is mid-callback, wait for it to leave"
-    /// from "I *am* that callback, and waiting for myself would deadlock" — which
-    /// is what happens when a host handler reacts to an event by closing the
-    /// client.
-    static DEPTH: Cell<usize> = const { Cell::new(0) };
+/// What [`CallbackGate::retire`] achieved.
+///
+/// The distinction is the whole safety story: a host may only release its callback
+/// pointers on [`Quiescence::Complete`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quiescence {
+    /// No callback is running and none will start. Pointers are safe to release.
+    Complete,
+    /// A callback is still executing and cannot be waited for — either the host is
+    /// blocked, or the caller *is* the callback. Pointers must be kept alive; leak
+    /// them rather than free them.
+    Incomplete,
 }
 
 /// Decides whether host callbacks may still run, and lets teardown wait until none
 /// are running.
 pub struct CallbackGate {
     open: AtomicBool,
-    in_flight: Mutex<usize>,
+    state: Mutex<GateState>,
     idle: Condvar,
+}
+
+#[derive(Default)]
+struct GateState {
+    /// Callbacks in flight, counted per thread.
+    ///
+    /// Per gate rather than per thread-local, so a callback belonging to one client
+    /// cannot make another client's `retire` believe the callback it is waiting for
+    /// is its own caller and skip the wait. Two handles in one process is ordinary,
+    /// and a handler for one closing the other is exactly the case that would slip
+    /// through.
+    in_flight: HashMap<ThreadId, usize>,
+}
+
+impl GateState {
+    fn total(&self) -> usize {
+        self.in_flight.values().sum()
+    }
+
+    fn own(&self) -> usize {
+        self.in_flight
+            .get(&thread::current().id())
+            .copied()
+            .unwrap_or(0)
+    }
 }
 
 impl CallbackGate {
     pub fn new() -> Self {
         Self {
             open: AtomicBool::new(true),
-            in_flight: Mutex::new(0),
+            state: Mutex::new(GateState::default()),
             idle: Condvar::new(),
         }
     }
@@ -64,45 +99,64 @@ impl CallbackGate {
         // Checked under the lock, so the flag cannot flip between the test and the
         // increment — otherwise `retire` could observe a count of zero and return
         // while a callback was on its way in.
-        let mut n = self.in_flight.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         if !self.open.load(Ordering::Acquire) {
             return None;
         }
-        *n += 1;
-        DEPTH.with(|d| d.set(d.get() + 1));
+        *state.in_flight.entry(thread::current().id()).or_insert(0) += 1;
         Some(GateGuard { gate: self })
     }
 
     /// Close the gate, then wait for callbacks already in progress to return.
     ///
-    /// Idempotent, and safe to call from inside a callback: the gate closes either
-    /// way, but this thread does not wait for itself.
-    pub fn retire(&self) {
+    /// Idempotent. Safe to call from inside a callback — the gate closes either way
+    /// — but that case cannot reach [`Quiescence::Complete`], because the caller
+    /// would be waiting for itself.
+    #[must_use = "Incomplete means the host must not release its callback pointers"]
+    pub fn retire(&self) -> Quiescence {
+        self.retire_with_timeout(QUIESCE_TIMEOUT)
+    }
+
+    /// [`retire`](Self::retire) with the wait bound spelled out, so tests can
+    /// exercise the give-up path without sitting for the real timeout.
+    fn retire_with_timeout(&self, wait_for: Duration) -> Quiescence {
         self.open.store(false, Ordering::Release);
 
-        // Callbacks this very thread is inside can never be waited for.
-        let own = DEPTH.with(|d| d.get());
+        let mut state = self.state.lock().unwrap();
 
-        let mut n = self.in_flight.lock().unwrap();
-        while *n > own {
+        // Callbacks this very thread is inside can never be waited for.
+        let own = state.own();
+
+        while state.total() > own {
             let (guard, timeout) = self
                 .idle
-                .wait_timeout(n, QUIESCE_TIMEOUT)
+                .wait_timeout(state, wait_for)
                 .expect("callback gate mutex poisoned");
-            n = guard;
+            state = guard;
             if timeout.timed_out() {
                 warn!(
                     "[ffi] gave up waiting for {} host callback(s) to return after {:?}. \
-                     The host may be blocked (a ctypes trampoline waiting on the GIL, \
-                     or an interpreter already finalising). Releasing callback \
-                     pointers now risks a use-after-free — tear the client down \
+                     The host is likely blocked — a ctypes trampoline waiting on the GIL, \
+                     or an interpreter already finalising. Keep the callback pointers \
+                     alive; freeing them now is a use-after-free. Tear the client down \
                      before the host runtime starts shutting down.",
-                    *n - own,
-                    QUIESCE_TIMEOUT,
+                    state.total() - own,
+                    wait_for,
                 );
-                return;
+                return Quiescence::Incomplete;
             }
         }
+
+        if own > 0 {
+            warn!(
+                "[ffi] destroyed from inside a host callback, which is still running. \
+                 Keep the callback pointers alive until it returns; there is no way to \
+                 wait for the caller's own callback from here."
+            );
+            return Quiescence::Incomplete;
+        }
+
+        Quiescence::Complete
     }
 
     /// Whether the gate is still open. Diagnostics and tests only — a caller that
@@ -110,6 +164,11 @@ impl CallbackGate {
     #[cfg(test)]
     fn is_open(&self) -> bool {
         self.open.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    fn in_flight_total(&self) -> usize {
+        self.state.lock().unwrap().total()
     }
 }
 
@@ -126,9 +185,17 @@ pub struct GateGuard<'a> {
 
 impl Drop for GateGuard<'_> {
     fn drop(&mut self) {
-        DEPTH.with(|d| d.set(d.get() - 1));
-        let mut n = self.gate.in_flight.lock().unwrap();
-        *n -= 1;
+        let mut state = self.gate.state.lock().unwrap();
+        // Same thread that entered, so the same key.
+        if let std::collections::hash_map::Entry::Occupied(mut entry) =
+            state.in_flight.entry(thread::current().id())
+        {
+            *entry.get_mut() -= 1;
+            if *entry.get() == 0 {
+                entry.remove();
+            }
+        }
+        drop(state);
         // notify_all, not notify_one: more than one thread can be retiring.
         self.gate.idle.notify_all();
     }
@@ -152,7 +219,7 @@ mod tests {
     #[test]
     fn a_retired_gate_admits_nothing() {
         let gate = CallbackGate::new();
-        gate.retire();
+        assert_eq!(gate.retire(), Quiescence::Complete);
         assert!(gate.enter().is_none());
         assert!(!gate.is_open());
     }
@@ -160,8 +227,8 @@ mod tests {
     #[test]
     fn retire_is_idempotent() {
         let gate = CallbackGate::new();
-        gate.retire();
-        gate.retire();
+        assert_eq!(gate.retire(), Quiescence::Complete);
+        assert_eq!(gate.retire(), Quiescence::Complete);
         assert!(gate.enter().is_none());
     }
 
@@ -171,7 +238,7 @@ mod tests {
         let guard = gate.enter().expect("gate is open");
         // Retiring from another thread would block; drop first, then retire.
         drop(guard);
-        gate.retire();
+        assert_eq!(gate.retire(), Quiescence::Complete);
         assert!(gate.enter().is_none());
     }
 
@@ -201,7 +268,7 @@ mod tests {
 
         entered_rx.recv().unwrap();
         release_tx.send(()).unwrap();
-        gate.retire();
+        assert_eq!(gate.retire(), Quiescence::Complete);
 
         assert!(
             left.load(Ordering::Acquire),
@@ -218,11 +285,16 @@ mod tests {
         let _guard = gate.enter().expect("gate is open");
 
         let started = Instant::now();
-        gate.retire();
+        let quiescence = gate.retire();
 
         assert!(
             started.elapsed() < QUIESCE_TIMEOUT,
             "retire waited on the calling thread's own callback"
+        );
+        assert_eq!(
+            quiescence,
+            Quiescence::Incomplete,
+            "a callback is still running, so the host must not free its pointers"
         );
         assert!(!gate.is_open());
         // Still shut for the re-entrant caller, so a handler cannot start another
@@ -235,11 +307,84 @@ mod tests {
         let gate = CallbackGate::new();
         let outer = gate.enter().expect("gate is open");
         let inner = gate.enter().expect("gate is open");
-        assert_eq!(*gate.in_flight.lock().unwrap(), 2);
+        assert_eq!(gate.in_flight_total(), 2);
         drop(inner);
-        assert_eq!(*gate.in_flight.lock().unwrap(), 1);
+        assert_eq!(gate.in_flight_total(), 1);
         drop(outer);
-        assert_eq!(*gate.in_flight.lock().unwrap(), 0);
+        assert_eq!(gate.in_flight_total(), 0);
+    }
+
+    /// Two clients in one process have two gates. A callback belonging to one must
+    /// not let the other's retire skip the wait — which is what a thread-global
+    /// depth counter did, because it could not tell the gates apart.
+    #[test]
+    fn depth_is_scoped_per_gate() {
+        let a = CallbackGate::new();
+        let b = Arc::new(CallbackGate::new());
+
+        // This thread is inside a callback belonging to gate A.
+        let _inside_a = a.enter().expect("gate A is open");
+
+        // Meanwhile another thread is inside a callback belonging to gate B.
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let left_b = Arc::new(AtomicBool::new(false));
+        let worker = {
+            let b = b.clone();
+            let left_b = left_b.clone();
+            std::thread::spawn(move || {
+                let guard = b.enter().expect("gate B is open");
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                left_b.store(true, Ordering::Release);
+                drop(guard);
+            })
+        };
+        entered_rx.recv().unwrap();
+        release_tx.send(()).unwrap();
+
+        // Retiring B from inside A's callback must still wait for B's callback.
+        assert_eq!(b.retire(), Quiescence::Complete);
+        assert!(
+            left_b.load(Ordering::Acquire),
+            "retiring gate B returned while B's callback was still in flight"
+        );
+
+        worker.join().unwrap();
+    }
+
+    /// `retire` reports Incomplete rather than blocking forever when a callback is
+    /// wedged inside the host. The host has to be told, because freeing the pointers
+    /// on that answer is the use-after-free the whole gate exists to prevent.
+    #[test]
+    fn a_wedged_callback_times_out_as_incomplete() {
+        let gate = Arc::new(CallbackGate::new());
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let release = Arc::new(AtomicBool::new(false));
+
+        let worker = {
+            let gate = gate.clone();
+            let release = release.clone();
+            std::thread::spawn(move || {
+                let guard = gate.enter().expect("gate is open");
+                entered_tx.send(()).unwrap();
+                while !release.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                drop(guard);
+            })
+        };
+        entered_rx.recv().unwrap();
+
+        // Deliberately shorter than QUIESCE_TIMEOUT would allow, so the test does
+        // not sit for five seconds: assert the timeout path via a scoped override.
+        let started = Instant::now();
+        let quiescence = gate.retire_with_timeout(Duration::from_millis(50));
+        assert_eq!(quiescence, Quiescence::Incomplete);
+        assert!(started.elapsed() < QUIESCE_TIMEOUT);
+
+        release.store(true, Ordering::Release);
+        worker.join().unwrap();
     }
 
     #[test]
@@ -279,9 +424,9 @@ mod tests {
             ready_rx.recv().unwrap();
         }
 
-        gate.retire();
+        assert_eq!(gate.retire(), Quiescence::Complete);
         assert_eq!(
-            *gate.in_flight.lock().unwrap(),
+            gate.in_flight_total(),
             0,
             "retire returned with callbacks still counted"
         );
