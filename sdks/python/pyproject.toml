@@ -5,9 +5,9 @@ description = "Reactor client SDK — Python"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
-dependencies = [
-    "numpy>=1.24.0",
-]
+# No runtime dependencies: the SDK talks to libreactor_ffi through ctypes, which
+# is in the standard library.
+dependencies = []
 
 [project.urls]
 Repository = "https://github.com/reactor-team/reactor-client-sdks"
