@@ -394,27 +394,50 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
     }
 
     async fn close(&self) -> Result<(), CoreError> {
-        let mut s = self.state.lock().unwrap();
-        s.pc = None;
-        s.data_channel = None;
-        s.control_channel = None;
-        s.track_names.clear();
-        s.track_directions.clear();
-        s.transceivers.clear();
-        s.local_tracks.clear();
-        s.recv_tracks.lock().unwrap().clear();
+        // Everything comes out from under the lock, and is dropped after the guard
+        // is released. Never the other way around.
+        //
+        // Dropping a PeerConnection, Track or Transceiver dispatches onto
+        // libwebrtc's signaling/worker/network threads and waits for them. One of
+        // those threads can be inside a receive track's frame sink, in a host
+        // callback, whose handler calls back into push_video_frame — the echo loop
+        // in examples/frame_metadata_roundtrip.py does exactly that. That path
+        // wants this same mutex. Holding it across the drop leaves each side
+        // waiting on the other: teardown waits for the media thread to finish,
+        // the media thread waits for the mutex teardown is holding.
+        let taken = {
+            let mut s = self.state.lock().unwrap();
+            std::mem::take(&mut *s)
+        };
+
+        // `recv_tracks` lives behind its own Arc, shared with the on_track
+        // observer, so the take above moved only this side's handle. Clear the
+        // contents to drop the remote tracks here with everything else, rather
+        // than whenever the observer closure happens to be released.
+        taken.recv_tracks.lock().unwrap().clear();
+
+        drop(taken);
         Ok(())
     }
 
     fn push_audio_frame(&self, track_name: &str, data: &[i16]) {
-        let s = self.state.lock().unwrap();
-        if !s.local_tracks.contains_key(track_name) {
-            warn!("[peer] push_audio_frame: no audio source for track '{track_name}'");
-            return;
+        // The guard covers the lookup only. The factory push does not need it, and
+        // holding a lock across a libwebrtc call is the shape that deadlocks.
+        {
+            let s = self.state.lock().unwrap();
+            if !s.local_tracks.contains_key(track_name) {
+                warn!("[peer] push_audio_frame: no audio source for track '{track_name}'");
+                return;
+            }
         }
         self.factory.push_audio_frame(data, 48_000, 1);
     }
 
+    // The two video pushes below do hold the guard across the libwebrtc call,
+    // because `Track` is not `Clone` and the value is borrowed from the map. That
+    // is safe: pushing a frame hands it to the track's video source and returns —
+    // it joins no thread and re-enters no host callback. `close()` was the only
+    // holder that waited on libwebrtc while holding this mutex.
     fn push_video_frame(&self, track_name: &str, data: &[u8], width: u32, height: u32) {
         let s = self.state.lock().unwrap();
         let Some(track) = s.local_tracks.get(track_name) else {
