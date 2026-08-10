@@ -47,18 +47,53 @@ run = "cargo check --workspace"
 
 [tasks.clippy]
 description = "[Quality] Clippy with warnings denied"
-# reactor-ffi requires prebuilt libwebrtc (reactor-webrtc-sys) — exclude from
-# workspace clippy so the lint job doesn't try to compile native WebRTC.
-run = "cargo clippy --workspace --exclude reactor-ffi -- -D warnings"
+# Covers reactor-ffi. Nothing needs a local WebRTC checkout: reactor-webrtc-sys
+# auto-detects the host triple and downloads the prebuilt libwebrtc into OUT_DIR.
+#
+# It does still compile the C++ glue, and on Linux that happens against the
+# libwebrtc archive's own trunk libc++ headers (`-nostdinc++`), which the distro
+# clang++ is generally too old to parse. macOS uses the platform libc++ and needs
+# nothing. On Linux, set CXX to a recent clang++ — see the CI workflow.
+run = "cargo clippy --workspace --all-targets -- -D warnings"
 
-[tasks.test]
-description = "[Testing] Workspace tests via nextest + doctests"
+[tasks."test:rust"]
+description = "[Testing] Rust workspace tests via nextest + doctests"
 run = [
     "cargo nextest run --workspace --no-tests=pass",
     "cargo test --workspace --doc",
 ]
 
+# ── Python SDK ────────────────────────────────────────────────────────────────
+
+[tasks."fmt:python"]
+description = "[Format] Format the Python SDK with ruff"
+dir = "sdks/python"
+run = "ruff format ."
+
+[tasks."lint:python"]
+description = "[Quality] Lint + format-check the Python SDK with ruff"
+dir = "sdks/python"
+run = [
+    "ruff check .",
+    "ruff format --check .",
+]
+
+[tasks."test:python"]
+description = "[Testing] Python SDK tests via pytest"
+dir = "sdks/python"
+# --locked: resolve strictly from the committed uv.lock, matching MISE_LOCKED=1.
+# Tests needing the compiled dylib skip themselves when it is absent.
+run = "uv run --group dev --locked pytest"
+
+[tasks.test]
+description = "[Testing] Every test suite (Rust + Python)"
+depends = ["test:rust", "test:python"]
+
 # ── Lints ─────────────────────────────────────────────────────────────────────
+
+[tasks."lint:abi"]
+description = "[Quality] Verify lib.rs, reactor_ffi.h and _ffi.py declare the same ABI"
+run = "python3 scripts/check-abi-parity.py"
 
 [tasks."lint:mise-lock"]
 description = "[Quality] Verify mise.lock covers every declared tool + lockfile platform"
@@ -74,11 +109,19 @@ run = "git ls-files '*.sh' | xargs -r shellcheck --shell=bash"
 
 [tasks.lint]
 description = "[Quality] Run all linters"
-depends = ["fmt:check", "clippy", "lint:shell", "lint:mise-tools-root", "lint:mise-lock"]
+depends = [
+    "fmt:check",
+    "clippy",
+    "lint:python",
+    "lint:abi",
+    "lint:shell",
+    "lint:mise-tools-root",
+    "lint:mise-lock",
+]
 
 [tasks.ci]
-description = "[Quality] Everything the CI lint job runs"
-depends = ["lint"]
+description = "[Quality] Everything CI runs"
+depends = ["lint", "test"]
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
 

@@ -3,6 +3,41 @@
 //! Bundles a multi-threaded tokio runtime and a libwebrtc-style WebRTC
 //! transport.  Language bindings (Python ctypes, Swift, Kotlin, Go, C++)
 //! load the resulting dylib/so and call the `reactor_*` functions.
+//!
+//! # Safety contract
+//!
+//! Every `reactor_*` entry point shares these invariants; each function's own
+//! `# Safety` section states only what it adds.
+//!
+//! * **Handles.** A `*mut ReactorHandle` is either null or a pointer returned by
+//!   [`reactor_create`] / [`reactor_create_with_adm`] that has not yet been passed
+//!   to [`reactor_destroy`]. Null is always accepted and handled. A destroyed
+//!   handle is not: reusing one is undefined behaviour.
+//! * **Strings in.** Every `*const c_char` parameter is either explicitly
+//!   documented as nullable or must be a NUL-terminated C string, valid for reads
+//!   for the duration of the call. Contents are copied before the call returns, so
+//!   the caller may free them immediately after.
+//! * **Buffers in.** Pointer + length pairs must be readable for the stated number
+//!   of elements. They are borrowed for the call only.
+//! * **Callbacks.** Function pointers in [`ReactorCallbacks`] are invoked from
+//!   threads this library owns, never from the caller's thread, and may be invoked
+//!   concurrently. `userdata` is passed through untouched and must be safe to
+//!   access from any such thread.
+//!
+//! ## Known gaps in this contract
+//!
+//! Two properties a host needs are **not** currently provided, and bindings must
+//! work around them until they are:
+//!
+//! 1. [`reactor_destroy`] does not stop the event pumps or wait for in-flight
+//!    callbacks, so a callback may still fire after it returns. A host must
+//!    therefore keep its callback context (a ctypes trampoline, a `cgo.Handle`, a
+//!    JNI `GlobalRef`) alive beyond destroy — releasing it there is a
+//!    use-after-free.
+//! 2. `on_frame` and `on_audio` are invoked on libwebrtc's media threads, not on a
+//!    tokio thread. A host callback that blocks — anything that takes the CPython
+//!    GIL or attaches to the JVM — stalls decoding and, on the worker/network
+//!    threads, can time out ICE.
 
 mod http;
 mod peer;
@@ -176,6 +211,15 @@ impl Completion {
 
 // ── extern "C" API ───────────────────────────────────────────────────────────
 
+/// Create a client. The returned handle must be released with
+/// [`reactor_destroy`].
+///
+/// # Safety
+///
+/// `api_url` and `model_name` must be NUL-terminated C strings. `jwt` may be null
+/// (unauthenticated local dev). `callbacks` may be null (no events); when
+/// non-null it must point to a readable [`ReactorCallbacks`], which is copied
+/// during the call.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_create(
     api_url: *const c_char,
@@ -187,6 +231,13 @@ pub unsafe extern "C" fn reactor_create(
     create_impl(api_url, model_name, jwt, local, callbacks, None)
 }
 
+/// Like [`reactor_create`], but selects the audio device module explicitly:
+/// `0` = synthetic (headless), `1` = platform (real mic/speaker with AEC/NS/AGC),
+/// anything else = platform on desktop, synthetic on Android.
+///
+/// # Safety
+///
+/// Same as [`reactor_create`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_create_with_adm(
     api_url: *const c_char,
@@ -344,6 +395,15 @@ unsafe fn create_impl(
     Box::into_raw(Box::new(ReactorHandle { reactor }))
 }
 
+/// Release a handle.
+///
+/// # Safety
+///
+/// `handle` must be null or a live handle, and must not be used again afterwards.
+///
+/// This does **not** quiesce callbacks: the event pumps keep running and a
+/// callback may fire after this returns (see the module's *Known gaps*). Callers
+/// must not release their callback context here.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_destroy(handle: *mut ReactorHandle) {
     if !handle.is_null() {
@@ -367,6 +427,13 @@ macro_rules! async_op {
     }};
 }
 
+/// Create (or adopt) a session and establish the WebRTC transport.
+///
+/// # Safety
+///
+/// `session_id` may be null to create a new session. `completion` is invoked
+/// exactly once, on a tokio thread, and must stay callable until it fires — which
+/// may be after the awaiting caller has given up.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_connect(
     handle: *mut ReactorHandle,
@@ -396,6 +463,12 @@ pub unsafe extern "C" fn reactor_connect(
     );
 }
 
+/// Disconnect gracefully. The session is preserved, so [`reactor_reconnect`] can
+/// resume it.
+///
+/// # Safety
+///
+/// As [`reactor_connect`], minus `session_id`.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_disconnect(
     handle: *mut ReactorHandle,
@@ -407,6 +480,11 @@ pub unsafe extern "C" fn reactor_disconnect(
     });
 }
 
+/// Reconnect using the existing session, after a transient failure.
+///
+/// # Safety
+///
+/// As [`reactor_connect`], minus `session_id`.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_reconnect(
     handle: *mut ReactorHandle,
@@ -421,6 +499,12 @@ pub unsafe extern "C" fn reactor_reconnect(
     });
 }
 
+/// Activate a named sendonly track slot. Media is attached separately, with
+/// [`reactor_push_video_frame`] or [`reactor_push_audio_frame`].
+///
+/// # Safety
+///
+/// `name` must be a NUL-terminated C string. `completion` as [`reactor_connect`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_publish_track(
     handle: *mut ReactorHandle,
@@ -437,6 +521,11 @@ pub unsafe extern "C" fn reactor_publish_track(
     );
 }
 
+/// Pause receiving a named track.
+///
+/// # Safety
+///
+/// As [`reactor_publish_track`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_pause_track(
     handle: *mut ReactorHandle,
@@ -453,6 +542,11 @@ pub unsafe extern "C" fn reactor_pause_track(
     );
 }
 
+/// Resume receiving a named track.
+///
+/// # Safety
+///
+/// As [`reactor_publish_track`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_resume_track(
     handle: *mut ReactorHandle,
@@ -469,6 +563,12 @@ pub unsafe extern "C" fn reactor_resume_track(
     );
 }
 
+/// Request a clip covering the last `duration_seconds` of the session. On success
+/// `result_json` is a clip object.
+///
+/// # Safety
+///
+/// `completion` as [`reactor_connect`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_request_clip(
     handle: *mut ReactorHandle,
@@ -489,6 +589,11 @@ pub unsafe extern "C" fn reactor_request_clip(
     );
 }
 
+/// Request a clip covering the whole session up to now.
+///
+/// # Safety
+///
+/// `completion` as [`reactor_connect`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_request_recording(
     handle: *mut ReactorHandle,
@@ -503,6 +608,12 @@ pub unsafe extern "C" fn reactor_request_recording(
     });
 }
 
+/// Upload a local file and return a reference to pass as a command argument.
+///
+/// # Safety
+///
+/// `path` must be a NUL-terminated C string naming a readable file. `completion`
+/// as [`reactor_connect`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_upload_file(
     handle: *mut ReactorHandle,
@@ -536,6 +647,14 @@ pub unsafe extern "C" fn reactor_upload_file(
 
 // ── Synchronous operations ────────────────────────────────────────────────────
 
+/// Send an application-scoped command over the data channel, fire-and-forget.
+/// Returns 0 on success, -1 on any failure (null handle, malformed JSON, channel
+/// not ready, payload too large).
+///
+/// # Safety
+///
+/// `name` must be a NUL-terminated C string. `args_json` may be null (treated as
+/// `{}`); otherwise it must be a NUL-terminated C string holding a JSON value.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_send_command(
     handle: *mut ReactorHandle,
@@ -562,6 +681,11 @@ pub unsafe extern "C" fn reactor_send_command(
     }
 }
 
+/// Send a runtime-scoped (platform) command over the data channel.
+///
+/// # Safety
+///
+/// As [`reactor_send_command`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_send_runtime_command(
     handle: *mut ReactorHandle,
@@ -588,6 +712,11 @@ pub unsafe extern "C" fn reactor_send_runtime_command(
     }
 }
 
+/// Deactivate a sendonly track. Returns 0 on success, -1 on failure.
+///
+/// # Safety
+///
+/// `name` must be a NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_unpublish_track(
     handle: *mut ReactorHandle,
@@ -603,6 +732,14 @@ pub unsafe extern "C" fn reactor_unpublish_track(
     }
 }
 
+/// Current status: `"disconnected"`, `"connecting"`, `"waiting"` or `"ready"`.
+///
+/// The returned pointer is a static string literal — never null, valid for the
+/// life of the process, and must not be freed.
+///
+/// # Safety
+///
+/// `handle` must be null (reports `"disconnected"`) or a live handle.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_status(handle: *mut ReactorHandle) -> *const c_char {
     let s = if handle.is_null() {
@@ -611,13 +748,21 @@ pub unsafe extern "C" fn reactor_status(handle: *mut ReactorHandle) -> *const c_
         (*handle).reactor.status().as_str()
     };
     match s {
-        "connecting" => b"connecting\0".as_ptr() as *const c_char,
-        "waiting" => b"waiting\0".as_ptr() as *const c_char,
-        "ready" => b"ready\0".as_ptr() as *const c_char,
-        _ => b"disconnected\0".as_ptr() as *const c_char,
+        "connecting" => c"connecting".as_ptr(),
+        "waiting" => c"waiting".as_ptr(),
+        "ready" => c"ready".as_ptr(),
+        _ => c"disconnected".as_ptr(),
     }
 }
 
+/// Current session id, or null when no session is active.
+///
+/// Unlike [`reactor_status`], the result is heap-allocated and owned by the
+/// caller, who must release it with [`reactor_free_string`].
+///
+/// # Safety
+///
+/// `handle` must be null (returns null) or a live handle.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_session_id(handle: *mut ReactorHandle) -> *mut c_char {
     if handle.is_null() {
@@ -631,6 +776,13 @@ pub unsafe extern "C" fn reactor_session_id(handle: *mut ReactorHandle) -> *mut 
     }
 }
 
+/// Release a string returned by [`reactor_session_id`].
+///
+/// # Safety
+///
+/// `s` must be null (no-op) or a pointer returned by [`reactor_session_id`] that
+/// has not already been freed. Passing any other pointer — including the static
+/// one from [`reactor_status`] — is undefined behaviour.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_free_string(s: *mut c_char) {
     if !s.is_null() {
@@ -638,6 +790,14 @@ pub unsafe extern "C" fn reactor_free_string(s: *mut c_char) {
     }
 }
 
+/// Push a raw BGRA frame into a named sendonly video track. No-op when the track
+/// has no attached video source.
+///
+/// # Safety
+///
+/// `track_name` must be a NUL-terminated C string, and `data` must point to at
+/// least `width * height * 4` readable bytes — the length is **not** passed, so a
+/// short buffer is read out of bounds. Both are borrowed for the call only.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_push_video_frame(
     handle: *mut ReactorHandle,
@@ -695,6 +855,17 @@ pub unsafe extern "C" fn reactor_push_video_frame_with_metadata(
         .push_video_frame_with_metadata(&name, slice, width, height, tag);
 }
 
+/// Push interleaved i16 PCM into a named sendonly audio track. No-op when the
+/// track has no attached audio source.
+///
+/// `sample_rate` is currently ignored and the source is driven at 48 kHz mono
+/// regardless of `num_channels`, which only sizes the input slice.
+///
+/// # Safety
+///
+/// `track_name` must be a NUL-terminated C string, and `data` must point to at
+/// least `samples_per_channel * num_channels` readable `i16`s. The length is not
+/// passed; a short buffer is read out of bounds.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_push_audio_frame(
     handle: *mut ReactorHandle,
@@ -711,4 +882,181 @@ pub unsafe extern "C" fn reactor_push_audio_frame(
     let n = (samples_per_channel * num_channels) as usize;
     let slice = std::slice::from_raw_parts(data, n);
     (*handle).reactor.push_audio_frame(&name, slice);
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Every entry point documents null as accepted-and-handled, and bindings lean
+    /// on it: a Python `Reactor` reports `"disconnected"` from a client that never
+    /// connected by calling straight through with a null handle. These assert the
+    /// guards rather than the behaviour behind them, so they need no session, no
+    /// network and no libwebrtc device.
+    #[test]
+    fn null_handle_is_accepted_by_every_sync_entry_point() {
+        let name = CString::new("video").unwrap();
+        let args = CString::new("{}").unwrap();
+
+        unsafe {
+            let status = CStr::from_ptr(reactor_status(std::ptr::null_mut()));
+            assert_eq!(status.to_str().unwrap(), "disconnected");
+
+            assert!(reactor_session_id(std::ptr::null_mut()).is_null());
+
+            assert_eq!(
+                reactor_send_command(std::ptr::null_mut(), name.as_ptr(), args.as_ptr()),
+                -1
+            );
+            assert_eq!(
+                reactor_send_runtime_command(std::ptr::null_mut(), name.as_ptr(), args.as_ptr()),
+                -1
+            );
+            assert_eq!(
+                reactor_unpublish_track(std::ptr::null_mut(), name.as_ptr()),
+                -1
+            );
+
+            // No-ops rather than returns: the assertion is that they do not abort.
+            reactor_destroy(std::ptr::null_mut());
+            reactor_free_string(std::ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn null_handle_is_accepted_by_the_media_push_path() {
+        let name = CString::new("video").unwrap();
+        let pixels = [0u8; 4];
+        let pcm = [0i16; 2];
+        let tag = [1u8, 2, 3];
+
+        unsafe {
+            reactor_push_video_frame(std::ptr::null_mut(), name.as_ptr(), pixels.as_ptr(), 1, 1);
+            reactor_push_video_frame_with_metadata(
+                std::ptr::null_mut(),
+                name.as_ptr(),
+                pixels.as_ptr(),
+                1,
+                1,
+                tag.as_ptr(),
+                tag.len() as u32,
+            );
+            reactor_push_audio_frame(
+                std::ptr::null_mut(),
+                name.as_ptr(),
+                pcm.as_ptr(),
+                2,
+                48_000,
+                1,
+            );
+        }
+    }
+
+    /// A null `track_name` or `data` must be caught before the pointer is read.
+    /// Worth pinning separately from the handle guard: these are the arguments a
+    /// binding derives from user input, so they are the ones that go null in
+    /// practice.
+    #[test]
+    fn null_media_arguments_are_rejected_before_any_read() {
+        let name = CString::new("video").unwrap();
+        let pixels = [0u8; 4];
+
+        unsafe {
+            reactor_push_video_frame(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                pixels.as_ptr(),
+                1,
+                1,
+            );
+            reactor_push_video_frame(
+                std::ptr::null_mut(),
+                name.as_ptr(),
+                std::ptr::null(),
+                640,
+                480,
+            );
+            reactor_push_audio_frame(
+                std::ptr::null_mut(),
+                name.as_ptr(),
+                std::ptr::null(),
+                480,
+                48_000,
+                1,
+            );
+        }
+    }
+
+    static COMPLETIONS: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn count_completion(
+        _ok: c_int,
+        _result: *const c_char,
+        _error: *const c_char,
+        _userdata: *mut c_void,
+    ) {
+        COMPLETIONS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The async entry points return early on a null handle *without* invoking the
+    /// completion. That asymmetry is load-bearing and easy to break: a binding that
+    /// awaits a future resolved only by the completion would hang forever, so the
+    /// contract is "null handle means the call never happened".
+    ///
+    /// Note this is the opposite of what a host usually wants; it is asserted here
+    /// because it is the current contract, not because it is the better one.
+    #[test]
+    fn async_entry_points_skip_the_completion_on_a_null_handle() {
+        COMPLETIONS.store(0, Ordering::SeqCst);
+        let name = CString::new("video").unwrap();
+
+        unsafe {
+            reactor_connect(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                Some(count_completion),
+                std::ptr::null_mut(),
+            );
+            reactor_disconnect(
+                std::ptr::null_mut(),
+                Some(count_completion),
+                std::ptr::null_mut(),
+            );
+            reactor_reconnect(
+                std::ptr::null_mut(),
+                Some(count_completion),
+                std::ptr::null_mut(),
+            );
+            reactor_publish_track(
+                std::ptr::null_mut(),
+                name.as_ptr(),
+                Some(count_completion),
+                std::ptr::null_mut(),
+            );
+            reactor_request_recording(
+                std::ptr::null_mut(),
+                Some(count_completion),
+                std::ptr::null_mut(),
+            );
+        }
+
+        assert_eq!(COMPLETIONS.load(Ordering::SeqCst), 0);
+    }
+
+    /// `reactor_status` hands out static literals, so the pointer stays valid after
+    /// any number of further calls and must never be freed. Pinning that keeps a
+    /// future refactor from returning heap strings without also changing the header
+    /// and every binding that trusts this.
+    #[test]
+    fn status_pointer_is_static_and_stable() {
+        unsafe {
+            let first = reactor_status(std::ptr::null_mut());
+            let second = reactor_status(std::ptr::null_mut());
+            assert_eq!(first, second, "expected the same static pointer");
+            assert_eq!(CStr::from_ptr(first).to_str().unwrap(), "disconnected");
+        }
+    }
 }
