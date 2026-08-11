@@ -273,15 +273,56 @@ jobs:
           # the installed package and the library it carries — not the checkout.
           cd "$(mktemp -d)"
           "$GITHUB_WORKSPACE/$PY" -c "
+          import pathlib, sysconfig
           import reactor
           from reactor import _ffi
+
           print('version:', reactor.__version__)
-          print('library:', _ffi._find_lib())
+          library = pathlib.Path(_ffi._find_lib())
+          print('library:', library)
+
+          # The library has to be the one inside the wheel. Without this the test
+          # could pass by finding target/release in the checkout — proving nothing
+          # about what a user would install.
+          site = pathlib.Path(sysconfig.get_paths()['purelib'])
+          assert library.is_relative_to(site), f'{library} is not from the installed wheel ({site})'
+
           lib = _ffi.get_lib()
           assert lib.reactor_status(None) == b'disconnected'
           assert lib.reactor_destroy(None) == 0
-          print('wheel imports and calls into the library ok')
+          print('wheel imports and calls into its bundled library ok')
           "
+
+      # The suite, against the installed wheel, on each platform.
+      #
+      # The nine tests in test_ffi_bindings.py are the only check that _ffi.py's
+      # argtypes match the compiled ABI — ctypes verifies nothing itself, so a drifted
+      # signature is silent undefined behaviour. Until now they only ever ran on Linux,
+      # in the `test` job against a target/release build; on Windows the DLL was never
+      # exercised at all. Running them here covers all five platforms against the
+      # binary a user actually gets.
+      #
+      # test_client.py comes along because it is fast and some of it is
+      # platform-sensitive — _find_lib's name and path handling most of all.
+      # test_build_hook.py deliberately does not: it tests the build machinery rather
+      # than the wheel, and belongs in the `test` job that already runs it.
+      - name: Run the test suite against the wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            PY="$GITHUB_WORKSPACE/smoke/Scripts/python.exe"
+          else
+            PY="$GITHUB_WORKSPACE/smoke/bin/python"
+          fi
+          "$PY" -m pip install --quiet pytest pytest-asyncio
+
+          # From the repository root, so `reactor` resolves to the installed package
+          # rather than the source tree next to the tests. pytest still finds its
+          # configuration in sdks/python/pyproject.toml.
+          "$PY" -m pytest -v \
+            sdks/python/tests/test_ffi_bindings.py \
+            sdks/python/tests/test_client.py
 
       - uses: actions/upload-artifact@v7
         with:
