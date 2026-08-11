@@ -1,0 +1,6 @@
+# Pygame example app requirements
+# Install the SDK from the parent directory:
+#   pip install -e ../../
+
+pygame>=2.5.0
+numpy>=1.24.0

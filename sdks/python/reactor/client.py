@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import collections.abc
 import ctypes
 import json
 import logging
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
+from ._auth import fetch_jwt
 from ._ffi import (
     COMPLETION_FN,
     ON_AUDIO_FN,
@@ -25,6 +28,76 @@ from ._ffi import (
 # ---------------------------------------------------------------------------
 # Public types
 # ---------------------------------------------------------------------------
+
+#: Reactor's production coordinator, used when no `api_url` is given.
+DEFAULT_API_URL = "https://api.reactor.inc"
+
+
+class ReactorStatus(str, Enum):
+    """Connection status.
+
+    A `str` enum, so it compares equal to the plain strings the FFI reports and can be
+    used interchangeably with them: ``reactor.status == ReactorStatus.READY`` and
+    ``reactor.status == "ready"`` are both true, and ``.value`` gives the string.
+    """
+
+    DISCONNECTED = "disconnected"
+    CONNECTING = "connecting"
+    WAITING = "waiting"
+    READY = "ready"
+
+
+class MessageScope(str, Enum):
+    """Which side of the protocol a command is addressed to.
+
+    `APPLICATION` reaches the model; `RUNTIME` reaches the platform around it
+    (capabilities, recording, moderation).
+    """
+
+    APPLICATION = "application"
+    RUNTIME = "runtime"
+
+
+class CommandResult(int):
+    """The result of :meth:`Reactor.send_command`: 0 on success, -1 on failure.
+
+    The send has already happened by the time this exists. It is an `int`, so it can be
+    compared and tested directly — and it is *also* a coroutine, so every way of
+    writing the call works:
+
+        reactor.send_command(...)                      # 0 or -1
+        await reactor.send_command(...)                # 0 or -1
+        asyncio.create_task(reactor.send_command(...)) # a Task resolving to it
+
+    Sending was a coroutine in earlier releases, so the awaiting forms are what code
+    written against those does. Returning a real coroutine instead would make the plain
+    synchronous call — the documented one — emit "coroutine was never awaited" every
+    time. Satisfying the coroutine protocol on an already-finished value avoids the
+    warning while keeping `create_task`, which insists on a coroutine rather than
+    merely an awaitable.
+    """
+
+    def __await__(self):
+        # A generator function, so `return` becomes the awaited value. `yield from ()`
+        # is what makes it one without ever suspending: the work is already done, so
+        # there is nothing to wait for.
+        yield from ()
+        return int(self)
+
+    def send(self, _value: Any) -> None:
+        raise StopIteration(int(self))
+
+    def throw(self, *args: Any) -> None:
+        raise StopIteration(int(self))
+
+    def close(self) -> None:
+        pass
+
+
+# Registered rather than inherited: `int` and the ABC have incompatible metaclasses,
+# and a virtual subclass is enough for `asyncio.iscoroutine`, which is what decides
+# whether `create_task` accepts it.
+collections.abc.Coroutine.register(CommandResult)
 
 
 @dataclass(frozen=True)
@@ -101,6 +174,28 @@ def _close_live_clients() -> None:
 atexit.register(_close_live_clients)
 
 
+def _bgra_to_rgb_array(bgra: bytes, width: int, height: int) -> Any:
+    """Turn a BGRA frame into an RGB ``numpy`` array of shape ``(height, width, 3)``.
+
+    Two conversions in one: drop the alpha channel, and reverse BGR to RGB. The slice
+    ``[..., 2::-1]`` does both — it walks the first three bytes backwards, so B, G, R, A
+    becomes R, G, B.
+
+    numpy is imported here rather than at module scope so that it stays optional: only
+    the `on_frame` decorator needs it, and the rest of the SDK has no dependencies.
+    """
+    try:
+        import numpy as np
+    except ModuleNotFoundError as exc:  # pragma: no cover - depends on the environment
+        raise ModuleNotFoundError(
+            "on_frame delivers numpy arrays, and numpy is not installed. Install it, "
+            'or use on("frame", ...) to receive the raw BGRA bytes instead.'
+        ) from exc
+
+    frame = np.frombuffer(bgra, dtype=np.uint8).reshape(height, width, 4)
+    return frame[..., 2::-1]
+
+
 def _settle_from_foreign_thread(
     loop: asyncio.AbstractEventLoop,
     future: asyncio.Future,
@@ -149,16 +244,41 @@ class Reactor:
 
     def __init__(
         self,
-        api_url: str,
-        model_name: str,
+        api_url: str | None = None,
+        model_name: str | None = None,
         *,
         jwt: str | None = None,
+        api_key: str | None = None,
         local: bool = False,
         adm_mode: int | None = None,
     ) -> None:
-        self._api_url = api_url
+        """
+        Args:
+            api_url: Coordinator base URL. Defaults to production.
+            model_name: Model to connect to. Required.
+            jwt: A token to authenticate with.
+            api_key: An API key to exchange for a token at connect time. Use one or
+                the other; `jwt` wins if both are given.
+            local: Local-dev mode — relaxes TLS verification and skips auth.
+            adm_mode: 0 synthetic, 1 platform, None for the platform default.
+        """
+        # Older releases took `model_name` first and `api_url` second. Both orders work:
+        # an api_url is always a URL and a model name never is, so the two cannot be
+        # confused. Keyword arguments are unambiguous either way.
+        if (
+            api_url is not None
+            and model_name is None
+            and not api_url.startswith(("http://", "https://"))
+        ):
+            api_url, model_name = None, api_url
+
+        if model_name is None:
+            raise TypeError("Reactor() requires model_name")
+
+        self._api_url = api_url or DEFAULT_API_URL
         self._model_name = model_name
         self._jwt = jwt
+        self._api_key = api_key
         self._local = local
         self._adm_mode = adm_mode
 
@@ -186,6 +306,94 @@ class Reactor:
     def on(self, event: str, handler: Callable) -> None:
         """Register a handler for an event name."""
         self._handlers.setdefault(event, []).append(handler)
+
+    # ------------------------------------------------------------------
+    # Decorator registration
+    # ------------------------------------------------------------------
+    #
+    # The same events as `on`, registered by decorating. Each returns the function
+    # unchanged, so the decorated name stays callable.
+
+    def on_frame(self, func: Callable) -> Callable:
+        """Register a handler for decoded video frames.
+
+        The handler receives one argument: the frame as an RGB ``numpy`` array of
+        shape ``(height, width, 3)`` — ready for anything that renders images.
+
+        This is a different shape from ``on("frame", ...)``, which hands over the
+        untouched BGRA bytes plus dimensions and metadata. Both are live at once; use
+        whichever suits, and prefer `on` when you want the metadata or want to avoid
+        the conversion.
+
+        Requires numpy, which is not a dependency of this package — installing it is
+        the price of this convenience.
+        """
+
+        def handler(
+            bgra: bytes,
+            width: int,
+            height: int,
+            _frame_id: int,
+            _timestamp_us: int,
+            _user_data: bytes,
+        ) -> None:
+            func(_bgra_to_rgb_array(bgra, width, height))
+
+        self.on("frame", handler)
+        return func
+
+    def on_status(self, arg: Callable | str | None = None) -> Callable:
+        """Register a handler for status changes.
+
+        Bare, the handler receives every change::
+
+            @reactor.on_status
+            def changed(status): ...
+
+        Given a status, it fires only on that one, and the handler takes no
+        arguments::
+
+            @reactor.on_status(ReactorStatus.READY)
+            def ready(): ...
+        """
+        # Bare: the decorated function arrives as `arg`.
+        if callable(arg):
+            func = arg
+
+            def every(status: str) -> None:
+                func(ReactorStatus(status))
+
+            self.on("status_changed", every)
+            return func
+
+        wanted = ReactorStatus(arg) if arg is not None else None
+
+        def decorator(func: Callable) -> Callable:
+            def filtered(status: str) -> None:
+                if wanted is None:
+                    func(ReactorStatus(status))
+                elif status == wanted.value:
+                    func()
+
+            self.on("status_changed", filtered)
+            return func
+
+        return decorator
+
+    def on_error(self, func: Callable) -> Callable:
+        """Register a handler for errors. The handler receives a `ReactorError`."""
+        self.on("error", func)
+        return func
+
+    def on_message(self, func: Callable) -> Callable:
+        """Register a handler for application messages from the model."""
+        self.on("message", func)
+        return func
+
+    def on_track(self, func: Callable) -> Callable:
+        """Register a handler for incoming media tracks."""
+        self.on("track_received", func)
+        return func
 
     def off(self, event: str, handler: Callable) -> None:
         """Unregister a handler."""
@@ -506,6 +714,7 @@ class Reactor:
 
     async def connect(self, *, session_id: str | None = None) -> None:
         """Connect: create a session and establish WebRTC transport."""
+        await self._resolve_token(session_id)
         if self._handle is None:
             self._create_handle()
         lib = get_lib()
@@ -537,26 +746,54 @@ class Reactor:
     # Messaging
     # ------------------------------------------------------------------
 
+    async def _resolve_token(self, session_id: str | None) -> None:
+        """Turn an API key into a JWT, if that is what we were given.
+
+        Scoped to this model when we are creating the session, which is the safer
+        default: such a token can only start sessions on this model, so a leak is worth
+        that rather than everything the key can reach. Adopting an existing session
+        needs the broader token, since the scoped one cannot operate a session it did
+        not create.
+
+        The exchange is a blocking HTTP call, so it runs in a thread rather than
+        stalling the loop. Skipped entirely in local mode, which does not authenticate.
+        """
+        if self._jwt is not None or self._api_key is None or self._local:
+            return
+
+        models = [self._model_name] if session_id is None else None
+        self._jwt = await asyncio.to_thread(fetch_jwt, self._api_key, self._api_url, models=models)
+
     def send_command(
         self,
         command: str,
         data: Any,
-        scope: str = "application",
-    ) -> int:
-        """Send a fire-and-forget command. Returns 0 on success, -1 on error."""
+        scope: str | MessageScope = "application",
+    ) -> CommandResult:
+        """Send a fire-and-forget command. Returns 0 on success, -1 on error.
+
+        The result is awaitable as well as an int, so ``await send_command(...)`` works
+        for code written when this was a coroutine. The send happens either way, before
+        this returns.
+        """
         self._require_handle()
         lib = get_lib()
         args_json = json.dumps(data).encode()
-        if scope == "runtime":
-            return lib.reactor_send_runtime_command(
+        # A MessageScope is a str subclass, so this covers both it and a bare string.
+        if scope == MessageScope.RUNTIME:
+            return CommandResult(
+                lib.reactor_send_runtime_command(
+                    ctypes.c_void_p(self._handle),
+                    command.encode(),
+                    args_json,
+                )
+            )
+        return CommandResult(
+            lib.reactor_send_command(
                 ctypes.c_void_p(self._handle),
                 command.encode(),
                 args_json,
             )
-        return lib.reactor_send_command(
-            ctypes.c_void_p(self._handle),
-            command.encode(),
-            args_json,
         )
 
     # ------------------------------------------------------------------
@@ -710,12 +947,17 @@ class Reactor:
     # ------------------------------------------------------------------
 
     @property
-    def status(self) -> str:
-        """Current status string: disconnected | connecting | waiting | ready."""
+    def status(self) -> ReactorStatus:
+        """Current status.
+
+        A `ReactorStatus`, which is a `str` enum — so it compares equal to
+        ``"ready"`` as readily as to ``ReactorStatus.READY``, and ``.value`` gives the
+        string.
+        """
         if self._handle is None:
-            return "disconnected"
+            return ReactorStatus.DISCONNECTED
         raw = get_lib().reactor_status(ctypes.c_void_p(self._handle))
-        return raw.decode() if raw else "disconnected"
+        return ReactorStatus(raw.decode()) if raw else ReactorStatus.DISCONNECTED
 
     @property
     def session_id(self) -> str | None:
@@ -729,6 +971,16 @@ class Reactor:
         sid = ctypes.cast(ptr, ctypes.c_char_p).value
         lib.reactor_free_string(ctypes.c_void_p(ptr))
         return sid.decode() if sid else None
+
+    # Method forms of the two properties above. Kept because code written against
+    # earlier releases calls them, and because there is no cost to having both.
+    def get_status(self) -> ReactorStatus:
+        """Current status. Same as the `status` property."""
+        return self.status
+
+    def get_session_id(self) -> str | None:
+        """Current session ID. Same as the `session_id` property."""
+        return self.session_id
 
     # ------------------------------------------------------------------
     # Context manager

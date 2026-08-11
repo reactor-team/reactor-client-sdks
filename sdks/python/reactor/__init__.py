@@ -23,13 +23,30 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0.dev"
 
-from .client import Clip, FileRef, Reactor, ReactorError, ReactorFFIError
+from ._auth import AuthError, fetch_jwt
+from .client import (
+    DEFAULT_API_URL,
+    Clip,
+    CommandResult,
+    FileRef,
+    MessageScope,
+    Reactor,
+    ReactorError,
+    ReactorFFIError,
+    ReactorStatus,
+)
 
 __all__ = [
     "Reactor",
+    "ReactorStatus",
+    "MessageScope",
     "Clip",
     "FileRef",
+    "CommandResult",
     "ReactorError",
     "ReactorFFIError",
+    "AuthError",
+    "fetch_jwt",
+    "DEFAULT_API_URL",
     "__version__",
 ]
