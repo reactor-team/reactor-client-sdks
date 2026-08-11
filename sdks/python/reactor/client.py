@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import ctypes
 import json
 import logging
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -75,6 +77,58 @@ _log = logging.getLogger(__name__)
 # handlers are blocking or clients are being closed from inside a handler.
 _ORPHANED_CALLBACKS: list[tuple[Any, list[Any]]] = []
 
+# Every client with a live handle, weakly held. Exists so the interpreter cannot
+# exit with one still open.
+_LIVE_CLIENTS: weakref.WeakSet = weakref.WeakSet()
+
+
+def _close_live_clients() -> None:
+    """Tear down any client the program left open, at exit.
+
+    Registered with :mod:`atexit`, which runs while the interpreter is still fully
+    alive — and that timing is the whole point. Once finalisation proper begins,
+    CPython stops handing the GIL back to foreign threads, so a callback in flight
+    can never finish, ``reactor_destroy`` cannot reach quiescence, and the native
+    threads are left calling into an interpreter that is dismantling itself.
+    """
+    for client in list(_LIVE_CLIENTS):
+        try:
+            client.close()
+        except Exception:  # pragma: no cover - best effort at exit
+            _log.debug("failed to close a client at exit", exc_info=True)
+
+
+atexit.register(_close_live_clients)
+
+
+def _settle_from_foreign_thread(
+    loop: asyncio.AbstractEventLoop,
+    future: asyncio.Future,
+    payload: Any,
+    error: BaseException | None,
+) -> None:
+    """Complete `future` from a thread that does not own `loop`.
+
+    Both failure modes here are reachable and neither may raise into the FFI: the
+    loop can be closed by the time a completion arrives, and the future can already
+    be cancelled. Left unguarded, the exception surfaces inside the ctypes trampoline
+    on a native thread, where ctypes prints it and returns — and the coroutine that
+    was waiting is never woken at all.
+    """
+
+    def _settle() -> None:
+        if future.done():
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(payload)
+
+    try:
+        loop.call_soon_threadsafe(_settle)
+    except RuntimeError:
+        _log.debug("completion arrived after the event loop closed; discarding")
+
 
 # ---------------------------------------------------------------------------
 # Reactor
@@ -117,7 +171,12 @@ class Reactor:
         self._callbacks_struct: ReactorCallbacks | None = None
         self._cb_refs: list[Any] = []
 
-        # Current loop — set during connect/create
+        # Completion trampolines for operations in flight, keyed by id(). Owned here
+        # rather than by the awaiting frame, so cancelling an await cannot free one
+        # the library still holds a pointer to.
+        self._pending_completions: dict[int, Any] = {}
+
+        # The loop that created the handle. Control events are marshalled onto it.
         self._loop: asyncio.AbstractEventLoop | None = None
 
     # ------------------------------------------------------------------
@@ -137,11 +196,48 @@ class Reactor:
             pass
 
     def _fire(self, event: str, *args: Any) -> None:
+        """Run every handler for `event` on the calling thread, now.
+
+        A raising handler does not stop the others, and the exception is logged
+        rather than dropped — one broken handler should be visible without taking
+        the rest of the event down with it.
+        """
         for h in list(self._handlers.get(event, [])):
             try:
                 h(*args)
             except Exception:
+                _log.exception("error in %r handler %r", event, h)
+
+    def _fire_on_loop(self, event: str, *args: Any) -> None:
+        """Hand `event` to the loop thread, and run the handlers there.
+
+        Control events go through here because handlers naturally reach for asyncio
+        — every example in this repo sets an ``asyncio.Event`` from ``on_status`` —
+        and ``Event.set()``, ``Queue.put_nowait()`` and friends are not thread-safe.
+        Called directly from the native control thread, they mutate loop state from
+        outside the loop: it works almost every time and fails under a race, which is
+        the worst way for a bug to behave.
+
+        Media events deliberately do *not* come through here; see the note on
+        ``_on_frame``.
+        """
+        if not self._handlers.get(event):
+            return
+
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(self._fire, event, *args)
+                return
+            except RuntimeError:
+                # Closed between the check and the call.
                 pass
+
+        # No loop to marshal onto — the client was built outside one, or it has since
+        # shut down. Running inline is all that is left, and there is no loop state
+        # left to corrupt either.
+        _log.debug("no running loop for %r; dispatching on the callback thread", event)
+        self._fire(event, *args)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -149,12 +245,13 @@ class Reactor:
 
     def _create_handle(self) -> None:
         lib = get_lib()
-        loop = asyncio.get_event_loop()
-        self._loop = loop
+        # get_running_loop, not get_event_loop: the latter is deprecated and raises
+        # without a running loop from 3.12. _create_handle is only reached from
+        # connect(), so there is always one.
+        self._loop = asyncio.get_running_loop()
 
-        # Build callback wrappers; capture self weakly via closure
-        import weakref
-
+        # Callbacks capture self weakly, so a registered handler cannot be what keeps
+        # the client alive.
         weak = weakref.ref(self)
 
         def _on_status(status_bytes: bytes, _ud: Any) -> None:
@@ -162,7 +259,7 @@ class Reactor:
             if r is None:
                 return
             status = status_bytes.decode() if status_bytes else "disconnected"
-            r._fire("status_changed", status)
+            r._fire_on_loop("status_changed", status)
 
         def _on_error(json_bytes: bytes, _ud: Any) -> None:
             r = weak()
@@ -178,7 +275,7 @@ class Reactor:
                     component=d.get("component", "api"),
                     retry_after_ms=d.get("retry_after_ms"),
                 )
-                r._fire("error", err)
+                r._fire_on_loop("error", err)
             except Exception:
                 pass
 
@@ -187,7 +284,7 @@ class Reactor:
             if r is None:
                 return
             try:
-                r._fire("message", json.loads(json_bytes))
+                r._fire_on_loop("message", json.loads(json_bytes))
             except Exception:
                 pass
 
@@ -196,7 +293,7 @@ class Reactor:
             if r is None:
                 return
             try:
-                r._fire("runtime_message", json.loads(json_bytes))
+                r._fire_on_loop("runtime_message", json.loads(json_bytes))
             except Exception:
                 pass
 
@@ -206,14 +303,14 @@ class Reactor:
                 return
             name = name_bytes.decode() if name_bytes else ""
             mid = mid_bytes.decode() if mid_bytes else None
-            r._fire("track_received", name, mid)
+            r._fire_on_loop("track_received", name, mid)
 
         def _on_capabilities(json_bytes: bytes, _ud: Any) -> None:
             r = weak()
             if r is None:
                 return
             try:
-                r._fire("capabilities_received", json.loads(json_bytes))
+                r._fire_on_loop("capabilities_received", json.loads(json_bytes))
             except Exception:
                 pass
 
@@ -222,7 +319,7 @@ class Reactor:
             if r is None:
                 return
             sid = sid_bytes.decode() if sid_bytes else None
-            r._fire("session_id_changed", sid)
+            r._fire_on_loop("session_id_changed", sid)
 
         def _on_frame(
             data_ptr: int,
@@ -234,8 +331,19 @@ class Reactor:
             user_data_len: int,
             _ud: Any,
         ) -> None:
+            # Media runs inline on its own FFI delivery thread rather than being
+            # marshalled to the loop, and that is deliberate. Blocking here is what
+            # applies backpressure: the FFI keeps only the newest frame while this
+            # handler runs, so a slow consumer sees fresh frames. Hand each one to
+            # the loop instead and the queue simply moves into asyncio's ready queue,
+            # which is unbounded — trading a bounded drop for unbounded latency and
+            # memory. The cost is that a handler touching asyncio state must go
+            # through loop.call_soon_threadsafe itself.
             r = weak()
             if r is None:
+                return
+            if not data_ptr:
+                _log.debug("frame callback with a null buffer; dropping")
                 return
             n = width * height * 4
             frame = (ctypes.c_uint8 * n).from_address(data_ptr)
@@ -249,8 +357,12 @@ class Reactor:
         def _on_audio(
             data_ptr: int, num_samples: int, sample_rate: int, channels: int, _ud: Any
         ) -> None:
+            # Inline for the same reason as _on_frame.
             r = weak()
             if r is None:
+                return
+            if not data_ptr:
+                _log.debug("audio callback with a null buffer; dropping")
                 return
             arr = (ctypes.c_int16 * num_samples).from_address(data_ptr)
             r._fire("audio", bytes(arr), num_samples, sample_rate, channels)
@@ -303,6 +415,8 @@ class Reactor:
             )
 
         self._handle = handle
+        # Now closable, so the atexit hook must know about it.
+        _LIVE_CLIENTS.add(self)
 
     def _destroy_handle(self) -> None:
         if self._handle is None:
@@ -317,58 +431,74 @@ class Reactor:
         # blocked waiting for it can finish and let destroy return.
         quiesced = get_lib().reactor_destroy(ctypes.c_void_p(self._handle)) == 0
         self._handle = None
+        _LIVE_CLIENTS.discard(self)
+
+        # Completions for operations still in flight count too: the same guarantee
+        # covers them, and an abandoned await can have left entries behind.
+        trampolines = self._cb_refs + list(self._pending_completions.values())
+        self._callbacks_struct = None
+        self._cb_refs = []
+        self._pending_completions = {}
 
         if quiesced:
-            self._callbacks_struct = None
-            self._cb_refs = []
             return
 
         # A callback is still running and could not be waited for — a blocking
         # handler, or close() called from inside a handler. Leaking a handful of
         # small objects is the right trade against a use-after-free, so park them
         # somewhere that outlives this client and never free them.
-        _ORPHANED_CALLBACKS.append((self._callbacks_struct, self._cb_refs))
-        self._callbacks_struct = None
-        self._cb_refs = []
+        _ORPHANED_CALLBACKS.append((None, trampolines))
         _log.warning(
             "reactor_destroy could not confirm no callback was running; retaining "
             "%d callback trampolines for the life of the process rather than "
             "risking a use-after-free. Avoid blocking in handlers, and close the "
             "client from outside one.",
-            len(_ORPHANED_CALLBACKS[-1][1]),
+            len(trampolines),
         )
 
     # ------------------------------------------------------------------
     # Async completion bridge
     # ------------------------------------------------------------------
 
-    def _make_completion(self, future: asyncio.Future) -> Any:
-        """Return a COMPLETION_FN that resolves ``future`` on the event loop."""
-        loop = self._loop
+    async def _async_op(self, dispatcher: Callable[[Any], None]) -> Any:
+        """Run a one-shot FFI operation and return its result.
+
+        The trampoline's lifetime is the delicate part. The FFI promises to call it
+        exactly once, but says nothing about *when* relative to this coroutine: an
+        ``asyncio.wait_for`` that times out, a ``task.cancel()``, or a Ctrl-C unwinds
+        this frame while the operation is still in flight. So ownership sits on the
+        client, keyed by id, and only the completion itself takes it out. A cancelled
+        await leaves the entry in place, which is a bounded leak until the call fires
+        — the previous arrangement kept it in a local and left the library holding a
+        pointer to freed memory instead.
+        """
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        pending = self._pending_completions
+        holder: list[Any] = []
 
         def _cb(ok: int, result_json: bytes | None, error_msg: bytes | None, _ud: Any) -> None:
-            if ok:
-                payload = json.loads(result_json) if result_json and result_json != b"{}" else None
-                loop.call_soon_threadsafe(future.set_result, payload)
-            else:
-                msg = error_msg.decode() if error_msg else "unknown error"
-                loop.call_soon_threadsafe(future.set_exception, ReactorFFIError(msg))
+            # Runs on the FFI's control thread.
+            try:
+                if ok:
+                    payload = (
+                        json.loads(result_json) if result_json and result_json != b"{}" else None
+                    )
+                    _settle_from_foreign_thread(loop, future, payload, None)
+                else:
+                    msg = error_msg.decode() if error_msg else "unknown error"
+                    _settle_from_foreign_thread(loop, future, None, ReactorFFIError(msg))
+            finally:
+                # Fired exactly once, so the trampoline has no further use.
+                if holder:
+                    pending.pop(id(holder[0]), None)
 
         fn = COMPLETION_FN(_cb)
-        # Keep fn alive until future resolves
-        future.add_done_callback(lambda _: None)
-        return fn
+        holder.append(fn)
+        pending[id(fn)] = fn
 
-    async def _async_op(self, dispatcher: Callable[[Any], None]) -> Any:
-        """Run a one-shot async FFI operation and return its result."""
-        loop = asyncio.get_event_loop()
-        future: asyncio.Future = loop.create_future()
-        fn = self._make_completion(future)
-        # Keep fn alive for the duration of the await
         dispatcher(fn)
-        result = await future
-        del fn
-        return result
+        return await future
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -613,6 +743,20 @@ class Reactor:
                 await self.disconnect()
         finally:
             self.close()
+
+    def __del__(self) -> None:
+        """Last resort for a client dropped without close().
+
+        Deliberately minimal. __del__ runs at whatever moment the collector picks,
+        including late in interpreter shutdown when module globals this method needs
+        may already be None — hence the bare guard. The orderly path is the atexit
+        hook, or `async with`.
+        """
+        try:
+            if getattr(self, "_handle", None) is not None:
+                self._destroy_handle()
+        except Exception:  # pragma: no cover - interpreter teardown
+            pass
 
     # ------------------------------------------------------------------
     # Internals

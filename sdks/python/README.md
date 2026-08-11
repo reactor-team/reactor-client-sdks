@@ -47,20 +47,45 @@ Register handlers with `r.on(event, handler)`:
 | `audio` | `pcm: bytes`, `num_samples`, `sample_rate`, `channels` |
 | `error` | `error: ReactorError` |
 
-### Handlers run on a native thread
+### Where handlers run
 
-Handlers are invoked from threads inside the native library, **not** from your
-asyncio event loop. Two consequences:
+**Control events** — everything except `frame` and `audio` — run on your asyncio
+event loop, so you can touch asyncio state from them directly:
 
-* Do not touch asyncio state directly from a handler. `asyncio.Event.set()`,
-  `Queue.put_nowait()` and friends are not thread-safe; go through
-  `loop.call_soon_threadsafe(...)`.
-* Blocking is safe, but you pay for it in dropped data rather than in stalled
-  WebRTC. Each stream has its own delivery thread: block in a `frame` handler and
-  you keep getting the newest frame while the ones in between are dropped; block
-  in `audio` and you lose samples once its short queue fills. Control events and
-  command results share a third thread with an unbounded queue, so those wait for
-  you instead of being dropped.
+```python
+ready = asyncio.Event()
+
+def on_status(status: str) -> None:
+    if status == "ready":
+        ready.set()          # safe: this runs on the loop thread
+
+r.on("status_changed", on_status)
+await asyncio.wait_for(ready.wait(), timeout=60)
+```
+
+**`frame` and `audio`** run on their own native delivery threads instead, because
+that is what applies backpressure: while your handler runs, the library keeps only
+the newest frame, so a slow consumer gets fresh frames rather than a growing
+backlog. Two consequences:
+
+* Blocking is safe — it never stalls WebRTC — but you pay in dropped data. Block in
+  `frame` and the frames in between are discarded; block in `audio` and you lose
+  samples once its short queue fills.
+* You are off the loop, so reach asyncio through `call_soon_threadsafe`:
+
+```python
+loop = asyncio.get_running_loop()
+
+def on_frame(bgra, width, height, frame_id, timestamp_us, user_data):
+    loop.call_soon_threadsafe(frames.put_nowait, bgra)
+```
+
+### Closing
+
+Use `async with`, or call `close()`. An `atexit` hook closes anything you leave
+open, which matters more than it sounds: teardown has to finish while the
+interpreter is still running, because once it starts finalising, native threads
+never get the GIL back.
 
 ```python
 loop = asyncio.get_running_loop()
