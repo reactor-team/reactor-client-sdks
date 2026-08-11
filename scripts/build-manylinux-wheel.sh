@@ -83,6 +83,9 @@ echo "::endgroup::"
 # `show` first, and kept in the log: it names the policy the binary qualifies for
 # and lists the external libraries that will be vendored in. Worth reading rather
 # than trusting — this is where an unexpected dependency surfaces.
+# There should be nothing to vendor: TLS is rustls, so no libssl or libcrypto, and
+# libwebrtc is linked statically. Anything listed here is a surprise worth chasing —
+# a vendored library is a copy this project then owns the patching of.
 echo "::group::auditwheel show"
 "${PYTHON}" -m pip install --quiet auditwheel
 "${PYTHON}" -m auditwheel show /io/dist-unrepaired/*.whl
