@@ -36,6 +36,7 @@ from numpy.typing import NDArray
 # Add parent directories to path for development
 sys.path.insert(0, str(__file__).rsplit("/", 3)[0] + "/src")
 
+from audio import AudioPlayer
 from controller import ReactorController
 
 from reactor_sdk import Reactor, ReactorStatus
@@ -124,11 +125,15 @@ class ReactorApp:
         self.reactor: Reactor | None = None
         self.controller: ReactorController | None = None
 
+        # The SDK opens no audio device, so playing what arrives is up to us.
+        self.audio = AudioPlayer()
+
     async def run(self) -> None:
         """Run the application."""
         try:
             self._init_pygame()
             self._init_reactor()
+            self.audio.start()
             await self._connect()
             await self._main_loop()
         except KeyboardInterrupt:
@@ -173,6 +178,14 @@ class ReactorApp:
         def handle_error(error: object) -> None:
             logger.error(f"Reactor error: {error}")
 
+        # Received audio, straight to the speaker. Registered with `on` rather than a
+        # decorator because the payload is the raw PCM plus its format, and this
+        # handler runs on the SDK's audio delivery thread — see audio.py.
+        self.reactor.on(
+            "audio",
+            lambda pcm, _samples, _rate, _channels: self.audio.submit(pcm),
+        )
+
         # Create controller
         self.controller = ReactorController(
             reactor=self.reactor,
@@ -194,6 +207,8 @@ class ReactorApp:
 
     async def _cleanup(self) -> None:
         """Clean up resources."""
+        self.audio.stop()
+
         if self.reactor:
             await self.reactor.disconnect()
 
