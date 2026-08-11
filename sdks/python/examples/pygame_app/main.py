@@ -183,7 +183,7 @@ class ReactorApp:
         # handler runs on the SDK's audio delivery thread — see audio.py.
         self.reactor.on(
             "audio",
-            lambda pcm, _samples, _rate, _channels: self.audio.submit(pcm),
+            lambda pcm, _samples, rate, channels: self.audio.submit(pcm, rate, channels),
         )
 
         # Create controller
