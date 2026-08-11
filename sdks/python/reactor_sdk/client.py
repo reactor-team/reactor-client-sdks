@@ -6,6 +6,7 @@ import asyncio
 import atexit
 import collections.abc
 import ctypes
+import inspect
 import json
 import logging
 import weakref
@@ -177,6 +178,42 @@ def _close_live_clients() -> None:
 atexit.register(_close_live_clients)
 
 
+#: What `on_frame` offers a handler, in order. A handler is given as many of these as it
+#: declares parameters for, so the historical one-argument contract keeps working while a
+#: handler that wants the metadata trailer just asks for more.
+FRAME_HANDLER_ARGUMENTS = ("frame", "frame_id", "timestamp_us", "user_data")
+
+
+def _positional_arity(func: Callable, maximum: int) -> int:
+    """How many of `maximum` positional arguments `func` is willing to take.
+
+    Decided once, when the handler is registered, rather than per frame.
+
+    Falls back to one on anything it cannot read — a builtin, a C function, an exotic
+    callable. One is the shape `on_frame` has always had, so the fallback is the
+    compatible direction rather than a guess.
+    """
+    try:
+        parameters = inspect.signature(func).parameters.values()
+    except (TypeError, ValueError):
+        return 1
+
+    count = 0
+    for parameter in parameters:
+        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+            # *args takes whatever there is.
+            return maximum
+        if parameter.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            count += 1
+
+    # Never zero: a handler that takes nothing is a mistake worth surfacing as the
+    # TypeError it is, rather than silently never being given the frame.
+    return max(1, min(count, maximum))
+
+
 def _bgra_to_rgb_array(bgra: bytes, width: int, height: int) -> Any:
     """Turn a BGRA frame into an RGB ``numpy`` array of shape ``(height, width, 3)``.
 
@@ -335,27 +372,49 @@ class Reactor:
     def on_frame(self, func: Callable) -> Callable:
         """Register a handler for decoded video frames.
 
-        The handler receives one argument: the frame as an RGB ``numpy`` array of
-        shape ``(height, width, 3)`` — ready for anything that renders images.
+        The handler is given as many of ``(frame, frame_id, timestamp_us, user_data)``
+        as it declares parameters for, so it can ask for only what it uses::
 
-        This is a different shape from ``on("frame", ...)``, which hands over the
-        untouched BGRA bytes plus dimensions and metadata. Both are live at once; use
-        whichever suits, and prefer `on` when you want the metadata or want to avoid
-        the conversion.
+            @reactor.on_frame
+            def render(frame): ...                                  # just the image
 
-        Requires numpy, which is not a dependency of this package — installing it is
-        the price of this convenience.
+            @reactor.on_frame
+            def render(frame, frame_id, timestamp_us, user_data): ...  # and the trailer
+
+        ``frame`` is an RGB ``numpy`` array of shape ``(height, width, 3)``, ready for
+        anything that renders images — width and height are its shape, which is why they
+        are not passed separately. The other three are the metadata trailer, and are
+        ``0``, ``0`` and ``b""`` on a frame that carries none.
+
+        One argument is what this decorator has always given, so existing handlers are
+        unaffected; a handler taking ``*args`` gets all four.
+
+        ``on("frame", ...)`` remains the other shape of the same event, handing over the
+        untouched BGRA bytes with the dimensions and the trailer. Prefer it when the
+        conversion is not wanted — for forwarding the bytes somewhere, say.
+
+        Requires numpy, which is not a dependency of this package: installing it is the
+        price of the conversion.
         """
+        take = _positional_arity(func, len(FRAME_HANDLER_ARGUMENTS))
 
         def handler(
             bgra: bytes,
             width: int,
             height: int,
-            _frame_id: int,
-            _timestamp_us: int,
-            _user_data: bytes,
+            frame_id: int,
+            timestamp_us: int,
+            user_data: bytes,
         ) -> None:
-            func(_bgra_to_rgb_array(bgra, width, height))
+            # The array is built first because it is what every handler wants; the
+            # conversion is the cost of this decorator either way.
+            arguments = (
+                _bgra_to_rgb_array(bgra, width, height),
+                frame_id,
+                timestamp_us,
+                user_data,
+            )
+            func(*arguments[:take])
 
         self.on("frame", handler)
         return func

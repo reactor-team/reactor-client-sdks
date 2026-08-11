@@ -144,9 +144,12 @@ class ReactorApp:
         # The SDK opens no audio device, so playing what arrives is up to us.
         self.audio = AudioPlayer()
 
-        # Metadata from the most recent tagged frame, and how many have carried one.
+        # Metadata from the most recent tagged frame, how many have carried one, and
+        # whether the newest frame did — a stream can stop tagging, and stale values
+        # should not be presented as current.
         self.frame_meta: dict[str, Any] | None = None
         self.frames_tagged = 0
+        self.last_frame_tagged = False
 
     async def run(self) -> None:
         """Run the application."""
@@ -185,10 +188,18 @@ class ReactorApp:
         )
 
         # Set up event handlers using decorators
+        # Four parameters, so the trailer arrives with the image. A handler that only
+        # wants the image declares one, which is what this used to be.
         @self.reactor.on_frame
-        def handle_frame(frame: NDArray[np.uint8]) -> None:
+        def handle_frame(
+            frame: NDArray[np.uint8],
+            frame_id: int,
+            timestamp_us: int,
+            user_data: bytes,
+        ) -> None:
             self.current_frame = frame
             self.frames_received += 1
+            self._note_frame_metadata(frame_id, timestamp_us, user_data)
 
         @self.reactor.on_status
         def handle_status(status: ReactorStatus) -> None:
@@ -197,12 +208,6 @@ class ReactorApp:
         @self.reactor.on_error
         def handle_error(error: object) -> None:
             logger.error(f"Reactor error: {error}")
-
-        # `on_frame` hands over the image as an array and nothing else, which is what
-        # the renderer wants. The metadata trailer comes through `on("frame")`, the other
-        # shape of the same event — so both are registered, each for the part it gives.
-        # See examples/metadata_publisher.py for the process that attaches these.
-        self.reactor.on("frame", self._note_frame_metadata)
 
         # Received audio, straight to the speaker. Registered with `on` rather than a
         # decorator because the payload is the raw PCM plus its format, and this
@@ -221,26 +226,27 @@ class ReactorApp:
             height=WINDOW_HEIGHT,
         )
 
-    def _note_frame_metadata(
-        self,
-        _bgra: bytes,
-        _width: int,
-        _height: int,
-        frame_id: int,
-        timestamp_us: int,
-        user_data: bytes,
-    ) -> None:
+    def _note_frame_metadata(self, frame_id: int, timestamp_us: int, user_data: bytes) -> None:
         """Keep the tag from the newest frame, for the overlay to draw.
+
+        Most frames have no trailer at all, and that is the normal case rather than an
+        error: a sender that does not tag, or a peer that did not negotiate metadata,
+        produces `0, 0, b""` on every frame. Nothing is shown until something arrives
+        tagged, and an untagged frame never overwrites a tag with emptiness — it is
+        recorded as untagged so the overlay can say the values are from an earlier frame
+        rather than presenting them as current.
 
         Runs on the SDK's frame delivery thread, so it does the least it can: decode and
         store. Anything slower here costs frames, because the SDK keeps only the newest
         while this is running.
 
-        A frame with no trailer arrives with everything zeroed and empty, which is normal
-        — a sender that does not tag frames, or a peer that did not negotiate metadata.
+        See examples/metadata_publisher.py for a process that does attach them.
         """
         if not user_data and not frame_id and not timestamp_us:
+            self.last_frame_tagged = False
             return
+
+        self.last_frame_tagged = True
 
         meta: dict[str, Any] = {"frame_id": frame_id, "timestamp_us": timestamp_us}
         if user_data:
@@ -382,7 +388,11 @@ class ReactorApp:
             return
 
         meta = self.frame_meta
-        lines = [f"frame_id {meta['frame_id']}  ·  tagged {self.frames_tagged}"]
+        heading = f"frame_id {meta['frame_id']}  ·  tagged {self.frames_tagged}"
+        if not self.last_frame_tagged:
+            # The current frame carried nothing; what follows is from an earlier one.
+            heading += "  ·  stale"
+        lines = [heading]
 
         sent_us = meta["timestamp_us"]
         if sent_us:
