@@ -29,21 +29,42 @@ fn peer_err(e: impl std::fmt::Display) -> CoreError {
     CoreError::Peer(e.to_string())
 }
 
+/// Which audio device module to use when the host does not say.
+///
+/// Synthetic, on every platform — no microphone is opened and nothing is captured
+/// unless the host pushes it with `reactor_push_audio_frame`.
+///
+/// Platform used to be the desktop default, and it was the wrong one twice over. A
+/// model declaring a sendonly audio track was enough to put the microphone on the
+/// wire: `prepare` attaches a local track for every such capability, and the platform
+/// ADM feeds it from the real device with no involvement from the host at all. An
+/// application that never mentions audio does not expect to be transmitting it, and an
+/// SDK opening a capture device on its own behalf is not a defensible default whatever
+/// the convenience.
+///
+/// It also broke the other direction: `push_audio_frame` feeds the synthetic ADM, so
+/// under the platform ADM a host's PCM went nowhere while the microphone streamed in
+/// its place. `examples/push_audio.py` was silently doing exactly that.
+///
+/// Hosts that want real capture and playout ask for it — `adm_mode = 1` on
+/// `reactor_create_with_adm`, or `REACTOR_WEBRTC_ADM=platform`. That is also what
+/// brings speaker playout back; under Synthetic, decoded audio arrives at `on_audio`
+/// for the host to play.
 fn default_adm_mode() -> AdmMode {
-    if let Ok(v) = std::env::var("REACTOR_WEBRTC_ADM") {
-        match v.trim().to_ascii_lowercase().as_str() {
-            "synthetic" => return AdmMode::Synthetic,
-            "platform" => return AdmMode::Platform,
-            other => warn!("[peer] unknown REACTOR_WEBRTC_ADM='{other}', using default"),
+    adm_mode_from_env(std::env::var("REACTOR_WEBRTC_ADM").ok().as_deref())
+}
+
+/// The decision itself, split out from reading the environment so it can be tested
+/// without touching process-global state.
+fn adm_mode_from_env(requested: Option<&str>) -> AdmMode {
+    match requested.map(|v| v.trim().to_ascii_lowercase()) {
+        Some(v) if v == "synthetic" => AdmMode::Synthetic,
+        Some(v) if v == "platform" => AdmMode::Platform,
+        Some(other) => {
+            warn!("[peer] unknown REACTOR_WEBRTC_ADM='{other}', using the default");
+            AdmMode::Synthetic
         }
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        AdmMode::Platform
-    }
-    #[cfg(target_os = "android")]
-    {
-        AdmMode::Synthetic
+        None => AdmMode::Synthetic,
     }
 }
 
@@ -465,5 +486,45 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         // Dropped by reactor-webrtc unless the peer declared that it strips the
         // trailer, so tagging a frame is safe whatever the far end supports.
         track.push_video_frame_with_metadata(data, width, height, user_data);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The microphone must not open because nobody said otherwise.
+    ///
+    /// This was `Platform` on desktop, which meant a model declaring a sendonly audio
+    /// track put live microphone audio on the wire without the host asking — `prepare`
+    /// attaches a local track for the capability and the platform ADM feeds it from the
+    /// real device. Nothing in the host's code had to mention audio for that to happen.
+    #[test]
+    fn the_default_does_not_open_a_capture_device() {
+        assert_eq!(adm_mode_from_env(None), AdmMode::Synthetic);
+    }
+
+    #[test]
+    fn real_capture_has_to_be_asked_for() {
+        assert_eq!(adm_mode_from_env(Some("platform")), AdmMode::Platform);
+    }
+
+    #[test]
+    fn synthetic_can_be_named_explicitly() {
+        assert_eq!(adm_mode_from_env(Some("synthetic")), AdmMode::Synthetic);
+    }
+
+    #[test]
+    fn the_value_is_case_and_whitespace_insensitive() {
+        assert_eq!(adm_mode_from_env(Some("  PLATFORM \n")), AdmMode::Platform);
+        assert_eq!(adm_mode_from_env(Some("Synthetic")), AdmMode::Synthetic);
+    }
+
+    /// A typo must not silently open the microphone: the safe direction is the default,
+    /// not the requested one.
+    #[test]
+    fn an_unrecognised_value_falls_back_to_synthetic() {
+        assert_eq!(adm_mode_from_env(Some("platfrom")), AdmMode::Synthetic);
+        assert_eq!(adm_mode_from_env(Some("")), AdmMode::Synthetic);
     }
 }
