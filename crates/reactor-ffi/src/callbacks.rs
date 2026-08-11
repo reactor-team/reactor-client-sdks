@@ -1,14 +1,13 @@
-//! Lifetime control for the host's callback pointers.
+//! The boundary where this library calls back into the host, and the two
+//! properties of that boundary that everything here exists for.
 //!
-//! A host callback stops being callable at a moment the host chooses, not one this
-//! library controls. A ctypes `CFUNCTYPE` object is freed when Python drops its
-//! last reference; a `cgo.Handle` stops resolving when Go deletes it; a JNI
-//! `GlobalRef` dies on `DeleteGlobalRef`. Calling a pointer after that point is a
-//! jump into freed memory.
-//!
-//! No binding can protect itself here on its own, because none of them can observe
-//! whether a callback is currently running or about to start. That has to come from
-//! this side, and [`CallbackGate`] is it.
+//! **A host callback stops being callable at a moment the host chooses.** A ctypes
+//! `CFUNCTYPE` object is freed when Python drops its last reference; a `cgo.Handle`
+//! stops resolving when Go deletes it; a JNI `GlobalRef` dies on
+//! `DeleteGlobalRef`. Calling a pointer after that point is a jump into freed
+//! memory, and no binding can protect itself, because none of them can observe
+//! whether a callback is running or about to start. [`CallbackGate`] is that
+//! observation.
 //!
 //! [`retire`](CallbackGate::retire) closes the gate and reports what it achieved.
 //! On [`Quiescence::Complete`] nothing is executing and nothing will start, so the
@@ -16,14 +15,26 @@
 //! running and cannot be waited for — the host is wedged, or the caller *is* the
 //! callback — and the host must keep the pointers alive. Leaking them is the correct
 //! answer there; freeing them is the use-after-free this module exists to prevent.
+//!
+//! **A host callback can block for an unbounded time.** The first thing a ctypes
+//! trampoline does is take the GIL, which it will not get until whichever Python
+//! thread holds it lets go — possibly after a long stretch of pure-Python work. A
+//! JNI upcall attaches to the JVM, making that thread a GC root the runtime
+//! suspends at safepoints. Neither is a wait a libwebrtc media thread can afford:
+//! its decode and network threads have deadlines, and missing them shows up as
+//! dropped frames, audio glitches and ICE timeouts. A tokio worker parked the same
+//! way starves every other task on it.
+//!
+//! So no media thread and no tokio worker ever calls a host callback. They hand the
+//! payload to a [`HostThread`], which exists to be blocked.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Condvar, Mutex};
-use std::thread::{self, ThreadId};
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::{self, JoinHandle, ThreadId};
 use std::time::Duration;
 
-use log::warn;
+use log::{debug, warn};
 
 /// How long [`CallbackGate::retire`] waits for an in-flight callback to return
 /// before giving up on it.
@@ -201,10 +212,194 @@ impl Drop for GateGuard<'_> {
     }
 }
 
+// ── Handing work to the host ─────────────────────────────────────────────────
+
+/// What a full queue discards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Overflow {
+    /// Keep the newest. Right for video: a frame the host could not keep up with is
+    /// stale by the time it would be delivered, and showing it costs latency
+    /// without buying anything.
+    DropOldest,
+    /// Keep the backlog. Right for audio, where the queue *is* the jitter buffer and
+    /// a hole is audible.
+    DropNewest,
+}
+
+struct Queue<T> {
+    slots: Mutex<Slots<T>>,
+    ready: Condvar,
+    /// `None` is unbounded. Control events are unbounded because they are low-rate
+    /// and losing a status change or a session id leaves the host with a wrong view
+    /// of the session; media is always bounded.
+    capacity: Option<usize>,
+    overflow: Overflow,
+    dropped: AtomicU64,
+    name: &'static str,
+}
+
+struct Slots<T> {
+    items: VecDeque<T>,
+    closed: bool,
+}
+
+impl<T> Queue<T> {
+    fn push(&self, item: T) {
+        let mut slots = self.slots.lock().unwrap();
+        if slots.closed {
+            return;
+        }
+        if let Some(capacity) = self.capacity {
+            if slots.items.len() >= capacity {
+                match self.overflow {
+                    Overflow::DropOldest => {
+                        slots.items.pop_front();
+                    }
+                    Overflow::DropNewest => {
+                        drop(slots);
+                        self.count_drop();
+                        return;
+                    }
+                }
+                self.count_drop();
+            }
+        }
+        slots.items.push_back(item);
+        drop(slots);
+        self.ready.notify_one();
+    }
+
+    /// Block until an item is available, or `None` once the queue is closed.
+    fn pop(&self) -> Option<T> {
+        let mut slots = self.slots.lock().unwrap();
+        loop {
+            if let Some(item) = slots.items.pop_front() {
+                return Some(item);
+            }
+            if slots.closed {
+                return None;
+            }
+            slots = self.ready.wait(slots).unwrap();
+        }
+    }
+
+    fn close(&self) {
+        let mut slots = self.slots.lock().unwrap();
+        slots.closed = true;
+        // Pending items carry host pointers. Running them after teardown has begun
+        // is what the gate refuses anyway, so drop them here rather than making the
+        // worker walk a queue it will only reject.
+        slots.items.clear();
+        drop(slots);
+        self.ready.notify_all();
+    }
+
+    fn count_drop(&self) {
+        let total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+        // Dropping under load is the design, not a fault, so this must not become
+        // the bottleneck it is reporting. Log on powers of two.
+        if total.is_power_of_two() {
+            debug!(
+                "[ffi] {} queue full, host is behind — {total} dropped so far",
+                self.name
+            );
+        }
+    }
+}
+
+/// A thread whose job is to block on the host.
+///
+/// Dropping it closes the queue and joins the thread, so a handle owning one is
+/// guaranteed no delivery outlives it.
+pub struct HostThread<T: Send + 'static> {
+    queue: Arc<Queue<T>>,
+    join: Option<JoinHandle<()>>,
+}
+
+/// Cloneable handle for enqueuing from tokio and media threads.
+pub struct HostSender<T: Send + 'static> {
+    queue: Arc<Queue<T>>,
+}
+
+impl<T: Send + 'static> Clone for HostSender<T> {
+    fn clone(&self) -> Self {
+        Self {
+            queue: self.queue.clone(),
+        }
+    }
+}
+
+impl<T: Send + 'static> HostSender<T> {
+    /// Enqueue `item`. Never blocks and never fails: when the host is behind, the
+    /// item is discarded per the queue's [`Overflow`] policy, because the
+    /// alternative is stalling a caller that cannot afford to wait.
+    pub fn send(&self, item: T) {
+        self.queue.push(item);
+    }
+}
+
+impl<T: Send + 'static> HostThread<T> {
+    pub fn spawn(
+        name: &'static str,
+        capacity: Option<usize>,
+        overflow: Overflow,
+        gate: Arc<CallbackGate>,
+        mut deliver: impl FnMut(T) + Send + 'static,
+    ) -> Self {
+        let queue = Arc::new(Queue {
+            slots: Mutex::new(Slots {
+                items: VecDeque::new(),
+                closed: false,
+            }),
+            ready: Condvar::new(),
+            capacity,
+            overflow,
+            dropped: AtomicU64::new(0),
+            name,
+        });
+
+        let worker = queue.clone();
+        let join = thread::Builder::new()
+            .name(name.to_string())
+            .spawn(move || {
+                while let Some(item) = worker.pop() {
+                    // Re-checked per item: the gate can close while an item waits.
+                    let Some(_admitted) = gate.enter() else { break };
+                    deliver(item);
+                }
+            })
+            .expect("spawn host callback thread");
+
+        Self {
+            queue,
+            join: Some(join),
+        }
+    }
+
+    pub fn sender(&self) -> HostSender<T> {
+        HostSender {
+            queue: self.queue.clone(),
+        }
+    }
+}
+
+impl<T: Send + 'static> Drop for HostThread<T> {
+    fn drop(&mut self) {
+        self.queue.close();
+        if let Some(join) = self.join.take() {
+            // A host handler that tears its own client down runs *on* this thread,
+            // so joining would be joining ourselves. The gate has already closed by
+            // then, so the loop exits on its own once the handler returns.
+            if join.thread().id() != thread::current().id() {
+                let _ = join.join();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
-    use std::sync::Arc;
     use std::time::Instant;
 
     use super::*;
@@ -385,6 +580,177 @@ mod tests {
 
         release.store(true, Ordering::Release);
         worker.join().unwrap();
+    }
+
+    // ── HostThread ───────────────────────────────────────────────────────────
+
+    /// Collects what a host thread delivered, so tests can assert on ordering and
+    /// on what survived an overflow.
+    fn recorder() -> (Arc<Mutex<Vec<u32>>>, impl FnMut(u32) + Send + 'static) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        (seen, move |item: u32| sink.lock().unwrap().push(item))
+    }
+
+    #[test]
+    fn a_host_thread_delivers_in_order() {
+        let gate = Arc::new(CallbackGate::new());
+        let (seen, deliver) = recorder();
+        let host = HostThread::spawn("test-order", None, Overflow::DropNewest, gate, deliver);
+
+        let tx = host.sender();
+        for i in 0..100 {
+            tx.send(i);
+        }
+        drop(host); // closes and joins
+
+        // close() discards anything still queued, so this asserts ordering rather
+        // than completeness: whatever arrived, arrived in order.
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.windows(2).all(|w| w[0] < w[1]),
+            "delivered out of order"
+        );
+    }
+
+    #[test]
+    fn delivery_happens_off_the_sending_thread() {
+        let gate = Arc::new(CallbackGate::new());
+        let sender_thread = thread::current().id();
+        let (delivered_on_tx, delivered_on_rx) = mpsc::channel();
+        let host = HostThread::spawn(
+            "test-thread",
+            None,
+            Overflow::DropNewest,
+            gate,
+            move |_: u32| {
+                delivered_on_tx.send(thread::current().id()).unwrap();
+            },
+        );
+
+        host.sender().send(1);
+        let delivered_on = delivered_on_rx.recv().unwrap();
+
+        assert_ne!(
+            delivered_on, sender_thread,
+            "the host ran on the sending thread, which is the whole thing this avoids"
+        );
+    }
+
+    /// Video's contract: under backpressure the host sees the newest frame, not a
+    /// backlog of stale ones.
+    #[test]
+    fn drop_oldest_keeps_the_newest_item() {
+        let gate = Arc::new(CallbackGate::new());
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let (seen_tx, seen_rx) = mpsc::channel();
+
+        let host = HostThread::spawn(
+            "test-video",
+            Some(1),
+            Overflow::DropOldest,
+            gate,
+            move |item: u32| {
+                // Block on the first item so the rest pile into a queue of one.
+                if item == 0 {
+                    release_rx.recv().unwrap();
+                }
+                seen_tx.send(item).unwrap();
+            },
+        );
+
+        let tx = host.sender();
+        tx.send(0);
+        // Wait for the worker to pick up item 0 and block, so the queue is empty.
+        thread::sleep(Duration::from_millis(50));
+        for i in 1..=9 {
+            tx.send(i);
+        }
+        release_tx.send(()).unwrap();
+
+        assert_eq!(seen_rx.recv().unwrap(), 0);
+        assert_eq!(
+            seen_rx.recv().unwrap(),
+            9,
+            "expected the newest queued item, not a stale one"
+        );
+    }
+
+    /// Audio's contract: the queue is the jitter buffer, so an overflowing queue
+    /// keeps its backlog and refuses the new arrival.
+    #[test]
+    fn drop_newest_keeps_the_backlog() {
+        let gate = Arc::new(CallbackGate::new());
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let (seen_tx, seen_rx) = mpsc::channel();
+
+        let host = HostThread::spawn(
+            "test-audio",
+            Some(2),
+            Overflow::DropNewest,
+            gate,
+            move |item: u32| {
+                if item == 0 {
+                    release_rx.recv().unwrap();
+                }
+                seen_tx.send(item).unwrap();
+            },
+        );
+
+        let tx = host.sender();
+        tx.send(0);
+        thread::sleep(Duration::from_millis(50));
+        for i in 1..=9 {
+            tx.send(i);
+        }
+        release_tx.send(()).unwrap();
+
+        assert_eq!(seen_rx.recv().unwrap(), 0);
+        assert_eq!(
+            seen_rx.recv().unwrap(),
+            1,
+            "expected the oldest queued item"
+        );
+        assert_eq!(seen_rx.recv().unwrap(), 2);
+    }
+
+    /// A retired gate stops delivery even for work already queued, so nothing
+    /// reaches a host pointer that may since have been freed.
+    #[test]
+    fn a_retired_gate_stops_a_host_thread() {
+        let gate = Arc::new(CallbackGate::new());
+        let (seen, deliver) = recorder();
+        let host = HostThread::spawn(
+            "test-retire",
+            None,
+            Overflow::DropNewest,
+            gate.clone(),
+            deliver,
+        );
+
+        assert_eq!(gate.retire(), Quiescence::Complete);
+        for i in 0..10 {
+            host.sender().send(i);
+        }
+        drop(host);
+
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "delivered after the gate was retired"
+        );
+    }
+
+    #[test]
+    fn sending_to_a_dropped_host_thread_is_a_noop() {
+        let gate = Arc::new(CallbackGate::new());
+        let (seen, deliver) = recorder();
+        let host = HostThread::spawn("test-closed", None, Overflow::DropNewest, gate, deliver);
+        let tx = host.sender();
+        drop(host);
+
+        // The sender outlives the thread; this must not panic or deliver.
+        tx.send(42);
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -29,17 +29,14 @@
 //!   `cgo.Handle`, a JNI `GlobalRef`. A non-zero return means a callback could not
 //!   be waited for and the context must be kept alive instead. See
 //!   [`callbacks::CallbackGate`].
-//!
-//! ## Known gaps in this contract
-//!
-//! One property a host needs is **not** yet provided, and bindings must work around
-//! it until it is:
-//!
-//! * `on_frame` and `on_audio` are invoked on libwebrtc's media threads, not on a
-//!   tokio thread. A host callback that blocks — anything that takes the CPython
-//!   GIL or attaches to the JVM — stalls decoding and, on the worker/network
-//!   threads, can time out ICE. Copy the buffer, hand it to your own thread, and
-//!   return.
+//! * **Blocking is tolerated.** Callbacks run on threads dedicated to them, never on
+//!   a libwebrtc media thread or a tokio worker, so a host that takes its time
+//!   delays only its own stream. Three threads, because their backpressure differs:
+//!   control events and completions on one (unbounded, low-rate), video on one
+//!   (newest frame wins, so a slow host sees fresh frames instead of a backlog), and
+//!   audio on one (short queue, oldest wins, because there the queue is the jitter
+//!   buffer). Media frames are copied out of libwebrtc's buffers to make that
+//!   hand-off possible.
 
 mod callbacks;
 mod http;
@@ -59,7 +56,7 @@ use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions
 use reactor_core::runtime::TokioPlatform;
 use reactor_webrtc::AdmMode;
 
-use self::callbacks::{CallbackGate, Quiescence};
+use self::callbacks::{CallbackGate, HostSender, HostThread, Overflow, Quiescence};
 use self::http::ReqwestHttpClient;
 use self::peer::ReactorWebRtcPeerTransport;
 
@@ -188,6 +185,52 @@ impl CallbackSet {
 
 // ── ReactorHandle ────────────────────────────────────────────────────────────
 
+/// A unit of host work queued for the control thread: an event dispatch or a
+/// completion. Boxed because the two have nothing else in common.
+type HostJob = Box<dyn FnOnce() + Send + 'static>;
+
+/// A decoded remote video frame, copied out of libwebrtc's buffer so the media
+/// thread can return immediately.
+struct VideoFrame {
+    bgra: Vec<u8>,
+    width: u32,
+    height: u32,
+    frame_id: u64,
+    timestamp_us: u64,
+    user_data: Vec<u8>,
+}
+
+/// A decoded remote audio frame, likewise copied.
+struct AudioFrame {
+    pcm: Vec<i16>,
+    sample_rate: u32,
+    channels: u32,
+}
+
+/// How many audio frames may queue before the oldest wins.
+///
+/// Frames are ~10 ms, so this is roughly a third of a second of slack — enough to
+/// ride out a GC pause or a scheduling hiccup in the host, short enough that a host
+/// which is simply too slow does not accumulate unbounded latency.
+const AUDIO_QUEUE_DEPTH: usize = 32;
+
+/// The threads this handle uses to call the host.
+///
+/// Three, because their backpressure requirements differ and one slow consumer must
+/// not delay the others: a host stalling on video should not hold up a status change
+/// or make audio glitch.
+struct HostThreads {
+    /// Control events and completions. Unbounded: low-rate, and dropping a status
+    /// change or a session id would leave the host with a wrong view of the session.
+    control: HostThread<HostJob>,
+    /// Held for their `Drop`, which closes each queue and joins the thread. Their
+    /// senders were moved into the media callbacks at construction, so nothing reads
+    /// these again — but dropping them is what guarantees no delivery outlives the
+    /// handle.
+    _video: Option<HostThread<VideoFrame>>,
+    _audio: Option<HostThread<AudioFrame>>,
+}
+
 /// Background tasks this handle owns, so `reactor_destroy` can stop them.
 ///
 /// Without this the handle leaks: the peer-event pump holds an `Arc<Reactor>`, and
@@ -200,6 +243,9 @@ pub struct ReactorHandle {
     reactor: Arc<Reactor>,
     gate: Arc<CallbackGate>,
     tasks: TaskSet,
+    /// Owned outright rather than shared, so `reactor_destroy` is what joins these
+    /// threads — not whichever tokio task happened to hold the last reference.
+    hosts: HostThreads,
 }
 
 /// Spawn a task the handle will stop on destroy.
@@ -348,55 +394,82 @@ unsafe fn create_impl(
         Some(mode) => ReactorWebRtcPeerTransport::with_adm_mode(peer_event_tx, mode),
         None => ReactorWebRtcPeerTransport::new(peer_event_tx),
     };
+    let mut video: Option<HostThread<VideoFrame>> = None;
+    let mut audio: Option<HostThread<AudioFrame>> = None;
     if !callbacks.is_null() {
         let c = &*callbacks;
         if let Some(frame_fn) = c.on_frame {
             let userdata_usize = c.userdata as usize;
-            let gate = gate.clone();
+            // Capacity one, newest wins: a frame the host could not keep up with is
+            // stale by the time it would be delivered, so queueing it would only add
+            // latency. This is also what bounds memory when the host falls behind.
+            let thread = HostThread::spawn(
+                "reactor-on-frame",
+                Some(1),
+                Overflow::DropOldest,
+                gate.clone(),
+                move |frame: VideoFrame| unsafe {
+                    frame_fn(
+                        frame.bgra.as_ptr(),
+                        frame.width,
+                        frame.height,
+                        frame.frame_id,
+                        frame.timestamp_us,
+                        if frame.user_data.is_empty() {
+                            std::ptr::null()
+                        } else {
+                            frame.user_data.as_ptr()
+                        },
+                        frame.user_data.len() as u32,
+                        userdata_usize as *mut c_void,
+                    )
+                },
+            );
+            let tx = thread.sender();
             peer_transport =
                 peer_transport.with_frame_callback(move |data, w, h, frame_id, ts, ud| {
-                    // Still on a libwebrtc media thread at this point; the gate only
-                    // decides whether the host pointer is callable. Moving the call
-                    // off that thread is REA-5028.
-                    let Some(_admitted) = gate.enter() else {
-                        return;
-                    };
-                    unsafe {
-                        frame_fn(
-                            data.as_ptr(),
-                            w,
-                            h,
-                            frame_id,
-                            ts,
-                            if ud.is_empty() {
-                                std::ptr::null()
-                            } else {
-                                ud.as_ptr()
-                            },
-                            ud.len() as u32,
-                            userdata_usize as *mut c_void,
-                        )
-                    }
+                    // Runs on a libwebrtc decode thread. Copy and hand off; the one
+                    // thing not to do here is wait for the host.
+                    tx.send(VideoFrame {
+                        bgra: data.to_vec(),
+                        width: w,
+                        height: h,
+                        frame_id,
+                        timestamp_us: ts,
+                        user_data: ud.to_vec(),
+                    });
                 });
+            video = Some(thread);
         }
         if let Some(audio_fn) = c.on_audio {
             let userdata_usize = c.userdata as usize;
-            let gate = gate.clone();
+            // Oldest wins here: for audio the queue is the jitter buffer, and a hole
+            // punched in the middle of it is audible.
+            let thread = HostThread::spawn(
+                "reactor-on-audio",
+                Some(AUDIO_QUEUE_DEPTH),
+                Overflow::DropNewest,
+                gate.clone(),
+                move |frame: AudioFrame| unsafe {
+                    audio_fn(
+                        frame.pcm.as_ptr(),
+                        frame.pcm.len() as u32,
+                        frame.sample_rate,
+                        frame.channels,
+                        userdata_usize as *mut c_void,
+                    )
+                },
+            );
+            let tx = thread.sender();
             peer_transport =
                 peer_transport.with_audio_callback(move |pcm, sample_rate, channels| {
-                    let Some(_admitted) = gate.enter() else {
-                        return;
-                    };
-                    unsafe {
-                        audio_fn(
-                            pcm.as_ptr(),
-                            pcm.len() as u32,
-                            sample_rate,
-                            channels,
-                            userdata_usize as *mut c_void,
-                        )
-                    }
+                    tx.send(AudioFrame {
+                        pcm: pcm.to_vec(),
+                        sample_rate,
+                        channels,
+                    });
                 });
+            audio = Some(thread);
         }
     }
     let peer_transport = Arc::new(peer_transport);
@@ -422,38 +495,25 @@ unsafe fn create_impl(
         }
     });
 
+    // Always present, even without event callbacks: completions are delivered here
+    // too, so that a tokio worker never waits on the host either.
+    let control = HostThread::spawn(
+        "reactor-host-events",
+        None,
+        Overflow::DropNewest,
+        gate.clone(),
+        |job: HostJob| job(),
+    );
+
     if let Some(cbs) = cbs {
         let mut event_rx = reactor.subscribe();
         let cbs = Arc::new(cbs);
+        let control_tx = control.sender();
         spawn_tracked(&tasks, async move {
             while let Some(event) = event_rx.next().await {
-                match event {
-                    ReactorEvent::StatusChanged(s) => {
-                        cbs.fire_str(cbs.on_status, s.as_str());
-                    }
-                    ReactorEvent::Error(e) => {
-                        if let Ok(v) = serde_json::to_value(&e) {
-                            cbs.fire_json_val(cbs.on_error, &v);
-                        }
-                    }
-                    ReactorEvent::Message(v) => {
-                        cbs.fire_json_val(cbs.on_message, &v);
-                    }
-                    ReactorEvent::RuntimeMessage(v) => {
-                        cbs.fire_json_val(cbs.on_runtime_message, &v);
-                    }
-                    ReactorEvent::TrackReceived { name, mid } => {
-                        cbs.fire_track(&name, &mid);
-                    }
-                    ReactorEvent::CapabilitiesReceived(caps) => {
-                        if let Ok(v) = serde_json::to_value(&caps) {
-                            cbs.fire_json_val(cbs.on_capabilities, &v);
-                        }
-                    }
-                    ReactorEvent::SessionIdChanged(sid) => {
-                        cbs.fire_opt_str(cbs.on_session_id, &sid);
-                    }
-                }
+                // Forwarding only — the fire itself happens on the control thread.
+                let cbs = cbs.clone();
+                control_tx.send(Box::new(move || dispatch_event(&cbs, event)));
             }
         });
     }
@@ -462,7 +522,43 @@ unsafe fn create_impl(
         reactor,
         gate,
         tasks,
+        hosts: HostThreads {
+            control,
+            _video: video,
+            _audio: audio,
+        },
     }))
+}
+
+/// Turn one core event into the matching host callback. Runs on the control thread.
+fn dispatch_event(cbs: &CallbackSet, event: ReactorEvent) {
+    match event {
+        ReactorEvent::StatusChanged(s) => {
+            cbs.fire_str(cbs.on_status, s.as_str());
+        }
+        ReactorEvent::Error(e) => {
+            if let Ok(v) = serde_json::to_value(&e) {
+                cbs.fire_json_val(cbs.on_error, &v);
+            }
+        }
+        ReactorEvent::Message(v) => {
+            cbs.fire_json_val(cbs.on_message, &v);
+        }
+        ReactorEvent::RuntimeMessage(v) => {
+            cbs.fire_json_val(cbs.on_runtime_message, &v);
+        }
+        ReactorEvent::TrackReceived { name, mid } => {
+            cbs.fire_track(&name, &mid);
+        }
+        ReactorEvent::CapabilitiesReceived(caps) => {
+            if let Ok(v) = serde_json::to_value(&caps) {
+                cbs.fire_json_val(cbs.on_capabilities, &v);
+            }
+        }
+        ReactorEvent::SessionIdChanged(sid) => {
+            cbs.fire_opt_str(cbs.on_session_id, &sid);
+        }
+    }
 }
 
 /// Release a handle, and with it the right to call back into the host.
@@ -504,6 +600,9 @@ pub unsafe extern "C" fn reactor_destroy(handle: *mut ReactorHandle) -> c_int {
         task.abort();
     }
 
+    // Dropping the handle closes each host queue and joins its thread, so no
+    // delivery outlives this call. Ordered after the gate so a thread mid-callback
+    // has already come out.
     drop(handle);
 
     match quiescence {
@@ -529,10 +628,13 @@ macro_rules! async_op {
         let tasks = handle.tasks.clone();
         let body_tasks = handle.tasks.clone();
         let completion = Completion::new($completion, $userdata, handle.gate.clone());
+        let control_tx: HostSender<HostJob> = handle.hosts.control.sender();
         spawn_tracked(&tasks, async move {
             let result: Result<Option<serde_json::Value>, CoreError> =
                 $body(reactor, body_tasks).await;
-            completion.resolve(result);
+            // Resolved on the control thread, not here: a completion callback that
+            // blocks would otherwise park a tokio worker.
+            control_tx.send(Box::new(move || completion.resolve(result)));
         });
     }};
 }
