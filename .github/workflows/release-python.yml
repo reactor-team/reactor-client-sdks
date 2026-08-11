@@ -7,6 +7,10 @@
 # The wheels go out as GitHub release assets. PyPI is wired up below but switched
 # off; see the publish-pypi job for what turning it on takes.
 #
+# Linux builds inside a manylinux container so its wheels carry a manylinux tag that
+# is earned rather than asserted; mac and Windows build on the runner. See
+# scripts/build-manylinux-wheel.sh.
+#
 # Five platforms, matching what reactor-webrtc ships. iOS and Android have prebuilt
 # libwebrtc but no CPython, so they have no wheel.
 #
@@ -105,15 +109,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux builds inside a manylinux container — see
+          # scripts/build-manylinux-wheel.sh for why, and note that these entries
+          # need no target/lib/tag: the script owns the whole build.
+          #
+          # manylinux_2_34 is AlmaLinux 9, which is what reactor-webrtc publishes
+          # against and which has a new enough clang in AppStream for libwebrtc's
+          # bundled libc++ headers.
           - platform: linux-x64
             os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            lib: libreactor_ffi.so
+            container_image: quay.io/pypa/manylinux_2_34_x86_64
+            manylinux_plat: manylinux_2_34_x86_64
 
           - platform: linux-arm64
+            # Native arm64 runner, so no qemu.
             os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            lib: libreactor_ffi.so
+            container_image: quay.io/pypa/manylinux_2_34_aarch64
+            manylinux_plat: manylinux_2_34_aarch64
 
           - platform: mac-arm64
             os: macos-latest
@@ -144,36 +156,52 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # ── Linux: everything happens in the container ──────────────────────────
+      #
+      # Mounting the checkout and running one script keeps the whole Linux build —
+      # toolchain, native library, wheel, auditwheel repair — against AlmaLinux 9's
+      # glibc, which is what makes the manylinux tag true rather than asserted. The
+      # host contributes nothing but the mount, so none of the host setup below
+      # applies.
+      - name: Build wheel in ${{ matrix.container_image }}
+        if: matrix.container_image != ''
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD":/io -w /io \
+            -e MANYLINUX_PLAT="${{ matrix.manylinux_plat }}" \
+            "${{ matrix.container_image }}" \
+            bash /io/scripts/build-manylinux-wheel.sh
+
+      # ── macOS and Windows: build on the runner ──────────────────────────────
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+        if: matrix.container_image == ''
         with:
           target: ${{ matrix.target }}
           cache-on-failure: true
 
       - uses: jdx/mise-action@v4
+        if: matrix.container_image == ''
         with:
           version: ${{ env.MISE_VERSION }}
-
-      # Linux only: the libwebrtc glue compiles against the archive's bundled
-      # trunk-libc++ headers, which the distro clang++ cannot parse.
-      - name: Install clang for the libwebrtc C++ glue
-        uses: ./.github/actions/setup-libwebrtc-cxx
 
       - name: Set macOS deployment target
         if: matrix.macos_deployment_target != ''
         run: echo "MACOSX_DEPLOYMENT_TARGET=${{ matrix.macos_deployment_target }}" >> "$GITHUB_ENV"
 
       - name: Build libreactor_ffi
+        if: matrix.container_image == ''
         shell: bash
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
         run: cargo build -p reactor-ffi --release --target ${{ matrix.target }}
 
       - name: Build the wheel
+        if: matrix.container_image == ''
         shell: bash
         env:
           # Absolute, because hatchling runs from sdks/python.
           REACTOR_FFI_LIB: ${{ github.workspace }}/target/${{ matrix.target }}/release/${{ matrix.lib }}
-          # Empty on Linux, where the tag is inferred and then reported on below.
           REACTOR_WHEEL_PLATFORM_TAG: ${{ matrix.wheel_tag }}
         run: |
           set -euo pipefail
@@ -182,18 +210,6 @@ jobs:
           mise exec -- uv build --wheel --out-dir "$GITHUB_WORKSPACE/dist"
           ls -lh "$GITHUB_WORKSPACE/dist"
 
-      # Informational, and the reason PyPI is still off for Linux: a bare
-      # linux_x86_64 tag is not accepted there. auditwheel names the manylinux policy
-      # this binary actually satisfies, and lists anything that would have to be
-      # vendored — which is the input to deciding how to normalise these wheels.
-      - name: Report manylinux compatibility
-        if: startsWith(matrix.platform, 'linux')
-        shell: bash
-        continue-on-error: true
-        run: |
-          mise exec -- uv tool run --from auditwheel auditwheel show "$GITHUB_WORKSPACE"/dist/*.whl \
-            || echo "::warning::auditwheel could not analyse the wheel"
-
       # Install and import on the platform that built it. This is what catches a
       # binary that is present but unloadable — a missing symbol, the wrong libc++
       # linkage — before it ever reaches a release asset.
@@ -201,13 +217,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mise exec -- uv venv smoke
-          mise exec -- uv pip install --python smoke --no-index "$GITHUB_WORKSPACE"/dist/*.whl
+
+          # Plain venv and pip, not uv-via-mise: the Linux jobs have no mise (the
+          # container owns their build), and this way the wheel is exercised by the
+          # same tooling a user would reach for.
+          #
+          # On Linux this is doubly useful — installing a manylinux_2_34 wheel on the
+          # runner's newer Ubuntu is a real check that the tag means what it says,
+          # since the wheel was built against an older glibc than the one loading it.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            HOST_PY=python
+          else
+            HOST_PY=python3
+          fi
+          "$HOST_PY" -m venv smoke
           if [ "$RUNNER_OS" = "Windows" ]; then
             PY="smoke/Scripts/python.exe"
           else
             PY="smoke/bin/python"
           fi
+          "$GITHUB_WORKSPACE/$PY" -m pip install --quiet --upgrade pip
+          "$GITHUB_WORKSPACE/$PY" -m pip install --no-index "$GITHUB_WORKSPACE"/dist/*.whl
           # Run from a directory with no `reactor/` in it, so the import resolves to
           # the installed package and the library it carries — not the checkout.
           cd "$(mktemp -d)"
@@ -303,12 +333,10 @@ jobs:
   #   2. Create the `pypi` environment in this repository's settings.
   #   3. Set the repository variable PUBLISH_TO_PYPI to `true`.
   #
-  # Before flipping it, settle the Linux wheels: PyPI rejects a bare linux_x86_64
-  # tag, so they need a manylinux tag they genuinely satisfy. The
-  # "Report manylinux compatibility" step above prints what the binary currently
-  # earns and what would have to be vendored to claim more. Uploading a wheel whose
-  # tag overstates its compatibility is worse than not publishing, because pip will
-  # install it and the failure lands at import time on a user's machine.
+  # The wheels themselves are already in a publishable shape: Linux is built in a
+  # manylinux_2_34 container and repaired by auditwheel, and the mac and Windows tags
+  # are set from the floor the bundled library actually needs. Nothing here is
+  # waiting on packaging work — only on the decision to publish.
   publish-pypi:
     name: Publish to PyPI
     needs: [detect-version, build-wheels, release]
