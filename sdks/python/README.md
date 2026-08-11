@@ -50,14 +50,17 @@ Register handlers with `r.on(event, handler)`:
 ### Handlers run on a native thread
 
 Handlers are invoked from threads inside the native library, **not** from your
-asyncio event loop — and `frame` and `audio` arrive on a WebRTC media thread that
-has deadlines to meet. Two consequences:
+asyncio event loop. Two consequences:
 
 * Do not touch asyncio state directly from a handler. `asyncio.Event.set()`,
   `Queue.put_nowait()` and friends are not thread-safe; go through
   `loop.call_soon_threadsafe(...)`.
-* Return quickly. Blocking in a `frame` or `audio` handler holds the GIL on a
-  media thread and stalls decoding. Hand the buffer to your own worker and return.
+* Blocking is safe, but you pay for it in dropped data rather than in stalled
+  WebRTC. Each stream has its own delivery thread: block in a `frame` handler and
+  you keep getting the newest frame while the ones in between are dropped; block
+  in `audio` and you lose samples once its short queue fills. Control events and
+  command results share a third thread with an unbounded queue, so those wait for
+  you instead of being dropped.
 
 ```python
 loop = asyncio.get_running_loop()
