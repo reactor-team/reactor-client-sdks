@@ -350,11 +350,12 @@ class Reactor:
             @reactor.on_status
             def changed(status): ...
 
-        Given a status, it fires only on that one, and the handler takes no
-        arguments::
+        Given a status, it fires only on that one. The handler still receives it, even
+        though it can only ever be the one asked for — that is the shape existing code
+        is written to::
 
             @reactor.on_status(ReactorStatus.READY)
-            def ready(): ...
+            def ready(status): ...
         """
         # Bare: the decorated function arrives as `arg`.
         if callable(arg):
@@ -370,10 +371,8 @@ class Reactor:
 
         def decorator(func: Callable) -> Callable:
             def filtered(status: str) -> None:
-                if wanted is None:
+                if wanted is None or status == wanted.value:
                     func(ReactorStatus(status))
-                elif status == wanted.value:
-                    func()
 
             self.on("status_changed", filtered)
             return func

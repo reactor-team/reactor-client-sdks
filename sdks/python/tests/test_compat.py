@@ -1,9 +1,10 @@
 """Tests for the API surface that keeps code written against earlier releases working.
 
-Each of these exists because a real consumer uses that shape — the pygame example in
-`examples/pygame_app` was ported by changing three lines, all of them the module name,
-and everything asserted here is what made that possible. They are regression tests in
-the strict sense: dropping any one of them is a breaking change for somebody.
+Each of these exists because a real consumer uses that shape. The pygame example in
+`examples/pygame_app` came across from the previous SDK with no changes to a single
+line that touches the SDK — only the formatter's own reordering and `Optional[X]` to
+`X | None` — and everything asserted here is what made that possible. They are
+regression tests in the strict sense: dropping any one of them breaks somebody.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from reactor import (
+from reactor_sdk import (
     DEFAULT_API_URL,
     AuthError,
     CommandResult,
@@ -26,7 +27,7 @@ from reactor import (
     ReactorStatus,
     fetch_jwt,
 )
-from reactor.client import _bgra_to_rgb_array
+from reactor_sdk.client import _bgra_to_rgb_array
 
 
 class TestStatusEnum:
@@ -185,28 +186,30 @@ class TestDecorators:
         reactor = Reactor(model_name="m")
         calls: list[str] = []
 
+        # The handler receives the status even when filtered, which is the shape the
+        # previous SDK used and therefore what existing code is written to.
         @reactor.on_status(ReactorStatus.READY)
-        def ready() -> None:
-            calls.append("ready")
+        def ready(status: ReactorStatus) -> None:
+            calls.append(status.value)
 
         @reactor.on_status(ReactorStatus.DISCONNECTED)
-        def gone() -> None:
-            calls.append("gone")
+        def gone(status: ReactorStatus) -> None:
+            calls.append(status.value)
 
         reactor._fire("status_changed", "connecting")
         assert calls == []
 
         reactor._fire("status_changed", "ready")
         reactor._fire("status_changed", "disconnected")
-        assert calls == ["ready", "gone"]
+        assert calls == ["ready", "disconnected"]
 
     def test_parameterised_on_status_accepts_a_plain_string(self) -> None:
         reactor = Reactor(model_name="m")
         calls: list[str] = []
 
         @reactor.on_status("ready")
-        def ready() -> None:
-            calls.append("ready")
+        def ready(status: ReactorStatus) -> None:
+            calls.append(status.value)
 
         reactor._fire("status_changed", "ready")
         assert calls == ["ready"]
@@ -259,7 +262,7 @@ class TestFetchJwt:
         return response
 
     def test_posts_to_the_tokens_endpoint_with_the_key_as_a_header(self) -> None:
-        with mock.patch("reactor._auth.urllib.request.urlopen") as urlopen:
+        with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
             urlopen.return_value = self._response({"jwt": "tok"})
             assert fetch_jwt("secret", "https://api.reactor.inc/") == "tok"
 
@@ -270,14 +273,14 @@ class TestFetchJwt:
 
     def test_unscoped_requests_send_a_null_body(self) -> None:
         """Not `{}` — the coordinator distinguishes them."""
-        with mock.patch("reactor._auth.urllib.request.urlopen") as urlopen:
+        with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
             urlopen.return_value = self._response({"jwt": "tok"})
             fetch_jwt("secret", "https://api.reactor.inc")
 
         assert json.loads(urlopen.call_args[0][0].data) is None
 
     def test_scoping_to_models_limits_the_token(self) -> None:
-        with mock.patch("reactor._auth.urllib.request.urlopen") as urlopen:
+        with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
             urlopen.return_value = self._response({"jwt": "tok"})
             fetch_jwt("secret", "https://api.reactor.inc", models=["hy-world"])
 
@@ -287,7 +290,7 @@ class TestFetchJwt:
         ]
 
     def test_max_sessions_is_a_constraint_on_a_scoped_token(self) -> None:
-        with mock.patch("reactor._auth.urllib.request.urlopen") as urlopen:
+        with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
             urlopen.return_value = self._response({"jwt": "tok"})
             fetch_jwt("s", "https://x.invalid", models=["m"], max_sessions=3)
 
@@ -295,7 +298,7 @@ class TestFetchJwt:
         assert detail["constraints"] == {"max_sessions": 3}
 
     def test_a_response_without_a_token_is_an_error(self) -> None:
-        with mock.patch("reactor._auth.urllib.request.urlopen") as urlopen:
+        with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
             urlopen.return_value = self._response({"nope": True})
             with pytest.raises(AuthError, match="returned no token"):
                 fetch_jwt("secret", "https://x.invalid")
@@ -303,7 +306,7 @@ class TestFetchJwt:
     def test_an_unreachable_coordinator_is_an_error(self) -> None:
         import urllib.error
 
-        with mock.patch("reactor._auth.urllib.request.urlopen") as urlopen:
+        with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
             urlopen.side_effect = urllib.error.URLError("no route")
             with pytest.raises(AuthError, match="could not reach"):
                 fetch_jwt("secret", "https://x.invalid")
@@ -315,7 +318,7 @@ class TestTokenResolution:
 
     async def test_creating_a_session_mints_a_model_scoped_token(self) -> None:
         reactor = Reactor(model_name="hy-world", api_key="k")
-        with mock.patch("reactor.client.fetch_jwt", return_value="tok") as fetch:
+        with mock.patch("reactor_sdk.client.fetch_jwt", return_value="tok") as fetch:
             await reactor._resolve_token(session_id=None)
 
         assert reactor._jwt == "tok"
@@ -324,14 +327,14 @@ class TestTokenResolution:
     async def test_adopting_a_session_mints_an_unscoped_token(self) -> None:
         """A model-scoped token cannot operate a session it did not create."""
         reactor = Reactor(model_name="hy-world", api_key="k")
-        with mock.patch("reactor.client.fetch_jwt", return_value="tok") as fetch:
+        with mock.patch("reactor_sdk.client.fetch_jwt", return_value="tok") as fetch:
             await reactor._resolve_token(session_id="sess-1")
 
         assert fetch.call_args.kwargs["models"] is None
 
     async def test_an_explicit_jwt_is_left_alone(self) -> None:
         reactor = Reactor(model_name="m", jwt="given", api_key="k")
-        with mock.patch("reactor.client.fetch_jwt") as fetch:
+        with mock.patch("reactor_sdk.client.fetch_jwt") as fetch:
             await reactor._resolve_token(session_id=None)
 
         assert reactor._jwt == "given"
@@ -339,7 +342,7 @@ class TestTokenResolution:
 
     async def test_local_mode_does_not_authenticate(self) -> None:
         reactor = Reactor(model_name="m", api_key="k", local=True)
-        with mock.patch("reactor.client.fetch_jwt") as fetch:
+        with mock.patch("reactor_sdk.client.fetch_jwt") as fetch:
             await reactor._resolve_token(session_id=None)
 
         assert reactor._jwt is None
@@ -347,7 +350,7 @@ class TestTokenResolution:
 
     async def test_without_a_key_there_is_nothing_to_do(self) -> None:
         reactor = Reactor(model_name="m")
-        with mock.patch("reactor.client.fetch_jwt") as fetch:
+        with mock.patch("reactor_sdk.client.fetch_jwt") as fetch:
             await reactor._resolve_token(session_id=None)
 
         fetch.assert_not_called()

@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from reactor import _ffi
+from reactor_sdk import _ffi
 
 
 def _library_available() -> bool:

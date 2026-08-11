@@ -38,7 +38,7 @@ sys.path.insert(0, str(__file__).rsplit("/", 3)[0] + "/src")
 
 from controller import ReactorController
 
-from reactor import Reactor, ReactorStatus
+from reactor_sdk import Reactor, ReactorStatus
 
 # =============================================================================
 # Configuration
@@ -400,7 +400,7 @@ async def main() -> None:
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-        logging.getLogger("reactor").setLevel(logging.DEBUG)
+        logging.getLogger("reactor_sdk").setLevel(logging.DEBUG)
 
     # Validate arguments
     if not args.local and not args.api_key:

@@ -14,7 +14,7 @@ Requires Python 3.10+.
 
 ```python
 import asyncio
-from reactor import Reactor
+from reactor_sdk import Reactor
 
 async def main():
     async with Reactor("https://api.reactor.inc", "my-model", jwt=token) as r:
@@ -115,7 +115,7 @@ mac-x64 and win-x64.
 The library is resolved at first use, in order:
 
 1. `REACTOR_FFI_LIB` — absolute path, which overrides everything.
-2. `libreactor_ffi.{dylib,so}` / `reactor_ffi.dll` next to the `reactor` package —
+2. `libreactor_ffi.{dylib,so}` / `reactor_ffi.dll` next to the `reactor_sdk` package —
    where a released wheel puts it.
 3. `target/release/` in an enclosing Cargo workspace, for development.
 

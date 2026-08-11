@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 
-from reactor import Reactor
+from reactor_sdk import Reactor
 
 
 def make_reactor(

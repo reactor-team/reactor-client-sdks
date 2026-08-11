@@ -18,7 +18,7 @@ from typing import Any
 
 import pygame
 
-from reactor import MessageScope, Reactor, ReactorStatus
+from reactor_sdk import MessageScope, Reactor, ReactorStatus
 
 logger = logging.getLogger(__name__)
 

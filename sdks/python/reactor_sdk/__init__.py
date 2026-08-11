@@ -4,7 +4,7 @@ Reactor Python SDK — ctypes wrapper over libreactor_ffi.
 Example::
 
     import asyncio
-    from reactor import Reactor
+    from reactor_sdk import Reactor
 
     async def main():
         async with Reactor("https://api.reactor.inc", "my-model", jwt="...") as r:

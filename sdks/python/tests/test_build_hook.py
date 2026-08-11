@@ -43,13 +43,13 @@ class TestExpectedLibraryName:
     def test_matches_what_ffi_looks_for(
         self, platform: str, expected: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """These names must agree with `reactor/_ffi.py`; a mismatch produces a wheel
+        """These names must agree with `reactor_sdk/_ffi.py`; a mismatch produces a wheel
         carrying a library the loader will not look for."""
         monkeypatch.setattr(hook.sys, "platform", platform)
         assert hook._expected_lib_name() == expected
 
     def test_the_names_agree_with_the_loader(self) -> None:
-        from reactor import _ffi
+        from reactor_sdk import _ffi
 
         source = _HOOK_PATH.read_text()
         loader_source = Path(_ffi.__file__).read_text()

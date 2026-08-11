@@ -23,7 +23,7 @@ build-backend = "hatchling.build"
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "hatchling", "numpy"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["reactor"]
+packages = ["reactor_sdk"]
 
 # Bundles libreactor_ffi and turns the wheel into a platform wheel. See
 # hatch_build.py; without a library present it falls back to a pure wheel, so an

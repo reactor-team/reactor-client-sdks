@@ -269,15 +269,15 @@ jobs:
           fi
           "$GITHUB_WORKSPACE/$PY" -m pip install --quiet --upgrade pip
           "$GITHUB_WORKSPACE/$PY" -m pip install --no-index "$GITHUB_WORKSPACE"/dist/*.whl
-          # Run from a directory with no `reactor/` in it, so the import resolves to
+          # Run from a directory with no `reactor_sdk/` in it, so the import resolves to
           # the installed package and the library it carries — not the checkout.
           cd "$(mktemp -d)"
           "$GITHUB_WORKSPACE/$PY" -c "
           import pathlib, sysconfig
-          import reactor
-          from reactor import _ffi
+          import reactor_sdk
+          from reactor_sdk import _ffi
 
-          print('version:', reactor.__version__)
+          print('version:', reactor_sdk.__version__)
           library = pathlib.Path(_ffi._find_lib())
           print('library:', library)
 

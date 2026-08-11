@@ -31,7 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from reactor import Clip, ReactorFFIError
+from reactor_sdk import Clip, ReactorFFIError
 
 from .reactor_client import make_reactor
 
