@@ -32,6 +32,9 @@ from ._ffi import (
 #: Reactor's production coordinator, used when no `api_url` is given.
 DEFAULT_API_URL = "https://api.reactor.inc"
 
+#: Where a local coordinator listens. `local=True` points at this.
+LOCAL_API_URL = "http://localhost:8080"
+
 
 class ReactorStatus(str, Enum):
     """Connection status.
@@ -274,6 +277,15 @@ class Reactor:
 
         if model_name is None:
             raise TypeError("Reactor() requires model_name")
+
+        # Local mode means a local coordinator, so it picks the URL. The production
+        # default counts as "no choice made": callers routinely compute
+        # `api_url or "https://api.reactor.inc"` and pass that alongside `local=True`,
+        # which without this would aim local mode at production. An api_url that is
+        # anything else was a real choice and is honoured, so a local coordinator on
+        # another port still works.
+        if local and (api_url is None or api_url == DEFAULT_API_URL):
+            api_url = LOCAL_API_URL
 
         self._api_url = api_url or DEFAULT_API_URL
         self._model_name = model_name

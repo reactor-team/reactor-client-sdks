@@ -20,6 +20,7 @@ import pytest
 
 from reactor_sdk import (
     DEFAULT_API_URL,
+    LOCAL_API_URL,
     AuthError,
     CommandResult,
     MessageScope,
@@ -91,6 +92,29 @@ class TestConstructor:
     def test_model_name_is_required(self) -> None:
         with pytest.raises(TypeError, match="requires model_name"):
             Reactor()
+
+
+class TestLocalMode:
+    """`local=True` means a local coordinator, so it decides the URL."""
+
+    def test_local_points_at_localhost(self) -> None:
+        assert Reactor(model_name="m", local=True)._api_url == LOCAL_API_URL
+
+    def test_local_overrides_the_production_default(self) -> None:
+        """The shape that matters: callers compute `api_url or PROD` and pass it with
+        `local=True`, which would otherwise aim local mode at production. The pygame
+        example does exactly that."""
+        r = Reactor(model_name="m", api_url=DEFAULT_API_URL, local=True)
+        assert r._api_url == LOCAL_API_URL
+
+    def test_an_explicit_local_url_is_honoured(self) -> None:
+        """A coordinator on another port was a real choice, not a default."""
+        r = Reactor(model_name="m", api_url="http://localhost:9090", local=True)
+        assert r._api_url == "http://localhost:9090"
+
+    def test_without_local_the_url_is_untouched(self) -> None:
+        r = Reactor(model_name="m", api_url=DEFAULT_API_URL)
+        assert r._api_url == DEFAULT_API_URL
 
 
 class TestCommandResult:

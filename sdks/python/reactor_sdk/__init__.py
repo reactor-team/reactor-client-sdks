@@ -26,6 +26,7 @@ except PackageNotFoundError:
 from ._auth import AuthError, fetch_jwt
 from .client import (
     DEFAULT_API_URL,
+    LOCAL_API_URL,
     Clip,
     CommandResult,
     FileRef,
@@ -48,5 +49,6 @@ __all__ = [
     "AuthError",
     "fetch_jwt",
     "DEFAULT_API_URL",
+    "LOCAL_API_URL",
     "__version__",
 ]
