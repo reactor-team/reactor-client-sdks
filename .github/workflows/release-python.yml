@@ -61,11 +61,6 @@ concurrency:
   # Supersede an outdated pull-request build, but never interrupt a release.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  MISE_VERSION: "2026.6.12"
-  MISE_LOCKED: "1"
-  MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
-
 jobs:
   # ── 0. Is this push a release? ──────────────────────────────────────────────
   detect-version:
@@ -205,11 +200,6 @@ jobs:
           target: ${{ matrix.target }}
           cache-on-failure: true
 
-      - uses: jdx/mise-action@v4
-        if: matrix.container_image == ''
-        with:
-          version: ${{ env.MISE_VERSION }}
-
       - name: Set macOS deployment target
         if: matrix.macos_deployment_target != ''
         run: echo "MACOSX_DEPLOYMENT_TARGET=${{ matrix.macos_deployment_target }}" >> "$GITHUB_ENV"
@@ -231,8 +221,24 @@ jobs:
         run: |
           set -euo pipefail
           ls -lh "$REACTOR_FFI_LIB"
+
+          # uv in a throwaway venv rather than through mise. This workflow needs one
+          # tool, and asking mise for it cost both of these platforms: mise.lock
+          # carries no windows-x64 URLs at all, and no macos-x64 URL for hk, so
+          # `mise install --locked` refuses before it gets to uv. It also matches how
+          # the container script builds, so all five platforms now do the same thing.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            HOST_PY=python
+            VENV_PY="$GITHUB_WORKSPACE/buildenv/Scripts/python.exe"
+          else
+            HOST_PY=python3
+            VENV_PY="$GITHUB_WORKSPACE/buildenv/bin/python"
+          fi
+          "$HOST_PY" -m venv buildenv
+          "$VENV_PY" -m pip install --quiet --upgrade pip uv
+
           cd sdks/python
-          mise exec -- uv build --wheel --out-dir "$GITHUB_WORKSPACE/dist"
+          "$VENV_PY" -m uv build --wheel --out-dir "$GITHUB_WORKSPACE/dist"
           ls -lh "$GITHUB_WORKSPACE/dist"
 
       # Install and import on the platform that built it. This is what catches a
@@ -243,9 +249,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Plain venv and pip, not uv-via-mise: the Linux jobs have no mise (the
-          # container owns their build), and this way the wheel is exercised by the
-          # same tooling a user would reach for.
+          # Plain venv and pip, and a fresh one: the wheel has to be exercised by
+          # the tooling a user would reach for, in an environment that has nothing
+          # else in it.
           #
           # On Linux this is doubly useful — installing a manylinux_2_34 wheel on the
           # runner's newer Ubuntu is a real check that the tag means what it says,
