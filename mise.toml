@@ -78,6 +78,17 @@ run = [
     "ruff format --check .",
 ]
 
+[tasks."build:wheel"]
+description = "[Build] Build the Python SDK wheel with libreactor_ffi bundled"
+dir = "sdks/python"
+# Needs a release build of the FFI to bundle; without one hatch_build.py falls back
+# to a pure wheel and says so. Override the binary with REACTOR_FFI_LIB, or the
+# platform tag with REACTOR_WHEEL_PLATFORM_TAG.
+run = [
+    "cargo build -p reactor-ffi --release",
+    "uv build --wheel --out-dir dist",
+]
+
 [tasks."test:python"]
 description = "[Testing] Python SDK tests via pytest"
 dir = "sdks/python"

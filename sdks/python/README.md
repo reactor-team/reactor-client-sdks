@@ -98,30 +98,38 @@ def on_status(status: str) -> None:
 r.on("status_changed", on_status)
 ```
 
-## Locating the native library
+## The native library
 
-The wheel ships without the compiled library; it is resolved at first use, in
-order:
-
-1. `REACTOR_FFI_LIB` — absolute path to the library.
-2. `libreactor_ffi.{dylib,so}` / `reactor_ffi.dll` next to the `reactor` package.
-3. `target/release/` in an enclosing Cargo workspace (for development).
-
-To build it from a checkout of this repository:
+Released wheels bundle `libreactor_ffi` for their platform, so `pip install` is all
+you need. Wheels are published as GitHub release assets, tagged `python-vX.Y.Z`:
 
 ```bash
-cargo build -p reactor-ffi --release
+pip install https://github.com/reactor-team/reactor-client-sdks/releases/download/python-v0.9.0/<wheel>
 ```
+
+Each is `py3-none-<platform>` — the SDK reaches the library through ctypes and links
+no libpython, so one wheel per platform covers every supported interpreter. Built
+for the same five platforms as reactor-webrtc: linux-x64, linux-arm64, mac-arm64,
+mac-x64 and win-x64.
+
+The library is resolved at first use, in order:
+
+1. `REACTOR_FFI_LIB` — absolute path, which overrides everything.
+2. `libreactor_ffi.{dylib,so}` / `reactor_ffi.dll` next to the `reactor` package —
+   where a released wheel puts it.
+3. `target/release/` in an enclosing Cargo workspace, for development.
 
 ## Development
 
 ```bash
 mise run lint:python     # ruff check + format
 mise run test:python     # pytest
+mise run build:wheel     # cargo build --release, then a wheel with it bundled
 ```
 
-Tests that need the compiled library skip themselves when it is absent, so
-`pytest` works on a fresh checkout.
+Tests that need the compiled library skip themselves when it is absent, so `pytest`
+works on a fresh checkout. Building a wheel without one produces a pure-Python wheel
+and warns; that is fine for an editable install and wrong for a release.
 
 ## License
 
