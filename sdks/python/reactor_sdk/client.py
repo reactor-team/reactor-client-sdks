@@ -294,6 +294,12 @@ class Reactor:
         self._local = local
         self._adm_mode = adm_mode
 
+        # A token the caller handed us is theirs: never replaced. One we minted from an
+        # API key is ours, and `_minted_for` records the scope it was minted with, so a
+        # later connect needing a different scope knows to mint again.
+        self._caller_supplied_jwt = jwt is not None
+        self._minted_for: list[str] | None = None
+
         self._handle: int | None = None
 
         # event handlers: event_name -> list[callable]
@@ -725,7 +731,12 @@ class Reactor:
 
     async def connect(self, *, session_id: str | None = None) -> None:
         """Connect: create a session and establish WebRTC transport."""
-        await self._resolve_token(session_id)
+        token_changed = await self._resolve_token(session_id)
+        if token_changed and self._handle is not None:
+            # The native client is handed its token when it is created, so a re-minted
+            # one only takes effect on a fresh handle. Registered handlers live on this
+            # object and survive; only the native side is rebuilt.
+            self._destroy_handle()
         if self._handle is None:
             self._create_handle()
         lib = get_lib()
@@ -757,23 +768,37 @@ class Reactor:
     # Messaging
     # ------------------------------------------------------------------
 
-    async def _resolve_token(self, session_id: str | None) -> None:
+    async def _resolve_token(self, session_id: str | None) -> bool:
         """Turn an API key into a JWT, if that is what we were given.
 
         Scoped to this model when we are creating the session, which is the safer
         default: such a token can only start sessions on this model, so a leak is worth
-        that rather than everything the key can reach. Adopting an existing session
-        needs the broader token, since the scoped one cannot operate a session it did
-        not create.
+        that rather than everything the key can reach. Adopting a session created
+        elsewhere needs the broader token, because a scoped one cannot reach a session
+        it did not create.
+
+        So the scope depends on the *call*, not on the client: a token minted for one
+        connect is not necessarily right for the next, and this mints again when the
+        requirement changes. Caching regardless would quietly hand a model-scoped token
+        to a connect that needs an unscoped one.
 
         The exchange is a blocking HTTP call, so it runs in a thread rather than
-        stalling the loop. Skipped entirely in local mode, which does not authenticate.
-        """
-        if self._jwt is not None or self._api_key is None or self._local:
-            return
+        stalling the loop. Skipped in local mode, which does not authenticate, and for a
+        token the caller supplied, which is theirs rather than ours to replace.
 
-        models = [self._model_name] if session_id is None else None
-        self._jwt = await asyncio.to_thread(fetch_jwt, self._api_key, self._api_url, models=models)
+        Returns True when the token changed, since the native client is handed its token
+        at creation and a new one only reaches it through a new handle.
+        """
+        if self._local or self._api_key is None or self._caller_supplied_jwt:
+            return False
+
+        wanted = [self._model_name] if session_id is None else None
+        if self._jwt is not None and self._minted_for == wanted:
+            return False
+
+        self._jwt = await asyncio.to_thread(fetch_jwt, self._api_key, self._api_url, models=wanted)
+        self._minted_for = wanted
+        return True
 
     def send_command(
         self,

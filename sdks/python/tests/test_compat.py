@@ -343,7 +343,7 @@ class TestTokenResolution:
     async def test_creating_a_session_mints_a_model_scoped_token(self) -> None:
         reactor = Reactor(model_name="hy-world", api_key="k")
         with mock.patch("reactor_sdk.client.fetch_jwt", return_value="tok") as fetch:
-            await reactor._resolve_token(session_id=None)
+            assert await reactor._resolve_token(session_id=None) is True
 
         assert reactor._jwt == "tok"
         assert fetch.call_args.kwargs["models"] == ["hy-world"]
@@ -357,17 +357,49 @@ class TestTokenResolution:
         assert fetch.call_args.kwargs["models"] is None
 
     async def test_an_explicit_jwt_is_left_alone(self) -> None:
+        """A token the caller supplied is theirs, not ours to replace."""
         reactor = Reactor(model_name="m", jwt="given", api_key="k")
         with mock.patch("reactor_sdk.client.fetch_jwt") as fetch:
-            await reactor._resolve_token(session_id=None)
+            assert await reactor._resolve_token(session_id=None) is False
 
         assert reactor._jwt == "given"
         fetch.assert_not_called()
 
+    async def test_a_token_of_the_right_scope_is_reused(self) -> None:
+        reactor = Reactor(model_name="m", api_key="k")
+        with mock.patch("reactor_sdk.client.fetch_jwt", return_value="tok") as fetch:
+            assert await reactor._resolve_token(session_id=None) is True
+            assert await reactor._resolve_token(session_id=None) is False
+
+        assert fetch.call_count == 1
+
+    async def test_a_changed_scope_mints_again(self) -> None:
+        """The scope depends on the call, not the client: creating a session wants a
+        model-scoped token and adopting one wants an unscoped token, so a cached token
+        from the first is wrong for the second."""
+        reactor = Reactor(model_name="m", api_key="k")
+        with mock.patch(
+            "reactor_sdk.client.fetch_jwt", side_effect=["scoped", "unscoped"]
+        ) as fetch:
+            await reactor._resolve_token(session_id=None)
+            assert await reactor._resolve_token(session_id="sess-1") is True
+
+        assert reactor._jwt == "unscoped"
+        assert [c.kwargs["models"] for c in fetch.call_args_list] == [["m"], None]
+
+    async def test_going_back_to_creating_mints_again(self) -> None:
+        reactor = Reactor(model_name="m", api_key="k")
+        with mock.patch("reactor_sdk.client.fetch_jwt", side_effect=["a", "b", "c"]) as fetch:
+            await reactor._resolve_token(session_id=None)
+            await reactor._resolve_token(session_id="sess-1")
+            assert await reactor._resolve_token(session_id=None) is True
+
+        assert fetch.call_count == 3
+
     async def test_local_mode_does_not_authenticate(self) -> None:
         reactor = Reactor(model_name="m", api_key="k", local=True)
         with mock.patch("reactor_sdk.client.fetch_jwt") as fetch:
-            await reactor._resolve_token(session_id=None)
+            assert await reactor._resolve_token(session_id=None) is False
 
         assert reactor._jwt is None
         fetch.assert_not_called()
