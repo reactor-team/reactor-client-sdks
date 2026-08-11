@@ -25,9 +25,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import sys
 import time
+from typing import Any
 
 import numpy as np
 import pygame
@@ -73,6 +75,17 @@ logging.getLogger("aiortc.codecs.h264").setLevel(logging.ERROR)
 logging.getLogger("aioice.ice").setLevel(logging.WARNING)
 
 
+#: Joining a session by id needs a coordinator that can look one up. The local runtime
+#: cannot: the SDK caches the session it created in this process and there is no lookup
+#: by id in the local protocol, so a second process gets "no cached local session".
+#: Refusing up front beats surfacing that from inside the FFI.
+LOCAL_JOIN_MESSAGE = (
+    "--session-id cannot be combined with --local: the local runtime has no way to "
+    "look up a session created by another process. Point both processes at a real "
+    "coordinator to share a session, or drop --session-id to create one here."
+)
+
+
 # =============================================================================
 # Application
 # =============================================================================
@@ -92,6 +105,7 @@ class ReactorApp:
         api_key: str | None = None,
         local: bool = False,
         api_url: str | None = None,
+        session_id: str | None = None,
     ) -> None:
         """
         Initialize the application.
@@ -101,11 +115,13 @@ class ReactorApp:
             api_key: Reactor API key for authentication.
             local: If True, connect to local API.
             api_url: Custom Reactor API URL.
+            session_id: Join this existing session instead of creating one.
         """
         self.model_name = model_name
         self.api_key = api_key
         self.local = local
         self.api_url = api_url
+        self.session_id = session_id
 
         # State
         self.running = False
@@ -127,6 +143,10 @@ class ReactorApp:
 
         # The SDK opens no audio device, so playing what arrives is up to us.
         self.audio = AudioPlayer()
+
+        # Metadata from the most recent tagged frame, and how many have carried one.
+        self.frame_meta: dict[str, Any] | None = None
+        self.frames_tagged = 0
 
     async def run(self) -> None:
         """Run the application."""
@@ -178,6 +198,12 @@ class ReactorApp:
         def handle_error(error: object) -> None:
             logger.error(f"Reactor error: {error}")
 
+        # `on_frame` hands over the image as an array and nothing else, which is what
+        # the renderer wants. The metadata trailer comes through `on("frame")`, the other
+        # shape of the same event — so both are registered, each for the part it gives.
+        # See examples/metadata_publisher.py for the process that attaches these.
+        self.reactor.on("frame", self._note_frame_metadata)
+
         # Received audio, straight to the speaker. Registered with `on` rather than a
         # decorator because the payload is the raw PCM plus its format, and this
         # handler runs on the SDK's audio delivery thread — see audio.py.
@@ -195,12 +221,49 @@ class ReactorApp:
             height=WINDOW_HEIGHT,
         )
 
+    def _note_frame_metadata(
+        self,
+        _bgra: bytes,
+        _width: int,
+        _height: int,
+        frame_id: int,
+        timestamp_us: int,
+        user_data: bytes,
+    ) -> None:
+        """Keep the tag from the newest frame, for the overlay to draw.
+
+        Runs on the SDK's frame delivery thread, so it does the least it can: decode and
+        store. Anything slower here costs frames, because the SDK keeps only the newest
+        while this is running.
+
+        A frame with no trailer arrives with everything zeroed and empty, which is normal
+        — a sender that does not tag frames, or a peer that did not negotiate metadata.
+        """
+        if not user_data and not frame_id and not timestamp_us:
+            return
+
+        meta: dict[str, Any] = {"frame_id": frame_id, "timestamp_us": timestamp_us}
+        if user_data:
+            try:
+                decoded = json.loads(user_data)
+                meta["tag"] = decoded if isinstance(decoded, dict) else {"value": decoded}
+            except (ValueError, UnicodeDecodeError):
+                # The bytes are the sender's business and need not be JSON. Show
+                # something rather than nothing.
+                meta["tag"] = {"raw": user_data.decode(errors="replace")[:60]}
+
+        self.frame_meta = meta
+        self.frames_tagged += 1
+
     async def _connect(self) -> None:
-        """Connect to the Reactor."""
-        logger.info("Connecting to Reactor...")
+        """Connect to the Reactor, joining an existing session when one was named."""
+        if self.session_id:
+            logger.info("Joining session %s...", self.session_id)
+        else:
+            logger.info("Connecting to Reactor...")
         try:
-            await self.reactor.connect()
-            logger.info("Connected!")
+            await self.reactor.connect(session_id=self.session_id)
+            logger.info("Connected to session %s", self.reactor.get_session_id())
         except Exception as e:
             logger.error(f"Failed to connect: {e}")
             raise
@@ -258,6 +321,7 @@ class ReactorApp:
 
         # Render video
         self._render_video()
+        self._render_metadata()
 
         # Render controller
         if self.controller:
@@ -307,6 +371,48 @@ class ReactorApp:
                 self._render_no_video(video_rect)
         else:
             self._render_no_video(video_rect)
+
+    def _render_metadata(self) -> None:
+        """Draw the newest frame's metadata over the video.
+
+        Nothing is drawn when no frame has carried a trailer, which keeps the untagged
+        case looking like it did before rather than showing an empty box.
+        """
+        if self.screen is None or self.font_small is None or self.frame_meta is None:
+            return
+
+        meta = self.frame_meta
+        lines = [f"frame_id {meta['frame_id']}  ·  tagged {self.frames_tagged}"]
+
+        sent_us = meta["timestamp_us"]
+        if sent_us:
+            # The sender's clock, so this is only meaningful between machines whose time
+            # agrees — which is why it is labelled as the trip rather than the latency.
+            trip_ms = time.time() * 1000.0 - sent_us / 1000.0
+            lines.append(f"trip {trip_ms:+.0f} ms")
+
+        tag = meta.get("tag")
+        if isinstance(tag, dict):
+            lines += [f"{k}: {v}" for k, v in tag.items()]
+
+        padding = 8
+        rendered = [self.font_small.render(line, True, (230, 230, 230)) for line in lines]
+        width = max(surface.get_width() for surface in rendered) + padding * 2
+        height = sum(surface.get_height() for surface in rendered) + padding * 2
+
+        # Sit below the status bar, top-left of the video area.
+        box = pygame.Rect(10, 30, width, height)
+
+        # Translucent backing, so the text stays readable over any frame content.
+        backing = pygame.Surface(box.size, pygame.SRCALPHA)
+        backing.fill((0, 0, 0, 160))
+        self.screen.blit(backing, box.topleft)
+        pygame.draw.rect(self.screen, (90, 90, 90), box, width=1)
+
+        y = box.top + padding
+        for surface in rendered:
+            self.screen.blit(surface, (box.left + padding, y))
+            y += surface.get_height()
 
     def _render_no_video(self, rect: pygame.Rect) -> None:
         """Render placeholder when no video is available."""
@@ -400,6 +506,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--session-id",
+        "-s",
+        metavar="ID",
+        help="Join this existing session instead of creating a new one",
+    )
+
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -422,12 +535,17 @@ async def main() -> None:
         logger.error("Either --local or --api-key must be provided")
         sys.exit(1)
 
+    if args.session_id and args.local:
+        logger.error(LOCAL_JOIN_MESSAGE)
+        sys.exit(1)
+
     # Create and run app
     app = ReactorApp(
         model_name=args.model,
         api_key=args.api_key,
         local=args.local,
         api_url=args.api_url,
+        session_id=args.session_id,
     )
 
     await app.run()
