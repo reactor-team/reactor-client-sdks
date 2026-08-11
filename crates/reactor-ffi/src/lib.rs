@@ -223,12 +223,29 @@ struct HostThreads {
     /// Control events and completions. Unbounded: low-rate, and dropping a status
     /// change or a session id would leave the host with a wrong view of the session.
     control: HostThread<HostJob>,
-    /// Held for their `Drop`, which closes each queue and joins the thread. Their
-    /// senders were moved into the media callbacks at construction, so nothing reads
-    /// these again — but dropping them is what guarantees no delivery outlives the
-    /// handle.
-    _video: Option<HostThread<VideoFrame>>,
-    _audio: Option<HostThread<AudioFrame>>,
+    /// Their senders were moved into the media callbacks at construction, so these
+    /// exist to be torn down: dropping them closes each queue and joins the thread,
+    /// which is what guarantees no delivery outlives the handle.
+    video: Option<HostThread<VideoFrame>>,
+    audio: Option<HostThread<AudioFrame>>,
+}
+
+impl HostThreads {
+    /// Close every queue without waiting for the threads.
+    ///
+    /// Used when teardown could not confirm quiescence: at least one of these
+    /// threads may be stuck inside a host callback that never returns, and joining
+    /// it would hang `reactor_destroy` — which would also stop the caller from ever
+    /// learning that it must keep its callback pointers alive.
+    fn abandon(&mut self) {
+        self.control.abandon();
+        if let Some(video) = self.video.as_mut() {
+            video.abandon();
+        }
+        if let Some(audio) = self.audio.as_mut() {
+            audio.abandon();
+        }
+    }
 }
 
 /// Background tasks this handle owns, so `reactor_destroy` can stop them.
@@ -524,8 +541,8 @@ unsafe fn create_impl(
         tasks,
         hosts: HostThreads {
             control,
-            _video: video,
-            _audio: audio,
+            video,
+            audio,
         },
     }))
 }
@@ -587,7 +604,7 @@ pub unsafe extern "C" fn reactor_destroy(handle: *mut ReactorHandle) -> c_int {
     if handle.is_null() {
         return 0;
     }
-    let handle = Box::from_raw(handle);
+    let mut handle = Box::from_raw(handle);
 
     // Order matters. Close the gate and drain first: a pump blocked inside a host
     // callback has to come back out before its task can be stopped, and a task
@@ -600,9 +617,16 @@ pub unsafe extern "C" fn reactor_destroy(handle: *mut ReactorHandle) -> c_int {
         task.abort();
     }
 
-    // Dropping the handle closes each host queue and joins its thread, so no
-    // delivery outlives this call. Ordered after the gate so a thread mid-callback
-    // has already come out.
+    if quiescence == Quiescence::Incomplete {
+        // A callback is still running somewhere. Dropping the host threads would
+        // join them, and joining the stuck one would block here forever — which
+        // would also mean the caller never learns it has to keep its pointers
+        // alive, making the whole -1 path unreachable. Detach instead and leak.
+        handle.hosts.abandon();
+    }
+
+    // On the quiesced path, dropping the handle closes each host queue and joins its
+    // thread, so no delivery outlives this call.
     drop(handle);
 
     match quiescence {

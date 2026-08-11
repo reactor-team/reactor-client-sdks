@@ -381,15 +381,30 @@ impl<T: Send + 'static> HostThread<T> {
             queue: self.queue.clone(),
         }
     }
+
+    /// Stop feeding the thread, and give up on ever seeing it finish.
+    ///
+    /// For the teardown that could not reach [`Quiescence::Complete`]: the thread is
+    /// inside a host callback that may never return, so joining it would block the
+    /// caller indefinitely — and that would also swallow the answer the caller needs
+    /// in order to know it must keep its callback pointers alive. Leaks the thread,
+    /// which is the lesser cost, and leaves its payload untouched so the pointers it
+    /// may still use stay valid.
+    pub fn abandon(&mut self) {
+        self.queue.close();
+        // Dropping a JoinHandle detaches the thread.
+        self.join.take();
+    }
 }
 
 impl<T: Send + 'static> Drop for HostThread<T> {
     fn drop(&mut self) {
         self.queue.close();
         if let Some(join) = self.join.take() {
-            // A host handler that tears its own client down runs *on* this thread,
-            // so joining would be joining ourselves. The gate has already closed by
-            // then, so the loop exits on its own once the handler returns.
+            // Belt and braces: callers reach here only after quiescence, and
+            // `abandon` covers the case where a callback is still running. But a
+            // handler tearing its own client down runs *on* this thread, and joining
+            // ourselves would panic.
             if join.thread().id() != thread::current().id() {
                 let _ = join.join();
             }
@@ -738,6 +753,51 @@ mod tests {
             seen.lock().unwrap().is_empty(),
             "delivered after the gate was retired"
         );
+    }
+
+    /// Dropping a host thread joins it, which is correct only once nothing is
+    /// running. With a callback wedged, `abandon` is what keeps teardown from
+    /// blocking forever on a thread that may never come back — and therefore what
+    /// keeps the caller's "you must not free your pointers" answer reachable at all.
+    #[test]
+    fn abandon_returns_while_a_callback_is_still_wedged() {
+        let gate = Arc::new(CallbackGate::new());
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let release = Arc::new(AtomicBool::new(false));
+
+        let wedge = release.clone();
+        let mut host = HostThread::spawn(
+            "test-abandon",
+            None,
+            Overflow::DropNewest,
+            gate.clone(),
+            move |_: u32| {
+                entered_tx.send(()).unwrap();
+                while !wedge.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(5));
+                }
+            },
+        );
+
+        host.sender().send(1);
+        entered_rx.recv().unwrap(); // the worker is now inside the callback
+
+        assert_eq!(
+            gate.retire_with_timeout(Duration::from_millis(50)),
+            Quiescence::Incomplete
+        );
+
+        let started = Instant::now();
+        host.abandon();
+        drop(host);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "teardown waited on a wedged callback instead of detaching"
+        );
+
+        // Only now let the leaked thread finish, so the test does not exit with it
+        // mid-callback.
+        release.store(true, Ordering::Release);
     }
 
     #[test]
