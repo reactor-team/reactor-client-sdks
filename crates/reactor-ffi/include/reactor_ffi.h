@@ -30,10 +30,17 @@
  *
  * Teardown
  * ────────
- * reactor_destroy() does not currently stop the event pumps or wait for
- * in-flight callbacks, so a callback may still fire after it returns.  Keep
- * your callback context alive past destroy: releasing it there (a ctypes
- * trampoline, a cgo.Handle, a JNI GlobalRef) is a use-after-free.
+ * reactor_destroy() blocks until every callback in flight has returned, and no
+ * callback starts after it.  It is therefore the boundary to release your
+ * callback context on — a ctypes trampoline, a cgo.Handle, a JNI GlobalRef —
+ * and doing so any earlier is a use-after-free.
+ *
+ * Check the return value.  0 means quiescence was reached and releasing is safe;
+ * -1 means a callback is still running and the pointers must be kept alive
+ * instead, which happens if the host is wedged (a callback waiting on a GIL an
+ * already-finalising interpreter will never release) or if destroy was called
+ * from inside one of the handle's own callbacks.  Tearing down while your
+ * runtime is still running keeps you on the 0 path.
  */
 
 #ifndef REACTOR_FFI_H
@@ -154,10 +161,26 @@ ReactorHandle *reactor_create_with_adm(
 );
 
 /*
- * Destroy a handle.  Must not be called while other operations are in flight
- * (wait for all completion callbacks to fire first).
+ * Destroy a handle, and with it the right to call back into the host.
+ *
+ * Returns 0 when no callback is running and none will start.  That is the only
+ * answer on which you may release whatever your callback pointers refer to — a
+ * ctypes trampoline, a cgo.Handle, a JNI GlobalRef.
+ *
+ * Returns -1 when a callback is still executing and could not be waited for.
+ * The handle is released either way, but the callback pointers must be kept
+ * alive; leaking them is correct, freeing them is a use-after-free.  Two ways to
+ * get here: the host is wedged (a callback blocked on a lock this library cannot
+ * make it give up, such as a GIL an already-finalising interpreter will never
+ * release), or this was called from inside one of the handle's own callbacks,
+ * which is therefore still on the stack.
+ *
+ * NULL is accepted and returns 0.
+ *
+ * Callers that previously treated this as returning void keep working; the extra
+ * return value is ignored by the caller's calling convention.
  */
-void reactor_destroy(ReactorHandle *handle);
+int reactor_destroy(ReactorHandle *handle);
 
 /* ── Async operations ─────────────────────────────────────────────────────── */
 

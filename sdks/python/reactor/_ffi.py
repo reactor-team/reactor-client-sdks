@@ -71,7 +71,8 @@ def _load() -> ctypes.CDLL:
         ctypes.c_int,  # adm_mode
     ]
 
-    lib.reactor_destroy.restype = None
+    # 0 = quiesced, -1 = a callback is still running (see reactor_ffi.h).
+    lib.reactor_destroy.restype = ctypes.c_int
     lib.reactor_destroy.argtypes = [ctypes.c_void_p]
 
     lib.reactor_connect.restype = None

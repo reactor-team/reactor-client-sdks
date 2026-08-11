@@ -23,28 +23,31 @@
 //!   threads this library owns, never from the caller's thread, and may be invoked
 //!   concurrently. `userdata` is passed through untouched and must be safe to
 //!   access from any such thread.
+//! * **Callback lifetime.** Every pointer stays callable until
+//!   [`reactor_destroy`] returns 0, and none is called after. That is the boundary a
+//!   binding releases its callback context on — a ctypes trampoline, a
+//!   `cgo.Handle`, a JNI `GlobalRef`. A non-zero return means a callback could not
+//!   be waited for and the context must be kept alive instead. See
+//!   [`callbacks::CallbackGate`].
 //!
 //! ## Known gaps in this contract
 //!
-//! Two properties a host needs are **not** currently provided, and bindings must
-//! work around them until they are:
+//! One property a host needs is **not** yet provided, and bindings must work around
+//! it until it is:
 //!
-//! 1. [`reactor_destroy`] does not stop the event pumps or wait for in-flight
-//!    callbacks, so a callback may still fire after it returns. A host must
-//!    therefore keep its callback context (a ctypes trampoline, a `cgo.Handle`, a
-//!    JNI `GlobalRef`) alive beyond destroy — releasing it there is a
-//!    use-after-free.
-//! 2. `on_frame` and `on_audio` are invoked on libwebrtc's media threads, not on a
-//!    tokio thread. A host callback that blocks — anything that takes the CPython
-//!    GIL or attaches to the JVM — stalls decoding and, on the worker/network
-//!    threads, can time out ICE.
+//! * `on_frame` and `on_audio` are invoked on libwebrtc's media threads, not on a
+//!   tokio thread. A host callback that blocks — anything that takes the CPython
+//!   GIL or attaches to the JVM — stalls decoding and, on the worker/network
+//!   threads, can time out ICE. Copy the buffer, hand it to your own thread, and
+//!   return.
 
+mod callbacks;
 mod http;
 mod peer;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_double, c_int, c_void};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
 use reactor_core::error::CoreError;
@@ -56,6 +59,7 @@ use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions
 use reactor_core::runtime::TokioPlatform;
 use reactor_webrtc::AdmMode;
 
+use self::callbacks::{CallbackGate, Quiescence};
 use self::http::ReqwestHttpClient;
 use self::peer::ReactorWebRtcPeerTransport;
 
@@ -116,6 +120,9 @@ struct CallbackSet {
     on_capabilities: Option<unsafe extern "C" fn(*const c_char, *mut c_void)>,
     on_session_id: Option<unsafe extern "C" fn(*const c_char, *mut c_void)>,
     userdata: *mut c_void,
+    /// Every fire below goes through this. Once `reactor_destroy` retires it, the
+    /// pointers above must be treated as dangling.
+    gate: Arc<CallbackGate>,
 }
 unsafe impl Send for CallbackSet {}
 unsafe impl Sync for CallbackSet {}
@@ -124,6 +131,9 @@ impl CallbackSet {
     fn fire_str(&self, f: Option<unsafe extern "C" fn(*const c_char, *mut c_void)>, s: &str) {
         if let Some(func) = f {
             if let Ok(cs) = CString::new(s) {
+                let Some(_admitted) = self.gate.enter() else {
+                    return;
+                };
                 unsafe { func(cs.as_ptr(), self.userdata) }
             }
         }
@@ -143,6 +153,9 @@ impl CallbackSet {
         opt: &Option<String>,
     ) {
         if let Some(func) = f {
+            let Some(_admitted) = self.gate.enter() else {
+                return;
+            };
             match opt {
                 Some(s) => {
                     if let Ok(cs) = CString::new(s.as_str()) {
@@ -157,6 +170,9 @@ impl CallbackSet {
     fn fire_track(&self, name: &str, mid: &Option<String>) {
         if let Some(func) = self.on_track {
             if let Ok(name_cs) = CString::new(name) {
+                let Some(_admitted) = self.gate.enter() else {
+                    return;
+                };
                 match mid {
                     Some(m) => {
                         if let Ok(mid_cs) = CString::new(m.as_str()) {
@@ -172,13 +188,35 @@ impl CallbackSet {
 
 // ── ReactorHandle ────────────────────────────────────────────────────────────
 
+/// Background tasks this handle owns, so `reactor_destroy` can stop them.
+///
+/// Without this the handle leaks: the peer-event pump holds an `Arc<Reactor>`, and
+/// `Reactor` owns the `Dispatcher` whose sender feeds the event pump, so neither
+/// stream ever ends and neither task ever exits. The heartbeat leaks the same way —
+/// it stops on a session epoch change, which destroying a handle does not cause.
+type TaskSet = Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>;
+
 pub struct ReactorHandle {
     reactor: Arc<Reactor>,
+    gate: Arc<CallbackGate>,
+    tasks: TaskSet,
+}
+
+/// Spawn a task the handle will stop on destroy.
+///
+/// Finished handles are reaped first: `connect` and `reconnect` each add a
+/// heartbeat, and a long-lived client should not accumulate them.
+fn spawn_tracked(tasks: &TaskSet, future: impl std::future::Future<Output = ()> + Send + 'static) {
+    let handle = runtime().spawn(future);
+    let mut tasks = tasks.lock().unwrap();
+    tasks.retain(|t| !t.is_finished());
+    tasks.push(handle);
 }
 
 struct Completion {
     f: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
     userdata: *mut c_void,
+    gate: Arc<CallbackGate>,
 }
 unsafe impl Send for Completion {}
 unsafe impl Sync for Completion {}
@@ -187,12 +225,19 @@ impl Completion {
     fn new(
         f: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
         userdata: *mut c_void,
+        gate: Arc<CallbackGate>,
     ) -> Self {
-        Self { f, userdata }
+        Self { f, userdata, gate }
     }
 
     fn resolve(self, result: Result<Option<serde_json::Value>, CoreError>) {
         let Some(func) = self.f else { return };
+        // An operation can still be in flight when the handle is destroyed. Firing
+        // its completion afterwards would call a pointer the host has already
+        // released.
+        let Some(_admitted) = self.gate.enter() else {
+            return;
+        };
         match result {
             Ok(v) => {
                 let json = v.map(|j| j.to_string()).unwrap_or_else(|| "{}".to_string());
@@ -272,6 +317,10 @@ unsafe fn create_impl(
         Some(CStr::from_ptr(jwt).to_string_lossy().into_owned())
     };
 
+    // Guards every host pointer below, including the media callbacks and the
+    // completions of operations still in flight when the handle is destroyed.
+    let gate = Arc::new(CallbackGate::new());
+
     let cbs: Option<CallbackSet> = if callbacks.is_null() {
         None
     } else {
@@ -285,6 +334,7 @@ unsafe fn create_impl(
             on_capabilities: c.on_capabilities,
             on_session_id: c.on_session_id,
             userdata: c.userdata,
+            gate: gate.clone(),
         })
     };
 
@@ -302,35 +352,50 @@ unsafe fn create_impl(
         let c = &*callbacks;
         if let Some(frame_fn) = c.on_frame {
             let userdata_usize = c.userdata as usize;
+            let gate = gate.clone();
             peer_transport =
-                peer_transport.with_frame_callback(move |data, w, h, frame_id, ts, ud| unsafe {
-                    frame_fn(
-                        data.as_ptr(),
-                        w,
-                        h,
-                        frame_id,
-                        ts,
-                        if ud.is_empty() {
-                            std::ptr::null()
-                        } else {
-                            ud.as_ptr()
-                        },
-                        ud.len() as u32,
-                        userdata_usize as *mut c_void,
-                    )
+                peer_transport.with_frame_callback(move |data, w, h, frame_id, ts, ud| {
+                    // Still on a libwebrtc media thread at this point; the gate only
+                    // decides whether the host pointer is callable. Moving the call
+                    // off that thread is REA-5028.
+                    let Some(_admitted) = gate.enter() else {
+                        return;
+                    };
+                    unsafe {
+                        frame_fn(
+                            data.as_ptr(),
+                            w,
+                            h,
+                            frame_id,
+                            ts,
+                            if ud.is_empty() {
+                                std::ptr::null()
+                            } else {
+                                ud.as_ptr()
+                            },
+                            ud.len() as u32,
+                            userdata_usize as *mut c_void,
+                        )
+                    }
                 });
         }
         if let Some(audio_fn) = c.on_audio {
             let userdata_usize = c.userdata as usize;
+            let gate = gate.clone();
             peer_transport =
-                peer_transport.with_audio_callback(move |pcm, sample_rate, channels| unsafe {
-                    audio_fn(
-                        pcm.as_ptr(),
-                        pcm.len() as u32,
-                        sample_rate,
-                        channels,
-                        userdata_usize as *mut c_void,
-                    )
+                peer_transport.with_audio_callback(move |pcm, sample_rate, channels| {
+                    let Some(_admitted) = gate.enter() else {
+                        return;
+                    };
+                    unsafe {
+                        audio_fn(
+                            pcm.as_ptr(),
+                            pcm.len() as u32,
+                            sample_rate,
+                            channels,
+                            userdata_usize as *mut c_void,
+                        )
+                    }
                 });
         }
     }
@@ -347,10 +412,11 @@ unsafe fn create_impl(
         peer: peer_transport,
     };
     let reactor = Arc::new(Reactor::new(deps, options));
+    let tasks: TaskSet = Arc::new(Mutex::new(Vec::new()));
 
     let reactor2 = reactor.clone();
     let mut peer_rx = peer_event_rx;
-    runtime().spawn(async move {
+    spawn_tracked(&tasks, async move {
         while let Some(ev) = peer_rx.next().await {
             reactor2.handle_peer_event(ev).await;
         }
@@ -359,7 +425,7 @@ unsafe fn create_impl(
     if let Some(cbs) = cbs {
         let mut event_rx = reactor.subscribe();
         let cbs = Arc::new(cbs);
-        runtime().spawn(async move {
+        spawn_tracked(&tasks, async move {
             while let Some(event) = event_rx.next().await {
                 match event {
                     ReactorEvent::StatusChanged(s) => {
@@ -392,36 +458,80 @@ unsafe fn create_impl(
         });
     }
 
-    Box::into_raw(Box::new(ReactorHandle { reactor }))
+    Box::into_raw(Box::new(ReactorHandle {
+        reactor,
+        gate,
+        tasks,
+    }))
 }
 
-/// Release a handle.
+/// Release a handle, and with it the right to call back into the host.
+///
+/// Returns **0** when no callback is running and none will start. That is the only
+/// answer on which a binding may release whatever its callback pointers refer to —
+/// a ctypes trampoline, a `cgo.Handle`, a JNI `GlobalRef`.
+///
+/// Returns **-1** when a callback is still executing and could not be waited for.
+/// The handle is still released, but the callback pointers must be kept alive;
+/// leaking them is correct, freeing them is a use-after-free. Two ways to get here:
+///
+/// * the host is wedged — a callback blocked on a lock this library cannot make it
+///   give up, such as a ctypes trampoline waiting on a GIL that an already
+///   finalising interpreter will never release. Tear down while the host runtime is
+///   still running and this does not arise.
+/// * this was called from inside one of the handle's own callbacks, which is
+///   therefore still on the stack. There is no way to wait for the caller.
 ///
 /// # Safety
 ///
 /// `handle` must be null or a live handle, and must not be used again afterwards.
-///
-/// This does **not** quiesce callbacks: the event pumps keep running and a
-/// callback may fire after this returns (see the module's *Known gaps*). Callers
-/// must not release their callback context here.
+/// Null is accepted and returns 0.
 #[no_mangle]
-pub unsafe extern "C" fn reactor_destroy(handle: *mut ReactorHandle) {
-    if !handle.is_null() {
-        drop(Box::from_raw(handle));
+pub unsafe extern "C" fn reactor_destroy(handle: *mut ReactorHandle) -> c_int {
+    if handle.is_null() {
+        return 0;
+    }
+    let handle = Box::from_raw(handle);
+
+    // Order matters. Close the gate and drain first: a pump blocked inside a host
+    // callback has to come back out before its task can be stopped, and a task
+    // aborted mid-callback would leave the count non-zero forever.
+    let quiescence = handle.gate.retire();
+
+    // Then stop the pumps and the heartbeat. Nothing here can re-enter the host,
+    // because the gate now turns every attempt away.
+    for task in handle.tasks.lock().unwrap().drain(..) {
+        task.abort();
+    }
+
+    drop(handle);
+
+    match quiescence {
+        Quiescence::Complete => 0,
+        Quiescence::Incomplete => -1,
     }
 }
 
 // ── Async operations ─────────────────────────────────────────────────────────
 
+/// Run `$body` on the runtime and hand its result to the completion.
+///
+/// The body receives the reactor and the handle's [`TaskSet`], so an operation that
+/// spawns something long-lived — `connect` and `reconnect` start a heartbeat —
+/// registers it for `reactor_destroy` to stop rather than leaking it.
 macro_rules! async_op {
     ($handle:expr, $completion:expr, $userdata:expr, $body:expr) => {{
         if $handle.is_null() {
             return;
         }
-        let reactor = unsafe { &*$handle }.reactor.clone();
-        let completion = Completion::new($completion, $userdata);
-        runtime().spawn(async move {
-            let result: Result<Option<serde_json::Value>, CoreError> = $body(reactor).await;
+        let handle = unsafe { &*$handle };
+        let reactor = handle.reactor.clone();
+        let tasks = handle.tasks.clone();
+        let body_tasks = handle.tasks.clone();
+        let completion = Completion::new($completion, $userdata, handle.gate.clone());
+        spawn_tracked(&tasks, async move {
+            let result: Result<Option<serde_json::Value>, CoreError> =
+                $body(reactor, body_tasks).await;
             completion.resolve(result);
         });
     }};
@@ -450,14 +560,14 @@ pub unsafe extern "C" fn reactor_connect(
         handle,
         completion,
         userdata,
-        move |r: Arc<Reactor>| async move {
+        move |r: Arc<Reactor>, tasks: TaskSet| async move {
             r.connect(ConnectOptions {
                 session_id: sid,
                 connection_id: None,
             })
             .await?;
             let r2 = r.clone();
-            runtime().spawn(async move { r2.run_heartbeat().await });
+            spawn_tracked(&tasks, async move { r2.run_heartbeat().await });
             Ok(None)
         }
     );
@@ -475,9 +585,12 @@ pub unsafe extern "C" fn reactor_disconnect(
     completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
     userdata: *mut c_void,
 ) {
-    async_op!(handle, completion, userdata, |r: Arc<Reactor>| async move {
-        r.disconnect(false).await.map(|_| None)
-    });
+    async_op!(
+        handle,
+        completion,
+        userdata,
+        |r: Arc<Reactor>, _tasks: TaskSet| async move { r.disconnect(false).await.map(|_| None) }
+    );
 }
 
 /// Reconnect using the existing session, after a transient failure.
@@ -491,12 +604,17 @@ pub unsafe extern "C" fn reactor_reconnect(
     completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
     userdata: *mut c_void,
 ) {
-    async_op!(handle, completion, userdata, |r: Arc<Reactor>| async move {
-        r.reconnect().await?;
-        let r2 = r.clone();
-        runtime().spawn(async move { r2.run_heartbeat().await });
-        Ok(None)
-    });
+    async_op!(
+        handle,
+        completion,
+        userdata,
+        |r: Arc<Reactor>, tasks: TaskSet| async move {
+            r.reconnect().await?;
+            let r2 = r.clone();
+            spawn_tracked(&tasks, async move { r2.run_heartbeat().await });
+            Ok(None)
+        }
+    );
 }
 
 /// Activate a named sendonly track slot. Media is attached separately, with
@@ -517,7 +635,9 @@ pub unsafe extern "C" fn reactor_publish_track(
         handle,
         completion,
         userdata,
-        move |r: Arc<Reactor>| async move { r.publish_track(&name).await.map(|_| None) }
+        move |r: Arc<Reactor>, _tasks: TaskSet| async move {
+            r.publish_track(&name).await.map(|_| None)
+        }
     );
 }
 
@@ -538,7 +658,7 @@ pub unsafe extern "C" fn reactor_pause_track(
         handle,
         completion,
         userdata,
-        move |r: Arc<Reactor>| async move { r.pause_track(&name).await.map(|_| None) }
+        move |r: Arc<Reactor>, _tasks: TaskSet| async move { r.pause_track(&name).await.map(|_| None) }
     );
 }
 
@@ -559,7 +679,7 @@ pub unsafe extern "C" fn reactor_resume_track(
         handle,
         completion,
         userdata,
-        move |r: Arc<Reactor>| async move { r.resume_track(&name).await.map(|_| None) }
+        move |r: Arc<Reactor>, _tasks: TaskSet| async move { r.resume_track(&name).await.map(|_| None) }
     );
 }
 
@@ -580,7 +700,7 @@ pub unsafe extern "C" fn reactor_request_clip(
         handle,
         completion,
         userdata,
-        move |r: Arc<Reactor>| async move {
+        move |r: Arc<Reactor>, _tasks: TaskSet| async move {
             let clip = r.request_clip(duration_seconds).await?;
             serde_json::to_value(&clip)
                 .map(Some)
@@ -600,12 +720,17 @@ pub unsafe extern "C" fn reactor_request_recording(
     completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
     userdata: *mut c_void,
 ) {
-    async_op!(handle, completion, userdata, |r: Arc<Reactor>| async move {
-        let clip = r.request_recording().await?;
-        serde_json::to_value(&clip)
-            .map(Some)
-            .map_err(|e| CoreError::Decode(e.to_string()))
-    });
+    async_op!(
+        handle,
+        completion,
+        userdata,
+        |r: Arc<Reactor>, _tasks: TaskSet| async move {
+            let clip = r.request_recording().await?;
+            serde_json::to_value(&clip)
+                .map(Some)
+                .map_err(|e| CoreError::Decode(e.to_string()))
+        }
+    );
 }
 
 /// Upload a local file and return a reference to pass as a command argument.
@@ -626,7 +751,7 @@ pub unsafe extern "C" fn reactor_upload_file(
         handle,
         completion,
         userdata,
-        move |r: Arc<Reactor>| async move {
+        move |r: Arc<Reactor>, _tasks: TaskSet| async move {
             let p = std::path::Path::new(&path);
             let name = p
                 .file_name()
@@ -920,8 +1045,11 @@ mod tests {
                 -1
             );
 
-            // No-ops rather than returns: the assertion is that they do not abort.
-            reactor_destroy(std::ptr::null_mut());
+            // Nothing to quiesce, so destroying nothing reports success.
+            assert_eq!(reactor_destroy(std::ptr::null_mut()), 0);
+
+            // A no-op rather than a return value: the assertion is that it does not
+            // abort.
             reactor_free_string(std::ptr::null_mut());
         }
     }
