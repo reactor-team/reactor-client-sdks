@@ -18,10 +18,25 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 # Dev-only; not shipped in the wheel. Installed by `mise run test:python`.
-dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+# hatchling is here so the tests can import hatch_build.py, which is otherwise only
+# present in the isolated build environment.
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "hatchling"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["reactor"]
+
+# Bundles libreactor_ffi and turns the wheel into a platform wheel. See
+# hatch_build.py; without a library present it falls back to a pure wheel, so an
+# editable install in a checkout still works.
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+# No sdist. The package is useless without libreactor_ffi, and a source
+# distribution cannot carry a binary for a platform it does not know yet — it would
+# install cleanly and then fail at the first call, which is worse than not being
+# there. Build from the repository instead.
+[tool.hatch.build.targets.sdist]
+exclude = ["*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

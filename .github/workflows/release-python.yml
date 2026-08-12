@@ -1,0 +1,451 @@
+# Build and release the Python SDK's platform wheels.
+#
+# Triggered by a push to main that changes the version in
+# sdks/python/pyproject.toml — the version is the release switch, so shipping is
+# "bump the version and merge". Everything else on main is a no-op here.
+#
+# The wheels go out as GitHub release assets. PyPI is wired up below but switched
+# off; see the publish-pypi job for what turning it on takes.
+#
+# Linux builds inside a manylinux container so its wheels carry a manylinux tag that
+# is earned rather than asserted; mac and Windows build on the runner. See
+# scripts/build-manylinux-wheel.sh.
+#
+# Five platforms, matching what reactor-webrtc ships. iOS and Android have prebuilt
+# libwebrtc but no CPython, so they have no wheel.
+#
+# Pull requests that touch packaging or the FFI build the wheels and upload them as
+# artifacts, releasing nothing. workflow_dispatch does the same on demand. Only a
+# push to main with a changed version releases.
+name: Release Python SDK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sdks/python/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/release-python.yml"
+      - "scripts/build-manylinux-wheel.sh"
+
+  # Pull requests build the wheels and upload them as artifacts, without releasing
+  # anything — the release and publish jobs are gated on a push to main. This is the
+  # only way to find out whether the matrix works before it is the release path: a
+  # workflow only runs from the default branch, so nothing here can be exercised by
+  # merging it and hoping.
+  #
+  # The paths are narrow on purpose. Five runners, two of them macOS and one Windows,
+  # each doing a full release build of libwebrtc's glue — worth it for a change to
+  # packaging or to the library the wheel carries, and not worth it for anything else.
+  # Narrow it further, or drop it, if it turns out to fire more often than it earns.
+  pull_request:
+    paths:
+      - "sdks/python/**"
+      - "crates/reactor-ffi/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/release-python.yml"
+      - "scripts/build-manylinux-wheel.sh"
+
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build the wheels but do not create a release"
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-python-${{ github.ref }}
+  # Supersede an outdated pull-request build, but never interrupt a release.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ── 0. Is this push a release? ──────────────────────────────────────────────
+  detect-version:
+    name: Detect version bump
+    runs-on: ubuntu-latest
+    outputs:
+      bumped: ${{ steps.diff.outputs.bumped }}
+      version: ${{ steps.diff.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Diff the SDK version against the previous commit on main
+        id: diff
+        run: |
+          set -euo pipefail
+
+          version_at() {
+            git show "$1:sdks/python/pyproject.toml" 2>/dev/null \
+              | awk '/^\[project\]/{f=1;next} /^\[/{f=0} f' \
+              | grep -m1 '^version' \
+              | sed -E 's/version[[:space:]]*=[[:space:]]*"([^"]+)"/\1/'
+          }
+
+          NEW_VER=$(version_at "${{ github.sha }}")
+          if [ -z "$NEW_VER" ]; then
+            echo "::error::Could not read the version from sdks/python/pyproject.toml"
+            exit 1
+          fi
+          echo "version=${NEW_VER}" >> "$GITHUB_OUTPUT"
+
+          # Pull requests and manual runs build but never release; only a push to
+          # main that changes the version does that.
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "::notice::${{ github.event_name }} — building ${NEW_VER}, not releasing."
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          BEFORE="${{ github.event.before }}"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "::warning::No previous commit to diff against (new branch or force-push) — not releasing."
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          OLD_VER=$(version_at "$BEFORE")
+          if [ "$OLD_VER" != "$NEW_VER" ]; then
+            echo "::notice::Version bump: ${OLD_VER:-<none>} -> ${NEW_VER}"
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Version unchanged at ${NEW_VER} — building only."
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── 1. One wheel per platform ───────────────────────────────────────────────
+  #
+  # Each wheel is py3-none-<platform>: ctypes links no libpython, so one wheel per
+  # platform serves every interpreter the project supports, and only the platform
+  # tag varies. hatch_build.py does the bundling and tagging.
+  build-wheels:
+    name: Wheel · ${{ matrix.platform }}
+    needs: detect-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux builds inside a manylinux container — see
+          # scripts/build-manylinux-wheel.sh for why, and note that these entries
+          # need no target/lib/tag: the script owns the whole build.
+          #
+          # manylinux_2_34 is AlmaLinux 9, which is what reactor-webrtc publishes
+          # against and which has a new enough clang in AppStream for libwebrtc's
+          # bundled libc++ headers.
+          - platform: linux-x64
+            os: ubuntu-latest
+            container_image: quay.io/pypa/manylinux_2_34_x86_64
+            manylinux_plat: manylinux_2_34_x86_64
+
+          - platform: linux-arm64
+            # Native arm64 runner, so no qemu.
+            os: ubuntu-24.04-arm
+            container_image: quay.io/pypa/manylinux_2_34_aarch64
+            manylinux_plat: manylinux_2_34_aarch64
+
+          - platform: mac-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            lib: libreactor_ffi.dylib
+            # Rust's default floor for this target.
+            wheel_tag: macosx_11_0_arm64
+
+          - platform: mac-x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            lib: libreactor_ffi.dylib
+            # libwebrtc's x86_64 build requires 13.0, and the tag has to say so:
+            # understating it lets pip install a wheel that then fails to load.
+            wheel_tag: macosx_13_0_x86_64
+            macos_deployment_target: "13.0"
+
+          - platform: win-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            lib: reactor_ffi.dll
+            wheel_tag: win_amd64
+            # libwebrtc.lib is built /MT, so Rust must match or the link fails
+            # with LNK2038.
+            rustflags: "-C target-feature=+crt-static"
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # ── Linux: everything happens in the container ──────────────────────────
+      #
+      # Mounting the checkout and running one script keeps the whole Linux build —
+      # toolchain, native library, wheel, auditwheel repair — against AlmaLinux 9's
+      # glibc, which is what makes the manylinux tag true rather than asserted. The
+      # host contributes nothing but the mount, so none of the host setup below
+      # applies.
+      - name: Build wheel in ${{ matrix.container_image }}
+        if: matrix.container_image != ''
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD":/io -w /io \
+            -e MANYLINUX_PLAT="${{ matrix.manylinux_plat }}" \
+            "${{ matrix.container_image }}" \
+            bash /io/scripts/build-manylinux-wheel.sh
+
+      # ── macOS and Windows: build on the runner ──────────────────────────────
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        if: matrix.container_image == ''
+        with:
+          target: ${{ matrix.target }}
+          cache-on-failure: true
+
+      - name: Set macOS deployment target
+        if: matrix.macos_deployment_target != ''
+        run: echo "MACOSX_DEPLOYMENT_TARGET=${{ matrix.macos_deployment_target }}" >> "$GITHUB_ENV"
+
+      - name: Build libreactor_ffi
+        if: matrix.container_image == ''
+        shell: bash
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: cargo build -p reactor-ffi --release --target ${{ matrix.target }}
+
+      - name: Build the wheel
+        if: matrix.container_image == ''
+        shell: bash
+        env:
+          # Absolute, because hatchling runs from sdks/python.
+          REACTOR_FFI_LIB: ${{ github.workspace }}/target/${{ matrix.target }}/release/${{ matrix.lib }}
+          REACTOR_WHEEL_PLATFORM_TAG: ${{ matrix.wheel_tag }}
+        run: |
+          set -euo pipefail
+          ls -lh "$REACTOR_FFI_LIB"
+
+          # uv in a throwaway venv rather than through mise. This workflow needs one
+          # tool, and asking mise for it cost both of these platforms: mise.lock
+          # carries no windows-x64 URLs at all, and no macos-x64 URL for hk, so
+          # `mise install --locked` refuses before it gets to uv. It also matches how
+          # the container script builds, so all five platforms now do the same thing.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            HOST_PY=python
+            VENV_PY="$GITHUB_WORKSPACE/buildenv/Scripts/python.exe"
+          else
+            HOST_PY=python3
+            VENV_PY="$GITHUB_WORKSPACE/buildenv/bin/python"
+          fi
+          "$HOST_PY" -m venv buildenv
+          "$VENV_PY" -m pip install --quiet --upgrade pip uv
+
+          cd sdks/python
+          "$VENV_PY" -m uv build --wheel --out-dir "$GITHUB_WORKSPACE/dist"
+          ls -lh "$GITHUB_WORKSPACE/dist"
+
+      # Install and import on the platform that built it. This is what catches a
+      # binary that is present but unloadable — a missing symbol, the wrong libc++
+      # linkage — before it ever reaches a release asset.
+      - name: Smoke-test the wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Plain venv and pip, and a fresh one: the wheel has to be exercised by
+          # the tooling a user would reach for, in an environment that has nothing
+          # else in it.
+          #
+          # On Linux this is doubly useful — installing a manylinux_2_34 wheel on the
+          # runner's newer Ubuntu is a real check that the tag means what it says,
+          # since the wheel was built against an older glibc than the one loading it.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            HOST_PY=python
+          else
+            HOST_PY=python3
+          fi
+          "$HOST_PY" -m venv smoke
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            PY="smoke/Scripts/python.exe"
+          else
+            PY="smoke/bin/python"
+          fi
+          "$GITHUB_WORKSPACE/$PY" -m pip install --quiet --upgrade pip
+          "$GITHUB_WORKSPACE/$PY" -m pip install --no-index "$GITHUB_WORKSPACE"/dist/*.whl
+          # Run from a directory with no `reactor/` in it, so the import resolves to
+          # the installed package and the library it carries — not the checkout.
+          cd "$(mktemp -d)"
+          "$GITHUB_WORKSPACE/$PY" -c "
+          import pathlib, sysconfig
+          import reactor
+          from reactor import _ffi
+
+          print('version:', reactor.__version__)
+          library = pathlib.Path(_ffi._find_lib())
+          print('library:', library)
+
+          # The library has to be the one inside the wheel. Without this the test
+          # could pass by finding target/release in the checkout — proving nothing
+          # about what a user would install.
+          site = pathlib.Path(sysconfig.get_paths()['purelib'])
+          assert library.is_relative_to(site), f'{library} is not from the installed wheel ({site})'
+
+          lib = _ffi.get_lib()
+          assert lib.reactor_status(None) == b'disconnected'
+          assert lib.reactor_destroy(None) == 0
+          print('wheel imports and calls into its bundled library ok')
+          "
+
+      # The suite, against the installed wheel, on each platform.
+      #
+      # The nine tests in test_ffi_bindings.py are the only check that _ffi.py's
+      # argtypes match the compiled ABI — ctypes verifies nothing itself, so a drifted
+      # signature is silent undefined behaviour. Until now they only ever ran on Linux,
+      # in the `test` job against a target/release build; on Windows the DLL was never
+      # exercised at all. Running them here covers all five platforms against the
+      # binary a user actually gets.
+      #
+      # test_client.py comes along because it is fast and some of it is
+      # platform-sensitive — _find_lib's name and path handling most of all.
+      # test_build_hook.py deliberately does not: it tests the build machinery rather
+      # than the wheel, and belongs in the `test` job that already runs it.
+      - name: Run the test suite against the wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            PY="$GITHUB_WORKSPACE/smoke/Scripts/python.exe"
+          else
+            PY="$GITHUB_WORKSPACE/smoke/bin/python"
+          fi
+          "$PY" -m pip install --quiet pytest pytest-asyncio
+
+          # From the repository root, so `reactor` resolves to the installed package
+          # rather than the source tree next to the tests. pytest still finds its
+          # configuration in sdks/python/pyproject.toml.
+          "$PY" -m pytest -v \
+            sdks/python/tests/test_ffi_bindings.py \
+            sdks/python/tests/test_client.py
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-${{ matrix.platform }}
+          path: dist/*.whl
+          if-no-files-found: error
+          # Each wheel carries a ~20 MB library, so a full matrix is ~100 MB. A
+          # pull-request build is only interesting while the pull request is; a
+          # release build is already preserved as a release asset.
+          retention-days: ${{ github.event_name == 'pull_request' && 14 || 30 }}
+
+  # ── 2. GitHub release ───────────────────────────────────────────────────────
+  release:
+    name: Publish GitHub release
+    needs: [detect-version, build-wheels]
+    if: github.event_name == 'push' && needs.detect-version.outputs.bumped == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.assets.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist/
+
+      - name: Collect assets
+        id: assets
+        run: |
+          set -euo pipefail
+          cd dist
+          # Namespaced, because this repo will also tag Rust crates one day and
+          # python-v0.9.0 says which thing shipped.
+          echo "tag=python-v${{ needs.detect-version.outputs.version }}" >> "$GITHUB_OUTPUT"
+          sha256sum ./*.whl | tee SHA256SUMS
+          ls -lh
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          VERSION: ${{ needs.detect-version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::Release $TAG exists — replacing its assets"
+            gh release upload "$TAG" dist/* --clobber
+            exit 0
+          fi
+
+          gh release create "$TAG" dist/* \
+            --title "Python SDK ${VERSION}" \
+            --notes "$(cat <<EOF
+          \`reactor-sdk\` ${VERSION} — platform wheels for the Python SDK.
+
+          Each wheel bundles \`libreactor_ffi\` for its platform and is tagged
+          \`py3-none-<platform>\`: the SDK reaches the native library through ctypes and
+          links no libpython, so one wheel per platform covers every supported
+          interpreter (3.10+).
+
+          Install a wheel directly:
+
+          \`\`\`
+          pip install https://github.com/${{ github.repository }}/releases/download/${TAG}/<wheel>
+          \`\`\`
+
+          Checksums are in \`SHA256SUMS\`. Not on PyPI yet.
+          EOF
+          )"
+
+  # ── 3. PyPI — wired, switched off ───────────────────────────────────────────
+  #
+  # To turn this on:
+  #
+  #   1. Configure trusted publishing on PyPI for the reactor-sdk project:
+  #      https://pypi.org/manage/project/reactor-sdk/settings/publishing/
+  #      Publisher: reactor-team/reactor-client-sdks, workflow: release-python.yml,
+  #      environment: pypi. No API token is needed, and none should be added.
+  #   2. Create the `pypi` environment in this repository's settings.
+  #   3. Set the repository variable PUBLISH_TO_PYPI to `true`.
+  #
+  # The wheels themselves are already in a publishable shape: Linux is built in a
+  # manylinux_2_34 container and repaired by auditwheel, and the mac and Windows tags
+  # are set from the floor the bundled library actually needs. Nothing here is
+  # waiting on packaging work — only on the decision to publish.
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [detect-version, build-wheels, release]
+    if: >-
+      vars.PUBLISH_TO_PYPI == 'true' &&
+      github.event_name == 'push' &&
+      needs.detect-version.outputs.bumped == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # OIDC trusted publishing
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist/
+
+      - name: List wheels
+        run: ls -lh dist/
+
+      # PyPI refuses to re-upload an existing version, so check rather than fail.
+      - name: Check whether this version is already published
+        id: check
+        run: |
+          VERSION="${{ needs.detect-version.outputs.version }}"
+          if curl -sf -o /dev/null "https://pypi.org/pypi/reactor-sdk/${VERSION}/json"; then
+            echo "::notice::reactor-sdk ${VERSION} is already on PyPI — skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.check.outputs.skip != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
