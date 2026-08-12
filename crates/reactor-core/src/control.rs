@@ -129,10 +129,7 @@ mod tests {
     use crate::protocol::wire::v1::platform::{ClipFailed, ClipReady};
     use crate::protocol::wire::v1::track::{PublishTrack, PublishTrackResponse};
 
-    fn encode_response(
-        request_id: &str,
-        payload: control_server_message::Payload,
-    ) -> Vec<u8> {
+    fn encode_response(request_id: &str, payload: control_server_message::Payload) -> Vec<u8> {
         ControlServerMessage {
             request_id: request_id.to_string(),
             kind: MessageKind::Response as i32,

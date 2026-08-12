@@ -30,12 +30,8 @@ use crate::protocol::upload::{CreateUploadRequest, FileRef};
 use crate::protocol::webrtc::{IceCandidate, TrackMappingEntry};
 use crate::protocol::wire::v1::control::control_client_message::Payload as ClientPayload;
 use crate::protocol::wire::v1::control::control_server_message::Payload as ServerPayload;
-use crate::protocol::wire::v1::platform::{
-    FileUploaded, Ping, RequestClip, RequestRecording,
-};
-use crate::protocol::wire::v1::track::{
-    PauseTrack, PublishTrack, ResumeTrack, UnpublishTrack,
-};
+use crate::protocol::wire::v1::platform::{FileUploaded, Ping, RequestClip, RequestRecording};
+use crate::protocol::wire::v1::track::{PauseTrack, PublishTrack, ResumeTrack, UnpublishTrack};
 use crate::recording::{clip_from_ready, Clip};
 use crate::runtime::timeout;
 use crate::signaling::WebRtcSignaling;
@@ -606,7 +602,9 @@ impl Reactor {
                     }),
                 );
             }
-            ServerPayload::ModelSchema(_) | ServerPayload::PublishTrack(_) | ServerPayload::Error(_) => {}
+            ServerPayload::ModelSchema(_)
+            | ServerPayload::PublishTrack(_)
+            | ServerPayload::Error(_) => {}
         }
     }
 
@@ -739,11 +737,10 @@ impl Reactor {
 
     pub fn unpublish_track(&self, name: &str) -> Result<(), CoreError> {
         self.ensure_ready()?;
-        let payload = ControlCorrelator::notification(ClientPayload::UnpublishTrack(
-            UnpublishTrack {
+        let payload =
+            ControlCorrelator::notification(ClientPayload::UnpublishTrack(UnpublishTrack {
                 name: name.to_string(),
-            },
-        ));
+            }));
         self.peer.send_control(&payload)
     }
 
@@ -943,14 +940,13 @@ impl Reactor {
         };
 
         if self.status() == ReactorStatus::Ready {
-            let payload = ControlCorrelator::notification(ClientPayload::FileUploaded(
-                FileUploaded {
+            let payload =
+                ControlCorrelator::notification(ClientPayload::FileUploaded(FileUploaded {
                     upload_id: file_ref.upload_id.clone(),
                     name: file_ref.name.clone(),
                     mime_type: file_ref.mime_type.clone(),
                     size: file_ref.size as i64,
-                },
-            ));
+                }));
             let _ = self.peer.send_control(&payload);
         }
         Ok(file_ref)
