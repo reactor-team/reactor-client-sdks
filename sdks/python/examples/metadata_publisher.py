@@ -17,12 +17,6 @@ Joining works against a local runtime as well as a real coordinator: a local run
 holds one session and describes it at ``GET /session``, so the viewer joins by asking for
 the id this prints.
 
-Whether the viewer then *sees* these frames is up to the model. ``echo`` returns frames
-to whoever sent them rather than fanning them out, so a second participant joins the
-session and receives nothing from this one — the pairing connects, but the tags arrive
-only where the model sends them. Pick a model that produces video for every participant
-to watch this end to end.
-
 The tag here is JSON: a sequence number, the send time, and the colour, so a viewer can
 tell frames apart, spot a gap, and measure how long the trip took. The bytes are opaque
 to the SDK and to the runtime — JSON, protobuf, or anything else is between the sender
@@ -35,6 +29,9 @@ receives frames without one. Tagging is safe regardless.
 The sibling examples cover the other shapes: ``frame_metadata.py`` reads tags from an
 incoming track, and ``frame_metadata_roundtrip.py`` tags frames and matches them coming
 back through a model that echoes them.
+
+Ctrl-C stops it cleanly, which matters here: the session belongs to the peer that
+created it, so this process disconnecting is what releases it for the next run.
 
 Usage:
     python -m examples.metadata_publisher --local
@@ -51,6 +48,7 @@ import asyncio
 import contextlib
 import json
 import math
+import signal
 import sys
 import time
 
@@ -62,7 +60,11 @@ def _parse_args() -> argparse.Namespace:
         description="Continuously publish video frames tagged with metadata",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--track", default="video", metavar="NAME", help="sendonly track to publish")
+    p.add_argument(
+        "--track",
+        metavar="NAME",
+        help="sendonly video track to publish on; defaults to the model's, when it has one",
+    )
     p.add_argument("--width", type=int, default=640)
     p.add_argument("--height", type=int, default=480)
     p.add_argument("--fps", type=float, default=30.0)
@@ -112,6 +114,38 @@ def _make_frame(width: int, height: int, rgb: tuple[int, int, int]) -> bytes:
     return bytes([b, g, r, 255]) * (width * height)
 
 
+def _choose_track(capabilities: dict, requested: str | None) -> str:
+    """Pick the sendonly video track to publish on, from what the model declares.
+
+    Named explicitly, it is checked rather than trusted, because a name the model does
+    not have fails in the worst way available: `push_video_frame` finds no local track,
+    logs a warning nothing surfaces, and returns — so every frame is dropped while the
+    send keeps reporting success.
+    """
+    video = [
+        track["name"]
+        for track in capabilities.get("tracks", [])
+        if track.get("kind") == "video" and track.get("direction") == "sendonly"
+    ]
+
+    if requested is not None:
+        if requested not in video:
+            available = ", ".join(video) or "none"
+            raise SystemExit(
+                f"the model has no sendonly video track called '{requested}' (it has: {available})"
+            )
+        return requested
+
+    if not video:
+        raise SystemExit("the model declares no sendonly video track to publish on")
+    if len(video) > 1:
+        raise SystemExit(
+            f"the model has several sendonly video tracks ({', '.join(video)}); "
+            f"name one with --track"
+        )
+    return video[0]
+
+
 def _tag(sequence: int, rgb: tuple[int, int, int]) -> bytes:
     """The trailer for one frame.
 
@@ -143,11 +177,48 @@ async def main() -> int:
     reactor.on("error", lambda e: print(f"[error] {e}", file=sys.stderr))
 
     ready = asyncio.Event()
-    reactor.on("status_changed", lambda s: ready.set() if s == "ready" else None)
+
+    # The model declares which tracks exist and which way each one goes, and the SDK
+    # hands that over as `capabilities_received`. Picking the track from it beats
+    # guessing a name: pushing to a track the model did not declare is silently dropped
+    # — the frames go nowhere and the send still looks like it worked.
+    capabilities: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
+    reactor.on(
+        "capabilities_received",
+        lambda caps: None if capabilities.done() else capabilities.set_result(caps),
+    )
+
+    # A published track stops going anywhere if the peer connection drops, and there is
+    # nothing in the push path to say so, so watch the status instead of pushing into a
+    # connection that has gone.
+    live = asyncio.Event()
+    live.set()
+
+    def _on_status(status: str) -> None:
+        if status == "ready":
+            ready.set()
+            live.set()
+        elif ready.is_set():
+            # Only after the first ready: the states on the way up are not a drop.
+            live.clear()
+
+    reactor.on("status_changed", _on_status)
+
+    # Ctrl-C asks the loop to finish rather than raising through it. The teardown below
+    # has to run: this process owns the session, and a creator that goes away without
+    # disconnecting takes the session with it — the runtime marks it orphaned, and the
+    # next run cannot start ("cannot start session while orphaned") until it is cleared.
+    # A KeyboardInterrupt would unwind straight past `disconnect()`, and moving the
+    # teardown into a `finally` alone would not help, since by then the task is being
+    # cancelled and its remaining awaits are not guaranteed to complete.
+    stopping = asyncio.Event()
+    _install_interrupt_handler(stopping)
 
     print("Connecting…", file=sys.stderr)
     await reactor.connect(session_id=args.session_id)
     await asyncio.wait_for(ready.wait(), timeout=60)
+
+    track = _choose_track(await asyncio.wait_for(capabilities, timeout=30), args.track)
 
     # Printed to stdout, and prominently: joining from another process is the whole point
     # of this example, and this is the value that makes it possible.
@@ -155,7 +226,7 @@ async def main() -> int:
     print(f"session-id: {session_id}", flush=True)
     print(
         f"Ready. Publishing {args.width}×{args.height} @ {args.fps:g} fps on "
-        f"'{args.track}', every frame tagged.",
+        f"'{track}', every frame tagged.",
         file=sys.stderr,
     )
     print(
@@ -165,7 +236,7 @@ async def main() -> int:
         file=sys.stderr,
     )
 
-    await reactor.publish_track(args.track)
+    await reactor.publish_track(track)
 
     sent = 0
     started = time.monotonic()
@@ -176,11 +247,23 @@ async def main() -> int:
 
     try:
         while time.monotonic() < deadline:
+            if stopping.is_set():
+                print("\nStopping…", file=sys.stderr)
+                break
+
+            if not live.is_set():
+                print(
+                    f"Connection dropped after {sent} frames — nothing published from "
+                    f"here is reaching anyone. Stopping.",
+                    file=sys.stderr,
+                )
+                break
+
             loop_start = time.monotonic()
 
             rgb = _hue_to_rgb(hue)
             reactor.push_video_frame(
-                args.track,
+                track,
                 _make_frame(args.width, args.height, rgb),
                 args.width,
                 args.height,
@@ -202,19 +285,37 @@ async def main() -> int:
             await asyncio.sleep(max(0.0, frame_secs - (time.monotonic() - loop_start)))
     except asyncio.CancelledError:
         pass
+    finally:
+        elapsed = max(time.monotonic() - started, 1e-9)
+        print(
+            f"Sent {sent} tagged frames in {elapsed:.1f}s ({sent / elapsed:.1f} fps).",
+            file=sys.stderr,
+        )
 
-    elapsed = max(time.monotonic() - started, 1e-9)
-    print(
-        f"Sent {sent} tagged frames in {elapsed:.1f}s ({sent / elapsed:.1f} fps).",
-        file=sys.stderr,
-    )
+        # Ending the session deliberately, rather than by vanishing, is what leaves the
+        # runtime able to start the next one.
+        reactor.unpublish_track(track)
+        await reactor.disconnect()
+        reactor.close()
 
-    reactor.unpublish_track(args.track)
-    await reactor.disconnect()
-    reactor.close()
     return 0
 
 
+def _install_interrupt_handler(stopping: asyncio.Event) -> None:
+    """Make Ctrl-C set ``stopping`` instead of raising.
+
+    ``loop.add_signal_handler`` is the clean path but is not implemented on Windows, so
+    fall back to ``signal.signal`` there and hop back onto the loop thread, since a
+    handler installed that way runs wherever the signal lands.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        loop.add_signal_handler(signal.SIGINT, stopping.set)
+    except NotImplementedError:
+        signal.signal(signal.SIGINT, lambda *_: loop.call_soon_threadsafe(stopping.set))
+
+
 if __name__ == "__main__":
+    # Reached only if a second Ctrl-C arrives while the first one is still shutting down.
     with contextlib.suppress(KeyboardInterrupt):
         raise SystemExit(asyncio.run(main()))
