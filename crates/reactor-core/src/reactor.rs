@@ -874,24 +874,31 @@ impl Reactor {
                 message: format!("cannot request clip while status is {}", self.status()),
             });
         }
-        match self
+        let response = self
             .control_request(method, payload, self.options.clip_request_timeout)
-            .await?
-        {
-            ServerPayload::ClipReady(ready) => {
+            .await;
+        match response {
+            Ok(ServerPayload::ClipReady(ready)) => {
                 Ok(clip_from_ready(ready, self.coordinator.api_url()))
             }
-            ServerPayload::ClipFailed(failed) => Err(CoreError::Recording {
+            Ok(ServerPayload::ClipFailed(failed)) => Err(CoreError::Recording {
                 code: codes::INTERNAL_ERROR.to_string(),
                 message: failed.reason,
             }),
-            ServerPayload::Error(e) => Err(CoreError::Recording {
+            Ok(ServerPayload::Error(e)) => Err(CoreError::Recording {
                 code: e.code,
                 message: e.message,
             }),
-            _ => Err(CoreError::decode(format!(
+            Ok(_) => Err(CoreError::decode(format!(
                 "unexpected control response for {method}"
             ))),
+            // A generic timeout still needs to surface as the documented
+            // Recording/REQUEST_TIMEOUT code callers already match on.
+            Err(CoreError::Timeout(_)) => Err(CoreError::Recording {
+                code: codes::REQUEST_TIMEOUT.to_string(),
+                message: "clip request timed out".to_string(),
+            }),
+            Err(error) => Err(error),
         }
     }
 
