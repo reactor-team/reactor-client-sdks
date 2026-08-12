@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use prost::Message as _;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::error::CoreError;
 use crate::protocol::upload::FileRef;
@@ -65,7 +65,8 @@ pub fn encode_command(
 /// An inbound, decoded data-channel message.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IncomingMessage {
-    /// A model emission (`ModelMessage`).
+    /// A model emission (`ModelMessage`), as `{"type": ..., "data": ...}` —
+    /// consumers key on `type` to distinguish emission kinds.
     Application(Value),
     /// The runtime rejected the last command sent on this channel.
     Error { code: String, message: String },
@@ -80,7 +81,10 @@ pub fn parse_incoming(raw: &[u8]) -> Result<IncomingMessage, CoreError> {
                 .data
                 .map(struct_to_value)
                 .unwrap_or(Value::Null);
-            Ok(IncomingMessage::Application(data))
+            Ok(IncomingMessage::Application(json!({
+                "type": model_message.r#type,
+                "data": data,
+            })))
         }
         Some(data_server_message::Payload::Error(error)) => Ok(IncomingMessage::Error {
             code: error.code,
@@ -175,7 +179,6 @@ pub mod legacy {
 mod tests {
     use super::*;
     use crate::protocol::wire::v1::model::ModelMessage;
-    use serde_json::json;
 
     fn decode_command(bytes: &[u8]) -> Command {
         let message = DataClientMessage::decode(bytes).unwrap();
@@ -239,7 +242,7 @@ mod tests {
         .encode_to_vec();
         assert_eq!(
             parse_incoming(&bytes).unwrap(),
-            IncomingMessage::Application(json!({"data": 1.0}))
+            IncomingMessage::Application(json!({"type": "emit", "data": {"data": 1.0}}))
         );
     }
 
