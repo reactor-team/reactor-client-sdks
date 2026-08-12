@@ -558,7 +558,10 @@ impl Reactor {
                 self.dispatcher.dispatch(ReactorEvent::Message(value));
             }
             Ok(IncomingMessage::Error { code, message }) => {
-                log::warn!("data channel error {code}: {message}");
+                // The runtime rejected the last command sent on this channel.
+                // send_command already returned once the frame was queued, so
+                // this is the only signal callers get that it failed.
+                self.emit_error(&code, message, Component::Gpu, true, None);
             }
             // Transitional: runtime-scoped commands (ping, clip/recording
             // requests, fileUploaded) still round-trip as the legacy JSON
