@@ -27,8 +27,8 @@ pub enum PeerEvent {
     ControlChannelOpen,
     /// Binary `reactor_wire.v1` payload received on the data channel.
     DataChannelMessage(Vec<u8>),
-    /// Text payload received on the control channel.
-    ControlChannelMessage(String),
+    /// Binary `reactor_wire.v1` payload received on the control channel.
+    ControlChannelMessage(Vec<u8>),
     /// A remote media track arrived. `name` if the engine resolved it,
     /// otherwise the core resolves it from the track mapping by `mid`.
     TrackReceived {
@@ -79,8 +79,8 @@ pub trait PeerTransport {
     /// scoped commands not yet migrated — see [`crate::messaging::legacy`]).
     fn send_data(&self, payload: &[u8], binary: bool) -> Result<(), crate::error::CoreError>;
 
-    /// Send a serialized message on the `"control"` channel.
-    fn send_control(&self, payload: &str) -> Result<(), crate::error::CoreError>;
+    /// Send a `reactor_wire.v1` binary message on the `"control"` channel.
+    fn send_control(&self, payload: &[u8]) -> Result<(), crate::error::CoreError>;
 
     /// Activate (`true`) or deactivate (`false`) a track's transceiver —
     /// the local SDP renegotiation behind pause/resume.

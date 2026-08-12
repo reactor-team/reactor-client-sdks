@@ -19,7 +19,7 @@ use crate::control::ControlCorrelator;
 use crate::coordinator::{CoordinatorClient, CoordinatorConfig};
 use crate::error::{codes, Component, CoreError, ReactorError};
 use crate::events::{Dispatcher, ReactorEvent};
-use crate::messaging::{self, encode_command, parse_incoming, IncomingMessage};
+use crate::messaging::{encode_command, parse_incoming, IncomingMessage};
 use crate::peer::{PeerConnectionState, PeerEvent};
 use crate::protocol::envelope::MessageScope;
 use crate::protocol::recording::message_type;
@@ -28,7 +28,15 @@ use crate::protocol::session::{
 };
 use crate::protocol::upload::{CreateUploadRequest, FileRef};
 use crate::protocol::webrtc::{IceCandidate, TrackMappingEntry};
-use crate::recording::{Clip, RecordingCorrelator};
+use crate::protocol::wire::v1::control::control_client_message::Payload as ClientPayload;
+use crate::protocol::wire::v1::control::control_server_message::Payload as ServerPayload;
+use crate::protocol::wire::v1::platform::{
+    FileUploaded, Ping, RequestClip, RequestRecording,
+};
+use crate::protocol::wire::v1::track::{
+    PauseTrack, PublishTrack, ResumeTrack, UnpublishTrack,
+};
+use crate::recording::{clip_from_ready, Clip};
 use crate::runtime::timeout;
 use crate::signaling::WebRtcSignaling;
 use crate::state::ReactorStatus;
@@ -135,7 +143,6 @@ pub struct Reactor {
     options: ReactorOptions,
     dispatcher: Dispatcher,
     control: ControlCorrelator,
-    recording: RecordingCorrelator,
     state: Mutex<State>,
 }
 
@@ -170,7 +177,6 @@ impl Reactor {
             options,
             dispatcher: Dispatcher::new(),
             control: ControlCorrelator::new(),
-            recording: RecordingCorrelator::new(),
             state: Mutex::new(State::default()),
         }
     }
@@ -414,7 +420,6 @@ impl Reactor {
         };
 
         self.control.fail_all("disconnected");
-        self.recording.fail_all("disconnected");
 
         if let Err(error) = self.peer.close().await {
             log::warn!("peer close failed: {error}");
@@ -478,9 +483,7 @@ impl Reactor {
                 Self::check_ready_locked(&mut state);
             }
             PeerEvent::DataChannelMessage(raw) => self.on_data_message(&raw),
-            PeerEvent::ControlChannelMessage(raw) => {
-                self.control.handle_message(&raw);
-            }
+            PeerEvent::ControlChannelMessage(raw) => self.on_control_message(&raw),
             PeerEvent::TrackReceived { name, mid } => {
                 let resolved = name.or_else(|| {
                     let state = self.state.lock().unwrap();
@@ -563,22 +566,54 @@ impl Reactor {
                 // this is the only signal callers get that it failed.
                 self.emit_error(&code, message, Component::Gpu, true, None);
             }
-            // Transitional: runtime-scoped commands (ping, clip/recording
-            // requests, fileUploaded) still round-trip as the legacy JSON
-            // envelope until they move to the control channel.
-            Err(_) => match messaging::legacy::parse_incoming(raw) {
-                Some((MessageScope::Application, value)) => {
-                    self.dispatcher.dispatch(ReactorEvent::Message(value));
-                }
-                Some((MessageScope::Runtime, value)) => {
-                    self.recording
-                        .handle_runtime_message(&value, self.coordinator.api_url());
-                    self.dispatcher
-                        .dispatch(ReactorEvent::RuntimeMessage(value));
-                }
-                None => log::warn!("undecodable data-channel message"),
-            },
+            Err(error) => log::warn!("undecodable data-channel message: {error}"),
         }
+    }
+
+    /// Handle a decoded control-channel push. [`ControlCorrelator::handle_message`]
+    /// already resolved any pending request this correlates to; this only
+    /// covers responses/notifications the core additionally surfaces as a
+    /// [`ReactorEvent::RuntimeMessage`] for host/app listeners — clip
+    /// results (also returned directly from `request_clip`/
+    /// `request_recording`) and unprompted pushes like moderation.
+    fn on_control_message(&self, raw: &[u8]) {
+        let Some(payload) = self.control.handle_message(raw) else {
+            return;
+        };
+        match payload {
+            ServerPayload::ClipReady(ready) => {
+                let clip = clip_from_ready(ready, self.coordinator.api_url());
+                self.dispatch_runtime_message(
+                    message_type::CLIP_READY,
+                    serde_json::to_value(&clip).unwrap_or(Value::Null),
+                );
+            }
+            ServerPayload::ClipFailed(failed) => {
+                self.dispatch_runtime_message(
+                    message_type::CLIP_FAILED,
+                    json!({ "reason": failed.reason }),
+                );
+            }
+            ServerPayload::Moderation(m) => {
+                self.dispatch_runtime_message(
+                    message_type::MODERATION,
+                    json!({
+                        "action": m.action,
+                        "input_kind": m.input_kind,
+                        "command": m.command,
+                        "categories": m.categories,
+                        "message": m.message,
+                    }),
+                );
+            }
+            ServerPayload::ModelSchema(_) | ServerPayload::PublishTrack(_) | ServerPayload::Error(_) => {}
+        }
+    }
+
+    fn dispatch_runtime_message(&self, kind: &str, data: Value) {
+        self.dispatcher.dispatch(ReactorEvent::RuntimeMessage(
+            json!({ "type": kind, "data": data }),
+        ));
     }
 
     fn check_ready_locked(state: &mut State) {
@@ -609,6 +644,18 @@ impl Reactor {
         scope: MessageScope,
         uploads: Option<BTreeMap<String, FileRef>>,
     ) -> Result<(), CoreError> {
+        if scope == MessageScope::Runtime {
+            // The reactor_wire.v1 control channel has no generic passthrough
+            // for an arbitrary runtime command name — every runtime-scoped
+            // message is one of a closed set of typed control-channel
+            // messages, each with its own dedicated method (`ping`,
+            // `request_clip`, `request_recording`, `upload_file`, track
+            // control). There is no typed equivalent for anything else.
+            return Err(CoreError::InvalidState(format!(
+                "'{command}' has no reactor_wire.v1 control-channel equivalent; \
+                 use ping()/request_clip()/request_recording()/upload_file() instead"
+            )));
+        }
         {
             let state = self.state.lock().unwrap();
             if state.status != ReactorStatus::Ready {
@@ -647,7 +694,10 @@ impl Reactor {
     }
 
     pub fn ping(&self) -> Result<(), CoreError> {
-        self.send_command(message_type::PING, json!({}), MessageScope::Runtime)
+        self.peer
+            .send_control(&ControlCorrelator::notification(ClientPayload::Ping(
+                Ping {},
+            )))
     }
 
     // ------------------------------------------------------------------
@@ -656,22 +706,44 @@ impl Reactor {
 
     pub async fn publish_track(&self, name: &str) -> Result<(), CoreError> {
         self.ensure_ready()?;
-        self.control_request("publish_track", json!({ "name": name }))
-            .await
-            .inspect_err(|error| {
-                self.emit_error(
-                    codes::TRACK_PUBLISH_FAILED,
-                    error.to_string(),
-                    Component::Gpu,
-                    false,
-                    None,
-                );
-            })
+        let payload = ClientPayload::PublishTrack(PublishTrack {
+            name: name.to_string(),
+        });
+        self.control_request(
+            "publish_track",
+            payload,
+            self.options.control_request_timeout,
+        )
+        .await
+        .and_then(|payload| match payload {
+            ServerPayload::PublishTrack(_) => Ok(()),
+            ServerPayload::Error(e) => Err(CoreError::ControlRequest {
+                method: "publish_track".to_string(),
+                code: e.code,
+                message: e.message,
+            }),
+            _ => Err(CoreError::decode(
+                "unexpected control response for publish_track",
+            )),
+        })
+        .inspect_err(|error| {
+            self.emit_error(
+                codes::TRACK_PUBLISH_FAILED,
+                error.to_string(),
+                Component::Gpu,
+                false,
+                None,
+            );
+        })
     }
 
     pub fn unpublish_track(&self, name: &str) -> Result<(), CoreError> {
         self.ensure_ready()?;
-        let payload = ControlCorrelator::notification("unpublish_track", json!({ "name": name }));
+        let payload = ControlCorrelator::notification(ClientPayload::UnpublishTrack(
+            UnpublishTrack {
+                name: name.to_string(),
+            },
+        ));
         self.peer.send_control(&payload)
     }
 
@@ -700,7 +772,9 @@ impl Reactor {
     pub async fn pause_track(&self, name: &str) -> Result<(), CoreError> {
         self.ensure_ready()?;
         self.peer.set_track_direction(name, false).await?;
-        let payload = ControlCorrelator::notification("pause_track", json!({ "name": name }));
+        let payload = ControlCorrelator::notification(ClientPayload::PauseTrack(PauseTrack {
+            name: name.to_string(),
+        }));
         self.peer.send_control(&payload)?;
         self.state
             .lock()
@@ -713,7 +787,9 @@ impl Reactor {
     pub async fn resume_track(&self, name: &str) -> Result<(), CoreError> {
         self.ensure_ready()?;
         self.peer.set_track_direction(name, true).await?;
-        let payload = ControlCorrelator::notification("resume_track", json!({ "name": name }));
+        let payload = ControlCorrelator::notification(ClientPayload::ResumeTrack(ResumeTrack {
+            name: name.to_string(),
+        }));
         self.peer.send_control(&payload)?;
         self.state.lock().unwrap().paused_tracks.remove(name);
         Ok(())
@@ -740,20 +816,21 @@ impl Reactor {
         }
     }
 
-    async fn control_request(&self, method: &str, data: Value) -> Result<(), CoreError> {
-        let pending = self.control.begin(method, data);
+    /// Send a control-channel request and wait for its correlated response,
+    /// returning the raw decoded `reactor_wire.v1` server payload for the
+    /// caller to interpret (the possible variants differ per request kind).
+    async fn control_request(
+        &self,
+        method: &'static str,
+        payload: ClientPayload,
+        request_timeout: Duration,
+    ) -> Result<ServerPayload, CoreError> {
+        let pending = self.control.begin(payload);
         if let Err(error) = self.peer.send_control(&pending.payload) {
             self.control.cancel(&pending.request_id);
             return Err(error);
         }
-        match timeout(
-            &self.platform,
-            self.options.control_request_timeout,
-            method,
-            pending.receiver,
-        )
-        .await
-        {
+        match timeout(&self.platform, request_timeout, method, pending.receiver).await {
             Ok(Ok(result)) => result,
             Ok(Err(_cancelled)) => Err(CoreError::Aborted),
             Err(timeout_error) => {
@@ -775,46 +852,49 @@ impl Reactor {
             });
         }
         self.dispatch_clip_request(
-            message_type::REQUEST_CLIP,
-            json!({ "duration_seconds": duration_seconds }),
+            "requestClip",
+            ClientPayload::RequestClip(RequestClip { duration_seconds }),
         )
         .await
     }
 
     pub async fn request_recording(&self) -> Result<Clip, CoreError> {
-        self.dispatch_clip_request(message_type::REQUEST_RECORDING, json!({}))
-            .await
+        self.dispatch_clip_request(
+            "requestRecording",
+            ClientPayload::RequestRecording(RequestRecording {}),
+        )
+        .await
     }
 
-    async fn dispatch_clip_request(&self, kind: &str, data: Value) -> Result<Clip, CoreError> {
+    async fn dispatch_clip_request(
+        &self,
+        method: &'static str,
+        payload: ClientPayload,
+    ) -> Result<Clip, CoreError> {
         if self.status() != ReactorStatus::Ready {
             return Err(CoreError::Recording {
                 code: codes::DISCONNECTED.to_string(),
                 message: format!("cannot request clip while status is {}", self.status()),
             });
         }
-        let (ticket, receiver) = self.recording.begin();
-        if let Err(error) = self.send_command(kind, data, MessageScope::Runtime) {
-            self.recording.cancel(ticket);
-            return Err(error);
-        }
-        match timeout(
-            &self.platform,
-            self.options.clip_request_timeout,
-            kind,
-            receiver,
-        )
-        .await
+        match self
+            .control_request(method, payload, self.options.clip_request_timeout)
+            .await?
         {
-            Ok(Ok(result)) => result,
-            Ok(Err(_cancelled)) => Err(CoreError::Aborted),
-            Err(_) => {
-                self.recording.cancel(ticket);
-                Err(CoreError::Recording {
-                    code: codes::REQUEST_TIMEOUT.to_string(),
-                    message: "clip request timed out".to_string(),
-                })
+            ServerPayload::ClipReady(ready) => {
+                Ok(clip_from_ready(ready, self.coordinator.api_url()))
             }
+            ServerPayload::ClipFailed(failed) => Err(CoreError::Recording {
+                code: codes::INTERNAL_ERROR.to_string(),
+                message: failed.reason,
+            }),
+            ServerPayload::Error(e) => Err(CoreError::Recording {
+                code: e.code,
+                message: e.message,
+            }),
+            _ => Err(CoreError::decode(format!(
+                "unexpected control response for {method}"
+            ))),
         }
     }
 
@@ -863,11 +943,15 @@ impl Reactor {
         };
 
         if self.status() == ReactorStatus::Ready {
-            let _ = self.send_command(
-                message_type::FILE_UPLOADED,
-                serde_json::to_value(&file_ref).map_err(CoreError::decode)?,
-                MessageScope::Runtime,
-            );
+            let payload = ControlCorrelator::notification(ClientPayload::FileUploaded(
+                FileUploaded {
+                    upload_id: file_ref.upload_id.clone(),
+                    name: file_ref.name.clone(),
+                    mime_type: file_ref.mime_type.clone(),
+                    size: file_ref.size as i64,
+                },
+            ));
+            let _ = self.peer.send_control(&payload);
         }
         Ok(file_ref)
     }
@@ -1075,7 +1159,7 @@ mod tests {
         fn send_data(&self, _: &[u8], _: bool) -> Result<(), CoreError> {
             Ok(())
         }
-        fn send_control(&self, _: &str) -> Result<(), CoreError> {
+        fn send_control(&self, _: &[u8]) -> Result<(), CoreError> {
             Ok(())
         }
         async fn set_track_direction(&self, _: &str, _: bool) -> Result<(), CoreError> {

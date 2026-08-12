@@ -3,23 +3,18 @@
 //! This crate is the single source of truth for every JSON shape exchanged
 //! between a Reactor client and the platform:
 //!
-//! * the coordinator HTTP API (session lifecycle, uploads),
-//! * the HTTP-based WebRTC signaling protocol (SDP exchange, trickle ICE),
-//! * the two-level message envelope carried over the WebRTC data channel
-//!   (legacy JSON, being replaced by [`wire`]),
-//! * the control-channel request/response/notification protocol (legacy
-//!   JSON, being replaced by [`wire`]),
-//! * the recording (clip) runtime messages,
+//! * the coordinator HTTP API (session lifecycle, uploads) — JSON,
+//! * the HTTP-based WebRTC signaling protocol (SDP exchange, trickle ICE) —
+//!   JSON,
 //! * the data/control channel wire protocol — protobuf (`reactor_wire.v1`,
 //!   see [`wire`]), owned upstream by `reactor-runtime`.
 //!
-//! All field names serialize to the exact snake_case wire names used by the
-//! existing JS (`@reactor-team/js-sdk`) and Python (`reactor-sdk`) SDKs.
+//! All HTTP field names serialize to the exact snake_case wire names used by
+//! the existing JS (`@reactor-team/js-sdk`) and Python (`reactor-sdk`) SDKs.
 //! The crate is `#![no_std]`-adjacent in spirit: no I/O, no async, no
-//! platform dependencies — just `serde` types, so it can be reused by the
-//! core, by FFI layers, and by server-side tooling.
+//! platform dependencies, so it can be reused by the core, by FFI layers,
+//! and by server-side tooling.
 
-pub mod control;
 pub mod envelope;
 pub mod recording;
 pub mod session;
