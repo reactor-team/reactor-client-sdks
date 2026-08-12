@@ -53,9 +53,9 @@ fn prost_value_to_value(value: ProstValue) -> Value {
     match value.kind {
         None | Some(Kind::NullValue(_)) => Value::Null,
         Some(Kind::BoolValue(b)) => Value::Bool(b),
-        Some(Kind::NumberValue(n)) => {
-            Number::from_f64(n).map(Value::Number).unwrap_or(Value::Null)
-        }
+        Some(Kind::NumberValue(n)) => Number::from_f64(n)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
         Some(Kind::StringValue(s)) => Value::String(s),
         Some(Kind::ListValue(l)) => {
             Value::Array(l.values.into_iter().map(prost_value_to_value).collect())

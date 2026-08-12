@@ -40,7 +40,6 @@ pub mod data {
 
 pub mod control {
     pub use super::generated::{
-        control_client_message, control_server_message, ControlClientMessage,
-        ControlServerMessage,
+        control_client_message, control_server_message, ControlClientMessage, ControlServerMessage,
     };
 }
