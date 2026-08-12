@@ -340,8 +340,11 @@ pub unsafe extern "C" fn reactor_create(
 }
 
 /// Like [`reactor_create`], but selects the audio device module explicitly:
-/// `0` = synthetic (headless), `1` = platform (real mic/speaker with AEC/NS/AGC),
-/// anything else = platform on desktop, synthetic on Android.
+/// `0` = synthetic, `1` = platform (real mic capture and speaker playout, with
+/// AEC/NS/AGC), anything else = the default, which is synthetic.
+///
+/// Nothing opens the microphone unless `1` asks for it. See
+/// [`peer::default_adm_mode`](crate::peer) for why that is the default.
 ///
 /// # Safety
 ///

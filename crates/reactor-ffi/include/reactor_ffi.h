@@ -155,9 +155,15 @@ ReactorHandle *reactor_create(
 
 /*
  * Like reactor_create but selects the audio device module explicitly:
- *   adm_mode 0 = synthetic (headless: app pushes PCM, receives via on_audio),
- *            1 = platform  (real mic/speaker + AEC/NS/AGC),
- *            other        = default (platform on desktop, synthetic on Android).
+ *   adm_mode 0 = synthetic (no audio hardware: the app pushes PCM with
+ *                            reactor_push_audio_frame and receives decoded audio
+ *                            through on_audio),
+ *            1 = platform  (real mic capture + speaker playout, with AEC/NS/AGC),
+ *            other        = the default, which is synthetic.
+ *
+ * Synthetic is the default deliberately: nothing opens the microphone unless you
+ * ask for it with 1.  A model declaring a sendonly audio track is not you asking —
+ * under the platform module that alone put live microphone audio on the wire.
  */
 ReactorHandle *reactor_create_with_adm(
     const char           *api_url,

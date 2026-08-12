@@ -7,7 +7,7 @@ The exported surface of `reactor-ffi` is declared in three independent places:
      functions, which are the actual ABI.
   2. `crates/reactor-ffi/include/reactor_ffi.h` — the contract Go, C++, Kotlin and
      Swift bindings compile against. What is missing here does not exist for them.
-  3. `sdks/python/reactor/_ffi.py` — the ctypes declarations. ctypes checks nothing
+  3. `sdks/python/reactor_sdk/_ffi.py` — the ctypes declarations. ctypes checks nothing
      against the header, so a mismatch here is silent undefined behaviour rather
      than a compile error.
 
@@ -34,7 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 RUST_SRC = REPO_ROOT / "crates/reactor-ffi/src/lib.rs"
 HEADER = REPO_ROOT / "crates/reactor-ffi/include/reactor_ffi.h"
-CTYPES_SRC = REPO_ROOT / "sdks/python/reactor/_ffi.py"
+CTYPES_SRC = REPO_ROOT / "sdks/python/reactor_sdk/_ffi.py"
 
 # `pub unsafe extern "C" fn reactor_foo(`  — the exported ABI.
 RUST_EXPORT = re.compile(r'pub\s+unsafe\s+extern\s+"C"\s+fn\s+(reactor_[a-z0-9_]+)\s*\(')

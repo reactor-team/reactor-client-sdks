@@ -16,7 +16,7 @@ import threading
 
 import pytest
 
-from reactor import Clip, FileRef, Reactor, ReactorError
+from reactor_sdk import Clip, FileRef, Reactor, ReactorError
 
 
 class TestLazyLoading:
@@ -27,7 +27,7 @@ class TestLazyLoading:
         cache, so the test does not depend on whether some other module already
         loaded the library.
         """
-        import reactor._ffi as ffi
+        import reactor_sdk._ffi as ffi
 
         def explode() -> None:
             raise AssertionError(
@@ -121,7 +121,7 @@ class TestHandlerRegistry:
         reactor.on("status_changed", boom)
         reactor.on("status_changed", lambda s: seen.append(s))
 
-        with caplog.at_level("ERROR", logger="reactor.client"):
+        with caplog.at_level("ERROR", logger="reactor_sdk.client"):
             reactor._fire("status_changed", "ready")
 
         assert seen == ["ready"]
@@ -262,7 +262,7 @@ class TestSettleFromForeignThread:
 
     @pytest.mark.asyncio
     async def test_resolves_a_pending_future(self) -> None:
-        from reactor.client import _settle_from_foreign_thread
+        from reactor_sdk.client import _settle_from_foreign_thread
 
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
@@ -273,7 +273,7 @@ class TestSettleFromForeignThread:
 
     @pytest.mark.asyncio
     async def test_delivers_an_error(self) -> None:
-        from reactor.client import ReactorFFIError, _settle_from_foreign_thread
+        from reactor_sdk.client import ReactorFFIError, _settle_from_foreign_thread
 
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
@@ -287,7 +287,7 @@ class TestSettleFromForeignThread:
     async def test_a_cancelled_future_is_left_alone(self) -> None:
         """A timed-out `wait_for` cancels the future before the completion lands.
         Setting a result on it would raise InvalidStateError inside the trampoline."""
-        from reactor.client import _settle_from_foreign_thread
+        from reactor_sdk.client import _settle_from_foreign_thread
 
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
@@ -299,7 +299,7 @@ class TestSettleFromForeignThread:
         assert future.cancelled()
 
     def test_a_closed_loop_is_tolerated(self) -> None:
-        from reactor.client import _settle_from_foreign_thread
+        from reactor_sdk.client import _settle_from_foreign_thread
 
         loop = asyncio.new_event_loop()
         future: asyncio.Future = loop.create_future()
@@ -311,14 +311,14 @@ class TestSettleFromForeignThread:
 
 class TestExitHook:
     def test_clients_without_a_handle_are_not_registered(self) -> None:
-        from reactor.client import _LIVE_CLIENTS
+        from reactor_sdk.client import _LIVE_CLIENTS
 
         reactor = Reactor("https://api.reactor.inc", "m")
         assert reactor not in _LIVE_CLIENTS
 
     def test_the_exit_hook_tolerates_a_failing_close(self) -> None:
         """It runs during shutdown, where raising would be noise at best."""
-        from reactor.client import _LIVE_CLIENTS, _close_live_clients
+        from reactor_sdk.client import _LIVE_CLIENTS, _close_live_clients
 
         class Exploding(Reactor):
             def close(self) -> None:

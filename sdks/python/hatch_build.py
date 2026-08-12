@@ -11,7 +11,7 @@ Two consequences of ctypes worth knowing, because they shape the tags:
 * No libpython is linked, so one wheel serves every supported interpreter. The
   Python tag stays `py3` and the ABI tag stays `none`; only the platform tag varies.
 * The library is loaded by name at first use, so it only has to *be* in the package
-  directory. `reactor/_ffi.py` looks there second, after ``REACTOR_FFI_LIB``.
+  directory. `reactor_sdk/_ffi.py` looks there second, after ``REACTOR_FFI_LIB``.
 
 Set ``REACTOR_FFI_LIB`` to bundle a specific binary. With nothing set, the build
 looks for a release build in the Cargo workspace and falls back to a pure wheel if
@@ -29,7 +29,7 @@ from typing import Any
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
-#: Package-relative destination. Must match the names `reactor/_ffi.py` looks for.
+#: Package-relative destination. Must match the names `reactor_sdk/_ffi.py` looks for.
 LIB_NAMES = {
     "darwin": "libreactor_ffi.dylib",
     "win32": "reactor_ffi.dll",
@@ -97,7 +97,7 @@ class BundleNativeLibraryHook(BuildHookInterface):
             )
             return
 
-        build_data["force_include"][str(library)] = f"reactor/{_expected_lib_name()}"
+        build_data["force_include"][str(library)] = f"reactor_sdk/{_expected_lib_name()}"
 
         # Not pure_python, because an `any` wheel carrying a macOS dylib would install
         # happily on Linux and fail at the first call.
