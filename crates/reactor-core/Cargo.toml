@@ -21,6 +21,7 @@ thiserror        = { workspace = true }
 async-trait      = { workspace = true }
 futures          = { workspace = true }
 log              = { workspace = true }
+prost            = { workspace = true }
 tokio            = { version = "1", features = ["time"], optional = true }
 
 [dev-dependencies]

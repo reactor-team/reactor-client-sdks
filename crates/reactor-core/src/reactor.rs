@@ -19,7 +19,7 @@ use crate::control::ControlCorrelator;
 use crate::coordinator::{CoordinatorClient, CoordinatorConfig};
 use crate::error::{codes, Component, CoreError, ReactorError};
 use crate::events::{Dispatcher, ReactorEvent};
-use crate::messaging::{encode_command, parse_incoming, IncomingMessage};
+use crate::messaging::{self, encode_command, parse_incoming, IncomingMessage};
 use crate::peer::{PeerConnectionState, PeerEvent};
 use crate::protocol::envelope::MessageScope;
 use crate::protocol::recording::message_type;
@@ -552,17 +552,29 @@ impl Reactor {
         }
     }
 
-    fn on_data_message(&self, raw: &str) {
+    fn on_data_message(&self, raw: &[u8]) {
         match parse_incoming(raw) {
-            IncomingMessage::Application(value) => {
+            Ok(IncomingMessage::Application(value)) => {
                 self.dispatcher.dispatch(ReactorEvent::Message(value));
             }
-            IncomingMessage::Runtime(value) => {
-                self.recording
-                    .handle_runtime_message(&value, self.coordinator.api_url());
-                self.dispatcher
-                    .dispatch(ReactorEvent::RuntimeMessage(value));
+            Ok(IncomingMessage::Error { code, message }) => {
+                log::warn!("data channel error {code}: {message}");
             }
+            // Transitional: runtime-scoped commands (ping, clip/recording
+            // requests, fileUploaded) still round-trip as the legacy JSON
+            // envelope until they move to the control channel.
+            Err(_) => match messaging::legacy::parse_incoming(raw) {
+                Some((MessageScope::Application, value)) => {
+                    self.dispatcher.dispatch(ReactorEvent::Message(value));
+                }
+                Some((MessageScope::Runtime, value)) => {
+                    self.recording
+                        .handle_runtime_message(&value, self.coordinator.api_url());
+                    self.dispatcher
+                        .dispatch(ReactorEvent::RuntimeMessage(value));
+                }
+                None => log::warn!("undecodable data-channel message"),
+            },
         }
     }
 
@@ -612,7 +624,13 @@ impl Reactor {
                 return Err(error);
             }
         }
-        let payload = encode_command(command, data, scope, uploads, self.peer.max_message_bytes())?;
+        let max_bytes = self.peer.max_message_bytes();
+        let payload = match scope {
+            MessageScope::Application => encode_command(command, data, uploads, max_bytes)?,
+            MessageScope::Runtime => {
+                messaging::legacy::encode_runtime_command(command, data, max_bytes)?
+            }
+        };
         self.peer.send_data(&payload).inspect_err(|error| {
             self.emit_error(
                 codes::MESSAGE_SEND_FAILED,
@@ -1050,7 +1068,7 @@ mod tests {
         async fn set_remote_description(&self, _: &str) -> Result<(), CoreError> {
             Ok(())
         }
-        fn send_data(&self, _: &str) -> Result<(), CoreError> {
+        fn send_data(&self, _: &[u8]) -> Result<(), CoreError> {
             Ok(())
         }
         fn send_control(&self, _: &str) -> Result<(), CoreError> {

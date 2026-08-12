@@ -298,12 +298,8 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             let _ = tx.unbounded_send(PeerEvent::DataChannelOpen);
         });
         let tx = self.event_tx.clone();
-        data_ch.on_message(move |data, binary| {
-            if !binary {
-                if let Ok(s) = std::str::from_utf8(data) {
-                    let _ = tx.unbounded_send(PeerEvent::DataChannelMessage(s.to_owned()));
-                }
-            }
+        data_ch.on_message(move |data, _binary| {
+            let _ = tx.unbounded_send(PeerEvent::DataChannelMessage(data.to_vec()));
         });
 
         let tx = self.event_tx.clone();
@@ -386,14 +382,14 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         pc.set_remote_description(&answer).map_err(peer_err)
     }
 
-    fn send_data(&self, payload: &str) -> Result<(), CoreError> {
-        debug!("[peer] → data:    {}", &payload[..payload.len().min(200)]);
+    fn send_data(&self, payload: &[u8]) -> Result<(), CoreError> {
+        debug!("[peer] → data: {} byte(s)", payload.len());
         let s = self.state.lock().unwrap();
         let dc = s
             .data_channel
             .as_ref()
             .ok_or_else(|| CoreError::Peer("data channel not ready".into()))?;
-        dc.send(payload.as_bytes(), false).map_err(peer_err)
+        dc.send(payload, true).map_err(peer_err)
     }
 
     fn send_control(&self, payload: &str) -> Result<(), CoreError> {
