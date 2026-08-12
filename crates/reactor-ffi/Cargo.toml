@@ -22,7 +22,20 @@ env_logger     = { workspace = true }
 mime_guess     = { workspace = true }
 tokio          = { workspace = true }
 
-# iOS / Android: pure-Rust TLS (no clash with BoringSSL in libwebrtc)
+# TLS is pure Rust on every platform. Two reasons, and the mobile targets have
+# always had the first one:
+#
+# 1. libwebrtc bundles BoringSSL. Linking OpenSSL beside it puts two forks of the
+#    same library in one process, which is a well-known source of symbol conflicts.
+#    rustls's crypto provider uses prefixed symbols, so it does not collide.
+# 2. Packaging. On Linux, native-tls means OpenSSL, which auditwheel then vendors
+#    into every wheel — shipping a pinned copy of OpenSSL that we would own the
+#    patching of. With rustls there is nothing to vendor.
+#
+# Desktop uses the platform trust store rather than bundled roots, because it is
+# replacing native-tls, which did too: switching to webpki-roots would silently stop
+# trusting enterprise CAs and break anyone behind a MITM proxy.
+
 [target.'cfg(target_os = "ios")'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
@@ -30,6 +43,6 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 jni     = "0.21"
 
-# Desktop: native TLS + http2/stream/charset
+# Desktop also gets http2/stream/charset.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "http2", "charset", "default-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "http2", "charset", "rustls-tls-native-roots"] }

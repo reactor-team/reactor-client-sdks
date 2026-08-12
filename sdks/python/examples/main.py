@@ -10,10 +10,10 @@ from __future__ import annotations
 import asyncio
 import sys
 
-sys.path.insert(0, ".")  # allow `from reactor import ...` from repo root
+sys.path.insert(0, ".")  # allow `from reactor_sdk import ...` from repo root
 
 from examples.reactor_client import make_reactor
-from reactor import ReactorError
+from reactor_sdk import ReactorError
 
 
 async def main() -> None:

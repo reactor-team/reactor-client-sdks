@@ -162,6 +162,40 @@ impl CoordinatorClient {
         Ok(session)
     }
 
+    /// Read the session a local runtime is serving, to join one this client did not
+    /// create.
+    ///
+    /// `GET /session` takes no id because a local runtime holds exactly one. The
+    /// requested id is still checked against what comes back: adopting a different
+    /// session than the caller asked for would be worse than refusing, and the id is
+    /// how they said which.
+    async fn local_get_session(&self, session_id: &str) -> Result<SessionResponse, CoreError> {
+        let response = self
+            .http
+            .request(HttpRequest {
+                method: Method::Get,
+                url: format!("{}/session", self.config.api_url),
+                headers: self.local_headers(false),
+                body: None,
+            })
+            .await?;
+        check_status(&response, "get local session")?;
+        let session: SessionResponse = response.json()?;
+
+        if session.session_id != session_id {
+            return Err(CoreError::InvalidState(format!(
+                "local runtime is serving session {}, not the requested {session_id}",
+                session.session_id
+            )));
+        }
+        if session.state.is_terminal() {
+            return Err(CoreError::TerminalSession(format!("{:?}", session.state)));
+        }
+
+        *self.local_session.lock().unwrap() = Some(session.clone());
+        Ok(session)
+    }
+
     pub async fn get_session(&self, session_id: &str) -> Result<SessionResponse, CoreError> {
         let response = self
             .http
@@ -178,11 +212,16 @@ impl CoordinatorClient {
 
     pub async fn poll_session_ready(&self, session_id: &str) -> Result<SessionResponse, CoreError> {
         if self.config.local {
-            return self.local_session.lock().unwrap().clone().ok_or_else(|| {
-                CoreError::InvalidState(
-                    "no cached local session — call create_session first".into(),
-                )
-            });
+            // The session this client started, when it started one.
+            if let Some(session) = self.local_session.lock().unwrap().clone() {
+                return Ok(session);
+            }
+            // Otherwise adopt the one the runtime is already serving. A local runtime
+            // holds a single session and `GET /session` describes it, which is how a
+            // second process joins one it did not create — previously this returned
+            // "no cached local session" and made joining impossible outside the
+            // creating process.
+            return self.local_get_session(session_id).await;
         }
         let mut backoff = self.config.poll.backoff();
         for attempt in 1..=self.config.poll.max_attempts {

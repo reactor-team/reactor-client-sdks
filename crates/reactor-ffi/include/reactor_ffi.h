@@ -9,15 +9,46 @@
  *
  * Thread safety
  * ─────────────
- * All event callbacks (on_status, on_error, …) are invoked on an internal
- * tokio thread.  The strings passed to them are valid only for the duration
- * of the callback (copy them if you need them later).
+ * No callback runs on the caller's thread, and callbacks may run concurrently.
+ * Strings and buffers handed to a callback are valid only for its duration —
+ * copy anything you need to keep.
  *
- * Completion callbacks (reactor_completion_fn) are also invoked on a tokio
- * thread, exactly once per call.
+ * Callbacks are delivered on threads dedicated to them, so a callback that
+ * blocks — taking the CPython GIL, attaching to the JVM — is tolerated and
+ * delays only its own stream.  It never stalls WebRTC decoding or the internal
+ * tokio runtime.  There are three such threads, because their backpressure
+ * differs:
+ *
+ *   - Control events (on_status, on_error, on_message, on_runtime_message,
+ *     on_track, on_capabilities, on_session_id) and the completion callbacks
+ *     (reactor_completion_fn, invoked exactly once per call) share one thread,
+ *     with an unbounded queue: they are low-rate, and losing one would leave you
+ *     with a wrong view of the session.
+ *   - on_frame has its own thread and a one-deep queue.  If you are slower than
+ *     the incoming frame rate you get the newest frame and the ones in between
+ *     are dropped, because a stale frame costs latency without buying anything.
+ *   - on_audio has its own thread and a short queue that keeps its backlog and
+ *     refuses new arrivals when full, since there the queue is the jitter buffer
+ *     and a hole in it is audible.
+ *
+ * Blocking is therefore safe, but still not free: whatever you block, you drop.
  *
  * The caller is responsible for ensuring that `userdata` pointers are safe
  * to dereference from any thread that may call the callbacks.
+ *
+ * Teardown
+ * ────────
+ * reactor_destroy() blocks until every callback in flight has returned, and no
+ * callback starts after it.  It is therefore the boundary to release your
+ * callback context on — a ctypes trampoline, a cgo.Handle, a JNI GlobalRef —
+ * and doing so any earlier is a use-after-free.
+ *
+ * Check the return value.  0 means quiescence was reached and releasing is safe;
+ * -1 means a callback is still running and the pointers must be kept alive
+ * instead, which happens if the host is wedged (a callback waiting on a GIL an
+ * already-finalising interpreter will never release) or if destroy was called
+ * from inside one of the handle's own callbacks.  Tearing down while your
+ * runtime is still running keeps you on the 0 path.
  */
 
 #ifndef REACTOR_FFI_H
@@ -79,8 +110,8 @@ typedef struct ReactorCallbacks {
     reactor_on_track_fn           on_track;            /* nullable */
     reactor_on_capabilities_fn    on_capabilities;     /* nullable */
     reactor_on_session_id_fn      on_session_id;       /* nullable */
-    reactor_on_frame_fn           on_frame;            /* nullable; called on Tokio thread at video rate */
-    reactor_on_audio_fn           on_audio;            /* nullable; decoded remote PCM (~10 ms/frame) */
+    reactor_on_frame_fn           on_frame;            /* nullable; own thread, newest frame wins if you fall behind */
+    reactor_on_audio_fn           on_audio;            /* nullable; own thread, ~10 ms/frame, short queue */
     void                         *userdata;             /* passed through to every callback */
 } ReactorCallbacks;
 
@@ -124,9 +155,15 @@ ReactorHandle *reactor_create(
 
 /*
  * Like reactor_create but selects the audio device module explicitly:
- *   adm_mode 0 = synthetic (headless: app pushes PCM, receives via on_audio),
- *            1 = platform  (real mic/speaker + AEC/NS/AGC),
- *            other        = default (platform on desktop, synthetic on Android).
+ *   adm_mode 0 = synthetic (no audio hardware: the app pushes PCM with
+ *                            reactor_push_audio_frame and receives decoded audio
+ *                            through on_audio),
+ *            1 = platform  (real mic capture + speaker playout, with AEC/NS/AGC),
+ *            other        = the default, which is synthetic.
+ *
+ * Synthetic is the default deliberately: nothing opens the microphone unless you
+ * ask for it with 1.  A model declaring a sendonly audio track is not you asking —
+ * under the platform module that alone put live microphone audio on the wire.
  */
 ReactorHandle *reactor_create_with_adm(
     const char           *api_url,
@@ -138,10 +175,26 @@ ReactorHandle *reactor_create_with_adm(
 );
 
 /*
- * Destroy a handle.  Must not be called while other operations are in flight
- * (wait for all completion callbacks to fire first).
+ * Destroy a handle, and with it the right to call back into the host.
+ *
+ * Returns 0 when no callback is running and none will start.  That is the only
+ * answer on which you may release whatever your callback pointers refer to — a
+ * ctypes trampoline, a cgo.Handle, a JNI GlobalRef.
+ *
+ * Returns -1 when a callback is still executing and could not be waited for.
+ * The handle is released either way, but the callback pointers must be kept
+ * alive; leaking them is correct, freeing them is a use-after-free.  Two ways to
+ * get here: the host is wedged (a callback blocked on a lock this library cannot
+ * make it give up, such as a GIL an already-finalising interpreter will never
+ * release), or this was called from inside one of the handle's own callbacks,
+ * which is therefore still on the stack.
+ *
+ * NULL is accepted and returns 0.
+ *
+ * Callers that previously treated this as returning void keep working; the extra
+ * return value is ignored by the caller's calling convention.
  */
-void reactor_destroy(ReactorHandle *handle);
+int reactor_destroy(ReactorHandle *handle);
 
 /* ── Async operations ─────────────────────────────────────────────────────── */
 
@@ -291,6 +344,28 @@ void reactor_push_video_frame(
     const uint8_t *data,
     uint32_t       width,
     uint32_t       height
+);
+
+/*
+ * Push a BGRA frame tagged with `user_data`, which reaches the far end as that
+ * frame's metadata (see reactor_on_frame_fn's user_data parameter).
+ *
+ * The bytes are sent as-is — JSON, protobuf or anything else is between the
+ * caller and the model.  A tag is dropped unless the peer declared that it reads
+ * them, so tagging is safe whatever the far end supports.
+ *
+ * `user_data` may be NULL with `user_data_len` 0, which is identical to
+ * reactor_push_video_frame().  Same buffer requirements as that function:
+ * `data` must hold width * height * 4 bytes.
+ */
+void reactor_push_video_frame_with_metadata(
+    ReactorHandle *handle,
+    const char    *track_name,
+    const uint8_t *data,
+    uint32_t       width,
+    uint32_t       height,
+    const uint8_t *user_data,   /* nullable with user_data_len 0 */
+    uint32_t       user_data_len
 );
 
 /*

@@ -35,16 +35,25 @@ from .reactor_client import make_reactor
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Push generated video frames into Reactor")
-    p.add_argument("--track", metavar="NAME", required=True,
-                   help="Name of the sendonly video track")
-    p.add_argument("--width", metavar="W", type=int, default=1280,
-                   help="Frame width in pixels (default: 1280)")
-    p.add_argument("--height", metavar="H", type=int, default=720,
-                   help="Frame height in pixels (default: 720)")
-    p.add_argument("--fps", metavar="FPS", type=float, default=30.0,
-                   help="Target frame rate (default: 30)")
-    p.add_argument("--duration", metavar="SECS", type=float, default=30.0,
-                   help="Stop after N seconds (default: 30)")
+    p.add_argument(
+        "--track", metavar="NAME", required=True, help="Name of the sendonly video track"
+    )
+    p.add_argument(
+        "--width", metavar="W", type=int, default=1280, help="Frame width in pixels (default: 1280)"
+    )
+    p.add_argument(
+        "--height", metavar="H", type=int, default=720, help="Frame height in pixels (default: 720)"
+    )
+    p.add_argument(
+        "--fps", metavar="FPS", type=float, default=30.0, help="Target frame rate (default: 30)"
+    )
+    p.add_argument(
+        "--duration",
+        metavar="SECS",
+        type=float,
+        default=30.0,
+        help="Stop after N seconds (default: 30)",
+    )
     p.add_argument("--model", metavar="NAME")
     p.add_argument("--api-url", metavar="URL")
     p.add_argument("--jwt", metavar="TOKEN")
@@ -75,7 +84,7 @@ def _hue_to_rgb(h: float) -> tuple[int, int, int]:
 def _make_frame(width: int, height: int, hue: float) -> bytes:
     """Return a solid-color BGRA frame (bytes, width*height*4 bytes)."""
     r, g, b = _hue_to_rgb(hue)
-    pixel = bytes([b, g, r, 255])   # BGRA
+    pixel = bytes([b, g, r, 255])  # BGRA
     return pixel * (width * height)
 
 
@@ -98,8 +107,7 @@ async def main() -> None:
     await reactor.connect()
     await asyncio.wait_for(ready.wait(), timeout=60)
     print(
-        f"Ready. Pushing {args.width}×{args.height} @ {args.fps:.0f} fps "
-        f"for {args.duration:.1f}s…",
+        f"Ready. Pushing {args.width}×{args.height} @ {args.fps:.0f} fps for {args.duration:.1f}s…",
         file=sys.stderr,
     )
 
@@ -109,7 +117,7 @@ async def main() -> None:
     t_start = time.monotonic()
     deadline = t_start + args.duration
     hue = 0.0
-    hue_step = frame_secs / 10.0   # full cycle every 10 s
+    hue_step = frame_secs / 10.0  # full cycle every 10 s
 
     while True:
         loop_start = time.monotonic()

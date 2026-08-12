@@ -39,15 +39,25 @@ from .reactor_client import make_reactor
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Print per-frame metadata from a Reactor video track"
+    p = argparse.ArgumentParser(description="Print per-frame metadata from a Reactor video track")
+    p.add_argument(
+        "--track",
+        metavar="NAME",
+        required=True,
+        help="Name of the recvonly video track to listen on",
     )
-    p.add_argument("--track", metavar="NAME", required=True,
-                   help="Name of the recvonly video track to listen on")
-    p.add_argument("--duration", metavar="SECS", type=float, default=30.0,
-                   help="How long to run (default: 30 s)")
-    p.add_argument("--verbose", action="store_true",
-                   help="Also print dimensions and first-pixel BGRA for every frame")
+    p.add_argument(
+        "--duration",
+        metavar="SECS",
+        type=float,
+        default=30.0,
+        help="How long to run (default: 30 s)",
+    )
+    p.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Also print dimensions and first-pixel BGRA for every frame",
+    )
     p.add_argument("--model", metavar="NAME")
     p.add_argument("--api-url", metavar="URL")
     p.add_argument("--jwt", metavar="TOKEN")
@@ -87,15 +97,11 @@ async def main() -> None:
             ud_str = user_data.decode(errors="replace") if user_data else ""
             print(
                 f"frame #{frame_id:<6}  ts={timestamp_us / 1_000_000:.6f}s"
-                f"  user_data={ud_str!r:<30}"
-                + (f"  {width}×{height}" if args.verbose else "")
+                f"  user_data={ud_str!r:<30}" + (f"  {width}×{height}" if args.verbose else "")
             )
         elif args.verbose:
             elapsed = time.monotonic() - t0
-            print(
-                f"frame #{total_frames:<6}  (no metadata)  "
-                f"{width}×{height}  t={elapsed:.2f}s"
-            )
+            print(f"frame #{total_frames:<6}  (no metadata)  {width}×{height}  t={elapsed:.2f}s")
 
     reactor.on("frame", on_frame)
 

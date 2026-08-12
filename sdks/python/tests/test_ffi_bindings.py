@@ -1,0 +1,93 @@
+"""Cross-language contract tests against the real `libreactor_ffi`.
+
+Skipped when no built library is present, so a plain `pytest` works on a fresh
+checkout. Build one with `cargo build -p reactor-ffi --release`, or point
+`REACTOR_FFI_LIB` at it.
+
+These exercise the null-handle contract *through ctypes*, which is what makes them
+worth more than their Rust counterparts in `crates/reactor-ffi/src/lib.rs`: they
+check that `_ffi.py`'s `argtypes` and `restype` declarations actually match the
+compiled ABI. ctypes verifies nothing against the header, so a signature that has
+drifted is silent undefined behaviour — these tests are the only place it surfaces.
+"""
+
+from __future__ import annotations
+
+import ctypes
+from pathlib import Path
+
+import pytest
+
+from reactor_sdk import _ffi
+
+
+def _library_available() -> bool:
+    """Resolve the library path without loading it.
+
+    Deliberately not `get_lib()`: this runs at collection time, and loading here
+    would populate the module-level cache before `test_client.py` gets to assert
+    that constructing a `Reactor` leaves it untouched. `_find_lib` also returns
+    `REACTOR_FFI_LIB` unverified, so the path is checked here.
+    """
+    try:
+        return Path(_ffi._find_lib()).is_file()
+    except FileNotFoundError:
+        return False
+
+
+pytestmark = pytest.mark.skipif(
+    not _library_available(),
+    reason="libreactor_ffi not built; run `cargo build -p reactor-ffi --release`",
+)
+
+
+def test_every_declared_function_resolves_in_the_library() -> None:
+    """`_load()` assigns `argtypes` on each symbol, so an unresolvable name raises
+    `AttributeError` here. This is the check that a function renamed in Rust cannot
+    silently leave the ctypes bindings pointing at nothing.
+    """
+    lib = _ffi.get_lib()
+    assert isinstance(lib, ctypes.CDLL)
+
+
+def test_status_of_a_null_handle_is_disconnected() -> None:
+    assert _ffi.get_lib().reactor_status(None) == b"disconnected"
+
+
+def test_status_returns_a_stable_static_pointer() -> None:
+    """Documented as a static literal that must never be freed. `restype` is
+    `c_char_p`, so ctypes copies the bytes and the pointer itself stays valid.
+    """
+    lib = _ffi.get_lib()
+    assert lib.reactor_status(None) == lib.reactor_status(None)
+
+
+def test_session_id_of_a_null_handle_is_null() -> None:
+    assert not _ffi.get_lib().reactor_session_id(None)
+
+
+@pytest.mark.parametrize("scope", ["application", "runtime"])
+def test_send_command_on_a_null_handle_reports_failure(scope: str) -> None:
+    lib = _ffi.get_lib()
+    send = lib.reactor_send_runtime_command if scope == "runtime" else lib.reactor_send_command
+    assert send(None, b"hello", b"{}") == -1
+
+
+def test_unpublish_track_on_a_null_handle_reports_failure() -> None:
+    assert _ffi.get_lib().reactor_unpublish_track(None, b"video") == -1
+
+
+def test_destroy_and_free_string_accept_null() -> None:
+    lib = _ffi.get_lib()
+    lib.reactor_destroy(None)
+    lib.reactor_free_string(None)
+
+
+def test_media_push_on_a_null_handle_is_a_noop() -> None:
+    lib = _ffi.get_lib()
+    pixels = (ctypes.c_uint8 * 4)()
+    pcm = (ctypes.c_int16 * 2)()
+
+    lib.reactor_push_video_frame(None, b"video", pixels, 1, 1)
+    lib.reactor_push_video_frame_with_metadata(None, b"video", pixels, 1, 1, None, 0)
+    lib.reactor_push_audio_frame(None, b"audio", pcm, 2, 48000, 1)

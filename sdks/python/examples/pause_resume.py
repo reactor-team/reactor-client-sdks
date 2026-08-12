@@ -43,16 +43,35 @@ from .reactor_client import make_reactor
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Demonstrate Reactor track pause/resume")
-    p.add_argument("--track", metavar="NAME", required=True,
-                   help="Name of the recvonly track to pause/resume")
-    p.add_argument("--receive", metavar="SECS", type=float, default=5.0,
-                   help="Seconds to receive frames before pausing (default: 5)")
-    p.add_argument("--pause", metavar="SECS", type=float, default=5.0,
-                   help="Seconds to keep the track paused (default: 5)")
-    p.add_argument("--resume", metavar="SECS", type=float, default=5.0,
-                   help="Seconds to receive frames after resuming (default: 5)")
-    p.add_argument("--interactive", action="store_true",
-                   help="Wait for Enter key press instead of using fixed timers")
+    p.add_argument(
+        "--track", metavar="NAME", required=True, help="Name of the recvonly track to pause/resume"
+    )
+    p.add_argument(
+        "--receive",
+        metavar="SECS",
+        type=float,
+        default=5.0,
+        help="Seconds to receive frames before pausing (default: 5)",
+    )
+    p.add_argument(
+        "--pause",
+        metavar="SECS",
+        type=float,
+        default=5.0,
+        help="Seconds to keep the track paused (default: 5)",
+    )
+    p.add_argument(
+        "--resume",
+        metavar="SECS",
+        type=float,
+        default=5.0,
+        help="Seconds to receive frames after resuming (default: 5)",
+    )
+    p.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Wait for Enter key press instead of using fixed timers",
+    )
     p.add_argument("--model", metavar="NAME")
     p.add_argument("--api-url", metavar="URL")
     p.add_argument("--jwt", metavar="TOKEN")
@@ -111,9 +130,7 @@ async def main() -> None:
 
     elapsed = time.monotonic() - t_start
     fps = phase_counts["receiving"] / elapsed if elapsed > 0 else 0.0
-    print(
-        f"  received {phase_counts['receiving']} frames in {elapsed:.1f}s  ({fps:.1f} fps)"
-    )
+    print(f"  received {phase_counts['receiving']} frames in {elapsed:.1f}s  ({fps:.1f} fps)")
 
     # ── Phase 2: pause ────────────────────────────────────────────────────────
     print(f"\n[Phase 2] Pausing '{args.track}'…")

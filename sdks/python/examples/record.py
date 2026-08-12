@@ -31,7 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from reactor import Clip, ReactorFFIError
+from reactor_sdk import Clip, ReactorFFIError
 
 from .reactor_client import make_reactor
 
@@ -39,17 +39,22 @@ from .reactor_client import make_reactor
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Request a Reactor clip or recording")
     group = p.add_mutually_exclusive_group(required=True)
-    group.add_argument("--clip", metavar="SECONDS", type=float,
-                       help="Request a clip of the last N seconds")
-    group.add_argument("--recording", action="store_true",
-                       help="Request a full-session recording")
-    p.add_argument("--download", metavar="FILE",
-                   help="Download HLS segments and write to FILE (e.g. clip.ts)")
+    group.add_argument(
+        "--clip", metavar="SECONDS", type=float, help="Request a clip of the last N seconds"
+    )
+    group.add_argument("--recording", action="store_true", help="Request a full-session recording")
+    p.add_argument(
+        "--download", metavar="FILE", help="Download HLS segments and write to FILE (e.g. clip.ts)"
+    )
     p.add_argument("--model", metavar="NAME", help="Model name (overrides REACTOR_MODEL)")
     p.add_argument("--api-url", metavar="URL", help="Coordinator URL (overrides REACTOR_API_URL)")
     p.add_argument("--jwt", metavar="TOKEN", help="JWT token (overrides REACTOR_JWT)")
-    p.add_argument("--local", action="store_true", default=None,
-                   help="Use local mode (overrides REACTOR_LOCAL)")
+    p.add_argument(
+        "--local",
+        action="store_true",
+        default=None,
+        help="Use local mode (overrides REACTOR_LOCAL)",
+    )
     return p.parse_args()
 
 
@@ -62,9 +67,7 @@ def _download_segments(playlist_url: str, out_path: str) -> None:
         playlist = resp.read().decode()
 
     segments = [
-        line.strip()
-        for line in playlist.splitlines()
-        if line.strip() and not line.startswith("#")
+        line.strip() for line in playlist.splitlines() if line.strip() and not line.startswith("#")
     ]
     if not segments:
         print("No segments found in playlist", file=sys.stderr)
