@@ -134,9 +134,7 @@ pub mod legacy {
         let value: Value = serde_json::from_slice(raw).ok()?;
         let scope = value.get("scope").and_then(Value::as_str);
         match (scope, value.get("data")) {
-            (Some("application"), Some(data)) => {
-                Some((MessageScope::Application, data.clone()))
-            }
+            (Some("application"), Some(data)) => Some((MessageScope::Application, data.clone())),
             (Some("runtime"), Some(data)) => Some((MessageScope::Runtime, data.clone())),
             _ => None,
         }
@@ -157,8 +155,8 @@ pub mod legacy {
 
         #[test]
         fn parse_runtime_and_application_scope() {
-            let rt = parse_incoming(br#"{"scope": "runtime", "data": {"type": "clipReady"}}"#)
-                .unwrap();
+            let rt =
+                parse_incoming(br#"{"scope": "runtime", "data": {"type": "clipReady"}}"#).unwrap();
             assert_eq!(rt, (MessageScope::Runtime, json!({"type": "clipReady"})));
 
             let app =
