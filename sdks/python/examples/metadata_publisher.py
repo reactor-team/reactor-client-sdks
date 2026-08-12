@@ -13,12 +13,15 @@ pygame example to watch the frames arrive and see each one's tag on screen::
     cd examples/pygame_app
     python main.py --model my-model --api-key "$KEY" --session-id <the id printed above>
 
-Sharing a session that way needs a real coordinator. The local runtime cannot do it:
-the SDK caches the session it created in this process and the local protocol has no
-lookup by id, so a second process is told there is no cached local session. Against
-``--local`` this example still runs — it just publishes into a session of its own, and
-``frame_metadata_roundtrip.py`` is the example that shows tags surviving the trip
-without a second process.
+Joining works against a local runtime as well as a real coordinator: a local runtime
+holds one session and describes it at ``GET /session``, so the viewer joins by asking for
+the id this prints.
+
+Whether the viewer then *sees* these frames is up to the model. ``echo`` returns frames
+to whoever sent them rather than fanning them out, so a second participant joins the
+session and receives nothing from this one — the pairing connects, but the tags arrive
+only where the model sends them. Pick a model that produces video for every participant
+to watch this end to end.
 
 The tag here is JSON: a sequence number, the send time, and the colour, so a viewer can
 tell frames apart, spot a gap, and measure how long the trip took. The bytes are opaque
@@ -129,16 +132,6 @@ def _tag(sequence: int, rgb: tuple[int, int, int]) -> bytes:
 async def main() -> int:
     args = _parse_args()
 
-    # See the note on the pairing above: joining by id needs a coordinator that can look
-    # a session up, which the local runtime cannot do across processes.
-    if args.session_id and args.local:
-        print(
-            "--session-id cannot be combined with --local: the local runtime has no way "
-            "to look up a session created by another process.",
-            file=sys.stderr,
-        )
-        return 2
-
     frame_secs = 1.0 / args.fps
 
     reactor = make_reactor(
@@ -165,20 +158,12 @@ async def main() -> int:
         f"'{args.track}', every frame tagged.",
         file=sys.stderr,
     )
-    if args.local:
-        # Saying "join this" here would be advertising something the local runtime cannot
-        # do, and the id it reports is a placeholder rather than a handle.
-        print(
-            "Local runtime: this session cannot be joined from another process, so "
-            "nothing will read these tags. Use a real coordinator for that.",
-            file=sys.stderr,
-        )
-    else:
-        print(
-            f"Watch it with:  cd examples/pygame_app && python main.py "
-            f"--model {reactor._model_name} --session-id {session_id}",
-            file=sys.stderr,
-        )
+    print(
+        f"Watch it with:  cd examples/pygame_app && python main.py "
+        f"{'--local ' if args.local else ''}--model {reactor._model_name} "
+        f"--session-id {session_id}",
+        file=sys.stderr,
+    )
 
     await reactor.publish_track(args.track)
 

@@ -75,17 +75,6 @@ logging.getLogger("aiortc.codecs.h264").setLevel(logging.ERROR)
 logging.getLogger("aioice.ice").setLevel(logging.WARNING)
 
 
-#: Joining a session by id needs a coordinator that can look one up. The local runtime
-#: cannot: the SDK caches the session it created in this process and there is no lookup
-#: by id in the local protocol, so a second process gets "no cached local session".
-#: Refusing up front beats surfacing that from inside the FFI.
-LOCAL_JOIN_MESSAGE = (
-    "--session-id cannot be combined with --local: the local runtime has no way to "
-    "look up a session created by another process. Point both processes at a real "
-    "coordinator to share a session, or drop --session-id to create one here."
-)
-
-
 # =============================================================================
 # Application
 # =============================================================================
@@ -543,10 +532,6 @@ async def main() -> None:
     # Validate arguments
     if not args.local and not args.api_key:
         logger.error("Either --local or --api-key must be provided")
-        sys.exit(1)
-
-    if args.session_id and args.local:
-        logger.error(LOCAL_JOIN_MESSAGE)
         sys.exit(1)
 
     # Create and run app
