@@ -32,4 +32,4 @@ rm -rf "$PROTO_DIR/reactor_wire/v1"
 mkdir -p "$PROTO_DIR/reactor_wire/v1"
 cp "$WORKDIR"/proto/reactor_wire/v1/*.proto "$PROTO_DIR/reactor_wire/v1/"
 
-echo "Vendored $(ls "$PROTO_DIR/reactor_wire/v1" | wc -l | tr -d ' ') .proto files into $PROTO_DIR/reactor_wire/v1/"
+echo "Vendored $(find "$PROTO_DIR/reactor_wire/v1" -maxdepth 1 -name '*.proto' | wc -l | tr -d ' ') .proto files into $PROTO_DIR/reactor_wire/v1/"
