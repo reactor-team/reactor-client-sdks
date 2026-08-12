@@ -34,27 +34,30 @@ list.
 ```bash
 cargo check --workspace                     # build.rs auto-downloads the matching
                                              # prebuilt libwebrtc for reactor-ffi's target
-mise run ci                                 # fmt-check + clippy + repo lints
-mise run test                               # cargo nextest + doctests
-cargo build -p reactor-ffi --release        # native lib the Python SDK loads
+mise run lint                               # fmt-check + clippy + ruff + repo lints
+mise run test                               # test:rust (nextest + doctests) + test:python (pytest)
+mise run ci                                 # lint + test — the exact tasks CI runs
+mise run build:wheel                        # cargo build --release, then a wheel with it bundled
 ```
 
-These are the exact tasks CI runs — if `mise run ci && mise run test` pass
-locally, CI should too. If you're working on the Python SDK, see
-[`sdks/python/README.md`](sdks/python/README.md#install) for pointing it at
-the `reactor-ffi` build above.
+If `mise run ci` passes locally, CI should too. If you're working on the
+Python SDK, see [`sdks/python/README.md`](sdks/python/README.md#the-native-library)
+for how the native library is resolved (an editable install picks up a
+local `cargo build` automatically).
 
 ## Code style
 
 - Rust: `rustfmt` (`mise run fmt`) and `clippy` with warnings denied
-  (`mise run clippy`). Both run in `mise run ci` and again in CI.
-  `reactor-ffi` is excluded from workspace clippy (it needs the prebuilt
-  `libwebrtc` linked in) — lint it explicitly with `cargo clippy -p
-  reactor-ffi` if you touch it.
-- Python: `ruff` (`sdks/python/pyproject.toml` sets `line-length = 100`,
-  target `py310`).
+  (`mise run clippy`, covers every crate including `reactor-ffi`). Both run
+  in `mise run ci` and again in CI.
+- Python: `ruff` check + format (`mise run lint:python`;
+  `sdks/python/pyproject.toml` sets `line-length = 100`, target `py310`).
 - Shell: `shellcheck` over every tracked script and bash `mise-tasks`
   (`mise run lint:shell`).
+- ABI: `mise run lint:abi` checks that `lib.rs`, `reactor_ffi.h` and
+  `_ffi.py` all declare the same C ABI surface — a real safeguard now that
+  the header, the Rust `#[no_mangle]` functions, and the Python `ctypes`
+  bindings are three separate places the same signature has to match.
 - Git hooks (installed via `mise run install-hooks`) run the fast subset of
   these on `pre-commit` and the heavier, compiling checks on `pre-push` —
   so most issues surface before you even open a PR.

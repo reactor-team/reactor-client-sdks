@@ -12,11 +12,14 @@ r.send_command("set_prompt", {"text": "a red bicycle"})   # application scope (d
 r.send_command("ping", {}, scope="runtime")                 # runtime scope — goes to the platform
 ```
 
-`send_command` is fire-and-forget: it returns `0` on success or `-1` if
-the handle isn't connected, the payload is too large (256 KiB by default),
-or it couldn't be serialized. There is no per-command acknowledgment — use
-the `message` / `runtime_message` events below to observe whatever
-response the model or platform chooses to send back.
+The send happens immediately either way: `send_command` returns `0` on
+success or `-1` if the handle isn't connected, the payload is too large
+(256 KiB by default), or it couldn't be serialized. You can use that
+return value directly, or `await` the call, or wrap it in
+`asyncio.create_task` — all three work, since the result is already known
+by the time any of them run. There is no per-command acknowledgment
+beyond that `0`/`-1` — use the `message` / `runtime_message` events below
+to observe whatever response the model or platform chooses to send back.
 
 ## Receiving messages
 

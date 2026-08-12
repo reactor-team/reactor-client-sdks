@@ -73,18 +73,25 @@ through this repo's native code — that only shares the wire protocol (see
 behave the same, but it isn't *guaranteed* identical the way the
 C-ABI-based SDKs are to each other.
 
-## Callbacks run off your main thread
+## Where handlers run
 
-Event handlers you register with `on(...)` are invoked from an internal
-background thread, **not** from your application's event loop. In Python
-this matters concretely: a handler registered with `r.on("frame", ...)` (or
-`message`, `status_changed`, etc.) runs synchronously on that background
-thread — it is not scheduled onto your `asyncio` loop for you. Keep these
-handlers fast and non-blocking, and if a handler needs to touch
-`asyncio`-only state, hand it off explicitly (e.g.
-`loop.call_soon_threadsafe(...)`) rather than awaiting or calling loop
-methods directly inside it.
+Not every event runs in the same place, because different events have
+different backpressure needs:
 
-The one exception is the result of an `await`-able call itself
-(`connect()`, `request_clip()`, ...) — those are already delivered back on
-your event loop, so you can await them normally.
+- **Control events** — `status_changed`, `error`, `message`,
+  `runtime_message`, `track_received`, `capabilities_received`,
+  `session_id_changed` — are dispatched onto your application's event loop
+  (in Python, `asyncio`), so you can touch loop-only state (an
+  `asyncio.Event`, a `Queue`) directly inside the handler.
+- **`frame` and `audio`** run on their own dedicated delivery threads
+  instead, off your event loop. This is what lets them apply backpressure:
+  if your handler is slower than the incoming rate, `frame` keeps only the
+  newest one and drops the stale ones in between, while `audio` keeps its
+  short backlog and drops new arrivals once it's full. Blocking in either
+  is safe — it never stalls the connection — but you pay for it in dropped
+  data, not in a growing queue. Reach your event loop from these two with
+  an explicit hand-off (in Python, `loop.call_soon_threadsafe(...)`), not
+  by awaiting or calling loop methods directly.
+
+The result of an `await`-able call itself (`connect()`, `request_clip()`,
+...) is always delivered back on your event loop, regardless of the above.

@@ -50,9 +50,25 @@ def on_frame(data, width, height, frame_id, timestamp_us, user_data):
 r.on("frame", on_frame)
 ```
 
+The `@r.on_frame` decorator is the same event with a nicer shape: it hands
+your handler a decoded RGB `numpy` array instead of raw BGRA bytes, and
+you can declare only the trailer fields you actually want:
+
+```python
+@r.on_frame
+def on_frame(frame, frame_id, timestamp_us, user_data):
+    ...
+```
+
 [`sdks/python/examples/frame_metadata.py`](../sdks/python/examples/frame_metadata.py)
 does exactly this over a live track and prints a summary of how many
 frames carried a trailer.
+
+`frame` delivery applies backpressure: if your handler falls behind the
+incoming rate, only the newest frame is kept and the ones in between are
+dropped (see [concepts.md](concepts.md#where-handlers-run)). A gap in
+`frame_id` doesn't mean a bug — under load, it's the expected way frames
+get dropped.
 
 ## Round-tripping a tag
 
@@ -65,3 +81,12 @@ come back, and reports round-trip latency and ordering. It's also the
 reference for what "no trailer support" looks like from the client side: if
 nothing comes back, the model isn't echoing metadata (or the two peers
 never negotiated the capability) rather than the request having failed.
+
+## Across two processes
+
+Tagging isn't limited to a single client round-trip — a session's tags are
+visible to anyone connected to it.
+[`sdks/python/examples/metadata_publisher.py`](../sdks/python/examples/metadata_publisher.py)
+publishes tagged frames with no UI, printing the session ID; a second
+process (the [`pygame_app`](../sdks/python/examples/pygame_app/) example)
+joins that same session by ID and renders each frame's tag on screen.
