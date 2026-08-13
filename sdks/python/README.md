@@ -10,8 +10,6 @@ model: send commands and receive real-time video and audio back. Built for
 scripts, servers, and computer-vision pipelines — it authenticates directly
 with your API key, server-side.
 
----
-
 ## Getting Started
 
 ```bash
@@ -19,8 +17,6 @@ pip install reactor-sdk
 ```
 
 Requires Python 3.10+.
-
----
 
 ## Usage Example
 
@@ -48,14 +44,10 @@ async def main():
 asyncio.run(main())
 ```
 
----
-
 ## Documentation & Resources
 
 See the [full documentation](https://docs.reactor.inc/sdk-reference/using-the-sdk#python) for platform
 concepts and the other language SDKs.
-
----
 
 ## Samples
 
@@ -87,8 +79,6 @@ REACTOR_MODEL=my-model REACTOR_JWT=<token> python examples/main.py
 REACTOR_MODEL=my-model REACTOR_JWT=<token> python -m examples.push_video --track video_input
 ```
 
----
-
 ## Development
 
 ```bash
@@ -104,8 +94,6 @@ but not something to publish as a release.
 
 See the repo-wide [`CONTRIBUTING.md`](../../CONTRIBUTING.md) for everything
 else (DCO, commit conventions, opening a PR).
-
----
 
 ## License
 
