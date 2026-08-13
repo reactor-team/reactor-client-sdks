@@ -20,13 +20,9 @@ Requires Python 3.10+.
 
 ## Documentation & Resources
 
-| Resource | Covers |
-|---|---|
-| [`docs/concepts.md`](../../docs/concepts.md) | Sessions and connection state, tracks and capabilities, scopes, callback threading. Start here. |
-| [`docs/messaging.md`](../../docs/messaging.md) | Sending commands, receiving messages, capabilities negotiation, track publish/pause/resume. |
-| [`docs/recording.md`](../../docs/recording.md) | Requesting clips and full-session recordings. |
-| [`docs/frame-metadata.md`](../../docs/frame-metadata.md) | Tagging and reading per-frame metadata trailers on video tracks. |
-| API reference | Below, on this page. |
+See the [full documentation](https://docs.reactor.inc/overview) for platform
+concepts, model reference, and the API. The API reference below covers
+this specific package.
 
 ---
 
@@ -159,7 +155,7 @@ both are given.
 | `await publish_track(name)` | Activate a named `sendonly` track slot. |
 | `unpublish_track(name)` | Deactivate a `sendonly` track (sync). |
 | `await pause_track(name)` / `await resume_track(name)` | Pause / resume a `recvonly` track subscription. |
-| `push_video_frame(track_name, data, width, height, user_data=None)` | Push a raw **BGRA** frame into a `sendonly` video track. `user_data` tags the frame; see [`docs/frame-metadata.md`](../../docs/frame-metadata.md). |
+| `push_video_frame(track_name, data, width, height, user_data=None)` | Push a raw **BGRA** frame into a `sendonly` video track. `user_data` tags the frame; see [`examples/frame_metadata.py`](examples/frame_metadata.py). |
 | `push_audio_frame(track_name, data, samples_per_channel, sample_rate=48000, num_channels=1)` | Push interleaved `int16` PCM into a `sendonly` audio track. |
 | `await request_clip(duration_seconds) -> Clip` | Request a clip of the last N seconds of the session. |
 | `await request_recording() -> Clip` | Request a clip covering the whole session so far. |

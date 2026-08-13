@@ -26,8 +26,6 @@ dedicated track.
 
 - 📚 **[Full documentation](https://docs.reactor.inc/overview)** — platform
   concepts, model reference, and the API across every language.
-- 🛠️ **[Guides](docs/README.md)** — sessions, messaging,
-  recording, frame metadata: how those concepts map onto this repo's SDKs.
 
 ## Contributing
 
