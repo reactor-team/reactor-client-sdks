@@ -18,7 +18,7 @@ its streaming video, and send commands that steer what it generates while
 it runs. Some models also accept your own audio/video as input over a
 dedicated track.
 
-## Getting started
+## Supported SDKs
 
 - 🐍 **[Python](sdks/python/README.md)** — install, quick start, full API reference.
 

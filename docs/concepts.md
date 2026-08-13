@@ -59,7 +59,7 @@ session/signaling logic, so protocol quirks and edge cases you learn on
 one hold on every other one. The JavaScript SDK, `@reactor-team/js-sdk`, is
 its own implementation — a browser drives WebRTC through its own APIs, not
 through this repo's native code — that only shares the wire protocol (see
-[the root README](../README.md#getting-started)) — it should
+[the root README](../README.md#supported-sdks)) — it should
 behave the same, but it isn't *guaranteed* identical the way the
 C-ABI-based SDKs are to each other.
 
