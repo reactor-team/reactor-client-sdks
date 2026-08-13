@@ -20,29 +20,14 @@ dedicated track.
 
 ## Supported SDKs
 
-- 🐍 **[Python](sdks/python/README.md)** — install, quick start, full API reference.
+- 🐍 **[Python](sdks/python/README.md)**
 
-## Full documentation
+## Documentation
 
-See the [full documentation](https://docs.reactor.inc/overview) for
-platform concepts, model reference, and the API across every language.
-
-## SDK-specific guides
-
-The guides below are specific to this repo: how the platform concepts
-above map onto this repo's actual API calls and events. They don't repeat
-what's already covered there.
-
-- [`docs/concepts.md`](docs/concepts.md) — sessions and connection state,
-  tracks and capabilities, application vs. runtime scope. Start here.
-- [`docs/messaging.md`](docs/messaging.md) — sending commands, receiving
-  messages, capabilities negotiation, and track publish/pause/resume.
-- [`docs/recording.md`](docs/recording.md) — clips and full-session
-  recordings.
-- [`docs/frame-metadata.md`](docs/frame-metadata.md) — tagging and reading
-  per-frame metadata trailers on video tracks.
-- [`docs/README.md`](docs/README.md) is the index if you're looking for
-  something specific.
+- 📚 **[Full documentation](https://docs.reactor.inc/overview)** — platform
+  concepts, model reference, and the API across every language.
+- 🛠️ **[Implementation guides](docs/README.md)** — sessions, messaging,
+  recording, frame metadata: how those concepts map onto this repo's SDKs.
 
 ## Contributing
 
