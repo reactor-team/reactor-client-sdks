@@ -48,8 +48,6 @@ async def main():
 asyncio.run(main())
 ```
 
-`@r.on_frame` needs `numpy` installed — see [Events](#events) below.
-
 ---
 
 ## Documentation & Resources
