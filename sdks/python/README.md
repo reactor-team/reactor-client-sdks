@@ -30,8 +30,8 @@ async def main():
     async with Reactor(model_name="my-model", api_key=API_KEY) as r:
 
         @r.on_status(ReactorStatus.READY)
-        async def on_ready(status):
-            await r.send_command("set_prompt", {"prompt": "a forest at dawn"})
+        def on_ready(status):
+            r.send_command("set_prompt", {"prompt": "a forest at dawn"})
 
         def on_frame(bgra, width, height, frame_id, timestamp_us, user_data):
             print(f"frame: {width}x{height}")
