@@ -10,6 +10,10 @@ model: send commands and receive real-time video and audio back. Built for
 scripts, servers, and computer-vision pipelines — it authenticates directly
 with your API key, server-side.
 
+---
+
+## Getting Started
+
 ```bash
 pip install reactor-sdk
 ```
@@ -18,16 +22,32 @@ Requires Python 3.10+.
 
 ---
 
-## At a glance
+## Usage Example
 
-- **Real-time media** — send and receive live video/audio over WebRTC.
-- **Structured events** — connection status, model messages, and errors via
-  callbacks or decorators.
-- **Model-declared capabilities** — tracks and commands come from the model
-  at runtime, not hardcoded.
-- **Recording on demand** — request a clip or the full session as HLS.
-- **Frame metadata** — tag outgoing frames and read tags off incoming ones,
-  for correlating input and output.
+```python
+import asyncio
+from reactor_sdk import Reactor, ReactorStatus
+
+API_KEY = "..."  # Insert your API key here.
+
+async def main():
+    async with Reactor(model_name="my-model", api_key=API_KEY) as r:
+
+        @r.on_status(ReactorStatus.READY)
+        async def on_ready(status):
+            await r.send_command("set_prompt", {"prompt": "a forest at dawn"})
+
+        @r.on_frame
+        def on_frame(frame):
+            print(f"frame: {frame.shape}")  # (height, width, 3), RGB
+
+        await r.connect()
+        await asyncio.sleep(30)  # keep the session open while frames arrive
+
+asyncio.run(main())
+```
+
+`@r.on_frame` needs `numpy` installed — see [Events](#events) below.
 
 ---
 
@@ -36,29 +56,6 @@ Requires Python 3.10+.
 See the [full documentation](https://docs.reactor.inc/overview) for platform
 concepts and the other language SDKs. The API reference below is the
 accurate one for this package.
-
----
-
-## Usage Example
-
-```python
-import asyncio
-from reactor_sdk import Reactor
-
-async def main():
-    async with Reactor("https://api.reactor.inc", "my-model", jwt=token) as r:
-        r.on("status_changed", lambda status: print("status:", status))
-        r.on("message", lambda msg: print("message:", msg))
-
-        await r.connect()
-        r.send_command("hello", {"text": "hi"})
-        await asyncio.sleep(10)
-
-asyncio.run(main())
-```
-
-See [Samples](#samples) for sending video, sending audio, pausing tracks,
-recording clips, and tagging frames with metadata.
 
 ## Events
 
