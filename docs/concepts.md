@@ -1,33 +1,23 @@
 # Concepts
 
-The mental model behind every Reactor client SDK, independent of language.
-Read this once before [messaging.md](messaging.md) and
-[recording.md](recording.md), which build on it.
+How the platform concepts at [docs.reactor.inc](https://docs.reactor.inc)
+map onto this repo's actual SDKs. Read that site first for what a session
+is and how reconnection works — this page assumes it, and covers the SDK
+mechanics on top: the exact event/method names, and things no single
+model's docs would tell you. Read this once before
+[messaging.md](messaging.md) and [recording.md](recording.md), which build
+on it.
 
 ## Sessions and connection state
 
-Connecting establishes (or resumes) a **session** with a model over WebRTC.
-A session always moves through the same four states, reported through a
-`status_changed` event:
+A session's four states (see the official docs above) are reported through
+a `status_changed` event: `connecting` → `waiting` → `ready`, back to
+`disconnected` on `disconnect()` or a fatal transport error. `ready` is the
+state to wait for before sending commands or pushing media.
 
-```mermaid
-stateDiagram-v2
-    [*] --> disconnected
-    disconnected --> connecting: connect()
-    connecting --> waiting: session created
-    waiting --> ready: transport ready
-    ready --> disconnected: disconnect() / fatal transport error
-```
-
-- `connecting` — the session is being created (or adopted, if you passed a
-  `session_id`).
-- `waiting` — the session exists but the model/runtime isn't ready yet.
-- `ready` — you can send commands and media flows. This is the state to
-  wait for before doing anything else.
-
-`disconnect()` preserves the session so you can `reconnect()` later; there's
-no separate "closed forever" state exposed to the SDK — a session that's
-truly done just never becomes `ready` again.
+`disconnect()` preserves the session so `reconnect()` can resume it later —
+there's no separate "closed forever" state exposed to the SDK; a session
+that's truly done just never becomes `ready` again.
 
 ## Tracks
 
@@ -75,23 +65,8 @@ C-ABI-based SDKs are to each other.
 
 ## Where handlers run
 
-Not every event runs in the same place, because different events have
-different backpressure needs:
-
-- **Control events** — `status_changed`, `error`, `message`,
-  `runtime_message`, `track_received`, `capabilities_received`,
-  `session_id_changed` — are dispatched onto your application's event loop
-  (in Python, `asyncio`), so you can touch loop-only state (an
-  `asyncio.Event`, a `Queue`) directly inside the handler.
-- **`frame` and `audio`** run on their own dedicated delivery threads
-  instead, off your event loop. This is what lets them apply backpressure:
-  if your handler is slower than the incoming rate, `frame` keeps only the
-  newest one and drops the stale ones in between, while `audio` keeps its
-  short backlog and drops new arrivals once it's full. Blocking in either
-  is safe — it never stalls the connection — but you pay for it in dropped
-  data, not in a growing queue. Reach your event loop from these two with
-  an explicit hand-off (in Python, `loop.call_soon_threadsafe(...)`), not
-  by awaiting or calling loop methods directly.
-
-The result of an `await`-able call itself (`connect()`, `request_clip()`,
-...) is always delivered back on your event loop, regardless of the above.
+Not every event runs in the same place, because `frame` and `audio` apply
+backpressure and the rest don't — but exactly what that means (which
+thread, how to hand off to your own event loop) is a detail of each
+binding's runtime, not a shared concept. See your SDK's own README:
+[Python](../sdks/python/README.md#where-handlers-run).

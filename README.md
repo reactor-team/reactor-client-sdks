@@ -4,7 +4,7 @@
 
 **Client SDKs for real-time world models — connect, watch it run, steer it live.**
 
-[🌐 Reactor](https://reactor.inc) · [⚙️ Runtime](https://github.com/reactor-team/reactor-runtime) · [🎥 WebRTC](https://github.com/reactor-team/reactor-webrtc) · [📖 Cookbook](https://github.com/reactor-team/reactor-cookbook)
+[🌐 Reactor](https://reactor.inc) · [📚 Docs](https://docs.reactor.inc) · [⚙️ Runtime](https://github.com/reactor-team/reactor-runtime) · [🎥 WebRTC](https://github.com/reactor-team/reactor-webrtc) · [📖 Cookbook](https://github.com/reactor-team/reactor-cookbook)
 
 [![CI](https://github.com/reactor-team/reactor-client-sdks/actions/workflows/ci.yml/badge.svg)](https://github.com/reactor-team/reactor-client-sdks/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -22,11 +22,19 @@ dedicated track.
 
 - 🐍 **[Python](sdks/python/README.md)** — install, quick start, full API reference.
 
-## Documentation
+## Full documentation
+
+See the [full documentation](https://docs.reactor.inc/overview) for
+platform concepts, model reference, and the API across every language.
+
+## SDK-specific guides
+
+The guides below are specific to this repo: how the platform concepts
+above map onto this repo's actual API calls and events. They don't repeat
+what's already covered there.
 
 - [`docs/concepts.md`](docs/concepts.md) — sessions and connection state,
-  tracks and capabilities, application vs. runtime scope, callback
-  threading. Start here.
+  tracks and capabilities, application vs. runtime scope. Start here.
 - [`docs/messaging.md`](docs/messaging.md) — sending commands, receiving
   messages, capabilities negotiation, and track publish/pause/resume.
 - [`docs/recording.md`](docs/recording.md) — clips and full-session
