@@ -1,14 +1,14 @@
-# reactor-sdk (Python)
+# 🐍 Python SDK for Reactor
 
 [![PyPI: reactor-sdk](https://img.shields.io/pypi/v/reactor-sdk.svg?label=reactor-sdk)](https://pypi.org/project/reactor-sdk/)
 [![PyPI Downloads](https://img.shields.io/pypi/dm/reactor-sdk.svg?label=downloads)](https://pypi.org/project/reactor-sdk/)
 [![build](https://img.shields.io/github/actions/workflow/status/reactor-team/reactor-client-sdks/ci.yml?branch=main)](https://github.com/reactor-team/reactor-client-sdks/actions)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](../../LICENSE)
 
-Async Python client for [Reactor](https://reactor.inc), wrapping the
-`reactor-ffi` C ABI over ctypes. Connects to a model, exchanges commands
-over a data channel, and sends or receives real-time video and audio over
-WebRTC.
+Use this SDK to connect your Python app to a live [Reactor](https://reactor.inc)
+model: send commands and receive real-time video and audio back. Built for
+scripts, servers, and computer-vision pipelines — it authenticates directly
+with your API key, server-side.
 
 ```bash
 pip install reactor-sdk
@@ -18,15 +18,28 @@ Requires Python 3.10+.
 
 ---
 
-## Documentation & Resources
+## At a glance
 
-See the [full documentation](https://docs.reactor.inc/overview) for platform
-concepts, model reference, and the API. The API reference below covers
-this specific package.
+- **Real-time media** — send and receive live video/audio over WebRTC.
+- **Structured events** — connection status, model messages, and errors via
+  callbacks or decorators.
+- **Model-declared capabilities** — tracks and commands come from the model
+  at runtime, not hardcoded.
+- **Recording on demand** — request a clip or the full session as HLS.
+- **Frame metadata** — tag outgoing frames and read tags off incoming ones,
+  for correlating input and output.
 
 ---
 
-## Quickstart
+## Documentation & Resources
+
+See the [full documentation](https://docs.reactor.inc/overview) for platform
+concepts and the other language SDKs. The API reference below is the
+accurate one for this package.
+
+---
+
+## Usage Example
 
 ```python
 import asyncio
@@ -240,9 +253,10 @@ mise run test:python     # pytest
 mise run build:wheel     # cargo build --release, then a wheel with it bundled
 ```
 
-Tests that need the compiled library skip themselves when it is absent, so `pytest`
-works on a fresh checkout. Building a wheel without one produces a pure-Python wheel
-and warns; that is fine for an editable install and wrong for a release.
+Tests skip themselves if the compiled library isn't present, so `pytest` runs
+clean on a fresh checkout. `mise run build:wheel` without one still produces a
+wheel, with a warning that it's pure-Python — fine for an editable install,
+but not something to publish as a release.
 
 See the repo-wide [`CONTRIBUTING.md`](../../CONTRIBUTING.md) for everything
 else (DCO, commit conventions, opening a PR).
