@@ -20,13 +20,13 @@ dedicated track.
 
 ## Supported SDKs
 
-- 🐍 **[Python](sdks/python/README.md)**
+- **[Python](sdks/python/README.md)**
 
 ## Documentation
 
 - 📚 **[Full documentation](https://docs.reactor.inc/overview)** — platform
   concepts, model reference, and the API across every language.
-- 🛠️ **[Implementation guides](docs/README.md)** — sessions, messaging,
+- 🛠️ **[Guides](docs/README.md)** — sessions, messaging,
   recording, frame metadata: how those concepts map onto this repo's SDKs.
 
 ## Contributing
