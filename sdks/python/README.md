@@ -1,4 +1,4 @@
-# 🐍 Python SDK for Reactor
+# Python SDK for Reactor
 
 [![PyPI: reactor-sdk](https://img.shields.io/pypi/v/reactor-sdk.svg?label=reactor-sdk)](https://pypi.org/project/reactor-sdk/)
 [![PyPI Downloads](https://img.shields.io/pypi/dm/reactor-sdk.svg?label=downloads)](https://pypi.org/project/reactor-sdk/)
@@ -37,9 +37,10 @@ async def main():
         async def on_ready(status):
             await r.send_command("set_prompt", {"prompt": "a forest at dawn"})
 
-        @r.on_frame
-        def on_frame(frame):
-            print(f"frame: {frame.shape}")  # (height, width, 3), RGB
+        def on_frame(bgra, width, height, frame_id, timestamp_us, user_data):
+            print(f"frame: {width}x{height}")
+
+        r.on("frame", on_frame)
 
         await r.connect()
         await asyncio.sleep(30)  # keep the session open while frames arrive
