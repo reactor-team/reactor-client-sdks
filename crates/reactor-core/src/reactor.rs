@@ -73,6 +73,10 @@ pub struct ReactorOptions {
     /// instead of the cloud coordinator API.
     pub local: bool,
     /// How often to send a keep-alive ping while the session is ready.
+    /// Must stay comfortably under the runtime's own liveness timeout
+    /// (`reactor-runtime`'s default `ping_timeout` is 20s, polled every 2s)
+    /// — a client that pings less often than the runtime's timeout gets
+    /// disconnected between pings no matter when the first one goes out.
     /// Set to `Duration::ZERO` to disable the heartbeat.
     pub heartbeat_interval: Duration,
 }
@@ -92,7 +96,7 @@ impl ReactorOptions {
             session_poll: PollConfig::session(),
             sdp_poll: PollConfig::sdp(),
             local: false,
-            heartbeat_interval: Duration::from_secs(30),
+            heartbeat_interval: Duration::from_secs(10),
         }
     }
 }
@@ -1001,7 +1005,6 @@ impl Reactor {
         }
         let my_epoch = self.state.lock().unwrap().heartbeat_epoch;
         loop {
-            self.platform.sleep(interval).await;
             let (current_epoch, ready) = {
                 let state = self.state.lock().unwrap();
                 let ready = !state.closing && state.status == ReactorStatus::Ready;
@@ -1010,9 +1013,14 @@ impl Reactor {
             if current_epoch != my_epoch || !ready {
                 break;
             }
+            // Ping immediately on each pass, before sleeping — a runtime's
+            // liveness timeout (e.g. 20s) can be shorter than `interval`
+            // (default 30s), so waiting a full interval before the first
+            // ping risks the runtime closing the connection first.
             if let Err(e) = self.ping() {
                 log::warn!("[reactor] heartbeat ping failed: {e}");
             }
+            self.platform.sleep(interval).await;
         }
     }
 
