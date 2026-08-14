@@ -581,8 +581,27 @@ class ReactorController:
                 elif schema.get("type") == "boolean":
                     data[el.param_name] = False
 
+        if cmd_ui.name == "get_state":
+            logger.info("Sending command: %s with data: %s (awaiting reply)", cmd_ui.name, data)
+            asyncio.create_task(self._send_and_log_reply(cmd_ui.name, data))
+            return
+
         logger.info("Sending command: %s with data: %s", cmd_ui.name, data)
         asyncio.create_task(self.reactor.send_command(cmd_ui.name, data))
+
+    async def _send_and_log_reply(self, name: str, data: dict[str, Any]) -> None:
+        """Send a command and wait for its correlated reply, logging it.
+
+        Unlike the fire-and-forget path in ``_execute_command``, this awaits
+        the model's actual response instead of leaving it to arrive later as
+        an unrelated ``on_message`` event nothing here listens for.
+        """
+        try:
+            reply = await self.reactor.send_command_and_wait(name, data)
+        except Exception:
+            logger.warning("%s failed", name, exc_info=True)
+            return
+        logger.info("%s reply: %s", name, reply)
 
     def update(self) -> None:
         """Retry requesting the model schema if not yet received."""
