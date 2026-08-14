@@ -1389,10 +1389,7 @@ mod tests {
         reactor.state.lock().unwrap().status = ReactorStatus::Ready;
 
         let r = reactor.clone();
-        let call =
-            tokio::spawn(
-                async move { r.send_command("get_state", json!({}), None).await },
-            );
+        let call = tokio::spawn(async move { r.send_command("get_state", json!({}), None).await });
 
         // Give the call a moment to register with the DataCorrelator.
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -1425,8 +1422,7 @@ mod tests {
         reactor.state.lock().unwrap().status = ReactorStatus::Ready;
 
         let r = reactor.clone();
-        let call =
-            tokio::spawn(async move { r.send_command("set_paused", json!({}), None).await });
+        let call = tokio::spawn(async move { r.send_command("set_paused", json!({}), None).await });
 
         tokio::time::sleep(Duration::from_millis(5)).await;
 
@@ -1454,10 +1450,8 @@ mod tests {
         reactor.state.lock().unwrap().status = ReactorStatus::Ready;
 
         let r = reactor.clone();
-        let call = tokio::spawn(async move {
-            r.send_command("bad_command", json!({}), None)
-                .await
-        });
+        let call =
+            tokio::spawn(async move { r.send_command("bad_command", json!({}), None).await });
 
         tokio::time::sleep(Duration::from_millis(5)).await;
 
@@ -1525,9 +1519,7 @@ mod tests {
         let reactor = make_reactor_opts(opts);
         reactor.state.lock().unwrap().status = ReactorStatus::Ready;
 
-        let result = reactor
-            .send_command("get_state", json!({}), None)
-            .await;
+        let result = reactor.send_command("get_state", json!({}), None).await;
         assert!(matches!(result, Err(CoreError::Timeout(_))));
     }
 }

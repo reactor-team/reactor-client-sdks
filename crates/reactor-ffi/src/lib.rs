@@ -921,9 +921,7 @@ pub unsafe extern "C" fn reactor_send_command(
         handle,
         completion,
         userdata,
-        move |r: Arc<Reactor>, _tasks: TaskSet| async move {
-            r.send_command(&name, args, None).await
-        }
+        move |r: Arc<Reactor>, _tasks: TaskSet| async move { r.send_command(&name, args, None).await }
     );
 }
 
