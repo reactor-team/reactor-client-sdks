@@ -9,7 +9,10 @@ regression tests in the strict sense: dropping any one of them breaks somebody.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import warnings
 from typing import Any
 from unittest import mock
 
@@ -328,10 +331,8 @@ class TestDecorators:
         assert seen == [ReactorStatus.READY]
 
     async def test_an_async_handler_that_raises_does_not_stop_the_others(self) -> None:
-        """The coroutine runs on the loop, not inside `_fire`'s try/except — a
-        rejection surfaces through asyncio's own unhandled-exception reporting, the
-        same place a synchronous handler's exception does not: it must not prevent
-        the next handler in line from firing."""
+        """The coroutine runs on the loop, not inside `_fire`'s try/except: it must
+        not prevent the next handler in line from firing."""
         reactor = Reactor(model_name="m")
         reactor._loop = asyncio.get_running_loop()
         seen: list[str] = []
@@ -348,6 +349,34 @@ class TestDecorators:
         await asyncio.sleep(0)
 
         assert seen == ["ready"]
+
+    async def test_an_async_handler_that_raises_is_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`run_coroutine_threadsafe` chains the coroutine's outcome onto a
+        `concurrent.futures.Future` this method would otherwise discard — and that
+        chaining is itself what retrieves the inner task's exception, so asyncio's own
+        "exception was never retrieved" never fires either. Left alone, a raising
+        async handler fails completely silently; a done-callback on that future is
+        what still logs it, matching a raising sync handler."""
+        reactor = Reactor(model_name="m")
+        reactor._loop = asyncio.get_running_loop()
+
+        @reactor.on_status
+        async def boom(status: str) -> None:
+            raise RuntimeError("nope")
+
+        with caplog.at_level(logging.ERROR, logger="reactor_sdk.client"):
+            reactor._fire("status_changed", "ready")
+            for _ in range(10):
+                if caplog.records:
+                    break
+                await asyncio.sleep(0)
+
+        assert any(
+            "status_changed" in r.message and r.exc_info and str(r.exc_info[1]) == "nope"
+            for r in caplog.records
+        )
 
     def test_an_async_handler_with_no_loop_is_closed_without_warning(self) -> None:
         """Fired before `connect()` sets `_loop` — e.g. a test calling `_fire`

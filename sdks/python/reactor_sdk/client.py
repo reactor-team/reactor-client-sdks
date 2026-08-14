@@ -453,11 +453,29 @@ class Reactor:
                 if asyncio.iscoroutine(result):
                     loop = self._loop
                     if loop is not None and not loop.is_closed():
-                        asyncio.run_coroutine_threadsafe(result, loop)
+                        future = asyncio.run_coroutine_threadsafe(result, loop)
+                        # `run_coroutine_threadsafe` chains the coroutine's outcome
+                        # onto this future rather than reporting it anywhere — that
+                        # chaining is itself what retrieves the inner task's
+                        # exception, which is what would otherwise make asyncio log
+                        # "exception was never retrieved". Left alone, a raising
+                        # async handler fails completely silently; this callback is
+                        # what still logs it, same as a raising sync handler below.
+                        future.add_done_callback(
+                            lambda f, event=event, h=h: self._log_async_handler_error(event, h, f)
+                        )
                     else:
                         result.close()
             except Exception:
                 _log.exception("error in %r handler %r", event, h)
+
+    @staticmethod
+    def _log_async_handler_error(event: str, handler: Callable, future: Any) -> None:
+        if future.cancelled():
+            return
+        exc = future.exception()
+        if exc is not None:
+            _log.error("error in %r async handler %r", event, handler, exc_info=exc)
 
     def _fire_on_loop(self, event: str, *args: Any) -> None:
         """Hand `event` to the loop thread, and run the handlers there.
