@@ -353,7 +353,7 @@ class Reactor:
             frame_id: int,
             timestamp_us: int,
             user_data: bytes,
-        ) -> None:
+        ) -> Any:
             # The array is built first because it is what every handler wants; the
             # conversion is the cost of this decorator either way.
             arguments = (
@@ -362,7 +362,9 @@ class Reactor:
                 timestamp_us,
                 user_data,
             )
-            func(*arguments[:take])
+            # Returned rather than discarded: `func` may be `async def`, in which case
+            # this is a coroutine that `_fire` needs to see in order to schedule it.
+            return func(*arguments[:take])
 
         self.on("frame", handler)
         return func
@@ -386,8 +388,10 @@ class Reactor:
         if callable(arg):
             func = arg
 
-            def every(status: str) -> None:
-                func(ReactorStatus(status))
+            def every(status: str) -> Any:
+                # Returned rather than discarded: `func` may be `async def`, in which
+                # case this is a coroutine that `_fire` needs to see to schedule it.
+                return func(ReactorStatus(status))
 
             self.on("status_changed", every)
             return func
@@ -395,9 +399,10 @@ class Reactor:
         wanted = ReactorStatus(arg) if arg is not None else None
 
         def decorator(func: Callable) -> Callable:
-            def filtered(status: str) -> None:
+            def filtered(status: str) -> Any:
                 if wanted is None or status == wanted.value:
-                    func(ReactorStatus(status))
+                    return func(ReactorStatus(status))
+                return None
 
             self.on("status_changed", filtered)
             return func
@@ -433,10 +438,24 @@ class Reactor:
         A raising handler does not stop the others, and the exception is logged
         rather than dropped — one broken handler should be visible without taking
         the rest of the event down with it.
+
+        An `async def` handler returns a coroutine instead of running its body —
+        calling it plainly never awaits that. Earlier releases dispatched through an
+        emitter that checked for exactly this and scheduled the coroutine, so an
+        `async def` handler registered the documented way has always worked; this
+        restores that. `run_coroutine_threadsafe` rather than `ensure_future` because
+        `_fire` also runs on the foreign FFI thread that delivers frame/audio events,
+        not only on the loop thread.
         """
         for h in list(self._handlers.get(event, [])):
             try:
-                h(*args)
+                result = h(*args)
+                if asyncio.iscoroutine(result):
+                    loop = self._loop
+                    if loop is not None and not loop.is_closed():
+                        asyncio.run_coroutine_threadsafe(result, loop)
+                    else:
+                        result.close()
             except Exception:
                 _log.exception("error in %r handler %r", event, h)
 

@@ -303,6 +303,66 @@ class TestDecorators:
 
         assert seen == [("video", "0")]
 
+    async def test_an_async_handler_actually_runs(self) -> None:
+        """`async def` handlers used to only build a coroutine and never run it —
+        calling a handler plainly never awaits the result. The previous SDK's event
+        emitter checked for a coroutine and scheduled it; this is that behaviour
+        restored, for every decorator that goes through `_fire`."""
+        reactor = Reactor(model_name="m")
+        reactor._loop = asyncio.get_running_loop()
+        seen: list[ReactorStatus] = []
+
+        @reactor.on_status
+        async def handler(status: ReactorStatus) -> None:
+            seen.append(status)
+
+        reactor._fire("status_changed", "ready")
+        # `run_coroutine_threadsafe` takes more than one trip through the loop: one to
+        # schedule the task, another to run its first step. Polling rather than a fixed
+        # number of `sleep(0)`s keeps this independent of that implementation detail.
+        for _ in range(10):
+            if seen:
+                break
+            await asyncio.sleep(0)
+
+        assert seen == [ReactorStatus.READY]
+
+    async def test_an_async_handler_that_raises_does_not_stop_the_others(self) -> None:
+        """The coroutine runs on the loop, not inside `_fire`'s try/except — a
+        rejection surfaces through asyncio's own unhandled-exception reporting, the
+        same place a synchronous handler's exception does not: it must not prevent
+        the next handler in line from firing."""
+        reactor = Reactor(model_name="m")
+        reactor._loop = asyncio.get_running_loop()
+        seen: list[str] = []
+
+        @reactor.on_status
+        async def boom(status: str) -> None:
+            raise RuntimeError("nope")
+
+        @reactor.on_status
+        def fine(status: str) -> None:
+            seen.append(status)
+
+        reactor._fire("status_changed", "ready")
+        await asyncio.sleep(0)
+
+        assert seen == ["ready"]
+
+    def test_an_async_handler_with_no_loop_is_closed_without_warning(self) -> None:
+        """Fired before `connect()` sets `_loop` — e.g. a test calling `_fire`
+        directly — there is nowhere to schedule the coroutine. It must be closed
+        rather than left to trigger "coroutine was never awaited"."""
+        reactor = Reactor(model_name="m")
+
+        @reactor.on_status
+        async def handler(status: str) -> None:
+            pass
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            reactor._fire("status_changed", "ready")
+
 
 class TestGetterMethods:
     def test_get_status_matches_the_property(self) -> None:
