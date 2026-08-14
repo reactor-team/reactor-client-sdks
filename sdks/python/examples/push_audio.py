@@ -12,13 +12,13 @@ frames at real-time pace.
 
 Usage:
     # Sine wave (A-440)
-    python examples/push_audio.py --track audio_input --sine 440 --duration 10
+    python -m examples.push_audio --track audio_input --sine 440 --duration 10
 
     # Push a WAV file
-    python examples/push_audio.py --track audio_input --wav hello.wav
+    python -m examples.push_audio --track audio_input --wav hello.wav
 
     # WAV with a non-default track name
-    python examples/push_audio.py --track my_track --wav speech.wav --duration 30
+    python -m examples.push_audio --track my_track --wav speech.wav --duration 30
 
 Environment variables (overridden by flags):
     REACTOR_API_URL, REACTOR_MODEL, REACTOR_JWT, REACTOR_LOCAL

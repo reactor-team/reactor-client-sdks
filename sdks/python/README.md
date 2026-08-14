@@ -1,8 +1,16 @@
-# Reactor SDK — Python
+# Reactor Python SDK
 
-Async Python client for [Reactor](https://reactor.inc), wrapping the `reactor-ffi`
-C ABI over ctypes. Connects to a model, exchanges commands over a data channel,
-and sends or receives real-time video and audio over WebRTC.
+[![PyPI: reactor-sdk](https://img.shields.io/pypi/v/reactor-sdk.svg?label=reactor-sdk)](https://pypi.org/project/reactor-sdk/)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/reactor-sdk.svg?label=downloads)](https://pypi.org/project/reactor-sdk/)
+[![build](https://img.shields.io/github/actions/workflow/status/reactor-team/reactor-client-sdks/ci.yml?branch=main)](https://github.com/reactor-team/reactor-client-sdks/actions)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](../../LICENSE)
+
+Use this SDK to connect your Python app to a live [Reactor](https://reactor.inc)
+model: send commands and receive real-time video and audio back. Built for
+scripts, servers, and computer-vision pipelines — it authenticates directly
+with your API key, server-side.
+
+## Getting Started
 
 ```bash
 pip install reactor-sdk
@@ -10,114 +18,66 @@ pip install reactor-sdk
 
 Requires Python 3.10+.
 
-## Quickstart
+## Usage Example
 
 ```python
 import asyncio
-from reactor_sdk import Reactor
+from reactor_sdk import Reactor, ReactorStatus
+
+API_KEY = "..."  # Insert your API key here.
 
 async def main():
-    async with Reactor("https://api.reactor.inc", "my-model", jwt=token) as r:
-        r.on("status_changed", lambda status: print("status:", status))
-        r.on("message", lambda msg: print("message:", msg))
+    async with Reactor(model_name="my-model", api_key=API_KEY) as r:
+
+        @r.on_status(ReactorStatus.READY)
+        def on_ready(status):
+            r.send_command("set_prompt", {"prompt": "a forest at dawn"})
+
+        def on_frame(bgra, width, height, frame_id, timestamp_us, user_data):
+            print(f"frame: {width}x{height}")
+
+        r.on("frame", on_frame)
 
         await r.connect()
-        r.send_command("hello", {"text": "hi"})
-        await asyncio.sleep(10)
+        await asyncio.sleep(30)  # keep the session open while frames arrive
 
 asyncio.run(main())
 ```
 
-See [`examples/`](examples/) for sending video, sending audio, pausing tracks,
-recording clips, and tagging frames with metadata.
+## Documentation & Resources
 
-## Events
+See the [full documentation](https://docs.reactor.inc/sdk-reference/using-the-sdk#python) for platform
+concepts and the other language SDKs.
 
-Register handlers with `r.on(event, handler)`:
+## Samples
 
-| Event | Arguments |
-| --- | --- |
-| `status_changed` | `status: str` — `disconnected` / `connecting` / `waiting` / `ready` |
-| `session_id_changed` | `session_id: str \| None` |
-| `message` | `payload: dict` — application message from the model |
-| `runtime_message` | `payload: dict` — platform message |
-| `capabilities_received` | `capabilities: dict` |
-| `track_received` | `name: str`, `mid: str \| None` |
-| `frame` | `bgra: bytes`, `width`, `height`, `frame_id`, `timestamp_us`, `user_data: bytes` |
-| `audio` | `pcm: bytes`, `num_samples`, `sample_rate`, `channels` |
-| `error` | `error: ReactorError` |
+Runnable scripts in [`examples/`](examples/), each driven by
+`REACTOR_API_URL` / `REACTOR_MODEL` / `REACTOR_JWT` / `REACTOR_LOCAL`
+environment variables (see [`reactor_client.py`](examples/reactor_client.py)):
 
-### Where handlers run
+| Script | Demonstrates |
+|---|---|
+| [`main.py`](examples/main.py) | Minimal connect → send a command → disconnect. |
+| [`push_video.py`](examples/push_video.py) | Stream generated frames into a `sendonly` video track. |
+| [`push_audio.py`](examples/push_audio.py) | Stream a sine tone or a WAV file into a `sendonly` audio track. |
+| [`pause_resume.py`](examples/pause_resume.py) | Pause and resume a `recvonly` track subscription. |
+| [`record.py`](examples/record.py) | Request a clip or full-session recording and download the HLS segments. |
+| [`frame_metadata.py`](examples/frame_metadata.py) | Read the per-frame metadata trailer off an incoming track. |
+| [`frame_metadata_roundtrip.py`](examples/frame_metadata_roundtrip.py) | Tag outgoing frames and match them against the ones that come back. |
+| [`metadata_publisher.py`](examples/metadata_publisher.py) | Publish tagged frames with no UI — the sending half of a two-process demo (pair with `pygame_app/`). |
+| [`pygame_app/`](examples/pygame_app/) | A pygame application: live video display plus a dynamic control UI built from the model's declared capabilities. |
 
-**Control events** — everything except `frame` and `audio` — run on your asyncio
-event loop, so you can touch asyncio state from them directly:
-
-```python
-ready = asyncio.Event()
-
-def on_status(status: str) -> None:
-    if status == "ready":
-        ready.set()          # safe: this runs on the loop thread
-
-r.on("status_changed", on_status)
-await asyncio.wait_for(ready.wait(), timeout=60)
-```
-
-**`frame` and `audio`** run on their own native delivery threads instead, because
-that is what applies backpressure: while your handler runs, the library keeps only
-the newest frame, so a slow consumer gets fresh frames rather than a growing
-backlog. Two consequences:
-
-* Blocking is safe — it never stalls WebRTC — but you pay in dropped data. Block in
-  `frame` and the frames in between are discarded; block in `audio` and you lose
-  samples once its short queue fills.
-* You are off the loop, so reach asyncio through `call_soon_threadsafe`:
-
-```python
-loop = asyncio.get_running_loop()
-
-def on_frame(bgra, width, height, frame_id, timestamp_us, user_data):
-    loop.call_soon_threadsafe(frames.put_nowait, bgra)
-```
-
-### Closing
-
-Use `async with`, or call `close()`. An `atexit` hook closes anything you leave
-open, which matters more than it sounds: teardown has to finish while the
-interpreter is still running, because once it starts finalising, native threads
-never get the GIL back.
-
-```python
-loop = asyncio.get_running_loop()
-ready = asyncio.Event()
-
-def on_status(status: str) -> None:
-    if status == "ready":
-        loop.call_soon_threadsafe(ready.set)
-
-r.on("status_changed", on_status)
-```
-
-## The native library
-
-Released wheels bundle `libreactor_ffi` for their platform, so `pip install` is all
-you need. Wheels are published as GitHub release assets, tagged `python-vX.Y.Z`:
+Run `main.py` directly; every other example (aside from `pygame_app/`,
+which is its own standalone app — see its own
+[README](examples/pygame_app/README.md)) imports its sibling
+`reactor_client.py` with a relative import, so run it as a module instead
+(both from `sdks/python/`):
 
 ```bash
-pip install https://github.com/reactor-team/reactor-client-sdks/releases/download/python-v0.9.0/<wheel>
+REACTOR_MODEL=my-model REACTOR_JWT=<token> python examples/main.py
+
+REACTOR_MODEL=my-model REACTOR_JWT=<token> python -m examples.push_video --track video_input
 ```
-
-Each is `py3-none-<platform>` — the SDK reaches the library through ctypes and links
-no libpython, so one wheel per platform covers every supported interpreter. Built
-for the same five platforms as reactor-webrtc: linux-x64, linux-arm64, mac-arm64,
-mac-x64 and win-x64.
-
-The library is resolved at first use, in order:
-
-1. `REACTOR_FFI_LIB` — absolute path, which overrides everything.
-2. `libreactor_ffi.{dylib,so}` / `reactor_ffi.dll` next to the `reactor_sdk` package —
-   where a released wheel puts it.
-3. `target/release/` in an enclosing Cargo workspace, for development.
 
 ## Development
 
@@ -127,10 +87,14 @@ mise run test:python     # pytest
 mise run build:wheel     # cargo build --release, then a wheel with it bundled
 ```
 
-Tests that need the compiled library skip themselves when it is absent, so `pytest`
-works on a fresh checkout. Building a wheel without one produces a pure-Python wheel
-and warns; that is fine for an editable install and wrong for a release.
+Tests skip themselves if the compiled library isn't present, so `pytest` runs
+clean on a fresh checkout. `mise run build:wheel` without one still produces a
+wheel, with a warning that it's pure-Python — fine for an editable install,
+but not something to publish as a release.
+
+See the repo-wide [`CONTRIBUTING.md`](../../CONTRIBUTING.md) for everything
+else (DCO, commit conventions, opening a PR).
 
 ## License
 
-Apache-2.0
+Apache-2.0 — see [`LICENSE`](../../LICENSE).

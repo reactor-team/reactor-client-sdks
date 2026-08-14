@@ -15,14 +15,14 @@ Timeline (all durations configurable via flags):
                                                         resume_secs    done
 
 Usage:
-    python examples/pause_resume.py --track video_output
+    python -m examples.pause_resume --track video_output
 
     # Custom timing
-    python examples/pause_resume.py --track video_output \
+    python -m examples.pause_resume --track video_output \
         --receive 5 --pause 5 --resume 5
 
     # Interactive: press Enter to pause, Enter again to resume
-    python examples/pause_resume.py --track video_output --interactive
+    python -m examples.pause_resume --track video_output --interactive
 
 Environment variables (overridden by flags):
     REACTOR_API_URL, REACTOR_MODEL, REACTOR_JWT, REACTOR_LOCAL

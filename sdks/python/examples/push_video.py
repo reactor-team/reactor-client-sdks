@@ -7,13 +7,13 @@ obvious that frames are being delivered.  Each frame is a solid color (BGRA)
 that rotates through the hue wheel over time.
 
 Usage:
-    python examples/push_video.py --track video_input
+    python -m examples.push_video --track video_input
 
     # Custom resolution and frame rate
-    python examples/push_video.py --track video_input --width 640 --height 360 --fps 15
+    python -m examples.push_video --track video_input --width 640 --height 360 --fps 15
 
     # Limit duration
-    python examples/push_video.py --track video_input --duration 10
+    python -m examples.push_video --track video_input --duration 10
 
 Environment variables (overridden by flags):
     REACTOR_API_URL, REACTOR_MODEL, REACTOR_JWT, REACTOR_LOCAL

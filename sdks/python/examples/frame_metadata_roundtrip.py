@@ -21,11 +21,11 @@ Run it against a local runtime serving the echo model::
     # In the reactor-runtime checkout:
     #   mise run serve examples/echo
     REACTOR_LOCAL=1 REACTOR_API_URL=http://localhost:8080 REACTOR_MODEL=echo \\
-        python examples/frame_metadata_roundtrip.py
+        python -m examples.frame_metadata_roundtrip
 
 Usage:
-    python examples/frame_metadata_roundtrip.py
-    python examples/frame_metadata_roundtrip.py --frames 60 --verbose
+    python -m examples.frame_metadata_roundtrip
+    python -m examples.frame_metadata_roundtrip --frames 60 --verbose
 
 Environment variables (overridden by flags):
     REACTOR_API_URL, REACTOR_MODEL, REACTOR_JWT, REACTOR_LOCAL
