@@ -11,7 +11,7 @@ import logging
 import mimetypes
 import os
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, BinaryIO
@@ -130,6 +130,10 @@ atexit.register(_close_live_clients)
 #: declares parameters for, so the historical one-argument contract keeps working while a
 #: handler that wants the metadata trailer just asks for more.
 FRAME_HANDLER_ARGUMENTS = ("frame", "frame_id", "timestamp_us", "user_data")
+
+#: What a registered handler returns: `None` from a plain function, or a coroutine from
+#: an `async def` one — `_fire` inspects this to decide whether to schedule it.
+_HandlerResult = Coroutine[Any, Any, None] | None
 
 
 def _positional_arity(func: Callable, maximum: int) -> int:
@@ -353,7 +357,7 @@ class Reactor:
             frame_id: int,
             timestamp_us: int,
             user_data: bytes,
-        ) -> Any:
+        ) -> _HandlerResult:
             # The array is built first because it is what every handler wants; the
             # conversion is the cost of this decorator either way.
             arguments = (
@@ -388,7 +392,7 @@ class Reactor:
         if callable(arg):
             func = arg
 
-            def every(status: str) -> Any:
+            def every(status: str) -> _HandlerResult:
                 # Returned rather than discarded: `func` may be `async def`, in which
                 # case this is a coroutine that `_fire` needs to see to schedule it.
                 return func(ReactorStatus(status))
@@ -399,7 +403,7 @@ class Reactor:
         wanted = ReactorStatus(arg) if arg is not None else None
 
         def decorator(func: Callable) -> Callable:
-            def filtered(status: str) -> Any:
+            def filtered(status: str) -> _HandlerResult:
                 if wanted is None or status == wanted.value:
                     return func(ReactorStatus(status))
                 return None
