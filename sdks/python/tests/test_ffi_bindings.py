@@ -66,11 +66,21 @@ def test_session_id_of_a_null_handle_is_null() -> None:
     assert not _ffi.get_lib().reactor_session_id(None)
 
 
-@pytest.mark.parametrize("scope", ["application", "runtime"])
-def test_send_command_on_a_null_handle_reports_failure(scope: str) -> None:
-    lib = _ffi.get_lib()
-    send = lib.reactor_send_runtime_command if scope == "runtime" else lib.reactor_send_command
-    assert send(None, b"hello", b"{}") == -1
+def test_send_command_on_a_null_handle_skips_the_completion() -> None:
+    """The async entry points return early on a null handle *without* invoking the
+    completion — see the matching Rust test in `crates/reactor-ffi/src/lib.rs`.
+    """
+    calls: list[int] = []
+
+    @_ffi.COMPLETION_FN
+    def completion(
+        ok: int, _result: bytes | None, _error: bytes | None, _userdata: int
+    ) -> None:
+        calls.append(ok)
+
+    _ffi.get_lib().reactor_send_command(None, b"hello", b"{}", completion, None)
+
+    assert calls == []
 
 
 def test_unpublish_track_on_a_null_handle_reports_failure() -> None:

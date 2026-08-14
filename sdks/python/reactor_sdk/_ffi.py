@@ -127,8 +127,8 @@ def _load() -> ctypes.CDLL:
     lib.reactor_request_schema.restype = None
     lib.reactor_request_schema.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
 
-    lib.reactor_send_command_and_wait.restype = None
-    lib.reactor_send_command_and_wait.argtypes = [
+    lib.reactor_send_command.restype = None
+    lib.reactor_send_command.argtypes = [
         ctypes.c_void_p,
         ctypes.c_char_p,
         ctypes.c_char_p,
@@ -143,12 +143,6 @@ def _load() -> ctypes.CDLL:
         ctypes.c_void_p,
         ctypes.c_void_p,
     ]
-
-    lib.reactor_send_command.restype = ctypes.c_int
-    lib.reactor_send_command.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
-
-    lib.reactor_send_runtime_command.restype = ctypes.c_int
-    lib.reactor_send_runtime_command.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
 
     lib.reactor_unpublish_track.restype = ctypes.c_int
     lib.reactor_unpublish_track.argtypes = [ctypes.c_void_p, ctypes.c_char_p]

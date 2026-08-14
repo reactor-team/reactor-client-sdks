@@ -53,7 +53,6 @@ class TestStateWithoutAHandle:
     @pytest.mark.parametrize(
         "call",
         [
-            pytest.param(lambda r: r.send_command("hello", {}), id="send_command"),
             pytest.param(lambda r: r.unpublish_track("video"), id="unpublish_track"),
             pytest.param(
                 lambda r: r.push_video_frame("video", b"\x00" * 4, 1, 1),
@@ -69,6 +68,11 @@ class TestStateWithoutAHandle:
         reactor = Reactor("https://api.reactor.inc", "m")
         with pytest.raises(RuntimeError, match="handle not created"):
             call(reactor)
+
+    async def test_send_command_requires_a_handle(self) -> None:
+        reactor = Reactor("https://api.reactor.inc", "m")
+        with pytest.raises(RuntimeError, match="handle not created"):
+            await reactor.send_command("hello", {})
 
 
 class TestHandlerRegistry:

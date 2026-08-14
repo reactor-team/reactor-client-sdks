@@ -12,7 +12,6 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde_json::Value;
 
-use crate::data::DataCorrelator;
 use crate::error::CoreError;
 use crate::protocol::upload::FileRef;
 use crate::protocol::wire::struct_convert::value_to_struct;
@@ -49,55 +48,34 @@ pub fn build_command_payload(
     }))
 }
 
-/// Encode an outbound application command as a fire-and-forget
-/// `DataClientMessage` and enforce the data-channel size limit.
-pub fn encode_command(
-    command: &str,
-    data: Value,
-    uploads: Option<BTreeMap<String, FileRef>>,
-    max_bytes: usize,
-) -> Result<Vec<u8>, CoreError> {
-    let payload = build_command_payload(command, data, uploads)?;
-    let encoded = DataCorrelator::notification(payload);
-    if encoded.len() > max_bytes {
-        return Err(CoreError::MessageTooLarge {
-            size: encoded.len(),
-            max: max_bytes,
-        });
-    }
-    Ok(encoded)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::protocol::wire::struct_convert::struct_to_value;
-    use crate::protocol::wire::v1::data::{data_client_message, DataClientMessage};
-    use prost::Message as _;
     use serde_json::json;
 
-    fn decode_command(bytes: &[u8]) -> Command {
-        let message = DataClientMessage::decode(bytes).unwrap();
-        match message.payload {
-            Some(data_client_message::Payload::Command(c)) => c,
+    fn as_command(payload: data_client_message::Payload) -> Command {
+        match payload {
+            data_client_message::Payload::Command(c) => c,
             other => panic!("expected Command, got {other:?}"),
         }
     }
 
     #[test]
-    fn encode_basic_command() {
-        let bytes = encode_command("set_prompt", json!({"prompt": "a cat"}), None, 1024).unwrap();
-        let command = decode_command(&bytes);
-        assert_eq!(command.r#type, "set_prompt");
+    fn builds_a_basic_command_payload() {
+        let payload = build_command_payload("set_prompt", json!({"prompt": "a cat"}), None)
+            .map(as_command)
+            .unwrap();
+        assert_eq!(payload.r#type, "set_prompt");
         assert_eq!(
-            struct_to_value(command.data.unwrap()),
+            struct_to_value(payload.data.unwrap()),
             json!({"prompt": "a cat"})
         );
-        assert!(command.uploads.is_empty());
+        assert!(payload.uploads.is_empty());
     }
 
     #[test]
-    fn encode_with_uploads() {
+    fn builds_a_command_payload_with_uploads() {
         let mut uploads = BTreeMap::new();
         uploads.insert(
             "image".to_string(),
@@ -108,20 +86,15 @@ mod tests {
                 size: 10,
             },
         );
-        let bytes = encode_command("set_image", json!({}), Some(uploads), 4096).unwrap();
-        let command = decode_command(&bytes);
-        assert_eq!(command.uploads["image"].upload_id, "up_9");
-    }
-
-    #[test]
-    fn size_limit_enforced() {
-        let err = encode_command("big", json!({"blob": "x".repeat(2048)}), None, 256).unwrap_err();
-        assert!(matches!(err, CoreError::MessageTooLarge { .. }));
+        let payload = build_command_payload("set_image", json!({}), Some(uploads))
+            .map(as_command)
+            .unwrap();
+        assert_eq!(payload.uploads["image"].upload_id, "up_9");
     }
 
     #[test]
     fn non_object_data_is_rejected() {
-        let err = encode_command("bad", json!(1), None, 1024).unwrap_err();
+        let err = build_command_payload("bad", json!(1), None).unwrap_err();
         assert!(matches!(err, CoreError::Decode(_)));
     }
 }

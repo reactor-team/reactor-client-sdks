@@ -15,7 +15,6 @@
 //! platform dependencies, so it can be reused by the core, by FFI layers,
 //! and by server-side tooling.
 
-pub mod envelope;
 pub mod recording;
 pub mod session;
 pub mod upload;

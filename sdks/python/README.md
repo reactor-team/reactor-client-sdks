@@ -31,7 +31,7 @@ async def main():
 
         @r.on_status(ReactorStatus.READY)
         def on_ready(status):
-            r.send_command("set_prompt", {"prompt": "a forest at dawn"})
+            asyncio.create_task(r.send_command("set_prompt", {"prompt": "a forest at dawn"}))
 
         def on_frame(bgra, width, height, frame_id, timestamp_us, user_data):
             print(f"frame: {width}x{height}")

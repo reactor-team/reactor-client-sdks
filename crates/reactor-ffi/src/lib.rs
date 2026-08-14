@@ -51,7 +51,6 @@ use reactor_core::error::CoreError;
 use reactor_core::events::ReactorEvent;
 use reactor_core::http::StaticAuth;
 use reactor_core::peer::PeerEvent;
-use reactor_core::protocol::envelope::MessageScope;
 use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions};
 use reactor_core::runtime::TokioPlatform;
 use reactor_webrtc::AdmMode;
@@ -883,8 +882,7 @@ pub unsafe extern "C" fn reactor_request_schema(
 }
 
 /// Send an application-scoped command over the data channel and wait for its
-/// correlated reply, instead of firing it and relying on `on_message` to
-/// eventually carry the answer. On success `result_json` is `{type, data}`.
+/// correlated reply. On success `result_json` is `{type, data}`.
 ///
 /// # Safety
 ///
@@ -892,7 +890,7 @@ pub unsafe extern "C" fn reactor_request_schema(
 /// as `{}`); otherwise it must be a NUL-terminated C string holding a JSON
 /// value. `completion` as [`reactor_connect`].
 #[no_mangle]
-pub unsafe extern "C" fn reactor_send_command_and_wait(
+pub unsafe extern "C" fn reactor_send_command(
     handle: *mut ReactorHandle,
     name: *const c_char,
     args_json: *const c_char,
@@ -924,7 +922,7 @@ pub unsafe extern "C" fn reactor_send_command_and_wait(
         completion,
         userdata,
         move |r: Arc<Reactor>, _tasks: TaskSet| async move {
-            r.send_command_and_wait(&name, args, None).await.map(Some)
+            r.send_command(&name, args, None).await
         }
     );
 }
@@ -967,78 +965,6 @@ pub unsafe extern "C" fn reactor_upload_file(
 }
 
 // ── Synchronous operations ────────────────────────────────────────────────────
-
-/// Send an application-scoped command over the data channel, fire-and-forget.
-/// Returns 0 on success, -1 on any failure (null handle, malformed JSON, channel
-/// not ready, payload too large).
-///
-/// # Safety
-///
-/// `name` must be a NUL-terminated C string. `args_json` may be null (treated as
-/// `{}`); otherwise it must be a NUL-terminated C string holding a JSON value.
-#[no_mangle]
-pub unsafe extern "C" fn reactor_send_command(
-    handle: *mut ReactorHandle,
-    name: *const c_char,
-    args_json: *const c_char,
-) -> c_int {
-    if handle.is_null() {
-        return -1;
-    }
-    let reactor = &(*handle).reactor;
-    let name = CStr::from_ptr(name).to_string_lossy();
-    let args: serde_json::Value = if args_json.is_null() {
-        serde_json::json!({})
-    } else {
-        let raw = CStr::from_ptr(args_json).to_string_lossy();
-        match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => return -1,
-        }
-    };
-    match reactor.send_command(&name, args, MessageScope::Application) {
-        Ok(_) => 0,
-        Err(_) => -1,
-    }
-}
-
-/// Deprecated: runtime-scoped commands no longer have a generic passthrough.
-/// `reactor_wire.v1`'s control channel is a closed set of typed messages, each
-/// with its own dedicated entry point — [`reactor_request_schema`],
-/// [`reactor_request_clip`], [`reactor_request_recording`], [`reactor_upload_file`],
-/// [`reactor_publish_track`]/[`reactor_pause_track`]/[`reactor_resume_track`]/
-/// [`reactor_unpublish_track`] (ping is sent automatically as a heartbeat).
-/// This always returns `-1` for any `name`; it is kept only so existing
-/// callers fail loudly instead of failing to link.
-///
-/// # Safety
-///
-/// As [`reactor_send_command`].
-#[no_mangle]
-pub unsafe extern "C" fn reactor_send_runtime_command(
-    handle: *mut ReactorHandle,
-    name: *const c_char,
-    args_json: *const c_char,
-) -> c_int {
-    if handle.is_null() {
-        return -1;
-    }
-    let reactor = &(*handle).reactor;
-    let name = CStr::from_ptr(name).to_string_lossy();
-    let args: serde_json::Value = if args_json.is_null() {
-        serde_json::json!({})
-    } else {
-        let raw = CStr::from_ptr(args_json).to_string_lossy();
-        match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => return -1,
-        }
-    };
-    match reactor.send_command(&name, args, MessageScope::Runtime) {
-        Ok(_) => 0,
-        Err(_) => -1,
-    }
-}
 
 /// Deactivate a sendonly track. Returns 0 on success, -1 on failure.
 ///
@@ -1227,7 +1153,6 @@ mod tests {
     #[test]
     fn null_handle_is_accepted_by_every_sync_entry_point() {
         let name = CString::new("video").unwrap();
-        let args = CString::new("{}").unwrap();
 
         unsafe {
             let status = CStr::from_ptr(reactor_status(std::ptr::null_mut()));
@@ -1235,14 +1160,6 @@ mod tests {
 
             assert!(reactor_session_id(std::ptr::null_mut()).is_null());
 
-            assert_eq!(
-                reactor_send_command(std::ptr::null_mut(), name.as_ptr(), args.as_ptr()),
-                -1
-            );
-            assert_eq!(
-                reactor_send_runtime_command(std::ptr::null_mut(), name.as_ptr(), args.as_ptr()),
-                -1
-            );
             assert_eq!(
                 reactor_unpublish_track(std::ptr::null_mut(), name.as_ptr()),
                 -1
@@ -1375,7 +1292,7 @@ mod tests {
             // Malformed JSON too: the null-handle check must win before the
             // args_json parse failure gets a chance to invoke completion.
             let bad_args = CString::new("not json").unwrap();
-            reactor_send_command_and_wait(
+            reactor_send_command(
                 std::ptr::null_mut(),
                 name.as_ptr(),
                 bad_args.as_ptr(),

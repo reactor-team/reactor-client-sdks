@@ -20,9 +20,8 @@ use crate::coordinator::{CoordinatorClient, CoordinatorConfig};
 use crate::data::DataCorrelator;
 use crate::error::{codes, Component, CoreError, ReactorError};
 use crate::events::{Dispatcher, ReactorEvent};
-use crate::messaging::{build_command_payload, encode_command};
+use crate::messaging::build_command_payload;
 use crate::peer::{PeerConnectionState, PeerEvent};
-use crate::protocol::envelope::MessageScope;
 use crate::protocol::recording::message_type;
 use crate::protocol::session::{
     Capabilities, ClientInfo, ModelConfig, TrackCapability, TrackDirection,
@@ -568,23 +567,29 @@ impl Reactor {
             return;
         };
         match handled.payload {
-            data_server_message::Payload::Message(model_message) => {
+            None => {
+                // A bodyless command acknowledgement — already delivered to
+                // an awaiting send_command() call as `Ok(None)` if one was
+                // pending; there is no message content to publish either way.
+            }
+            Some(data_server_message::Payload::Message(model_message)) => {
                 let value = json!({
                     "type": model_message.r#type,
                     "data": model_message.data.map(struct_to_value).unwrap_or(Value::Null),
                 });
                 self.dispatcher.dispatch(ReactorEvent::Message(value));
             }
-            data_server_message::Payload::Error(error) => {
+            Some(data_server_message::Payload::Error(error)) => {
                 if handled.correlated {
-                    // Already delivered to the awaiting send_command_and_wait()
-                    // call as a correlated CoreError::CommandRequest — raising
-                    // it globally too would double-report the same failure.
+                    // Already delivered to the awaiting send_command() call
+                    // as a correlated CoreError::CommandRequest — raising it
+                    // globally too would double-report the same failure.
                     return;
                 }
-                // The runtime rejected a fire-and-forget send_command(). It
-                // already returned once the frame was queued, so this is the
-                // only signal callers get that it failed.
+                // No pending request matched this reply's request_id (e.g. it
+                // arrived after a timeout already cancelled the correlation).
+                // There is no awaiting caller left to deliver it to, so this
+                // is the only signal callers get that it failed.
                 self.emit_error(&error.code, error.message, Component::Gpu, true, None);
             }
         }
@@ -650,89 +655,27 @@ impl Reactor {
     // Messaging
     // ------------------------------------------------------------------
 
-    pub fn send_command(
-        &self,
-        command: &str,
-        data: Value,
-        scope: MessageScope,
-    ) -> Result<(), CoreError> {
-        self.send_command_with_uploads(command, data, scope, None)
-    }
-
-    pub fn send_command_with_uploads(
-        &self,
-        command: &str,
-        data: Value,
-        scope: MessageScope,
-        uploads: Option<BTreeMap<String, FileRef>>,
-    ) -> Result<(), CoreError> {
-        if scope == MessageScope::Runtime {
-            // The reactor_wire.v1 control channel has no generic passthrough
-            // for an arbitrary runtime command name — every runtime-scoped
-            // message is one of a closed set of typed control-channel
-            // messages, each with its own dedicated method (`ping`,
-            // `request_schema`, `request_clip`, `request_recording`,
-            // `upload_file`, track control). There is no typed equivalent
-            // for anything else.
-            return Err(CoreError::InvalidState(format!(
-                "'{command}' has no reactor_wire.v1 control-channel equivalent; use \
-                 ping()/request_schema()/request_clip()/request_recording()/upload_file() instead"
-            )));
-        }
-        {
-            let state = self.state.lock().unwrap();
-            if state.status != ReactorStatus::Ready {
-                let error = CoreError::InvalidState(format!(
-                    "cannot send command while status is {}",
-                    state.status
-                ));
-                drop(state);
-                self.emit_error(
-                    codes::NOT_READY,
-                    error.to_string(),
-                    Component::Api,
-                    false,
-                    None,
-                );
-                return Err(error);
-            }
-        }
-        // Only MessageScope::Application reaches this point — Runtime always
-        // returns above — so the payload is always the reactor_wire.v1
-        // protobuf encoding, sent as a binary WebRTC frame.
-        let payload = encode_command(command, data, uploads, self.peer.max_message_bytes())?;
-        self.peer.send_data(&payload, true).inspect_err(|error| {
-            self.emit_error(
-                codes::MESSAGE_SEND_FAILED,
-                error.to_string(),
-                Component::Gpu,
-                false,
-                None,
-            );
-        })
-    }
-
     /// Send an application command and wait for its correlated reply
-    /// (`reactor_wire.v1` `MessageKind::Request`/`Response`), instead of
-    /// firing it and relying on the generic `message` event stream to
-    /// eventually carry the answer.
-    pub async fn send_command_and_wait(
+    /// (`reactor_wire.v1` `MessageKind::Request`/`Response`). `None` means
+    /// the handler ran and acknowledged the command but returned no message.
+    pub async fn send_command(
         &self,
         command: &str,
         data: Value,
         uploads: Option<BTreeMap<String, FileRef>>,
-    ) -> Result<Value, CoreError> {
+    ) -> Result<Option<Value>, CoreError> {
         self.ensure_ready()?;
         let payload = build_command_payload(command, data, uploads)?;
         let response = self
             .data_request(command, payload, self.options.control_request_timeout)
             .await?;
         match response {
-            data_server_message::Payload::Message(model_message) => Ok(json!({
+            None => Ok(None),
+            Some(data_server_message::Payload::Message(model_message)) => Ok(Some(json!({
                 "type": model_message.r#type,
                 "data": model_message.data.map(struct_to_value).unwrap_or(Value::Null),
-            })),
-            data_server_message::Payload::Error(e) => Err(CoreError::CommandRequest {
+            }))),
+            Some(data_server_message::Payload::Error(e)) => Err(CoreError::CommandRequest {
                 command: command.to_string(),
                 code: e.code,
                 message: e.message,
@@ -745,7 +688,7 @@ impl Reactor {
         command: &str,
         payload: data_client_message::Payload,
         request_timeout: Duration,
-    ) -> Result<data_server_message::Payload, CoreError> {
+    ) -> Result<Option<data_server_message::Payload>, CoreError> {
         let pending = self.data.begin(payload);
         let max_bytes = self.peer.max_message_bytes();
         if pending.payload.len() > max_bytes {
@@ -1420,7 +1363,7 @@ mod tests {
         assert!(result.is_ok(), "heartbeat should stop after epoch change");
     }
 
-    // ── send_command_and_wait ─────────────────────────────────────────────────
+    // ── send_command ─────────────────────────────────────────────────
 
     use crate::protocol::wire::struct_convert::value_to_struct;
     use crate::protocol::wire::v1::common::MessageKind;
@@ -1437,18 +1380,18 @@ mod tests {
         .encode_to_vec()
     }
 
-    /// send_command_and_wait() resolves once the correlated reply arrives —
+    /// send_command() resolves once the correlated reply arrives —
     /// the DataCorrelator's first-ever request_id is deterministic ("data_1")
     /// on a freshly constructed Reactor, so the test can address it directly.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn send_command_and_wait_resolves_the_correlated_reply() {
+    async fn send_command_resolves_the_correlated_reply() {
         let reactor = make_reactor();
         reactor.state.lock().unwrap().status = ReactorStatus::Ready;
 
         let r = reactor.clone();
         let call =
             tokio::spawn(
-                async move { r.send_command_and_wait("get_state", json!({}), None).await },
+                async move { r.send_command("get_state", json!({}), None).await },
             );
 
         // Give the call a moment to register with the DataCorrelator.
@@ -1465,25 +1408,54 @@ mod tests {
 
         let result = tokio::time::timeout(Duration::from_millis(300), call)
             .await
-            .expect("send_command_and_wait should resolve")
+            .expect("send_command should resolve")
             .unwrap()
             .unwrap();
         assert_eq!(
             result,
-            json!({"type": "get_state_reply", "data": {"brightness": 1.0}})
+            Some(json!({"type": "get_state_reply", "data": {"brightness": 1.0}}))
         );
+    }
+
+    /// A bodyless ack (a handler that returned no message) resolves
+    /// `send_command()` to `Ok(None)` instead of hanging until the timeout.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_command_resolves_a_bodyless_ack_to_none() {
+        let reactor = make_reactor();
+        reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+
+        let r = reactor.clone();
+        let call =
+            tokio::spawn(async move { r.send_command("set_paused", json!({}), None).await });
+
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        let bytes = DataServerMessage {
+            request_id: "data_1".to_string(),
+            kind: MessageKind::Response as i32,
+            payload: None,
+        }
+        .encode_to_vec();
+        reactor.on_data_message(&bytes);
+
+        let result = tokio::time::timeout(Duration::from_millis(300), call)
+            .await
+            .expect("send_command should resolve")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, None);
     }
 
     /// A correlated `Error` reply surfaces as `CoreError::CommandRequest`,
     /// not just a generic error event.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn send_command_and_wait_surfaces_a_correlated_error() {
+    async fn send_command_surfaces_a_correlated_error() {
         let reactor = make_reactor();
         reactor.state.lock().unwrap().status = ReactorStatus::Ready;
 
         let r = reactor.clone();
         let call = tokio::spawn(async move {
-            r.send_command_and_wait("bad_command", json!({}), None)
+            r.send_command("bad_command", json!({}), None)
                 .await
         });
 
@@ -1500,7 +1472,7 @@ mod tests {
 
         let result = tokio::time::timeout(Duration::from_millis(300), call)
             .await
-            .expect("send_command_and_wait should resolve")
+            .expect("send_command should resolve")
             .unwrap();
         match result {
             Err(CoreError::CommandRequest {
@@ -1522,9 +1494,9 @@ mod tests {
         );
     }
 
-    /// An *uncorrelated* error (rejecting a fire-and-forget send_command(),
-    /// empty request_id) has no awaiting caller to deliver it to, so it must
-    /// still surface as a global error.
+    /// An *uncorrelated* error (empty/unknown request_id — e.g. arriving
+    /// after a timeout already cancelled the correlation) has no awaiting
+    /// caller to deliver it to, so it must still surface as a global error.
     #[test]
     fn uncorrelated_error_still_surfaces_globally() {
         let reactor = make_reactor();
@@ -1547,14 +1519,14 @@ mod tests {
     /// A timeout cancels the pending correlation so a late reply is not
     /// delivered to a dropped receiver.
     #[tokio::test]
-    async fn send_command_and_wait_times_out() {
+    async fn send_command_times_out() {
         let mut opts = ReactorOptions::new("http://localhost", "test-model");
         opts.control_request_timeout = Duration::from_millis(20);
         let reactor = make_reactor_opts(opts);
         reactor.state.lock().unwrap().status = ReactorStatus::Ready;
 
         let result = reactor
-            .send_command_and_wait("get_state", json!({}), None)
+            .send_command("get_state", json!({}), None)
             .await;
         assert!(matches!(result, Err(CoreError::Timeout(_))));
     }

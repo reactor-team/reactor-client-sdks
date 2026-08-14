@@ -3,8 +3,12 @@
 //! Mirrors [`crate::control::ControlCorrelator`]: a request carries a
 //! generated `request_id` (`data_1`, `data_2`, ...) and `kind: Request`;
 //! the correlated response is matched by that id when it arrives. A
-//! fire-and-forget command instead carries an empty `request_id` and
-//! `kind: Notification` — the runtime never replies to those. Timeouts are
+//! response's `payload` oneof may itself be unset — a handler that returned
+//! no message acks with just a matching `request_id` — and that still
+//! resolves the correlation, as `None` rather than being dropped. An inbound
+//! message with an empty `request_id` (`kind: Notification`) is an
+//! unprompted broadcast rather than a reply to any request — it matches
+//! nothing and is still dispatched as a `message` event. Timeouts are
 //! enforced by the caller (see [`crate::reactor::Reactor`]) racing the
 //! receiver against a platform sleep, then calling [`DataCorrelator::cancel`].
 
@@ -21,7 +25,7 @@ use crate::protocol::wire::v1::data::{
     data_client_message, data_server_message, DataClientMessage, DataServerMessage,
 };
 
-type DataResult = Result<data_server_message::Payload, CoreError>;
+type DataResult = Result<Option<data_server_message::Payload>, CoreError>;
 
 /// A data-channel request ready to send.
 pub struct PendingData {
@@ -35,9 +39,9 @@ pub struct PendingData {
 /// A decoded inbound data-channel payload, and whether it resolved a
 /// pending [`DataCorrelator::begin`] request.
 pub struct HandledMessage {
-    pub payload: data_server_message::Payload,
+    pub payload: Option<data_server_message::Payload>,
     /// `true` when this reply's `request_id` matched (and resolved) a
-    /// pending `send_command_and_wait()` call — the caller already has it
+    /// pending `send_command()` call — the caller already has it
     /// via the awaited `Result` and must not also raise it globally.
     pub correlated: bool,
 }
@@ -81,16 +85,6 @@ impl DataCorrelator {
         }
     }
 
-    /// Serialize a fire-and-forget command — the runtime never replies.
-    pub fn notification(payload: data_client_message::Payload) -> Vec<u8> {
-        DataClientMessage {
-            request_id: String::new(),
-            kind: MessageKind::Notification as i32,
-            payload: Some(payload),
-        }
-        .encode_to_vec()
-    }
-
     /// Feed an inbound data-channel payload. Resolves the pending request it
     /// correlates to, if any, and always returns the decoded payload so the
     /// caller can additionally dispatch it as a public event — a command's
@@ -104,7 +98,11 @@ impl DataCorrelator {
                 return None;
             }
         };
-        let payload = message.payload?;
+        // A bodyless command acknowledgement (a handler that returned no
+        // message) carries a matching request_id but leaves the `payload`
+        // oneof entirely unset. `None` still resolves the pending
+        // correlation below instead of being silently dropped.
+        let payload = message.payload;
         let mut correlated = false;
         if !message.request_id.is_empty() {
             match self.pending.lock().unwrap().remove(&message.request_id) {
@@ -180,7 +178,36 @@ mod tests {
         assert!(handled.correlated);
         assert!(matches!(
             pending.receiver.try_recv().unwrap().unwrap(),
-            Ok(data_server_message::Payload::Message(_))
+            Ok(Some(data_server_message::Payload::Message(_)))
+        ));
+    }
+
+    #[test]
+    fn resolves_a_bodyless_ack_as_none() {
+        // `encode_command_ack` (reactor-runtime) replies to a handler that
+        // returned nothing with a `Response` carrying the matching
+        // request_id but no `message`/`error` — the `payload` oneof itself is
+        // unset. That must still resolve the pending correlation, as `None`,
+        // rather than being silently dropped.
+        let c = DataCorrelator::new();
+        let mut pending = c.begin(data_client_message::Payload::Command(Command {
+            r#type: "set_paused".into(),
+            data: None,
+            uploads: Default::default(),
+        }));
+        let bytes = DataServerMessage {
+            request_id: pending.request_id.clone(),
+            kind: MessageKind::Response as i32,
+            payload: None,
+        }
+        .encode_to_vec();
+
+        let handled = c.handle_message(&bytes).unwrap();
+        assert!(handled.correlated);
+        assert!(handled.payload.is_none());
+        assert!(matches!(
+            pending.receiver.try_recv().unwrap().unwrap(),
+            Ok(None)
         ));
     }
 
@@ -202,13 +229,13 @@ mod tests {
         let handled = c.handle_message(&bytes).unwrap();
         assert!(handled.correlated);
         match pending.receiver.try_recv().unwrap().unwrap().unwrap() {
-            data_server_message::Payload::Error(e) => {
+            Some(data_server_message::Payload::Error(e)) => {
                 assert_eq!(e.code, "BAD_COMMAND");
             }
             other => panic!("unexpected: {other:?}"),
         }
         match handled.payload {
-            data_server_message::Payload::Error(e) => assert_eq!(e.code, "BAD_COMMAND"),
+            Some(data_server_message::Payload::Error(e)) => assert_eq!(e.code, "BAD_COMMAND"),
             other => panic!("unexpected: {other:?}"),
         }
     }
@@ -229,7 +256,7 @@ mod tests {
         assert!(!handled.correlated);
         assert!(matches!(
             handled.payload,
-            data_server_message::Payload::Message(_)
+            Some(data_server_message::Payload::Message(_))
         ));
     }
 

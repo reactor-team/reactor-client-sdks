@@ -616,29 +616,25 @@ class ReactorController:
                 elif schema.get("type") == "boolean":
                     data[el.param_name] = False
 
-        if cmd_ui.name == "get_state":
-            logger.info("Sending command: %s with data: %s (awaiting reply)", cmd_ui.name, data)
-            asyncio.create_task(self._send_and_show_reply(cmd_ui, data))
-            return
-
-        logger.info("Sending command: %s with data: %s", cmd_ui.name, data)
-        asyncio.create_task(self.reactor.send_command(cmd_ui.name, data))
+        logger.info("Sending command: %s with data: %s (awaiting reply)", cmd_ui.name, data)
+        asyncio.create_task(self._send_and_show_reply(cmd_ui, data))
 
     async def _send_and_show_reply(self, cmd_ui: CommandUI, data: dict[str, Any]) -> None:
         """Send a command and wait for its correlated reply.
 
-        Unlike the fire-and-forget path in ``_execute_command``, this awaits
-        the model's actual response instead of leaving it to arrive later as
-        an unrelated ``on_message`` event nothing here listens for. The reply
-        is logged and also drawn under this command's Execute button.
+        The reply is logged and also drawn under this command's Execute button.
         """
         name = cmd_ui.name
         try:
-            reply = await self.reactor.send_command_and_wait(name, data)
+            reply = await self.reactor.send_command(name, data)
         except Exception:
             logger.warning("%s failed", name, exc_info=True)
             cmd_ui.last_reply = f"{name} failed — see logs"
             self._layout_commands()
+            return
+        if reply is None:
+            # A bodyless ack — the command was applied but returned no
+            # message, so there is nothing to log or draw under the button.
             return
         logger.info("%s reply: %s", name, reply)
         fields = ", ".join(f"{k}={v}" for k, v in (reply.get("data") or {}).items())

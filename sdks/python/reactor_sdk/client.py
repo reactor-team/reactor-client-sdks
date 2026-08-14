@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import collections.abc
 import ctypes
 import inspect
 import json
@@ -49,59 +48,6 @@ class ReactorStatus(str, Enum):
     CONNECTING = "connecting"
     WAITING = "waiting"
     READY = "ready"
-
-
-class MessageScope(str, Enum):
-    """Which side of the protocol a command is addressed to.
-
-    `APPLICATION` reaches the model; `RUNTIME` reaches the platform around it
-    (capabilities, recording, moderation).
-    """
-
-    APPLICATION = "application"
-    RUNTIME = "runtime"
-
-
-class CommandResult(int):
-    """The result of :meth:`Reactor.send_command`: 0 on success, -1 on failure.
-
-    The send has already happened by the time this exists. It is an `int`, so it can be
-    compared and tested directly — and it is *also* a coroutine, so every way of
-    writing the call works:
-
-        reactor.send_command(...)                      # 0 or -1
-        await reactor.send_command(...)                # 0 or -1
-        asyncio.create_task(reactor.send_command(...)) # a Task resolving to it
-
-    Sending was a coroutine in earlier releases, so the awaiting forms are what code
-    written against those does. Returning a real coroutine instead would make the plain
-    synchronous call — the documented one — emit "coroutine was never awaited" every
-    time. Satisfying the coroutine protocol on an already-finished value avoids the
-    warning while keeping `create_task`, which insists on a coroutine rather than
-    merely an awaitable.
-    """
-
-    def __await__(self):
-        # A generator function, so `return` becomes the awaited value. `yield from ()`
-        # is what makes it one without ever suspending: the work is already done, so
-        # there is nothing to wait for.
-        yield from ()
-        return int(self)
-
-    def send(self, _value: Any) -> None:
-        raise StopIteration(int(self))
-
-    def throw(self, *args: Any) -> None:
-        raise StopIteration(int(self))
-
-    def close(self) -> None:
-        pass
-
-
-# Registered rather than inherited: `int` and the ABC have incompatible metaclasses,
-# and a virtual subclass is enough for `asyncio.iscoroutine`, which is what decides
-# whether `create_task` accepts it.
-collections.abc.Coroutine.register(CommandResult)
 
 
 @dataclass(frozen=True)
@@ -859,51 +805,23 @@ class Reactor:
         self._minted_for = wanted
         return True
 
-    def send_command(
-        self,
-        command: str,
-        data: Any,
-        scope: str | MessageScope = "application",
-    ) -> CommandResult:
-        """Send a fire-and-forget command. Returns 0 on success, -1 on error.
-
-        The result is awaitable as well as an int, so ``await send_command(...)`` works
-        for code written when this was a coroutine. The send happens either way, before
-        this returns.
-        """
-        self._require_handle()
-        lib = get_lib()
-        args_json = json.dumps(data).encode()
-        # A MessageScope is a str subclass, so this covers both it and a bare string.
-        if scope == MessageScope.RUNTIME:
-            return CommandResult(
-                lib.reactor_send_runtime_command(
-                    ctypes.c_void_p(self._handle),
-                    command.encode(),
-                    args_json,
-                )
-            )
-        return CommandResult(
-            lib.reactor_send_command(
-                ctypes.c_void_p(self._handle),
-                command.encode(),
-                args_json,
-            )
-        )
-
-    async def send_command_and_wait(self, command: str, data: Any) -> dict[str, Any]:
+    async def send_command(self, command: str, data: Any) -> dict[str, Any] | None:
         """Send a command and wait for its correlated reply: ``{type, data}``.
 
-        Unlike ``send_command()``, this awaits the model's actual response
-        instead of firing the command and leaving the reply to arrive later
-        as an ``on_message`` event.
+        Returns ``None`` if the handler ran and acknowledged the command but
+        returned no message — e.g. an auto-generated ``set_<field>`` setter.
+
+        To fire a command without waiting on the reply, schedule the call
+        instead of awaiting it directly, e.g. ``asyncio.create_task(
+        reactor.send_command(...))`` — keep a reference to the task so it
+        isn't garbage-collected before it completes.
         """
         self._require_handle()
         handle = self._handle
         lib = get_lib()
         args_json = json.dumps(data).encode()
         return await self._async_op(
-            lambda fn: lib.reactor_send_command_and_wait(
+            lambda fn: lib.reactor_send_command(
                 ctypes.c_void_p(handle), command.encode(), args_json, fn, None
             )
         )

@@ -9,9 +9,7 @@ regression tests in the strict sense: dropping any one of them breaks somebody.
 
 from __future__ import annotations
 
-import asyncio
 import json
-import warnings
 from typing import Any
 from unittest import mock
 
@@ -22,8 +20,6 @@ from reactor_sdk import (
     DEFAULT_API_URL,
     LOCAL_API_URL,
     AuthError,
-    CommandResult,
-    MessageScope,
     Reactor,
     ReactorStatus,
     fetch_jwt,
@@ -52,12 +48,6 @@ class TestStatusEnum:
 
     def test_status_property_returns_the_enum(self) -> None:
         assert Reactor(model_name="m").status is ReactorStatus.DISCONNECTED
-
-
-class TestMessageScope:
-    def test_values(self) -> None:
-        assert MessageScope.APPLICATION == "application"
-        assert MessageScope.RUNTIME == "runtime"
 
 
 class TestConstructor:
@@ -115,37 +105,6 @@ class TestLocalMode:
     def test_without_local_the_url_is_untouched(self) -> None:
         r = Reactor(model_name="m", api_url=DEFAULT_API_URL)
         assert r._api_url == DEFAULT_API_URL
-
-
-class TestCommandResult:
-    """Sending was a coroutine once, so all four call shapes have to work."""
-
-    def test_is_an_int(self) -> None:
-        assert CommandResult(0) == 0
-        assert CommandResult(-1) == -1
-        assert isinstance(CommandResult(0), int)
-
-    async def test_can_be_awaited(self) -> None:
-        assert await CommandResult(0) == 0
-        assert await CommandResult(-1) == -1
-
-    async def test_works_with_ensure_future(self) -> None:
-        assert await asyncio.ensure_future(CommandResult(-1)) == -1
-
-    async def test_works_with_create_task(self) -> None:
-        """`create_task` insists on a coroutine rather than merely an awaitable, which
-        is why this satisfies the coroutine protocol as well."""
-        assert await asyncio.create_task(CommandResult(0)) == 0
-
-    def test_discarding_it_warns_about_nothing(self) -> None:
-        """The synchronous call is the documented one. Returning a real coroutine would
-        make it emit "coroutine was never awaited" every time."""
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            CommandResult(0)
-
-    def test_is_recognised_as_a_coroutine(self) -> None:
-        assert asyncio.iscoroutine(CommandResult(0))
 
 
 class TestFrameConversion:
