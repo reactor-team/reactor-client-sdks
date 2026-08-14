@@ -891,6 +891,23 @@ class Reactor:
             )
         )
 
+    async def send_command_and_wait(self, command: str, data: Any) -> dict[str, Any]:
+        """Send a command and wait for its correlated reply: ``{type, data}``.
+
+        Unlike ``send_command()``, this awaits the model's actual response
+        instead of firing the command and leaving the reply to arrive later
+        as an ``on_message`` event.
+        """
+        self._require_handle()
+        handle = self._handle
+        lib = get_lib()
+        args_json = json.dumps(data).encode()
+        return await self._async_op(
+            lambda fn: lib.reactor_send_command_and_wait(
+                ctypes.c_void_p(handle), command.encode(), args_json, fn, None
+            )
+        )
+
     # ------------------------------------------------------------------
     # Schema
     # ------------------------------------------------------------------

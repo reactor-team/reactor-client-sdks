@@ -20,6 +20,7 @@
 pub mod backoff;
 pub mod control;
 pub mod coordinator;
+pub mod data;
 pub mod error;
 pub mod events;
 pub mod http;

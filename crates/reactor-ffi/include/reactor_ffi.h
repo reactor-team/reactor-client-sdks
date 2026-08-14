@@ -283,6 +283,22 @@ void reactor_request_schema(
 );
 
 /*
+ * Send an application-scoped command over the data channel and wait for its
+ * correlated reply, instead of firing it and relying on the message callback
+ * to eventually carry the answer.
+ *   name      — command name
+ *   args_json — JSON object, or NULL (treated as {})
+ * result_json: { type, data }
+ */
+void reactor_send_command_and_wait(
+    ReactorHandle       *handle,
+    const char          *name,
+    const char          *args_json,  /* nullable */
+    reactor_completion_fn completion,
+    void                *userdata
+);
+
+/*
  * Upload a local file.
  * result_json: { upload_id, name, mime_type, size }
  */

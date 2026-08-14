@@ -882,6 +882,53 @@ pub unsafe extern "C" fn reactor_request_schema(
     );
 }
 
+/// Send an application-scoped command over the data channel and wait for its
+/// correlated reply, instead of firing it and relying on `on_message` to
+/// eventually carry the answer. On success `result_json` is `{type, data}`.
+///
+/// # Safety
+///
+/// `name` must be a NUL-terminated C string. `args_json` may be null (treated
+/// as `{}`); otherwise it must be a NUL-terminated C string holding a JSON
+/// value. `completion` as [`reactor_connect`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_send_command_and_wait(
+    handle: *mut ReactorHandle,
+    name: *const c_char,
+    args_json: *const c_char,
+    completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
+    userdata: *mut c_void,
+) {
+    if handle.is_null() {
+        return;
+    }
+    let name = CStr::from_ptr(name).to_string_lossy().into_owned();
+    let args: serde_json::Value = if args_json.is_null() {
+        serde_json::json!({})
+    } else {
+        let raw = CStr::from_ptr(args_json).to_string_lossy();
+        match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(e) => {
+                if let Some(cb) = completion {
+                    if let Ok(msg) = CString::new(format!("invalid args_json: {e}")) {
+                        cb(-1, std::ptr::null(), msg.as_ptr(), userdata);
+                    }
+                }
+                return;
+            }
+        }
+    };
+    async_op!(
+        handle,
+        completion,
+        userdata,
+        move |r: Arc<Reactor>, _tasks: TaskSet| async move {
+            r.send_command_and_wait(&name, args, None).await.map(Some)
+        }
+    );
+}
+
 /// Upload a local file and return a reference to pass as a command argument.
 ///
 /// # Safety
@@ -1322,6 +1369,16 @@ mod tests {
             );
             reactor_request_recording(
                 std::ptr::null_mut(),
+                Some(count_completion),
+                std::ptr::null_mut(),
+            );
+            // Malformed JSON too: the null-handle check must win before the
+            // args_json parse failure gets a chance to invoke completion.
+            let bad_args = CString::new("not json").unwrap();
+            reactor_send_command_and_wait(
+                std::ptr::null_mut(),
+                name.as_ptr(),
+                bad_args.as_ptr(),
                 Some(count_completion),
                 std::ptr::null_mut(),
             );

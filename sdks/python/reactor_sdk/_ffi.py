@@ -127,6 +127,15 @@ def _load() -> ctypes.CDLL:
     lib.reactor_request_schema.restype = None
     lib.reactor_request_schema.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
 
+    lib.reactor_send_command_and_wait.restype = None
+    lib.reactor_send_command_and_wait.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+
     lib.reactor_upload_file.restype = None
     lib.reactor_upload_file.argtypes = [
         ctypes.c_void_p,
