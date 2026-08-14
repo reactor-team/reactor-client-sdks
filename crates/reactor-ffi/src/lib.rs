@@ -42,6 +42,7 @@ mod callbacks;
 mod http;
 mod peer;
 
+use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_double, c_int, c_void};
 use std::sync::{Arc, Mutex};
@@ -51,6 +52,7 @@ use reactor_core::error::CoreError;
 use reactor_core::events::ReactorEvent;
 use reactor_core::http::StaticAuth;
 use reactor_core::peer::PeerEvent;
+use reactor_core::protocol::upload::FileRef;
 use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions};
 use reactor_core::runtime::TokioPlatform;
 use reactor_webrtc::AdmMode;
@@ -888,12 +890,17 @@ pub unsafe extern "C" fn reactor_request_schema(
 ///
 /// `name` must be a NUL-terminated C string. `args_json` may be null (treated
 /// as `{}`); otherwise it must be a NUL-terminated C string holding a JSON
-/// value. `completion` as [`reactor_connect`].
+/// value. `uploads_json` may be null (treated as no uploads); otherwise it must
+/// be a NUL-terminated C string holding a JSON object of
+/// `{param_name: {upload_id, name, mime_type, size}}`, as returned by
+/// [`reactor_upload_file`] / [`reactor_upload_bytes`]. `completion` as
+/// [`reactor_connect`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_send_command(
     handle: *mut ReactorHandle,
     name: *const c_char,
     args_json: *const c_char,
+    uploads_json: *const c_char,
     completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
     userdata: *mut c_void,
 ) {
@@ -917,11 +924,29 @@ pub unsafe extern "C" fn reactor_send_command(
             }
         }
     };
+    let uploads: Option<BTreeMap<String, FileRef>> = if uploads_json.is_null() {
+        None
+    } else {
+        let raw = CStr::from_ptr(uploads_json).to_string_lossy();
+        match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(e) => {
+                if let Some(cb) = completion {
+                    if let Ok(msg) = CString::new(format!("invalid uploads_json: {e}")) {
+                        cb(-1, std::ptr::null(), msg.as_ptr(), userdata);
+                    }
+                }
+                return;
+            }
+        }
+    };
     async_op!(
         handle,
         completion,
         userdata,
-        move |r: Arc<Reactor>, _tasks: TaskSet| async move { r.send_command(&name, args, None).await }
+        move |r: Arc<Reactor>, _tasks: TaskSet| async move {
+            r.send_command(&name, args, uploads).await
+        }
     );
 }
 
@@ -954,6 +979,63 @@ pub unsafe extern "C" fn reactor_upload_file(
             let bytes = tokio::fs::read(p)
                 .await
                 .map_err(|e| CoreError::Http(e.to_string()))?;
+            let file_ref = r.upload_file(&name, &mime_type, bytes).await?;
+            serde_json::to_value(&file_ref)
+                .map(Some)
+                .map_err(|e| CoreError::Decode(e.to_string()))
+        }
+    );
+}
+
+/// Copies `len` bytes out of `data` into an owned `Vec`.
+///
+/// `slice::from_raw_parts` requires a non-null, aligned pointer even for a
+/// zero-length slice, so a null `data` — a caller's spelling of "no bytes" —
+/// must short-circuit before reaching it rather than pass straight through.
+///
+/// # Safety
+///
+/// As [`reactor_upload_bytes`]: `data` must be null, or point to at least
+/// `len` readable bytes.
+unsafe fn copy_bytes(data: *const u8, len: usize) -> Vec<u8> {
+    if len == 0 {
+        Vec::new()
+    } else {
+        std::slice::from_raw_parts(data, len).to_vec()
+    }
+}
+
+/// Upload a file already in memory and return a reference to pass as a command
+/// argument. Same result shape as [`reactor_upload_file`]; use this when the
+/// caller already has the bytes (a `bytes` object, a file-like object, a
+/// `Blob`) rather than a filesystem path.
+///
+/// # Safety
+///
+/// `data` must point to at least `len` readable bytes, borrowed for the call
+/// only. `name` and `mime_type` must be NUL-terminated C strings. `completion`
+/// as [`reactor_connect`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_upload_bytes(
+    handle: *mut ReactorHandle,
+    data: *const u8,
+    len: usize,
+    name: *const c_char,
+    mime_type: *const c_char,
+    completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
+    userdata: *mut c_void,
+) {
+    if handle.is_null() || (data.is_null() && len > 0) {
+        return;
+    }
+    let bytes = copy_bytes(data, len);
+    let name = CStr::from_ptr(name).to_string_lossy().into_owned();
+    let mime_type = CStr::from_ptr(mime_type).to_string_lossy().into_owned();
+    async_op!(
+        handle,
+        completion,
+        userdata,
+        move |r: Arc<Reactor>, _tasks: TaskSet| async move {
             let file_ref = r.upload_file(&name, &mime_type, bytes).await?;
             serde_json::to_value(&file_ref)
                 .map(Some)
@@ -1294,6 +1376,18 @@ mod tests {
                 std::ptr::null_mut(),
                 name.as_ptr(),
                 bad_args.as_ptr(),
+                std::ptr::null(),
+                Some(count_completion),
+                std::ptr::null_mut(),
+            );
+            let upload_name = CString::new("f.bin").unwrap();
+            let mime_type = CString::new("application/octet-stream").unwrap();
+            reactor_upload_bytes(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                0,
+                upload_name.as_ptr(),
+                mime_type.as_ptr(),
                 Some(count_completion),
                 std::ptr::null_mut(),
             );
@@ -1313,6 +1407,24 @@ mod tests {
             let second = reactor_status(std::ptr::null_mut());
             assert_eq!(first, second, "expected the same static pointer");
             assert_eq!(CStr::from_ptr(first).to_str().unwrap(), "disconnected");
+        }
+    }
+
+    /// `slice::from_raw_parts` requires a non-null pointer even at length 0 — a
+    /// null `data` (a caller's spelling of "no bytes") must short-circuit before
+    /// ever reaching it.
+    #[test]
+    fn copy_bytes_of_a_null_pointer_at_zero_length_is_empty() {
+        unsafe {
+            assert_eq!(copy_bytes(std::ptr::null(), 0), Vec::<u8>::new());
+        }
+    }
+
+    #[test]
+    fn copy_bytes_copies_the_given_length() {
+        let data = [1u8, 2, 3, 4];
+        unsafe {
+            assert_eq!(copy_bytes(data.as_ptr(), data.len()), vec![1, 2, 3, 4]);
         }
     }
 }

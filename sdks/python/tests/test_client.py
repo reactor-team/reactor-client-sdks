@@ -12,7 +12,10 @@ Tests that do need the library live in `test_ffi_bindings.py` and skip without i
 from __future__ import annotations
 
 import asyncio
+import ctypes
+import json
 import threading
+from unittest import mock
 
 import pytest
 
@@ -186,6 +189,240 @@ class TestJsonContracts:
     def test_file_ref_fields_match_the_ffi_payload(self) -> None:
         ref = FileRef(upload_id="up-1", name="a.png", mime_type="image/png", size=12)
         assert (ref.upload_id, ref.size) == ("up-1", 12)
+
+
+class TestSendCommandUploads:
+    """`FileRef` values in `data` must reach the FFI as `uploads_json`, not get
+    serialised inline — the gap this closes: `json.dumps` cannot serialise a
+    `FileRef` at all, so a command with a file parameter was unreachable before.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_real_destroy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`_handle` below is a fake int, not a real native pointer — `__del__`
+        must not hand it to the real `reactor_destroy` at GC time."""
+        monkeypatch.setattr(Reactor, "_destroy_handle", lambda self: None)
+
+    def _reactor(self) -> Reactor:
+        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor._handle = 1234
+        return reactor
+
+    async def test_a_fileref_value_is_pulled_out_into_uploads_json(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_send_command(handle, name, args_json, uploads_json, completion, userdata):
+            captured["name"] = name
+            captured["args_json"] = args_json
+            captured["uploads_json"] = uploads_json
+            completion(1, b'{"type": "set_image", "data": {}}', None, None)
+
+        fake_lib = mock.Mock()
+        fake_lib.reactor_send_command = fake_send_command
+        reactor = self._reactor()
+
+        ref = FileRef(upload_id="up_1", name="a.jpg", mime_type="image/jpeg", size=3)
+        with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
+            reply = await reactor.send_command("set_image", {"image": ref, "caption": "hi"})
+
+        assert reply == {"type": "set_image", "data": {}}
+        assert captured["name"] == b"set_image"
+        assert json.loads(captured["args_json"]) == {"caption": "hi"}
+        assert json.loads(captured["uploads_json"]) == {
+            "image": {
+                "upload_id": "up_1",
+                "name": "a.jpg",
+                "mime_type": "image/jpeg",
+                "size": 3,
+            }
+        }
+
+    async def test_no_fileref_sends_no_uploads_json(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_send_command(handle, name, args_json, uploads_json, completion, userdata):
+            captured["uploads_json"] = uploads_json
+            completion(1, b"{}", None, None)
+
+        fake_lib = mock.Mock()
+        fake_lib.reactor_send_command = fake_send_command
+        reactor = self._reactor()
+
+        with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
+            await reactor.send_command("set_prompt", {"prompt": "a forest"})
+
+        assert captured["uploads_json"] is None
+
+    async def test_multiple_filerefs_all_reach_uploads_json(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_send_command(handle, name, args_json, uploads_json, completion, userdata):
+            captured["args_json"] = args_json
+            captured["uploads_json"] = uploads_json
+            completion(1, b"{}", None, None)
+
+        fake_lib = mock.Mock()
+        fake_lib.reactor_send_command = fake_send_command
+        reactor = self._reactor()
+
+        ref_a = FileRef(upload_id="up_a", name="a.jpg", mime_type="image/jpeg", size=1)
+        ref_b = FileRef(upload_id="up_b", name="b.jpg", mime_type="image/jpeg", size=2)
+        with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
+            await reactor.send_command("set_images", {"front": ref_a, "back": ref_b})
+
+        assert json.loads(captured["args_json"]) == {}
+        assert set(json.loads(captured["uploads_json"])) == {"front", "back"}
+
+
+class TestUploadFileDispatch:
+    """`upload_file` accepts a path, raw bytes, or a file-like object — a path
+    goes to the existing path-based FFI call; anything else is read into memory
+    and goes to `reactor_upload_bytes`, added because the Rust core underneath
+    was already byte-based (`Reactor::upload_file(name, mime_type, bytes)`) —
+    only the old FFI wrapper forced a filesystem path.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_real_destroy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`_handle` below is a fake int, not a real native pointer — `__del__`
+        must not hand it to the real `reactor_destroy` at GC time."""
+        monkeypatch.setattr(Reactor, "_destroy_handle", lambda self: None)
+
+    def _reactor(self) -> Reactor:
+        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor._handle = 1234
+        return reactor
+
+    async def test_a_path_string_uses_the_path_based_ffi_call(self, tmp_path) -> None:
+        f = tmp_path / "photo.jpg"
+        f.write_bytes(b"jpeg-bytes")
+        captured: dict[str, object] = {}
+
+        def fake_upload_file(handle, path, completion, userdata):
+            captured["path"] = path
+            completion(
+                1,
+                b'{"upload_id": "up_1", "name": "photo.jpg", '
+                b'"mime_type": "image/jpeg", "size": 10}',
+                None,
+                None,
+            )
+
+        fake_lib = mock.Mock()
+        fake_lib.reactor_upload_file = fake_upload_file
+        fake_lib.reactor_upload_bytes = mock.Mock(
+            side_effect=AssertionError("should not be called for a path")
+        )
+        reactor = self._reactor()
+
+        with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
+            ref = await reactor.upload_file(str(f))
+
+        assert captured["path"] == str(f).encode()
+        assert ref.upload_id == "up_1"
+
+    async def test_a_path_with_overrides_reads_the_file_and_uses_bytes(self, tmp_path) -> None:
+        """`reactor_upload_file` derives name/mime_type from the path itself with no
+        way to override either — a path with an override must not silently ignore
+        it, so it goes through the bytes-based call instead, same as any other
+        override."""
+        f = tmp_path / "photo.jpg"
+        f.write_bytes(b"jpeg-bytes")
+        captured: dict[str, object] = {}
+
+        def fake_upload_bytes(handle, data, length, name, mime_type, completion, userdata):
+            captured["data"] = bytes(ctypes.cast(data, ctypes.POINTER(ctypes.c_uint8 * length))[0])
+            captured["name"] = name
+            captured["mime_type"] = mime_type
+            completion(
+                1, b'{"upload_id": "up_x", "name": "x", "mime_type": "y", "size": 1}', None, None
+            )
+
+        fake_lib = mock.Mock()
+        fake_lib.reactor_upload_bytes = fake_upload_bytes
+        fake_lib.reactor_upload_file = mock.Mock(
+            side_effect=AssertionError("should not be called when an override is given")
+        )
+        reactor = self._reactor()
+
+        with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
+            await reactor.upload_file(str(f), name="custom.jpg", mime_type="image/x-custom")
+
+        assert captured["data"] == b"jpeg-bytes"
+        assert captured["name"] == b"custom.jpg"
+        assert captured["mime_type"] == b"image/x-custom"
+
+    async def test_raw_bytes_use_the_bytes_based_ffi_call(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_upload_bytes(handle, data, length, name, mime_type, completion, userdata):
+            captured["data"] = bytes(ctypes.cast(data, ctypes.POINTER(ctypes.c_uint8 * length))[0])
+            captured["name"] = name
+            captured["mime_type"] = mime_type
+            completion(
+                1,
+                b'{"upload_id": "up_2", "name": "upload", '
+                b'"mime_type": "application/octet-stream", "size": 5}',
+                None,
+                None,
+            )
+
+        fake_lib = mock.Mock()
+        fake_lib.reactor_upload_bytes = fake_upload_bytes
+        reactor = self._reactor()
+
+        with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
+            ref = await reactor.upload_file(b"hello")
+
+        assert captured["data"] == b"hello"
+        assert captured["name"] == b"upload"
+        assert ref.upload_id == "up_2"
+
+    async def test_a_file_like_object_infers_its_name_and_mime_type(self) -> None:
+        import io
+
+        captured: dict[str, object] = {}
+
+        def fake_upload_bytes(handle, data, length, name, mime_type, completion, userdata):
+            captured["data"] = bytes(ctypes.cast(data, ctypes.POINTER(ctypes.c_uint8 * length))[0])
+            captured["name"] = name
+            captured["mime_type"] = mime_type
+            completion(
+                1, b'{"upload_id": "up_3", "name": "x", "mime_type": "y", "size": 1}', None, None
+            )
+
+        fake_lib = mock.Mock()
+        fake_lib.reactor_upload_bytes = fake_upload_bytes
+        reactor = self._reactor()
+
+        buf = io.BytesIO(b"png-bytes")
+        buf.name = "diagram.png"
+        with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
+            await reactor.upload_file(buf)
+
+        assert captured["data"] == b"png-bytes"
+        assert captured["name"] == b"diagram.png"
+        assert captured["mime_type"] == b"image/png"
+
+    async def test_name_and_mime_type_overrides_are_honoured(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_upload_bytes(handle, data, length, name, mime_type, completion, userdata):
+            captured["name"] = name
+            captured["mime_type"] = mime_type
+            completion(
+                1, b'{"upload_id": "up_4", "name": "x", "mime_type": "y", "size": 1}', None, None
+            )
+
+        fake_lib = mock.Mock()
+        fake_lib.reactor_upload_bytes = fake_upload_bytes
+        reactor = self._reactor()
+
+        with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
+            await reactor.upload_file(b"data", name="custom.bin", mime_type="application/x-custom")
+
+        assert captured["name"] == b"custom.bin"
+        assert captured["mime_type"] == b"application/x-custom"
 
 
 class TestLoopDispatch:

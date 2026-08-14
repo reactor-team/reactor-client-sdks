@@ -967,6 +967,11 @@ impl Reactor {
         let session_id = self
             .session_id()
             .ok_or_else(|| CoreError::InvalidState("upload_file() without a session".into()))?;
+        if bytes.is_empty() {
+            return Err(CoreError::InvalidState(
+                "upload_file() called with an empty file".into(),
+            ));
+        }
         let size = bytes.len() as u64;
         let upload = self
             .coordinator
@@ -1521,5 +1526,41 @@ mod tests {
 
         let result = reactor.send_command("get_state", json!({}), None).await;
         assert!(matches!(result, Err(CoreError::Timeout(_))));
+    }
+
+    // ── Uploads ─────────────────────────────────────────────────────────────
+
+    /// An empty file is rejected before any network call — the previous
+    /// (aiortc-based) SDK validated this in Python; this restores the check at
+    /// the layer every FFI upload entry point (path- and bytes-based) shares,
+    /// rather than duplicating it per binding. `PendingHttp` backs this reactor
+    /// and never resolves, so a request escaping past the check would hang the
+    /// test rather than fail it cleanly.
+    #[tokio::test]
+    async fn upload_file_rejects_an_empty_file() {
+        let reactor = make_reactor();
+        reactor.state.lock().unwrap().session_id = Some("sess-1".into());
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(200),
+            reactor.upload_file("f.bin", "application/octet-stream", vec![]),
+        )
+        .await
+        .expect("should reject the empty file without touching the network");
+
+        assert!(matches!(result, Err(CoreError::InvalidState(msg)) if msg.contains("empty")));
+    }
+
+    /// Without a session, `upload_file()` fails on that before ever looking at
+    /// the bytes.
+    #[tokio::test]
+    async fn upload_file_without_a_session_is_rejected() {
+        let reactor = make_reactor();
+
+        let result = reactor
+            .upload_file("f.bin", "application/octet-stream", vec![1, 2, 3])
+            .await;
+
+        assert!(matches!(result, Err(CoreError::InvalidState(msg)) if msg.contains("session")));
     }
 }

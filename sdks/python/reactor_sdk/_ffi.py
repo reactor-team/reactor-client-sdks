@@ -129,11 +129,12 @@ def _load() -> ctypes.CDLL:
 
     lib.reactor_send_command.restype = None
     lib.reactor_send_command.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_char_p,
-        ctypes.c_char_p,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
+        ctypes.c_void_p,  # handle
+        ctypes.c_char_p,  # name
+        ctypes.c_char_p,  # args_json
+        ctypes.c_char_p,  # uploads_json
+        ctypes.c_void_p,  # completion fn ptr
+        ctypes.c_void_p,  # userdata
     ]
 
     lib.reactor_upload_file.restype = None
@@ -142,6 +143,17 @@ def _load() -> ctypes.CDLL:
         ctypes.c_char_p,
         ctypes.c_void_p,
         ctypes.c_void_p,
+    ]
+
+    lib.reactor_upload_bytes.restype = None
+    lib.reactor_upload_bytes.argtypes = [
+        ctypes.c_void_p,  # handle
+        ctypes.c_void_p,  # data
+        ctypes.c_size_t,  # len
+        ctypes.c_char_p,  # name
+        ctypes.c_char_p,  # mime_type
+        ctypes.c_void_p,  # completion fn ptr
+        ctypes.c_void_p,  # userdata
     ]
 
     lib.reactor_unpublish_track.restype = ctypes.c_int
