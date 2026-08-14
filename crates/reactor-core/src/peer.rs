@@ -25,8 +25,8 @@ pub enum PeerEvent {
     ConnectionStateChanged(PeerConnectionState),
     DataChannelOpen,
     ControlChannelOpen,
-    /// Text payload received on the data channel.
-    DataChannelMessage(String),
+    /// Binary `reactor_wire.v1` payload received on the data channel.
+    DataChannelMessage(Vec<u8>),
     /// Text payload received on the control channel.
     ControlChannelMessage(String),
     /// A remote media track arrived. `name` if the engine resolved it,
@@ -73,8 +73,11 @@ pub trait PeerTransport {
     async fn set_remote_description(&self, sdp_answer: &str)
         -> Result<(), crate::error::CoreError>;
 
-    /// Send a serialized message on the `"data"` channel.
-    fn send_data(&self, payload: &str) -> Result<(), crate::error::CoreError>;
+    /// Send a message on the `"data"` channel. `binary` selects the
+    /// WebRTC data-channel frame type: `true` for `reactor_wire.v1`
+    /// protobuf payloads, `false` for the legacy JSON envelope (runtime-
+    /// scoped commands not yet migrated — see [`crate::messaging::legacy`]).
+    fn send_data(&self, payload: &[u8], binary: bool) -> Result<(), crate::error::CoreError>;
 
     /// Send a serialized message on the `"control"` channel.
     fn send_control(&self, payload: &str) -> Result<(), crate::error::CoreError>;
