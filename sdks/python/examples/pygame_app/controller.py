@@ -89,6 +89,7 @@ class CommandUI:
     rect: pygame.Rect = field(default_factory=lambda: pygame.Rect(0, 0, 0, 0))
     header_rect: pygame.Rect = field(default_factory=lambda: pygame.Rect(0, 0, 0, 0))
     button_rect: pygame.Rect | None = None
+    last_reply: str | None = None
 
 
 # =============================================================================
@@ -132,13 +133,11 @@ class ReactorController:
 
         self._capabilities_received = False
         self._last_request_time = 0.0
-        self._last_reply_text: str | None = None
 
         @reactor.on_status(ReactorStatus.DISCONNECTED)
         def on_disconnected(status: ReactorStatus) -> None:
             self.commands.clear()
             self._capabilities_received = False
-            self._last_reply_text = None
 
         @reactor.on_status(ReactorStatus.READY)
         def on_ready(status: ReactorStatus) -> None:
@@ -314,6 +313,9 @@ class ReactorController:
                 else:
                     cmd_ui.button_rect = None
 
+                if cmd_ui.last_reply:
+                    y += 18
+
                 cmd_ui.rect.height = y - self.scroll_offset - cmd_ui.rect.y
 
             y += pad
@@ -333,13 +335,6 @@ class ReactorController:
 
         title = self.font_title.render("Reactor Commands", True, COLORS["text"])
         surface.blit(title, (self.rect.x + 12, self.rect.y + 12))
-
-        if self._last_reply_text:
-            max_chars = (self.rect.width - 24) // 6
-            reply_line = self.font_desc.render(
-                self._last_reply_text[:max_chars], True, COLORS["primary"]
-            )
-            surface.blit(reply_line, (self.rect.x + 12, self.rect.y + 32))
 
         if not self.commands:
             surface.blit(
@@ -393,6 +388,13 @@ class ReactorController:
             pygame.draw.rect(surface, COLORS["primary"], cmd.button_rect)
             btn = self.font_bold.render("Execute", True, (255, 255, 255))
             surface.blit(btn, btn.get_rect(center=cmd.button_rect.center))
+
+            if cmd.last_reply:
+                max_chars = (self.rect.width - cmd.button_rect.x * 2) // 6
+                reply_line = self.font_desc.render(
+                    cmd.last_reply[:max_chars], True, COLORS["text_light"]
+                )
+                surface.blit(reply_line, (cmd.button_rect.x, cmd.button_rect.bottom + 4))
 
     def _render_slider(self, surface: pygame.Surface, el: SliderElement) -> None:
         label = f"{el.param_name} ({el.min_value:.1f} - {el.max_value:.1f})"
@@ -592,29 +594,32 @@ class ReactorController:
 
         if cmd_ui.name == "get_state":
             logger.info("Sending command: %s with data: %s (awaiting reply)", cmd_ui.name, data)
-            asyncio.create_task(self._send_and_log_reply(cmd_ui.name, data))
+            asyncio.create_task(self._send_and_show_reply(cmd_ui, data))
             return
 
         logger.info("Sending command: %s with data: %s", cmd_ui.name, data)
         asyncio.create_task(self.reactor.send_command(cmd_ui.name, data))
 
-    async def _send_and_log_reply(self, name: str, data: dict[str, Any]) -> None:
+    async def _send_and_show_reply(self, cmd_ui: CommandUI, data: dict[str, Any]) -> None:
         """Send a command and wait for its correlated reply.
 
         Unlike the fire-and-forget path in ``_execute_command``, this awaits
         the model's actual response instead of leaving it to arrive later as
         an unrelated ``on_message`` event nothing here listens for. The reply
-        is logged and also kept for ``render()`` to draw in the panel.
+        is logged and also drawn under this command's Execute button.
         """
+        name = cmd_ui.name
         try:
             reply = await self.reactor.send_command_and_wait(name, data)
         except Exception:
             logger.warning("%s failed", name, exc_info=True)
-            self._last_reply_text = f"{name} failed — see logs"
+            cmd_ui.last_reply = f"{name} failed — see logs"
+            self._layout_commands()
             return
         logger.info("%s reply: %s", name, reply)
         fields = ", ".join(f"{k}={v}" for k, v in (reply.get("data") or {}).items())
-        self._last_reply_text = f"{reply.get('type', name)}: {fields}"
+        cmd_ui.last_reply = f"{reply.get('type', name)}: {fields}"
+        self._layout_commands()
 
     def update(self) -> None:
         """Retry requesting the model schema if not yet received."""
