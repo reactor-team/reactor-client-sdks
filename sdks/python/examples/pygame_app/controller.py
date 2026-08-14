@@ -111,6 +111,8 @@ class ReactorController:
     4. Retry every 5s if the schema hasn't arrived yet
     """
 
+    _REPLY_LINE_HEIGHT = 14
+
     def __init__(
         self,
         reactor: Reactor,
@@ -266,6 +268,23 @@ class ReactorController:
 
         return None
 
+    def _wrap_reply(self, text: str, start_x: int) -> list[str]:
+        """Word-wrap `text` to fit between `start_x` and the panel's edge."""
+        max_width = self.rect.right - start_x - 8
+        words = text.split(" ")
+        lines: list[str] = []
+        current = ""
+        for word in words:
+            candidate = f"{current} {word}".strip()
+            if not current or self.font_desc.size(candidate)[0] <= max_width:
+                current = candidate
+            else:
+                lines.append(current)
+                current = word
+        if current:
+            lines.append(current)
+        return lines
+
     # ─────────────────────────────────────────────────────────────────────
     # Layout
     # ─────────────────────────────────────────────────────────────────────
@@ -313,8 +332,9 @@ class ReactorController:
                 else:
                     cmd_ui.button_rect = None
 
-                if cmd_ui.last_reply:
-                    y += 18
+                if cmd_ui.last_reply and cmd_ui.button_rect:
+                    n_lines = len(self._wrap_reply(cmd_ui.last_reply, cmd_ui.button_rect.x))
+                    y += self._REPLY_LINE_HEIGHT * n_lines + 4
 
                 cmd_ui.rect.height = y - self.scroll_offset - cmd_ui.rect.y
 
@@ -390,11 +410,15 @@ class ReactorController:
             surface.blit(btn, btn.get_rect(center=cmd.button_rect.center))
 
             if cmd.last_reply:
-                max_chars = (self.rect.width - cmd.button_rect.x * 2) // 6
-                reply_line = self.font_desc.render(
-                    cmd.last_reply[:max_chars], True, COLORS["text_light"]
-                )
-                surface.blit(reply_line, (cmd.button_rect.x, cmd.button_rect.bottom + 4))
+                for i, line in enumerate(self._wrap_reply(cmd.last_reply, cmd.button_rect.x)):
+                    reply_line = self.font_desc.render(line, True, COLORS["text_light"])
+                    surface.blit(
+                        reply_line,
+                        (
+                            cmd.button_rect.x,
+                            cmd.button_rect.bottom + 4 + i * self._REPLY_LINE_HEIGHT,
+                        ),
+                    )
 
     def _render_slider(self, surface: pygame.Surface, el: SliderElement) -> None:
         label = f"{el.param_name} ({el.min_value:.1f} - {el.max_value:.1f})"
