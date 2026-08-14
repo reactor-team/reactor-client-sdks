@@ -132,11 +132,13 @@ class ReactorController:
 
         self._capabilities_received = False
         self._last_request_time = 0.0
+        self._last_reply_text: str | None = None
 
         @reactor.on_status(ReactorStatus.DISCONNECTED)
         def on_disconnected(status: ReactorStatus) -> None:
             self.commands.clear()
             self._capabilities_received = False
+            self._last_reply_text = None
 
         @reactor.on_status(ReactorStatus.READY)
         def on_ready(status: ReactorStatus) -> None:
@@ -331,6 +333,13 @@ class ReactorController:
 
         title = self.font_title.render("Reactor Commands", True, COLORS["text"])
         surface.blit(title, (self.rect.x + 12, self.rect.y + 12))
+
+        if self._last_reply_text:
+            max_chars = (self.rect.width - 24) // 6
+            reply_line = self.font_desc.render(
+                self._last_reply_text[:max_chars], True, COLORS["primary"]
+            )
+            surface.blit(reply_line, (self.rect.x + 12, self.rect.y + 32))
 
         if not self.commands:
             surface.blit(
@@ -590,18 +599,22 @@ class ReactorController:
         asyncio.create_task(self.reactor.send_command(cmd_ui.name, data))
 
     async def _send_and_log_reply(self, name: str, data: dict[str, Any]) -> None:
-        """Send a command and wait for its correlated reply, logging it.
+        """Send a command and wait for its correlated reply.
 
         Unlike the fire-and-forget path in ``_execute_command``, this awaits
         the model's actual response instead of leaving it to arrive later as
-        an unrelated ``on_message`` event nothing here listens for.
+        an unrelated ``on_message`` event nothing here listens for. The reply
+        is logged and also kept for ``render()`` to draw in the panel.
         """
         try:
             reply = await self.reactor.send_command_and_wait(name, data)
         except Exception:
             logger.warning("%s failed", name, exc_info=True)
+            self._last_reply_text = f"{name} failed — see logs"
             return
         logger.info("%s reply: %s", name, reply)
+        fields = ", ".join(f"{k}={v}" for k, v in (reply.get("data") or {}).items())
+        self._last_reply_text = f"{reply.get('type', name)}: {fields}"
 
     def update(self) -> None:
         """Retry requesting the model schema if not yet received."""
