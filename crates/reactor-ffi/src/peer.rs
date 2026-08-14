@@ -382,14 +382,14 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         pc.set_remote_description(&answer).map_err(peer_err)
     }
 
-    fn send_data(&self, payload: &[u8]) -> Result<(), CoreError> {
-        debug!("[peer] → data: {} byte(s)", payload.len());
+    fn send_data(&self, payload: &[u8], binary: bool) -> Result<(), CoreError> {
+        debug!("[peer] → data: {} byte(s), binary={binary}", payload.len());
         let s = self.state.lock().unwrap();
         let dc = s
             .data_channel
             .as_ref()
             .ok_or_else(|| CoreError::Peer("data channel not ready".into()))?;
-        dc.send(payload, true).map_err(peer_err)
+        dc.send(payload, binary).map_err(peer_err)
     }
 
     fn send_control(&self, payload: &str) -> Result<(), CoreError> {

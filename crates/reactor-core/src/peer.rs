@@ -73,8 +73,11 @@ pub trait PeerTransport {
     async fn set_remote_description(&self, sdp_answer: &str)
         -> Result<(), crate::error::CoreError>;
 
-    /// Send a `reactor_wire.v1` binary message on the `"data"` channel.
-    fn send_data(&self, payload: &[u8]) -> Result<(), crate::error::CoreError>;
+    /// Send a message on the `"data"` channel. `binary` selects the
+    /// WebRTC data-channel frame type: `true` for `reactor_wire.v1`
+    /// protobuf payloads, `false` for the legacy JSON envelope (runtime-
+    /// scoped commands not yet migrated — see [`crate::messaging::legacy`]).
+    fn send_data(&self, payload: &[u8], binary: bool) -> Result<(), crate::error::CoreError>;
 
     /// Send a serialized message on the `"control"` channel.
     fn send_control(&self, payload: &str) -> Result<(), crate::error::CoreError>;

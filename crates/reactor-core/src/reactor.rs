@@ -628,13 +628,14 @@ impl Reactor {
             }
         }
         let max_bytes = self.peer.max_message_bytes();
+        let binary = matches!(scope, MessageScope::Application);
         let payload = match scope {
             MessageScope::Application => encode_command(command, data, uploads, max_bytes)?,
             MessageScope::Runtime => {
                 messaging::legacy::encode_runtime_command(command, data, max_bytes)?
             }
         };
-        self.peer.send_data(&payload).inspect_err(|error| {
+        self.peer.send_data(&payload, binary).inspect_err(|error| {
             self.emit_error(
                 codes::MESSAGE_SEND_FAILED,
                 error.to_string(),
@@ -1071,7 +1072,7 @@ mod tests {
         async fn set_remote_description(&self, _: &str) -> Result<(), CoreError> {
             Ok(())
         }
-        fn send_data(&self, _: &[u8]) -> Result<(), CoreError> {
+        fn send_data(&self, _: &[u8], _: bool) -> Result<(), CoreError> {
             Ok(())
         }
         fn send_control(&self, _: &str) -> Result<(), CoreError> {
