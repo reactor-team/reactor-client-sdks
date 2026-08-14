@@ -3,9 +3,9 @@
 """
 ReactorController - Dynamic UI controller for pygame.
 
-Builds UI controls dynamically from the model's command schema,
-received via the data channel runtime message (modelCapabilities).
-Mirrors the JS SDK's ReactorController.tsx.
+Builds UI controls dynamically from the model's command schema, fetched via
+``Reactor.request_schema()`` (the ``reactor_wire.v1`` control-channel
+RequestSchema/ModelSchema request/response).
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from typing import Any
 
 import pygame
 
-from reactor_sdk import MessageScope, Reactor, ReactorStatus
+from reactor_sdk import Reactor, ReactorStatus
 
 logger = logging.getLogger(__name__)
 
@@ -98,14 +98,16 @@ class CommandUI:
 
 class ReactorController:
     """
-    Dynamic UI controller that requests and receives command schemas
-    via the data channel (runtime scope), then builds pygame controls.
+    Dynamic UI controller that requests and receives the model's command
+    schema over the control channel, then builds pygame controls from it.
 
-    Flow (mirrors JS SDK ReactorController.tsx):
-    1. On READY → send ``requestCapabilities`` on the runtime channel
-    2. Listen for ``modelCapabilities`` runtime message with command list
+    Flow:
+    1. On READY → call ``reactor.request_schema()`` (control-channel
+       request/response, typed as ``RequestSchema``/``ModelSchema`` in
+       ``reactor_wire.v1``)
+    2. Parse the returned OpenAPI document into per-command parameter schemas
     3. Build UI from the received command schemas
-    4. Retry every 5s if capabilities haven't arrived
+    4. Retry every 5s if the schema hasn't arrived yet
     """
 
     def __init__(
@@ -131,19 +133,6 @@ class ReactorController:
         self._capabilities_received = False
         self._last_request_time = 0.0
 
-        def on_runtime_message(message: Any) -> None:
-            if (
-                isinstance(message, dict)
-                and message.get("type") == "modelCapabilities"
-                and isinstance(message.get("data"), dict)
-                and "commands" in message["data"]
-            ):
-                logger.debug("Received modelCapabilities from data channel")
-                self._capabilities_received = True
-                self._parse_commands(message["data"]["commands"])
-
-        reactor.on("runtime_message", on_runtime_message)
-
         @reactor.on_status(ReactorStatus.DISCONNECTED)
         def on_disconnected(status: ReactorStatus) -> None:
             self.commands.clear()
@@ -151,44 +140,68 @@ class ReactorController:
 
         @reactor.on_status(ReactorStatus.READY)
         def on_ready(status: ReactorStatus) -> None:
-            self._request_capabilities()
+            self._request_schema()
 
-    def _request_capabilities(self) -> None:
-        """Send requestCapabilities on the runtime data channel."""
+    def _request_schema(self) -> None:
+        """Request the model's command schema over the control channel."""
         now = time.time()
         if now - self._last_request_time < 1.0:
             return
         self._last_request_time = now
-        logger.debug("Requesting capabilities via data channel")
-        asyncio.create_task(
-            self.reactor.send_command("requestCapabilities", {}, MessageScope.RUNTIME)
-        )
+        logger.debug("Requesting model schema via control channel")
 
-    def _parse_commands(self, commands_list: list[dict[str, Any]]) -> None:
+        async def go() -> None:
+            try:
+                openapi = await self.reactor.request_schema()
+            except Exception:
+                logger.warning("request_schema() failed, will retry", exc_info=True)
+                return
+            self._capabilities_received = True
+            self._parse_openapi_schema(openapi)
+
+        asyncio.create_task(go())
+
+    def _parse_openapi_schema(self, openapi: dict[str, Any]) -> None:
         """
-        Parse the commands array from the modelCapabilities message.
+        Parse an OpenAPI document into per-command parameter schemas.
 
-        The runtime sends commands as a list of ``{name, description, schema}``
-        matching the proto Command message shape.
+        TODO: this assumes each command is a path with a single operation
+        whose ``operationId`` (or path segment, if unset) is the command
+        name, ``summary`` is its description, and its JSON Schema request
+        body's ``properties`` are the command's parameters — the shape
+        reactor-runtime actually emits hasn't been confirmed against this
+        parsing yet.
         """
         self.commands.clear()
 
-        for cmd in commands_list:
-            name = cmd.get("name", "")
-            desc = cmd.get("description", "")
-            schema = cmd.get("schema") or {}
+        for path, path_item in (openapi.get("paths") or {}).items():
+            if not isinstance(path_item, dict):
+                continue
+            for operation in path_item.values():
+                if not isinstance(operation, dict):
+                    continue
+                name = operation.get("operationId") or path.lstrip("/")
+                desc = operation.get("summary") or operation.get("description", "")
+                schema = (
+                    operation.get("requestBody", {})
+                    .get("content", {})
+                    .get("application/json", {})
+                    .get("schema", {})
+                    .get("properties")
+                    or {}
+                )
 
-            command_ui = CommandUI(name=name, description=desc, schema=schema, expanded=False)
+                command_ui = CommandUI(name=name, description=desc, schema=schema, expanded=False)
 
-            for param_name, param_schema in schema.items():
-                element = self._create_element(param_name, param_schema)
-                if element:
-                    command_ui.elements.append(element)
+                for param_name, param_schema in schema.items():
+                    element = self._create_element(param_name, param_schema)
+                    if element:
+                        command_ui.elements.append(element)
 
-            self.commands[name] = command_ui
+                self.commands[name] = command_ui
 
         self._layout_commands()
-        logger.info("Loaded %d commands from modelCapabilities", len(self.commands))
+        logger.info("Loaded %d commands from the model schema", len(self.commands))
 
     # ─────────────────────────────────────────────────────────────────────
     # Element Factory
@@ -572,8 +585,8 @@ class ReactorController:
         asyncio.create_task(self.reactor.send_command(cmd_ui.name, data))
 
     def update(self) -> None:
-        """Retry requesting capabilities if not yet received."""
+        """Retry requesting the model schema if not yet received."""
         if self.reactor.get_status() == ReactorStatus.READY and not self._capabilities_received:
             now = time.time()
             if now - self._last_request_time >= 5.0:
-                self._request_capabilities()
+                self._request_schema()

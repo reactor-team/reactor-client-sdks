@@ -28,9 +28,12 @@ use crate::protocol::session::{
 };
 use crate::protocol::upload::{CreateUploadRequest, FileRef};
 use crate::protocol::webrtc::{IceCandidate, TrackMappingEntry};
+use crate::protocol::wire::struct_convert::struct_to_value;
 use crate::protocol::wire::v1::control::control_client_message::Payload as ClientPayload;
 use crate::protocol::wire::v1::control::control_server_message::Payload as ServerPayload;
-use crate::protocol::wire::v1::platform::{FileUploaded, Ping, RequestClip, RequestRecording};
+use crate::protocol::wire::v1::platform::{
+    FileUploaded, Ping, RequestClip, RequestRecording, RequestSchema,
+};
 use crate::protocol::wire::v1::track::{PauseTrack, PublishTrack, ResumeTrack, UnpublishTrack};
 use crate::recording::{clip_from_ready, Clip};
 use crate::runtime::timeout;
@@ -647,11 +650,12 @@ impl Reactor {
             // for an arbitrary runtime command name — every runtime-scoped
             // message is one of a closed set of typed control-channel
             // messages, each with its own dedicated method (`ping`,
-            // `request_clip`, `request_recording`, `upload_file`, track
-            // control). There is no typed equivalent for anything else.
+            // `request_schema`, `request_clip`, `request_recording`,
+            // `upload_file`, track control). There is no typed equivalent
+            // for anything else.
             return Err(CoreError::InvalidState(format!(
-                "'{command}' has no reactor_wire.v1 control-channel equivalent; \
-                 use ping()/request_clip()/request_recording()/upload_file() instead"
+                "'{command}' has no reactor_wire.v1 control-channel equivalent; use \
+                 ping()/request_schema()/request_clip()/request_recording()/upload_file() instead"
             )));
         }
         {
@@ -672,15 +676,11 @@ impl Reactor {
                 return Err(error);
             }
         }
-        let max_bytes = self.peer.max_message_bytes();
-        let binary = matches!(scope, MessageScope::Application);
-        let payload = match scope {
-            MessageScope::Application => encode_command(command, data, uploads, max_bytes)?,
-            MessageScope::Runtime => {
-                messaging::legacy::encode_runtime_command(command, data, max_bytes)?
-            }
-        };
-        self.peer.send_data(&payload, binary).inspect_err(|error| {
+        // Only MessageScope::Application reaches this point — Runtime always
+        // returns above — so the payload is always the reactor_wire.v1
+        // protobuf encoding, sent as a binary WebRTC frame.
+        let payload = encode_command(command, data, uploads, self.peer.max_message_bytes())?;
+        self.peer.send_data(&payload, true).inspect_err(|error| {
             self.emit_error(
                 codes::MESSAGE_SEND_FAILED,
                 error.to_string(),
@@ -696,6 +696,30 @@ impl Reactor {
             .send_control(&ControlCorrelator::notification(ClientPayload::Ping(
                 Ping {},
             )))
+    }
+
+    /// Request the model's command schema, delivered as an OpenAPI document.
+    pub async fn request_schema(&self) -> Result<Value, CoreError> {
+        self.ensure_ready()?;
+        self.control_request(
+            "request_schema",
+            ClientPayload::RequestSchema(RequestSchema {}),
+            self.options.control_request_timeout,
+        )
+        .await
+        .and_then(|payload| match payload {
+            ServerPayload::ModelSchema(schema) => {
+                Ok(schema.openapi.map(struct_to_value).unwrap_or(Value::Null))
+            }
+            ServerPayload::Error(e) => Err(CoreError::ControlRequest {
+                method: "request_schema".to_string(),
+                code: e.code,
+                message: e.message,
+            }),
+            _ => Err(CoreError::decode(
+                "unexpected control response for request_schema",
+            )),
+        })
     }
 
     // ------------------------------------------------------------------

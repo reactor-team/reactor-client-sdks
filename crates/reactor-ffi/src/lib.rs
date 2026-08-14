@@ -862,6 +862,26 @@ pub unsafe extern "C" fn reactor_request_recording(
     );
 }
 
+/// Request the model's command schema. On success `result_json` is an OpenAPI
+/// document.
+///
+/// # Safety
+///
+/// `completion` as [`reactor_connect`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_request_schema(
+    handle: *mut ReactorHandle,
+    completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
+    userdata: *mut c_void,
+) {
+    async_op!(
+        handle,
+        completion,
+        userdata,
+        |r: Arc<Reactor>, _tasks: TaskSet| async move { r.request_schema().await.map(Some) }
+    );
+}
+
 /// Upload a local file and return a reference to pass as a command argument.
 ///
 /// # Safety
@@ -935,7 +955,14 @@ pub unsafe extern "C" fn reactor_send_command(
     }
 }
 
-/// Send a runtime-scoped (platform) command over the data channel.
+/// Deprecated: runtime-scoped commands no longer have a generic passthrough.
+/// `reactor_wire.v1`'s control channel is a closed set of typed messages, each
+/// with its own dedicated entry point — [`reactor_request_schema`],
+/// [`reactor_request_clip`], [`reactor_request_recording`], [`reactor_upload_file`],
+/// [`reactor_publish_track`]/[`reactor_pause_track`]/[`reactor_resume_track`]/
+/// [`reactor_unpublish_track`] (ping is sent automatically as a heartbeat).
+/// This always returns `-1` for any `name`; it is kept only so existing
+/// callers fail loudly instead of failing to link.
 ///
 /// # Safety
 ///
