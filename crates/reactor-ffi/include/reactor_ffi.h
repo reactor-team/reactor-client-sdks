@@ -273,6 +273,16 @@ void reactor_request_recording(
 );
 
 /*
+ * Request the model's command schema.
+ * result_json: an OpenAPI document.
+ */
+void reactor_request_schema(
+    ReactorHandle       *handle,
+    reactor_completion_fn completion,
+    void                *userdata
+);
+
+/*
  * Upload a local file.
  * result_json: { upload_id, name, mime_type, size }
  */
