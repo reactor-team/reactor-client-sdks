@@ -32,11 +32,23 @@ pub struct PendingData {
     pub receiver: oneshot::Receiver<DataResult>,
 }
 
+/// A decoded inbound data-channel payload, and whether it resolved a
+/// pending [`DataCorrelator::begin`] request.
+pub struct HandledMessage {
+    pub payload: data_server_message::Payload,
+    /// `true` when this reply's `request_id` matched (and resolved) a
+    /// pending `send_command_and_wait()` call — the caller already has it
+    /// via the awaited `Result` and must not also raise it globally.
+    pub correlated: bool,
+}
+
 /// Correlates data-channel commands with their responses.
 #[derive(Default)]
 pub struct DataCorrelator {
     counter: AtomicU64,
-    pending: Mutex<HashMap<String, oneshot::Sender<DataResult>>>,
+    /// Keyed by `request_id`; the stored command name lets `fail_all`
+    /// report which command a disconnect-time rejection belongs to.
+    pending: Mutex<HashMap<String, (String, oneshot::Sender<DataResult>)>>,
 }
 
 impl DataCorrelator {
@@ -46,6 +58,10 @@ impl DataCorrelator {
 
     /// Build a request and register it for correlation.
     pub fn begin(&self, payload: data_client_message::Payload) -> PendingData {
+        let command = match &payload {
+            data_client_message::Payload::Command(c) => c.r#type.clone(),
+            data_client_message::Payload::Error(_) => "command".to_string(),
+        };
         let id = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
         let request_id = format!("data_{id}");
         let message = DataClientMessage {
@@ -54,7 +70,10 @@ impl DataCorrelator {
             payload: Some(payload),
         };
         let (tx, receiver) = oneshot::channel();
-        self.pending.lock().unwrap().insert(request_id.clone(), tx);
+        self.pending
+            .lock()
+            .unwrap()
+            .insert(request_id.clone(), (command, tx));
         PendingData {
             payload: message.encode_to_vec(),
             request_id,
@@ -77,7 +96,7 @@ impl DataCorrelator {
     /// caller can additionally dispatch it as a public event — a command's
     /// awaited reply is still broadcast as a `message` event for listeners
     /// that prefer that surface.
-    pub fn handle_message(&self, raw: &[u8]) -> Option<data_server_message::Payload> {
+    pub fn handle_message(&self, raw: &[u8]) -> Option<HandledMessage> {
         let message = match DataServerMessage::decode(raw) {
             Ok(m) => m,
             Err(error) => {
@@ -86,10 +105,12 @@ impl DataCorrelator {
             }
         };
         let payload = message.payload?;
+        let mut correlated = false;
         if !message.request_id.is_empty() {
             match self.pending.lock().unwrap().remove(&message.request_id) {
-                Some(tx) => {
+                Some((_, tx)) => {
                     let _ = tx.send(Ok(payload.clone()));
+                    correlated = true;
                 }
                 None => {
                     log::warn!(
@@ -99,7 +120,10 @@ impl DataCorrelator {
                 }
             }
         }
-        Some(payload)
+        Some(HandledMessage {
+            payload,
+            correlated,
+        })
     }
 
     /// Forget a request (after a timeout) so a late response is not
@@ -111,9 +135,9 @@ impl DataCorrelator {
     /// Reject every in-flight request (on disconnect).
     pub fn fail_all(&self, reason: &str) {
         let pending = std::mem::take(&mut *self.pending.lock().unwrap());
-        for (request_id, tx) in pending {
+        for (request_id, (command, tx)) in pending {
             let _ = tx.send(Err(CoreError::CommandRequest {
-                command: "command".to_string(),
+                command,
                 code: crate::error::codes::DISCONNECTED.to_string(),
                 message: format!("{reason} (request_id={request_id})"),
             }));
@@ -152,7 +176,8 @@ mod tests {
                 data: None,
             }),
         );
-        assert!(c.handle_message(&bytes).is_some());
+        let handled = c.handle_message(&bytes).unwrap();
+        assert!(handled.correlated);
         assert!(matches!(
             pending.receiver.try_recv().unwrap().unwrap(),
             Ok(data_server_message::Payload::Message(_))
@@ -174,11 +199,16 @@ mod tests {
                 message: "unknown command".into(),
             }),
         );
-        c.handle_message(&bytes);
+        let handled = c.handle_message(&bytes).unwrap();
+        assert!(handled.correlated);
         match pending.receiver.try_recv().unwrap().unwrap().unwrap() {
             data_server_message::Payload::Error(e) => {
                 assert_eq!(e.code, "BAD_COMMAND");
             }
+            other => panic!("unexpected: {other:?}"),
+        }
+        match handled.payload {
+            data_server_message::Payload::Error(e) => assert_eq!(e.code, "BAD_COMMAND"),
             other => panic!("unexpected: {other:?}"),
         }
     }
@@ -195,14 +225,16 @@ mod tests {
             })),
         }
         .encode_to_vec();
+        let handled = c.handle_message(&bytes).unwrap();
+        assert!(!handled.correlated);
         assert!(matches!(
-            c.handle_message(&bytes),
-            Some(data_server_message::Payload::Message(_))
+            handled.payload,
+            data_server_message::Payload::Message(_)
         ));
     }
 
     #[test]
-    fn unknown_request_id_still_returns_the_decoded_payload() {
+    fn unknown_request_id_still_returns_the_decoded_payload_uncorrelated() {
         let c = DataCorrelator::new();
         let bytes = encode_response(
             "data_99",
@@ -211,7 +243,8 @@ mod tests {
                 message: "y".into(),
             }),
         );
-        assert!(c.handle_message(&bytes).is_some());
+        let handled = c.handle_message(&bytes).unwrap();
+        assert!(!handled.correlated);
     }
 
     #[test]
@@ -235,20 +268,26 @@ mod tests {
     }
 
     #[test]
-    fn fail_all_rejects_pending() {
+    fn fail_all_rejects_pending_and_preserves_the_command_name() {
         let c = DataCorrelator::new();
         let mut p1 = c.begin(data_client_message::Payload::Command(Command {
-            r#type: "a".into(),
+            r#type: "get_state".into(),
             data: None,
             uploads: Default::default(),
         }));
         let mut p2 = c.begin(data_client_message::Payload::Command(Command {
-            r#type: "b".into(),
+            r#type: "set_brightness".into(),
             data: None,
             uploads: Default::default(),
         }));
         c.fail_all("disconnected");
-        assert!(p1.receiver.try_recv().unwrap().unwrap().is_err());
-        assert!(p2.receiver.try_recv().unwrap().unwrap().is_err());
+        match p1.receiver.try_recv().unwrap().unwrap().unwrap_err() {
+            CoreError::CommandRequest { command, .. } => assert_eq!(command, "get_state"),
+            other => panic!("unexpected: {other:?}"),
+        }
+        match p2.receiver.try_recv().unwrap().unwrap().unwrap_err() {
+            CoreError::CommandRequest { command, .. } => assert_eq!(command, "set_brightness"),
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 }

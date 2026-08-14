@@ -564,10 +564,10 @@ impl Reactor {
     }
 
     fn on_data_message(&self, raw: &[u8]) {
-        let Some(payload) = self.data.handle_message(raw) else {
+        let Some(handled) = self.data.handle_message(raw) else {
             return;
         };
-        match payload {
+        match handled.payload {
             data_server_message::Payload::Message(model_message) => {
                 let value = json!({
                     "type": model_message.r#type,
@@ -576,11 +576,15 @@ impl Reactor {
                 self.dispatcher.dispatch(ReactorEvent::Message(value));
             }
             data_server_message::Payload::Error(error) => {
-                // The runtime rejected the last command sent on this channel.
-                // send_command already returned once the frame was queued, so
-                // this is the only signal fire-and-forget callers get that it
-                // failed — an awaited send_command_and_wait() call instead
-                // resolves through DataCorrelator, never reaching here.
+                if handled.correlated {
+                    // Already delivered to the awaiting send_command_and_wait()
+                    // call as a correlated CoreError::CommandRequest — raising
+                    // it globally too would double-report the same failure.
+                    return;
+                }
+                // The runtime rejected a fire-and-forget send_command(). It
+                // already returned once the frame was queued, so this is the
+                // only signal callers get that it failed.
                 self.emit_error(&error.code, error.message, Component::Gpu, true, None);
             }
         }
@@ -1510,6 +1514,34 @@ mod tests {
             }
             other => panic!("expected CommandRequest error, got {other:?}"),
         }
+        // A correlated error must not *also* fire as a global error — the
+        // caller already has it via the awaited Result.
+        assert!(
+            reactor.last_error().is_none(),
+            "correlated error should not also surface as a global error"
+        );
+    }
+
+    /// An *uncorrelated* error (rejecting a fire-and-forget send_command(),
+    /// empty request_id) has no awaiting caller to deliver it to, so it must
+    /// still surface as a global error.
+    #[test]
+    fn uncorrelated_error_still_surfaces_globally() {
+        let reactor = make_reactor();
+
+        let bytes = encode_data_response(
+            "",
+            data_server_message::Payload::Error(crate::protocol::wire::v1::common::Error {
+                code: "BAD_COMMAND".into(),
+                message: "unknown command".into(),
+            }),
+        );
+        reactor.on_data_message(&bytes);
+
+        let error = reactor
+            .last_error()
+            .expect("uncorrelated error should surface globally");
+        assert_eq!(error.code, "BAD_COMMAND");
     }
 
     /// A timeout cancels the pending correlation so a late reply is not
