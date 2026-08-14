@@ -76,7 +76,7 @@ def test_send_command_on_a_null_handle_skips_the_completion() -> None:
     def completion(ok: int, _result: bytes | None, _error: bytes | None, _userdata: int) -> None:
         calls.append(ok)
 
-    _ffi.get_lib().reactor_send_command(None, b"hello", b"{}", completion, None)
+    _ffi.get_lib().reactor_send_command(None, b"hello", b"{}", None, completion, None)
 
     assert calls == []
 

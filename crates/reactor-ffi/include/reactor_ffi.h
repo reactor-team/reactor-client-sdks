@@ -285,15 +285,19 @@ void reactor_request_schema(
 /*
  * Send an application-scoped command over the data channel and wait for its
  * correlated reply.
- *   name      — command name
- *   args_json — JSON object, or NULL (treated as {})
+ *   name         — command name
+ *   args_json    — JSON object, or NULL (treated as {})
+ *   uploads_json — JSON object of
+ *     {param_name: {upload_id, name, mime_type, size}}, or NULL (no uploads).
+ *     Values come from reactor_upload_file / reactor_upload_bytes.
  * result_json: { type, data }, or absent if the handler acknowledged the
  * command but returned no message.
  */
 void reactor_send_command(
     ReactorHandle       *handle,
     const char          *name,
-    const char          *args_json,  /* nullable */
+    const char          *args_json,     /* nullable */
+    const char          *uploads_json,  /* nullable */
     reactor_completion_fn completion,
     void                *userdata
 );
@@ -305,6 +309,21 @@ void reactor_send_command(
 void reactor_upload_file(
     ReactorHandle       *handle,
     const char          *path,
+    reactor_completion_fn completion,
+    void                *userdata
+);
+
+/*
+ * Upload a file already in memory. Same result shape as reactor_upload_file;
+ * use this when the caller already has the bytes rather than a filesystem path.
+ *   data — at least `len` readable bytes, borrowed for the call only
+ */
+void reactor_upload_bytes(
+    ReactorHandle       *handle,
+    const uint8_t       *data,
+    size_t               len,
+    const char          *name,
+    const char          *mime_type,
     reactor_completion_fn completion,
     void                *userdata
 );

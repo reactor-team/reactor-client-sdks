@@ -8,11 +8,13 @@ import ctypes
 import inspect
 import json
 import logging
+import mimetypes
+import os
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, BinaryIO
 
 from ._auth import fetch_jwt
 from ._ffi import (
@@ -811,6 +813,16 @@ class Reactor:
         Returns ``None`` if the handler ran and acknowledged the command but
         returned no message — e.g. an auto-generated ``set_<field>`` setter.
 
+        A ``FileRef`` (from `upload_file`) may be passed as a top-level value in
+        ``data``, alongside regular parameters — it is pulled out and sent as a
+        separate upload reference rather than embedded in the JSON payload::
+
+            ref = await reactor.upload_file("photo.jpg")
+            await reactor.send_command("set_image", {"image": ref})
+
+        Only top-level values are inspected — a `FileRef` nested inside a list or
+        another dict is not detected and is left for `json.dumps` to reject.
+
         To fire a command without waiting on the reply, schedule the call
         instead of awaiting it directly, e.g. ``asyncio.create_task(
         reactor.send_command(...))`` — keep a reference to the task so it
@@ -819,10 +831,27 @@ class Reactor:
         self._require_handle()
         handle = self._handle
         lib = get_lib()
+
+        uploads: dict[str, Any] = {}
+        if isinstance(data, dict):
+            scalars = {}
+            for key, value in data.items():
+                if isinstance(value, FileRef):
+                    uploads[key] = {
+                        "upload_id": value.upload_id,
+                        "name": value.name,
+                        "mime_type": value.mime_type,
+                        "size": value.size,
+                    }
+                else:
+                    scalars[key] = value
+            data = scalars
+
         args_json = json.dumps(data).encode()
+        uploads_json = json.dumps(uploads).encode() if uploads else None
         return await self._async_op(
             lambda fn: lib.reactor_send_command(
-                ctypes.c_void_p(handle), command.encode(), args_json, fn, None
+                ctypes.c_void_p(handle), command.encode(), args_json, uploads_json, fn, None
             )
         )
 
@@ -974,14 +1003,48 @@ class Reactor:
     # File upload
     # ------------------------------------------------------------------
 
-    async def upload_file(self, path: str) -> FileRef:
-        """Upload a local file; returns a FileRef for use in send_command."""
+    async def upload_file(
+        self,
+        file: BinaryIO | bytes | str | os.PathLike[str],
+        *,
+        name: str | None = None,
+        mime_type: str | None = None,
+    ) -> FileRef:
+        """Upload a file; returns a FileRef for use in `send_command`.
+
+        `file` accepts a path, raw bytes, or a file-like object opened in binary
+        mode. `name` and `mime_type` are inferred when not given — from the path
+        or the file object's own `.name`, falling back to `"upload"`; MIME type is
+        guessed from that name, falling back to `"application/octet-stream"`.
+        """
         self._require_handle()
         handle = self._handle
         lib = get_lib()
-        path_b = path.encode()
+
+        if isinstance(file, (str, os.PathLike)):
+            path_b = os.fspath(file).encode()
+            result = await self._async_op(
+                lambda fn: lib.reactor_upload_file(ctypes.c_void_p(handle), path_b, fn, None)
+            )
+            return FileRef(**result)
+
+        if isinstance(file, bytes):
+            data = file
+            inferred_name = "upload"
+        else:
+            data = file.read()
+            inferred_name = os.path.basename(getattr(file, "name", "")) or "upload"
+
+        resolved_name = name or inferred_name
+        guessed_mime_type = mimetypes.guess_type(resolved_name)[0]
+        resolved_mime_type = mime_type or guessed_mime_type or "application/octet-stream"
+        name_b = resolved_name.encode()
+        mime_type_b = resolved_mime_type.encode()
+        buf = (ctypes.c_uint8 * len(data)).from_buffer_copy(data)
         result = await self._async_op(
-            lambda fn: lib.reactor_upload_file(ctypes.c_void_p(handle), path_b, fn, None)
+            lambda fn: lib.reactor_upload_bytes(
+                ctypes.c_void_p(handle), buf, len(data), name_b, mime_type_b, fn, None
+            )
         )
         return FileRef(**result)
 
