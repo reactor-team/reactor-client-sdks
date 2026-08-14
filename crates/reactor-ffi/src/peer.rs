@@ -308,12 +308,8 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             let _ = tx.unbounded_send(PeerEvent::ControlChannelOpen);
         });
         let tx = self.event_tx.clone();
-        control_ch.on_message(move |data, binary| {
-            if !binary {
-                if let Ok(s) = std::str::from_utf8(data) {
-                    let _ = tx.unbounded_send(PeerEvent::ControlChannelMessage(s.to_owned()));
-                }
-            }
+        control_ch.on_message(move |data, _binary| {
+            let _ = tx.unbounded_send(PeerEvent::ControlChannelMessage(data.to_vec()));
         });
 
         let offer = pc.create_offer().map_err(peer_err)?;
@@ -392,14 +388,14 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         dc.send(payload, binary).map_err(peer_err)
     }
 
-    fn send_control(&self, payload: &str) -> Result<(), CoreError> {
-        debug!("[peer] → control: {}", &payload[..payload.len().min(200)]);
+    fn send_control(&self, payload: &[u8]) -> Result<(), CoreError> {
+        debug!("[peer] → control: {} byte(s)", payload.len());
         let s = self.state.lock().unwrap();
         let dc = s
             .control_channel
             .as_ref()
             .ok_or_else(|| CoreError::Peer("control channel not ready".into()))?;
-        dc.send(payload.as_bytes(), false).map_err(peer_err)
+        dc.send(payload, true).map_err(peer_err)
     }
 
     async fn set_track_direction(&self, track_name: &str, _active: bool) -> Result<(), CoreError> {

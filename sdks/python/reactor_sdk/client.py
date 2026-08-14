@@ -892,6 +892,19 @@ class Reactor:
         )
 
     # ------------------------------------------------------------------
+    # Schema
+    # ------------------------------------------------------------------
+
+    async def request_schema(self) -> dict[str, Any]:
+        """Request the model's command schema, as an OpenAPI document."""
+        self._require_handle()
+        handle = self._handle
+        lib = get_lib()
+        return await self._async_op(
+            lambda fn: lib.reactor_request_schema(ctypes.c_void_p(handle), fn, None)
+        )
+
+    # ------------------------------------------------------------------
     # Track control
     # ------------------------------------------------------------------
 
