@@ -5,9 +5,13 @@
 //!
 //! * the coordinator HTTP API (session lifecycle, uploads),
 //! * the HTTP-based WebRTC signaling protocol (SDP exchange, trickle ICE),
-//! * the two-level message envelope carried over the WebRTC data channel,
-//! * the control-channel request/response/notification protocol,
-//! * the recording (clip) runtime messages.
+//! * the two-level message envelope carried over the WebRTC data channel
+//!   (legacy JSON, being replaced by [`wire`]),
+//! * the control-channel request/response/notification protocol (legacy
+//!   JSON, being replaced by [`wire`]),
+//! * the recording (clip) runtime messages,
+//! * the data/control channel wire protocol — protobuf (`reactor_wire.v1`,
+//!   see [`wire`]), owned upstream by `reactor-runtime`.
 //!
 //! All field names serialize to the exact snake_case wire names used by the
 //! existing JS (`@reactor-team/js-sdk`) and Python (`reactor-sdk`) SDKs.
@@ -21,6 +25,7 @@ pub mod recording;
 pub mod session;
 pub mod upload;
 pub mod webrtc;
+pub mod wire;
 
 /// Coordinator HTTP API version, sent as [`API_VERSION_HEADER`].
 pub const REACTOR_API_VERSION: &str = "1";
