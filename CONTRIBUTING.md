@@ -25,6 +25,17 @@ mise install             # installs the pinned toolchain
 mise run install-hooks   # wires up pre-commit / pre-push hooks (via hk)
 ```
 
+On Intel Macs (`darwin/amd64`), `mise install` fails on `hk` — it only ships
+binaries for `linux`, `darwin/arm64` and `windows`. Skip it and install
+everything else:
+
+```bash
+MISE_DISABLE_TOOLS=hk mise install
+```
+
+You'll just miss `mise run install-hooks` (pre-commit/pre-push git hooks);
+everything else — building, linting, testing — works the same.
+
 A thin `make` shim forwards to the same tasks (`make ci`, `make test`,
 `make help`) at the repo root. Run `mise tasks` any time to see the full
 list.
