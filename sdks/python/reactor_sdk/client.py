@@ -1021,14 +1021,22 @@ class Reactor:
         handle = self._handle
         lib = get_lib()
 
-        if isinstance(file, (str, os.PathLike)):
+        # The path-based FFI call derives name/mime_type from the path itself with
+        # no way to override either, so it is only used when neither is given —
+        # otherwise the file is read here and sent as bytes instead, same as any
+        # other override.
+        if isinstance(file, (str, os.PathLike)) and name is None and mime_type is None:
             path_b = os.fspath(file).encode()
             result = await self._async_op(
                 lambda fn: lib.reactor_upload_file(ctypes.c_void_p(handle), path_b, fn, None)
             )
             return FileRef(**result)
 
-        if isinstance(file, bytes):
+        if isinstance(file, (str, os.PathLike)):
+            with open(file, "rb") as f:
+                data = f.read()
+            inferred_name = os.path.basename(os.fspath(file)) or "upload"
+        elif isinstance(file, bytes):
             data = file
             inferred_name = "upload"
         else:

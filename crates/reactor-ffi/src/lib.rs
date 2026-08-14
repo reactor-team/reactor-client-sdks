@@ -987,6 +987,24 @@ pub unsafe extern "C" fn reactor_upload_file(
     );
 }
 
+/// Copies `len` bytes out of `data` into an owned `Vec`.
+///
+/// `slice::from_raw_parts` requires a non-null, aligned pointer even for a
+/// zero-length slice, so a null `data` — a caller's spelling of "no bytes" —
+/// must short-circuit before reaching it rather than pass straight through.
+///
+/// # Safety
+///
+/// As [`reactor_upload_bytes`]: `data` must be null, or point to at least
+/// `len` readable bytes.
+unsafe fn copy_bytes(data: *const u8, len: usize) -> Vec<u8> {
+    if len == 0 {
+        Vec::new()
+    } else {
+        std::slice::from_raw_parts(data, len).to_vec()
+    }
+}
+
 /// Upload a file already in memory and return a reference to pass as a command
 /// argument. Same result shape as [`reactor_upload_file`]; use this when the
 /// caller already has the bytes (a `bytes` object, a file-like object, a
@@ -1010,7 +1028,7 @@ pub unsafe extern "C" fn reactor_upload_bytes(
     if handle.is_null() || (data.is_null() && len > 0) {
         return;
     }
-    let bytes = std::slice::from_raw_parts(data, len).to_vec();
+    let bytes = copy_bytes(data, len);
     let name = CStr::from_ptr(name).to_string_lossy().into_owned();
     let mime_type = CStr::from_ptr(mime_type).to_string_lossy().into_owned();
     async_op!(
@@ -1389,6 +1407,24 @@ mod tests {
             let second = reactor_status(std::ptr::null_mut());
             assert_eq!(first, second, "expected the same static pointer");
             assert_eq!(CStr::from_ptr(first).to_str().unwrap(), "disconnected");
+        }
+    }
+
+    /// `slice::from_raw_parts` requires a non-null pointer even at length 0 — a
+    /// null `data` (a caller's spelling of "no bytes") must short-circuit before
+    /// ever reaching it.
+    #[test]
+    fn copy_bytes_of_a_null_pointer_at_zero_length_is_empty() {
+        unsafe {
+            assert_eq!(copy_bytes(std::ptr::null(), 0), Vec::<u8>::new());
+        }
+    }
+
+    #[test]
+    fn copy_bytes_copies_the_given_length() {
+        let data = [1u8, 2, 3, 4];
+        unsafe {
+            assert_eq!(copy_bytes(data.as_ptr(), data.len()), vec![1, 2, 3, 4]);
         }
     }
 }

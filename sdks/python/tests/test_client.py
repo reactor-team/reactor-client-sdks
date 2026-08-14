@@ -321,6 +321,37 @@ class TestUploadFileDispatch:
         assert captured["path"] == str(f).encode()
         assert ref.upload_id == "up_1"
 
+    async def test_a_path_with_overrides_reads_the_file_and_uses_bytes(self, tmp_path) -> None:
+        """`reactor_upload_file` derives name/mime_type from the path itself with no
+        way to override either — a path with an override must not silently ignore
+        it, so it goes through the bytes-based call instead, same as any other
+        override."""
+        f = tmp_path / "photo.jpg"
+        f.write_bytes(b"jpeg-bytes")
+        captured: dict[str, object] = {}
+
+        def fake_upload_bytes(handle, data, length, name, mime_type, completion, userdata):
+            captured["data"] = bytes(ctypes.cast(data, ctypes.POINTER(ctypes.c_uint8 * length))[0])
+            captured["name"] = name
+            captured["mime_type"] = mime_type
+            completion(
+                1, b'{"upload_id": "up_x", "name": "x", "mime_type": "y", "size": 1}', None, None
+            )
+
+        fake_lib = mock.Mock()
+        fake_lib.reactor_upload_bytes = fake_upload_bytes
+        fake_lib.reactor_upload_file = mock.Mock(
+            side_effect=AssertionError("should not be called when an override is given")
+        )
+        reactor = self._reactor()
+
+        with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
+            await reactor.upload_file(str(f), name="custom.jpg", mime_type="image/x-custom")
+
+        assert captured["data"] == b"jpeg-bytes"
+        assert captured["name"] == b"custom.jpg"
+        assert captured["mime_type"] == b"image/x-custom"
+
     async def test_raw_bytes_use_the_bytes_based_ffi_call(self) -> None:
         captured: dict[str, object] = {}
 
