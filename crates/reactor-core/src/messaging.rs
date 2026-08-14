@@ -1,31 +1,29 @@
-//! Data-channel message encoding/decoding (`reactor_wire.v1`, protobuf).
+//! Data-channel command encoding (`reactor_wire.v1`, protobuf).
 //!
 //! The data channel carries only application-scoped traffic: model commands
 //! (client → runtime) and model emissions (runtime → client). Runtime/
 //! platform traffic (ping, clip/recording requests, track control, ...)
 //! travels on the control channel instead — see [`crate::control`].
+//!
+//! Correlating a command with its reply (rather than firing it and
+//! forgetting) lives in [`crate::data::DataCorrelator`].
 
 use std::collections::{BTreeMap, HashMap};
 
-use prost::Message as _;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::error::CoreError;
 use crate::protocol::upload::FileRef;
-use crate::protocol::wire::struct_convert::{struct_to_value, value_to_struct};
-use crate::protocol::wire::v1::common::MessageKind;
-use crate::protocol::wire::v1::data::{data_client_message, data_server_message};
-use crate::protocol::wire::v1::data::{DataClientMessage, DataServerMessage};
+use crate::protocol::wire::struct_convert::value_to_struct;
+use crate::protocol::wire::v1::data::data_client_message;
 use crate::protocol::wire::v1::model::{Command, UploadReference};
 
-/// Encode an outbound application command as a `DataClientMessage` and
-/// enforce the data-channel size limit.
-pub fn encode_command(
+/// Build the `Command` payload for an outbound application command.
+pub fn build_command_payload(
     command: &str,
     data: Value,
     uploads: Option<BTreeMap<String, FileRef>>,
-    max_bytes: usize,
-) -> Result<Vec<u8>, CoreError> {
+) -> Result<data_client_message::Payload, CoreError> {
     let data = value_to_struct(data)
         .ok_or_else(|| CoreError::decode("command data must be a JSON object"))?;
     let uploads = uploads
@@ -43,84 +41,41 @@ pub fn encode_command(
             )
         })
         .collect::<HashMap<_, _>>();
-    let message = DataClientMessage {
-        request_id: String::new(),
-        kind: MessageKind::Notification as i32,
-        payload: Some(data_client_message::Payload::Command(Command {
-            r#type: command.to_string(),
-            data: Some(data),
-            uploads,
-        })),
-    };
-    let encoded = message.encode_to_vec();
-    if encoded.len() > max_bytes {
-        return Err(CoreError::MessageTooLarge {
-            size: encoded.len(),
-            max: max_bytes,
-        });
-    }
-    Ok(encoded)
-}
-
-/// An inbound, decoded data-channel message.
-#[derive(Debug, Clone, PartialEq)]
-pub enum IncomingMessage {
-    /// A model emission (`ModelMessage`), as `{"type": ..., "data": ...}` —
-    /// consumers key on `type` to distinguish emission kinds.
-    Application(Value),
-    /// The runtime rejected the last command sent on this channel.
-    Error { code: String, message: String },
-}
-
-/// Decode an inbound data-channel payload.
-pub fn parse_incoming(raw: &[u8]) -> Result<IncomingMessage, CoreError> {
-    let message = DataServerMessage::decode(raw).map_err(CoreError::decode)?;
-    match message.payload {
-        Some(data_server_message::Payload::Message(model_message)) => {
-            let data = model_message
-                .data
-                .map(struct_to_value)
-                .unwrap_or(Value::Null);
-            Ok(IncomingMessage::Application(json!({
-                "type": model_message.r#type,
-                "data": data,
-            })))
-        }
-        Some(data_server_message::Payload::Error(error)) => Ok(IncomingMessage::Error {
-            code: error.code,
-            message: error.message,
-        }),
-        None => Err(CoreError::decode("DataServerMessage without a payload")),
-    }
+    Ok(data_client_message::Payload::Command(Command {
+        r#type: command.to_string(),
+        data: Some(data),
+        uploads,
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::wire::v1::model::ModelMessage;
+    use crate::protocol::wire::struct_convert::struct_to_value;
+    use serde_json::json;
 
-    fn decode_command(bytes: &[u8]) -> Command {
-        let message = DataClientMessage::decode(bytes).unwrap();
-        match message.payload {
-            Some(data_client_message::Payload::Command(c)) => c,
+    fn as_command(payload: data_client_message::Payload) -> Command {
+        match payload {
+            data_client_message::Payload::Command(c) => c,
             other => panic!("expected Command, got {other:?}"),
         }
     }
 
     #[test]
-    fn encode_basic_command() {
-        let bytes = encode_command("set_prompt", json!({"prompt": "a cat"}), None, 1024).unwrap();
-        let command = decode_command(&bytes);
-        assert_eq!(command.r#type, "set_prompt");
+    fn builds_a_basic_command_payload() {
+        let payload = build_command_payload("set_prompt", json!({"prompt": "a cat"}), None)
+            .map(as_command)
+            .unwrap();
+        assert_eq!(payload.r#type, "set_prompt");
         assert_eq!(
-            struct_to_value(command.data.unwrap()),
+            struct_to_value(payload.data.unwrap()),
             json!({"prompt": "a cat"})
         );
-        assert!(command.uploads.is_empty());
+        assert!(payload.uploads.is_empty());
     }
 
     #[test]
-    fn encode_with_uploads() {
+    fn builds_a_command_payload_with_uploads() {
         let mut uploads = BTreeMap::new();
         uploads.insert(
             "image".to_string(),
@@ -131,59 +86,15 @@ mod tests {
                 size: 10,
             },
         );
-        let bytes = encode_command("set_image", json!({}), Some(uploads), 4096).unwrap();
-        let command = decode_command(&bytes);
-        assert_eq!(command.uploads["image"].upload_id, "up_9");
-    }
-
-    #[test]
-    fn size_limit_enforced() {
-        let err = encode_command("big", json!({"blob": "x".repeat(2048)}), None, 256).unwrap_err();
-        assert!(matches!(err, CoreError::MessageTooLarge { .. }));
+        let payload = build_command_payload("set_image", json!({}), Some(uploads))
+            .map(as_command)
+            .unwrap();
+        assert_eq!(payload.uploads["image"].upload_id, "up_9");
     }
 
     #[test]
     fn non_object_data_is_rejected() {
-        let err = encode_command("bad", json!(1), None, 1024).unwrap_err();
+        let err = build_command_payload("bad", json!(1), None).unwrap_err();
         assert!(matches!(err, CoreError::Decode(_)));
-    }
-
-    #[test]
-    fn parses_model_message() {
-        let bytes = DataServerMessage {
-            request_id: String::new(),
-            kind: MessageKind::Notification as i32,
-            payload: Some(data_server_message::Payload::Message(ModelMessage {
-                r#type: "emit".into(),
-                data: value_to_struct(json!({"data": 1.0})),
-            })),
-        }
-        .encode_to_vec();
-        assert_eq!(
-            parse_incoming(&bytes).unwrap(),
-            IncomingMessage::Application(json!({"type": "emit", "data": {"data": 1.0}}))
-        );
-    }
-
-    #[test]
-    fn parses_server_error() {
-        let bytes = DataServerMessage {
-            request_id: "req_1".into(),
-            kind: MessageKind::Response as i32,
-            payload: Some(data_server_message::Payload::Error(
-                crate::protocol::wire::v1::common::Error {
-                    code: "BAD_COMMAND".into(),
-                    message: "unknown command".into(),
-                },
-            )),
-        }
-        .encode_to_vec();
-        assert_eq!(
-            parse_incoming(&bytes).unwrap(),
-            IncomingMessage::Error {
-                code: "BAD_COMMAND".into(),
-                message: "unknown command".into(),
-            }
-        );
     }
 }

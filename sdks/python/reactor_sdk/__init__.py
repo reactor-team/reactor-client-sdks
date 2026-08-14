@@ -10,7 +10,7 @@ Example::
         async with Reactor("https://api.reactor.inc", "my-model", jwt="...") as r:
             r.on("message", lambda msg: print("msg:", msg))
             await r.connect()
-            r.send_command("hello", {"text": "hi"})
+            await r.send_command("hello", {"text": "hi"})
             await asyncio.sleep(10)
 
     asyncio.run(main())
@@ -28,9 +28,7 @@ from .client import (
     DEFAULT_API_URL,
     LOCAL_API_URL,
     Clip,
-    CommandResult,
     FileRef,
-    MessageScope,
     Reactor,
     ReactorError,
     ReactorFFIError,
@@ -40,10 +38,8 @@ from .client import (
 __all__ = [
     "Reactor",
     "ReactorStatus",
-    "MessageScope",
     "Clip",
     "FileRef",
-    "CommandResult",
     "ReactorError",
     "ReactorFFIError",
     "AuthError",

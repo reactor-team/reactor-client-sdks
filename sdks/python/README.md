@@ -26,12 +26,13 @@ from reactor_sdk import Reactor, ReactorStatus
 
 API_KEY = "..."  # Insert your API key here.
 
+
 async def main():
     async with Reactor(model_name="my-model", api_key=API_KEY) as r:
 
         @r.on_status(ReactorStatus.READY)
         def on_ready(status):
-            r.send_command("set_prompt", {"prompt": "a forest at dawn"})
+            asyncio.create_task(r.send_command("set_prompt", {"prompt": "a forest at dawn"}))
 
         def on_frame(bgra, width, height, frame_id, timestamp_us, user_data):
             print(f"frame: {width}x{height}")
@@ -40,6 +41,7 @@ async def main():
 
         await r.connect()
         await asyncio.sleep(30)  # keep the session open while frames arrive
+
 
 asyncio.run(main())
 ```

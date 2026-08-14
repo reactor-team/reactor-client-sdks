@@ -91,6 +91,13 @@ pub enum CoreError {
         message: String,
     },
 
+    #[error("command '{command}' failed ({code}): {message}")]
+    CommandRequest {
+        command: String,
+        code: String,
+        message: String,
+    },
+
     #[error("recording error ({code}): {message}")]
     Recording { code: String, message: String },
 

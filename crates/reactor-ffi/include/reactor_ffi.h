@@ -283,6 +283,22 @@ void reactor_request_schema(
 );
 
 /*
+ * Send an application-scoped command over the data channel and wait for its
+ * correlated reply.
+ *   name      — command name
+ *   args_json — JSON object, or NULL (treated as {})
+ * result_json: { type, data }, or absent if the handler acknowledged the
+ * command but returned no message.
+ */
+void reactor_send_command(
+    ReactorHandle       *handle,
+    const char          *name,
+    const char          *args_json,  /* nullable */
+    reactor_completion_fn completion,
+    void                *userdata
+);
+
+/*
  * Upload a local file.
  * result_json: { upload_id, name, mime_type, size }
  */
@@ -294,28 +310,6 @@ void reactor_upload_file(
 );
 
 /* ── Synchronous operations ───────────────────────────────────────────────── */
-
-/*
- * Send an application-scoped command over the data channel (fire-and-forget).
- *   name      — command name
- *   args_json — JSON object, or NULL (treated as {})
- * Returns 0 on success, -1 on error (not connected, message too large, …).
- */
-int reactor_send_command(
-    ReactorHandle *handle,
-    const char    *name,
-    const char    *args_json  /* nullable */
-);
-
-/*
- * Send a runtime-scoped command over the data channel.
- * Same signature / semantics as reactor_send_command.
- */
-int reactor_send_runtime_command(
-    ReactorHandle *handle,
-    const char    *name,
-    const char    *args_json  /* nullable */
-);
 
 /* Release a previously published track (sync). */
 int reactor_unpublish_track(

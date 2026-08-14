@@ -47,7 +47,8 @@ async def main() -> None:
     await asyncio.wait_for(ready.wait(), timeout=60)
 
     print("Sending hello command …")
-    reactor.send_command("hello", {"text": "Hello from Python SDK!"})
+    reply = await reactor.send_command("hello", {"text": "Hello from Python SDK!"})
+    print(f"[reply] {reply}")
 
     await asyncio.sleep(5)
 
