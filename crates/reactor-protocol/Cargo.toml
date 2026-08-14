@@ -15,3 +15,6 @@ prost-types = { workspace = true }
 [build-dependencies]
 prost-build         = "0.13"
 protoc-bin-vendored = "3"
+ureq                = "2"
+flate2              = "1"
+tar                 = "0.4"

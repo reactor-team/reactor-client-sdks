@@ -1,7 +1,8 @@
 //! `reactor_wire.v1` — the protobuf wire protocol for data/control channels.
 //!
 //! The types below are generated at build time by `build.rs` from the
-//! vendored `.proto` sources in `proto/` (`prost-build`), then re-exported
+//! `.proto` sources it fetches from the pinned `reactor-runtime` release
+//! (`prost-build`), then re-exported
 //! through the same `common`/`data`/`control`/`model`/`platform`/`track`
 //! modules this crate has always exposed — one per original `.proto` file —
 //! so callers are unaffected by the switch from hand-written types.

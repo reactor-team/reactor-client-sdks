@@ -1,16 +1,18 @@
 # `reactor_wire.v1` sources
 
-The `.proto` files here are vendored from a `reactor-runtime` release (see
-[`WIRE_VERSION`](WIRE_VERSION) for the pinned version) — `reactor-runtime` is
-the source of truth for the wire protocol, and cuts a CalVer release
-(`wire/v<version>`) with `buf breaking` compatibility checks on every schema
-change.
+There are no `.proto` files committed here — `reactor-runtime` is the source
+of truth for the wire protocol, and cuts a CalVer release (`wire/v<version>`)
+with `buf breaking` compatibility checks on every schema change. `build.rs`
+downloads the pinned release's `.proto` sources at build time (see
+[`WIRE_VERSION`](WIRE_VERSION)) and compiles them into Rust bindings via
+`prost-build`; neither the `.proto` sources nor the generated code are
+committed.
 
-`build.rs` compiles these into Rust bindings at build time via `prost-build`;
-the generated code is not committed. `src/wire/v1/mod.rs` re-exports the
-generated types through `common`/`data`/`control`/`model`/`platform`/`track`
-submodules, one per original `.proto` file, matching `reactor-runtime`'s own
-layout.
+`src/wire/v1/mod.rs` re-exports the generated types through
+`common`/`data`/`control`/`model`/`platform`/`track` submodules, one per
+original `.proto` file, matching `reactor-runtime`'s own layout.
 
-To adopt a newer protocol version: bump [`WIRE_VERSION`](WIRE_VERSION), then
-run `../../../scripts/fetch-wire-protos.sh` from the repo root.
+To adopt a newer protocol version: bump [`WIRE_VERSION`](WIRE_VERSION) and
+rebuild — `build.rs` fetches the new version's sources automatically.
+Building requires network access to `github.com` the first time a given
+version is compiled; results are then cached under `OUT_DIR`.
