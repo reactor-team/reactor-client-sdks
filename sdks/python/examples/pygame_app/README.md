@@ -61,7 +61,7 @@ python main.py --api-key REACTOR_API_KEY --model your-model-name
 | `--api-key` | `-k` | Reactor API key for authentication |
 | `--model` | `-m` | Model name to connect to (default: `example-model`) |
 | `--local` | `-l` | Connect to local coordinator at `localhost:8080` |
-| `--coordinator-url` | `-c` | Custom coordinator URL |
+| `--api-url` | `-c` | Custom coordinator URL |
 | `--verbose` | `-v` | Enable verbose logging |
 
 ### Examples
