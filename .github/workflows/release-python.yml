@@ -359,7 +359,7 @@ jobs:
           set -euo pipefail
           cd dist
           # Namespaced, because this repo will also tag Rust crates one day and
-          # python-v0.9.0 says which thing shipped.
+          # python-v1.0.0 says which thing shipped.
           echo "tag=python-v${{ needs.detect-version.outputs.version }}" >> "$GITHUB_OUTPUT"
           sha256sum ./*.whl | tee SHA256SUMS
           ls -lh
@@ -395,7 +395,7 @@ jobs:
           Linux needs glibc 2.34 or newer (x86_64, aarch64), macOS 11+ on arm64 and
           13+ on x86_64, and Windows x86_64. There is no sdist, so on anything else
           pip resolves to an older release instead of failing — pin
-          \`reactor-sdk>=0.9\` to turn that into an error. The README has the table.
+          \`reactor-sdk>=1.0\` to turn that into an error. The README has the table.
 
           The same wheels are attached here. To install one directly:
 
