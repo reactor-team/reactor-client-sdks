@@ -281,6 +281,36 @@ class TestDecorators:
         reactor._fire("status_changed", "ready")
         assert calls == ["ready"]
 
+    def test_parameterised_on_status_accepts_a_sequence(self) -> None:
+        """The previous SDK supported filtering on a list of statuses; existing code
+        written against it (e.g. `@reactor.on_status([CONNECTING, WAITING])`) should
+        keep working rather than raising."""
+        reactor = Reactor(model_name="m")
+        calls: list[str] = []
+
+        @reactor.on_status([ReactorStatus.CONNECTING, ReactorStatus.WAITING])
+        def pending(status: ReactorStatus) -> None:
+            calls.append(status.value)
+
+        reactor._fire("status_changed", "connecting")
+        reactor._fire("status_changed", "ready")
+        reactor._fire("status_changed", "waiting")
+
+        assert calls == ["connecting", "waiting"]
+
+    def test_parameterised_on_status_accepts_a_sequence_of_plain_strings(self) -> None:
+        reactor = Reactor(model_name="m")
+        calls: list[str] = []
+
+        @reactor.on_status(["connecting", "waiting"])
+        def pending(status: ReactorStatus) -> None:
+            calls.append(status.value)
+
+        reactor._fire("status_changed", "connecting")
+        reactor._fire("status_changed", "ready")
+
+        assert calls == ["connecting"]
+
     @pytest.mark.parametrize(
         ("decorator", "event", "payload"),
         [

@@ -11,7 +11,7 @@ import logging
 import mimetypes
 import os
 import weakref
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, BinaryIO
@@ -373,7 +373,7 @@ class Reactor:
         self.on("frame", handler)
         return func
 
-    def on_status(self, arg: Callable | str | None = None) -> Callable:
+    def on_status(self, arg: Callable | str | Sequence[str] | None = None) -> Callable:
         """Register a handler for status changes.
 
         Bare, the handler receives every change::
@@ -387,6 +387,11 @@ class Reactor:
 
             @reactor.on_status(ReactorStatus.READY)
             def ready(status): ...
+
+        Given a sequence, it fires on any status in it::
+
+            @reactor.on_status([ReactorStatus.CONNECTING, ReactorStatus.WAITING])
+            def pending(status): ...
         """
         # Bare: the decorated function arrives as `arg`.
         if callable(arg):
@@ -400,11 +405,16 @@ class Reactor:
             self.on("status_changed", every)
             return func
 
-        wanted = ReactorStatus(arg) if arg is not None else None
+        if arg is None:
+            wanted: set[ReactorStatus] | None = None
+        elif isinstance(arg, str):
+            wanted = {ReactorStatus(arg)}
+        else:
+            wanted = {ReactorStatus(a) for a in arg}
 
         def decorator(func: Callable) -> Callable:
             def filtered(status: str) -> _HandlerResult:
-                if wanted is None or status == wanted.value:
+                if wanted is None or ReactorStatus(status) in wanted:
                     return func(ReactorStatus(status))
                 return None
 
