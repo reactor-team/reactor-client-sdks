@@ -9,7 +9,10 @@ regression tests in the strict sense: dropping any one of them breaks somebody.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import warnings
 from typing import Any
 from unittest import mock
 
@@ -302,6 +305,92 @@ class TestDecorators:
         reactor._fire("track_received", "video", "0")
 
         assert seen == [("video", "0")]
+
+    async def test_an_async_handler_actually_runs(self) -> None:
+        """`async def` handlers used to only build a coroutine and never run it —
+        calling a handler plainly never awaits the result. The previous SDK's event
+        emitter checked for a coroutine and scheduled it; this is that behaviour
+        restored, for every decorator that goes through `_fire`."""
+        reactor = Reactor(model_name="m")
+        reactor._loop = asyncio.get_running_loop()
+        seen: list[ReactorStatus] = []
+
+        @reactor.on_status
+        async def handler(status: ReactorStatus) -> None:
+            seen.append(status)
+
+        reactor._fire("status_changed", "ready")
+        # `run_coroutine_threadsafe` takes more than one trip through the loop: one to
+        # schedule the task, another to run its first step. Polling rather than a fixed
+        # number of `sleep(0)`s keeps this independent of that implementation detail.
+        for _ in range(10):
+            if seen:
+                break
+            await asyncio.sleep(0)
+
+        assert seen == [ReactorStatus.READY]
+
+    async def test_an_async_handler_that_raises_does_not_stop_the_others(self) -> None:
+        """The coroutine runs on the loop, not inside `_fire`'s try/except: it must
+        not prevent the next handler in line from firing."""
+        reactor = Reactor(model_name="m")
+        reactor._loop = asyncio.get_running_loop()
+        seen: list[str] = []
+
+        @reactor.on_status
+        async def boom(status: str) -> None:
+            raise RuntimeError("nope")
+
+        @reactor.on_status
+        def fine(status: str) -> None:
+            seen.append(status)
+
+        reactor._fire("status_changed", "ready")
+        await asyncio.sleep(0)
+
+        assert seen == ["ready"]
+
+    async def test_an_async_handler_that_raises_is_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`run_coroutine_threadsafe` chains the coroutine's outcome onto a
+        `concurrent.futures.Future` this method would otherwise discard — and that
+        chaining is itself what retrieves the inner task's exception, so asyncio's own
+        "exception was never retrieved" never fires either. Left alone, a raising
+        async handler fails completely silently; a done-callback on that future is
+        what still logs it, matching a raising sync handler."""
+        reactor = Reactor(model_name="m")
+        reactor._loop = asyncio.get_running_loop()
+
+        @reactor.on_status
+        async def boom(status: str) -> None:
+            raise RuntimeError("nope")
+
+        with caplog.at_level(logging.ERROR, logger="reactor_sdk.client"):
+            reactor._fire("status_changed", "ready")
+            for _ in range(10):
+                if caplog.records:
+                    break
+                await asyncio.sleep(0)
+
+        assert any(
+            "status_changed" in r.message and r.exc_info and str(r.exc_info[1]) == "nope"
+            for r in caplog.records
+        )
+
+    def test_an_async_handler_with_no_loop_is_closed_without_warning(self) -> None:
+        """Fired before `connect()` sets `_loop` — e.g. a test calling `_fire`
+        directly — there is nowhere to schedule the coroutine. It must be closed
+        rather than left to trigger "coroutine was never awaited"."""
+        reactor = Reactor(model_name="m")
+
+        @reactor.on_status
+        async def handler(status: str) -> None:
+            pass
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            reactor._fire("status_changed", "ready")
 
 
 class TestGetterMethods:

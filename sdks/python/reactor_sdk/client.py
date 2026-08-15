@@ -11,7 +11,7 @@ import logging
 import mimetypes
 import os
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, BinaryIO
@@ -130,6 +130,10 @@ atexit.register(_close_live_clients)
 #: declares parameters for, so the historical one-argument contract keeps working while a
 #: handler that wants the metadata trailer just asks for more.
 FRAME_HANDLER_ARGUMENTS = ("frame", "frame_id", "timestamp_us", "user_data")
+
+#: What a registered handler returns: `None` from a plain function, or a coroutine from
+#: an `async def` one — `_fire` inspects this to decide whether to schedule it.
+_HandlerResult = Coroutine[Any, Any, None] | None
 
 
 def _positional_arity(func: Callable, maximum: int) -> int:
@@ -353,7 +357,7 @@ class Reactor:
             frame_id: int,
             timestamp_us: int,
             user_data: bytes,
-        ) -> None:
+        ) -> _HandlerResult:
             # The array is built first because it is what every handler wants; the
             # conversion is the cost of this decorator either way.
             arguments = (
@@ -362,7 +366,9 @@ class Reactor:
                 timestamp_us,
                 user_data,
             )
-            func(*arguments[:take])
+            # Returned rather than discarded: `func` may be `async def`, in which case
+            # this is a coroutine that `_fire` needs to see in order to schedule it.
+            return func(*arguments[:take])
 
         self.on("frame", handler)
         return func
@@ -386,8 +392,10 @@ class Reactor:
         if callable(arg):
             func = arg
 
-            def every(status: str) -> None:
-                func(ReactorStatus(status))
+            def every(status: str) -> _HandlerResult:
+                # Returned rather than discarded: `func` may be `async def`, in which
+                # case this is a coroutine that `_fire` needs to see to schedule it.
+                return func(ReactorStatus(status))
 
             self.on("status_changed", every)
             return func
@@ -395,9 +403,10 @@ class Reactor:
         wanted = ReactorStatus(arg) if arg is not None else None
 
         def decorator(func: Callable) -> Callable:
-            def filtered(status: str) -> None:
+            def filtered(status: str) -> _HandlerResult:
                 if wanted is None or status == wanted.value:
-                    func(ReactorStatus(status))
+                    return func(ReactorStatus(status))
+                return None
 
             self.on("status_changed", filtered)
             return func
@@ -433,12 +442,44 @@ class Reactor:
         A raising handler does not stop the others, and the exception is logged
         rather than dropped — one broken handler should be visible without taking
         the rest of the event down with it.
+
+        An `async def` handler returns a coroutine instead of running its body —
+        calling it plainly never awaits that. Earlier releases dispatched through an
+        emitter that checked for exactly this and scheduled the coroutine, so an
+        `async def` handler registered the documented way has always worked; this
+        restores that. `run_coroutine_threadsafe` rather than `ensure_future` because
+        `_fire` also runs on the foreign FFI thread that delivers frame/audio events,
+        not only on the loop thread.
         """
         for h in list(self._handlers.get(event, [])):
             try:
-                h(*args)
+                result = h(*args)
+                if asyncio.iscoroutine(result):
+                    loop = self._loop
+                    if loop is not None and not loop.is_closed():
+                        future = asyncio.run_coroutine_threadsafe(result, loop)
+                        # `run_coroutine_threadsafe` chains the coroutine's outcome
+                        # onto this future rather than reporting it anywhere — that
+                        # chaining is itself what retrieves the inner task's
+                        # exception, which is what would otherwise make asyncio log
+                        # "exception was never retrieved". Left alone, a raising
+                        # async handler fails completely silently; this callback is
+                        # what still logs it, same as a raising sync handler below.
+                        future.add_done_callback(
+                            lambda f, event=event, h=h: self._log_async_handler_error(event, h, f)
+                        )
+                    else:
+                        result.close()
             except Exception:
                 _log.exception("error in %r handler %r", event, h)
+
+    @staticmethod
+    def _log_async_handler_error(event: str, handler: Callable, future: Any) -> None:
+        if future.cancelled():
+            return
+        exc = future.exception()
+        if exc is not None:
+            _log.error("error in %r async handler %r", event, handler, exc_info=exc)
 
     def _fire_on_loop(self, event: str, *args: Any) -> None:
         """Hand `event` to the loop thread, and run the handlers there.
