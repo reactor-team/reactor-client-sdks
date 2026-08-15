@@ -113,6 +113,7 @@ async def main() -> int:
 
     print(f"connecting to {args.in_track!r} (sending on {args.track!r})…")
     await reactor.connect()
+    await reactor.publish_track(args.track)
     try:
         for seq in range(args.frames):
             tag = json.dumps({"seq": seq, "sent_us": int(time.time() * 1e6)}).encode()
@@ -126,6 +127,7 @@ async def main() -> int:
         while len(returned) < args.frames and time.monotonic() < deadline:
             await asyncio.sleep(0.05)
     finally:
+        reactor.unpublish_track(args.track)
         await reactor.disconnect()
 
     print()

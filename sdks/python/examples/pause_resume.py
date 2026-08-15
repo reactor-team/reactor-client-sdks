@@ -101,7 +101,14 @@ async def main() -> None:
     current_phase = "receiving"
     last_frame_time: float | None = None
 
-    def on_frame(data: bytes, width: int, height: int) -> None:
+    def on_frame(
+        data: bytes,
+        width: int,
+        height: int,
+        frame_id: int,
+        timestamp_us: int,
+        user_data: bytes,
+    ) -> None:
         nonlocal last_frame_time
         phase_counts[current_phase] += 1
         last_frame_time = time.monotonic()

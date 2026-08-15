@@ -28,6 +28,7 @@ import asyncio
 import sys
 import urllib.request
 from pathlib import Path
+from urllib.parse import urljoin
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -61,7 +62,6 @@ def _parse_args() -> argparse.Namespace:
 def _download_segments(playlist_url: str, out_path: str) -> None:
     """Fetch an HLS playlist and concatenate all .ts segments into out_path."""
     print(f"Downloading playlist: {playlist_url}", file=sys.stderr)
-    base_url = playlist_url.rsplit("/", 1)[0] + "/"
 
     with urllib.request.urlopen(playlist_url) as resp:
         playlist = resp.read().decode()
@@ -76,7 +76,10 @@ def _download_segments(playlist_url: str, out_path: str) -> None:
     print(f"Fetching {len(segments)} segment(s) → {out_path}", file=sys.stderr)
     with open(out_path, "wb") as out:
         for i, seg in enumerate(segments, 1):
-            url = seg if seg.startswith("http") else base_url + seg
+            # `urljoin` resolves both relative segment names and the
+            # absolute-path URIs (`/clips/chunks/...`) the coordinator emits —
+            # a plain string-concat mishandles the latter into a doubled path.
+            url = urljoin(playlist_url, seg)
             print(f"  [{i}/{len(segments)}] {url}", file=sys.stderr)
             with urllib.request.urlopen(url) as r:
                 out.write(r.read())

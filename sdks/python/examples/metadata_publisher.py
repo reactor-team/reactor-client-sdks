@@ -216,36 +216,43 @@ async def main() -> int:
 
     print("Connecting…", file=sys.stderr)
     await reactor.connect(session_id=args.session_id)
-    await asyncio.wait_for(ready.wait(), timeout=60)
 
-    track = _choose_track(await asyncio.wait_for(capabilities, timeout=30), args.track)
-
-    # Printed to stdout, and prominently: joining from another process is the whole point
-    # of this example, and this is the value that makes it possible.
-    session_id = reactor.session_id
-    print(f"session-id: {session_id}", flush=True)
-    print(
-        f"Ready. Publishing {args.width}×{args.height} @ {args.fps:g} fps on "
-        f"'{track}', every frame tagged.",
-        file=sys.stderr,
-    )
-    print(
-        f"Watch it with:  cd examples/pygame_app && python main.py "
-        f"{'--local ' if args.local else ''}--model {reactor._model_name} "
-        f"--session-id {session_id}",
-        file=sys.stderr,
-    )
-
-    await reactor.publish_track(track)
-
+    # Everything below can fail (no matching track, a stalled ready/capabilities
+    # wait, …) and the session this process created must still be released on the
+    # way out — an exception here left `connect()` succeeded but `disconnect()`
+    # unreached, which is exactly the dangling session the comment below warns
+    # about: the runtime marks it orphaned and the next run cannot start.
+    track: str | None = None
     sent = 0
     started = time.monotonic()
-    deadline = started + args.duration if args.duration > 0 else math.inf
-    hue = 0.0
-    hue_step = frame_secs / 10.0  # a full colour cycle every 10 s
-    next_report = started + 5.0
-
     try:
+        await asyncio.wait_for(ready.wait(), timeout=60)
+
+        track = _choose_track(await asyncio.wait_for(capabilities, timeout=30), args.track)
+
+        # Printed to stdout, and prominently: joining from another process is the
+        # whole point of this example, and this is the value that makes it possible.
+        session_id = reactor.session_id
+        print(f"session-id: {session_id}", flush=True)
+        print(
+            f"Ready. Publishing {args.width}×{args.height} @ {args.fps:g} fps on "
+            f"'{track}', every frame tagged.",
+            file=sys.stderr,
+        )
+        print(
+            f"Watch it with:  cd examples/pygame_app && python main.py "
+            f"{'--local ' if args.local else ''}--model {reactor._model_name} "
+            f"--session-id {session_id}",
+            file=sys.stderr,
+        )
+
+        await reactor.publish_track(track)
+
+        deadline = started + args.duration if args.duration > 0 else math.inf
+        hue = 0.0
+        hue_step = frame_secs / 10.0  # a full colour cycle every 10 s
+        next_report = started + 5.0
+
         while time.monotonic() < deadline:
             if stopping.is_set():
                 print("\nStopping…", file=sys.stderr)
@@ -294,7 +301,8 @@ async def main() -> int:
 
         # Ending the session deliberately, rather than by vanishing, is what leaves the
         # runtime able to start the next one.
-        reactor.unpublish_track(track)
+        if track is not None:
+            reactor.unpublish_track(track)
         await reactor.disconnect()
         reactor.close()
 

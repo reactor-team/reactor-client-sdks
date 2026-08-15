@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, ".")  # allow `from reactor_sdk import ...` from repo root
 
 from examples.reactor_client import make_reactor
-from reactor_sdk import ReactorError
+from reactor_sdk import ReactorError, ReactorFFIError
 
 
 async def main() -> None:
@@ -47,8 +47,14 @@ async def main() -> None:
     await asyncio.wait_for(ready.wait(), timeout=60)
 
     print("Sending hello command …")
-    reply = await reactor.send_command("hello", {"text": "Hello from Python SDK!"})
-    print(f"[reply] {reply}")
+    try:
+        reply = await reactor.send_command("hello", {"text": "Hello from Python SDK!"})
+        print(f"[reply] {reply}")
+    except ReactorFFIError as exc:
+        # "hello" is a placeholder — swap it for a command your model actually
+        # defines. Caught here so the connect -> command -> disconnect flow
+        # still completes cleanly when the target model has no such command.
+        print(f"[command error] {exc}")
 
     await asyncio.sleep(5)
 
