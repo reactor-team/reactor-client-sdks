@@ -389,6 +389,78 @@ class TestOnFrame:
 
         assert seen == []
 
+    def test_raw_frames_skip_the_conversion(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Same routing, same arguments as the client-wide event — so a handler
+        written against `on("frame", ...)` moves onto a track unchanged, and one
+        that only counts frames pays for no numpy."""
+        reactor, _ = _connected(monkeypatch)
+        seen: list[tuple] = []
+
+        @reactor.track("output").on_raw_frame
+        def handler(bgra, width, height, frame_id, timestamp_us, user_data) -> None:
+            seen.append((bgra, width, height, frame_id, timestamp_us, user_data))
+
+        reactor._fire_on_track("frame", b"output", b"\x01\x02\x03\x04", 1, 1, 7, 8, b"tag")
+        reactor._fire_on_track("frame", b"other", b"\x00" * 4, 1, 1, 0, 0, b"")
+
+        assert seen == [(b"\x01\x02\x03\x04", 1, 1, 7, 8, b"tag")]
+
+    def test_a_raw_audio_handler_gets_the_client_wide_arguments(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reactor, _ = _connected(monkeypatch)
+        seen: list[tuple] = []
+
+        @reactor.track("speech").on_raw_frame
+        def handler(pcm, num_samples, sample_rate, num_channels) -> None:
+            seen.append((len(pcm), num_samples, sample_rate, num_channels))
+
+        reactor._fire_on_track("audio", b"speech", b"\x00" * 16, 8, 48000, 2)
+
+        assert seen == [(16, 8, 48000, 2)]
+
+    def test_off_frame_also_unregisters_a_raw_handler(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reactor, _ = _connected(monkeypatch)
+        seen: list[object] = []
+
+        def handler(bgra, width, height, frame_id, timestamp_us, user_data) -> None:
+            seen.append(bgra)
+
+        track = reactor.track("output")
+        track.on_raw_frame(handler)
+        track.off_frame(handler)
+        reactor._fire_on_track("frame", b"output", bytes(4), 1, 1, 0, 0, b"")
+
+        assert seen == []
+
+    def test_a_raw_handler_registered_early_stays_raw(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Learning the kind re-registers every handler. One that asked for raw
+        frames must come back raw, not quietly converted."""
+        reactor, lib = _connected(monkeypatch, tracks=[])
+        seen: list[tuple] = []
+
+        @reactor.track("speech").on_raw_frame
+        def handler(pcm, num_samples, sample_rate, num_channels) -> None:
+            seen.append((num_samples, sample_rate))
+
+        lib._tracks = DECLARED
+        assert reactor.track("speech").kind is TrackKind.AUDIO
+
+        reactor._fire_on_track("audio", b"speech", b"\x00" * 8, 4, 16000, 1)
+
+        assert seen == [(4, 16000)]
+
+    def test_raw_frames_are_refused_on_a_sendonly_track(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reactor, _ = _connected(monkeypatch)
+        with pytest.raises(ValueError, match="sendonly"):
+            reactor.track("camera").on_raw_frame(lambda *a: None)
+
     def test_off_frame_of_an_unregistered_handler_is_a_noop(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

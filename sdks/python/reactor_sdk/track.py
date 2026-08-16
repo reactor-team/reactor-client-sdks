@@ -91,9 +91,10 @@ class Track:
         self._name = name
         self._kind = kind
         self._direction = direction
-        # Handler → the adapter registered for it, so `off_frame` can find what
-        # `on_frame` actually put on the client.
-        self._adapters: dict[Callable, Callable] = {}
+        # Handler → (what was registered on the client for it, whether it wanted
+        # frames raw). `off_frame` needs the first to find it again; `_readapt`
+        # needs the second to put it back the same way when the kind is learned.
+        self._adapters: dict[Callable, tuple[Callable, bool]] = {}
 
     # ------------------------------------------------------------------
     # Identity
@@ -251,8 +252,39 @@ class Track:
         handlers can be set up before `connect()`. The direction is checked once it
         is known, and a handler on a sendonly track simply never fires.
 
+        Requires numpy, which is not a dependency of this package. Use
+        :meth:`on_raw_frame` for the same frames without the conversion.
+
         Returns the function unchanged, so the decorated name stays callable.
         """
+        return self._register(func, raw=False)
+
+    def on_raw_frame(self, func: Callable) -> Callable:
+        """Register a handler for this track's frames, undecoded. Usable as a decorator.
+
+        The same routing as :meth:`on_frame` and the same arguments the client-wide
+        events carry — so a handler written against ``on("frame", ...)`` moves here
+        unchanged and starts seeing one track instead of all of them::
+
+            @output.on_raw_frame
+            def forward(bgra, width, height, frame_id, timestamp_us, user_data): ...
+
+            @speech.on_raw_frame
+            def forward(pcm, num_samples, sample_rate, num_channels): ...
+
+        Prefer this when the conversion is not wanted — forwarding the bytes
+        somewhere, or counting frames — since it needs no numpy and copies nothing.
+        Every argument is passed, so the handler must take them all.
+        """
+        return self._register(func, raw=True)
+
+    def off_frame(self, func: Callable) -> None:
+        """Unregister a handler registered with :meth:`on_frame` or :meth:`on_raw_frame`."""
+        registered = self._adapters.pop(func, None)
+        if registered is not None:
+            self._reactor().off(self._event, registered[0])
+
+    def _register(self, func: Callable, raw: bool) -> Callable:
         self._refresh()
         if self._direction is TrackDirection.SENDONLY:
             raise ValueError(
@@ -261,17 +293,14 @@ class Track:
                 f"recvonly track."
             )
 
-        adapt = self._audio_adapter if self._kind is TrackKind.AUDIO else self._video_adapter
-        adapter = adapt(func)
-        self._adapters[func] = adapter
+        if raw:
+            adapter = func
+        else:
+            adapt = self._audio_adapter if self._kind is TrackKind.AUDIO else self._video_adapter
+            adapter = adapt(func)
+        self._adapters[func] = (adapter, raw)
         self._reactor().on(self._event, adapter)
         return func
-
-    def off_frame(self, func: Callable) -> None:
-        """Unregister a handler registered with :meth:`on_frame`."""
-        adapter = self._adapters.pop(func, None)
-        if adapter is not None:
-            self._reactor().off(self._event, adapter)
 
     def _video_adapter(self, func: Callable) -> Callable:
         take = _positional_arity(func, len(VIDEO_FRAME_HANDLER_ARGUMENTS))
@@ -362,12 +391,12 @@ class Track:
         client = self._client()
         if client is None:
             return
-        handlers = list(self._adapters)
-        for func, adapter in list(self._adapters.items()):
+        registered = list(self._adapters.items())
+        self._adapters.clear()
+        for _, (adapter, _raw) in registered:
             client.off(old_event, adapter)
-            self._adapters.pop(func, None)
-        for func in handlers:
-            self.on_frame(func)
+        for func, (_adapter, raw) in registered:
+            self._register(func, raw=raw)
 
     def _refresh(self) -> None:
         """Adopt what the session declares, if it has not been adopted yet."""
