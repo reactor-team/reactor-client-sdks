@@ -80,9 +80,10 @@ await output.pause()
 await output.resume()
 ```
 
-`on_frame` decodes each frame into a numpy array. Use `on_raw_frame` for the same
-frames untouched — the arguments the client-wide `on("frame", …)` carries — when
-the conversion is not wanted:
+`on_frame` converts each frame into a numpy array. Use `on_raw_frame` for the
+same frames as bytes — the arguments the client-wide `on("frame", …)` carries —
+when the conversion is not wanted. Both get frames WebRTC has already decoded
+(BGRA pixels, or interleaved i16 PCM); the difference is only the conversion:
 
 ```python
 @output.on_raw_frame
