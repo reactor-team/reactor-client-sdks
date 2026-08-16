@@ -79,14 +79,19 @@ fn map_state(s: PeerConnectionState) -> CorePeerConnectionState {
     }
 }
 
-/// Sink for a decoded remote video frame: BGRA pixels, width, height, `frame_id`,
-/// capture timestamp in µs, and the sender's `user_data` (empty when the frame
-/// carried no metadata trailer).
-type FrameCallback = Arc<dyn Fn(&[u8], u32, u32, u64, u64, &[u8]) + Send + Sync + 'static>;
+/// Sink for a decoded remote video frame: the track it arrived on, BGRA pixels,
+/// width, height, `frame_id`, capture timestamp in µs, and the sender's
+/// `user_data` (empty when the frame carried no metadata trailer).
+///
+/// The track name leads because it is what makes the frame attributable. A model
+/// may declare several recvonly video tracks, and every one of them decodes into
+/// this same sink — without the name the host receives an interleaved stream it
+/// has no way to separate.
+type FrameCallback = Arc<dyn Fn(&str, &[u8], u32, u32, u64, u64, &[u8]) + Send + Sync + 'static>;
 
-/// Sink for a decoded remote audio frame: interleaved i16 PCM, sample rate in Hz,
-/// channel count.
-type AudioCallback = Arc<dyn Fn(&[i16], u32, u32) + Send + Sync + 'static>;
+/// Sink for a decoded remote audio frame: the track it arrived on, interleaved
+/// i16 PCM, sample rate in Hz, channel count.
+type AudioCallback = Arc<dyn Fn(&str, &[i16], u32, u32) + Send + Sync + 'static>;
 
 #[derive(Default)]
 struct PeerState {
@@ -127,7 +132,7 @@ impl ReactorWebRtcPeerTransport {
 
     pub fn with_frame_callback(
         mut self,
-        cb: impl Fn(&[u8], u32, u32, u64, u64, &[u8]) + Send + Sync + 'static,
+        cb: impl Fn(&str, &[u8], u32, u32, u64, u64, &[u8]) + Send + Sync + 'static,
     ) -> Self {
         self.frame_cb = Some(Arc::new(cb));
         self
@@ -135,7 +140,7 @@ impl ReactorWebRtcPeerTransport {
 
     pub fn with_audio_callback(
         mut self,
-        cb: impl Fn(&[i16], u32, u32) + Send + Sync + 'static,
+        cb: impl Fn(&str, &[i16], u32, u32) + Send + Sync + 'static,
     ) -> Self {
         self.audio_cb = Some(Arc::new(cb));
         self
@@ -217,9 +222,14 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
                     .unwrap_or((None, None));
                 info!("[peer] track received  kind={kind:?}  name={name:?}  mid={mid:?}");
                 let _ = tx.unbounded_send(PeerEvent::TrackReceived {
-                    name,
+                    name: name.clone(),
                     mid: mid.clone(),
                 });
+                // Empty when the transceiver could not be matched against the
+                // negotiated mapping. The frames are still delivered — an
+                // unattributable frame beats a dropped one — and the host sees a
+                // track name it will not match to any declared track.
+                let track_name = name.unwrap_or_default();
                 match kind {
                     MediaKind::Video => {
                         if let Some(cb) = frame_cb.clone() {
@@ -233,13 +243,15 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
                                     .as_ref()
                                     .map(|m| (m.frame_id, m.timestamp, m.user_data.as_slice()))
                                     .unwrap_or((0, 0, &[]));
-                                cb(f.bgra, f.width, f.height, frame_id, ts, ud);
+                                cb(&track_name, f.bgra, f.width, f.height, frame_id, ts, ud);
                             });
                         }
                     }
                     MediaKind::Audio => {
                         if let Some(cb) = audio_cb.clone() {
-                            track.on_audio_frame(move |f| cb(f.pcm, f.sample_rate, f.channels));
+                            track.on_audio_frame(move |f| {
+                                cb(&track_name, f.pcm, f.sample_rate, f.channels)
+                            });
                         }
                     }
                     MediaKind::Unknown => {}

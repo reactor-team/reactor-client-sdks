@@ -34,10 +34,14 @@ from .client import (
     ReactorFFIError,
     ReactorStatus,
 )
+from .track import Track, TrackDirection, TrackKind
 
 __all__ = [
     "Reactor",
     "ReactorStatus",
+    "Track",
+    "TrackKind",
+    "TrackDirection",
     "Clip",
     "FileRef",
     "ReactorError",

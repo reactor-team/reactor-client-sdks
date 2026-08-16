@@ -99,9 +99,24 @@ pub struct ReactorCallbacks {
     pub on_track: Option<unsafe extern "C" fn(*const c_char, *const c_char, *mut c_void)>,
     pub on_capabilities: Option<unsafe extern "C" fn(*const c_char, *mut c_void)>,
     pub on_session_id: Option<unsafe extern "C" fn(*const c_char, *mut c_void)>,
-    pub on_frame:
-        Option<unsafe extern "C" fn(*const u8, u32, u32, u64, u64, *const u8, u32, *mut c_void)>,
-    pub on_audio: Option<unsafe extern "C" fn(*const i16, u32, u32, u32, *mut c_void)>,
+    /// Leading `*const c_char` is the name of the track the frame arrived on,
+    /// empty when the transceiver could not be matched to a declared track.
+    pub on_frame: Option<
+        unsafe extern "C" fn(
+            *const c_char,
+            *const u8,
+            u32,
+            u32,
+            u64,
+            u64,
+            *const u8,
+            u32,
+            *mut c_void,
+        ),
+    >,
+    /// Leading `*const c_char` as [`ReactorCallbacks::on_frame`].
+    pub on_audio:
+        Option<unsafe extern "C" fn(*const c_char, *const i16, u32, u32, u32, *mut c_void)>,
     pub userdata: *mut c_void,
 }
 
@@ -192,7 +207,12 @@ type HostJob = Box<dyn FnOnce() + Send + 'static>;
 
 /// A decoded remote video frame, copied out of libwebrtc's buffer so the media
 /// thread can return immediately.
+///
+/// `track` is built here, on the media thread that already copies the pixels,
+/// rather than on the delivery thread — one allocation next to a frame-sized one
+/// costs nothing, and it keeps the host thread doing nothing but the call.
 struct VideoFrame {
+    track: CString,
     bgra: Vec<u8>,
     width: u32,
     height: u32,
@@ -203,6 +223,7 @@ struct VideoFrame {
 
 /// A decoded remote audio frame, likewise copied.
 struct AudioFrame {
+    track: CString,
     pcm: Vec<i16>,
     sample_rate: u32,
     channels: u32,
@@ -431,6 +452,7 @@ unsafe fn create_impl(
                 gate.clone(),
                 move |frame: VideoFrame| unsafe {
                     frame_fn(
+                        frame.track.as_ptr(),
                         frame.bgra.as_ptr(),
                         frame.width,
                         frame.height,
@@ -448,10 +470,11 @@ unsafe fn create_impl(
             );
             let tx = thread.sender();
             peer_transport =
-                peer_transport.with_frame_callback(move |data, w, h, frame_id, ts, ud| {
+                peer_transport.with_frame_callback(move |track, data, w, h, frame_id, ts, ud| {
                     // Runs on a libwebrtc decode thread. Copy and hand off; the one
                     // thing not to do here is wait for the host.
                     tx.send(VideoFrame {
+                        track: CString::new(track).unwrap_or_default(),
                         bgra: data.to_vec(),
                         width: w,
                         height: h,
@@ -473,6 +496,7 @@ unsafe fn create_impl(
                 gate.clone(),
                 move |frame: AudioFrame| unsafe {
                     audio_fn(
+                        frame.track.as_ptr(),
                         frame.pcm.as_ptr(),
                         frame.pcm.len() as u32,
                         frame.sample_rate,
@@ -483,8 +507,9 @@ unsafe fn create_impl(
             );
             let tx = thread.sender();
             peer_transport =
-                peer_transport.with_audio_callback(move |pcm, sample_rate, channels| {
+                peer_transport.with_audio_callback(move |track, pcm, sample_rate, channels| {
                     tx.send(AudioFrame {
+                        track: CString::new(track).unwrap_or_default(),
                         pcm: pcm.to_vec(),
                         sample_rate,
                         channels,
@@ -1110,11 +1135,64 @@ pub unsafe extern "C" fn reactor_session_id(handle: *mut ReactorHandle) -> *mut 
     }
 }
 
-/// Release a string returned by [`reactor_session_id`].
+/// The tracks the runtime declared, as a JSON array of
+/// `{"name","kind","direction"}` — the same entries the capabilities event
+/// carries, readable at any time.
+///
+/// Returns `"[]"` before the session is accepted and after it is torn down, so a
+/// binding can tell "no tracks yet" from a track it does not recognise without
+/// having to have caught the event. Owned by the caller; release it with
+/// [`reactor_free_string`].
 ///
 /// # Safety
 ///
-/// `s` must be null (no-op) or a pointer returned by [`reactor_session_id`] that
+/// `handle` must be null (returns null) or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_tracks(handle: *mut ReactorHandle) -> *mut c_char {
+    if handle.is_null() {
+        return std::ptr::null_mut();
+    }
+    let tracks = (*handle).reactor.tracks();
+    match serde_json::to_string(&tracks) {
+        Ok(json) => CString::new(json)
+            .map(|cs| cs.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// The names of the tracks currently paused, as a JSON array of strings.
+///
+/// Recvonly tracks are resumed automatically once connected, so this is empty on
+/// a healthy session until the host pauses something. Owned by the caller;
+/// release it with [`reactor_free_string`].
+///
+/// # Safety
+///
+/// `handle` must be null (returns null) or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_paused_tracks(handle: *mut ReactorHandle) -> *mut c_char {
+    if handle.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Sorted, so the same set is always the same string: a host diffing this
+    // between polls should not see a change that HashSet ordering invented.
+    let mut names: Vec<String> = (*handle).reactor.paused_tracks().into_iter().collect();
+    names.sort();
+    match serde_json::to_string(&names) {
+        Ok(json) => CString::new(json)
+            .map(|cs| cs.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Release a string returned by [`reactor_session_id`], [`reactor_tracks`] or
+/// [`reactor_paused_tracks`].
+///
+/// # Safety
+///
+/// `s` must be null (no-op) or a pointer returned by one of those functions that
 /// has not already been freed. Passing any other pointer — including the static
 /// one from [`reactor_status`] — is undefined behaviour.
 #[no_mangle]
@@ -1239,6 +1317,9 @@ mod tests {
             assert_eq!(status.to_str().unwrap(), "disconnected");
 
             assert!(reactor_session_id(std::ptr::null_mut()).is_null());
+
+            assert!(reactor_tracks(std::ptr::null_mut()).is_null());
+            assert!(reactor_paused_tracks(std::ptr::null_mut()).is_null());
 
             assert_eq!(
                 reactor_unpublish_track(std::ptr::null_mut(), name.as_ptr()),

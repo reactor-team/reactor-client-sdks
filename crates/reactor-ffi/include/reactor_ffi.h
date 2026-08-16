@@ -88,8 +88,16 @@ typedef void (*reactor_on_capabilities_fn)(const char *caps_json, void *userdata
 /* session_id_or_null is NULL when the session is cleared. */
 typedef void (*reactor_on_session_id_fn)(const char *session_id_or_null, void *userdata);
 
-/* Raw video frame in BGRA format (B, G, R, A bytes).  width * height * 4 bytes. */
+/*
+ * Raw video frame in BGRA format (B, G, R, A bytes).  width * height * 4 bytes.
+ *
+ * track_name names the declared track the frame arrived on — every recvonly video
+ * track decodes into this one callback, so it is the only thing that tells them
+ * apart.  Empty ("") when the transceiver could not be matched to a declared
+ * track; never NULL.
+ */
 typedef void (*reactor_on_frame_fn)(
+    const char *track_name,
     const uint8_t *data, uint32_t width, uint32_t height,
     uint64_t frame_id,       /* 0 when no metadata trailer present */
     uint64_t timestamp_us,   /* wall-clock µs; 0 when no metadata  */
@@ -97,8 +105,11 @@ typedef void (*reactor_on_frame_fn)(
     void *userdata
 );
 
-/* Audio frame callback: interleaved int16 PCM, total sample count, sample rate (Hz), channels. */
-typedef void (*reactor_on_audio_fn)(const int16_t *samples, uint32_t num_samples, uint32_t sample_rate, uint32_t channels, void *userdata);
+/*
+ * Audio frame callback: the track the frame arrived on (as reactor_on_frame_fn),
+ * interleaved int16 PCM, total sample count, sample rate (Hz), channels.
+ */
+typedef void (*reactor_on_audio_fn)(const char *track_name, const int16_t *samples, uint32_t num_samples, uint32_t sample_rate, uint32_t channels, void *userdata);
 
 /* ── Callbacks registration struct ───────────────────────────────────────── */
 
@@ -349,7 +360,29 @@ const char *reactor_status(ReactorHandle *handle);
  */
 char *reactor_session_id(ReactorHandle *handle);
 
-/* Free a string returned by reactor_session_id(). */
+/*
+ * The tracks the runtime declared, as a JSON array of
+ * [{"name":…,"kind":"video"|"audio","direction":"sendonly"|"recvonly"}] —
+ * the same entries on_capabilities carries, readable at any time.
+ *
+ * "[]" before the session is accepted and after it is torn down, so a caller can
+ * tell "no tracks yet" from a name it does not recognise.  Heap-allocated; free
+ * with reactor_free_string().  NULL only if handle is NULL.
+ */
+char *reactor_tracks(ReactorHandle *handle);
+
+/*
+ * Names of the currently paused tracks, as a JSON array of strings, sorted.
+ * Recvonly tracks resume automatically once connected, so this is empty on a
+ * healthy session until the caller pauses something.  Heap-allocated; free with
+ * reactor_free_string().  NULL only if handle is NULL.
+ */
+char *reactor_paused_tracks(ReactorHandle *handle);
+
+/*
+ * Free a string returned by reactor_session_id(), reactor_tracks() or
+ * reactor_paused_tracks().
+ */
 void reactor_free_string(char *s);
 
 /*

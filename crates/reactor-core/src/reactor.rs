@@ -848,6 +848,15 @@ impl Reactor {
         self.state.lock().unwrap().paused_tracks.clone()
     }
 
+    /// The tracks the runtime declared for this session.
+    ///
+    /// Empty until the session is accepted and its capabilities arrive, and
+    /// emptied again on disconnect — so a binding can read this instead of having
+    /// to catch the capabilities event and hold onto it.
+    pub fn tracks(&self) -> Vec<TrackCapability> {
+        self.state.lock().unwrap().tracks.clone()
+    }
+
     async fn auto_resume_recv_tracks(&self) {
         let recv_tracks: Vec<String> = {
             let state = self.state.lock().unwrap();
