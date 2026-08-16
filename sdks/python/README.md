@@ -46,6 +46,57 @@ async def main():
 asyncio.run(main())
 ```
 
+## Tracks
+
+A model declares its media tracks — a name, a kind (`video` or `audio`) and a
+direction (`sendonly`, which you push into, or `recvonly`, which you receive
+from). `reactor.tracks` is that declaration, and `reactor.track(name)` is one of
+them as a `Track`:
+
+```python
+for track in reactor.tracks:
+    print(track.name, track.kind, track.direction)   # e.g. output video recvonly
+```
+
+A `Track` knows which slot it is, so there is one `push_frame` and one `on_frame`
+rather than a video and an audio version of each, and asking for something the
+direction does not have is an error rather than a silent no-op:
+
+```python
+# Sending — publish the slot, then push into it.
+camera = await reactor.publish_track("camera")
+camera.push_frame(frame)                       # an RGB numpy array carries its own size
+camera.push_frame(bgra, width=640, height=480) # raw bytes need it spelled out
+camera.unpublish()
+
+# Receiving — only this track's frames reach the handler.
+output = reactor.track("output")
+
+@output.on_frame
+def render(frame):                             # RGB numpy array, (height, width, 3)
+    ...
+
+await output.pause()
+await output.resume()
+```
+
+`on_frame` decodes each frame into a numpy array. Use `on_raw_frame` for the same
+frames untouched — the arguments the client-wide `on("frame", …)` carries — when
+the conversion is not wanted:
+
+```python
+@output.on_raw_frame
+def forward(bgra, width, height, frame_id, timestamp_us, user_data):
+    ...
+```
+
+Naming a track before `connect()` is fine: the session has not declared anything
+yet, so handlers can be registered first and the name is checked as soon as the
+declaration arrives.
+
+The name-based calls — `publish_track`, `pause_track`, `push_video_frame`,
+`push_audio_frame`, `on("frame", …)` — all still work exactly as before.
+
 ## Documentation & Resources
 
 See the [full documentation](https://docs.reactor.inc/sdk-reference/using-the-sdk#python) for platform
@@ -59,10 +110,10 @@ environment variables (see [`reactor_client.py`](examples/reactor_client.py)):
 
 | Script | Demonstrates |
 |---|---|
-| [`main.py`](examples/main.py) | Minimal connect → send a command → disconnect. |
+| [`main.py`](examples/main.py) | Minimal connect → list the model's tracks → send a command → disconnect. |
 | [`push_video.py`](examples/push_video.py) | Stream generated frames into a `sendonly` video track. |
 | [`push_audio.py`](examples/push_audio.py) | Stream a sine tone or a WAV file into a `sendonly` audio track. |
-| [`pause_resume.py`](examples/pause_resume.py) | Pause and resume a `recvonly` track subscription. |
+| [`pause_resume.py`](examples/pause_resume.py) | Pause and resume a `recvonly` track subscription, counting only that track's frames. |
 | [`record.py`](examples/record.py) | Request a clip or full-session recording and download the HLS segments. |
 | [`frame_metadata.py`](examples/frame_metadata.py) | Read the per-frame metadata trailer off an incoming track. |
 | [`frame_metadata_roundtrip.py`](examples/frame_metadata_roundtrip.py) | Tag outgoing frames and match them against the ones that come back. |

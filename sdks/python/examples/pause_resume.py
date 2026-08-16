@@ -113,7 +113,16 @@ async def main() -> None:
         phase_counts[current_phase] += 1
         last_frame_time = time.monotonic()
 
-    reactor.on("frame", on_frame)
+    # Registered on the track rather than on the client, so the count is this
+    # track's alone — a model with a second video track would otherwise keep
+    # incrementing it right through the pause. `on_raw_frame` because nothing here
+    # looks at the pixels; `on_frame` would decode every one of them into a numpy
+    # array for a counter to throw away.
+    #
+    # The track can be named before connect(), when the session has not yet said
+    # what it declares; it resolves itself as soon as the capabilities arrive.
+    track = reactor.track(args.track)
+    track.on_raw_frame(on_frame)
     reactor.on("error", lambda e: print(f"[error] {e}", file=sys.stderr))
 
     ready = asyncio.Event()
@@ -141,8 +150,8 @@ async def main() -> None:
 
     # ── Phase 2: pause ────────────────────────────────────────────────────────
     print(f"\n[Phase 2] Pausing '{args.track}'…")
-    await reactor.pause_track(args.track)
-    print(f"  Track paused.  (frames during pause = {phase_counts['paused']})")
+    await track.pause()
+    print(f"  Track paused: {track.paused}.  (frames during pause = {phase_counts['paused']})")
 
     current_phase = "paused"
     t_pause = time.monotonic()
@@ -160,7 +169,7 @@ async def main() -> None:
 
     # ── Phase 3: resume ───────────────────────────────────────────────────────
     print(f"\n[Phase 3] Resuming '{args.track}'…")
-    await reactor.resume_track(args.track)
+    await track.resume()
     print("  Track resumed.")
 
     current_phase = "resumed"
