@@ -260,11 +260,17 @@ class Track:
         return self._register(func, raw=False)
 
     def on_raw_frame(self, func: Callable) -> Callable:
-        """Register a handler for this track's frames, undecoded. Usable as a decorator.
+        """Register a handler for this track's frames as bytes. Usable as a decorator.
 
-        The same routing as :meth:`on_frame` and the same arguments the client-wide
-        events carry — so a handler written against ``on("frame", ...)`` moves here
-        unchanged and starts seeing one track instead of all of them::
+        Raw means unconverted, not undecoded. Every frame arrives here already
+        decoded — BGRA pixels for video, interleaved i16 PCM for audio — because
+        that happens in WebRTC, below this SDK; the encoded payload is never
+        exposed. What :meth:`on_frame` adds on top is the numpy conversion, and
+        this is the same frames without it.
+
+        The same routing as :meth:`on_frame`, then, and the same arguments the
+        client-wide events carry — so a handler written against ``on("frame", ...)``
+        moves here unchanged and starts seeing one track instead of all of them::
 
             @output.on_raw_frame
             def forward(bgra, width, height, frame_id, timestamp_us, user_data): ...
