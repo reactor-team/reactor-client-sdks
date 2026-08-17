@@ -136,6 +136,24 @@ def _close_live_clients() -> None:
 atexit.register(_close_live_clients)
 
 
+#: The synthetic audio device module, which this SDK always uses — the value
+#: `reactor_create_with_adm` documents as "no capture device, no playout".
+#:
+#: Nothing here opens a microphone or a speaker. A sendonly audio track carries
+#: only the PCM the caller pushes into it, and a model's audio arrives at
+#: `on("audio", ...)` or a track's `on_frame` for the caller to play.
+#:
+#: The alternative — the platform module, which captures and plays through the
+#: real devices — was reachable through an `adm_mode` argument and is not any
+#: more. It was the wrong thing to offer a library whose audience is scripts,
+#: servers and pipelines: a model declaring a sendonly audio track was enough to
+#: put the live microphone on the wire without the caller mentioning audio at
+#: all. It also broke the other direction, since `push_audio_frame` feeds the
+#: synthetic module — under the platform one a caller's PCM went nowhere while
+#: the microphone streamed in its place, which is what `examples/push_audio.py`
+#: was silently doing.
+_SYNTHETIC_ADM = 0
+
 #: What `on_frame` offers a handler, in order. A handler is given as many of these as it
 #: declares parameters for, so the historical one-argument contract keeps working while a
 #: handler that wants the metadata trailer just asks for more.
@@ -200,7 +218,6 @@ class Reactor:
         jwt: str | None = None,
         api_key: str | None = None,
         local: bool = False,
-        adm_mode: int | None = None,
     ) -> None:
         """
         Args:
@@ -210,7 +227,8 @@ class Reactor:
             api_key: An API key to exchange for a token at connect time. Use one or
                 the other; `jwt` wins if both are given.
             local: Local-dev mode — relaxes TLS verification and skips auth.
-            adm_mode: 0 synthetic, 1 platform, None for the platform default.
+
+        No audio device is ever opened — see `_SYNTHETIC_ADM`.
         """
         # Older releases took `model_name` first and `api_url` second. Both orders work:
         # an api_url is always a URL and a model name never is, so the two cannot be
@@ -239,7 +257,6 @@ class Reactor:
         self._jwt = jwt
         self._api_key = api_key
         self._local = local
-        self._adm_mode = adm_mode
 
         # A token the caller handed us is theirs: never replaced. One we minted from an
         # API key is ours, and `_minted_for` records the scope it was minted with, so a
@@ -678,23 +695,17 @@ class Reactor:
         jwt_bytes = self._jwt.encode() if self._jwt else None
         local_int = 1 if self._local else 0
 
-        if self._adm_mode is not None:
-            handle = lib.reactor_create_with_adm(
-                self._api_url.encode(),
-                self._model_name.encode(),
-                jwt_bytes,
-                local_int,
-                ctypes.byref(cbs),
-                ctypes.c_int(self._adm_mode),
-            )
-        else:
-            handle = lib.reactor_create(
-                self._api_url.encode(),
-                self._model_name.encode(),
-                jwt_bytes,
-                local_int,
-                ctypes.byref(cbs),
-            )
+        # Named rather than defaulted: `reactor_create` would take the mode from
+        # the REACTOR_WEBRTC_ADM environment variable, and an environment variable
+        # is not something a library should let open the user's microphone.
+        handle = lib.reactor_create_with_adm(
+            self._api_url.encode(),
+            self._model_name.encode(),
+            jwt_bytes,
+            local_int,
+            ctypes.byref(cbs),
+            ctypes.c_int(_SYNTHETIC_ADM),
+        )
 
         self._handle = handle
         # Now closable, so the atexit hook must know about it.

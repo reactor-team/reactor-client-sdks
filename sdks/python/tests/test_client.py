@@ -588,3 +588,66 @@ class TestExitHook:
 
     def test_del_on_a_client_without_a_handle_is_quiet(self) -> None:
         Reactor("https://api.reactor.inc", "m").__del__()
+
+
+class TestAudioDevices:
+    """The SDK must never open a microphone or a speaker.
+
+    Asserted at the one place that could: the call that creates the native
+    handle. Nothing further down is observable from a unit test — whether a
+    capture device was opened is a property of libwebrtc — so the mode this
+    passes is the whole contract.
+    """
+
+    def _create(self, monkeypatch: pytest.MonkeyPatch) -> dict:
+        captured: dict = {}
+        fake_lib = mock.Mock()
+
+        def create_with_adm(api_url, model, jwt, local, callbacks, adm_mode):
+            captured["adm_mode"] = adm_mode
+            return 1234
+
+        fake_lib.reactor_create_with_adm = create_with_adm
+        fake_lib.reactor_create = lambda *a: pytest.fail(
+            "reactor_create takes the ADM from REACTOR_WEBRTC_ADM; the mode must "
+            "be named so the environment cannot open a capture device"
+        )
+        monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: fake_lib)
+
+        reactor = Reactor("https://api.reactor.inc", "m")
+        try:
+            reactor._create_handle()
+        finally:
+            # _create_handle registers the client as live, which is what makes the
+            # conftest guard step aside — so the fabricated handle has to go before
+            # __del__ can hand it to the real reactor_destroy.
+            from reactor_sdk.client import _LIVE_CLIENTS
+
+            reactor._handle = None
+            _LIVE_CLIENTS.discard(reactor)
+        return captured
+
+    async def test_the_handle_is_always_created_synthetic(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from reactor_sdk.client import _SYNTHETIC_ADM
+
+        assert self._create(monkeypatch)["adm_mode"].value == _SYNTHETIC_ADM
+
+    async def test_the_environment_cannot_change_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """REACTOR_WEBRTC_ADM is read by the library, not by this SDK. Removing
+        the adm_mode argument without naming the mode here would have left the
+        variable as an undocumented way to put the live microphone on the wire.
+        """
+        monkeypatch.setenv("REACTOR_WEBRTC_ADM", "platform")
+        from reactor_sdk.client import _SYNTHETIC_ADM
+
+        assert self._create(monkeypatch)["adm_mode"].value == _SYNTHETIC_ADM
+
+    def test_the_constructor_no_longer_takes_a_mode(self) -> None:
+        """A hard error, deliberately. Accepting `adm_mode` and ignoring it would
+        leave a caller who asked for platform capture with a silently mute app;
+        a TypeError sends them to read what changed.
+        """
+        with pytest.raises(TypeError, match="adm_mode"):
+            Reactor("https://api.reactor.inc", "m", adm_mode=1)  # type: ignore[call-arg]
