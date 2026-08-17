@@ -21,12 +21,11 @@ from reactor_sdk import (
     MessageTooLargeError,
     RateLimitedError,
     Reactor,
-    ReactorFFIError,
+    ReactorError,
     RequestTimeoutError,
     ServerError,
     UnauthorizedError,
 )
-from reactor_sdk.client import ReactorError
 from reactor_sdk.errors import ERROR_CLASSES, error_for_code, error_from_payload
 
 
@@ -69,7 +68,7 @@ class TestCodeToClass:
         """The compatibility promise: code written against the single generic
         error keeps working, and gains the specific classes without changing."""
         for cls in ERROR_CLASSES:
-            assert issubclass(cls, ReactorFFIError)
+            assert issubclass(cls, ReactorError)
 
 
 class TestUnknownCodes:
@@ -78,14 +77,14 @@ class TestUnknownCodes:
         cannot enumerate. Falling back to the base class must not mean falling
         back to a generic code — matching on `error.code` is the whole point."""
         error = error_from_payload(_payload(code="PROMPT_REJECTED", message="unsafe"))
-        assert type(error) is ReactorFFIError
+        assert type(error) is ReactorError
         assert error.code == "PROMPT_REJECTED"
         assert error.message == "unsafe"
 
     def test_a_missing_code_falls_back_without_inventing_one(self) -> None:
         raw = json.dumps({"message": "something went wrong"}).encode()
         error = error_from_payload(raw)
-        assert type(error) is ReactorFFIError
+        assert type(error) is ReactorError
         assert error.code == "INTERNAL_ERROR"
         assert error.message == "something went wrong"
 
@@ -100,7 +99,7 @@ class TestMalformedPayloads:
         always paired with the exact libreactor_ffi it shipped with, and the wrong
         guess here would raise a JSON error in place of the real failure."""
         error = error_from_payload(b"peer transport error: ice failed")
-        assert type(error) is ReactorFFIError
+        assert type(error) is ReactorError
         assert error.message == "peer transport error: ice failed"
 
     def test_valid_json_that_is_not_an_object_is_kept_as_the_message(self) -> None:
@@ -145,9 +144,9 @@ class TestAttributes:
         assert str(error) == "[NOT_FOUND] no such model"
 
     def test_the_message_is_still_the_first_argument(self) -> None:
-        """`ReactorFFIError("boom")` is how this was constructed before there was
+        """`ReactorError("boom")` is how this was constructed before there was
         anything else to say, and it is still valid."""
-        error = ReactorFFIError("boom")
+        error = ReactorError("boom")
         assert error.args == ("boom",)
         assert error.message == "boom"
         assert error.code == "INTERNAL_ERROR"
@@ -181,7 +180,7 @@ class TestRaisedFromAnOperation:
         )
 
         with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
-            with pytest.raises(ReactorFFIError):
+            with pytest.raises(ReactorError):
                 await self._reactor().send_command("hello", {})
 
     async def test_an_old_library_sending_a_bare_string_still_raises(self) -> None:
@@ -191,28 +190,36 @@ class TestRaisedFromAnOperation:
         )
 
         with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
-            with pytest.raises(ReactorFFIError, match="command 'hello' failed"):
+            with pytest.raises(ReactorError, match="command 'hello' failed"):
                 await self._reactor().send_command("hello", {})
 
 
 class TestOneList:
-    """The event and the failed call report the same code for the same failure."""
+    """The event and the failed call report the same code for the same failure —
+    because both are the same `ReactorError`, not two types that happen to agree."""
 
-    def test_the_event_payload_and_the_exception_take_the_same_fields(self) -> None:
-        """Both are built from the same object on the Rust side, so a field added
-        to one and not the other is a divergence waiting to happen."""
+    def test_the_event_payload_and_the_exception_are_the_same_class(self) -> None:
+        """`Reactor._on_error` builds its payload with `error_for_code(code)(...)`,
+        the exact call `error_from_payload` makes — this pins that construction so
+        a future edit to one path cannot quietly stop matching the other."""
         payload = _payload(code="UNAUTHORIZED", status=401, operation="connect")
-        error = error_from_payload(payload)
-        event = ReactorError(
-            code=error.code,
-            message=error.message,
+        raised = error_from_payload(payload)
+
+        event = error_for_code(raised.code)(
+            raised.message,
+            code=raised.code,
+            recoverable=raised.recoverable,
+            status=raised.status,
+            operation=raised.operation,
+            retry_after_ms=raised.retry_after_ms,
             timestamp_ms=0.0,
-            recoverable=error.recoverable,
-            status=error.status,
-            operation=error.operation,
-            retry_after_ms=error.retry_after_ms,
         )
+
+        assert type(event) is type(raised) is UnauthorizedError
+        assert isinstance(event, ReactorError)
         assert (event.code, event.status, event.operation) == ("UNAUTHORIZED", 401, "connect")
+        assert event.timestamp_ms == 0.0
+        assert raised.timestamp_ms is None  # never set on the raised path
 
     def test_no_class_claims_a_code_the_event_uses_for_something_else(self) -> None:
         """The failure mode a single list exists to prevent: one name meaning two

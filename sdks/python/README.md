@@ -109,7 +109,7 @@ A failed operation raises an exception carrying a code you can branch on, rather
 than only a sentence you can print:
 
 ```python
-from reactor_sdk import ReactorFFIError, UnauthorizedError, ConflictError
+from reactor_sdk import ReactorError, UnauthorizedError, ConflictError
 
 try:
     await reactor.connect()
@@ -117,7 +117,7 @@ except UnauthorizedError:
     ...                      # the token is missing, expired or out of scope
 except ConflictError:
     ...                      # a previous run left the session orphaned
-except ReactorFFIError as error:
+except ReactorError as error:
     if error.recoverable:    # a timeout, a 5xx, a transport that dropped
         await reactor.reconnect()
     else:
@@ -133,25 +133,25 @@ except RateLimitedError as error:
     await asyncio.sleep((error.retry_after_ms or 1000) / 1000)
 ```
 
-`ReactorFFIError` is the base of all of them, so `except ReactorFFIError` still
+`ReactorError` is the base of all of them, so `except ReactorError` still
 catches everything. The classes are `InvalidStateError`, `DisconnectedError`,
 `NetworkError`, `RequestTimeoutError`, `TransportError`, `UnauthorizedError`,
 `NotFoundError`, `ConflictError`, `RateLimitedError`, `BadRequestError`,
 `ServerError`, `VersionMismatchError`, `DecodeError`, `SessionTerminalError`,
 `MessageTooLargeError` and `AbortedError`.
 
-**One list.** The `on_error` event reports the same codes, in the same shape plus
-`timestamp_ms` — so the same failure is the same code whichever way you receive
-it:
+**One class.** The `on_error` event hands you the exact same `ReactorError` a
+failed call raises — not a separate type that happens to agree — plus
+`timestamp_ms`, only ever set here:
 
 ```python
 @reactor.on_error
-def log(error):                  # a ReactorError
+def log(error):                  # a ReactorError — an UnauthorizedError, etc.
     print(error.code, error.operation, error.recoverable)
 ```
 
 A command or a control request the model itself rejects reports the model's own
-code, which this package cannot enumerate — those raise `ReactorFFIError` with
+code, which this package cannot enumerate — those raise `ReactorError` with
 `.code` set to whatever arrived, so match on `error.code` for anything not in the
 list above.
 

@@ -30,7 +30,6 @@ from .client import (
     Clip,
     FileRef,
     Reactor,
-    ReactorError,
     ReactorStatus,
 )
 from .errors import (
@@ -44,7 +43,7 @@ from .errors import (
     NetworkError,
     NotFoundError,
     RateLimitedError,
-    ReactorFFIError,
+    ReactorError,
     RequestTimeoutError,
     ServerError,
     SessionTerminalError,
@@ -62,10 +61,9 @@ __all__ = [
     "TrackDirection",
     "Clip",
     "FileRef",
+    # Failures, and the `on_error` event payload — the same class. `ReactorError`
+    # is the base of every one below it, so catching it still catches everything.
     "ReactorError",
-    # Failures. `ReactorFFIError` is the base of every one below it, so catching
-    # it still catches everything.
-    "ReactorFFIError",
     "NetworkError",
     "UnauthorizedError",
     "NotFoundError",
