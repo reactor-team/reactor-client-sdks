@@ -111,7 +111,7 @@ This is the largest conceptual change and the reason nothing here is a rename.
 | `fetch_jwt_token(...)` | `fetch_jwt(api_key, api_url, *, models=None, max_sessions=None, expires_after=None) -> str` — renamed **and** the signature changed (`api_url` is now required, not read from a default). It is synchronous; wrap it in `asyncio.to_thread()` from async code. |
 | `on(event: ReactorEvent, handler)` | `on(event: str, handler)` — `ReactorEvent` doesn't exist; event names are plain strings (`"status_changed"`, not `"statusChanged"`). |
 | `on_status(func)` / `on_status(ReactorStatus.READY)` / `on_status([READY, WAITING])` | Same three forms, same behavior — this one carried over unchanged. |
-| `send_command(command, data)` — fire-and-forget, reply arrives later as a `message` event | `send_command(command, data) -> dict | None` — **awaits and returns the correlated reply**. To fire without waiting, `asyncio.create_task(reactor.send_command(...))`. |
+| `send_command(command, data)` — fire-and-forget, reply arrives later as a `message` event | `await send_command(command, data) -> dict | None` — **awaits and returns the correlated reply**. To fire without waiting, `asyncio.create_task(reactor.send_command(...))`. |
 | `upload_file(...)` requiring a fully `READY` session | `upload_file(...)` needs only an active session (as soon as the coordinator creates one), not full `READY`. |
 
 ---
