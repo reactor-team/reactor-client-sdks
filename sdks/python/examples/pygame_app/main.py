@@ -38,10 +38,10 @@ from numpy.typing import NDArray
 # Add parent directories to path for development
 sys.path.insert(0, str(__file__).rsplit("/", 3)[0] + "/src")
 
-from audio import AudioPlayer
 from controller import ReactorController
 
 from reactor_sdk import Reactor, ReactorStatus, TrackDirection, TrackKind, TrackList
+from reactor_sdk.audio_devices import Speaker
 
 # =============================================================================
 # Configuration
@@ -130,8 +130,9 @@ class ReactorApp:
         self.reactor: Reactor | None = None
         self.controller: ReactorController | None = None
 
-        # The SDK opens no audio device, so playing what arrives is up to us.
-        self.audio = AudioPlayer()
+        # The SDK opens no audio device, so playing what arrives is up to us — with
+        # the SDK's own helper, which is the player this app used to carry itself.
+        self.audio: Speaker | None = None
         # The track being played, once one is found. None means the model declares
         # no audio, which is why the app is silent — worth telling the user apart
         # from an audio device that failed to open.
@@ -152,7 +153,6 @@ class ReactorApp:
         try:
             self._init_pygame()
             self._init_reactor()
-            self.audio.start()
             await self._connect()
             await self._main_loop()
         except KeyboardInterrupt:
@@ -302,12 +302,11 @@ class ReactorApp:
         logger.info("displaying video from track %r", tracks[0].name)
 
     def _attach_audio(self, tracks: TrackList) -> None:
-        """Play the model's audio track, if it declares one.
+        """Play the model's audio track, if it declares one and we can.
 
-        `on_raw_frame` because the player wants the PCM and its format, not the
-        numpy array `on_frame` would decode — and because this runs on the SDK's
-        audio delivery thread, where the cost of a conversion is paid in audio
-        (see audio.py).
+        `Speaker` raises when sounddevice is missing, which is right for a library:
+        a caller who asked for sound should hear about it. Here it is caught,
+        because this app's point is the video and running silent beats not running.
         """
         if not tracks:
             logger.info(
@@ -316,16 +315,19 @@ class ReactorApp:
             )
             return
 
-        track = tracks[0]
-        track.on_raw_frame(
-            lambda pcm, _samples, rate, channels: self.audio.submit(pcm, rate, channels)
-        )
-        self.audio_track = track.name
-        logger.info("playing audio from track %r", track.name)
+        try:
+            self.audio = Speaker(tracks[0]).start()
+        except ModuleNotFoundError as error:
+            logger.warning("%s — the app will run silently", error)
+            return
+
+        self.audio_track = tracks[0].name
+        logger.info("playing audio from track %r", tracks[0].name)
 
     async def _cleanup(self) -> None:
         """Clean up resources."""
-        self.audio.stop()
+        if self.audio is not None:
+            self.audio.stop()
 
         if self.reactor:
             await self.reactor.disconnect()

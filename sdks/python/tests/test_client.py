@@ -590,8 +590,11 @@ class TestExitHook:
         Reactor("https://api.reactor.inc", "m").__del__()
 
 
-class TestAudioDevices:
+class TestNoAudioDeviceIsOpened:
     """The SDK must never open a microphone or a speaker.
+
+    The helpers that do are opt-in, in `reactor_sdk.audio_devices`, and tested
+    there; this is about the SDK itself never doing it on a caller's behalf.
 
     Asserted at the one place that could: the call that creates the native
     handle. Nothing further down is observable from a unit test — whether a

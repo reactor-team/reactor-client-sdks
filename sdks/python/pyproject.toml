@@ -9,6 +9,11 @@ license = { text = "Apache-2.0" }
 # is in the standard library.
 dependencies = []
 
+[project.optional-dependencies]
+# Speaker and Microphone in reactor_sdk.devices. Optional because the SDK opens no
+# audio device of its own: only an application that wants one needs PortAudio.
+audio = ["sounddevice>=0.4.6"]
+
 [project.urls]
 Repository = "https://github.com/reactor-team/reactor-client-sdks"
 

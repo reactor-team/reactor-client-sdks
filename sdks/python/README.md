@@ -16,7 +16,16 @@ with your API key, server-side.
 pip install reactor-sdk
 ```
 
-Requires Python 3.10+.
+Requires Python 3.10+. No runtime dependencies: the SDK reaches its native library
+through `ctypes`.
+
+One optional extra, for the microphone and speaker helpers in
+`reactor_sdk.audio_devices` — it brings PortAudio, and only an application that
+wants a device needs it:
+
+```bash
+pip install "reactor-sdk[audio]"
+```
 
 ## Usage Example
 
@@ -118,11 +127,6 @@ object exists for. `on("frame", …)` and `on("audio", …)` remain for raw
 client-wide bytes; use a track's `on_frame` for decoded frames, and `.one()` above
 when you do not want to hardcode the name.
 
-**No audio device is ever opened.** A sendonly audio track carries only the PCM
-you push into it, and a model's audio arrives at `on_frame` for you to play with
-whatever you like — nothing is captured from your microphone or played through
-your speakers on your behalf.
-
 Naming a track before `connect()` is fine: the session has not declared anything
 yet, so handlers can be registered first and the name is checked as soon as the
 declaration arrives.
@@ -130,6 +134,47 @@ declaration arrives.
 The name-based calls — `publish_track`, `pause_track`, `push_video_frame`,
 `push_audio_frame`, `on("frame", …)` — all still work exactly as before. The one
 removal is `reactor.on_frame`; see "Finding a track" above for what replaces it.
+
+### Audio devices
+
+**No audio device is ever opened by the SDK.** A sendonly audio track carries only
+the PCM you push into it, and a model's audio arrives at `on_frame` — nothing is
+captured from your microphone or played through your speakers on your behalf.
+
+When you do want that, the SDK has the two helpers rather than leaving you to
+write them:
+
+```python
+from reactor_sdk.audio_devices import Microphone, Speaker
+
+speaker = reactor.tracks.with_direction("recvonly").with_kind("audio").one()
+mic = await reactor.track("mic").publish()
+
+with Speaker(speaker), Microphone(mic):
+    await asyncio.sleep(30)
+```
+
+`Speaker` plays a recvonly audio track, buffering against the jitter between what
+arrives and what the device asks for; feed it yourself with `submit()` if the PCM
+comes from somewhere else. `Microphone` captures the default input device into a
+sendonly track, in the block size the far end expects.
+
+Both are context managers, so a model that takes audio and sends it back is the two
+of them together — see
+[`echo_audio.py`](examples/echo_audio.py).
+
+They live in their own module rather than in `reactor_sdk`, because they are the
+one part of the SDK with a dependency — importing the package never reaches them,
+and installing PortAudio is only for the applications that want a device:
+
+```bash
+pip install "reactor-sdk[audio]"
+```
+
+Without it they raise, naming the fix — an application that would rather run
+silently can catch that, as `examples/pygame_app` does. And capture from one
+`Microphone` at a time: the SDK feeds every local audio track from one shared
+device, so two would interleave into the same stream rather than give you two.
 
 ## Errors
 
@@ -223,7 +268,8 @@ environment variables (see [`reactor_client.py`](examples/reactor_client.py)):
 |---|---|
 | [`main.py`](examples/main.py) | Minimal connect → list the model's tracks → send a command → disconnect. |
 | [`push_video.py`](examples/push_video.py) | Stream generated frames into a `sendonly` video track. |
-| [`push_audio.py`](examples/push_audio.py) | Stream a sine tone or a WAV file into a `sendonly` audio track. |
+| [`push_audio.py`](examples/push_audio.py) | Stream a sine tone, a WAV file, or the microphone into a `sendonly` audio track. |
+| [`echo_audio.py`](examples/echo_audio.py) | The full audio duplex: microphone out, the model's audio to the speakers. |
 | [`pause_resume.py`](examples/pause_resume.py) | Pause and resume a `recvonly` track subscription, counting only that track's frames. |
 | [`record.py`](examples/record.py) | Request a clip or full-session recording and download the HLS segments. |
 | [`frame_metadata.py`](examples/frame_metadata.py) | Read the per-frame metadata trailer off an incoming track. |

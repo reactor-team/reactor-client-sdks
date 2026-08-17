@@ -39,8 +39,14 @@ def _never_destroy_a_fabricated_handle() -> object:
             return
         real_destroy(self)
 
+    # Installed for good, deliberately: restoring it at session teardown put the
+    # hole back at the worst moment. A fabricated client still referenced when the
+    # session ends — a fixture value, a traceback pytest is holding — is collected
+    # *after* teardown, so the restore handed exactly those to the real
+    # reactor_destroy and the run ended in a segfault after every test had passed.
+    #
+    # Nothing needs the unpatched method afterwards. The atexit hook closes real
+    # clients, and they are in `_LIVE_CLIENTS`, so the guard sends them down the
+    # real path anyway.
     Reactor._destroy_handle = destroy_unless_fabricated  # type: ignore[method-assign]
-    try:
-        yield
-    finally:
-        Reactor._destroy_handle = real_destroy  # type: ignore[method-assign]
+    yield

@@ -43,31 +43,36 @@ async def main() -> None:
     print("Connecting …")
     await reactor.connect()
 
-    print("Waiting for ready …")
-    await asyncio.wait_for(ready.wait(), timeout=60)
-
-    # What the model declared, now that the session is up. Each of these is a Track,
-    # with pause()/resume(), publish()/push_frame() and on_frame() on it according to
-    # which way it goes — see push_video.py and pause_resume.py.
-    for track in reactor.tracks:
-        print(f"[track] {track.name} ({track.kind.value}, {track.direction.value})")
-
-    print("Sending hello command …")
+    # From here on the session exists, so it has to be released whichever way this
+    # function leaves — a timeout waiting for ready, a Ctrl-C, anything. A creator
+    # that goes away without disconnecting leaves the session orphaned, and the next
+    # run cannot start until that clears.
     try:
-        reply = await reactor.send_command("hello", {"text": "Hello from Python SDK!"})
-        print(f"[reply] {reply}")
-    except ReactorError as exc:
-        # "hello" is a placeholder — swap it for a command your model actually
-        # defines. Caught here so the connect -> command -> disconnect flow
-        # still completes cleanly when the target model has no such command.
-        print(f"[command error] {exc}")
+        print("Waiting for ready …")
+        await asyncio.wait_for(ready.wait(), timeout=60)
 
-    await asyncio.sleep(5)
+        # What the model declared, now that the session is up. Each of these is a
+        # Track, with pause()/resume(), publish()/push_frame() and on_frame() on it
+        # according to which way it goes — see push_video.py and pause_resume.py.
+        for track in reactor.tracks:
+            print(f"[track] {track.name} ({track.kind.value}, {track.direction.value})")
 
-    print("Disconnecting …")
-    await reactor.disconnect()
-    reactor.close()
-    print("Done.")
+        print("Sending hello command …")
+        try:
+            reply = await reactor.send_command("hello", {"text": "Hello from Python SDK!"})
+            print(f"[reply] {reply}")
+        except ReactorError as exc:
+            # "hello" is a placeholder — swap it for a command your model actually
+            # defines. Caught here so the connect -> command -> disconnect flow
+            # still completes cleanly when the target model has no such command.
+            print(f"[command error] {exc}")
+
+        await asyncio.sleep(5)
+    finally:
+        print("Disconnecting …")
+        await reactor.disconnect()
+        reactor.close()
+        print("Done.")
 
 
 if __name__ == "__main__":
