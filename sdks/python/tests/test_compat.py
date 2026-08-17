@@ -241,15 +241,6 @@ class TestDecorators:
 
         assert seen == [payload]
 
-    def test_on_track_receives_name_and_mid(self) -> None:
-        reactor = Reactor(model_name="m")
-        seen: list[tuple] = []
-        reactor.on_track(lambda name, mid: seen.append((name, mid)))
-
-        reactor._fire("track_received", "video", "0")
-
-        assert seen == [("video", "0")]
-
     async def test_an_async_handler_actually_runs(self) -> None:
         """`async def` handlers used to only build a coroutine and never run it —
         calling a handler plainly never awaits the result. The previous SDK's event

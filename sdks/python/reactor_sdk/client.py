@@ -341,7 +341,13 @@ class Reactor:
         return func
 
     def on_track(self, func: Callable) -> Callable:
-        """Register a handler for incoming media tracks."""
+        """Register a handler for incoming media tracks.
+
+        Fires once per named track the session declares, handing over the
+        `Track` itself — `reactor.track(name)`, already resolved — rather than
+        a bare name the handler has to look up before doing anything with it.
+        Not filtered by name: check `track.name` yourself if only one matters.
+        """
         self.on("track_received", func)
         return func
 
@@ -511,10 +517,19 @@ class Reactor:
             if r is None:
                 return
             name = name_bytes.decode() if name_bytes else ""
+            # An empty name means the transceiver could not be matched to a
+            # declared track — the same case _fire_on_track drops for the same
+            # reason: there is no `Track` to hand a handler for it.
+            if not name:
+                return
             mid = mid_bytes.decode() if mid_bytes else None
-            if name:
-                r._track_mids[name] = mid
-            r._fire_on_loop("track_received", name, mid)
+            r._track_mids[name] = mid
+            try:
+                track = r.track(name)
+            except ValueError:
+                _log.debug("track_received named a track the session does not declare: %r", name)
+                return
+            r._fire_on_loop("track_received", track)
 
         def _on_capabilities(json_bytes: bytes, _ud: Any) -> None:
             r = weak()
@@ -1029,10 +1044,22 @@ class Reactor:
         )
         return self.track(name)
 
-    def unpublish_track(self, name: str) -> int:
-        """Deactivate a sendonly track (sync). Returns 0 on success."""
+    def unpublish_track(self, name: str) -> None:
+        """Deactivate a sendonly track (sync — no network round trip, only a
+        local status check and a fire-and-forget notification).
+
+        Failure is logged, not raised: unpublish is commonly the last thing a
+        cleanup path does, often from a `finally` block, and raising there
+        would replace whatever exception was already propagating instead of
+        just adding information to it. Check the logs (`reactor_sdk` at
+        `WARNING`) if a track seems to have stayed published.
+        """
         self._require_handle()
-        return get_lib().reactor_unpublish_track(ctypes.c_void_p(self._handle), name.encode())
+        raw = self._read_string(
+            lambda lib, handle: lib.reactor_unpublish_track(handle, name.encode())
+        )
+        if raw is not None:
+            _log.warning("unpublish_track(%r) failed: %s", name, error_from_payload(raw))
 
     async def pause_track(self, name: str) -> None:
         """Pause receiving a named track."""

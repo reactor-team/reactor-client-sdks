@@ -157,20 +157,21 @@ def _load() -> ctypes.CDLL:
         ctypes.c_void_p,  # userdata
     ]
 
-    lib.reactor_unpublish_track.restype = ctypes.c_int
-    lib.reactor_unpublish_track.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-
     lib.reactor_status.restype = ctypes.c_char_p
     lib.reactor_status.argtypes = [ctypes.c_void_p]
 
     lib.reactor_session_id.restype = ctypes.c_void_p
     lib.reactor_session_id.argtypes = [ctypes.c_void_p]
 
-    # Both return heap JSON to free with reactor_free_string, hence c_void_p
-    # rather than c_char_p — ctypes converts the latter to bytes and loses the
-    # pointer needed to release it.
+    # All three return heap JSON to free with reactor_free_string, hence
+    # c_void_p rather than c_char_p — ctypes converts the latter to bytes and
+    # loses the pointer needed to release it. reactor_unpublish_track returns
+    # null on success and a heap error object on failure, the same convention.
     lib.reactor_tracks.restype = ctypes.c_void_p
     lib.reactor_tracks.argtypes = [ctypes.c_void_p]
+
+    lib.reactor_unpublish_track.restype = ctypes.c_void_p
+    lib.reactor_unpublish_track.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
 
     lib.reactor_paused_tracks.restype = ctypes.c_void_p
     lib.reactor_paused_tracks.argtypes = [ctypes.c_void_p]

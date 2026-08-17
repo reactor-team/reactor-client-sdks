@@ -14,6 +14,7 @@ drifted is silent undefined behaviour — these tests are the only place it surf
 from __future__ import annotations
 
 import ctypes
+import json
 from pathlib import Path
 
 import pytest
@@ -125,7 +126,14 @@ def test_send_command_on_a_null_handle_skips_the_completion() -> None:
 
 
 def test_unpublish_track_on_a_null_handle_reports_failure() -> None:
-    assert _ffi.get_lib().reactor_unpublish_track(None, b"video") == -1
+    lib = _ffi.get_lib()
+    ptr = lib.reactor_unpublish_track(None, b"video")
+    assert ptr is not None
+    try:
+        payload = json.loads(ctypes.cast(ptr, ctypes.c_char_p).value)
+        assert payload["code"] == "INVALID_STATE"
+    finally:
+        lib.reactor_free_string(ptr)
 
 
 def test_destroy_and_free_string_accept_null() -> None:

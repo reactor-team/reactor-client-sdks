@@ -41,6 +41,8 @@ class _FakeLib:
         self._tracks = tracks
         self._paused = paused
         self.freed: list[int] = []
+        self.unpublish_error: dict | None = None
+        self.unpublished: list[str] = []
 
     def _string(self, payload: object) -> int:
         buffer = ctypes.create_string_buffer(json.dumps(payload).encode())
@@ -52,6 +54,10 @@ class _FakeLib:
 
     def reactor_paused_tracks(self, _handle: object) -> int:
         return self._string(self._paused)
+
+    def reactor_unpublish_track(self, _handle: object, name: bytes) -> int:
+        self.unpublished.append(name.decode())
+        return 0 if self.unpublish_error is None else self._string(self.unpublish_error)
 
     def reactor_free_string(self, ptr: object) -> None:
         self.freed.append(getattr(ptr, "value", ptr))
@@ -747,6 +753,60 @@ class TestPublishTrack:
 
         assert await reactor.track("camera").publish() is reactor.track("camera")
         assert names == [b"camera"]
+
+
+class TestUnpublishTrack:
+    """Sync, and a failure is logged rather than raised — see `Reactor.
+    unpublish_track`'s docstring for why: it is commonly the last call in a
+    `finally` block, and raising there would replace whatever exception was
+    already propagating instead of adding to it."""
+
+    def test_success_is_silent(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        reactor, lib = _connected(monkeypatch)
+
+        with caplog.at_level("WARNING", logger="reactor_sdk.client"):
+            reactor.unpublish_track("camera")
+
+        assert lib.unpublished == ["camera"]
+        assert caplog.records == []
+
+    def test_track_unpublish_goes_through_the_same_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reactor, lib = _connected(monkeypatch)
+        assert reactor.track("camera").unpublish() is None
+        assert lib.unpublished == ["camera"]
+
+    def test_failure_is_a_warning_not_an_exception(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        reactor, lib = _connected(monkeypatch)
+        lib.unpublish_error = {
+            "code": "INVALID_STATE",
+            "message": "operation requires ready status, currently connecting",
+            "recoverable": False,
+            "operation": "unpublish_track",
+        }
+
+        with caplog.at_level("WARNING", logger="reactor_sdk.client"):
+            result = reactor.unpublish_track("camera")
+
+        assert result is None
+        assert len(caplog.records) == 1
+        assert "camera" in caplog.text
+        assert "INVALID_STATE" in caplog.text
+        assert "currently connecting" in caplog.text
+
+    def test_track_unpublish_failure_is_also_only_a_warning(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        reactor, lib = _connected(monkeypatch)
+        lib.unpublish_error = {"code": "INVALID_STATE", "message": "not ready"}
+
+        with caplog.at_level("WARNING", logger="reactor_sdk.client"):
+            assert reactor.track("camera").unpublish() is None
 
 
 def test_the_kind_and_direction_enums_are_strings() -> None:

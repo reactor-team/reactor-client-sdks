@@ -1119,24 +1119,46 @@ pub unsafe extern "C" fn reactor_upload_bytes(
 
 // ── Synchronous operations ────────────────────────────────────────────────────
 
-/// Deactivate a sendonly track. Returns 0 on success, -1 on failure.
+/// Deactivate a sendonly track (sync — this never touches the network, only a
+/// local status check and a fire-and-forget notification, so there is nothing
+/// here for a completion callback to wait on).
+///
+/// Returns null on success. On failure, returns a heap JSON error object — the
+/// same `{code, message, recoverable, status, operation, retry_after_ms}` shape
+/// every completion reports — which the caller must release with
+/// [`reactor_free_string`].
 ///
 /// # Safety
 ///
-/// `name` must be a NUL-terminated C string.
+/// `handle` must be null or a live handle. `name` must be a NUL-terminated C
+/// string.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_unpublish_track(
     handle: *mut ReactorHandle,
     name: *const c_char,
-) -> c_int {
+) -> *mut c_char {
     if handle.is_null() {
-        return -1;
+        return error_details_ptr(
+            &CoreError::InvalidState("no active handle".to_string()),
+            "unpublish_track",
+        );
     }
     let name = CStr::from_ptr(name).to_string_lossy();
     match (*handle).reactor.unpublish_track(&name) {
-        Ok(_) => 0,
-        Err(_) => -1,
+        Ok(_) => std::ptr::null_mut(),
+        Err(e) => error_details_ptr(&e, "unpublish_track"),
     }
+}
+
+/// Serialise a `CoreError` into the heap JSON payload every completion reports,
+/// for a synchronous caller with no completion callback to hand it to instead.
+fn error_details_ptr(err: &CoreError, operation: &str) -> *mut c_char {
+    let details = err.details(Some(operation));
+    let json =
+        serde_json::to_string(&details).unwrap_or_else(|_| fallback_error_json(&details.message));
+    CString::new(json)
+        .map(|cs| cs.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 /// Current status: `"disconnected"`, `"connecting"`, `"waiting"` or `"ready"`.
@@ -1369,10 +1391,12 @@ mod tests {
             assert!(reactor_tracks(std::ptr::null_mut()).is_null());
             assert!(reactor_paused_tracks(std::ptr::null_mut()).is_null());
 
-            assert_eq!(
-                reactor_unpublish_track(std::ptr::null_mut(), name.as_ptr()),
-                -1
-            );
+            let err_ptr = reactor_unpublish_track(std::ptr::null_mut(), name.as_ptr());
+            assert!(!err_ptr.is_null());
+            let json: serde_json::Value =
+                serde_json::from_str(CStr::from_ptr(err_ptr).to_str().unwrap()).unwrap();
+            assert_eq!(json["code"], reactor_core::error::codes::INVALID_STATE);
+            reactor_free_string(err_ptr);
 
             // Nothing to quiesce, so destroying nothing reports success.
             assert_eq!(reactor_destroy(std::ptr::null_mut()), 0);
