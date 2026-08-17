@@ -143,7 +143,9 @@ class TestDecorators:
         def handler(frame: Any) -> None:
             seen.append(frame)
 
-        reactor._fire("frame", bytes([10, 20, 30, 255]) * 4, 2, 2, 7, 8, b"tag")
+        reactor._fire_on_track(
+            "frame", b"video_out", bytes([10, 20, 30, 255]) * 4, 2, 2, 7, 8, b"tag"
+        )
 
         assert len(seen) == 1
         assert seen[0].shape == (2, 2, 3)
@@ -159,13 +161,15 @@ class TestDecorators:
         def handler(frame: Any, frame_id: int, timestamp_us: int, user_data: bytes) -> None:
             seen.append((frame.shape, frame_id, timestamp_us, user_data))
 
-        reactor._fire("frame", bytes([1, 2, 3, 255]) * 4, 2, 2, 7, 1234, b"tag")
+        reactor._fire_on_track(
+            "frame", b"video_out", bytes([1, 2, 3, 255]) * 4, 2, 2, 7, 1234, b"tag"
+        )
 
         assert seen == [((2, 2, 3), 7, 1234, b"tag")]
 
     def test_on_frame_gives_a_handler_only_what_it_asks_for(self) -> None:
         """The prefix rule: N parameters means the first N of
-        (frame, frame_id, timestamp_us, user_data)."""
+        (frame, frame_id, timestamp_us, user_data, track)."""
         reactor = Reactor(model_name="m")
         two: list[tuple] = []
         three: list[tuple] = []
@@ -178,7 +182,7 @@ class TestDecorators:
         def with_time(frame: Any, frame_id: int, timestamp_us: int) -> None:
             three.append((frame_id, timestamp_us))
 
-        reactor._fire("frame", bytes([1, 2, 3, 255]), 1, 1, 5, 99, b"x")
+        reactor._fire_on_track("frame", b"video_out", bytes([1, 2, 3, 255]), 1, 1, 5, 99, b"x")
 
         assert two == [((1, 1, 3), 5)]
         assert three == [(5, 99)]
@@ -191,10 +195,10 @@ class TestDecorators:
         def handler(*args: Any) -> None:
             seen.append(args)
 
-        reactor._fire("frame", bytes([1, 2, 3, 255]), 1, 1, 3, 4, b"z")
+        reactor._fire_on_track("frame", b"video_out", bytes([1, 2, 3, 255]), 1, 1, 3, 4, b"z")
 
-        assert len(seen[0]) == 4
-        assert seen[0][1:] == (3, 4, b"z")
+        assert len(seen[0]) == 5
+        assert seen[0][1:] == (3, 4, b"z", "video_out")
 
     def test_an_untagged_frame_reaches_a_metadata_handler_with_empty_values(self) -> None:
         """A frame with no trailer is not withheld: the handler is told there was none."""
@@ -205,7 +209,7 @@ class TestDecorators:
         def handler(_frame: Any, frame_id: int, timestamp_us: int, user_data: bytes) -> None:
             seen.append((frame_id, timestamp_us, user_data))
 
-        reactor._fire("frame", bytes([0, 0, 0, 255]), 1, 1, 0, 0, b"")
+        reactor._fire_on_track("frame", b"video_out", bytes([0, 0, 0, 255]), 1, 1, 0, 0, b"")
 
         assert seen == [(0, 0, b"")]
 
@@ -219,9 +223,54 @@ class TestDecorators:
                 seen.append(frame.shape)
 
         reactor.on_frame(Renderer().handle)
-        reactor._fire("frame", bytes([0, 0, 0, 255]), 1, 1, 0, 0, b"")
+        reactor._fire_on_track("frame", b"video_out", bytes([0, 0, 0, 255]), 1, 1, 0, 0, b"")
 
         assert seen == [(1, 1, 3)]
+
+    def test_a_handler_can_ask_which_track_the_frame_came_on(self) -> None:
+        """What this decorator could not answer before. It sees every recvonly
+        video track, so with more than one there was no way to tell them apart —
+        and the alternative, `Track.on_frame`, needs the name up front."""
+        reactor = Reactor(model_name="m")
+        seen: list[tuple] = []
+
+        @reactor.on_frame
+        def handler(
+            frame: Any, frame_id: int, timestamp_us: int, user_data: bytes, track: str
+        ) -> None:
+            seen.append((track, frame_id))
+
+        reactor._fire_on_track("frame", b"left", bytes(4), 1, 1, 1, 0, b"")
+        reactor._fire_on_track("frame", b"right", bytes(4), 1, 1, 2, 0, b"")
+
+        assert seen == [("left", 1), ("right", 2)]
+
+    def test_an_unattributable_frame_still_reaches_the_client_wide_handler(self) -> None:
+        """The FFI reports an empty name when a transceiver could not be matched to
+        a declared track. Client-wide has always meant every frame, so withholding
+        it would be a regression; the name is empty and the frame still arrives."""
+        reactor = Reactor(model_name="m")
+        seen: list[tuple] = []
+
+        @reactor.on_frame
+        def handler(frame: Any, _id: int, _ts: int, _ud: bytes, track: str) -> None:
+            seen.append((frame.shape, track))
+
+        reactor._fire_on_track("frame", b"", bytes(4), 1, 1, 0, 0, b"")
+
+        assert seen == [((1, 1, 3), "")]
+
+    def test_the_raw_event_is_unchanged(self) -> None:
+        """`on("frame", ...)` passes its arguments positionally with no arity rule to
+        absorb a new one, so the track name is deliberately not added there —
+        appending it would raise TypeError in every handler written against it."""
+        reactor = Reactor(model_name="m")
+        seen: list[tuple] = []
+        reactor.on("frame", lambda *args: seen.append(args))
+
+        reactor._fire("frame", bytes(4), 1, 1, 7, 8, b"tag")
+
+        assert seen == [(bytes(4), 1, 1, 7, 8, b"tag")]
 
     def test_an_unreadable_signature_falls_back_to_the_old_contract(self) -> None:
         """A callable inspect cannot read gets one argument, which is the shape this

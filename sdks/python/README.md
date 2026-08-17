@@ -96,6 +96,29 @@ you push into it, and a model's audio arrives at `on_frame` for you to play with
 whatever you like — nothing is captured from your microphone or played through
 your speakers on your behalf.
 
+### Which track a frame came on
+
+`reactor.on_frame` is the other way to receive video: it sees **every** recvonly
+video track, so it needs no track name — and it tells you which one each frame
+came on, as a last argument you ask for only if you want it:
+
+```python
+@reactor.on_frame
+def render(frame):
+    ...                                   # just the image, as always
+
+@reactor.on_frame
+def render(frame, frame_id, timestamp_us, user_data, track):
+    print(f"{track}: {frame.shape}")      # and which track it came on
+```
+
+A handler gets as many of `(frame, frame_id, timestamp_us, user_data, track)` as it
+declares parameters for, so adding one never disturbs a handler that did not ask.
+`track` is `""` for a frame whose transceiver could not be matched to a declared
+track. The raw `on("frame", …)` does not carry the name — its arguments are
+positional with no such rule — so use this decorator, or a track's own `on_frame`,
+when the name matters.
+
 Naming a track before `connect()` is fine: the session has not declared anything
 yet, so handlers can be registered first and the name is checked as soon as the
 declaration arrives.

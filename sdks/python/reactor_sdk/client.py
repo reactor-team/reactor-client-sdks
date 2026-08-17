@@ -157,7 +157,12 @@ _SYNTHETIC_ADM = 0
 #: What `on_frame` offers a handler, in order. A handler is given as many of these as it
 #: declares parameters for, so the historical one-argument contract keeps working while a
 #: handler that wants the metadata trailer just asks for more.
-FRAME_HANDLER_ARGUMENTS = ("frame", "frame_id", "timestamp_us", "user_data")
+FRAME_HANDLER_ARGUMENTS = ("frame", "frame_id", "timestamp_us", "user_data", "track")
+
+#: Stands for "whichever track" in the event names the handler table is keyed by, so
+#: `on_frame` can register client-wide and still be told the track. A model would
+#: have to declare a track actually named `*` to collide with it.
+ANY_TRACK = "*"
 
 #: What a registered handler returns: `None` from a plain function, or a coroutine from
 #: an `async def` one — `_fire` inspects this to decide whether to schedule it.
@@ -309,8 +314,13 @@ class Reactor:
     def on_frame(self, func: Callable) -> Callable:
         """Register a handler for decoded video frames.
 
-        The handler is given as many of ``(frame, frame_id, timestamp_us, user_data)``
-        as it declares parameters for, so it can ask for only what it uses::
+        Every recvonly video track, which is what makes this different from
+        :meth:`Track.on_frame` — register here when you want the video without
+        having to know what the model calls the track it comes on.
+
+        The handler is given as many of
+        ``(frame, frame_id, timestamp_us, user_data, track)`` as it declares
+        parameters for, so it can ask for only what it uses::
 
             @reactor.on_frame
             def render(frame): ...                                  # just the image
@@ -318,17 +328,28 @@ class Reactor:
             @reactor.on_frame
             def render(frame, frame_id, timestamp_us, user_data): ...  # and the trailer
 
+            @reactor.on_frame
+            def render(frame, frame_id, timestamp_us, user_data, track): ...  # and which
+
         ``frame`` is an RGB ``numpy`` array of shape ``(height, width, 3)``, ready for
         anything that renders images — width and height are its shape, which is why they
-        are not passed separately. The other three are the metadata trailer, and are
-        ``0``, ``0`` and ``b""`` on a frame that carries none.
+        are not passed separately. The middle three are the metadata trailer, and are
+        ``0``, ``0`` and ``b""`` on a frame that carries none. ``track`` is the declared
+        name of the track the frame arrived on, and ``""`` for a frame whose
+        transceiver could not be matched to one.
 
-        One argument is what this decorator has always given, so existing handlers are
-        unaffected; a handler taking ``*args`` gets all four.
+        `track` is last for the same reason the trailer was: the arity rule means a
+        handler that does not ask for it cannot be affected by its arrival. One
+        argument is what this decorator has always given, and still is; a handler
+        taking ``*args`` gets all five.
 
         ``on("frame", ...)`` remains the other shape of the same event, handing over the
         untouched BGRA bytes with the dimensions and the trailer. Prefer it when the
-        conversion is not wanted — for forwarding the bytes somewhere, say.
+        conversion is not wanted — for forwarding the bytes somewhere, say. It does
+        not carry the track name: its arguments are passed positionally with no arity
+        rule to absorb a new one, so adding it there would break every handler
+        written against it. Use this decorator, or a track's own `on_frame`, when the
+        name matters.
 
         Requires numpy, which is not a dependency of this package: installing it is the
         price of the conversion.
@@ -342,6 +363,7 @@ class Reactor:
             frame_id: int,
             timestamp_us: int,
             user_data: bytes,
+            track: str,
         ) -> _HandlerResult:
             # The array is built first because it is what every handler wants; the
             # conversion is the cost of this decorator either way.
@@ -350,12 +372,13 @@ class Reactor:
                 frame_id,
                 timestamp_us,
                 user_data,
+                track,
             )
             # Returned rather than discarded: `func` may be `async def`, in which case
             # this is a coroutine that `_fire` needs to see in order to schedule it.
             return func(*arguments[:take])
 
-        self.on("frame", handler)
+        self.on(f"frame@{ANY_TRACK}", handler)
         return func
 
     def on_status(self, arg: Callable | str | Sequence[str] | None = None) -> Callable:
@@ -477,18 +500,24 @@ class Reactor:
             _log.error("error in %r async handler %r", event, handler, exc_info=exc)
 
     def _fire_on_track(self, kind: str, track: bytes | None, *args: Any) -> None:
-        """Deliver a media frame to the handlers registered on its own track.
+        """Deliver a media frame to the handlers that want to know its track.
 
-        The track name arrives from the FFI, which reports it empty when the
-        transceiver could not be matched to a declared track — there is nothing to
-        route such a frame to, and the client-wide event has already had it.
+        Two audiences. Handlers registered on one track get only that track's
+        frames; handlers registered client-wide through `on_frame` get every
+        frame, with the name appended so they can tell them apart.
+
+        The FFI reports the name empty when the transceiver could not be matched
+        to a declared track. There is no track to route such a frame to, but the
+        client-wide handlers still get it — every frame is what that contract has
+        always meant — with `""` for the name.
 
         Runs on the media delivery thread, like `_fire`, and for the same reason:
         blocking here is what applies backpressure.
         """
-        if not track:
-            return
-        self._fire(f"{kind}@{track.decode()}", *args)
+        name = track.decode() if track else ""
+        if name:
+            self._fire(f"{kind}@{name}", *args)
+        self._fire(f"{kind}@{ANY_TRACK}", *args, name)
 
     def _fire_on_loop(self, event: str, *args: Any) -> None:
         """Hand `event` to the loop thread, and run the handlers there.
