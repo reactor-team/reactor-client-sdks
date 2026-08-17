@@ -253,14 +253,22 @@ void reactor_connect(
     void                *userdata
 );
 
-/* Gracefully disconnect.  Session is NOT terminated (can reconnect). */
+/*
+ * Disconnect and end the session server-side.  Not recoverable -- call
+ * reactor_reconnect instead of reactor_disconnect + reactor_connect to keep it.
+ */
 void reactor_disconnect(
     ReactorHandle       *handle,
     reactor_completion_fn completion,
     void                *userdata
 );
 
-/* Reconnect using the existing session (after a transient failure). */
+/*
+ * Reconnect using the existing session -- after a transient failure, or from
+ * "ready" to deliberately cycle the connection.  Tears down the live connection
+ * first if there is one, without ending the session server-side.  Fails if there
+ * is no session to reconnect to.
+ */
 void reactor_reconnect(
     ReactorHandle       *handle,
     reactor_completion_fn completion,

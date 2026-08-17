@@ -786,7 +786,12 @@ pub unsafe extern "C" fn reactor_disconnect(
     );
 }
 
-/// Reconnect using the existing session, after a transient failure.
+/// Reconnect using the existing session — after a transient failure, or from
+/// `ready` to deliberately cycle the connection. Tears down the live connection
+/// first if there is one, without ending the session server-side.
+///
+/// Fails if there is no session to reconnect to: nothing has connected yet, or a
+/// previous `reactor_disconnect` already ended it.
 ///
 /// # Safety
 ///

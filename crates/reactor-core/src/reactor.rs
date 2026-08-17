@@ -289,12 +289,22 @@ impl Reactor {
         Ok(())
     }
 
+    /// Reconnect using the existing session — tearing down the live connection
+    /// first if there is one, without terminating the session server-side (the
+    /// whole point of calling this instead of `disconnect()` then `connect()`).
+    ///
+    /// Errors if there is no session to reconnect to at all — nothing has ever
+    /// connected, or a previous `disconnect()` already terminated it.
     pub async fn reconnect(&self) -> Result<(), CoreError> {
+        let currently_ready = self.state.lock().unwrap().status == ReactorStatus::Ready;
+        if currently_ready {
+            // recoverable=true: keep the session this reconnect is about to reuse.
+            // Unlike disconnect(), reconnect() is never the caller asking to end it.
+            self.disconnect(true).await?;
+        }
+
         let session_id = {
             let mut state = self.state.lock().unwrap();
-            if state.status == ReactorStatus::Ready {
-                return Err(CoreError::InvalidState("reconnect() while ready".into()));
-            }
             let sid = state
                 .session_id
                 .clone()
@@ -332,6 +342,11 @@ impl Reactor {
         }
     }
 
+    /// Tear down the connection. `recoverable` is an internal knob — every public
+    /// entry point but `reconnect()` calls this with `false`: a caller-initiated
+    /// `disconnect()` terminates the session server-side (when this client created
+    /// it; adopted sessions are the creator's to terminate, not this client's), no
+    /// exceptions. `reconnect()` is the one caller that wants the session kept.
     pub async fn disconnect(&self, recoverable: bool) -> Result<(), CoreError> {
         self.teardown(recoverable, false).await;
         Ok(())
@@ -1140,7 +1155,7 @@ mod tests {
 
     use futures::StreamExt;
 
-    use crate::http::{AuthProvider, HttpClient, HttpRequest, HttpResponse};
+    use crate::http::{AuthProvider, HttpClient, HttpRequest, HttpResponse, Method};
     use crate::peer::{PeerTransport, PreparedOffer};
     use crate::protocol::session::TrackCapability;
     use crate::protocol::webrtc::IceServer;
@@ -1179,6 +1194,49 @@ mod tests {
         async fn request(&self, _req: HttpRequest) -> Result<HttpResponse, CoreError> {
             std::future::pending::<()>().await;
             unreachable!()
+        }
+    }
+
+    /// Records every request it sees, answers a DELETE (session termination) with
+    /// success, and fails anything else fast — a reconnect's later steps (ICE
+    /// servers, signaling) do not need to actually succeed for these tests, only
+    /// to not hang, so whether `terminate_session` was reached is observable
+    /// without driving a whole connection to `Ready`.
+    #[derive(Default)]
+    struct RecordingHttp {
+        requests: std::sync::Mutex<Vec<(Method, String)>>,
+    }
+
+    impl RecordingHttp {
+        fn delete_count(&self) -> usize {
+            self.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(m, _)| *m == Method::Delete)
+                .count()
+        }
+
+        fn saw_any_request(&self) -> bool {
+            !self.requests.lock().unwrap().is_empty()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HttpClient for RecordingHttp {
+        async fn request(&self, req: HttpRequest) -> Result<HttpResponse, CoreError> {
+            self.requests
+                .lock()
+                .unwrap()
+                .push((req.method, req.url.clone()));
+            match req.method {
+                Method::Delete => Ok(HttpResponse {
+                    status: 204,
+                    headers: vec![],
+                    body: vec![],
+                }),
+                _ => Err(CoreError::Http("RecordingHttp: no route".into())),
+            }
         }
     }
 
@@ -1234,6 +1292,18 @@ mod tests {
                 peer: Arc::new(NullPeer) as SharedPeer,
             },
             opts,
+        ))
+    }
+
+    fn make_reactor_with_http(http: Arc<RecordingHttp>) -> Arc<Reactor> {
+        Arc::new(Reactor::new(
+            ReactorDeps {
+                http: http as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: Arc::new(NullPeer) as SharedPeer,
+            },
+            ReactorOptions::new("http://localhost", "test-model"),
         ))
     }
 
@@ -1303,6 +1373,79 @@ mod tests {
         let reactor = make_reactor();
         reactor.state.lock().unwrap().status = ReactorStatus::Ready;
         let result = reactor.connect(ConnectOptions::default()).await;
+        assert!(matches!(result, Err(CoreError::InvalidState(_))));
+    }
+
+    // ── disconnect() / reconnect() session lifecycle ────────────────────────────
+
+    /// A plain disconnect() ends the session server-side when this client created
+    /// it — not recoverable, unlike reconnect()'s internal teardown.
+    #[tokio::test]
+    async fn disconnect_terminates_a_session_this_client_created() {
+        let http = Arc::new(RecordingHttp::default());
+        let reactor = make_reactor_with_http(http.clone());
+        {
+            let mut state = reactor.state.lock().unwrap();
+            state.session_id = Some("s1".to_string());
+            state.created_session = true;
+        }
+
+        reactor.disconnect(false).await.unwrap();
+
+        assert_eq!(http.delete_count(), 1);
+    }
+
+    /// An adopted session (connect(session_id=...)) is the creator's to
+    /// terminate, not this client's — disconnect() must not attempt to.
+    #[tokio::test]
+    async fn disconnect_does_not_terminate_an_adopted_session() {
+        let http = Arc::new(RecordingHttp::default());
+        let reactor = make_reactor_with_http(http.clone());
+        {
+            let mut state = reactor.state.lock().unwrap();
+            state.session_id = Some("s1".to_string());
+            state.created_session = false;
+        }
+
+        reactor.disconnect(false).await.unwrap();
+
+        assert_eq!(http.delete_count(), 0);
+    }
+
+    /// reconnect() from `ready` tears down the live connection first — but must
+    /// not end the session server-side in the process, or there would be nothing
+    /// left to reconnect to.
+    #[tokio::test]
+    async fn reconnect_from_ready_does_not_terminate_the_session() {
+        let http = Arc::new(RecordingHttp::default());
+        let reactor = make_reactor_with_http(http.clone());
+        {
+            let mut state = reactor.state.lock().unwrap();
+            state.session_id = Some("s1".to_string());
+            state.created_session = true;
+            state.status = ReactorStatus::Ready;
+        }
+
+        // establish_transport can't actually succeed against RecordingHttp (no ICE
+        // servers route) — irrelevant here, the assertion is about what happened
+        // before that, not whether the reconnect attempt itself completes. It does
+        // have to actually be reached, though: the old "reject while ready" guard
+        // would also leave delete_count() at 0, for the wrong reason.
+        let _ = reactor.reconnect().await;
+
+        assert_eq!(http.delete_count(), 0);
+        assert!(
+            http.saw_any_request(),
+            "reconnect() must tear down and proceed past `ready`, not reject outright"
+        );
+    }
+
+    /// reconnect() with no session at all — never connected, or a previous
+    /// disconnect() already ended it — has nothing to reconnect to.
+    #[tokio::test]
+    async fn reconnect_without_a_session_errors() {
+        let reactor = make_reactor();
+        let result = reactor.reconnect().await;
         assert!(matches!(result, Err(CoreError::InvalidState(_))));
     }
 

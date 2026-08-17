@@ -793,14 +793,23 @@ class Reactor:
         )
 
     async def reconnect(self) -> None:
-        """Reconnect to the current session after a transient failure."""
+        """Reconnect using the same session — after a transient failure, or from
+        `ready` to deliberately cycle the connection.
+
+        Tears down the live connection first if there is one, without ending the
+        session server-side — the whole point of calling this instead of
+        `disconnect()` then `connect()`. Raises `InvalidStateError` if there is no
+        session to reconnect to: nothing has connected yet, or a previous
+        `disconnect()` already ended it.
+        """
         self._require_handle()
         handle = self._handle
         lib = get_lib()
         await self._async_op(lambda fn: lib.reactor_reconnect(ctypes.c_void_p(handle), fn, None))
 
     async def disconnect(self) -> None:
-        """Gracefully disconnect (session is preserved for reconnect)."""
+        """Disconnect and end the session server-side. Not recoverable — call
+        `reconnect()` instead of `disconnect()` + `connect()` to keep it."""
         if self._handle is None:
             return
         handle = self._handle
