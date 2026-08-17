@@ -557,6 +557,23 @@ class TestExitHook:
         reactor = Reactor("https://api.reactor.inc", "m")
         assert reactor not in _LIVE_CLIENTS
 
+    def test_a_fabricated_handle_is_never_handed_to_the_native_destroy(self) -> None:
+        """The scenario the session guard in `conftest.py` exists for.
+
+        Half this suite assigns `_handle` directly to make a client look
+        connected, and that integer is indistinguishable from a live pointer by
+        the time `__del__` runs. Without the guard this is a segmentation fault,
+        not a failure — so it is worth one deterministic place that crashes if the
+        guard is ever removed, rather than a random later test taking the whole
+        run down with it.
+        """
+        import gc
+
+        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor._handle = 1234
+        del reactor
+        gc.collect()
+
     def test_the_exit_hook_tolerates_a_failing_close(self) -> None:
         """It runs during shutdown, where raising would be noise at best."""
         from reactor_sdk.client import _LIVE_CLIENTS, _close_live_clients
