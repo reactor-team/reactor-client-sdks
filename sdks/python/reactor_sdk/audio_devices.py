@@ -82,11 +82,14 @@ class Speaker:
         with Speaker(reactor.track("speech")):
             await asyncio.sleep(30)
 
-    Without one, it is a sink you feed yourself — from ``on("audio", …)``, or from
-    anywhere else the PCM comes from::
+    Without one, it is a sink you feed yourself — from a track's raw handler, or
+    from anywhere else the PCM comes from::
 
         speaker = Speaker().start()
-        reactor.on("audio", lambda pcm, _n, rate, ch: speaker.submit(pcm, rate, ch))
+
+        @reactor.track("speech").on_raw_frame
+        def play(pcm, _samples, rate, channels):
+            speaker.submit(pcm, rate, channels)
 
     The device is opened on the first frame, not on `start`, because the first
     frame is what says at which rate and channel count to open it. The rest is a

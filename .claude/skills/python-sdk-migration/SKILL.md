@@ -74,19 +74,19 @@ This is the largest conceptual change and the reason nothing here is a rename.
 
 | Old (`py-sdk`) | New (this repo) |
 |---|---|
-| `publish_track(name, track: MediaStreamTrack)` | `publish_track(name) -> Track`, then push raw frames into it: `push_video_frame(name, bgra_bytes, w, h)` / `push_audio_frame(name, pcm_bytes, samples, ...)`, or the object form `track.push_frame(data)` — see [`Track`](../../sdks/python/reactor_sdk/track.py). You build/capture the media yourself (OpenCV, a file, a synthesizer); there is no `aiortc` track to hand over. |
-| `get_remote_tracks() -> dict[str, MediaStreamTrack]` | Nothing hands you a media object. Decoded frames arrive via `on("frame", ...)` / `on("audio", ...)` (raw, client-wide), or a `Track`'s `on_frame()`/`on_raw_frame()` (scoped to one track — see the next two rows; there is no client-wide `reactor.on_frame` anymore). |
+| `publish_track(name, track: MediaStreamTrack)` | `publish_track(name) -> Track`, then push frames into the track itself: `track.push_frame(data)` for both kinds — see [`Track`](../../../sdks/python/reactor_sdk/track.py). The name-based `push_video_frame`/`push_audio_frame` are gone; pushing before `publish()` now raises `InvalidStateError` instead of going nowhere. You build/capture the media yourself (OpenCV, a file, a synthesizer); there is no `aiortc` track to hand over. |
+| `get_remote_tracks() -> dict[str, MediaStreamTrack]` | Nothing hands you a media object. Decoded frames arrive on the `Track`: `on_frame()` for numpy arrays, `on_raw_frame()` for the bytes — see the next two rows. There is no client-wide delivery of any kind; `on("frame", ...)` / `on("audio", ...)` are refused at registration, with the per-track replacement in the error. |
 | `set_frame_callback(callback)` | `track.on_frame` (decorator, per-track) — found via `reactor.track(name)` or `reactor.tracks.with_kind(...).with_direction(...).one()`. There is no client-wide equivalent — register per-track instead. |
-| `@reactor.on_track(name)` — a decorator **factory**, pre-filtered by name | `@reactor.on_track` — a **bare** decorator, fires with the resolved [`Track`](../../sdks/python/reactor_sdk/track.py) itself (not a bare name) for every track; filter on `track.name` yourself, or use `reactor.track(name).on_frame` to scope to one track without filtering in the handler body. `track.mid` carries the WebRTC media stream id the old `mid` argument did. |
-| `@reactor.on_frame` — client-wide, video only | **Removed.** Register on a `Track` instead: `reactor.track(name).on_frame` by name, or `reactor.tracks.with_direction("recvonly").with_kind("video").one().on_frame` when you don't want to hardcode the name. `reactor.tracks` is a `TrackList` — a `list[Track]` with `with_kind()`/`with_direction()` filters and `.one()`. The raw `on("frame", ...)` / `on("audio", ...)` events are unaffected. |
-| Real microphone/speaker via the platform audio device module | Every `Reactor` still forces synthetic-only audio at the transport level — no constructor flag opts back into a real device there. But `reactor_sdk.audio_devices.Speaker`/`Microphone` (added post-1.0.0) wrap a `sounddevice` stream around a `Track` for you: `Speaker(reactor.track("output"))` plays a `recvonly` track through real speakers, `Microphone(await reactor.track("mic").publish())` captures the real mic into a `sendonly` track. Context managers, not automatic — construct and enter them explicitly, they don't come with the session. |
+| `@reactor.on_track(name)` — a decorator **factory**, pre-filtered by name | `@reactor.on_track` — a **bare** decorator, fires with the resolved [`Track`](../../../sdks/python/reactor_sdk/track.py) itself (not a bare name) for every track; filter on `track.name` yourself, or use `reactor.track(name).on_frame` to scope to one track without filtering in the handler body. `track.mid` carries the WebRTC media stream id the old `mid` argument did. |
+| `@reactor.on_frame` — client-wide, video only | **Removed.** Register on a `Track` instead: `reactor.track(name).on_frame` by name, or `reactor.tracks.with_direction("recvonly").with_kind("video").one().on_frame` when you don't want to hardcode the name. `reactor.tracks` is a `TrackList` — a `list[Track]` with `with_kind()`/`with_direction()` filters and `.one()`. The raw client-wide `on("frame", ...)` / `on("audio", ...)` events are gone too: use `on_raw_frame()`, which takes the same arguments they did. |
+| Real microphone/speaker via the platform audio device module | Every `Reactor` still forces synthetic-only audio at the transport level — no constructor flag opts back into a real device there. But `reactor_sdk.audio_devices.Speaker`/`Microphone` (added post-1.0.0) wrap a `sounddevice` stream around a `Track` for you: `Speaker(reactor.track("output"))` plays a `recvonly` track through real speakers, `Microphone(await reactor.track("mic").publish())` captures the real mic into a `sendonly` track — `publish()` hands the track back, and pushing into one that was never published now raises `InvalidStateError`. Context managers, not automatic — construct and enter them explicitly, they don't come with the session. |
 
 ### Recording: no more `RecordingClient`
 
 | Old | New |
 |---|---|
 | `reactor.recording` returns a separate `RecordingClient` with its own `request_clip()`, `request_recording()`, `download_clip_as_file()`, `close()` | `request_clip(duration_seconds)` / `request_recording()` are directly on `Reactor`, returning a `Clip`. No separate client object, no `.close()` to manage. |
-| `download_clip_as_file(...)` (on `Reactor` or `RecordingClient`) | [`download_clip(clip, path=None)`](../../sdks/python/reactor_sdk/_recording.py) (module-level, exported from `reactor_sdk`) or, skipping `request_clip()`/`request_recording()` entirely, [`reactor.download_clip(seconds, path=None)`](../../sdks/python/reactor_sdk/client.py) / `reactor.download_recording(path=None)`. Given `path` it streams straight there and returns `None`; without one it returns the assembled bytes. Interleaved MPEG-TS, not the old fMP4 — playable as-is by most players, remux with `ffmpeg -c copy` if that container is specifically needed. See [`examples/record.py`](../../sdks/python/examples/record.py) (`--simple` flag for the one-call form) or the public docs' [Recordings](https://docs.reactor.inc/concepts/recordings) page. |
+| `download_clip_as_file(...)` (on `Reactor` or `RecordingClient`) | [`download_clip(clip, path=None)`](../../../sdks/python/reactor_sdk/_recording.py) (module-level, exported from `reactor_sdk`) or, skipping `request_clip()`/`request_recording()` entirely, [`reactor.download_clip(seconds, path=None)`](../../../sdks/python/reactor_sdk/client.py) / `reactor.download_recording(path=None)`. Given `path` it streams straight there and returns `None`; without one it returns the assembled bytes. Interleaved MPEG-TS, not the old fMP4 — playable as-is by most players, remux with `ffmpeg -c copy` if that container is specifically needed. See [`examples/record.py`](../../../sdks/python/examples/record.py) (`--simple` flag for the one-call form) or the public docs' [Recordings](https://docs.reactor.inc/concepts/recordings) page. |
 
 ### Errors: same two class names, different meaning — read this even if the names match
 
@@ -94,7 +94,7 @@ This is the largest conceptual change and the reason nothing here is a rename.
 |---|---|
 | One `ReactorError` dataclass with `code`, `message` as the `on_error` payload; `get_last_error()` polls the last one | `ReactorError` is still the `on_error` payload — and is now also the exception base every failed call raises. Fields are `code, message, timestamp_ms, recoverable, status, operation, retry_after_ms` — no polling method, and no `component`. |
 | `ConflictError(Exception)`, `VersionMismatchError(Exception)` — plain exceptions, old SDK's own session/version-conflict signaling | `ConflictError`, `VersionMismatchError` — **real, current classes**, subclasses of `ReactorError` with `code`/`message`/`recoverable`/`status`/`operation`/`retry_after_ms`. Same names, unrelated implementation. **Don't assume old call sites that catch these by name are still correct** — check what they actually expect on the exception object. |
-| One untyped failure path in practice | 16 typed subclasses of `ReactorError` (`UnauthorizedError`, `NotFoundError`, `RateLimitedError`, `InvalidStateError`, `DisconnectedError`, and more) — catch the specific one you can act on, or `ReactorError` broadly. Full list in [`errors.py`](../../sdks/python/reactor_sdk/errors.py). |
+| One untyped failure path in practice | 16 typed subclasses of `ReactorError` (`UnauthorizedError`, `NotFoundError`, `RateLimitedError`, `InvalidStateError`, `DisconnectedError`, and more) — catch the specific one you can act on, or `ReactorError` broadly. Full list in [`errors.py`](../../../sdks/python/reactor_sdk/errors.py). |
 | `ReactorState`, `get_state()` | Doesn't exist. Use `reactor.status` (`ReactorStatus` enum) for connection state; there is no separate "state" object. |
 | `Capabilities`, `get_capabilities()` | Doesn't exist as a public type. Capabilities drive `reactor.tracks` / `reactor.track(name)` internally; there's no direct accessor for the raw capabilities payload from Python. |
 | `get_session_info()` | Doesn't exist. Use `reactor.session_id`. |
@@ -103,14 +103,14 @@ This is the largest conceptual change and the reason nothing here is a rename.
 
 | Old | New |
 |---|---|
-| `disconnect(recoverable: bool = False)` | `disconnect()` — no parameter, **always** terminates the session server-side, same as the old default (`recoverable=False`). There is no way to make it preserve the session instead. If old code called `disconnect(True)` expecting the session to survive for a later resume, call [`reconnect()`](../../sdks/python/reactor_sdk/client.py) directly now instead of `disconnect()` + `connect()` — it tears the live connection down itself without ending the session, and works from any status including `ready`, not only after a drop. |
+| `disconnect(recoverable: bool = False)` | `disconnect()` — no parameter, **always** terminates the session server-side, same as the old default (`recoverable=False`). There is no way to make it preserve the session instead. If old code called `disconnect(True)` expecting the session to survive for a later resume, call [`reconnect()`](../../../sdks/python/reactor_sdk/client.py) directly now instead of `disconnect()` + `connect()` — it tears the live connection down itself without ending the session, and works from any status including `ready`, not only after a drop. |
 | `unpublish_track(name) -> None`, async | `unpublish_track(name) -> None`, **sync**. Drop the `await`. A failure is logged (`reactor_sdk` at `WARNING`), not raised — unpublish is commonly the last call in a `finally` block, and this deliberately doesn't interrupt it. (A 1.0.0-adjacent build had this returning `0`/`-1` instead of logging; if the installed package still does, it predates that fix.) |
-| `connect(*, session_id=None, connection_id=None, auto_resume_tracks=True)` | `connect(*, session_id=None, connection_id=None)` — `connection_id` is back (added post-1.0.0, closing a rewrite gap; same idea as the old parameter — adopt a connection slot a backend already registered for the session). `auto_resume_tracks` stays gone: every output track always starts subscribed; call `pause_track(name)` right after `connect()` for the ones you don't want yet. |
-| `fetch_jwt_token(...)` | `fetch_jwt(api_key, api_url=DEFAULT_API_URL, *, models=None, max_sessions=None, expires_after=None) -> str` — renamed; `api_url` is optional, same production default `Reactor()` itself uses. It is synchronous; wrap it in `asyncio.to_thread()` from async code. |
+| `connect(*, session_id=None, connection_id=None, auto_resume_tracks=True)` | `connect(*, session_id=None, connection_id=None)` — `connection_id` is back (added post-1.0.0, closing a rewrite gap; same idea as the old parameter — adopt a connection slot a backend already registered for the session). `auto_resume_tracks` stays gone: every output track always starts subscribed; call `reactor.track(name).pause()` right after `connect()` for the ones you don't want yet. |
+| `fetch_jwt_token(...)` | `fetch_jwt(api_key, api_url=DEFAULT_API_URL, *, models=None, max_sessions=None, expires_after=None) -> str` — renamed; `api_url` is optional, same production default `Reactor()` itself uses. It is synchronous; wrap it in `asyncio.to_thread()` from async code. It raises `AuthError`, which is a `RuntimeError` and **not** a `ReactorError` — so does `connect()` on a client built with `api_key`, since it mints the token itself. A migrated `except ReactorError` around `connect()` does not cover a refused key. |
 | `on(event: ReactorEvent, handler)` | `on(event: str, handler)` — `ReactorEvent` doesn't exist; event names are plain strings (`"status_changed"`, not `"statusChanged"`). |
 | `on_status(func)` / `on_status(ReactorStatus.READY)` / `on_status([READY, WAITING])` | Same three forms, same behavior — this one carried over unchanged. |
 | `send_command(command, data)` — fire-and-forget, reply arrives later as a `message` event | `await send_command(command, data) -> dict | None` — **awaits and returns the correlated reply**. To fire without waiting, `asyncio.create_task(reactor.send_command(...))`. |
-| `upload_file(...)` requiring a fully `READY` session | Same requirement, unchanged — raises `InvalidStateError` before `ready`. (A 1.0.0-adjacent build relaxed this to only needing an active session, before the WebRTC handshake finished; fixed back to match `request_clip()`/`pause_track()`'s own guard before this skill was last verified, below.) |
+| `upload_file(...)` requiring a fully `READY` session | Same requirement, unchanged — raises `InvalidStateError` before `ready`. (A 1.0.0-adjacent build relaxed this to only needing an active session, before the WebRTC handshake finished; fixed back to match `request_clip()`/`Track.pause()`'s own guard before this skill was last verified, below.) |
 
 ---
 
@@ -137,7 +137,7 @@ This is the largest conceptual change and the reason nothing here is a rename.
 - **`disconnect()` always ends the session — there is no recoverable option.** If the old code
   called `disconnect(True)` (or relied on the default `False` terminating and expected
   `disconnect()` alone to preserve it, having read a docs page written before this was fixed),
-  neither survives the port: call [`reconnect()`](../../sdks/python/reactor_sdk/client.py)
+  neither survives the port: call [`reconnect()`](../../../sdks/python/reactor_sdk/client.py)
   directly instead of `disconnect()` + `connect()` to keep the session and resume it — it works
   from `ready` too, not only after a drop, and tears the live connection down itself.
 - **`ConflictError`/`VersionMismatchError` name collisions** (above) — a `except
@@ -153,7 +153,7 @@ This is the largest conceptual change and the reason nothing here is a rename.
    symbol name over trying to remember where they're used.
 3. For anything touching media (`MediaStreamTrack`, `publish_track`, `get_remote_tracks`,
    frame callbacks), expect to restructure, not just rename — read the "Media" section above
-   and the current [`Track`](../../sdks/python/reactor_sdk/track.py) docstrings.
+   and the current [`Track`](../../../sdks/python/reactor_sdk/track.py) docstrings.
 4. Search for bare `except ConflictError` / `except VersionMismatchError` and re-verify what
    condition they're meant to catch.
 5. Wrap connected lifetimes that call `publish_track()`/`track.publish()` in
@@ -163,13 +163,13 @@ This is the largest conceptual change and the reason nothing here is a rename.
 8. Pin `reactor-sdk>=1.0` explicitly in the migrated project's dependency file — mid-1.0
    transition, a loose pin can silently resolve back to a `0.8.x` old-generation wheel on a
    platform with no matching 1.0 wheel (musl, very old glibc, 32-bit, Windows on ARM). See the
-   [SDK README](../../sdks/python/README.md#supported-platforms).
+   [SDK README](../../../sdks/python/README.md#supported-platforms).
 
 ## Reference
 
-- Current API: [`reactor_sdk/client.py`](../../sdks/python/reactor_sdk/client.py),
-  [`track.py`](../../sdks/python/reactor_sdk/track.py),
-  [`errors.py`](../../sdks/python/reactor_sdk/errors.py).
+- Current API: [`reactor_sdk/client.py`](../../../sdks/python/reactor_sdk/client.py),
+  [`track.py`](../../../sdks/python/reactor_sdk/track.py),
+  [`errors.py`](../../../sdks/python/reactor_sdk/errors.py).
 - Public docs: [Python SDK reference](https://docs.reactor.inc/sdk-reference/python/reactor),
   [`Track`](https://docs.reactor.inc/sdk-reference/python/track),
   [changelog](https://docs.reactor.inc/changelog/overview).

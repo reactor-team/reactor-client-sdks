@@ -13,7 +13,7 @@ import weakref
 from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, BinaryIO, overload
+from typing import Any, BinaryIO, ClassVar, overload
 
 from ._auth import DEFAULT_API_URL, fetch_jwt
 from ._ffi import (
@@ -116,8 +116,8 @@ atexit.register(_close_live_clients)
 #: `reactor_create_with_adm` documents as "no capture device, no playout".
 #:
 #: Nothing here opens a microphone or a speaker. A sendonly audio track carries
-#: only the PCM the caller pushes into it, and a model's audio arrives at
-#: `on("audio", ...)` or a track's `on_frame` for the caller to play.
+#: only the PCM the caller pushes into it, and a model's audio arrives at that
+#: track's `on_frame` for the caller to play.
 #:
 #: The alternative — the platform module, which captures and plays through the
 #: real devices — was reachable through an `adm_mode` argument and is not any
@@ -253,8 +253,29 @@ class Reactor:
     # Event registration
     # ------------------------------------------------------------------
 
+    #: Event -> track kind, for the two client-wide media events that no longer
+    #: exist. Media is delivered per track, so these are refused at registration:
+    #: accepting a handler that can never fire is the silent failure the `Track`
+    #: object exists to end, and it would be one nobody could find.
+    _MEDIA_EVENTS: ClassVar[dict[str, str]] = {"frame": "video", "audio": "audio"}
+
     def on(self, event: str, handler: Callable) -> None:
-        """Register a handler for an event name."""
+        """Register a handler for an event name.
+
+        Media is not among them: it is delivered per track, so it is registered on
+        the track — see `Track.on_frame` and `Track.on_raw_frame`.
+        """
+        kind = self._MEDIA_EVENTS.get(event)
+        if kind is not None:
+            raise ValueError(
+                f"on({event!r}) does not deliver anything: media is per track, and a "
+                f"single handler fed every recvonly {kind} track at once cannot tell "
+                f"them apart. Register on the track instead — "
+                f"reactor.track(name).on_frame for decoded frames, .on_raw_frame for "
+                f"the same bytes with the same arguments. To reach the track without "
+                f"naming it: "
+                f'reactor.tracks.with_direction("recvonly").with_kind("{kind}").one().'
+            )
         self._handlers.setdefault(event, []).append(handler)
 
     # ------------------------------------------------------------------
@@ -392,13 +413,16 @@ class Reactor:
         """Deliver a media frame to the handlers registered on its own track.
 
         The track name arrives from the FFI, which reports it empty when the
-        transceiver could not be matched to a declared track — there is nothing to
-        route such a frame to, and the client-wide event has already had it.
+        transceiver could not be matched to a declared track. Such a frame has
+        nowhere to go — there is no client-wide event to fall back to any more — so
+        it is dropped, and said out loud at debug level rather than silently. Seeing
+        these means the session negotiated a track this SDK cannot name.
 
         Runs on the media delivery thread, like `_fire`, and for the same reason:
         blocking here is what applies backpressure.
         """
         if not track:
+            _log.debug("a %s frame arrived with no track name; dropping it", kind)
             return
         self._fire(f"{kind}@{track.decode()}", *args)
 
@@ -453,6 +477,15 @@ class Reactor:
             if r is None:
                 return
             status = status_bytes.decode() if status_bytes else "disconnected"
+            if status != ReactorStatus.READY:
+                # Leaving ready ends every publish that was in force. A reconnect
+                # resumes recvonly tracks and stops there, so a sendonly track that
+                # was published before the drop is not published after it, and the
+                # far end never hears about the frames pushed into it. Forgetting
+                # here is what turns that into publish() again, rather than a track
+                # that claims to be live and sends into nothing.
+                for track in r._tracks.values():
+                    track._published = False
             r._fire_on_loop("status_changed", status)
 
         def _on_error(json_bytes: bytes, _ud: Any) -> None:
@@ -564,9 +597,6 @@ class Reactor:
                 else b""
             )
             pixels = bytes(frame)
-            # The client-wide event first, unchanged: it predates per-track delivery
-            # and every handler registered on it expects every frame.
-            r._fire("frame", pixels, width, height, frame_id, timestamp_us, ud)
             r._fire_on_track(
                 "frame", track_bytes, pixels, width, height, frame_id, timestamp_us, ud
             )
@@ -588,7 +618,6 @@ class Reactor:
                 return
             arr = (ctypes.c_int16 * num_samples).from_address(data_ptr)
             pcm = bytes(arr)
-            r._fire("audio", pcm, num_samples, sample_rate, channels)
             r._fire_on_track("audio", track_bytes, pcm, num_samples, sample_rate, channels)
 
         # Wrap with ctypes CFUNCTYPE
@@ -785,6 +814,16 @@ class Reactor:
         `disconnect()` then `connect()`. Raises `InvalidStateError` if there is no
         session to reconnect to: nothing has connected yet, or a previous
         `disconnect()` already ended it.
+
+        Recvonly tracks come back subscribed on their own. Sendonly ones do not
+        come back published — the runtime does not carry a publish across the
+        reconnect — so publish again for anything you were sending::
+
+            await reactor.reconnect()
+            await camera.publish()
+
+        `Track.published` is False until that happens, and `push_frame` raises
+        rather than sending into a slot with nothing behind it.
         """
         self._require_handle()
         handle = self._handle
@@ -1035,7 +1074,9 @@ class Reactor:
         await self._async_op(
             lambda fn: lib.reactor_publish_track(ctypes.c_void_p(handle), name_b, fn, None)
         )
-        return self.track(name)
+        track = self.track(name)
+        track._published = True
+        return track
 
     def unpublish_track(self, name: str) -> None:
         """Deactivate a sendonly track (sync — no network round trip, only a
@@ -1052,9 +1093,24 @@ class Reactor:
             lambda lib, handle: lib.reactor_unpublish_track(handle, name.encode())
         )
         if raw is not None:
+            # Deliberately still published as far as this side is concerned. The
+            # notification is what tells the far end to stop, and a send that failed
+            # while the session was otherwise fine did not send it — the track is
+            # still up. Clearing here would make `Track.unpublish()` a no-op on the
+            # retry, which is the one call that could still put it right.
             _log.warning("unpublish_track(%r) failed: %s", name, error_from_payload(raw))
+            return
+        track = self._tracks.get(name)
+        if track is not None:
+            track._published = False
 
-    async def pause_track(self, name: str) -> None:
+    # Pausing and frame push are reached through `Track` — `reactor.track(name)`,
+    # or `reactor.tracks`. They stay here as the plumbing the track methods call,
+    # private because a name-based copy of each was a second way to say the same
+    # thing that could not check what it was being asked to do: a wrong name, or a
+    # track pointing the other way, went to the FFI and came back looking fine.
+
+    async def _pause_track(self, name: str) -> None:
         """Pause receiving a named track."""
         self._require_handle()
         handle = self._handle
@@ -1064,7 +1120,7 @@ class Reactor:
             lambda fn: lib.reactor_pause_track(ctypes.c_void_p(handle), name_b, fn, None)
         )
 
-    async def resume_track(self, name: str) -> None:
+    async def _resume_track(self, name: str) -> None:
         """Resume receiving a named track."""
         self._require_handle()
         handle = self._handle
@@ -1078,7 +1134,7 @@ class Reactor:
     # Frame push
     # ------------------------------------------------------------------
 
-    def push_video_frame(
+    def _push_video_frame(
         self,
         track_name: str,
         data: bytes,
@@ -1117,7 +1173,7 @@ class Reactor:
             ctypes.c_uint32(height),
         )
 
-    def push_audio_frame(
+    def _push_audio_frame(
         self,
         track_name: str,
         data: bytes,

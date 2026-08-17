@@ -262,10 +262,10 @@ class ReactorApp:
         session carries the model's tracks by the time `connect()` returns, so
         `reactor.tracks` is what exists rather than a guess.
 
-        Both handlers go on their track rather than on the client. For audio that
-        is what keeps two recvonly audio tracks from being summed into one speaker
-        with nothing to say which was which; for video it is the only way, since
-        the client-wide `on_frame` was removed for exactly that reason.
+        Both handlers go on their track rather than on the client, which is the
+        only way now: client-wide delivery was removed because one handler fed every
+        recvonly track at once cannot tell them apart — two audio tracks summed into
+        one speaker with nothing to say which was which.
         """
         recvonly = self.reactor.tracks.with_direction(TrackDirection.RECVONLY)
         self._attach_video(recvonly.with_kind(TrackKind.VIDEO))

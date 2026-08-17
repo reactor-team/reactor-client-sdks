@@ -10,8 +10,7 @@ nothing.
 One type covers both directions and both kinds, because the operations are the same
 operations either way::
 
-    camera = reactor.track("camera")       # sendonly video
-    await camera.publish()
+    camera = await reactor.track("camera").publish()   # sendonly video
     camera.push_frame(rgb_array)
 
     output = reactor.track("output")       # recvonly video
@@ -19,9 +18,10 @@ operations either way::
     def render(frame): ...
     await output.pause()
 
-There is no `push_video_frame` / `push_audio_frame` split, and no
-`on_video_frame` / `on_audio_frame` split: the track already knows its kind, so the
-caller does not have to say it twice.
+One `push_frame` and one `on_frame` cover both kinds: the track already knows
+which it is, so the caller does not have to say it twice. And a sendonly track
+only accepts frames once `publish()` has activated it — an unpublished slot has no
+sender behind it, so the frames would be taken and dropped.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ from ._media import (
     _positional_arity,
     _rgb_array_to_bgra,
 )
+from .errors import InvalidStateError
 
 if TYPE_CHECKING:  # pragma: no cover - types only
     # Imported for annotations only, so numpy stays an optional dependency: a
@@ -146,6 +147,11 @@ class Track:
         # frames raw). `off_frame` needs the first to find it again; `_readapt`
         # needs the second to put it back the same way when the kind is learned.
         self._adapters: dict[Callable, tuple[Callable, bool]] = {}
+        # Whether this sendonly slot is activated. Kept here rather than read back
+        # from the session because the session does not record it: publish is a
+        # control request and unpublish a notification, and neither leaves anything
+        # to query. The client clears it whenever the status leaves ready.
+        self._published = False
 
     # ------------------------------------------------------------------
     # Identity
@@ -198,21 +204,53 @@ class Track:
     # Sending
     # ------------------------------------------------------------------
 
+    @property
+    def published(self) -> bool:
+        """Whether this sendonly slot is currently activated.
+
+        False for a recvonly track, which is never published: publishing is what
+        turns a slot you send into on, and there is nothing to turn on for a slot
+        that only receives.
+
+        Goes back to False on its own when the session leaves `ready`, because the
+        publish went with it — see :meth:`publish`.
+        """
+        return self._published
+
     async def publish(self) -> Track:
         """Activate this sendonly slot, so frames pushed into it go on the wire.
 
-        Returns the track, so a caller can do it in one line::
+        Until this returns, :meth:`push_frame` raises: an unpublished slot has no
+        sender behind it, so the frames would be accepted and dropped.
+
+        Returns the track, so getting one and activating it can be a single line::
 
             camera = await reactor.track("camera").publish()
+            camera.push_frame(frame)
+
+        The activation lasts as long as the session does. A reconnect resumes
+        recvonly tracks and nothing else, so a track published before one has to be
+        published again after it — :attr:`published` says which side of that you are
+        on.
         """
-        self._require(TrackDirection.SENDONLY, "publish()")
+        self._require_direction(TrackDirection.SENDONLY, "publish()")
         await self._reactor().publish_track(self._name)
+        self._published = True
         return self
 
     def unpublish(self) -> None:
         """Deactivate this sendonly slot (sync). Logs a warning on failure —
-        see `Reactor.unpublish_track` — rather than raising."""
-        self._require(TrackDirection.SENDONLY, "unpublish()")
+        see `Reactor.unpublish_track` — rather than raising.
+
+        Deactivating a slot that is not activated does nothing, deliberately: this
+        is what a cleanup path calls, often from a `finally` block and often after
+        the failure that ended the session already cleared the publish. Raising
+        there would replace the exception on its way out with this one.
+        """
+        self._require_direction(TrackDirection.SENDONLY, "unpublish()")
+        if not self._published:
+            _log.debug("unpublish(): track %r is not published; nothing to do", self._name)
+            return
         self._reactor().unpublish_track(self._name)
 
     # The two shapes of a frame, told apart by the one thing that already
@@ -284,7 +322,8 @@ class Track:
         passing `user_data` to an audio track means a tag that never goes anywhere,
         and that is an error.
         """
-        self._require(TrackDirection.SENDONLY, "push_frame()")
+        self._require_direction(TrackDirection.SENDONLY, "push_frame()")
+        self._require_published("push_frame()")
         reactor = self._reactor()
 
         if self._kind is TrackKind.AUDIO:
@@ -298,7 +337,7 @@ class Track:
             if samples_per_channel is None:
                 # i16 samples, interleaved across channels: two bytes each.
                 samples_per_channel = len(pcm) // 2 // max(1, num_channels)
-            reactor.push_audio_frame(
+            reactor._push_audio_frame(
                 self._name, pcm, samples_per_channel, sample_rate, num_channels
             )
             return
@@ -317,7 +356,9 @@ class Track:
                 f"height={height}. An array carries its own shape; drop the "
                 f"arguments, or pass the bytes if the other size is the intended one."
             )
-        reactor.push_video_frame(self._name, bgra, actual_width, actual_height, user_data=user_data)
+        reactor._push_video_frame(
+            self._name, bgra, actual_width, actual_height, user_data=user_data
+        )
 
     # ------------------------------------------------------------------
     # Receiving
@@ -371,9 +412,8 @@ class Track:
         exposed. What :meth:`on_frame` adds on top is the numpy conversion, and
         this is the same frames without it.
 
-        The same routing as :meth:`on_frame`, then, and the same arguments the
-        client-wide events carry — so a handler written against ``on("frame", ...)``
-        moves here unchanged and starts seeing one track instead of all of them::
+        The same routing as :meth:`on_frame`, then, without the conversion. Every
+        argument the frame arrived with is passed straight through::
 
             @output.on_raw_frame
             def forward(bgra, width, height, frame_id, timestamp_us, user_data): ...
@@ -470,13 +510,13 @@ class Track:
 
     async def pause(self) -> None:
         """Stop receiving this track. Frames stop arriving until :meth:`resume`."""
-        self._require(TrackDirection.RECVONLY, "pause()")
-        await self._reactor().pause_track(self._name)
+        self._require_direction(TrackDirection.RECVONLY, "pause()")
+        await self._reactor()._pause_track(self._name)
 
     async def resume(self) -> None:
         """Start receiving this track again after :meth:`pause`."""
-        self._require(TrackDirection.RECVONLY, "resume()")
-        await self._reactor().resume_track(self._name)
+        self._require_direction(TrackDirection.RECVONLY, "resume()")
+        await self._reactor()._resume_track(self._name)
 
     # ------------------------------------------------------------------
     # Internals
@@ -548,7 +588,25 @@ class Track:
         if client is not None:
             client._sync_tracks()
 
-    def _require(self, direction: TrackDirection, action: str) -> None:
+    def _require_published(self, action: str) -> None:
+        """Refuse to send into a slot that was never activated.
+
+        Same reason as :meth:`_require_direction`, one step further along: the direction is
+        right, so nothing below here objects. `push_video_frame` on an unpublished
+        track reaches the FFI, finds no local source to hand the frame to, and
+        returns — the caller sees a loop that pushes at 30fps and a model that
+        receives nothing.
+        """
+        if self._published:
+            return
+        raise InvalidStateError(
+            f"{action}: track {self._name!r} is not published, so a frame pushed into "
+            f"it has no sender to go out on. Call publish() first. A publish does not "
+            f"survive the session leaving ready, so publish again after a reconnect.",
+            operation="push_frame",
+        )
+
+    def _require_direction(self, direction: TrackDirection, action: str) -> None:
         """Refuse an operation the track's direction does not have.
 
         Deliberately loud. The whole reason for a `Track` object is that the plain

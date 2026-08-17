@@ -105,8 +105,8 @@ async def main() -> None:
                     Speaker(incoming.one(), device=_device(args.output))
                 )
             if outgoing:
-                # Publishing is what makes the push land: pushing into a slot that
-                # was never activated goes nowhere and says nothing.
+                # Publishing is what makes the push land: push_frame refuses a
+                # slot that was never activated.
                 track = await outgoing.one().publish()
                 devices.callback(track.unpublish)
                 mic = devices.enter_context(Microphone(track, device=_device(args.input)))

@@ -19,7 +19,7 @@ import json
 import numpy as np
 import pytest
 
-from reactor_sdk import Reactor, Track, TrackDirection, TrackKind
+from reactor_sdk import InvalidStateError, Reactor, Track, TrackDirection, TrackKind
 
 DECLARED = [
     {"name": "camera", "kind": "video", "direction": "sendonly"},
@@ -62,22 +62,42 @@ class _FakeLib:
     def reactor_free_string(self, ptr: object) -> None:
         self.freed.append(getattr(ptr, "value", ptr))
 
+    # Enough for `_create_handle` to run, so a test can drive the real status
+    # callback rather than a hand-rolled stand-in for it.
+    def reactor_create_with_adm(self, *_args: object) -> int:
+        return 1234
+
+    def reactor_destroy(self, _handle: object) -> int:
+        return 0
+
 
 def _connected(
     monkeypatch: pytest.MonkeyPatch,
     tracks: list[dict] | None = None,
     paused: list[str] | None = None,
+    published: bool = True,
 ) -> tuple[Reactor, _FakeLib]:
     """A client with a handle, whose track getters answer from `tracks`.
 
     An empty `tracks` is a session that has not declared anything yet — every moment
     between `connect()` and the model's capabilities arriving. The fake is returned
     too, so a test can make the declaration land partway through.
+
+    `published` marks every sendonly slot activated, which is the state most tests
+    here are interested in: they are about what `push_frame` does with a frame, not
+    about the guard that stands in front of it. Pass False to be on the other side
+    of that guard — see `TestPublishIsRequired`.
     """
     reactor = Reactor("m")
     reactor._handle = 1234
     lib = _FakeLib(DECLARED if tracks is None else tracks, paused or [])
     monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: lib)
+    if published:
+        for track in reactor.tracks.with_direction(TrackDirection.SENDONLY):
+            track._published = True
+        # That read is a get and a free like any other. Left in the tally it would
+        # break `test_the_frees_are_paired_with_the_gets`, which counts its own.
+        lib.freed.clear()
     return reactor, lib
 
 
@@ -285,8 +305,8 @@ class TestPushFrame:
 
     def _captured(self, reactor: Reactor) -> dict:
         captured: dict = {}
-        reactor.push_video_frame = lambda *a, **k: captured.update(video=(a, k))  # type: ignore[method-assign]
-        reactor.push_audio_frame = lambda *a, **k: captured.update(audio=(a, k))  # type: ignore[method-assign]
+        reactor._push_video_frame = lambda *a, **k: captured.update(video=(a, k))  # type: ignore[method-assign]
+        reactor._push_audio_frame = lambda *a, **k: captured.update(audio=(a, k))  # type: ignore[method-assign]
         return captured
 
     def test_video_bytes_need_their_dimensions(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -365,7 +385,7 @@ class TestPushFrame:
     def test_dimensions_that_agree_with_an_array_are_allowed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Someone porting from push_video_frame() passes both, and they agree.
+        """Someone porting from the old name-based call passes both, and they agree.
         Refusing that would be pedantry."""
         reactor, _ = _connected(monkeypatch)
         captured = self._captured(reactor)
@@ -430,18 +450,35 @@ class TestOnFrame:
 
         assert seen == [10]
 
-    def test_the_client_wide_event_still_sees_everything(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(("event", "kind"), [("frame", "video"), ("audio", "audio")])
+    def test_the_client_wide_media_events_are_refused(
+        self, monkeypatch: pytest.MonkeyPatch, event: str, kind: str
     ) -> None:
-        """Per-track delivery is additive. `on("frame", ...)` predates it and its
-        handlers expect every frame, with the argument list they were written for."""
+        """Refused at registration, not accepted and left silent.
+
+        Media is delivered per track now. A handler registered on the old
+        client-wide name would sit there looking live and never fire, which is the
+        failure this object exists to end — and the hardest kind to find, since
+        nothing at all happens."""
+        reactor, _ = _connected(monkeypatch)
+
+        with pytest.raises(ValueError, match="per track") as excinfo:
+            reactor.on(event, lambda *args: None)
+
+        # The error has to carry the way out, not just the refusal.
+        assert "on_raw_frame" in str(excinfo.value)
+        assert f'with_kind("{kind}")' in str(excinfo.value)
+
+    def test_no_frame_reaches_the_client_wide_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The delivery side, not just the registration side: nothing fires the bare
+        event any more, so a handler smuggled into the table directly stays quiet."""
         reactor, _ = _connected(monkeypatch)
         seen: list[tuple] = []
-        reactor.on("frame", lambda *args: seen.append(args))
+        reactor._handlers.setdefault("frame", []).append(lambda *args: seen.append(args))
 
-        reactor._fire("frame", b"\x00" * 4, 1, 1, 7, 8, b"tag")
+        reactor._fire_on_track("frame", b"output", b"\x00" * 4, 1, 1, 7, 8, b"tag")
 
-        assert seen == [(b"\x00" * 4, 1, 1, 7, 8, b"tag")]
+        assert seen == []
 
     def test_a_handler_is_given_as_much_as_it_asks_for(
         self, monkeypatch: pytest.MonkeyPatch
@@ -474,7 +511,8 @@ class TestOnFrame:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The FFI reports an empty name when a transceiver could not be matched.
-        There is nothing to route it to, and the client-wide event already had it."""
+        There is nothing to route it to, and no client-wide event to fall back to, so
+        it is dropped — see the debug line in `_fire_on_track`."""
         reactor, _ = _connected(monkeypatch)
         seen: list[object] = []
         reactor.track("output").on_frame(lambda frame: seen.append(frame))
@@ -501,7 +539,7 @@ class TestOnFrame:
         assert seen == []
 
     def test_raw_frames_skip_the_conversion(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Same routing, same arguments as the client-wide event — so a handler
+        """Same routing as on_frame, without the conversion — so a handler
         written against `on("frame", ...)` moves onto a track unchanged, and one
         that only counts frames pays for no numpy."""
         reactor, _ = _connected(monkeypatch)
@@ -742,7 +780,7 @@ class TestPublishTrack:
     async def test_track_publish_goes_through_the_same_call(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        reactor, lib = _connected(monkeypatch)
+        reactor, lib = _connected(monkeypatch, published=False)
         names: list[bytes] = []
 
         def publish(handle, name, fn, ud):
@@ -751,8 +789,14 @@ class TestPublishTrack:
 
         lib.reactor_publish_track = publish
 
-        assert await reactor.track("camera").publish() is reactor.track("camera")
+        camera = reactor.track("camera")
+        assert camera.published is False
+
+        # Hands the track back, so getting one and activating it can be one line.
+        assert await camera.publish() is camera
+
         assert names == [b"camera"]
+        assert camera.published is True
 
 
 class TestUnpublishTrack:
@@ -815,3 +859,138 @@ def test_the_kind_and_direction_enums_are_strings() -> None:
     assert TrackKind.VIDEO == "video"
     assert TrackDirection.RECVONLY == "recvonly"
     assert TrackKind("audio") is TrackKind.AUDIO
+
+
+class TestPublishIsRequired:
+    """A sendonly slot does nothing until it is published, and says so.
+
+    Pushing into an unpublished slot is the same class of silent failure the
+    `Track` object exists for: the frame reaches the FFI, finds no local source to
+    hand it to, and the call returns. The loop looks like it is streaming at 30fps
+    and the model receives nothing.
+    """
+
+    def test_pushing_before_publish_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reactor, _ = _connected(monkeypatch, published=False)
+
+        with pytest.raises(InvalidStateError, match="not published") as excinfo:
+            reactor.track("camera").push_frame(b"\x00" * 4, width=1, height=1)
+
+        assert excinfo.value.code == "INVALID_STATE"
+        assert "publish() first" in str(excinfo.value)
+
+    def test_the_guard_runs_before_the_frame_is_even_looked_at(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bytes with no dimensions are also an error, and the state is the one to
+        report: fixing the arguments would only get the caller to the real problem."""
+        reactor, _ = _connected(monkeypatch, published=False)
+
+        with pytest.raises(InvalidStateError):
+            reactor.track("camera").push_frame(b"\x00" * 4)
+
+    async def test_publish_opens_the_way(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reactor, lib = _connected(monkeypatch, published=False)
+        lib.reactor_publish_track = lambda handle, name, fn, ud: fn(1, b"{}", None, None)
+        pushed: list = []
+        reactor._push_video_frame = lambda *a, **k: pushed.append(a)  # type: ignore[method-assign]
+
+        camera = reactor.track("camera")
+        await camera.publish()
+        camera.push_frame(b"\x00" * 4, width=1, height=1)
+
+        assert camera.published is True
+        assert len(pushed) == 1
+
+    async def test_publishing_by_name_activates_the_same_slot(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`publish_track(name)` hands back a `Track`, and that track has to be
+        usable — it would be a trap to return one that refuses the next line."""
+        reactor, lib = _connected(monkeypatch, published=False)
+        lib.reactor_publish_track = lambda handle, name, fn, ud: fn(1, b"{}", None, None)
+        reactor._push_video_frame = lambda *a, **k: None  # type: ignore[method-assign]
+
+        track = await reactor.publish_track("camera")
+
+        assert track.published is True
+        track.push_frame(b"\x00" * 4, width=1, height=1)
+
+    def test_a_recvonly_track_is_never_published(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reactor, _ = _connected(monkeypatch)
+        assert reactor.track("output").published is False
+
+    def test_a_failed_unpublish_stays_published_so_it_can_be_retried(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The notification is what tells the far end to stop. A send that failed
+        did not send it, so the track is still up — and clearing the flag would make
+        the retry a no-op, which is the one call that could still put it right."""
+        reactor, lib = _connected(monkeypatch)
+        lib.unpublish_error = {
+            "code": "TRANSPORT_ERROR",
+            "message": "control channel is not open",
+            "recoverable": True,
+            "operation": "unpublish_track",
+        }
+        camera = reactor.track("camera")
+
+        camera.unpublish()
+
+        assert camera.published is True
+        assert lib.unpublished == ["camera"]
+
+        # And the retry actually goes out, rather than short-circuiting.
+        lib.unpublish_error = None
+        camera.unpublish()
+
+        assert camera.published is False
+        assert lib.unpublished == ["camera", "camera"]
+
+    def test_unpublishing_what_was_never_published_does_not_reach_the_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """And does not raise. This is what a `finally` block calls, often after the
+        failure that ended the session already cleared the publish; raising there
+        would replace the exception on its way out."""
+        reactor, lib = _connected(monkeypatch, published=False)
+
+        assert reactor.track("camera").unpublish() is None
+        assert lib.unpublished == []
+
+    async def test_leaving_ready_forgets_the_publish(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A reconnect resumes recvonly tracks and stops there, so a slot published
+        before one is not published after it. Remembering otherwise would put the
+        silent failure back exactly where it is hardest to spot: the session looks
+        healthy, and the frames go nowhere."""
+        reactor, lib = _connected(monkeypatch, published=False)
+        reactor._create_handle()
+        try:
+            camera = reactor.track("camera")
+            camera._published = True
+
+            # The real callback the FFI drives, not a stand-in for it.
+            reactor._callbacks_struct.on_status(b"connecting", None)
+
+            assert camera.published is False
+            with pytest.raises(InvalidStateError, match="after a reconnect"):
+                camera.push_frame(b"\x00" * 4, width=1, height=1)
+        finally:
+            # While the fake is still installed: a real reactor_destroy on this
+            # fabricated handle is a segfault, not a failed test.
+            reactor.close()
+
+    async def test_becoming_ready_leaves_it_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The clearing keys off leaving ready, so the ready that a publish is
+        waiting on must not undo the publish that follows it."""
+        reactor, _ = _connected(monkeypatch, published=False)
+        reactor._create_handle()
+        try:
+            camera = reactor.track("camera")
+            camera._published = True
+
+            reactor._callbacks_struct.on_status(b"ready", None)
+
+            assert camera.published is True
+        finally:
+            reactor.close()

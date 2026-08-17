@@ -9,8 +9,8 @@ a send timestamp, then checks the same tag comes back and reports how many
 round-tripped, in what order, and how long each took.
 
 What it demonstrates:
-  - ``push_video_frame(..., user_data=...)`` tags an outbound frame.
-  - ``on("frame")`` surfaces the tag the sender attached, as ``user_data``.
+  - ``push_frame(..., user_data=...)`` tags an outbound frame.
+  - ``Track.on_raw_frame`` surfaces the tag the sender attached, as ``user_data``.
   - Nothing negotiates or configures the capability: reactor-webrtc advertises it
     in the offer and the runtime's answer mirrors it. A model that does not echo
     metadata simply returns frames with none, and this example reports that

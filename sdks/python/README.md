@@ -100,20 +100,10 @@ def arrived(track):               # fires once per declared track
     print(track.name, track.kind, track.direction)
 ```
 
-Two client-wide events carry every recvonly track's frames at once, unconverted:
-
-```python
-reactor.on("frame", lambda bgra, width, height, frame_id, timestamp_us, user_data: ...)
-reactor.on("audio", lambda pcm, num_samples, sample_rate, channels: ...)
-```
-
-Neither says which track a frame came on, so register on the track itself when that
-matters.
-
 ### Sending
 
 ```python
-camera = await reactor.publish_track("camera")
+camera = await reactor.track("camera").publish()   # or: await reactor.publish_track("camera")
 
 camera.push_frame(frame)                          # numpy array: shape carries the size
 camera.push_frame(bgra, width=640, height=480)    # bytes: size spelled out
@@ -125,6 +115,11 @@ camera.unpublish()
 
 One `push_frame` and one `on_frame` for both kinds — the track knows which it is.
 Asking for something its direction does not have raises, rather than doing nothing.
+
+Publishing is what puts a sender behind the slot, so `push_frame` before it raises
+`InvalidStateError` rather than accepting frames nothing carries. A publish lasts
+as long as the session: a reconnect resumes recvonly tracks and nothing else, so
+publish again after one — `track.published` says which side of that you are on.
 
 ### Audio devices
 
@@ -196,6 +191,20 @@ Subclasses: `InvalidStateError`, `DisconnectedError`, `NetworkError`,
 
 A command the model itself rejects reports the model's own code, which this package
 cannot enumerate — match on `error.code` for anything outside that list.
+
+One failure is not in that family: exchanging an `api_key` for a token raises
+`AuthError`, which is a `RuntimeError` and not a `ReactorError`. It happens inside
+`connect()` when the client was given a key rather than a `jwt`, so catch it
+alongside:
+
+```python
+from reactor_sdk import AuthError
+
+try:
+    await reactor.connect()
+except AuthError:
+    ...                       # the key itself was refused, or the auth host is unreachable
+```
 
 ## Recordings
 
