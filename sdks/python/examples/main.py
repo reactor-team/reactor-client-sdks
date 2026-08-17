@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, ".")  # allow `from reactor_sdk import ...` from repo root
 
 from examples.reactor_client import make_reactor
-from reactor_sdk import ReactorError
+from reactor_sdk import ReactorError, Track
 
 
 async def main() -> None:
@@ -32,8 +32,8 @@ async def main() -> None:
     def on_message(msg: object) -> None:
         print(f"[message] {msg}")
 
-    def on_track(name: str, mid: str | None) -> None:
-        print(f"[track] name={name!r} mid={mid!r}")
+    def on_track(track: Track) -> None:
+        print(f"[track] name={track.name!r} mid={track.mid!r}")
 
     reactor.on("status_changed", on_status)
     reactor.on("error", on_error)

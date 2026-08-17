@@ -373,8 +373,16 @@ void reactor_upload_bytes(
 
 /* ── Synchronous operations ───────────────────────────────────────────────── */
 
-/* Release a previously published track (sync). */
-int reactor_unpublish_track(
+/*
+ * Deactivate a sendonly track (sync — no network round trip, only a local
+ * status check and a fire-and-forget notification).
+ *
+ * NULL on success. On failure, a heap JSON error object
+ * ({"code","message","recoverable","status","operation","retry_after_ms"} —
+ * the same shape every completion reports) that the caller must free with
+ * reactor_free_string().
+ */
+char *reactor_unpublish_track(
     ReactorHandle *handle,
     const char    *name
 );

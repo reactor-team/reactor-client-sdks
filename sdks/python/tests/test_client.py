@@ -750,3 +750,73 @@ class TestConnectionIdRange:
 
         pointer = ctypes.cast(captured["connection_id"], ctypes.POINTER(ctypes.c_uint32))
         assert pointer.contents.value == boundary
+
+
+class TestOnTrack:
+    """End to end from the `on_track` callback the FFI would actually call —
+    a handler gets the resolved `Track`, not a bare name it has to look up
+    itself."""
+
+    def _create(self, monkeypatch: pytest.MonkeyPatch) -> Reactor:
+        fake_lib = mock.Mock()
+        fake_lib.reactor_create_with_adm = lambda *a: 1234
+        # Falsy, so _sync_tracks reads it the same way it reads a real "no
+        # declaration yet" answer — track_received firing ahead of capabilities
+        # is the common case, not an edge case.
+        fake_lib.reactor_tracks = lambda *a: 0
+        monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: fake_lib)
+
+        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor._create_handle()
+        return reactor
+
+    def _discard(self, reactor: Reactor) -> None:
+        from reactor_sdk.client import _LIVE_CLIENTS
+
+        reactor._handle = None
+        _LIVE_CLIENTS.discard(reactor)
+
+    async def test_handler_receives_the_track_not_a_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reactor = self._create(monkeypatch)
+        seen = []
+        reactor.on_track(seen.append)
+        try:
+            reactor._callbacks_struct.on_track(b"camera", b"0", None)
+            await asyncio.sleep(0)  # let call_soon_threadsafe's callback run
+        finally:
+            self._discard(reactor)
+
+        assert len(seen) == 1
+        track = seen[0]
+        assert track.name == "camera"
+        assert track.mid == "0"
+        assert track is reactor.track("camera")
+
+    async def test_a_null_mid_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reactor = self._create(monkeypatch)
+        seen = []
+        reactor.on_track(seen.append)
+        try:
+            reactor._callbacks_struct.on_track(b"camera", None, None)
+            await asyncio.sleep(0)
+        finally:
+            self._discard(reactor)
+
+        assert seen[0].mid is None
+
+    async def test_an_empty_name_does_not_fire(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No transceiver could be matched to a declared track — there is no
+        `Track` to hand over, so unlike every other field this one is not
+        merely absent, the whole event is skipped."""
+        reactor = self._create(monkeypatch)
+        seen = []
+        reactor.on_track(seen.append)
+        try:
+            reactor._callbacks_struct.on_track(b"", b"0", None)
+            await asyncio.sleep(0)
+        finally:
+            self._discard(reactor)
+
+        assert seen == []

@@ -209,10 +209,11 @@ class Track:
         await self._reactor().publish_track(self._name)
         return self
 
-    def unpublish(self) -> int:
-        """Deactivate this sendonly slot (sync). Returns 0 on success."""
+    def unpublish(self) -> None:
+        """Deactivate this sendonly slot (sync). Logs a warning on failure —
+        see `Reactor.unpublish_track` — rather than raising."""
         self._require(TrackDirection.SENDONLY, "unpublish()")
-        return self._reactor().unpublish_track(self._name)
+        self._reactor().unpublish_track(self._name)
 
     # The two shapes of a frame, told apart by the one thing that already
     # distinguishes them: BGRA pixels are `uint8` and i16 PCM is `int16`. That is the
