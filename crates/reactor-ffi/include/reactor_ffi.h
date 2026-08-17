@@ -238,12 +238,17 @@ int reactor_destroy(ReactorHandle *handle);
 
 /*
  * Connect: create (or adopt) a session and establish the WebRTC transport.
- *   session_id — nullable; pass NULL to create a new session.
- *   completion — called with ok=1 and result_json="{}" on success.
+ *   session_id    — nullable; pass NULL to create a new session.
+ *   connection_id — nullable; pass NULL to register a new connection. Non-NULL
+ *                   adopts a connection id a backend already registered for
+ *                   this session, the same way a non-NULL session_id adopts an
+ *                   existing session — most callers pass NULL for both.
+ *   completion    — called with ok=1 and result_json="{}" on success.
  */
 void reactor_connect(
     ReactorHandle       *handle,
-    const char          *session_id,  /* nullable */
+    const char          *session_id,     /* nullable */
+    const uint32_t      *connection_id,  /* nullable */
     reactor_completion_fn completion,
     void                *userdata
 );

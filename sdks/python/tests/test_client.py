@@ -651,3 +651,99 @@ class TestAudioDevices:
         """
         with pytest.raises(TypeError, match="adm_mode"):
             Reactor("https://api.reactor.inc", "m", adm_mode=1)  # type: ignore[call-arg]
+
+
+class TestConnectionId:
+    """`connect(connection_id=...)` has to reach the FFI as a pointer to a live
+    `uint32`, not the Python `int` — `reactor_connect`'s `argtypes` marshal it as
+    `POINTER(c_uint32)`, and passing the wrong shape is undefined behaviour on
+    the Rust side, invisible from here. `Track`/`send_command` already prove the
+    completion-callback wiring; this is only the one new argument's shape.
+    """
+
+    def _connect_reactor(self, monkeypatch: pytest.MonkeyPatch) -> tuple[Reactor, dict]:
+        captured: dict = {}
+        fake_lib = mock.Mock()
+        fake_lib.reactor_create_with_adm = lambda *a: 1234
+
+        def connect(handle, session_id, connection_id, completion, userdata):
+            captured["connection_id"] = connection_id
+            completion(1, b"{}", None, None)
+
+        fake_lib.reactor_connect = connect
+        monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: fake_lib)
+        return Reactor("https://api.reactor.inc", "m", jwt="fake"), captured
+
+    async def test_omitting_it_passes_a_null_pointer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reactor, captured = self._connect_reactor(monkeypatch)
+        await reactor.connect()
+        assert captured["connection_id"] is None
+
+    async def test_passing_it_reaches_the_ffi_as_the_same_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reactor, captured = self._connect_reactor(monkeypatch)
+        await reactor.connect(connection_id=42)
+        pointer = ctypes.cast(captured["connection_id"], ctypes.POINTER(ctypes.c_uint32))
+        assert pointer.contents.value == 42
+
+    async def test_session_id_and_connection_id_are_independent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Adopting a session without adopting a specific connection within it —
+        the common multi-connection shape — must not require both."""
+        reactor, captured = self._connect_reactor(monkeypatch)
+        await reactor.connect(session_id="s1")
+        assert captured["connection_id"] is None
+
+
+class TestConnectionIdRange:
+    """`ctypes.c_uint32` does not raise for a value outside its range — it
+    wraps modulo 2**32 (confirmed directly: `c_uint32(-1).value == 4294967295`,
+    `c_uint32(2**32 + 42).value == 42`) — so `connect()` has to reject an
+    out-of-range value itself, before it ever reaches ctypes, or a caller's
+    typo silently adopts a real but different connection instead of failing.
+    """
+
+    @pytest.mark.parametrize("bad", [-1, 2**32, 2**32 + 42, -(2**32)])
+    async def test_an_out_of_range_value_is_rejected_before_any_side_effect(
+        self, monkeypatch: pytest.MonkeyPatch, bad: int
+    ) -> None:
+        """Checked before the handle is even created, not just before the FFI
+        call — a rejected connect() should leave the client exactly as it
+        found it, not holding a handle nothing will ever use."""
+        fake_lib = mock.Mock()
+        fake_lib.reactor_create_with_adm = lambda *a: pytest.fail(
+            "a handle must not be created for an out-of-range connection_id"
+        )
+        fake_lib.reactor_connect = lambda *a: pytest.fail(
+            "reactor_connect must not be reached for an out-of-range connection_id"
+        )
+        monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: fake_lib)
+        reactor = Reactor("https://api.reactor.inc", "m", jwt="fake")
+
+        with pytest.raises(ValueError, match="connection_id"):
+            await reactor.connect(connection_id=bad)
+
+        assert reactor._handle is None
+
+    @pytest.mark.parametrize("boundary", [0, 2**32 - 1])
+    async def test_the_boundary_values_are_accepted(
+        self, monkeypatch: pytest.MonkeyPatch, boundary: int
+    ) -> None:
+        captured: dict = {}
+        fake_lib = mock.Mock()
+        fake_lib.reactor_create_with_adm = lambda *a: 1234
+
+        def connect(handle, session_id, connection_id, completion, userdata):
+            captured["connection_id"] = connection_id
+            completion(1, b"{}", None, None)
+
+        fake_lib.reactor_connect = connect
+        monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: fake_lib)
+        reactor = Reactor("https://api.reactor.inc", "m", jwt="fake")
+
+        await reactor.connect(connection_id=boundary)
+
+        pointer = ctypes.cast(captured["connection_id"], ctypes.POINTER(ctypes.c_uint32))
+        assert pointer.contents.value == boundary
