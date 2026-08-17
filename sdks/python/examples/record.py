@@ -26,13 +26,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-import urllib.request
 from pathlib import Path
-from urllib.parse import urljoin
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from reactor_sdk import Clip, ReactorFFIError
+from reactor_sdk import Clip, ReactorFFIError, download_clip
 
 from .reactor_client import make_reactor
 
@@ -59,30 +57,14 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _download_segments(playlist_url: str, out_path: str) -> None:
-    """Fetch an HLS playlist and concatenate all .ts segments into out_path."""
-    print(f"Downloading playlist: {playlist_url}", file=sys.stderr)
+def _download(clip: Clip, out_path: str) -> None:
+    """Fetch every segment `clip.playlist_url` names and write them to out_path."""
+    print(f"Downloading playlist: {clip.playlist_url}", file=sys.stderr)
 
-    with urllib.request.urlopen(playlist_url) as resp:
-        playlist = resp.read().decode()
+    def on_progress(done: int, total: int) -> None:
+        print(f"  [{done}/{total}]", file=sys.stderr)
 
-    segments = [
-        line.strip() for line in playlist.splitlines() if line.strip() and not line.startswith("#")
-    ]
-    if not segments:
-        print("No segments found in playlist", file=sys.stderr)
-        return
-
-    print(f"Fetching {len(segments)} segment(s) → {out_path}", file=sys.stderr)
-    with open(out_path, "wb") as out:
-        for i, seg in enumerate(segments, 1):
-            # `urljoin` resolves both relative segment names and the
-            # absolute-path URIs (`/clips/chunks/...`) the coordinator emits —
-            # a plain string-concat mishandles the latter into a doubled path.
-            url = urljoin(playlist_url, seg)
-            print(f"  [{i}/{len(segments)}] {url}", file=sys.stderr)
-            with urllib.request.urlopen(url) as r:
-                out.write(r.read())
+    download_clip(clip, out_path, on_progress=on_progress)
 
     size_kb = Path(out_path).stat().st_size // 1024
     print(f"Saved {size_kb} KB to {out_path}", file=sys.stderr)
@@ -131,7 +113,7 @@ async def main() -> None:
     print(f"predicted_ready_ms: {clip.predicted_ready_at_ms:.0f}")
 
     if args.download:
-        _download_segments(clip.playlist_url, args.download)
+        _download(clip, args.download)
 
     await reactor.disconnect()
     reactor.close()

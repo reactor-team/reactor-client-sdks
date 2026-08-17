@@ -155,6 +155,23 @@ code, which this package cannot enumerate — those raise `ReactorFFIError` with
 `.code` set to whatever arrived, so match on `error.code` for anything not in the
 list above.
 
+## Recordings
+
+`request_clip(seconds)` and `request_recording()` return a `Clip` naming an HLS
+playlist that expires — Reactor does not host clips. `download_clip()` fetches
+every segment it names and hands you the concatenated bytes:
+
+```python
+clip = await reactor.request_clip(10)
+data = await asyncio.to_thread(download_clip, clip, "clip.ts")
+```
+
+It's the interleaved MPEG-TS bytes, not an MP4 — playable as-is by most players
+(`ffplay`, VLC, mpv); remux with `ffmpeg -i clip.ts -c copy clip.mp4` if you need
+that container specifically. Pass `on_progress=lambda done, total: ...` to track
+it, and omit the path to get the bytes back without writing a file. It's
+synchronous like `fetch_jwt`, so run it in a thread from async code.
+
 ## Documentation & Resources
 
 See the [full documentation](https://docs.reactor.inc/sdk-reference/using-the-sdk#python) for platform
