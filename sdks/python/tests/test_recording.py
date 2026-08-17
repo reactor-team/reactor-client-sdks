@@ -99,8 +99,38 @@ class TestDownloadClip:
 
     async def test_writes_to_path_when_given(self, server_url: str, tmp_path: object) -> None:
         out = tmp_path / "clip.ts"  # type: ignore[operator]
-        data = await download_clip(_clip(f"{server_url}/hls/clip.m3u8"), out)
-        assert out.read_bytes() == data == _SEG0 + _SEG1
+        await download_clip(_clip(f"{server_url}/hls/clip.m3u8"), out)
+        assert out.read_bytes() == _SEG0 + _SEG1
+
+    async def test_returns_none_when_a_path_is_given(
+        self, server_url: str, tmp_path: object
+    ) -> None:
+        """The whole point of taking a path: the caller gets a file, not also
+        a second full copy of it sitting in memory as a return value."""
+        out = tmp_path / "clip.ts"  # type: ignore[operator]
+        result = await download_clip(_clip(f"{server_url}/hls/clip.m3u8"), out)
+        assert result is None
+
+    async def test_a_path_download_streams_each_segment_rather_than_buffering(
+        self, server_url: str, tmp_path: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pins the actual fix, not just its outward result: each segment's
+        response is handed to `shutil.copyfileobj` once, directly — proving the
+        path-given branch never assembles a `list[bytes]` plus a joined copy
+        the way the no-path branch does."""
+        import shutil
+
+        calls: list[object] = []
+        real_copyfileobj = shutil.copyfileobj
+
+        def spy(fsrc: object, fdst: object, *a: object, **kw: object) -> None:
+            calls.append(fsrc)
+            real_copyfileobj(fsrc, fdst, *a, **kw)
+
+        monkeypatch.setattr(shutil, "copyfileobj", spy)
+        out = tmp_path / "clip.ts"  # type: ignore[operator]
+        await download_clip(_clip(f"{server_url}/hls/clip.m3u8"), out)
+        assert len(calls) == 2  # one call per segment, none reused
 
     async def test_returns_bytes_without_a_path(self, server_url: str) -> None:
         data = await download_clip(_clip(f"{server_url}/hls/clip.m3u8"))

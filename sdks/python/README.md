@@ -187,17 +187,25 @@ list above.
 
 `request_clip(seconds)` and `request_recording()` return a `Clip` naming an HLS
 playlist that expires — Reactor does not host clips. `download_clip()` fetches
-every segment it names and hands you the concatenated bytes:
+every segment it names:
 
 ```python
 clip = await reactor.request_clip(10)
-data = await download_clip(clip, "clip.ts")
+await download_clip(clip, "clip.ts")   # streamed straight to the file, returns None
+
+data = await download_clip(clip)       # no path: returns the assembled bytes instead
 ```
 
-It's the interleaved MPEG-TS bytes, not an MP4 — playable as-is by most players
-(`ffplay`, VLC, mpv); remux with `ffmpeg -i clip.ts -c copy clip.mp4` if you need
-that container specifically. Pass `on_progress=lambda done, total: ...` to track
-it, and omit the path to get the bytes back without writing a file.
+Give it a path and it streams the download straight there without holding the whole
+thing in memory — the one that matters for `request_recording()`, which has no upper
+bound on length. Omit the path and it returns the assembled bytes, which does mean
+holding the whole clip in memory: fine for a short clip, not the default choice for
+a long recording.
+
+Either way it's the interleaved MPEG-TS bytes, not an MP4 — playable as-is by most
+players (`ffplay`, VLC, mpv); remux with `ffmpeg -i clip.ts -c copy clip.mp4` if you
+need that container specifically. Pass `on_progress=lambda done, total: ...` to
+track it.
 
 ## Documentation & Resources
 
