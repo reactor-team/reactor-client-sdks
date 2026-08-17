@@ -109,22 +109,24 @@ async def main() -> int:
         if args.verbose:
             print(f"  ✓ seq={seq} back in {elapsed_ms:.0f} ms")
 
-    reactor.on("frame", on_frame)
+    # Only the track being echoed back. The tags this checks for are the ones sent
+    # on args.track, so counting frames from any other track as untagged would be
+    # a made-up failure.
+    reactor.track(args.in_track).on_raw_frame(on_frame)
 
     print(f"connecting to {args.in_track!r} (sending on {args.track!r})…")
     await reactor.connect()
     # publish_track can fail (e.g. the name is not a declared sendonly track), so it
     # has to run inside the protected block too — otherwise that failure skips
     # disconnect() and leaves the just-created session orphaned.
-    published = False
+    track = None
     try:
-        await reactor.publish_track(args.track)
-        published = True
+        track = await reactor.publish_track(args.track)
 
         for seq in range(args.frames):
             tag = json.dumps({"seq": seq, "sent_us": int(time.time() * 1e6)}).encode()
             sent[seq] = time.monotonic()
-            reactor.push_video_frame(args.track, _frame(seq), WIDTH, HEIGHT, user_data=tag)
+            track.push_frame(_frame(seq), width=WIDTH, height=HEIGHT, user_data=tag)
             await asyncio.sleep(1 / FPS)
 
         # Frames keep arriving after the last push; wait for the tail rather than
@@ -133,8 +135,8 @@ async def main() -> int:
         while len(returned) < args.frames and time.monotonic() < deadline:
             await asyncio.sleep(0.05)
     finally:
-        if published:
-            reactor.unpublish_track(args.track)
+        if track is not None:
+            track.unpublish()
         await reactor.disconnect()
 
     print()

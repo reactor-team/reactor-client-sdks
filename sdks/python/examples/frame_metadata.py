@@ -103,7 +103,10 @@ async def main() -> None:
             elapsed = time.monotonic() - t0
             print(f"frame #{total_frames:<6}  (no metadata)  {width}×{height}  t={elapsed:.2f}s")
 
-    reactor.on("frame", on_frame)
+    # On the track, not on the client: this example takes a --track and until now
+    # listened to every video track the model had, so a second one would have had
+    # its frames counted here too.
+    reactor.track(args.track).on_raw_frame(on_frame)
 
     ready = asyncio.Event()
     reactor.on("status_changed", lambda s: ready.set() if s == "ready" else None)

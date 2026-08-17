@@ -111,7 +111,10 @@ async def main() -> None:
         file=sys.stderr,
     )
 
-    await reactor.publish_track(args.track)
+    # publish_track hands back the slot it activated. Everything after this goes
+    # through the track itself, which knows it is a sendonly video track — so the
+    # name is spelled once, here, rather than on every frame.
+    track = await reactor.publish_track(args.track)
 
     frames_sent = 0
     t_start = time.monotonic()
@@ -125,7 +128,7 @@ async def main() -> None:
             break
 
         frame = _make_frame(args.width, args.height, hue)
-        reactor.push_video_frame(args.track, frame, args.width, args.height)
+        track.push_frame(frame, width=args.width, height=args.height)
         frames_sent += 1
         hue = math.fmod(hue + hue_step, 1.0)
 
@@ -140,7 +143,7 @@ async def main() -> None:
         file=sys.stderr,
     )
 
-    reactor.unpublish_track(args.track)
+    track.unpublish()
     await reactor.disconnect()
     reactor.close()
 

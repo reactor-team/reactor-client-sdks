@@ -52,6 +52,8 @@ import signal
 import sys
 import time
 
+from reactor_sdk import Reactor, Track, TrackDirection, TrackKind
+
 from .reactor_client import make_reactor
 
 
@@ -114,34 +116,35 @@ def _make_frame(width: int, height: int, rgb: tuple[int, int, int]) -> bytes:
     return bytes([b, g, r, 255]) * (width * height)
 
 
-def _choose_track(capabilities: dict, requested: str | None) -> str:
+def _choose_track(reactor: Reactor, requested: str | None) -> Track:
     """Pick the sendonly video track to publish on, from what the model declares.
 
-    Named explicitly, it is checked rather than trusted, because a name the model does
-    not have fails in the worst way available: `push_video_frame` finds no local track,
-    logs a warning nothing surfaces, and returns — so every frame is dropped while the
-    send keeps reporting success.
+    `reactor.tracks` is that declaration, already typed — so this is a filter over
+    what exists rather than a guess at a name. Named explicitly, the name is still
+    checked here, to say which tracks the model does have; `reactor.track()` would
+    raise for an unknown one either way.
     """
     video = [
-        track["name"]
-        for track in capabilities.get("tracks", [])
-        if track.get("kind") == "video" and track.get("direction") == "sendonly"
+        track
+        for track in reactor.tracks
+        if track.kind == TrackKind.VIDEO and track.direction == TrackDirection.SENDONLY
     ]
+    names = ", ".join(track.name for track in video)
 
     if requested is not None:
-        if requested not in video:
-            available = ", ".join(video) or "none"
-            raise SystemExit(
-                f"the model has no sendonly video track called '{requested}' (it has: {available})"
-            )
-        return requested
+        for track in video:
+            if track.name == requested:
+                return track
+        raise SystemExit(
+            f"the model has no sendonly video track called '{requested}' "
+            f"(it has: {names or 'none'})"
+        )
 
     if not video:
         raise SystemExit("the model declares no sendonly video track to publish on")
     if len(video) > 1:
         raise SystemExit(
-            f"the model has several sendonly video tracks ({', '.join(video)}); "
-            f"name one with --track"
+            f"the model has several sendonly video tracks ({names}); name one with --track"
         )
     return video[0]
 
@@ -178,16 +181,6 @@ async def main() -> int:
 
     ready = asyncio.Event()
 
-    # The model declares which tracks exist and which way each one goes, and the SDK
-    # hands that over as `capabilities_received`. Picking the track from it beats
-    # guessing a name: pushing to a track the model did not declare is silently dropped
-    # — the frames go nowhere and the send still looks like it worked.
-    capabilities: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
-    reactor.on(
-        "capabilities_received",
-        lambda caps: None if capabilities.done() else capabilities.set_result(caps),
-    )
-
     # A published track stops going anywhere if the peer connection drops, and there is
     # nothing in the push path to say so, so watch the status instead of pushing into a
     # connection that has gone.
@@ -222,13 +215,19 @@ async def main() -> int:
     # way out — an exception here left `connect()` succeeded but `disconnect()`
     # unreached, which is exactly the dangling session the comment below warns
     # about: the runtime marks it orphaned and the next run cannot start.
-    track: str | None = None
+    track: Track | None = None
     sent = 0
     started = time.monotonic()
     try:
         await asyncio.wait_for(ready.wait(), timeout=60)
 
-        track = _choose_track(await asyncio.wait_for(capabilities, timeout=30), args.track)
+        # The model declares which tracks exist and which way each one goes, and
+        # `reactor.tracks` reads that declaration off the session once it is ready —
+        # no need to catch the capabilities event and hold onto it. Picking the track
+        # from it beats guessing a name: pushing to a track the model did not declare
+        # is silently dropped, the frames go nowhere, and the send still looks like it
+        # worked.
+        track = _choose_track(reactor, args.track)
 
         # Printed to stdout, and prominently: joining from another process is the
         # whole point of this example, and this is the value that makes it possible.
@@ -236,7 +235,7 @@ async def main() -> int:
         print(f"session-id: {session_id}", flush=True)
         print(
             f"Ready. Publishing {args.width}×{args.height} @ {args.fps:g} fps on "
-            f"'{track}', every frame tagged.",
+            f"'{track.name}', every frame tagged.",
             file=sys.stderr,
         )
         print(
@@ -246,7 +245,7 @@ async def main() -> int:
             file=sys.stderr,
         )
 
-        await reactor.publish_track(track)
+        await track.publish()
 
         deadline = started + args.duration if args.duration > 0 else math.inf
         hue = 0.0
@@ -269,11 +268,10 @@ async def main() -> int:
             loop_start = time.monotonic()
 
             rgb = _hue_to_rgb(hue)
-            reactor.push_video_frame(
-                track,
+            track.push_frame(
                 _make_frame(args.width, args.height, rgb),
-                args.width,
-                args.height,
+                width=args.width,
+                height=args.height,
                 user_data=_tag(sent, rgb),
             )
             sent += 1
@@ -302,7 +300,7 @@ async def main() -> int:
         # Ending the session deliberately, rather than by vanishing, is what leaves the
         # runtime able to start the next one.
         if track is not None:
-            reactor.unpublish_track(track)
+            track.unpublish()
         await reactor.disconnect()
         reactor.close()
 

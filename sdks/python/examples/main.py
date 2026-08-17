@@ -46,6 +46,12 @@ async def main() -> None:
     print("Waiting for ready …")
     await asyncio.wait_for(ready.wait(), timeout=60)
 
+    # What the model declared, now that the session is up. Each of these is a Track,
+    # with pause()/resume(), publish()/push_frame() and on_frame() on it according to
+    # which way it goes — see push_video.py and pause_resume.py.
+    for track in reactor.tracks:
+        print(f"[track] {track.name} ({track.kind.value}, {track.direction.value})")
+
     print("Sending hello command …")
     try:
         reply = await reactor.send_command("hello", {"text": "Hello from Python SDK!"})

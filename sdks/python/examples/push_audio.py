@@ -169,7 +169,9 @@ async def main() -> None:
     await asyncio.wait_for(ready.wait(), timeout=60)
     print("Ready. Publishing track and pushing audio…", file=sys.stderr)
 
-    await reactor.publish_track(args.track)
+    # The track knows it is a sendonly audio track, so push_frame below needs no
+    # kind in its name and no track name in its arguments.
+    track = await reactor.publish_track(args.track)
 
     chunks_sent = 0
     t_start = time.monotonic()
@@ -181,8 +183,7 @@ async def main() -> None:
         if deadline and loop_start >= deadline:
             break
 
-        reactor.push_audio_frame(
-            args.track,
+        track.push_frame(
             chunk_pcm,
             samples_per_channel=CHUNK_SAMPLES,
             sample_rate=SAMPLE_RATE,
@@ -201,7 +202,7 @@ async def main() -> None:
         file=sys.stderr,
     )
 
-    reactor.unpublish_track(args.track)
+    track.unpublish()
     await reactor.disconnect()
     reactor.close()
 
