@@ -51,7 +51,7 @@ from .errors import (
     UnauthorizedError,
     VersionMismatchError,
 )
-from .track import Track, TrackDirection, TrackKind
+from .track import Track, TrackDirection, TrackKind, TrackList
 
 __all__ = [
     "Reactor",
@@ -59,6 +59,7 @@ __all__ = [
     "Track",
     "TrackKind",
     "TrackDirection",
+    "TrackList",
     "Clip",
     "FileRef",
     # Failures, and the `on_error` event payload — the same class. `ReactorError`

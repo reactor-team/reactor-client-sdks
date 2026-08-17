@@ -147,6 +147,80 @@ class TestResolution:
         assert repr(Track(reactor, "later")) == "<Track 'later' ? unresolved>"
 
 
+class TestTrackList:
+    """`reactor.tracks` is a list with filters, not a filter object.
+
+    That order matters: iteration and indexing are what most callers want, and a
+    fluent wrapper that had to be unwrapped first would put ceremony in front of
+    the common case.
+    """
+
+    def test_it_is_a_real_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reactor, _ = _connected(monkeypatch)
+        tracks = reactor.tracks
+        assert isinstance(tracks, list)
+        assert len(tracks) == 4
+        assert tracks[0].name == "camera"
+        assert [t.name for t in tracks] == ["camera", "mic", "output", "speech"]
+
+    def test_filtering_by_kind_and_direction(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reactor, _ = _connected(monkeypatch)
+        names = lambda tl: [t.name for t in tl]  # noqa: E731
+        assert names(reactor.tracks.with_kind(TrackKind.VIDEO)) == ["camera", "output"]
+        assert names(reactor.tracks.with_direction(TrackDirection.SENDONLY)) == ["camera", "mic"]
+
+    def test_the_filters_chain_in_either_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Each returns another list, so composition is not order-sensitive."""
+        reactor, _ = _connected(monkeypatch)
+        forward = reactor.tracks.with_kind("video").with_direction("recvonly")
+        backward = reactor.tracks.with_direction("recvonly").with_kind("video")
+        assert [t.name for t in forward] == ["output"]
+        assert [t.name for t in backward] == ["output"]
+
+    def test_a_filter_takes_the_enum_or_the_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reactor, _ = _connected(monkeypatch)
+        assert reactor.tracks.with_kind("audio") == reactor.tracks.with_kind(TrackKind.AUDIO)
+
+    def test_an_unknown_value_is_refused_rather_than_matching_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty list would read as "the model has none of those", which is a
+        different and misleading answer to a typo."""
+        reactor, _ = _connected(monkeypatch)
+        with pytest.raises(ValueError):
+            reactor.tracks.with_kind("vidoe")
+
+    def test_one_returns_the_single_match(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The shape that replaces the removed client-wide on_frame: the model's
+        one video output, without hardcoding its name."""
+        reactor, _ = _connected(monkeypatch)
+        recvonly = reactor.tracks.with_direction(TrackDirection.RECVONLY)
+        track = recvonly.with_kind(TrackKind.VIDEO).one()
+        assert track.name == "output"
+
+    def test_one_names_the_candidates_when_there_are_several(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reactor, _ = _connected(monkeypatch)
+        with pytest.raises(ValueError, match="2 match: camera, output") as excinfo:
+            reactor.tracks.with_kind(TrackKind.VIDEO).one()
+        assert "Narrow the filter" in str(excinfo.value)
+
+    def test_one_says_so_when_nothing_matches(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reactor, _ = _connected(monkeypatch)
+        with pytest.raises(ValueError, match="no track matches"):
+            reactor.tracks.with_kind(TrackKind.AUDIO).with_direction("sendonly").with_kind(
+                TrackKind.VIDEO
+            ).one()
+
+    def test_an_unresolved_track_matches_no_filter(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Before the session declares anything there is nothing to match against,
+        so a filter is empty rather than guessing."""
+        reactor, _ = _connected(monkeypatch, tracks=[])
+        reactor.track("output")
+        assert reactor.tracks.with_kind(TrackKind.VIDEO) == []
+
+
 class TestDirectionGuards:
     """One test per silent failure the object turns into an error."""
 
