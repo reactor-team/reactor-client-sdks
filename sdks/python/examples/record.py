@@ -7,11 +7,11 @@ request_recording().  Prints the resulting playlist URL and, if --download
 is given, fetches all HLS segments and writes them as a concatenated
 byte stream to the output file.
 
-Uses request_clip()/request_recording() + download_clip() separately,
-deliberately: this example wants the Clip's metadata (session_id, the
-markers, predicted_ready_at_ms) to print regardless of --download. Skip
-straight to `await reactor.download_clip(seconds, path)` /
-`await reactor.download_recording(path)` if all you want is the file.
+Uses request_clip()/request_recording() + download_clip() separately by
+default: this example wants the Clip's metadata (session_id, the markers,
+predicted_ready_at_ms) to print regardless of --download. Pass --simple to
+see the other side instead — reactor.download_clip()/download_recording()
+doing the request and the download in one call, with no Clip in sight.
 
 Usage:
     # Clip of the last 10 seconds
@@ -22,6 +22,9 @@ Usage:
 
     # Download the clip segments to a file
     python -m examples.record --clip 10 --download clip.ts
+
+    # The one-call form: request + download together, no Clip printed
+    python -m examples.record --clip 10 --download clip.ts --simple
 
 Environment variables (overridden by flags):
     REACTOR_API_URL, REACTOR_MODEL, REACTOR_JWT, REACTOR_LOCAL
@@ -36,7 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from reactor_sdk import Clip, ReactorError, download_clip
+from reactor_sdk import Clip, Reactor, ReactorError, download_clip
 
 from .reactor_client import make_reactor
 
@@ -50,6 +53,15 @@ def _parse_args() -> argparse.Namespace:
     group.add_argument("--recording", action="store_true", help="Request a full-session recording")
     p.add_argument(
         "--download", metavar="FILE", help="Download HLS segments and write to FILE (e.g. clip.ts)"
+    )
+    p.add_argument(
+        "--simple",
+        action="store_true",
+        help=(
+            "Use reactor.download_clip()/download_recording() — request and download in one "
+            "call, no Clip metadata printed. Implies --download is where the file goes; without "
+            "it, prints how many bytes came back instead."
+        ),
     )
     p.add_argument("--model", metavar="NAME", help="Model name (overrides REACTOR_MODEL)")
     p.add_argument("--api-url", metavar="URL", help="Coordinator URL (overrides REACTOR_API_URL)")
@@ -76,6 +88,34 @@ async def _download(clip: Clip, out_path: str) -> None:
     print(f"Saved {size_kb} KB to {out_path}", file=sys.stderr)
 
 
+async def _simple(reactor: Reactor, args: argparse.Namespace) -> None:
+    """The other half of this example: request + download in one call, no
+    Clip in sight — reactor.download_clip() / reactor.download_recording()."""
+
+    def on_progress(done: int, total: int) -> None:
+        print(f"  [{done}/{total}]", file=sys.stderr)
+
+    try:
+        if args.recording:
+            print("Requesting + downloading recording…", file=sys.stderr)
+            result = await reactor.download_recording(args.download, on_progress=on_progress)
+        else:
+            print(f"Requesting + downloading clip ({args.clip}s)…", file=sys.stderr)
+            result = await reactor.download_clip(args.clip, args.download, on_progress=on_progress)
+    except ReactorError as exc:
+        print(f"Clip request failed: {exc}", file=sys.stderr)
+        await reactor.disconnect()
+        reactor.close()
+        sys.exit(1)
+
+    if args.download:
+        size_kb = Path(args.download).stat().st_size // 1024
+        print(f"Saved {size_kb} KB to {args.download}", file=sys.stderr)
+    else:
+        assert result is not None  # no path given: bytes, not None, came back
+        print(f"Got {len(result) // 1024} KB back, not written anywhere (pass --download for that)")
+
+
 async def main() -> None:
     args = _parse_args()
 
@@ -96,6 +136,12 @@ async def main() -> None:
     print("Waiting for ready…", file=sys.stderr)
     await asyncio.wait_for(ready.wait(), timeout=60)
     print("Ready.", file=sys.stderr)
+
+    if args.simple:
+        await _simple(reactor, args)
+        await reactor.disconnect()
+        reactor.close()
+        return
 
     clip: Clip
     try:
