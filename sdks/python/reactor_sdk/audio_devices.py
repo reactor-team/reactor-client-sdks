@@ -17,10 +17,15 @@ or both at once, for a model that takes audio and sends it back::
     async with AudioDevices(reactor):
         await asyncio.sleep(30)
 
-Both need `sounddevice`, which is not a dependency of this package —
-``pip install "reactor-sdk[audio]"``. A missing one raises rather than going
-quiet: a caller who constructed a `Speaker` asked for sound, and silence with a
-log line is the failure mode this SDK spends its effort removing.
+This module is deliberately not re-exported from `reactor_sdk`: it is the one part
+of the SDK with a dependency, so importing the package never reaches it and only
+an application that wants a device pays for PortAudio —
+``pip install "reactor-sdk[audio]"``, then
+``from reactor_sdk.audio_devices import Microphone, Speaker``.
+
+A missing `sounddevice` raises rather than going quiet: a caller who constructed a
+`Speaker` asked for sound, and silence with a log line is the failure mode this SDK
+spends its effort removing.
 """
 
 from __future__ import annotations
@@ -67,7 +72,7 @@ def _sounddevice() -> Any:
         raise ModuleNotFoundError(
             "audio devices need sounddevice, which is not a dependency of this "
             'package. Install it with `pip install "reactor-sdk[audio]"`. The SDK '
-            "itself opens no audio device — see reactor_sdk.devices."
+            "itself opens no audio device — see reactor_sdk.audio_devices."
         ) from exc
     return sounddevice
 

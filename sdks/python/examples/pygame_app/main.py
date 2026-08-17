@@ -40,7 +40,8 @@ sys.path.insert(0, str(__file__).rsplit("/", 3)[0] + "/src")
 
 from controller import ReactorController
 
-from reactor_sdk import Reactor, ReactorStatus, Speaker, TrackDirection, TrackKind, TrackList
+from reactor_sdk import Reactor, ReactorStatus, TrackDirection, TrackKind, TrackList
+from reactor_sdk.audio_devices import Speaker
 
 # =============================================================================
 # Configuration

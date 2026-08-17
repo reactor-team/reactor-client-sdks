@@ -42,7 +42,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from reactor_sdk import Microphone
+from reactor_sdk.audio_devices import Microphone
 
 from .reactor_client import make_reactor
 

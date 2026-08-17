@@ -22,8 +22,15 @@ from unittest import mock
 
 import pytest
 
-from reactor_sdk import AudioDevices, Microphone, Reactor, Speaker
-from reactor_sdk.devices import BYTES_PER_SAMPLE, MAX_BUFFER_MS, PREROLL_MS
+from reactor_sdk import Reactor
+from reactor_sdk.audio_devices import (
+    BYTES_PER_SAMPLE,
+    MAX_BUFFER_MS,
+    PREROLL_MS,
+    AudioDevices,
+    Microphone,
+    Speaker,
+)
 
 RATE = 48_000
 MONO = 1
@@ -152,6 +159,41 @@ def reactor(monkeypatch: pytest.MonkeyPatch) -> tuple[Reactor, _FakeLib]:
     return client, lib
 
 
+class TestItStaysOutOfTheMandatoryNamespace:
+    """The reason these live in their own module rather than in `reactor_sdk`.
+
+    They are the one optional feature — `pip install "reactor-sdk[audio]"` — and
+    keeping them off the import path everyone pays for is what makes that honest.
+    """
+
+    def test_importing_the_package_does_not_import_them(self) -> None:
+        import subprocess
+        import sys
+
+        # A fresh interpreter, because this one has already imported the module.
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import reactor_sdk, sys; print('reactor_sdk.audio_devices' in sys.modules)",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert result.stdout.strip() == "False", (
+            "importing reactor_sdk pulled in the optional audio module"
+        )
+
+    def test_they_are_not_reachable_from_the_top_level(self) -> None:
+        import reactor_sdk
+
+        for name in ("Speaker", "Microphone", "AudioDevices"):
+            assert not hasattr(reactor_sdk, name), (
+                f"{name} is in reactor_sdk; it belongs to reactor_sdk.audio_devices"
+            )
+
+
 class TestSpeakerBuffer:
     """What the buffer trades away, and when."""
 
@@ -257,7 +299,7 @@ class TestSpeakerLifecycle:
         monkeypatch.setitem(sys.modules, "sounddevice", None)
         monkeypatch.delitem(sys.modules, "sounddevice")
         monkeypatch.setattr(
-            "reactor_sdk.devices._sounddevice",
+            "reactor_sdk.audio_devices._sounddevice",
             mock.Mock(side_effect=ModuleNotFoundError("audio devices need sounddevice")),
         )
         with pytest.raises(ModuleNotFoundError, match="need sounddevice"):

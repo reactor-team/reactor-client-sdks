@@ -126,7 +126,7 @@ When you do want that, the SDK has the two helpers rather than leaving you to
 write them:
 
 ```python
-from reactor_sdk import Microphone, Speaker
+from reactor_sdk.audio_devices import Microphone, Speaker
 
 speaker = reactor.tracks.with_direction("recvonly").with_kind("audio").one()
 mic = await reactor.track("mic").publish()
@@ -150,7 +150,9 @@ async with AudioDevices(reactor) as audio:
     await asyncio.sleep(30)
 ```
 
-Both need PortAudio, which is not a dependency of this package:
+They live in their own module rather than in `reactor_sdk`, because they are the
+one part of the SDK with a dependency — importing the package never reaches them,
+and installing PortAudio is only for the applications that want a device:
 
 ```bash
 pip install "reactor-sdk[audio]"

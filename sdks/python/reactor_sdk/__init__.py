@@ -33,7 +33,6 @@ from .client import (
     Reactor,
     ReactorStatus,
 )
-from .devices import AudioDevices, Microphone, Speaker
 from .errors import (
     AbortedError,
     BadRequestError,
@@ -57,10 +56,6 @@ from .track import Track, TrackDirection, TrackKind, TrackList
 
 __all__ = [
     "Reactor",
-    # Audio devices, which the SDK never opens on its own.
-    "AudioDevices",
-    "Speaker",
-    "Microphone",
     "ReactorStatus",
     "Track",
     "TrackKind",
