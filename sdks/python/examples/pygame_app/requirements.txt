@@ -7,6 +7,7 @@
 pygame>=2.5.0
 numpy>=1.24.0
 
-# Plays the audio the model sends. Optional — without it the app runs silently,
-# because the SDK deliberately opens no audio device of its own (see audio.py).
+# Plays the audio the model sends, through reactor_sdk.devices.Speaker. Optional —
+# without it the app runs silently, because the SDK deliberately opens no audio
+# device of its own. Installing `reactor-sdk[audio]` brings it in too.
 sounddevice>=0.4.6

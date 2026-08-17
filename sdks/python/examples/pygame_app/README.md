@@ -13,7 +13,8 @@ A pygame-based application demonstrating the Reactor Python SDK with real-time v
 ### Audio
 
 The SDK opens no audio device of its own — no microphone is captured and nothing
-plays on your behalf — so this app does the playback itself, with `sounddevice`.
+plays on your behalf. This app uses the SDK's `Speaker` helper, which needs
+`sounddevice`; without it the app logs why and runs silently.
 
 It plays the model's `recvonly` audio track if there is one, and says which in the
 status bar (`Audio: <track>`, or `Audio: none`). A model with no audio track is

@@ -118,10 +118,38 @@ object exists for. `on("frame", …)` and `on("audio", …)` remain for raw
 client-wide bytes; use a track's `on_frame` for decoded frames, and `.one()` above
 when you do not want to hardcode the name.
 
-**No audio device is ever opened.** A sendonly audio track carries only the PCM
-you push into it, and a model's audio arrives at `on_frame` for you to play with
-whatever you like — nothing is captured from your microphone or played through
-your speakers on your behalf.
+**No audio device is ever opened by the SDK.** A sendonly audio track carries only
+the PCM you push into it, and a model's audio arrives at `on_frame` — nothing is
+captured from your microphone or played through your speakers on your behalf.
+
+When you do want that, the SDK has the two helpers rather than leaving you to
+write them:
+
+```python
+from reactor_sdk import Microphone, Speaker
+
+speaker = reactor.tracks.with_direction("recvonly").with_kind("audio").one()
+mic = await reactor.track("mic").publish()
+
+with Speaker(speaker), Microphone(mic):
+    await asyncio.sleep(30)
+```
+
+`Speaker` plays a recvonly audio track, buffering against the jitter between what
+arrives and what the device asks for; feed it yourself with `submit()` if the PCM
+comes from somewhere else. `Microphone` captures the default input device into a
+sendonly track, in the block size the far end expects.
+
+Both need PortAudio, which is not a dependency of this package:
+
+```bash
+pip install "reactor-sdk[audio]"
+```
+
+Without it they raise, naming the fix — an application that would rather run
+silently can catch that, as `examples/pygame_app` does. And capture from one
+`Microphone` at a time: the SDK feeds every local audio track from one shared
+device, so two would interleave into the same stream rather than give you two.
 
 Naming a track before `connect()` is fine: the session has not declared anything
 yet, so handlers can be registered first and the name is checked as soon as the

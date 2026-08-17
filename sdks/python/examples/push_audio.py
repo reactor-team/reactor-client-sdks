@@ -2,9 +2,10 @@
 """
 Push audio example — stream PCM into a sendonly audio track.
 
-Two modes:
+Three sources:
   --wav FILE   Read a WAV file (any sample rate / channels) and re-sample to 48 kHz mono
   --sine HZ    Generate a sine tone at the given frequency (default: 440 Hz)
+  --mic        Capture the microphone, through the SDK's `Microphone` helper
 
 Audio is pushed in 10 ms chunks (480 samples at 48 kHz, interleaved i16 PCM).
 The loop sleeps `chunk_duration - processing_time` between pushes to deliver
@@ -19,6 +20,9 @@ Usage:
 
     # WAV with a non-default track name
     python -m examples.push_audio --track my_track --wav speech.wav --duration 30
+
+    # The microphone (needs `pip install "reactor-sdk[audio]"`)
+    python -m examples.push_audio --track audio_input --mic --duration 30
 
 Environment variables (overridden by flags):
     REACTOR_API_URL, REACTOR_MODEL, REACTOR_JWT, REACTOR_LOCAL
@@ -37,6 +41,8 @@ from collections.abc import Generator
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from reactor_sdk import Microphone
 
 from .reactor_client import make_reactor
 
@@ -57,6 +63,11 @@ def _parse_args() -> argparse.Namespace:
     )
     src.add_argument(
         "--wav", metavar="FILE", help="Push samples from a WAV file (resampled to 48 kHz mono i16)"
+    )
+    src.add_argument(
+        "--mic",
+        action="store_true",
+        help="Capture the default input device (needs `reactor-sdk[audio]`)",
     )
 
     p.add_argument(
@@ -140,7 +151,12 @@ async def main() -> None:
     args = _parse_args()
     duration = args.duration
 
-    if args.sine is not None:
+    gen = None
+    if args.mic:
+        # No generator: the device produces the audio, on its own thread.
+        if duration is None:
+            duration = 30.0
+    elif args.sine is not None:
         freq = args.sine if args.sine > 0 else 440.0
         if duration is None:
             duration = 30.0
@@ -172,6 +188,19 @@ async def main() -> None:
     # The track knows it is a sendonly audio track, so push_frame below needs no
     # kind in its name and no track name in its arguments.
     track = await reactor.publish_track(args.track)
+
+    if args.mic:
+        # Nothing to pace here: the device delivers on its own thread at its own
+        # rate, which is the rate the far end wants. The helper pushes each block
+        # straight through, so this coroutine only has to wait.
+        with Microphone(track) as mic:
+            print(f"Capturing the microphone for {duration or 30:.0f}s…", file=sys.stderr)
+            await asyncio.sleep(duration or 30)
+        print(f"Done — captured {mic.blocks_sent} blocks", file=sys.stderr)
+        track.unpublish()
+        await reactor.disconnect()
+        reactor.close()
+        return
 
     chunks_sent = 0
     t_start = time.monotonic()
