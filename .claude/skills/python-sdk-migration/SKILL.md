@@ -131,7 +131,7 @@ This is the largest conceptual change and the reason nothing here is a rename.
 |---|---|
 | `disconnect(recoverable: bool = False)` | `disconnect()` — no parameter, **always** preserves the session for `reconnect()`. If old code called `disconnect()` (default `recoverable=False`, terminating the session) and expected that to end things permanently, it now doesn't — call nothing further, or check the platform API for explicit session termination. |
 | `unpublish_track(name) -> None`, async | `unpublish_track(name) -> int`, **sync**. Returns `0`/`-1`, does not raise. Drop the `await`, and check the return value — this is the one operation in the SDK that fails silently by design (see "Known traps" below). |
-| `connect(*, session_id=None, connection_id=None, auto_resume_tracks=True)` | `connect(*, session_id=None)` — `connection_id` and `auto_resume_tracks` are gone. Every output track always starts subscribed; call `pause_track(name)` right after `connect()` for the ones you don't want yet. |
+| `connect(*, session_id=None, connection_id=None, auto_resume_tracks=True)` | `connect(*, session_id=None, connection_id=None)` — `connection_id` is back (added post-1.0.0, closing a rewrite gap; same idea as the old parameter — adopt a connection slot a backend already registered for the session). `auto_resume_tracks` stays gone: every output track always starts subscribed; call `pause_track(name)` right after `connect()` for the ones you don't want yet. |
 | `fetch_jwt_token(...)` | `fetch_jwt(api_key, api_url, *, models=None, max_sessions=None, expires_after=None) -> str` — renamed **and** the signature changed (`api_url` is now required, not read from a default). It is synchronous; wrap it in `asyncio.to_thread()` from async code. |
 | `on(event: ReactorEvent, handler)` | `on(event: str, handler)` — `ReactorEvent` doesn't exist; event names are plain strings (`"status_changed"`, not `"statusChanged"`). |
 | `on_status(func)` / `on_status(ReactorStatus.READY)` / `on_status([READY, WAITING])` | Same three forms, same behavior — this one carried over unchanged. |
@@ -225,16 +225,13 @@ Narrower — three breaking changes, one additive feature, all in the same relea
   [`Track`](https://docs.reactor.inc/sdk-reference/python/track),
   [changelog](https://docs.reactor.inc/changelog/overview).
 - The tables above were verified against `reactor-team/py-sdk` @ `0.8.1` and this repo's
-  `main` as of the 1.0.0 cut (send_command correlation, `Track`, typed errors, synthetic-only
-  ADM). Two items were verified against branches, not `main`, at time of writing — confirm
-  each has actually merged before relying on this skill for that specific item:
-  - The `reactor.on_frame` removal / `TrackList` change (item 5 above): against
-    `douglas/rea-5253-remove-client-wide-on-frame` (PR #33). If unmerged, `Track` exists but
-    the client-wide `on_frame` decorator may still be there too.
-  - The `ReactorFFIError` → `ReactorError` unification (item 2 above): against
-    `fix/python-sdk-unify-reactor-error` (PR #34). If unmerged, the exception base is still
-    named `ReactorFFIError` and the errors table's class names above are the only thing that
-    changes back — everything else in this skill is unaffected either way.
+  `main` as of 2026-08-17 — send_command correlation, `Track`, typed errors, synthetic-only
+  ADM, the `reactor.on_frame` removal / `TrackList` change, the `ReactorFFIError` →
+  `ReactorError` unification, and `connect(connection_id=...)` are all merged to `main`.
+  `download_clip()` / `download_recording()` (would close the `download_clip_as_file()` gap
+  called out above) and a built-in `AudioPlayer` (would close the "no built-in playback" gap
+  above) are open PRs (#36, #38) at time of writing, **not yet on `main`** — check whether
+  either has merged before telling someone that gap is still open.
 
-  If either repo has moved since, spot-check a table row against the actual source before
+  If the repo has moved since, spot-check a table row against the actual source before
   trusting it on a large migration.
