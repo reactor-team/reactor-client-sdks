@@ -16,7 +16,16 @@ with your API key, server-side.
 pip install reactor-sdk
 ```
 
-Requires Python 3.10+.
+Requires Python 3.10+. No runtime dependencies: the SDK reaches its native library
+through `ctypes`.
+
+One optional extra, for the microphone and speaker helpers in
+`reactor_sdk.audio_devices` — it brings PortAudio, and only an application that
+wants a device needs it:
+
+```bash
+pip install "reactor-sdk[audio]"
+```
 
 ## Usage Example
 
@@ -118,6 +127,16 @@ object exists for. `on("frame", …)` and `on("audio", …)` remain for raw
 client-wide bytes; use a track's `on_frame` for decoded frames, and `.one()` above
 when you do not want to hardcode the name.
 
+Naming a track before `connect()` is fine: the session has not declared anything
+yet, so handlers can be registered first and the name is checked as soon as the
+declaration arrives.
+
+The name-based calls — `publish_track`, `pause_track`, `push_video_frame`,
+`push_audio_frame`, `on("frame", …)` — all still work exactly as before. The one
+removal is `reactor.on_frame`; see "Finding a track" above for what replaces it.
+
+### Audio devices
+
 **No audio device is ever opened by the SDK.** A sendonly audio track carries only
 the PCM you push into it, and a model's audio arrives at `on_frame` — nothing is
 captured from your microphone or played through your speakers on your behalf.
@@ -156,14 +175,6 @@ Without it they raise, naming the fix — an application that would rather run
 silently can catch that, as `examples/pygame_app` does. And capture from one
 `Microphone` at a time: the SDK feeds every local audio track from one shared
 device, so two would interleave into the same stream rather than give you two.
-
-Naming a track before `connect()` is fine: the session has not declared anything
-yet, so handlers can be registered first and the name is checked as soon as the
-declaration arrives.
-
-The name-based calls — `publish_track`, `pause_track`, `push_video_frame`,
-`push_audio_frame`, `on("frame", …)` — all still work exactly as before. The one
-removal is `reactor.on_frame`; see "Finding a track" above for what replaces it.
 
 ## Errors
 
