@@ -10,6 +10,7 @@ confusing one.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest import mock
 
@@ -192,6 +193,72 @@ class TestRaisedFromAnOperation:
         with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
             with pytest.raises(ReactorError, match="command 'hello' failed"):
                 await self._reactor().send_command("hello", {})
+
+
+class TestOnErrorEvent:
+    """End to end from the `on_error` callback the FFI would actually call —
+    `TestRaisedFromAnOperation` above covers the completion-callback path, this is
+    the other one `Reactor._on_error` itself has to get right.
+    """
+
+    async def test_fires_the_specific_class_with_a_timestamp(self) -> None:
+        fake_lib = mock.Mock()
+        fake_lib.reactor_create_with_adm = lambda *a: 1234
+
+        reactor = Reactor("https://api.reactor.inc", "m")
+        received: list[ReactorError] = []
+        reactor.on("error", received.append)
+
+        with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
+            reactor._create_handle()
+            try:
+                e_cb = reactor._callbacks_struct.on_error
+                e_cb(
+                    _payload(
+                        code="UNAUTHORIZED", status=401, operation="connect", timestamp_ms=123.0
+                    ),
+                    None,
+                )
+                await asyncio.sleep(0)  # let call_soon_threadsafe's callback run
+            finally:
+                from reactor_sdk.client import _LIVE_CLIENTS
+
+                reactor._handle = None
+                _LIVE_CLIENTS.discard(reactor)
+
+        assert len(received) == 1
+        error = received[0]
+        assert type(error) is UnauthorizedError
+        assert isinstance(error, ReactorError)
+        assert (error.code, error.status, error.operation) == ("UNAUTHORIZED", 401, "connect")
+        assert error.timestamp_ms == 123.0
+
+    async def test_an_unrecognised_code_survives_on_the_base_class(self) -> None:
+        """A model's own rejection code, arriving as an event instead of a raise —
+        the same open-endedness `error_from_payload` guarantees for the exception
+        path must hold here too."""
+        fake_lib = mock.Mock()
+        fake_lib.reactor_create_with_adm = lambda *a: 1234
+
+        reactor = Reactor("https://api.reactor.inc", "m")
+        received: list[ReactorError] = []
+        reactor.on("error", received.append)
+
+        with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
+            reactor._create_handle()
+            try:
+                e_cb = reactor._callbacks_struct.on_error
+                e_cb(_payload(code="PROMPT_REJECTED", message="unsafe"), None)
+                await asyncio.sleep(0)
+            finally:
+                from reactor_sdk.client import _LIVE_CLIENTS
+
+                reactor._handle = None
+                _LIVE_CLIENTS.discard(reactor)
+
+        assert len(received) == 1
+        assert type(received[0]) is ReactorError
+        assert received[0].code == "PROMPT_REJECTED"
 
 
 class TestOneList:
