@@ -7,6 +7,12 @@ request_recording().  Prints the resulting playlist URL and, if --download
 is given, fetches all HLS segments and writes them as a concatenated
 byte stream to the output file.
 
+Uses request_clip()/request_recording() + download_clip() separately,
+deliberately: this example wants the Clip's metadata (session_id, the
+markers, predicted_ready_at_ms) to print regardless of --download. Skip
+straight to `await reactor.download_clip(seconds, path)` /
+`await reactor.download_recording(path)` if all you want is the file.
+
 Usage:
     # Clip of the last 10 seconds
     python -m examples.record --clip 10

@@ -10,12 +10,14 @@ exactly that, so most of this runs a real (loopback) HTTP server instead.
 from __future__ import annotations
 
 import http.server
+import json
 import threading
 from collections.abc import Iterator
+from unittest import mock
 
 import pytest
 
-from reactor_sdk import Clip
+from reactor_sdk import Clip, Reactor
 from reactor_sdk._recording import download_clip
 
 # Distinct, length-different payloads so a swapped or duplicated segment shows
@@ -185,3 +187,67 @@ class TestDownloadClip:
         await download_clip(_clip(f"{server_url}/hls/clip.m3u8"), on_progress=on_progress)
 
         assert seen_from and all(t is not loop_thread for t in seen_from)
+
+
+class TestReactorDownloadConvenience:
+    """`Reactor.download_clip()` / `download_recording()` are `request_*()` +
+    the module-level `download_clip()` in one call — tested through both
+    halves for real (a real HTTP fetch of the resulting playlist), not just
+    that the delegation happens."""
+
+    def _reactor(self, monkeypatch: pytest.MonkeyPatch, server_url: str, kind: str) -> Reactor:
+        payload = json.dumps(
+            {
+                "session_id": "s1",
+                "kind": kind,
+                "start_marker": 0.0,
+                "end_marker": 10.0,
+                "now_marker": 10.0,
+                "predicted_ready_at_ms": 0.0,
+                "playlist_url": f"{server_url}/hls/clip.m3u8",
+            }
+        ).encode()
+
+        fake_lib = mock.Mock()
+        fake_lib.reactor_request_clip = lambda h, duration, completion, ud: completion(
+            1, payload, None, None
+        )
+        fake_lib.reactor_request_recording = lambda h, completion, ud: completion(
+            1, payload, None, None
+        )
+        monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: fake_lib)
+        reactor = Reactor("https://api.reactor.inc", "m", jwt="fake")
+        reactor._handle = 1234
+        return reactor
+
+    async def test_download_clip_requests_then_downloads(
+        self, monkeypatch: pytest.MonkeyPatch, server_url: str
+    ) -> None:
+        reactor = self._reactor(monkeypatch, server_url, kind="clip")
+        data = await reactor.download_clip(10)
+        assert data == _SEG0 + _SEG1
+
+    async def test_download_clip_streams_to_a_path(
+        self, monkeypatch: pytest.MonkeyPatch, server_url: str, tmp_path: object
+    ) -> None:
+        reactor = self._reactor(monkeypatch, server_url, kind="clip")
+        out = tmp_path / "clip.ts"  # type: ignore[operator]
+        result = await reactor.download_clip(10, out)
+        assert result is None
+        assert out.read_bytes() == _SEG0 + _SEG1
+
+    async def test_download_recording_requests_then_downloads(
+        self, monkeypatch: pytest.MonkeyPatch, server_url: str
+    ) -> None:
+        reactor = self._reactor(monkeypatch, server_url, kind="recording")
+        data = await reactor.download_recording()
+        assert data == _SEG0 + _SEG1
+
+    async def test_download_recording_streams_to_a_path(
+        self, monkeypatch: pytest.MonkeyPatch, server_url: str, tmp_path: object
+    ) -> None:
+        reactor = self._reactor(monkeypatch, server_url, kind="recording")
+        out = tmp_path / "recording.ts"  # type: ignore[operator]
+        result = await reactor.download_recording(out)
+        assert result is None
+        assert out.read_bytes() == _SEG0 + _SEG1

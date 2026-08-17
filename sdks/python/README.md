@@ -185,27 +185,28 @@ list above.
 
 ## Recordings
 
-`request_clip(seconds)` and `request_recording()` return a `Clip` naming an HLS
-playlist that expires — Reactor does not host clips. `download_clip()` fetches
-every segment it names:
-
 ```python
-clip = await reactor.request_clip(10)
-await download_clip(clip, "clip.ts")   # streamed straight to the file, returns None
+await reactor.download_clip(10, "clip.ts")   # last 10 seconds, streamed to the file
+await reactor.download_recording("full.ts")  # whole session, streamed to the file
 
-data = await download_clip(clip)       # no path: returns the assembled bytes instead
+data = await reactor.download_clip(10)       # no path: returns the assembled bytes instead
 ```
 
 Give it a path and it streams the download straight there without holding the whole
-thing in memory — the one that matters for `request_recording()`, which has no upper
+thing in memory — the one that matters for `download_recording()`, which has no upper
 bound on length. Omit the path and it returns the assembled bytes, which does mean
 holding the whole clip in memory: fine for a short clip, not the default choice for
-a long recording.
+a long recording. Either way it's the interleaved MPEG-TS bytes, not an MP4 — playable
+as-is by most players (`ffplay`, VLC, mpv); remux with `ffmpeg -i clip.ts -c copy
+clip.mp4` if you need that container specifically. Pass `on_progress=lambda done,
+total: ...` to track it.
 
-Either way it's the interleaved MPEG-TS bytes, not an MP4 — playable as-is by most
-players (`ffplay`, VLC, mpv); remux with `ffmpeg -i clip.ts -c copy clip.mp4` if you
-need that container specifically. Pass `on_progress=lambda done, total: ...` to
-track it.
+`download_clip()`/`download_recording()` are `request_clip(seconds)` /
+`request_recording()` plus the download, in one call. Reach for the two-step form —
+`clip = await reactor.request_clip(10)`, then `download_clip(clip, path)` (the
+module-level function, not the method above) when you're ready — if you also want
+`clip.session_id`, its `start_marker`/`end_marker`, or `predicted_ready_at_ms`, or want
+to decide whether to download it at all before you do.
 
 ## Documentation & Resources
 

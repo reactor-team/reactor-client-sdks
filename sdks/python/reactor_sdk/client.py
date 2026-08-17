@@ -13,7 +13,7 @@ import weakref
 from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, overload
 
 from ._auth import fetch_jwt
 from ._ffi import (
@@ -31,6 +31,7 @@ from ._ffi import (
 # path. The two media helpers have no caller left here now that the client-wide
 # `on_frame` is gone — `Track` uses them — but the import path stays.
 from ._media import _bgra_to_rgb_array, _positional_arity  # noqa: F401  (re-export)
+from ._recording import download_clip
 from .errors import ReactorError, error_for_code, error_from_payload  # noqa: F401  (re-export)
 from .track import Track, TrackDirection, TrackKind, TrackList
 
@@ -1144,6 +1145,68 @@ class Reactor:
             lambda fn: lib.reactor_request_recording(ctypes.c_void_p(handle), fn, None)
         )
         return Clip(**result)
+
+    @overload
+    async def download_clip(
+        self,
+        duration_seconds: float,
+        path: None = None,
+        *,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> bytes: ...
+    @overload
+    async def download_clip(
+        self,
+        duration_seconds: float,
+        path: str | os.PathLike,
+        *,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> None: ...
+    async def download_clip(
+        self,
+        duration_seconds: float,
+        path: str | os.PathLike | None = None,
+        *,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> bytes | None:
+        """`request_clip()` and download it, in one call.
+
+        For when the only thing you want is the file — `request_clip()`
+        directly if you also want `session_id`, the exact `start_marker` /
+        `end_marker` it landed on, or want to defer, redirect, or skip the
+        download depending on what it says.
+        """
+        clip = await self.request_clip(duration_seconds)
+        return await download_clip(clip, path, on_progress=on_progress)
+
+    @overload
+    async def download_recording(
+        self,
+        path: None = None,
+        *,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> bytes: ...
+    @overload
+    async def download_recording(
+        self,
+        path: str | os.PathLike,
+        *,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> None: ...
+    async def download_recording(
+        self,
+        path: str | os.PathLike | None = None,
+        *,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> bytes | None:
+        """`request_recording()` and download it, in one call.
+
+        Prefer passing `path`: a full-session recording has no upper bound on
+        length, and only the streamed-to-disk form avoids holding the whole
+        thing in memory — see `download_clip()` (the module-level function).
+        """
+        clip = await self.request_recording()
+        return await download_clip(clip, path, on_progress=on_progress)
 
     # ------------------------------------------------------------------
     # File upload
