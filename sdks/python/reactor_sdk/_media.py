@@ -22,8 +22,8 @@ def _numpy() -> Any:
     except ModuleNotFoundError as exc:  # pragma: no cover - depends on the environment
         raise ModuleNotFoundError(
             "this path delivers or accepts numpy arrays, and numpy is not installed. "
-            'Install it, or use the raw-bytes forms — on("frame", ...) / '
-            'on("audio", ...) to receive, and bytes with explicit dimensions to send.'
+            "Install it, or use the raw-bytes forms — a track's on_raw_frame() to "
+            "receive, and bytes with explicit dimensions to send."
         ) from exc
     return np
 

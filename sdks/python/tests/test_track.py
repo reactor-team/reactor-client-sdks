@@ -450,18 +450,35 @@ class TestOnFrame:
 
         assert seen == [10]
 
-    def test_the_client_wide_event_still_sees_everything(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(("event", "kind"), [("frame", "video"), ("audio", "audio")])
+    def test_the_client_wide_media_events_are_refused(
+        self, monkeypatch: pytest.MonkeyPatch, event: str, kind: str
     ) -> None:
-        """Per-track delivery is additive. `on("frame", ...)` predates it and its
-        handlers expect every frame, with the argument list they were written for."""
+        """Refused at registration, not accepted and left silent.
+
+        Media is delivered per track now. A handler registered on the old
+        client-wide name would sit there looking live and never fire, which is the
+        failure this object exists to end — and the hardest kind to find, since
+        nothing at all happens."""
+        reactor, _ = _connected(monkeypatch)
+
+        with pytest.raises(ValueError, match="per track") as excinfo:
+            reactor.on(event, lambda *args: None)
+
+        # The error has to carry the way out, not just the refusal.
+        assert "on_raw_frame" in str(excinfo.value)
+        assert f'with_kind("{kind}")' in str(excinfo.value)
+
+    def test_no_frame_reaches_the_client_wide_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The delivery side, not just the registration side: nothing fires the bare
+        event any more, so a handler smuggled into the table directly stays quiet."""
         reactor, _ = _connected(monkeypatch)
         seen: list[tuple] = []
-        reactor.on("frame", lambda *args: seen.append(args))
+        reactor._handlers.setdefault("frame", []).append(lambda *args: seen.append(args))
 
-        reactor._fire("frame", b"\x00" * 4, 1, 1, 7, 8, b"tag")
+        reactor._fire_on_track("frame", b"output", b"\x00" * 4, 1, 1, 7, 8, b"tag")
 
-        assert seen == [(b"\x00" * 4, 1, 1, 7, 8, b"tag")]
+        assert seen == []
 
     def test_a_handler_is_given_as_much_as_it_asks_for(
         self, monkeypatch: pytest.MonkeyPatch

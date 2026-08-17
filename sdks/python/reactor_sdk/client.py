@@ -13,7 +13,7 @@ import weakref
 from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, BinaryIO, overload
+from typing import Any, BinaryIO, ClassVar, overload
 
 from ._auth import DEFAULT_API_URL, fetch_jwt
 from ._ffi import (
@@ -116,8 +116,8 @@ atexit.register(_close_live_clients)
 #: `reactor_create_with_adm` documents as "no capture device, no playout".
 #:
 #: Nothing here opens a microphone or a speaker. A sendonly audio track carries
-#: only the PCM the caller pushes into it, and a model's audio arrives at
-#: `on("audio", ...)` or a track's `on_frame` for the caller to play.
+#: only the PCM the caller pushes into it, and a model's audio arrives at that
+#: track's `on_frame` for the caller to play.
 #:
 #: The alternative — the platform module, which captures and plays through the
 #: real devices — was reachable through an `adm_mode` argument and is not any
@@ -253,8 +253,29 @@ class Reactor:
     # Event registration
     # ------------------------------------------------------------------
 
+    #: Event -> track kind, for the two client-wide media events that no longer
+    #: exist. Media is delivered per track, so these are refused at registration:
+    #: accepting a handler that can never fire is the silent failure the `Track`
+    #: object exists to end, and it would be one nobody could find.
+    _MEDIA_EVENTS: ClassVar[dict[str, str]] = {"frame": "video", "audio": "audio"}
+
     def on(self, event: str, handler: Callable) -> None:
-        """Register a handler for an event name."""
+        """Register a handler for an event name.
+
+        Media is not among them: it is delivered per track, so it is registered on
+        the track — see `Track.on_frame` and `Track.on_raw_frame`.
+        """
+        kind = self._MEDIA_EVENTS.get(event)
+        if kind is not None:
+            raise ValueError(
+                f"on({event!r}) does not deliver anything: media is per track, and a "
+                f"single handler fed every recvonly {kind} track at once cannot tell "
+                f"them apart. Register on the track instead — "
+                f"reactor.track(name).on_frame for decoded frames, .on_raw_frame for "
+                f"the same bytes with the same arguments. To reach the track without "
+                f"naming it: "
+                f'reactor.tracks.with_direction("recvonly").with_kind("{kind}").one().'
+            )
         self._handlers.setdefault(event, []).append(handler)
 
     # ------------------------------------------------------------------
@@ -573,9 +594,6 @@ class Reactor:
                 else b""
             )
             pixels = bytes(frame)
-            # The client-wide event first, unchanged: it predates per-track delivery
-            # and every handler registered on it expects every frame.
-            r._fire("frame", pixels, width, height, frame_id, timestamp_us, ud)
             r._fire_on_track(
                 "frame", track_bytes, pixels, width, height, frame_id, timestamp_us, ud
             )
@@ -597,7 +615,6 @@ class Reactor:
                 return
             arr = (ctypes.c_int16 * num_samples).from_address(data_ptr)
             pcm = bytes(arr)
-            r._fire("audio", pcm, num_samples, sample_rate, channels)
             r._fire_on_track("audio", track_bytes, pcm, num_samples, sample_rate, channels)
 
         # Wrap with ctypes CFUNCTYPE

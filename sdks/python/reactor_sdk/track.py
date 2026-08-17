@@ -412,9 +412,8 @@ class Track:
         exposed. What :meth:`on_frame` adds on top is the numpy conversion, and
         this is the same frames without it.
 
-        The same routing as :meth:`on_frame`, then, and the same arguments the
-        client-wide events carry — so a handler written against ``on("frame", ...)``
-        moves here unchanged and starts seeing one track instead of all of them::
+        The same routing as :meth:`on_frame`, then, without the conversion. Every
+        argument the frame arrived with is passed straight through::
 
             @output.on_raw_frame
             def forward(bgra, width, height, frame_id, timestamp_us, user_data): ...
