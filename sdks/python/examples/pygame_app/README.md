@@ -5,9 +5,19 @@ A pygame-based application demonstrating the Reactor Python SDK with real-time v
 ## Features
 
 - Real-time video stream display from Reactor models
+- Speaker playback of the model's audio track, when it declares one
 - Dynamic controller UI that builds controls based on model capabilities
 - Support for sliders, checkboxes, dropdowns, and text inputs
 - Automatic command execution when adjusting slider values
+
+### Audio
+
+The SDK opens no audio device of its own — no microphone is captured and nothing
+plays on your behalf — so this app does the playback itself, with `sounddevice`.
+
+It plays the model's `recvonly` audio track if there is one, and says which in the
+status bar (`Audio: <track>`, or `Audio: none`). A model with no audio track is
+silent and says so; so is a run without `sounddevice` installed, which logs why.
 
 ## Prerequisites
 
