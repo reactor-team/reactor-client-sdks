@@ -725,8 +725,30 @@ class Reactor:
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self, *, session_id: str | None = None) -> None:
-        """Connect: create a session and establish WebRTC transport."""
+    async def connect(
+        self,
+        *,
+        session_id: str | None = None,
+        connection_id: int | None = None,
+    ) -> None:
+        """Connect: create a session and establish WebRTC transport.
+
+        `connection_id` adopts a connection a backend already registered for
+        this session — the connection-level analogue of `session_id` adopting
+        an existing session. Leave it `None` to register a new one, which is
+        what every single-connection client wants.
+        """
+        # Checked first, before anything here has a side effect: ctypes.c_uint32
+        # does not raise for a value outside its range, it wraps modulo 2**32,
+        # so a caller's -1 or a stray extra digit would silently adopt a
+        # different, real connection instead of failing. session_id needs no
+        # equivalent check — it is already a string, with no wrong-but-valid
+        # uint32 a typo in it could produce.
+        if connection_id is not None and not 0 <= connection_id < 2**32:
+            raise ValueError(
+                f"connection_id must fit in a uint32 (0 to {2**32 - 1}), got {connection_id}"
+            )
+
         token_changed = await self._resolve_token(session_id)
         if token_changed and self._handle is not None:
             # The native client is handed its token when it is created, so a re-minted
@@ -737,9 +759,22 @@ class Reactor:
             self._create_handle()
         lib = get_lib()
         sid = session_id.encode() if session_id else None
+        # A local, not inlined into the call: reactor_connect reads *cid before
+        # returning (it dispatches to a tokio task, not the completion, for the
+        # actual connect), so its lifetime only needs to outlast this statement —
+        # but byref() needs a named object to point at, not a temporary.
+        cid = ctypes.c_uint32(connection_id) if connection_id is not None else None
         handle = self._handle
 
-        await self._async_op(lambda fn: lib.reactor_connect(ctypes.c_void_p(handle), sid, fn, None))
+        await self._async_op(
+            lambda fn: lib.reactor_connect(
+                ctypes.c_void_p(handle),
+                sid,
+                ctypes.byref(cid) if cid is not None else None,
+                fn,
+                None,
+            )
+        )
 
     async def reconnect(self) -> None:
         """Reconnect to the current session after a transient failure."""
