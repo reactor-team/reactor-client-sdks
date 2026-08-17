@@ -118,6 +118,17 @@ class Speaker:
         self._pcm = bytearray()
         self._stream: Any | None = None
 
+        # Guards the lifecycle — `_closed`, `_stream`, and the open sequence — and is
+        # deliberately not `_lock`. Without it, a frame arriving as the speaker is
+        # being stopped can pass the `_closed` check, `stop` can then find no stream
+        # to close, and the frame can go on to open one that nothing ever closes:
+        # playback outliving the teardown that was supposed to end it.
+        #
+        # Separate from `_lock` because `_fill` takes that one on PortAudio's thread
+        # while `_open` calls into PortAudio holding this one. Sharing them would let
+        # a callback primed by `stream.start()` wait on the thread starting it.
+        self._lifecycle = threading.Lock()
+
         # Set from the first frame rather than assumed: it reports the rate and the
         # channel count, and guessing wrong renders noise rather than failing.
         self._format: tuple[int, int] | None = None
@@ -149,11 +160,17 @@ class Speaker:
 
     def stop(self) -> None:
         """Close the device and stop playing. Safe to call twice."""
-        self._closed = True
+        # Under the lock so a frame in flight cannot be mid-open: it either sees
+        # `_closed` and returns, or finishes opening and hands the stream over here.
+        with self._lifecycle:
+            self._closed = True
+            stream, self._stream = self._stream, None
+
         if self._track is not None:
             self._track.off_frame(self._on_raw_frame)
 
-        stream, self._stream = self._stream, None
+        # Closed outside the lock: closing dispatches onto PortAudio's threads and
+        # waits for them, and holding a lock across that is the shape that deadlocks.
         if stream is not None:
             try:
                 stream.stop()
@@ -209,23 +226,24 @@ class Speaker:
         blocks for long: the alternative is holding up delivery, which costs audio
         before it reaches here.
         """
-        if self._closed:
-            return
-
-        if self._format is None:
-            self._open(sample_rate, channels)
-            if self._stream is None:
+        with self._lifecycle:
+            if self._closed:
                 return
-        elif self._format != (sample_rate, channels):
-            # Renegotiation could in principle change this. Reopening mid-stream
-            # would drop whatever is buffered; saying so beats playing it at the
-            # wrong rate, which is heard as the wrong pitch.
-            _log.warning(
-                "speaker: audio format changed from %s to %s; ignoring the new stream",
-                self._format,
-                (sample_rate, channels),
-            )
-            return
+
+            if self._format is None:
+                self._open(sample_rate, channels)
+                if self._stream is None:
+                    return
+            elif self._format != (sample_rate, channels):
+                # Renegotiation could in principle change this. Reopening mid-stream
+                # would drop whatever is buffered; saying so beats playing it at the
+                # wrong rate, which is heard as the wrong pitch.
+                _log.warning(
+                    "speaker: audio format changed from %s to %s; ignoring the new stream",
+                    self._format,
+                    (sample_rate, channels),
+                )
+                return
 
         with self._lock:
             self._pcm += pcm

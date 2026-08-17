@@ -199,15 +199,19 @@ async def main() -> None:
 
     print("Connecting…", file=sys.stderr)
     await reactor.connect()
-    await asyncio.wait_for(ready.wait(), timeout=60)
-    print("Ready. Publishing track and pushing audio…", file=sys.stderr)
 
-    # The track knows it is a sendonly audio track, so push_frame below needs no
-    # kind in its name and no track name in its arguments.
     track = None
     chunks_sent = 0
     t_start = time.monotonic()
+    # The wait for ready goes inside: connect() has already created the session, so a
+    # timeout escaping this block would leave it orphaned. A failed connect() is the
+    # one case with no session to release, which is why it stays outside.
     try:
+        await asyncio.wait_for(ready.wait(), timeout=60)
+        print("Ready. Publishing track and pushing audio…", file=sys.stderr)
+
+        # The track knows it is a sendonly audio track, so push_frame below needs no
+        # kind in its name and no track name in its arguments.
         track = await reactor.publish_track(args.track)
 
         if args.mic:

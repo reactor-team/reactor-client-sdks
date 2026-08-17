@@ -17,6 +17,8 @@ from __future__ import annotations
 import ctypes
 import json
 import sys
+import threading
+import time
 from typing import Any
 from unittest import mock
 
@@ -331,6 +333,44 @@ class TestSpeakerLifecycle:
         before = len(speaker._pcm)
         client._fire_on_track("audio", b"speech", frames(10), 480, RATE, MONO)
         assert len(speaker._pcm) == before, "nothing should arrive after stop"
+
+    def test_a_stop_during_an_open_does_not_leak_the_stream(self, sd: _FakeSoundDevice) -> None:
+        """The race the lifecycle lock exists for.
+
+        A frame arriving as the speaker is stopped used to pass the `_closed` check,
+        `stop` would then find no stream to close, and the frame would go on to open
+        one nothing ever closed — playback outliving its own teardown, with the
+        device held open. Reproduced by making the open slow and stopping during it.
+        """
+        speaker = Speaker().start()
+        opening = threading.Event()
+        may_finish = threading.Event()
+        real_stream = sd.RawOutputStream
+
+        def slow_open(**kwargs: Any) -> _FakeStream:
+            opening.set()
+            may_finish.wait(timeout=2)
+            return real_stream(**kwargs)
+
+        sd.RawOutputStream = slow_open  # type: ignore[method-assign]
+
+        submitting = threading.Thread(target=speaker.submit, args=(frames(10), RATE, MONO))
+        submitting.start()
+        assert opening.wait(timeout=2), "the open never started"
+
+        stopping = threading.Thread(target=speaker.stop)
+        stopping.start()
+        # Long enough for stop to reach the lock. Without the fix there is no lock to
+        # reach, so it runs straight through and the assertion below fails — which is
+        # what makes this a regression test rather than a timing coincidence.
+        time.sleep(0.05)
+        may_finish.set()
+
+        submitting.join(timeout=2)
+        stopping.join(timeout=2)
+
+        assert sd.output is not None, "the fake should have been constructed"
+        assert sd.output.closed, "a stream opened during stop was left open"
 
     def test_as_a_context_manager(self, sd: _FakeSoundDevice) -> None:
         with Speaker() as speaker:

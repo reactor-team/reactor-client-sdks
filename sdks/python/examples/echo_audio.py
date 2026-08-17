@@ -75,12 +75,15 @@ async def main() -> None:
 
     print("Connecting…", file=sys.stderr)
     await reactor.connect()
-    await asyncio.wait_for(ready.wait(), timeout=60)
 
-    # Everything below can fail, and the session this process created has to be
-    # released either way — a creator that goes away without disconnecting leaves it
-    # orphaned, and the next run cannot start until that clears.
+    # Everything below can fail — including the wait for ready, which is the easiest
+    # one to get wrong: connect() has already created the session by then, so a
+    # timeout that escapes this block leaves it orphaned, and the next run cannot
+    # start until that clears. A failed connect() is the one case with no session to
+    # release, which is why it stays outside.
     try:
+        await asyncio.wait_for(ready.wait(), timeout=60)
+
         audio = reactor.tracks.with_kind("audio")
         incoming = audio.with_direction("recvonly")
         outgoing = audio.with_direction("sendonly")
