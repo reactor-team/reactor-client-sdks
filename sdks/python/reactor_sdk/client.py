@@ -800,8 +800,19 @@ class Reactor:
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self, *, session_id: str | None = None) -> None:
-        """Connect: create a session and establish WebRTC transport."""
+    async def connect(
+        self,
+        *,
+        session_id: str | None = None,
+        connection_id: int | None = None,
+    ) -> None:
+        """Connect: create a session and establish WebRTC transport.
+
+        `connection_id` adopts a connection a backend already registered for
+        this session — the connection-level analogue of `session_id` adopting
+        an existing session. Leave it `None` to register a new one, which is
+        what every single-connection client wants.
+        """
         token_changed = await self._resolve_token(session_id)
         if token_changed and self._handle is not None:
             # The native client is handed its token when it is created, so a re-minted
@@ -812,9 +823,22 @@ class Reactor:
             self._create_handle()
         lib = get_lib()
         sid = session_id.encode() if session_id else None
+        # A local, not inlined into the call: reactor_connect reads *cid before
+        # returning (it dispatches to a tokio task, not the completion, for the
+        # actual connect), so its lifetime only needs to outlast this statement —
+        # but byref() needs a named object to point at, not a temporary.
+        cid = ctypes.c_uint32(connection_id) if connection_id is not None else None
         handle = self._handle
 
-        await self._async_op(lambda fn: lib.reactor_connect(ctypes.c_void_p(handle), sid, fn, None))
+        await self._async_op(
+            lambda fn: lib.reactor_connect(
+                ctypes.c_void_p(handle),
+                sid,
+                ctypes.byref(cid) if cid is not None else None,
+                fn,
+                None,
+            )
+        )
 
     async def reconnect(self) -> None:
         """Reconnect to the current session after a transient failure."""

@@ -79,6 +79,7 @@ def _load() -> ctypes.CDLL:
     lib.reactor_connect.argtypes = [
         ctypes.c_void_p,  # handle
         ctypes.c_char_p,  # session_id (nullable)
+        ctypes.POINTER(ctypes.c_uint32),  # connection_id (nullable)
         ctypes.c_void_p,  # completion (nullable)
         ctypes.c_void_p,  # userdata
     ]

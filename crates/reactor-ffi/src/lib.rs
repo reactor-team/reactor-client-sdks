@@ -727,13 +727,17 @@ macro_rules! async_op {
 ///
 /// # Safety
 ///
-/// `session_id` may be null to create a new session. `completion` is invoked
-/// exactly once, on a tokio thread, and must stay callable until it fires — which
-/// may be after the awaiting caller has given up.
+/// `session_id` may be null to create a new session. `connection_id`, if
+/// non-null, must point to a valid, readable `uint32_t` for the duration of this
+/// call — it is read synchronously, before this function returns, so the pointee
+/// need not outlive the call the way `session_id`'s string does not either.
+/// `completion` is invoked exactly once, on a tokio thread, and must stay
+/// callable until it fires — which may be after the awaiting caller has given up.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_connect(
     handle: *mut ReactorHandle,
     session_id: *const c_char,
+    connection_id: *const u32,
     completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
     userdata: *mut c_void,
 ) {
@@ -742,6 +746,7 @@ pub unsafe extern "C" fn reactor_connect(
     } else {
         Some(CStr::from_ptr(session_id).to_string_lossy().into_owned())
     };
+    let cid = connection_id.as_ref().copied();
     async_op!(
         "connect",
         handle,
@@ -750,7 +755,7 @@ pub unsafe extern "C" fn reactor_connect(
         move |r: Arc<Reactor>, tasks: TaskSet| async move {
             r.connect(ConnectOptions {
                 session_id: sid,
-                connection_id: None,
+                connection_id: cid,
             })
             .await?;
             let r2 = r.clone();
@@ -1497,6 +1502,7 @@ mod tests {
             reactor_connect(
                 std::ptr::null_mut(),
                 std::ptr::null(),
+                std::ptr::null(),
                 Some(count_completion),
                 std::ptr::null_mut(),
             );
@@ -1578,5 +1584,27 @@ mod tests {
         unsafe {
             assert_eq!(copy_bytes(data.as_ptr(), data.len()), vec![1, 2, 3, 4]);
         }
+    }
+
+    // `reactor_connect`'s `connection_id` follows the same nullable-pointer
+    // convention as every other optional argument in this file, but it is the
+    // first `Option<u32>` (everything else optional is a string or a callback) —
+    // these pin that `.as_ref().copied()` reads it the same way a binding would
+    // have to write it: a null pointer for `None`, a pointer to a live `u32` for
+    // `Some`. `establish_transport`'s own handling of the resulting value is
+    // reactor-core's to test; there is no mock coordinator in this crate or that
+    // one to drive a real `reactor_connect` call end to end (session_id's
+    // adoption path is exactly as untested past this boundary).
+    #[test]
+    fn a_null_connection_id_pointer_is_none() {
+        let ptr: *const u32 = std::ptr::null();
+        assert_eq!(unsafe { ptr.as_ref().copied() }, None);
+    }
+
+    #[test]
+    fn a_connection_id_pointer_is_read_before_the_call_returns() {
+        let value: u32 = 42;
+        let ptr: *const u32 = &value;
+        assert_eq!(unsafe { ptr.as_ref().copied() }, Some(42));
     }
 }
