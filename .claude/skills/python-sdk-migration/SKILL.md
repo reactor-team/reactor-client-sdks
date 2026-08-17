@@ -103,16 +103,16 @@ This is the largest conceptual change and the reason nothing here is a rename.
 | `publish_track(name, track: MediaStreamTrack)` | `publish_track(name) -> Track`, then push raw frames into it: `push_video_frame(name, bgra_bytes, w, h)` / `push_audio_frame(name, pcm_bytes, samples, ...)`, or the object form `track.push_frame(data)` — see [`Track`](../../sdks/python/reactor_sdk/track.py). You build/capture the media yourself (OpenCV, a file, a synthesizer); there is no `aiortc` track to hand over. |
 | `get_remote_tracks() -> dict[str, MediaStreamTrack]` | Nothing hands you a media object. Decoded frames arrive via `on("frame", ...)` / `on("audio", ...)` (raw, client-wide), or a `Track`'s `on_frame()`/`on_raw_frame()` (scoped to one track — see the next two rows; there is no client-wide `reactor.on_frame` anymore). |
 | `set_frame_callback(callback)` | `track.on_frame` (decorator, per-track) — found via `reactor.track(name)` or `reactor.tracks.with_kind(...).with_direction(...).one()`. There is no client-wide equivalent; see item 5 under ["Within this repo: pre-1.0 → 1.0.0"](#within-this-repo-pre-1-0-1-0-0). |
-| `@reactor.on_track(name)` — a decorator **factory**, pre-filtered by name | `@reactor.on_track` — a **bare** decorator, fires `(name, mid)` for every track; filter by name yourself, or use `reactor.track(name).on_frame` to scope to one track without filtering in the handler body. |
-| `@reactor.on_frame` — client-wide, video only | **Removed.** Register on a [`Track`](../../sdks/python/reactor_sdk/track.py) instead: `reactor.track(name).on_frame` by name, or `reactor.tracks.with_direction("recvonly").with_kind("video").one().on_frame` when you don't want to hardcode the name. `reactor.tracks` is a `TrackList` — a `list[Track]` with `with_kind()`/`with_direction()` filters and `.one()`. The raw `on("frame", ...)` / `on("audio", ...)` events are unaffected. |
-| Real microphone/speaker via the platform audio device module | **Removed, no replacement.** Every `Reactor` now forces synthetic-only audio: a `sendonly` audio track carries only PCM you push with `push_audio_frame()`/`track.push_frame()`, and a model's audio must be played back explicitly (`on("audio", ...)` → your own playback, e.g. `sounddevice`). There is no constructor flag to opt back into real devices. If the old code relied on the platform module capturing a live mic automatically, that capability is gone — budget time to build a capture/playback path, not just swap an argument. |
+| `@reactor.on_track(name)` — a decorator **factory**, pre-filtered by name | `@reactor.on_track` — a **bare** decorator, fires with the resolved [`Track`](../../sdks/python/reactor_sdk/track.py) itself (not a bare name) for every track; filter on `track.name` yourself, or use `reactor.track(name).on_frame` to scope to one track without filtering in the handler body. `track.mid` carries the WebRTC media stream id the old `mid` argument did. |
+| `@reactor.on_frame` — client-wide, video only | **Removed.** Register on a `Track` instead: `reactor.track(name).on_frame` by name, or `reactor.tracks.with_direction("recvonly").with_kind("video").one().on_frame` when you don't want to hardcode the name. `reactor.tracks` is a `TrackList` — a `list[Track]` with `with_kind()`/`with_direction()` filters and `.one()`. The raw `on("frame", ...)` / `on("audio", ...)` events are unaffected. |
+| Real microphone/speaker via the platform audio device module | Every `Reactor` still forces synthetic-only audio at the transport level — no constructor flag opts back into a real device there. But `reactor_sdk.audio_devices.Speaker`/`Microphone` (added post-1.0.0) wrap a `sounddevice` stream around a `Track` for you: `Speaker(reactor.track("output"))` plays a `recvonly` track through real speakers, `Microphone(await reactor.track("mic").publish())` captures the real mic into a `sendonly` track. Context managers, not automatic — construct and enter them explicitly, they don't come with the session. |
 
 ### Recording: no more `RecordingClient`
 
 | Old | New |
 |---|---|
 | `reactor.recording` returns a separate `RecordingClient` with its own `request_clip()`, `request_recording()`, `download_clip_as_file()`, `close()` | `request_clip(duration_seconds)` / `request_recording()` are directly on `Reactor`, returning a `Clip`. No separate client object, no `.close()` to manage. |
-| `download_clip_as_file(...)` (on `Reactor` or `RecordingClient`) | No equivalent. Fetch `clip.playlist_url` (an HLS manifest) and concatenate its `.ts` segments yourself — see [`examples/record.py`](../../sdks/python/examples/record.py) for the runnable version, or the pattern in the public docs' [Recordings](https://docs.reactor.inc/concepts/recordings) page. |
+| `download_clip_as_file(...)` (on `Reactor` or `RecordingClient`) | [`download_clip(clip, path=None)`](../../sdks/python/reactor_sdk/_recording.py) (module-level, exported from `reactor_sdk`) or, skipping `request_clip()`/`request_recording()` entirely, [`reactor.download_clip(seconds, path=None)`](../../sdks/python/reactor_sdk/client.py) / `reactor.download_recording(path=None)`. Given `path` it streams straight there and returns `None`; without one it returns the assembled bytes. Interleaved MPEG-TS, not the old fMP4 — playable as-is by most players, remux with `ffmpeg -c copy` if that container is specifically needed. See [`examples/record.py`](../../sdks/python/examples/record.py) (`--simple` flag for the one-call form) or the public docs' [Recordings](https://docs.reactor.inc/concepts/recordings) page. |
 
 ### Errors: same two class names, different meaning — read this even if the names match
 
@@ -129,8 +129,8 @@ This is the largest conceptual change and the reason nothing here is a rename.
 
 | Old | New |
 |---|---|
-| `disconnect(recoverable: bool = False)` | `disconnect()` — no parameter, **always** preserves the session for `reconnect()`. If old code called `disconnect()` (default `recoverable=False`, terminating the session) and expected that to end things permanently, it now doesn't — call nothing further, or check the platform API for explicit session termination. |
-| `unpublish_track(name) -> None`, async | `unpublish_track(name) -> int`, **sync**. Returns `0`/`-1`, does not raise. Drop the `await`, and check the return value — this is the one operation in the SDK that fails silently by design (see "Known traps" below). |
+| `disconnect(recoverable: bool = False)` | `disconnect()` — no parameter, **always** terminates the session server-side, same as the old default (`recoverable=False`). There is no way to make it preserve the session instead. If old code called `disconnect(True)` expecting the session to survive for a later resume, call [`reconnect()`](../../sdks/python/reactor_sdk/client.py) directly now instead of `disconnect()` + `connect()` — it tears the live connection down itself without ending the session, and works from any status including `ready`, not only after a drop. |
+| `unpublish_track(name) -> None`, async | `unpublish_track(name) -> None`, **sync**. Drop the `await`. A failure is logged (`reactor_sdk` at `WARNING`), not raised — unpublish is commonly the last call in a `finally` block, and this deliberately doesn't interrupt it. (A 1.0.0-adjacent build had this returning `0`/`-1` instead of logging; if the installed package still does, it predates that fix.) |
 | `connect(*, session_id=None, connection_id=None, auto_resume_tracks=True)` | `connect(*, session_id=None, connection_id=None)` — `connection_id` is back (added post-1.0.0, closing a rewrite gap; same idea as the old parameter — adopt a connection slot a backend already registered for the session). `auto_resume_tracks` stays gone: every output track always starts subscribed; call `pause_track(name)` right after `connect()` for the ones you don't want yet. |
 | `fetch_jwt_token(...)` | `fetch_jwt(api_key, api_url, *, models=None, max_sessions=None, expires_after=None) -> str` — renamed **and** the signature changed (`api_url` is now required, not read from a default). It is synchronous; wrap it in `asyncio.to_thread()` from async code. |
 | `on(event: ReactorEvent, handler)` | `on(event: str, handler)` — `ReactorEvent` doesn't exist; event names are plain strings (`"status_changed"`, not `"statusChanged"`). |
@@ -180,14 +180,25 @@ Narrower — three breaking changes, one additive feature, all in the same relea
   there leaves the session orphaned, and the *next* `connect()` attempt fails with
   `ConflictError` — a confusing failure one call away from its actual cause. Wrap the whole
   connected lifetime, publish included, in one `try`/`finally`.
-- **`unpublish_track()` / `Track.unpublish()` don't raise.** They're the one operation left in
-  the old "fails quietly" style — `0` success, `-1` failure, no exception either way. Check
-  the return value explicitly if the caller needs to know.
-- **No built-in audio playback.** If the old code relied on the platform audio module playing
-  a model's voice through real speakers, there is no one-line replacement — budget for
-  building a small playback loop (`sounddevice` or similar) against `on("audio", ...)` /
-  `track.on_frame()`. See [`examples/pygame_app`](../../sdks/python/examples/pygame_app) for a
-  worked example, not a library you can import.
+- **`unpublish_track()` / `Track.unpublish()` don't raise.** A failure is logged
+  (`reactor_sdk` at `WARNING`), not raised — deliberately, since unpublish is commonly the
+  last call in a `finally` block and raising there would replace whatever exception was
+  already propagating. Check the logs if a track seems to have stayed published, rather than
+  a return value — there isn't one (`None` either way) as of the fix that closed the gap
+  described just above this line; an older 1.0.0-adjacent build returned an unchecked `0`/`-1`
+  instead.
+- **Playback/capture are `Speaker`/`Microphone` (`reactor_sdk.audio_devices`), not something to
+  build yourself.** If the old code relied on the platform audio module playing a model's
+  voice through real speakers or capturing a live mic, `Speaker(track)` /
+  `Microphone(sendonly_track)` are the replacement — context managers wrapping a
+  `sounddevice` stream around a `recvonly`/`sendonly` `Track`. Not automatic like the old
+  platform module was: still has to be constructed and entered explicitly.
+- **`disconnect()` always ends the session — there is no recoverable option.** If the old code
+  called `disconnect(True)` (or relied on the default `False` terminating and expected
+  `disconnect()` alone to preserve it, having read a docs page written before this was fixed),
+  neither survives the port: call [`reconnect()`](../../sdks/python/reactor_sdk/client.py)
+  directly instead of `disconnect()` + `connect()` to keep the session and resume it — it works
+  from `ready` too, not only after a drop, and tears the live connection down itself.
 - **`ConflictError`/`VersionMismatchError` name collisions** (above) — a `except
   ConflictError:` block ported unchanged from the old SDK will still run, but on a different
   condition than the developer originally meant. Read what triggers it now before trusting it.
@@ -227,11 +238,11 @@ Narrower — three breaking changes, one additive feature, all in the same relea
 - The tables above were verified against `reactor-team/py-sdk` @ `0.8.1` and this repo's
   `main` as of 2026-08-17 — send_command correlation, `Track`, typed errors, synthetic-only
   ADM, the `reactor.on_frame` removal / `TrackList` change, the `ReactorFFIError` →
-  `ReactorError` unification, and `connect(connection_id=...)` are all merged to `main`.
-  `download_clip()` / `download_recording()` (would close the `download_clip_as_file()` gap
-  called out above) and a built-in `AudioPlayer` (would close the "no built-in playback" gap
-  above) are open PRs (#36, #38) at time of writing, **not yet on `main`** — check whether
-  either has merged before telling someone that gap is still open.
+  `ReactorError` unification, `connect(connection_id=...)`, `download_clip()` /
+  `reactor.download_clip()`/`download_recording()`, `Speaker`/`Microphone`
+  (`reactor_sdk.audio_devices`), `@reactor.on_track` handing over a `Track`, and
+  `unpublish_track()`/`Track.unpublish()` logging instead of returning a code, are all merged
+  to `main`.
 
   If the repo has moved since, spot-check a table row against the actual source before
   trusting it on a large migration.
