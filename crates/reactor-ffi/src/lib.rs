@@ -343,8 +343,8 @@ impl Completion {
                 // A JSON object rather than the Display string this used to send.
                 // The string was enough to log and not enough to branch on, so
                 // every binding above collapsed all of these into one error type;
-                // the code, the component and whether retrying is worth anything
-                // were all in the `CoreError` and all thrown away here.
+                // the code and whether retrying is worth anything were both in
+                // the `CoreError` and both thrown away here.
                 let details = e.details(Some(self.operation));
                 let json = serde_json::to_string(&details)
                     .unwrap_or_else(|_| fallback_error_json(&details.message));
@@ -365,7 +365,6 @@ fn fallback_error_json(message: &str) -> String {
     serde_json::json!({
         "code": reactor_core::error::codes::INTERNAL_ERROR,
         "message": message,
-        "component": "api",
         "recoverable": false,
     })
     .to_string()
@@ -1388,7 +1387,6 @@ mod tests {
             serde_json::from_str(&fallback_error_json("something went wrong")).unwrap();
         assert_eq!(json["code"], "INTERNAL_ERROR");
         assert_eq!(json["message"], "something went wrong");
-        assert_eq!(json["component"], "api");
         assert_eq!(json["recoverable"], false);
     }
 

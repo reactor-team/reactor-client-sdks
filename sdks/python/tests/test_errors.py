@@ -26,6 +26,7 @@ from reactor_sdk import (
     ServerError,
     UnauthorizedError,
 )
+from reactor_sdk.client import ReactorError
 from reactor_sdk.errors import ERROR_CLASSES, error_for_code, error_from_payload
 
 
@@ -33,7 +34,6 @@ def _payload(**overrides: object) -> bytes:
     body = {
         "code": "SERVER_ERROR",
         "message": "unexpected HTTP status 503 from POST /sessions",
-        "component": "api",
         "recoverable": True,
     }
     body.update(overrides)
@@ -114,10 +114,10 @@ class TestMalformedPayloads:
 class TestAttributes:
     def test_the_payload_fields_reach_the_exception(self) -> None:
         error = error_from_payload(
-            _payload(code="RATE_LIMITED", component="gpu", status=429, operation="connect")
+            _payload(code="RATE_LIMITED", status=429, operation="connect", retry_after_ms=2000)
         )
         assert error.code == "RATE_LIMITED"
-        assert error.component == "gpu"
+        assert error.retry_after_ms == 2000
         assert error.status == 429
         assert error.operation == "connect"
         assert error.recoverable is True
@@ -126,6 +126,7 @@ class TestAttributes:
         error = error_from_payload(_payload())
         assert error.status is None
         assert error.operation is None
+        assert error.retry_after_ms is None
 
     def test_recoverable_says_whether_retrying_is_worth_anything(self) -> None:
         """The property callers branch on when they do not care which failure it
@@ -133,15 +134,15 @@ class TestAttributes:
         assert error_from_payload(_payload(code="SERVER_ERROR", recoverable=True)).recoverable
         assert not error_from_payload(_payload(code="UNAUTHORIZED", recoverable=False)).recoverable
 
-    def test_str_names_the_operation_the_component_and_the_code(self) -> None:
+    def test_str_names_the_operation_and_the_code(self) -> None:
         error = error_from_payload(
             _payload(code="NOT_FOUND", message="no such model", operation="connect")
         )
-        assert str(error) == "connect: [api:NOT_FOUND] no such model"
+        assert str(error) == "connect: [NOT_FOUND] no such model"
 
     def test_str_without_an_operation_omits_it(self) -> None:
         error = error_from_payload(_payload(code="NOT_FOUND", message="no such model"))
-        assert str(error) == "[api:NOT_FOUND] no such model"
+        assert str(error) == "[NOT_FOUND] no such model"
 
     def test_the_message_is_still_the_first_argument(self) -> None:
         """`ReactorFFIError("boom")` is how this was constructed before there was
@@ -192,3 +193,35 @@ class TestRaisedFromAnOperation:
         with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
             with pytest.raises(ReactorFFIError, match="command 'hello' failed"):
                 await self._reactor().send_command("hello", {})
+
+
+class TestOneList:
+    """The event and the failed call report the same code for the same failure."""
+
+    def test_the_event_payload_and_the_exception_take_the_same_fields(self) -> None:
+        """Both are built from the same object on the Rust side, so a field added
+        to one and not the other is a divergence waiting to happen."""
+        payload = _payload(code="UNAUTHORIZED", status=401, operation="connect")
+        error = error_from_payload(payload)
+        event = ReactorError(
+            code=error.code,
+            message=error.message,
+            timestamp_ms=0.0,
+            recoverable=error.recoverable,
+            status=error.status,
+            operation=error.operation,
+            retry_after_ms=error.retry_after_ms,
+        )
+        assert (event.code, event.status, event.operation) == ("UNAUTHORIZED", 401, "connect")
+
+    def test_no_class_claims_a_code_the_event_uses_for_something_else(self) -> None:
+        """The failure mode a single list exists to prevent: one name meaning two
+        things depending on which channel it arrived through."""
+        assert error_for_code("DISCONNECTED").code == "DISCONNECTED"
+        assert error_for_code("INVALID_STATE").code == "INVALID_STATE"
+
+    def test_component_is_gone(self) -> None:
+        """It named a tier of ours, changed nothing a caller would do, and having
+        it split the vocabulary is what produced two codes for one failure."""
+        error = error_from_payload(_payload(component="gpu"))
+        assert not hasattr(error, "component")

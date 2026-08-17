@@ -1,112 +1,122 @@
 //! Error model.
 //!
-//! Two layers, mirroring the JS/Python SDKs:
+//! One list of codes, in [`codes`], and two ways to receive one:
 //!
-//! * [`CoreError`] — the `Result` error type of core operations.
-//! * [`ReactorError`] — the user-facing error record emitted through the
-//!   event stream (`code`, `recoverable`, `component`, `retry_after`),
-//!   stored as "last error" on the client.
+//! * [`CoreError`] — the `Result` error type of core operations. Every variant
+//!   maps to a code through [`CoreError::code`].
+//! * [`ReactorError`] — the record emitted through the event stream and kept as
+//!   "last error" on the client.
+//!
+//! Both report the *same* code for the same failure. They used to disagree: the
+//! event's code was chosen by whichever call site emitted it, so a 401 during
+//! `connect()` was `CONNECTION_FAILED` and recoverable in one channel and
+//! `UNAUTHORIZED` and not recoverable in the other. What the call site knew that
+//! the error did not — which call failed — is the `operation` field instead.
 
 use serde::{Deserialize, Serialize};
 
-/// Which tier of the platform an error originated from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Component {
-    /// Coordinator / HTTP API tier.
-    Api,
-    /// Runtime / GPU / transport tier.
-    Gpu,
-}
-
-/// Well-known error codes surfaced through [`ReactorError`].
+/// Every error code the SDKs report. One list, no duplicates.
+///
+/// Each is a distinction a caller can act on. Which tier of the platform a
+/// failure came from is deliberately *not* one of them: it is an implementation
+/// detail of ours, it does not change what anyone should do about the failure,
+/// and splitting the vocabulary by it produced two names for one thing.
+///
+/// Codes are not exhaustive. A control request, a command or a recording the
+/// platform rejects reports the platform's own code, so consumers must treat an
+/// unrecognised code as an error they cannot classify rather than as a bug.
 pub mod codes {
-    pub const NOT_READY: &str = "NOT_READY";
-    pub const CONNECTION_FAILED: &str = "CONNECTION_FAILED";
-    pub const RECONNECTION_FAILED: &str = "RECONNECTION_FAILED";
-    pub const GPU_CONNECTION_ERROR: &str = "GPU_CONNECTION_ERROR";
-    pub const MESSAGE_SEND_FAILED: &str = "MESSAGE_SEND_FAILED";
-    pub const TRACK_PUBLISH_FAILED: &str = "TRACK_PUBLISH_FAILED";
-    pub const TRACK_UNPUBLISH_FAILED: &str = "TRACK_UNPUBLISH_FAILED";
-    pub const INVALID_DURATION: &str = "INVALID_DURATION";
+    /// The call is not allowed from the state the client is in — most often one
+    /// needing a live session, made before `connect()` or after `ready` was lost.
+    pub const INVALID_STATE: &str = "INVALID_STATE";
+    /// The connection went away: dropped while a request was in flight, or lost
+    /// after it had been established.
     pub const DISCONNECTED: &str = "DISCONNECTED";
-    pub const REQUEST_TIMEOUT: &str = "REQUEST_TIMEOUT";
-    pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
-
-    // ── Codes a failed operation reports for itself ──────────────────────────
-    //
-    // The codes above are chosen by the call site that emits the error event, and
-    // say what the caller was doing. These are chosen by the error itself, and say
-    // what went wrong — a distinction that matters because they answer different
-    // questions: CONNECTION_FAILED tells you connect() did not work, UNAUTHORIZED
-    // tells you why and what to do about it.
-
     /// The request never got a reply — DNS, TLS, a refused socket.
     pub const NETWORK_ERROR: &str = "NETWORK_ERROR";
-    /// 401 or 403: the token is missing, expired, or not scoped for this.
+    /// Sent, and nothing came back in time.
+    pub const REQUEST_TIMEOUT: &str = "REQUEST_TIMEOUT";
+    /// The media transport failed.
+    pub const TRANSPORT_ERROR: &str = "TRANSPORT_ERROR";
+    /// The token is missing, expired, or not scoped for this (HTTP 401 / 403).
     pub const UNAUTHORIZED: &str = "UNAUTHORIZED";
-    /// 404: no such model, session or upload.
+    /// No such model, session or upload (HTTP 404).
     pub const NOT_FOUND: &str = "NOT_FOUND";
-    /// 409: the session is in a state that does not allow this.
+    /// The session is in a state that does not allow this (HTTP 409) — usually
+    /// one left orphaned by a run that went away without disconnecting.
     pub const CONFLICT: &str = "CONFLICT";
-    /// 429: too many requests. Honour `retry_after_ms` when one is given.
+    /// Too many requests (HTTP 429).
     pub const RATE_LIMITED: &str = "RATE_LIMITED";
-    /// 4xx other than the above: the request itself was wrong.
+    /// The request itself was wrong — a 4xx other than the above, or an argument
+    /// rejected here before it was sent.
     pub const BAD_REQUEST: &str = "BAD_REQUEST";
-    /// 5xx: the coordinator failed, and the same request may work later.
+    /// The platform failed, and the same request may work later (HTTP 5xx).
     pub const SERVER_ERROR: &str = "SERVER_ERROR";
-    /// 426 or 501: this client and the platform disagree on the protocol.
+    /// This client and the platform disagree on the protocol (HTTP 426 / 501).
     pub const VERSION_MISMATCH: &str = "VERSION_MISMATCH";
     /// A reply arrived and could not be understood.
     pub const DECODE_FAILED: &str = "DECODE_FAILED";
-    /// The operation is not allowed from the state the client is in.
-    pub const INVALID_STATE: &str = "INVALID_STATE";
-    /// The session reached a state it cannot leave.
+    /// The session reached a state it cannot leave. Start a new one.
     pub const SESSION_TERMINAL: &str = "SESSION_TERMINAL";
     /// The payload exceeds what the data channel accepts.
     pub const MESSAGE_TOO_LARGE: &str = "MESSAGE_TOO_LARGE";
-    /// The WebRTC transport failed.
-    pub const PEER_ERROR: &str = "PEER_ERROR";
     /// The operation was abandoned before it finished.
     pub const ABORTED: &str = "ABORTED";
+    /// A failure that fits none of the above.
+    pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
 }
 
-/// A failure, in the terms a caller can act on: what went wrong, where, and
-/// whether trying again is worth anything.
+/// A failure, in the terms a caller can act on.
 ///
 /// This is what [`CoreError`] flattens down to for a binding — a `Display` string
 /// is enough to log and not enough to branch on, and every SDK above this was
 /// reduced to matching on message text or giving up.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErrorDetails {
-    /// A stable, matchable code. One of [`codes`], or a code the platform sent —
-    /// which is why this is a `String` and consumers must tolerate unknown values.
+    /// One of [`codes`], or a code the platform sent — which is why this is a
+    /// `String` and consumers must tolerate unknown values.
     pub code: String,
     pub message: String,
-    pub component: Component,
-    /// Whether the same call could succeed later, after a `reconnect()` or a wait.
+    /// Whether the same call could succeed later, after a `reconnect()` or a
+    /// wait. True is about the moment — a timeout, a 5xx, a transport that
+    /// dropped. False is about the request, and repeating it will fail the same.
     pub recoverable: bool,
     /// The HTTP status, when the failure came from one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<u16>,
-    /// Which operation failed, when the caller of the FFI names it.
+    /// Which call failed, e.g. `"connect"`, `"send_command"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<String>,
-}
-
-/// User-facing error record (event payload / `last_error`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ReactorError {
-    pub code: String,
-    pub message: String,
-    /// Unix epoch milliseconds.
-    pub timestamp_ms: f64,
-    /// Whether `reconnect()` is expected to succeed.
-    pub recoverable: bool,
-    pub component: Component,
-    /// Backoff hint in milliseconds, when the server provided one.
+    /// Backoff hint in milliseconds, when the platform provided one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after_ms: Option<f64>,
+}
+
+impl ErrorDetails {
+    /// A failure that did not come from a [`CoreError`] — a transport that
+    /// dropped on its own, or a code the platform sent unprompted.
+    pub fn new(code: impl Into<String>, message: impl Into<String>, recoverable: bool) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            recoverable,
+            status: None,
+            operation: None,
+            retry_after_ms: None,
+        }
+    }
+}
+
+/// The error record on the event stream, and what `last_error` returns.
+///
+/// The same [`ErrorDetails`] a failed call reports, plus when it happened —
+/// flattened on the wire, so consumers see one flat object either way.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReactorError {
+    #[serde(flatten)]
+    pub details: ErrorDetails,
+    /// Unix epoch milliseconds.
+    pub timestamp_ms: f64,
 }
 
 /// Error type returned by core operations.
@@ -205,38 +215,21 @@ impl CoreError {
             CoreError::Timeout(_) => codes::REQUEST_TIMEOUT,
             CoreError::TerminalSession(_) => codes::SESSION_TERMINAL,
             CoreError::MessageTooLarge { .. } => codes::MESSAGE_TOO_LARGE,
-            CoreError::Peer(_) => codes::PEER_ERROR,
+            CoreError::Peer(_) => codes::TRANSPORT_ERROR,
             CoreError::Aborted => codes::ABORTED,
         }
     }
 
-    /// Which tier this came from — the coordinator, or the runtime behind it.
-    ///
-    /// `Api` covers the coordinator and everything on this side of it, including
-    /// the failures that never left the client (`InvalidState`, `Aborted`): the
-    /// runtime had no part in those, and attributing them to it would send anyone
-    /// reading the logs to the wrong tier.
-    pub fn component(&self) -> Component {
-        match self {
-            CoreError::Http(_)
-            | CoreError::Status { .. }
-            | CoreError::VersionMismatch(_)
-            | CoreError::Decode(_)
-            | CoreError::InvalidState(_)
-            | CoreError::Aborted => Component::Api,
-            _ => Component::Gpu,
-        }
-    }
-
     /// Whether the same call could succeed later.
-    ///
-    /// True means the failure is about the moment — a timeout, a 5xx, a transport
-    /// that dropped — so reconnecting or waiting is worth something. False means
-    /// it is about the request, and repeating it unchanged will fail the same way.
     pub fn recoverable(&self) -> bool {
         match self {
             CoreError::Http(_) | CoreError::Timeout(_) | CoreError::Peer(_) => true,
             CoreError::Status { status, .. } => *status == 429 || *status >= 500,
+            // A request the platform rejected because the connection went is
+            // exactly the kind that passes once it is back.
+            CoreError::ControlRequest { code, .. }
+            | CoreError::CommandRequest { code, .. }
+            | CoreError::Recording { code, .. } => code == codes::DISCONNECTED,
             _ => false,
         }
     }
@@ -254,10 +247,10 @@ impl CoreError {
         ErrorDetails {
             code: self.code().to_string(),
             message: self.to_string(),
-            component: self.component(),
             recoverable: self.recoverable(),
             status: self.status(),
             operation: operation.map(str::to_string),
+            retry_after_ms: None,
         }
     }
 }
@@ -338,17 +331,35 @@ mod tests {
         assert!(!CoreError::MessageTooLarge { size: 2, max: 1 }.recoverable());
     }
 
-    /// A failure that never left the client is not the runtime's fault, and saying
-    /// it is sends whoever reads the log to the wrong tier.
+    /// A request that failed because the connection went is the archetype of one
+    /// worth retrying — and it arrives wearing a platform code, not a variant.
     #[test]
-    fn client_side_failures_are_not_attributed_to_the_runtime() {
-        assert_eq!(
-            CoreError::InvalidState("x".into()).component(),
-            Component::Api
-        );
-        assert_eq!(CoreError::Aborted.component(), Component::Api);
-        assert_eq!(status(500).component(), Component::Api);
-        assert_eq!(CoreError::Peer("x".into()).component(), Component::Gpu);
+    fn a_request_lost_to_a_disconnect_is_recoverable() {
+        let error = CoreError::ControlRequest {
+            method: "request".into(),
+            code: codes::DISCONNECTED.into(),
+            message: "connection closed".into(),
+        };
+        assert!(error.recoverable());
+    }
+
+    /// The contradiction this replaced: `connect()` failing on a 401 raised
+    /// UNAUTHORIZED/not-recoverable to the caller while the event said
+    /// CONNECTION_FAILED/recoverable — so anything listening to the event
+    /// reconnected in a loop against a token that would never work.
+    #[test]
+    fn the_event_and_the_failed_call_report_the_same_thing() {
+        let error = status(401);
+        let details = error.details(Some("connect"));
+        let event = ReactorError {
+            details: error.details(Some("connect")),
+            timestamp_ms: 0.0,
+        };
+
+        assert_eq!(event.details.code, details.code);
+        assert_eq!(event.details.recoverable, details.recoverable);
+        assert_eq!(event.details.code, codes::UNAUTHORIZED);
+        assert!(!event.details.recoverable);
     }
 
     #[test]
@@ -367,11 +378,29 @@ mod tests {
     fn details_serialise_under_the_names_the_bindings_read() {
         let json = serde_json::to_value(CoreError::Aborted.details(None)).unwrap();
         assert_eq!(json["code"], codes::ABORTED);
-        assert_eq!(json["component"], "api");
         assert_eq!(json["recoverable"], false);
         // Absent rather than null, so a binding can tell "no status" from "status
         // was reported as nothing".
         assert!(json.get("status").is_none());
         assert!(json.get("operation").is_none());
+        // Gone on purpose: which tier failed is our implementation detail, it
+        // changes nothing a caller would do, and having it split the vocabulary
+        // is what produced two names for one failure.
+        assert!(json.get("component").is_none());
+    }
+
+    /// Flattened, so a consumer of the event sees one flat object rather than a
+    /// nested `details` — the shape it has always had, plus the new fields.
+    #[test]
+    fn the_event_serialises_flat() {
+        let event = ReactorError {
+            details: status(409).details(Some("connect")),
+            timestamp_ms: 1234.0,
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["code"], codes::CONFLICT);
+        assert_eq!(json["timestamp_ms"], 1234.0);
+        assert_eq!(json["operation"], "connect");
+        assert!(json.get("details").is_none());
     }
 }

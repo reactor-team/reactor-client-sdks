@@ -83,17 +83,25 @@ class FileRef:
 
 @dataclass
 class ReactorError:
-    """Error event payload."""
+    """Error event payload.
+
+    The same codes and the same fields a failed call raises — see
+    :mod:`reactor_sdk.errors` — plus when it happened. `operation` names the call
+    the failure came from, where one did; a transport that dropped on its own has
+    none.
+    """
 
     code: str
     message: str
     timestamp_ms: float
     recoverable: bool
-    component: str
+    status: int | None = None
+    operation: str | None = None
     retry_after_ms: float | None = None
 
     def __str__(self) -> str:
-        return f"[{self.component}:{self.code}] {self.message}"
+        where = f"{self.operation}: " if self.operation else ""
+        return f"{where}[{self.code}] {self.message}"
 
 
 _log = logging.getLogger(__name__)
@@ -529,7 +537,8 @@ class Reactor:
                     message=d.get("message", ""),
                     timestamp_ms=d.get("timestamp_ms", 0.0),
                     recoverable=d.get("recoverable", False),
-                    component=d.get("component", "api"),
+                    status=d.get("status"),
+                    operation=d.get("operation"),
                     retry_after_ms=d.get("retry_after_ms"),
                 )
                 r._fire_on_loop("error", err)

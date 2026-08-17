@@ -21,6 +21,17 @@ the FFI. Now every exception has a `code`, and the common codes have a class::
 `ReactorFFIError` remains the base of all of them, so code that already catches it
 keeps catching everything.
 
+There is **one list of codes**, shared with the `on_error` event: the same failure
+reports the same code whichever way you receive it. They used to disagree — a 401
+during `connect()` raised UNAUTHORIZED and not-recoverable to the caller while the
+event called it CONNECTION_FAILED and recoverable, so anything listening to the
+event reconnected in a loop against a token that would never work. What the event
+knew that the exception did not — which call failed — is the `operation` field.
+
+There is no `component`. Which tier of the platform failed is not something a
+caller can act on, and splitting the codes by it is what produced two names for
+one failure.
+
 **Codes are open-ended.** A control request, a command or a recording the platform
 rejects reports the platform's own code, which this package cannot enumerate.
 Those raise `ReactorFFIError` itself with `code` set to whatever arrived — so
@@ -41,13 +52,12 @@ class ReactorFFIError(Exception):
         code: A stable, matchable code — one of the classes below, or a code the
             platform sent for a request it rejected.
         message: The human-readable explanation.
-        component: ``"api"`` for the coordinator and everything client-side,
-            ``"gpu"`` for the runtime and the media transport.
         recoverable: Whether the same call could succeed later. True is about the
             moment — a timeout, a 5xx, a transport that dropped — so waiting or
             reconnecting is worth something. False is about the request itself.
         status: The HTTP status, when the failure came from one; None otherwise.
         operation: Which call failed, e.g. ``"connect"``, ``"send_command"``.
+        retry_after_ms: A backoff hint, when the platform sent one.
     """
 
     #: The code this class stands for. `ReactorFFIError` itself is the fallback,
@@ -59,24 +69,24 @@ class ReactorFFIError(Exception):
         message: str,
         *,
         code: str | None = None,
-        component: str = "api",
         recoverable: bool = False,
         status: int | None = None,
         operation: str | None = None,
+        retry_after_ms: float | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
         # An explicit code wins, so an unrecognised one survives on the base class
         # rather than being relabelled as the fallback it was routed to.
         self.code = code or type(self).code
-        self.component = component
         self.recoverable = recoverable
         self.status = status
         self.operation = operation
+        self.retry_after_ms = retry_after_ms
 
     def __str__(self) -> str:
         where = f"{self.operation}: " if self.operation else ""
-        return f"{where}[{self.component}:{self.code}] {self.message}"
+        return f"{where}[{self.code}] {self.message}"
 
 
 class NetworkError(ReactorFFIError):
@@ -171,10 +181,20 @@ class MessageTooLargeError(ReactorFFIError):
     code = "MESSAGE_TOO_LARGE"
 
 
-class PeerError(ReactorFFIError):
-    """The WebRTC transport failed."""
+class TransportError(ReactorFFIError):
+    """The media transport failed."""
 
-    code = "PEER_ERROR"
+    code = "TRANSPORT_ERROR"
+
+
+class DisconnectedError(ReactorFFIError):
+    """The connection went away.
+
+    Either it dropped while this request was in flight, or it was lost after
+    being established. `reconnect()` is the way back.
+    """
+
+    code = "DISCONNECTED"
 
 
 class RequestTimeoutError(ReactorFFIError):
@@ -204,7 +224,8 @@ ERROR_CLASSES: tuple[type[ReactorFFIError], ...] = (
     InvalidStateError,
     SessionTerminalError,
     MessageTooLargeError,
-    PeerError,
+    TransportError,
+    DisconnectedError,
     RequestTimeoutError,
     AbortedError,
 )
@@ -237,14 +258,13 @@ def error_from_payload(raw: bytes | None) -> ReactorFFIError:
 
     code = payload.get("code") or None
     message = payload.get("message") or text
-    component = payload.get("component") or "api"
     return error_for_code(code)(
         message,
         code=code,
-        component=component,
         recoverable=bool(payload.get("recoverable", False)),
         status=payload.get("status"),
         operation=payload.get("operation"),
+        retry_after_ms=payload.get("retry_after_ms"),
     )
 
 

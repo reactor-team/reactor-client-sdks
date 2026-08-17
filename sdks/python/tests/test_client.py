@@ -145,21 +145,30 @@ class TestHandlerRegistry:
 
 
 class TestErrorPayload:
-    def test_str_names_the_component_and_code(self) -> None:
+    def test_str_names_the_code(self) -> None:
         err = ReactorError(
-            code="SESSION_LOST",
+            code="DISCONNECTED",
             message="the session went away",
             timestamp_ms=1.0,
             recoverable=True,
-            component="signaling",
         )
-        assert str(err) == "[signaling:SESSION_LOST] the session went away"
+        assert str(err) == "[DISCONNECTED] the session went away"
 
-    def test_retry_after_is_optional(self) -> None:
+    def test_str_names_the_operation_when_there_was_one(self) -> None:
+        """What the event's old code carried — CONNECTION_FAILED said `connect`
+        failed — now that the code says what went wrong instead."""
         err = ReactorError(
-            code="X", message="", timestamp_ms=0.0, recoverable=False, component="api"
+            code="UNAUTHORIZED",
+            message="401",
+            timestamp_ms=1.0,
+            recoverable=False,
+            operation="connect",
         )
-        assert err.retry_after_ms is None
+        assert str(err) == "connect: [UNAUTHORIZED] 401"
+
+    def test_everything_but_the_failure_itself_is_optional(self) -> None:
+        err = ReactorError(code="X", message="", timestamp_ms=0.0, recoverable=False)
+        assert (err.retry_after_ms, err.status, err.operation) == (None, None, None)
 
 
 class TestJsonContracts:

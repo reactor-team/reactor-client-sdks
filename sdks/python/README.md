@@ -119,16 +119,26 @@ except ReactorFFIError as error:
         raise
 ```
 
-Every exception has `.code`, `.message`, `.component` (`"api"` or `"gpu"`),
-`.recoverable`, `.status` (when the failure came from an HTTP one) and
-`.operation` (which call failed).
+Every exception has `.code`, `.message`, `.recoverable`, `.status` (when the
+failure came from an HTTP one), `.operation` (which call failed) and
+`.retry_after_ms` (when the platform sent a backoff hint).
 
 `ReactorFFIError` is the base of all of them, so `except ReactorFFIError` still
-catches everything. The classes are `NetworkError`, `UnauthorizedError`,
+catches everything. The classes are `InvalidStateError`, `DisconnectedError`,
+`NetworkError`, `RequestTimeoutError`, `TransportError`, `UnauthorizedError`,
 `NotFoundError`, `ConflictError`, `RateLimitedError`, `BadRequestError`,
-`ServerError`, `VersionMismatchError`, `DecodeError`, `InvalidStateError`,
-`SessionTerminalError`, `MessageTooLargeError`, `PeerError`,
-`RequestTimeoutError` and `AbortedError`.
+`ServerError`, `VersionMismatchError`, `DecodeError`, `SessionTerminalError`,
+`MessageTooLargeError` and `AbortedError`.
+
+**One list.** The `on_error` event reports the same codes, in the same shape plus
+`timestamp_ms` — so the same failure is the same code whichever way you receive
+it:
+
+```python
+@reactor.on_error
+def log(error):                  # a ReactorError
+    print(error.code, error.operation, error.recoverable)
+```
 
 A command or a control request the model itself rejects reports the model's own
 code, which this package cannot enumerate — those raise `ReactorFFIError` with
