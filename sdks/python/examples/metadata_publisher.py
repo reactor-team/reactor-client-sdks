@@ -119,16 +119,12 @@ def _make_frame(width: int, height: int, rgb: tuple[int, int, int]) -> bytes:
 def _choose_track(reactor: Reactor, requested: str | None) -> Track:
     """Pick the sendonly video track to publish on, from what the model declares.
 
-    `reactor.tracks` is that declaration, already typed — so this is a filter over
-    what exists rather than a guess at a name. Named explicitly, the name is still
-    checked here, to say which tracks the model does have; `reactor.track()` would
-    raise for an unknown one either way.
+    `reactor.tracks` is that declaration, already typed, and its filters chain — so
+    this is a description of the track wanted rather than a guess at a name. Named
+    explicitly, the name is still checked here, to say which tracks the model does
+    have; `reactor.track()` would raise for an unknown one either way.
     """
-    video = [
-        track
-        for track in reactor.tracks
-        if track.kind == TrackKind.VIDEO and track.direction == TrackDirection.SENDONLY
-    ]
+    video = reactor.tracks.with_kind(TrackKind.VIDEO).with_direction(TrackDirection.SENDONLY)
     names = ", ".join(track.name for track in video)
 
     if requested is not None:
