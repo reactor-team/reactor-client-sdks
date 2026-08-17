@@ -100,6 +100,16 @@ def arrived(track):               # fires once per declared track
     print(track.name, track.kind, track.direction)
 ```
 
+Two client-wide events carry every recvonly track's frames at once, unconverted:
+
+```python
+reactor.on("frame", lambda bgra, width, height, frame_id, timestamp_us, user_data: ...)
+reactor.on("audio", lambda pcm, num_samples, sample_rate, channels: ...)
+```
+
+Neither says which track a frame came on, so register on the track itself when that
+matters.
+
 ### Sending
 
 ```python
