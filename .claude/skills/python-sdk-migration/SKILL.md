@@ -20,17 +20,26 @@ one applies — they are not the same size.
 <Warning>
   **Both generations publish to PyPI under the identical name `reactor-sdk` and import as
   `reactor_sdk`.** You cannot tell which generation a codebase targets from the import
-  statement. Check the actual API surface used (see "Which migration applies" below) or the
-  pinned version (`0.8.x` and earlier = old `py-sdk`; `1.0.0+` = this repo).
+  statement, and — this is the part that's easy to get backwards — **not from the pinned
+  version either.** `reactor-team/py-sdk`'s last PyPI release is `0.8.0`; this repo has never
+  published anything (checked against the live PyPI index at the time of writing — every
+  release `0.1.0` through `0.8.0` comes from the old repo). So **any `pip`-installed
+  `reactor-sdk` below `1.0.0` is the old `py-sdk`, full stop** — there is no PyPI-installed
+  "pre-1.0 of this repo" to be on. Check the actual API surface used (see "Which migration
+  applies" below); a version pin only tells you the old-SDK case, never the other one.
 </Warning>
 
-1. **Old `py-sdk` → this repo's `reactor-sdk` 1.0.0.** A full rewrite. `reactor-team/py-sdk`
-   was built on `aiortc` and hands you real `MediaStreamTrack` objects; this repo is a Rust
-   core behind a `ctypes` FFI boundary and hands you raw frames instead. Nothing is a
-   drop-in rename — assume every call site needs a look, not just the ones that error at
-   import time.
-2. **Pre-1.0 `reactor-sdk` (this repo) → 1.0.0.** Narrower. Three breaking changes and one
-   additive feature, all landing together in the 1.0.0 cut. See
+1. **Old `py-sdk` → this repo's `reactor-sdk` 1.0.0.** The common case, and almost certainly
+   what you're looking at if the code was ever `pip install`ed rather than pointed at a git
+   checkout. A full rewrite: `reactor-team/py-sdk` was built on `aiortc` and hands you real
+   `MediaStreamTrack` objects; this repo is a Rust core behind a `ctypes` FFI boundary and
+   hands you raw frames instead. Nothing is a drop-in rename — assume every call site needs a
+   look, not just the ones that error at import time.
+2. **Pre-1.0 `reactor-sdk` (this repo) → 1.0.0.** Rare, and only possible at all if the
+   dependency was a git URL, a local path, or a wheel built from a pre-1.0 commit of this
+   repo — never a PyPI install (see the warning above). Mostly relevant to reactor-team's own
+   internal consumers who tracked `main` before the 1.0.0 cut. Narrower than migration 1:
+   three breaking changes and one additive feature. See
    ["Within this repo: pre-1.0 → 1.0.0"](#within-this-repo-pre-1-0-1-0-0) below.
 
 Skip straight to the checklists — don't re-derive this from first principles by diffing the
@@ -50,9 +59,13 @@ A hit on `ConflictError`/`VersionMismatchError` needs a second look: both names 
 *both* generations now, with **different meaning** — see the table below. Everything else in
 that grep is exclusive to the old SDK.
 
-If none of those hit but the code imports `reactor_sdk` and pins `reactor-sdk<1.0` (check
-`pyproject.toml`/`requirements.txt`/`uv.lock`), it's pre-1.0 of *this* repo — the narrower
-migration.
+If none of those hit, check how `reactor-sdk` is actually installed (`pip show reactor-sdk`,
+or the dependency spec in `pyproject.toml`/`requirements.txt`/`uv.lock`). A plain version pin
+from PyPI means old `py-sdk` regardless of the number (see the warning above) — there is
+nothing further to check, go to migration 1. Only a git/path/local-wheel dependency can mean
+migration 2; confirm by checking whether `Track` (this repo, post-#28) or the typed error
+classes (post-#30) already exist in the installed package before assuming it's pre-1.0 of
+this repo rather than already current.
 
 ---
 
