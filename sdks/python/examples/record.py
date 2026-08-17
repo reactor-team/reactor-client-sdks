@@ -32,7 +32,7 @@ from urllib.parse import urljoin
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from reactor_sdk import Clip, ReactorFFIError
+from reactor_sdk import Clip, ReactorError
 
 from .reactor_client import make_reactor
 
@@ -117,7 +117,7 @@ async def main() -> None:
         else:
             print(f"Requesting clip ({args.clip}s)…", file=sys.stderr)
             clip = await reactor.request_clip(args.clip)
-    except ReactorFFIError as exc:
+    except ReactorError as exc:
         print(f"Clip request failed: {exc}", file=sys.stderr)
         await reactor.disconnect()
         reactor.close()

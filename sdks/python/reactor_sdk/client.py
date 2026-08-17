@@ -31,7 +31,7 @@ from ._ffi import (
 # path. The two media helpers have no caller left here now that the client-wide
 # `on_frame` is gone — `Track` uses them — but the import path stays.
 from ._media import _bgra_to_rgb_array, _positional_arity  # noqa: F401  (re-export)
-from .errors import ReactorFFIError, error_from_payload  # noqa: F401  (re-export)
+from .errors import ReactorError, error_for_code, error_from_payload  # noqa: F401  (re-export)
 from .track import Track, TrackDirection, TrackKind, TrackList
 
 # ---------------------------------------------------------------------------
@@ -80,29 +80,6 @@ class FileRef:
     name: str
     mime_type: str
     size: int
-
-
-@dataclass
-class ReactorError:
-    """Error event payload.
-
-    The same codes and the same fields a failed call raises — see
-    :mod:`reactor_sdk.errors` — plus when it happened. `operation` names the call
-    the failure came from, where one did; a transport that dropped on its own has
-    none.
-    """
-
-    code: str
-    message: str
-    timestamp_ms: float
-    recoverable: bool
-    status: int | None = None
-    operation: str | None = None
-    retry_after_ms: float | None = None
-
-    def __str__(self) -> str:
-        where = f"{self.operation}: " if self.operation else ""
-        return f"{where}[{self.code}] {self.message}"
 
 
 _log = logging.getLogger(__name__)
@@ -493,14 +470,18 @@ class Reactor:
                 return
             try:
                 d = json.loads(json_bytes)
-                err = ReactorError(
-                    code=d.get("code", "UNKNOWN"),
-                    message=d.get("message", ""),
-                    timestamp_ms=d.get("timestamp_ms", 0.0),
+                code = d.get("code")
+                # The specific class, not just the base: an on_error handler gets
+                # the same UnauthorizedError/RateLimitedError/... a raised call
+                # would, since it is the same class either way — see errors.py.
+                err = error_for_code(code)(
+                    d.get("message", ""),
+                    code=code,
                     recoverable=d.get("recoverable", False),
                     status=d.get("status"),
                     operation=d.get("operation"),
                     retry_after_ms=d.get("retry_after_ms"),
+                    timestamp_ms=d.get("timestamp_ms", 0.0),
                 )
                 r._fire_on_loop("error", err)
             except Exception:
