@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import atexit
 import ctypes
-import inspect
 import json
 import logging
 import mimetypes
@@ -26,6 +25,11 @@ from ._ffi import (
     ReactorCallbacks,
     get_lib,
 )
+
+# Re-exported from `client` as well as `_media`: both have been importable from here
+# since before the split, and `tests/test_compat.py` reaches for them by that path.
+from ._media import _bgra_to_rgb_array, _positional_arity
+from .track import Track, TrackDirection, TrackKind
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -136,58 +140,6 @@ FRAME_HANDLER_ARGUMENTS = ("frame", "frame_id", "timestamp_us", "user_data")
 _HandlerResult = Coroutine[Any, Any, None] | None
 
 
-def _positional_arity(func: Callable, maximum: int) -> int:
-    """How many of `maximum` positional arguments `func` is willing to take.
-
-    Decided once, when the handler is registered, rather than per frame.
-
-    Falls back to one on anything it cannot read — a builtin, a C function, an exotic
-    callable. One is the shape `on_frame` has always had, so the fallback is the
-    compatible direction rather than a guess.
-    """
-    try:
-        parameters = inspect.signature(func).parameters.values()
-    except (TypeError, ValueError):
-        return 1
-
-    count = 0
-    for parameter in parameters:
-        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
-            # *args takes whatever there is.
-            return maximum
-        if parameter.kind in (
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        ):
-            count += 1
-
-    # Never zero: a handler that takes nothing is a mistake worth surfacing as the
-    # TypeError it is, rather than silently never being given the frame.
-    return max(1, min(count, maximum))
-
-
-def _bgra_to_rgb_array(bgra: bytes, width: int, height: int) -> Any:
-    """Turn a BGRA frame into an RGB ``numpy`` array of shape ``(height, width, 3)``.
-
-    Two conversions in one: drop the alpha channel, and reverse BGR to RGB. The slice
-    ``[..., 2::-1]`` does both — it walks the first three bytes backwards, so B, G, R, A
-    becomes R, G, B.
-
-    numpy is imported here rather than at module scope so that it stays optional: only
-    the `on_frame` decorator needs it, and the rest of the SDK has no dependencies.
-    """
-    try:
-        import numpy as np
-    except ModuleNotFoundError as exc:  # pragma: no cover - depends on the environment
-        raise ModuleNotFoundError(
-            "on_frame delivers numpy arrays, and numpy is not installed. Install it, "
-            'or use on("frame", ...) to receive the raw BGRA bytes instead.'
-        ) from exc
-
-    frame = np.frombuffer(bgra, dtype=np.uint8).reshape(height, width, 4)
-    return frame[..., 2::-1]
-
-
 def _settle_from_foreign_thread(
     loop: asyncio.AbstractEventLoop,
     future: asyncio.Future,
@@ -293,6 +245,16 @@ class Reactor:
 
         # event handlers: event_name -> list[callable]
         self._handlers: dict[str, list[Callable]] = {}
+
+        # Track handles, by name. Kept for the life of the client rather than
+        # rebuilt per connection: a caller holds one, registers handlers on it and
+        # expects both to survive a reconnect, which rebuilds the native handle.
+        self._tracks: dict[str, Track] = {}
+
+        # SDP media ids, filled in as tracks are received. Separate from the Track
+        # objects because the FFI reports them from its own control thread, and a
+        # plain dict assignment is the one thing safe to do from there.
+        self._track_mids: dict[str, str | None] = {}
 
         # Keep ctypes callback objects alive (GC would invalidate the fn pointer)
         self._callbacks_struct: ReactorCallbacks | None = None
@@ -491,6 +453,20 @@ class Reactor:
         if exc is not None:
             _log.error("error in %r async handler %r", event, handler, exc_info=exc)
 
+    def _fire_on_track(self, kind: str, track: bytes | None, *args: Any) -> None:
+        """Deliver a media frame to the handlers registered on its own track.
+
+        The track name arrives from the FFI, which reports it empty when the
+        transceiver could not be matched to a declared track — there is nothing to
+        route such a frame to, and the client-wide event has already had it.
+
+        Runs on the media delivery thread, like `_fire`, and for the same reason:
+        blocking here is what applies backpressure.
+        """
+        if not track:
+            return
+        self._fire(f"{kind}@{track.decode()}", *args)
+
     def _fire_on_loop(self, event: str, *args: Any) -> None:
         """Hand `event` to the loop thread, and run the handlers there.
 
@@ -586,6 +562,8 @@ class Reactor:
                 return
             name = name_bytes.decode() if name_bytes else ""
             mid = mid_bytes.decode() if mid_bytes else None
+            if name:
+                r._track_mids[name] = mid
             r._fire_on_loop("track_received", name, mid)
 
         def _on_capabilities(json_bytes: bytes, _ud: Any) -> None:
@@ -605,6 +583,7 @@ class Reactor:
             r._fire_on_loop("session_id_changed", sid)
 
         def _on_frame(
+            track_bytes: bytes | None,
             data_ptr: int,
             width: int,
             height: int,
@@ -635,10 +614,21 @@ class Reactor:
                 if user_data_ptr and user_data_len
                 else b""
             )
-            r._fire("frame", bytes(frame), width, height, frame_id, timestamp_us, ud)
+            pixels = bytes(frame)
+            # The client-wide event first, unchanged: it predates per-track delivery
+            # and every handler registered on it expects every frame.
+            r._fire("frame", pixels, width, height, frame_id, timestamp_us, ud)
+            r._fire_on_track(
+                "frame", track_bytes, pixels, width, height, frame_id, timestamp_us, ud
+            )
 
         def _on_audio(
-            data_ptr: int, num_samples: int, sample_rate: int, channels: int, _ud: Any
+            track_bytes: bytes | None,
+            data_ptr: int,
+            num_samples: int,
+            sample_rate: int,
+            channels: int,
+            _ud: Any,
         ) -> None:
             # Inline for the same reason as _on_frame.
             r = weak()
@@ -648,7 +638,9 @@ class Reactor:
                 _log.debug("audio callback with a null buffer; dropping")
                 return
             arr = (ctypes.c_int16 * num_samples).from_address(data_ptr)
-            r._fire("audio", bytes(arr), num_samples, sample_rate, channels)
+            pcm = bytes(arr)
+            r._fire("audio", pcm, num_samples, sample_rate, channels)
+            r._fire_on_track("audio", track_bytes, pcm, num_samples, sample_rate, channels)
 
         # Wrap with ctypes CFUNCTYPE
         s_cb = ON_STRING_FN(_on_status)
@@ -722,6 +714,9 @@ class Reactor:
         self._callbacks_struct = None
         self._cb_refs = []
         self._pending_completions = {}
+        # Renegotiated with the next connection; the Track objects and their
+        # handlers deliberately outlive the handle, but the mids do not.
+        self._track_mids.clear()
 
         if quiesced:
             return
@@ -923,8 +918,124 @@ class Reactor:
     # Track control
     # ------------------------------------------------------------------
 
-    async def publish_track(self, name: str) -> None:
-        """Activate a named sendonly track slot."""
+    def track(self, name: str) -> Track:
+        """The named track, as a `Track` — the object form of everything below.
+
+        A `Track` knows its own kind and direction, so it can refuse what the
+        direction does not allow instead of failing quietly the way a wrong name
+        does here::
+
+            camera = reactor.track("camera")
+            await camera.publish()
+            camera.push_frame(frame)
+
+        Raises `ValueError` for a name the session does not declare, naming the ones
+        it does. Before the session has declared anything — which happens shortly
+        after `connect()`, with the model's capabilities — any name is accepted, so
+        that handlers can be registered ahead of connecting; the check happens as
+        soon as the declaration arrives.
+
+        The same object comes back every time for a given name, so handlers
+        registered on it stay registered, including across a reconnect.
+        """
+        # A track already resolved needs no round trip: what the session declares
+        # does not change within a session, and this is on the path of anyone who
+        # looks a track up per frame rather than holding on to it.
+        existing = self._tracks.get(name)
+        if existing is not None and existing.direction is not None:
+            return existing
+
+        declared = self._sync_tracks()
+        existing = self._tracks.get(name)
+        if existing is not None:
+            return existing
+        if declared:
+            raise ValueError(
+                f"no track named {name!r} in this session. Declared: "
+                f"{', '.join(sorted(t.name for t in declared))}"
+            )
+        track = Track(self, name)
+        self._tracks[name] = track
+        return track
+
+    @property
+    def tracks(self) -> list[Track]:
+        """Every track the session declares, in declaration order.
+
+        Empty until the model's capabilities arrive, shortly after `connect()`.
+        """
+        return self._sync_tracks()
+
+    @property
+    def paused_tracks(self) -> frozenset[str]:
+        """The names of the tracks currently paused.
+
+        Recvonly tracks are resumed automatically once connected, so this is empty
+        on a healthy session until something is paused.
+        """
+        raw = self._read_string(lambda lib, handle: lib.reactor_paused_tracks(handle))
+        try:
+            return frozenset(json.loads(raw)) if raw else frozenset()
+        except ValueError:
+            _log.debug("could not decode the paused-track list")
+            return frozenset()
+
+    def _sync_tracks(self) -> list[Track]:
+        """Adopt what the session declares onto the `Track` registry.
+
+        The registry is only ever added to. A disconnect empties the native list,
+        and a `Track` the caller is holding must not lose what it knows because of
+        that — it is the same track when the session comes back.
+        """
+        raw = self._read_string(lambda lib, handle: lib.reactor_tracks(handle))
+        try:
+            declared = json.loads(raw) if raw else []
+        except ValueError:
+            _log.debug("could not decode the declared-track list")
+            return []
+
+        tracks = []
+        for entry in declared:
+            name = entry.get("name")
+            if not name:
+                continue
+            track = self._tracks.get(name)
+            if track is None:
+                track = Track(self, name)
+                self._tracks[name] = track
+            try:
+                track._adopt(TrackKind(entry["kind"]), TrackDirection(entry["direction"]))
+            except (KeyError, ValueError):
+                # A kind or direction this release does not know. The track is still
+                # real and still nameable; it just cannot be typed.
+                _log.debug("track %r declared with an unrecognised shape: %r", name, entry)
+            tracks.append(track)
+        return tracks
+
+    def _read_string(self, call: Callable[[Any, Any], int]) -> bytes | None:
+        """Run an FFI getter that returns a heap string, and free it.
+
+        Returns None when there is no handle or the call declined to answer.
+        """
+        if self._handle is None:
+            return None
+        lib = get_lib()
+        ptr = call(lib, ctypes.c_void_p(self._handle))
+        if not ptr:
+            return None
+        try:
+            return ctypes.cast(ptr, ctypes.c_char_p).value
+        finally:
+            lib.reactor_free_string(ctypes.c_void_p(ptr))
+
+    async def publish_track(self, name: str) -> Track:
+        """Activate a named sendonly track slot.
+
+        Returns the slot as a `Track`, so the frames can go straight into it::
+
+            camera = await reactor.publish_track("camera")
+            camera.push_frame(frame)
+        """
         self._require_handle()
         handle = self._handle
         lib = get_lib()
@@ -932,6 +1043,7 @@ class Reactor:
         await self._async_op(
             lambda fn: lib.reactor_publish_track(ctypes.c_void_p(handle), name_b, fn, None)
         )
+        return self.track(name)
 
     def unpublish_track(self, name: str) -> int:
         """Deactivate a sendonly track (sync). Returns 0 on success."""
@@ -1127,14 +1239,7 @@ class Reactor:
     @property
     def session_id(self) -> str | None:
         """Current session ID, or None when disconnected."""
-        if self._handle is None:
-            return None
-        lib = get_lib()
-        ptr = lib.reactor_session_id(ctypes.c_void_p(self._handle))
-        if not ptr:
-            return None
-        sid = ctypes.cast(ptr, ctypes.c_char_p).value
-        lib.reactor_free_string(ctypes.c_void_p(ptr))
+        sid = self._read_string(lambda lib, handle: lib.reactor_session_id(handle))
         return sid.decode() if sid else None
 
     # Method forms of the two properties above. Kept because code written against

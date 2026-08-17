@@ -66,6 +66,49 @@ def test_session_id_of_a_null_handle_is_null() -> None:
     assert not _ffi.get_lib().reactor_session_id(None)
 
 
+def test_track_getters_of_a_null_handle_are_null() -> None:
+    lib = _ffi.get_lib()
+    assert not lib.reactor_tracks(None)
+    assert not lib.reactor_paused_tracks(None)
+
+
+def test_the_media_callback_signatures_match_the_compiled_abi() -> None:
+    """The one place the frame/audio ABI is checked end to end.
+
+    Both callbacks gained a leading track name, and ctypes verifies no such thing:
+    a `CFUNCTYPE` whose arguments have drifted from the Rust `extern "C" fn` is
+    undefined behaviour that usually presents as a garbage pointer, not an error.
+    Building each trampoline here at least pins the declared shapes in one readable
+    place next to the header.
+    """
+
+    @_ffi.ON_FRAME_FN
+    def on_frame(
+        track: bytes | None,
+        data: int,
+        width: int,
+        height: int,
+        frame_id: int,
+        timestamp_us: int,
+        user_data: int,
+        user_data_len: int,
+        userdata: int,
+    ) -> None: ...
+
+    @_ffi.ON_AUDIO_FN
+    def on_audio(
+        track: bytes | None,
+        samples: int,
+        num_samples: int,
+        sample_rate: int,
+        channels: int,
+        userdata: int,
+    ) -> None: ...
+
+    callbacks = _ffi.ReactorCallbacks(on_frame=on_frame, on_audio=on_audio)
+    assert callbacks.on_frame and callbacks.on_audio
+
+
 def test_send_command_on_a_null_handle_skips_the_completion() -> None:
     """The async entry points return early on a null handle *without* invoking the
     completion — see the matching Rust test in `crates/reactor-ffi/src/lib.rs`.

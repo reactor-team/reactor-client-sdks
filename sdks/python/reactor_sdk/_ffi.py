@@ -165,6 +165,15 @@ def _load() -> ctypes.CDLL:
     lib.reactor_session_id.restype = ctypes.c_void_p
     lib.reactor_session_id.argtypes = [ctypes.c_void_p]
 
+    # Both return heap JSON to free with reactor_free_string, hence c_void_p
+    # rather than c_char_p — ctypes converts the latter to bytes and loses the
+    # pointer needed to release it.
+    lib.reactor_tracks.restype = ctypes.c_void_p
+    lib.reactor_tracks.argtypes = [ctypes.c_void_p]
+
+    lib.reactor_paused_tracks.restype = ctypes.c_void_p
+    lib.reactor_paused_tracks.argtypes = [ctypes.c_void_p]
+
     lib.reactor_free_string.restype = None
     lib.reactor_free_string.argtypes = [ctypes.c_void_p]
 
@@ -222,9 +231,10 @@ ON_STRING_FN = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_void_p)
 # (const char*, const char*, void*) -> void  [on_track]
 ON_TRACK_FN = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p)
 
-# (data, width, height, frame_id, timestamp_us, user_data, user_data_len, userdata)
+# (track, data, width, height, frame_id, timestamp_us, user_data, user_data_len, userdata)
 ON_FRAME_FN = ctypes.CFUNCTYPE(
     None,
+    ctypes.c_char_p,  # track name ("" = unattributable, never NULL)
     ctypes.c_void_p,  # data (BGRA bytes)
     ctypes.c_uint32,  # width
     ctypes.c_uint32,  # height
@@ -235,9 +245,10 @@ ON_FRAME_FN = ctypes.CFUNCTYPE(
     ctypes.c_void_p,  # userdata
 )
 
-# (const int16_t*, uint32_t, uint32_t, uint32_t, void*) -> void  [on_audio]
+# (const char*, const int16_t*, uint32_t, uint32_t, uint32_t, void*) -> void  [on_audio]
 ON_AUDIO_FN = ctypes.CFUNCTYPE(
     None,
+    ctypes.c_char_p,  # track name
     ctypes.c_void_p,
     ctypes.c_uint32,
     ctypes.c_uint32,

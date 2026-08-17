@@ -197,12 +197,6 @@ class TestSendCommandUploads:
     `FileRef` at all, so a command with a file parameter was unreachable before.
     """
 
-    @pytest.fixture(autouse=True)
-    def _no_real_destroy(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """`_handle` below is a fake int, not a real native pointer — `__del__`
-        must not hand it to the real `reactor_destroy` at GC time."""
-        monkeypatch.setattr(Reactor, "_destroy_handle", lambda self: None)
-
     def _reactor(self) -> Reactor:
         reactor = Reactor("https://api.reactor.inc", "m")
         reactor._handle = 1234
@@ -281,12 +275,6 @@ class TestUploadFileDispatch:
     was already byte-based (`Reactor::upload_file(name, mime_type, bytes)`) —
     only the old FFI wrapper forced a filesystem path.
     """
-
-    @pytest.fixture(autouse=True)
-    def _no_real_destroy(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """`_handle` below is a fake int, not a real native pointer — `__del__`
-        must not hand it to the real `reactor_destroy` at GC time."""
-        monkeypatch.setattr(Reactor, "_destroy_handle", lambda self: None)
 
     def _reactor(self) -> Reactor:
         reactor = Reactor("https://api.reactor.inc", "m")
@@ -556,6 +544,23 @@ class TestExitHook:
 
         reactor = Reactor("https://api.reactor.inc", "m")
         assert reactor not in _LIVE_CLIENTS
+
+    def test_a_fabricated_handle_is_never_handed_to_the_native_destroy(self) -> None:
+        """The scenario the session guard in `conftest.py` exists for.
+
+        Half this suite assigns `_handle` directly to make a client look
+        connected, and that integer is indistinguishable from a live pointer by
+        the time `__del__` runs. Without the guard this is a segmentation fault,
+        not a failure — so it is worth one deterministic place that crashes if the
+        guard is ever removed, rather than a random later test taking the whole
+        run down with it.
+        """
+        import gc
+
+        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor._handle = 1234
+        del reactor
+        gc.collect()
 
     def test_the_exit_hook_tolerates_a_failing_close(self) -> None:
         """It runs during shutdown, where raising would be noise at best."""
