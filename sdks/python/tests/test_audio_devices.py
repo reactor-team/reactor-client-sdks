@@ -143,7 +143,7 @@ def reactor(monkeypatch: pytest.MonkeyPatch) -> tuple[Reactor, _FakeLib]:
     Real ones on purpose: these helpers call `push_frame` and `on_raw_frame`, and a
     stub would keep passing if either signature drifted.
     """
-    client = Reactor("https://api.reactor.inc", "m")
+    client = Reactor("m")
     client._handle = 1234
     lib = _FakeLib()
     monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: lib)

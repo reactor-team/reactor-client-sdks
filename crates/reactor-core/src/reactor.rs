@@ -962,6 +962,7 @@ impl Reactor {
         mime_type: &str,
         bytes: Vec<u8>,
     ) -> Result<FileRef, CoreError> {
+        self.ensure_ready()?;
         let session_id = self
             .session_id()
             .ok_or_else(|| CoreError::InvalidState("upload_file() without a session".into()))?;
@@ -1661,7 +1662,11 @@ mod tests {
     #[tokio::test]
     async fn upload_file_rejects_an_empty_file() {
         let reactor = make_reactor();
-        reactor.state.lock().unwrap().session_id = Some("sess-1".into());
+        {
+            let mut state = reactor.state.lock().unwrap();
+            state.session_id = Some("sess-1".into());
+            state.status = ReactorStatus::Ready;
+        }
 
         let result = tokio::time::timeout(
             Duration::from_millis(200),
@@ -1676,13 +1681,13 @@ mod tests {
     /// Without a session, `upload_file()` fails on that before ever looking at
     /// the bytes.
     #[tokio::test]
-    async fn upload_file_without_a_session_is_rejected() {
+    async fn upload_file_requires_a_ready_session() {
         let reactor = make_reactor();
 
         let result = reactor
             .upload_file("f.bin", "application/octet-stream", vec![1, 2, 3])
             .await;
 
-        assert!(matches!(result, Err(CoreError::InvalidState(msg)) if msg.contains("session")));
+        assert!(matches!(result, Err(CoreError::InvalidState(msg)) if msg.contains("ready")));
     }
 }

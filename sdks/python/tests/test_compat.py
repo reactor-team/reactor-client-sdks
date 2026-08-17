@@ -59,7 +59,7 @@ class TestStatusEnum:
 
 
 class TestConstructor:
-    def test_old_keyword_form(self) -> None:
+    def test_keyword_form(self) -> None:
         r = Reactor(
             model_name="hy-world",
             api_key="k",
@@ -72,24 +72,27 @@ class TestConstructor:
             "k",
         )
 
-    def test_old_positional_form_puts_the_model_first(self) -> None:
-        """`Reactor("hy-world")` used to be valid. It still is: an api_url is always a
-        URL and a model name never is, so the two cannot be confused."""
+    def test_a_single_positional_arg_is_the_model_name(self) -> None:
         r = Reactor("hy-world")
         assert r._model_name == "hy-world"
         assert r._api_url == DEFAULT_API_URL
 
-    @pytest.mark.parametrize("url", ["http://localhost:8080", "https://api.reactor.inc"])
-    def test_new_positional_form_puts_the_url_first(self, url: str) -> None:
-        r = Reactor(url, "m")
-        assert (r._api_url, r._model_name) == (url, "m")
+    def test_two_positional_args_are_model_name_then_api_key(self) -> None:
+        """Matches the old py-sdk's own positional order exactly — `Reactor(model,
+        key)` ported from there needs no rewrite to keyword arguments at all."""
+        r = Reactor("hy-world", "k")
+        assert (r._model_name, r._api_key) == ("hy-world", "k")
+
+    def test_api_url_is_keyword_only(self) -> None:
+        with pytest.raises(TypeError):
+            Reactor("hy-world", "k", "https://example.invalid")  # type: ignore[misc]
 
     def test_api_url_defaults_to_production(self) -> None:
         assert Reactor(model_name="m")._api_url == DEFAULT_API_URL
 
     def test_model_name_is_required(self) -> None:
-        with pytest.raises(TypeError, match="requires model_name"):
-            Reactor()
+        with pytest.raises(TypeError, match="model_name"):
+            Reactor()  # type: ignore[call-arg]
 
 
 class TestLocalMode:
@@ -358,6 +361,15 @@ class TestFetchJwt:
         assert request.full_url == "https://api.reactor.inc/tokens"
         assert request.get_method() == "POST"
         assert request.get_header("Reactor-api-key") == "secret"
+
+    def test_api_url_defaults_to_production(self) -> None:
+        """Same default `Reactor()` uses, so minting a token for the common case
+        needs only the key."""
+        with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
+            urlopen.return_value = self._response({"jwt": "tok"})
+            fetch_jwt("secret")
+
+        assert urlopen.call_args[0][0].full_url == f"{DEFAULT_API_URL}/tokens"
 
     def test_unscoped_requests_send_a_null_body(self) -> None:
         """Not `{}` — the coordinator distinguishes them."""

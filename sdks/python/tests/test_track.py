@@ -74,7 +74,7 @@ def _connected(
     between `connect()` and the model's capabilities arriving. The fake is returned
     too, so a test can make the declaration land partway through.
     """
-    reactor = Reactor("https://api.reactor.inc", "m")
+    reactor = Reactor("m")
     reactor._handle = 1234
     lib = _FakeLib(DECLARED if tracks is None else tracks, paused or [])
     monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: lib)
@@ -699,10 +699,10 @@ class TestPausedState:
         assert reactor.paused_tracks == frozenset({"output", "speech"})
 
     def test_without_a_handle_nothing_is_paused(self) -> None:
-        assert Reactor("https://api.reactor.inc", "m").paused_tracks == frozenset()
+        assert Reactor("m").paused_tracks == frozenset()
 
     def test_without_a_handle_there_are_no_tracks(self) -> None:
-        assert Reactor("https://api.reactor.inc", "m").tracks == []
+        assert Reactor("m").tracks == []
 
 
 class TestLifetime:
