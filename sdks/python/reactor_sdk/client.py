@@ -794,6 +794,16 @@ class Reactor:
         `disconnect()` then `connect()`. Raises `InvalidStateError` if there is no
         session to reconnect to: nothing has connected yet, or a previous
         `disconnect()` already ended it.
+
+        Recvonly tracks come back subscribed on their own. Sendonly ones do not
+        come back published — the runtime does not carry a publish across the
+        reconnect — so publish again for anything you were sending::
+
+            await reactor.reconnect()
+            await camera.publish()
+
+        `Track.published` is False until that happens, and `push_frame` raises
+        rather than sending into a slot with nothing behind it.
         """
         self._require_handle()
         handle = self._handle
