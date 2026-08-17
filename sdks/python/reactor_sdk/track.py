@@ -10,8 +10,7 @@ nothing.
 One type covers both directions and both kinds, because the operations are the same
 operations either way::
 
-    camera = reactor.track("camera")       # sendonly video
-    await camera.publish()
+    camera = await reactor.track("camera").publish()   # sendonly video
     camera.push_frame(rgb_array)
 
     output = reactor.track("output")       # recvonly video
@@ -218,24 +217,26 @@ class Track:
         """
         return self._published
 
-    async def publish(self) -> None:
+    async def publish(self) -> Track:
         """Activate this sendonly slot, so frames pushed into it go on the wire.
 
         Until this returns, :meth:`push_frame` raises: an unpublished slot has no
         sender behind it, so the frames would be accepted and dropped.
 
+        Returns the track, so getting one and activating it can be a single line::
+
+            camera = await reactor.track("camera").publish()
+            camera.push_frame(frame)
+
         The activation lasts as long as the session does. A reconnect resumes
         recvonly tracks and nothing else, so a track published before one has to be
         published again after it — :attr:`published` says which side of that you are
-        on::
-
-            camera = reactor.track("camera")
-            await camera.publish()
-            camera.push_frame(frame)
+        on.
         """
         self._require_direction(TrackDirection.SENDONLY, "publish()")
         await self._reactor().publish_track(self._name)
         self._published = True
+        return self
 
     def unpublish(self) -> None:
         """Deactivate this sendonly slot (sync). Logs a warning on failure —

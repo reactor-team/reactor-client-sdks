@@ -113,8 +113,7 @@ matters.
 ### Sending
 
 ```python
-camera = reactor.track("camera")
-await camera.publish()                            # or: await reactor.publish_track("camera")
+camera = await reactor.track("camera").publish()   # or: await reactor.publish_track("camera")
 
 camera.push_frame(frame)                          # numpy array: shape carries the size
 camera.push_frame(bgra, width=640, height=480)    # bytes: size spelled out
@@ -142,8 +141,7 @@ that, and need `reactor-sdk[audio]`:
 from reactor_sdk.audio_devices import Microphone, Speaker
 
 speaker = reactor.tracks.with_kind("audio").with_direction("recvonly").one()
-mic = reactor.track("mic")
-await mic.publish()
+mic = await reactor.track("mic").publish()
 
 with Speaker(speaker), Microphone(mic):
     await asyncio.sleep(30)

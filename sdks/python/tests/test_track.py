@@ -774,7 +774,8 @@ class TestPublishTrack:
         camera = reactor.track("camera")
         assert camera.published is False
 
-        assert await camera.publish() is None
+        # Hands the track back, so getting one and activating it can be one line.
+        assert await camera.publish() is camera
 
         assert names == [b"camera"]
         assert camera.published is True
