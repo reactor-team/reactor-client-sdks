@@ -1,75 +1,51 @@
 ---
 name: python-sdk-migration
 description: >
-  Migrate a Python codebase onto the current `reactor-sdk` (this repo, `sdks/python`) —
-  either from the old aiortc-based `reactor-team/py-sdk` (last release 0.8.x, deprecated,
-  being archived), or from a pre-1.0 install of this SDK. Use this whenever the user asks to
-  "migrate to the new reactor-sdk / python sdk", "upgrade from py-sdk", "port off the old
-  Reactor Python client", mentions hitting `AttributeError`/`ImportError` on `reactor_sdk`
-  symbols like `ReactorState`, `Capabilities`, `MediaStreamTrack`, `get_state`,
-  `set_frame_callback`, `RecordingClient`, or references breaking changes around
-  `send_command`, `Track`, `ReactorError`/`ReactorFFIError`, or audio device modes. Also use it
-  to review a PR that touches `reactor_sdk` usage for compatibility with the current API.
+  Migrate a Python codebase off the old aiortc-based `reactor-team/py-sdk` (last release
+  0.8.x, deprecated, being archived) onto the current `reactor-sdk` (this repo,
+  `sdks/python`, 1.0.0). Use this whenever the user asks to "migrate to the new reactor-sdk
+  / python sdk", "upgrade from py-sdk", "port off the old Reactor Python client", mentions
+  hitting `AttributeError`/`ImportError` on `reactor_sdk` symbols like `ReactorState`,
+  `Capabilities`, `MediaStreamTrack`, `get_state`, `set_frame_callback`, `RecordingClient`,
+  or references breaking changes around `send_command`, `Track`, `ReactorError`, or audio
+  device modes. Also use it to review a PR that touches `reactor_sdk` usage for
+  compatibility with the current API.
 ---
 
 # Python SDK migration
 
-There are **two different migrations** this covers, and the first thing to establish is which
-one applies — they are not the same size.
+Migrating off the old `reactor-team/py-sdk` (aiortc-based, last PyPI release `0.8.0`,
+deprecated) onto this repo's `reactor-sdk` 1.0.0. A full rewrite, not a version bump:
+`py-sdk` was built on `aiortc` and hands you real `MediaStreamTrack` objects; this repo is a
+Rust core behind a `ctypes` FFI boundary and hands you raw frames instead. Nothing here is a
+drop-in rename — assume every call site needs a look, not just the ones that error at import
+time.
 
-<Warning>
-  **Both generations publish to PyPI under the identical name `reactor-sdk` and import as
-  `reactor_sdk`.** You cannot tell which generation a codebase targets from the import
-  statement, and — this is the part that's easy to get backwards — **not from the pinned
-  version either.** `reactor-team/py-sdk`'s last PyPI release is `0.8.0`; this repo has never
-  published anything (checked against the live PyPI index at the time of writing — every
-  release `0.1.0` through `0.8.0` comes from the old repo). So **any `pip`-installed
-  `reactor-sdk` below `1.0.0` is the old `py-sdk`, full stop** — there is no PyPI-installed
-  "pre-1.0 of this repo" to be on. Check the actual API surface used (see "Which migration
-  applies" below); a version pin only tells you the old-SDK case, never the other one.
-</Warning>
-
-1. **Old `py-sdk` → this repo's `reactor-sdk` 1.0.0.** The common case, and almost certainly
-   what you're looking at if the code was ever `pip install`ed rather than pointed at a git
-   checkout. A full rewrite: `reactor-team/py-sdk` was built on `aiortc` and hands you real
-   `MediaStreamTrack` objects; this repo is a Rust core behind a `ctypes` FFI boundary and
-   hands you raw frames instead. Nothing is a drop-in rename — assume every call site needs a
-   look, not just the ones that error at import time.
-2. **Pre-1.0 `reactor-sdk` (this repo) → 1.0.0.** Rare, and only possible at all if the
-   dependency was a git URL, a local path, or a wheel built from a pre-1.0 commit of this
-   repo — never a PyPI install (see the warning above). Mostly relevant to reactor-team's own
-   internal consumers who tracked `main` before the 1.0.0 cut. Narrower than migration 1:
-   three breaking changes and one additive feature. See
-   ["Within this repo: pre-1.0 → 1.0.0"](#within-this-repo-pre-1-0-1-0-0) below.
-
-Skip straight to the checklists — don't re-derive this from first principles by diffing the
-two repos yourself; the tables below are already verified against both codebases.
+Skip straight to the checklists below — don't re-derive this from first principles by
+diffing the two repos yourself; the tables are already verified against both codebases.
 
 ---
 
-## Which migration applies
+## Confirm it's actually the old `py-sdk`
 
-Grep the target codebase for any of these. If it hits, it's the **old `py-sdk`**:
+Grep the target codebase for any of these — exclusive to the old SDK, so a hit confirms this
+skill applies:
 
 ```bash
-grep -rEn "MediaStreamTrack|ReactorState|get_capabilities|get_last_error|get_session_info|get_remote_tracks|set_frame_callback|RecordingClient|\.recording\(\)|fetch_jwt_token|download_clip_as_file|ConflictError|VersionMismatchError" --include="*.py" .
+grep -rEn "MediaStreamTrack|ReactorState|get_capabilities|get_last_error|get_session_info|get_remote_tracks|set_frame_callback|RecordingClient|\.recording\(\)|fetch_jwt_token|download_clip_as_file" --include="*.py" .
 ```
 
-A hit on `ConflictError`/`VersionMismatchError` needs a second look: both names exist in
-*both* generations now, with **different meaning** — see the table below. Everything else in
-that grep is exclusive to the old SDK.
-
-If none of those hit, check how `reactor-sdk` is actually installed (`pip show reactor-sdk`,
-or the dependency spec in `pyproject.toml`/`requirements.txt`/`uv.lock`). A plain version pin
-from PyPI means old `py-sdk` regardless of the number (see the warning above) — there is
-nothing further to check, go to migration 1. Only a git/path/local-wheel dependency can mean
-migration 2; confirm by checking whether `Track` (this repo, post-#28) or the typed error
-classes (post-#30) already exist in the installed package before assuming it's pre-1.0 of
-this repo rather than already current.
+If nothing hits, check how `reactor-sdk` is actually installed (`pip show reactor-sdk`, or
+the dependency spec in `pyproject.toml`/`requirements.txt`/`uv.lock`). A version pin below
+`1.0.0` from PyPI is the old `py-sdk` regardless of what the grep found — this repo has never
+published anything below `1.0.0` (checked against the live PyPI index at the time of
+writing; every release `0.1.0` through `0.8.0` comes from the old repo). If it's already
+`>=1.0.0`, or a git/path dependency already exposing `Track` or the typed error classes,
+there is nothing here to migrate.
 
 ---
 
-## Old `py-sdk` → this repo, 1.0.0
+## Migrating to `reactor-sdk` 1.0.0
 
 ### The constructor's positional arguments changed meaning, silently
 
@@ -102,7 +78,7 @@ This is the largest conceptual change and the reason nothing here is a rename.
 |---|---|
 | `publish_track(name, track: MediaStreamTrack)` | `publish_track(name) -> Track`, then push raw frames into it: `push_video_frame(name, bgra_bytes, w, h)` / `push_audio_frame(name, pcm_bytes, samples, ...)`, or the object form `track.push_frame(data)` — see [`Track`](../../sdks/python/reactor_sdk/track.py). You build/capture the media yourself (OpenCV, a file, a synthesizer); there is no `aiortc` track to hand over. |
 | `get_remote_tracks() -> dict[str, MediaStreamTrack]` | Nothing hands you a media object. Decoded frames arrive via `on("frame", ...)` / `on("audio", ...)` (raw, client-wide), or a `Track`'s `on_frame()`/`on_raw_frame()` (scoped to one track — see the next two rows; there is no client-wide `reactor.on_frame` anymore). |
-| `set_frame_callback(callback)` | `track.on_frame` (decorator, per-track) — found via `reactor.track(name)` or `reactor.tracks.with_kind(...).with_direction(...).one()`. There is no client-wide equivalent; see item 5 under ["Within this repo: pre-1.0 → 1.0.0"](#within-this-repo-pre-1-0-1-0-0). |
+| `set_frame_callback(callback)` | `track.on_frame` (decorator, per-track) — found via `reactor.track(name)` or `reactor.tracks.with_kind(...).with_direction(...).one()`. There is no client-wide equivalent — register per-track instead. |
 | `@reactor.on_track(name)` — a decorator **factory**, pre-filtered by name | `@reactor.on_track` — a **bare** decorator, fires with the resolved [`Track`](../../sdks/python/reactor_sdk/track.py) itself (not a bare name) for every track; filter on `track.name` yourself, or use `reactor.track(name).on_frame` to scope to one track without filtering in the handler body. `track.mid` carries the WebRTC media stream id the old `mid` argument did. |
 | `@reactor.on_frame` — client-wide, video only | **Removed.** Register on a `Track` instead: `reactor.track(name).on_frame` by name, or `reactor.tracks.with_direction("recvonly").with_kind("video").one().on_frame` when you don't want to hardcode the name. `reactor.tracks` is a `TrackList` — a `list[Track]` with `with_kind()`/`with_direction()` filters and `.one()`. The raw `on("frame", ...)` / `on("audio", ...)` events are unaffected. |
 | Real microphone/speaker via the platform audio device module | Every `Reactor` still forces synthetic-only audio at the transport level — no constructor flag opts back into a real device there. But `reactor_sdk.audio_devices.Speaker`/`Microphone` (added post-1.0.0) wrap a `sounddevice` stream around a `Track` for you: `Speaker(reactor.track("output"))` plays a `recvonly` track through real speakers, `Microphone(await reactor.track("mic").publish())` captures the real mic into a `sendonly` track. Context managers, not automatic — construct and enter them explicitly, they don't come with the session. |
@@ -118,7 +94,7 @@ This is the largest conceptual change and the reason nothing here is a rename.
 
 | Old | New |
 |---|---|
-| One `ReactorError` dataclass with `code`, `message` as the `on_error` payload; `get_last_error()` polls the last one | `ReactorError` is still the `on_error` payload — and is now also the exception base every failed call raises (`ReactorFFIError`, an intermediate name in this repo's own history, no longer exists — see below). Fields are `code, message, timestamp_ms, recoverable, status, operation, retry_after_ms` — no polling method, and no `component`. |
+| One `ReactorError` dataclass with `code`, `message` as the `on_error` payload; `get_last_error()` polls the last one | `ReactorError` is still the `on_error` payload — and is now also the exception base every failed call raises. Fields are `code, message, timestamp_ms, recoverable, status, operation, retry_after_ms` — no polling method, and no `component`. |
 | `ConflictError(Exception)`, `VersionMismatchError(Exception)` — plain exceptions, old SDK's own session/version-conflict signaling | `ConflictError`, `VersionMismatchError` — **real, current classes**, subclasses of `ReactorError` with `code`/`message`/`recoverable`/`status`/`operation`/`retry_after_ms`. Same names, unrelated implementation. **Don't assume old call sites that catch these by name are still correct** — check what they actually expect on the exception object. |
 | One untyped failure path in practice | 16 typed subclasses of `ReactorError` (`UnauthorizedError`, `NotFoundError`, `RateLimitedError`, `InvalidStateError`, `DisconnectedError`, and more) — catch the specific one you can act on, or `ReactorError` broadly. Full list in [`errors.py`](../../sdks/python/reactor_sdk/errors.py). |
 | `ReactorState`, `get_state()` | Doesn't exist. Use `reactor.status` (`ReactorStatus` enum) for connection state; there is no separate "state" object. |
@@ -137,39 +113,6 @@ This is the largest conceptual change and the reason nothing here is a rename.
 | `on_status(func)` / `on_status(ReactorStatus.READY)` / `on_status([READY, WAITING])` | Same three forms, same behavior — this one carried over unchanged. |
 | `send_command(command, data)` — fire-and-forget, reply arrives later as a `message` event | `send_command(command, data) -> dict | None` — **awaits and returns the correlated reply**. To fire without waiting, `asyncio.create_task(reactor.send_command(...))`. |
 | `upload_file(...)` requiring a fully `READY` session | `upload_file(...)` needs only an active session (as soon as the coordinator creates one), not full `READY`. |
-
----
-
-## Within this repo: pre-1.0 → 1.0.0
-
-Narrower — three breaking changes, one additive feature, all in the same release:
-
-1. **`send_command()` now awaits its reply** instead of firing and forgetting. See the row
-   above; same fix applies whether you're coming from `py-sdk` or an earlier `reactor-sdk`.
-2. **Errors became typed exceptions, and `ReactorError` dropped `component`.** If code
-   pattern-matches on `error.component` (`"api"`/`"gpu"`) or catches only the base exception
-   and parses the message string for a code, both need updating — see the errors table above.
-   Mid-transition this base was briefly named `ReactorFFIError`; it was folded into
-   `ReactorError` (the same class the `on_error` event already used) before 1.0.0 shipped, so
-   code written against an intermediate 0.9.x/1.0.0-pre build may still say
-   `from reactor_sdk import ReactorFFIError` — that import now fails, replace it with
-   `ReactorError`.
-3. **Audio is synthetic-only; `adm_mode` is gone from the constructor.** Drop the argument
-   entirely — passing it raises `TypeError` now, it isn't silently ignored.
-4. **New, additive: the `Track` object.** `reactor.track(name)` / `reactor.tracks` return
-   objects with `publish()`, `push_frame()`, `on_frame()`/`on_raw_frame()`, `pause()`/
-   `resume()` that raise on a direction mismatch instead of silently doing nothing. This is
-   optional — every name-based call (`publish_track()`, `push_video_frame()`,
-   `on("frame", ...)`) still works unchanged. Adopt it opportunistically; don't rewrite
-   working name-based code just because it exists.
-5. **`reactor.on_frame` (client-wide) is removed.** It only ever worked for video, and one
-   handler fed every `recvonly` video track couldn't tell them apart. This one is **not**
-   optional if the codebase uses it — there is no name-based fallback for the client-wide
-   decorator specifically. Move to `reactor.track(name).on_frame` or
-   `reactor.tracks.with_direction("recvonly").with_kind("video").one().on_frame`.
-   `reactor.tracks` became a `TrackList` (a `list[Track]` with `with_kind()`/`with_direction()`
-   filters and `.one()`) to make the filtered form convenient. The raw `on("frame", ...)` /
-   `on("audio", ...)` events are unaffected — only the decorator is gone.
 
 ---
 
@@ -207,7 +150,7 @@ Narrower — three breaking changes, one additive feature, all in the same relea
 
 ## Migration procedure
 
-1. Run the "Which migration applies" grep above across the target codebase.
+1. Run the "Confirm it's actually the old `py-sdk`" grep above across the target codebase.
 2. Convert every `Reactor(...)` construction to keyword arguments (`model_name=`, `api_key=`
    or `jwt=`, `api_url=`, `local=`) — do this first, before anything else, since it's silent
    if missed.
