@@ -58,12 +58,12 @@ class TestStateWithoutAHandle:
         [
             pytest.param(lambda r: r.unpublish_track("video"), id="unpublish_track"),
             pytest.param(
-                lambda r: r.push_video_frame("video", b"\x00" * 4, 1, 1),
-                id="push_video_frame",
+                lambda r: r._push_video_frame("video", b"\x00" * 4, 1, 1),
+                id="_push_video_frame",
             ),
             pytest.param(
-                lambda r: r.push_audio_frame("audio", b"\x00" * 4, 2),
-                id="push_audio_frame",
+                lambda r: r._push_audio_frame("audio", b"\x00" * 4, 2),
+                id="_push_audio_frame",
             ),
         ],
     )

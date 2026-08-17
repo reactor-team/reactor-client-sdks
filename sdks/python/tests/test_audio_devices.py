@@ -147,6 +147,11 @@ def reactor(monkeypatch: pytest.MonkeyPatch) -> tuple[Reactor, _FakeLib]:
     client._handle = 1234
     lib = _FakeLib()
     monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: lib)
+    # A Microphone pushes into its track, and push_frame refuses a slot that was
+    # never activated — so a fixture that left them unpublished would be testing
+    # that guard over and over instead of the capture path.
+    for track in client.tracks.with_direction("sendonly"):
+        track._published = True
     return client, lib
 
 

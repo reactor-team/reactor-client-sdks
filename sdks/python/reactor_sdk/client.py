@@ -453,6 +453,15 @@ class Reactor:
             if r is None:
                 return
             status = status_bytes.decode() if status_bytes else "disconnected"
+            if status != ReactorStatus.READY:
+                # Leaving ready ends every publish that was in force. A reconnect
+                # resumes recvonly tracks and stops there, so a sendonly track that
+                # was published before the drop is not published after it, and the
+                # far end never hears about the frames pushed into it. Forgetting
+                # here is what turns that into publish() again, rather than a track
+                # that claims to be live and sends into nothing.
+                for track in r._tracks.values():
+                    track._published = False
             r._fire_on_loop("status_changed", status)
 
         def _on_error(json_bytes: bytes, _ud: Any) -> None:
@@ -1035,7 +1044,9 @@ class Reactor:
         await self._async_op(
             lambda fn: lib.reactor_publish_track(ctypes.c_void_p(handle), name_b, fn, None)
         )
-        return self.track(name)
+        track = self.track(name)
+        track._published = True
+        return track
 
     def unpublish_track(self, name: str) -> None:
         """Deactivate a sendonly track (sync — no network round trip, only a
@@ -1048,13 +1059,22 @@ class Reactor:
         `WARNING`) if a track seems to have stayed published.
         """
         self._require_handle()
+        track = self._tracks.get(name)
+        if track is not None:
+            track._published = False
         raw = self._read_string(
             lambda lib, handle: lib.reactor_unpublish_track(handle, name.encode())
         )
         if raw is not None:
             _log.warning("unpublish_track(%r) failed: %s", name, error_from_payload(raw))
 
-    async def pause_track(self, name: str) -> None:
+    # Pausing and frame push are reached through `Track` — `reactor.track(name)`,
+    # or `reactor.tracks`. They stay here as the plumbing the track methods call,
+    # private because a name-based copy of each was a second way to say the same
+    # thing that could not check what it was being asked to do: a wrong name, or a
+    # track pointing the other way, went to the FFI and came back looking fine.
+
+    async def _pause_track(self, name: str) -> None:
         """Pause receiving a named track."""
         self._require_handle()
         handle = self._handle
@@ -1064,7 +1084,7 @@ class Reactor:
             lambda fn: lib.reactor_pause_track(ctypes.c_void_p(handle), name_b, fn, None)
         )
 
-    async def resume_track(self, name: str) -> None:
+    async def _resume_track(self, name: str) -> None:
         """Resume receiving a named track."""
         self._require_handle()
         handle = self._handle
@@ -1078,7 +1098,7 @@ class Reactor:
     # Frame push
     # ------------------------------------------------------------------
 
-    def push_video_frame(
+    def _push_video_frame(
         self,
         track_name: str,
         data: bytes,
@@ -1117,7 +1137,7 @@ class Reactor:
             ctypes.c_uint32(height),
         )
 
-    def push_audio_frame(
+    def _push_audio_frame(
         self,
         track_name: str,
         data: bytes,

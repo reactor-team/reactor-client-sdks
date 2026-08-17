@@ -113,7 +113,8 @@ matters.
 ### Sending
 
 ```python
-camera = await reactor.publish_track("camera")
+camera = reactor.track("camera")
+await camera.publish()                            # or: await reactor.publish_track("camera")
 
 camera.push_frame(frame)                          # numpy array: shape carries the size
 camera.push_frame(bgra, width=640, height=480)    # bytes: size spelled out
@@ -126,6 +127,11 @@ camera.unpublish()
 One `push_frame` and one `on_frame` for both kinds — the track knows which it is.
 Asking for something its direction does not have raises, rather than doing nothing.
 
+Publishing is what puts a sender behind the slot, so `push_frame` before it raises
+`InvalidStateError` rather than accepting frames nothing carries. A publish lasts
+as long as the session: a reconnect resumes recvonly tracks and nothing else, so
+publish again after one — `track.published` says which side of that you are on.
+
 ### Audio devices
 
 The SDK opens no audio device: a sendonly audio track carries only the PCM you
@@ -136,7 +142,8 @@ that, and need `reactor-sdk[audio]`:
 from reactor_sdk.audio_devices import Microphone, Speaker
 
 speaker = reactor.tracks.with_kind("audio").with_direction("recvonly").one()
-mic = await reactor.track("mic").publish()
+mic = reactor.track("mic")
+await mic.publish()
 
 with Speaker(speaker), Microphone(mic):
     await asyncio.sleep(30)

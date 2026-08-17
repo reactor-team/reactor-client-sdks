@@ -9,7 +9,8 @@ it leaves both jobs to the application.
 These are those jobs, done::
 
     output = reactor.tracks.with_direction("recvonly").with_kind("audio").one()
-    mic = await reactor.track("mic").publish()
+    mic = reactor.track("mic")
+    await mic.publish()
 
     with Speaker(output), Microphone(mic):
         await asyncio.sleep(30)
@@ -312,7 +313,8 @@ class Speaker:
 class Microphone:
     """Captures from an input device into a sendonly audio track.
 
-        mic = await reactor.track("mic").publish()
+        mic = reactor.track("mic")
+        await mic.publish()
         with Microphone(mic):
             await asyncio.sleep(30)
 
