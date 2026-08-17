@@ -413,13 +413,16 @@ class Reactor:
         """Deliver a media frame to the handlers registered on its own track.
 
         The track name arrives from the FFI, which reports it empty when the
-        transceiver could not be matched to a declared track — there is nothing to
-        route such a frame to, and the client-wide event has already had it.
+        transceiver could not be matched to a declared track. Such a frame has
+        nowhere to go — there is no client-wide event to fall back to any more — so
+        it is dropped, and said out loud at debug level rather than silently. Seeing
+        these means the session negotiated a track this SDK cannot name.
 
         Runs on the media delivery thread, like `_fire`, and for the same reason:
         blocking here is what applies backpressure.
         """
         if not track:
+            _log.debug("a %s frame arrived with no track name; dropping it", kind)
             return
         self._fire(f"{kind}@{track.decode()}", *args)
 
@@ -1086,14 +1089,20 @@ class Reactor:
         `WARNING`) if a track seems to have stayed published.
         """
         self._require_handle()
-        track = self._tracks.get(name)
-        if track is not None:
-            track._published = False
         raw = self._read_string(
             lambda lib, handle: lib.reactor_unpublish_track(handle, name.encode())
         )
         if raw is not None:
+            # Deliberately still published as far as this side is concerned. The
+            # notification is what tells the far end to stop, and a send that failed
+            # while the session was otherwise fine did not send it — the track is
+            # still up. Clearing here would make `Track.unpublish()` a no-op on the
+            # retry, which is the one call that could still put it right.
             _log.warning("unpublish_track(%r) failed: %s", name, error_from_payload(raw))
+            return
+        track = self._tracks.get(name)
+        if track is not None:
+            track._published = False
 
     # Pausing and frame push are reached through `Track` — `reactor.track(name)`,
     # or `reactor.tracks`. They stay here as the plumbing the track methods call,

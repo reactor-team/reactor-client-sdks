@@ -511,7 +511,8 @@ class TestOnFrame:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The FFI reports an empty name when a transceiver could not be matched.
-        There is nothing to route it to, and the client-wide event already had it."""
+        There is nothing to route it to, and no client-wide event to fall back to, so
+        it is dropped — see the debug line in `_fire_on_track`."""
         reactor, _ = _connected(monkeypatch)
         seen: list[object] = []
         reactor.track("output").on_frame(lambda frame: seen.append(frame))
@@ -538,7 +539,7 @@ class TestOnFrame:
         assert seen == []
 
     def test_raw_frames_skip_the_conversion(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Same routing, same arguments as the client-wide event — so a handler
+        """Same routing as on_frame, without the conversion — so a handler
         written against `on("frame", ...)` moves onto a track unchanged, and one
         that only counts frames pays for no numpy."""
         reactor, _ = _connected(monkeypatch)
@@ -918,6 +919,33 @@ class TestPublishIsRequired:
     def test_a_recvonly_track_is_never_published(self, monkeypatch: pytest.MonkeyPatch) -> None:
         reactor, _ = _connected(monkeypatch)
         assert reactor.track("output").published is False
+
+    def test_a_failed_unpublish_stays_published_so_it_can_be_retried(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The notification is what tells the far end to stop. A send that failed
+        did not send it, so the track is still up — and clearing the flag would make
+        the retry a no-op, which is the one call that could still put it right."""
+        reactor, lib = _connected(monkeypatch)
+        lib.unpublish_error = {
+            "code": "TRANSPORT_ERROR",
+            "message": "control channel is not open",
+            "recoverable": True,
+            "operation": "unpublish_track",
+        }
+        camera = reactor.track("camera")
+
+        camera.unpublish()
+
+        assert camera.published is True
+        assert lib.unpublished == ["camera"]
+
+        # And the retry actually goes out, rather than short-circuiting.
+        lib.unpublish_error = None
+        camera.unpublish()
+
+        assert camera.published is False
+        assert lib.unpublished == ["camera", "camera"]
 
     def test_unpublishing_what_was_never_published_does_not_reach_the_session(
         self, monkeypatch: pytest.MonkeyPatch

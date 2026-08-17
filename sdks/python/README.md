@@ -192,6 +192,20 @@ Subclasses: `InvalidStateError`, `DisconnectedError`, `NetworkError`,
 A command the model itself rejects reports the model's own code, which this package
 cannot enumerate — match on `error.code` for anything outside that list.
 
+One failure is not in that family: exchanging an `api_key` for a token raises
+`AuthError`, which is a `RuntimeError` and not a `ReactorError`. It happens inside
+`connect()` when the client was given a key rather than a `jwt`, so catch it
+alongside:
+
+```python
+from reactor_sdk import AuthError
+
+try:
+    await reactor.connect()
+except AuthError:
+    ...                       # the key itself was refused, or the auth host is unreachable
+```
+
 ## Recordings
 
 ```python
