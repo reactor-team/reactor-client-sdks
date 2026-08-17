@@ -291,6 +291,14 @@ class Track:
             self._reactor().off(self._event, registered[0])
 
     def _register(self, func: Callable, raw: bool) -> Callable:
+        """Refuse the direction, then attach.
+
+        The guard belongs here and not in :meth:`_attach`, because the two callers
+        are asking different questions. This one is a caller registering a handler,
+        where a sendonly track is a mistake worth an exception. `_readapt` is not:
+        by the time it runs the handler is already registered, and the direction it
+        turned out to have is news.
+        """
         self._refresh()
         if self._direction is TrackDirection.SENDONLY:
             raise ValueError(
@@ -298,7 +306,11 @@ class Track:
                 f"to hand you. push_frame() sends into it; on_frame() applies to a "
                 f"recvonly track."
             )
+        self._attach(func, raw)
+        return func
 
+    def _attach(self, func: Callable, raw: bool) -> None:
+        """Adapt `func` for the kind this track has now, and put it on the client."""
         if raw:
             adapter = func
         else:
@@ -306,7 +318,6 @@ class Track:
             adapter = adapt(func)
         self._adapters[func] = (adapter, raw)
         self._reactor().on(self._event, adapter)
-        return func
 
     def _video_adapter(self, func: Callable) -> Callable:
         take = _positional_arity(func, len(VIDEO_FRAME_HANDLER_ARGUMENTS))
@@ -393,16 +404,38 @@ class Track:
             self._readapt(old_event)
 
     def _readapt(self, old_event: str) -> None:
-        """Re-register every handler for the kind this track turned out to be."""
+        """Re-register every handler for the kind this track turned out to be.
+
+        Deliberately not through :meth:`_register`: its direction guard raises, and
+        raising here would be raising out of `_sync_tracks` — which is reached from
+        reading `reactor.tracks`, or refreshing some *other* track. The caller
+        registering the handler is the one who can be told off; whoever happens to
+        read the track list later is not.
+        """
         client = self._client()
         if client is None:
             return
         registered = list(self._adapters.items())
-        self._adapters.clear()
         for _, (adapter, _raw) in registered:
             client.off(old_event, adapter)
+
+        if self._direction is TrackDirection.SENDONLY:
+            # Registered before the session said what this track was, and it turned
+            # out to be one that only sends. Nothing will ever arrive, so the
+            # handlers stay detached — and are said out loud once, here, rather than
+            # left looking live and silently never firing.
+            _log.warning(
+                "track %r turned out to be sendonly, so the %d handler(s) registered "
+                "on it before the session declared its tracks will never fire — a "
+                "sendonly track is one you push_frame() into",
+                self._name,
+                len(registered),
+            )
+            return
+
+        self._adapters.clear()
         for func, (_adapter, raw) in registered:
-            self._register(func, raw=raw)
+            self._attach(func, raw)
 
     def _refresh(self) -> None:
         """Adopt what the session declares, if it has not been adopted yet."""

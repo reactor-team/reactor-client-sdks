@@ -454,6 +454,69 @@ class TestOnFrame:
 
         assert seen == [(4, 16000)]
 
+    def test_a_handler_on_a_name_that_turns_out_to_be_sendonly_is_detached_loudly(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Registering before the session declares its tracks is allowed, so this
+        is reachable without doing anything wrong at the time.
+
+        Resolution used to route back through the direction guard, which raises —
+        inside `_sync_tracks`, whose `except` clause then swallowed it and logged
+        "declared with an unrecognised shape". Nothing was wrong with the shape.
+        Anyone reading that would go looking for a protocol problem, when the real
+        answer was that they had registered on a track that only sends.
+        """
+        reactor, lib = _connected(monkeypatch, tracks=[])
+        seen: list[object] = []
+        reactor.track("camera").on_frame(lambda frame: seen.append(frame))
+
+        lib._tracks = DECLARED
+        with caplog.at_level("DEBUG"):
+            names = [t.name for t in reactor.tracks]
+
+        assert "camera" in names
+        assert "sendonly" in caplog.text
+        assert "unrecognised shape" not in caplog.text
+        # Detached, not merely inert: nothing reaches it.
+        reactor._fire_on_track("frame", b"camera", bytes(4), 1, 1, 0, 0, b"")
+        assert seen == []
+
+    def test_resolving_such_a_track_does_not_raise_at_whoever_reads_the_list(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`reactor.tracks`, and any other track's refresh, both go through
+        `_sync_tracks`. Raising there would punish a reader for what a registrar
+        did."""
+        reactor, lib = _connected(monkeypatch, tracks=[])
+        reactor.track("camera").on_frame(lambda frame: None)
+        other = reactor.track("output")
+
+        lib._tracks = DECLARED
+
+        assert other.direction is TrackDirection.RECVONLY
+        assert [t.name for t in reactor.tracks] == [t["name"] for t in DECLARED]
+
+    def test_off_frame_still_works_on_a_detached_handler(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The record is kept so unregistering stays symmetric with registering,
+        even though there is nothing left on the client to remove."""
+        reactor, lib = _connected(monkeypatch, tracks=[])
+
+        def handler(frame: object) -> None: ...
+
+        camera = reactor.track("camera")
+        camera.on_frame(handler)
+        lib._tracks = DECLARED
+        reactor.tracks
+
+        # The point: the handler is still known here. Detaching used to drop the
+        # record too, so `off_frame` had nothing to find and the caller had no way
+        # to tell a handler it registered from one that was never accepted.
+        assert handler in camera._adapters
+        camera.off_frame(handler)
+        assert camera._adapters == {}
+
     def test_raw_frames_are_refused_on_a_sendonly_track(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
