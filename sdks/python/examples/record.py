@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from reactor_sdk import Clip, ReactorFFIError, download_clip
+from reactor_sdk import Clip, ReactorError, download_clip
 
 from .reactor_client import make_reactor
 
@@ -57,14 +57,14 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _download(clip: Clip, out_path: str) -> None:
+async def _download(clip: Clip, out_path: str) -> None:
     """Fetch every segment `clip.playlist_url` names and write them to out_path."""
     print(f"Downloading playlist: {clip.playlist_url}", file=sys.stderr)
 
     def on_progress(done: int, total: int) -> None:
         print(f"  [{done}/{total}]", file=sys.stderr)
 
-    download_clip(clip, out_path, on_progress=on_progress)
+    await download_clip(clip, out_path, on_progress=on_progress)
 
     size_kb = Path(out_path).stat().st_size // 1024
     print(f"Saved {size_kb} KB to {out_path}", file=sys.stderr)
@@ -99,7 +99,7 @@ async def main() -> None:
         else:
             print(f"Requesting clip ({args.clip}s)…", file=sys.stderr)
             clip = await reactor.request_clip(args.clip)
-    except ReactorFFIError as exc:
+    except ReactorError as exc:
         print(f"Clip request failed: {exc}", file=sys.stderr)
         await reactor.disconnect()
         reactor.close()
@@ -113,7 +113,7 @@ async def main() -> None:
     print(f"predicted_ready_ms: {clip.predicted_ready_at_ms:.0f}")
 
     if args.download:
-        _download(clip, args.download)
+        await _download(clip, args.download)
 
     await reactor.disconnect()
     reactor.close()

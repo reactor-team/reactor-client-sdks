@@ -71,12 +71,58 @@ class TrackDirection(str, Enum):
 
 
 #: What a video track's `on_frame` offers a handler, in order. A handler is given as
-#: many of these as it declares parameters for — the same contract as
-#: :meth:`Reactor.on_frame`.
+#: many of these as it declares parameters for, so it can ask for only what it uses.
 VIDEO_FRAME_HANDLER_ARGUMENTS = ("frame", "frame_id", "timestamp_us", "user_data")
 
 #: What an audio track's `on_frame` offers a handler, in order.
 AUDIO_FRAME_HANDLER_ARGUMENTS = ("frame", "sample_rate", "num_channels")
+
+
+class TrackList(list["Track"]):
+    """The tracks a session declares — a plain list, with filters that chain.
+
+    A `list` first, so everything a list does keeps working::
+
+        for track in reactor.tracks: ...
+        reactor.tracks[0]
+        len(reactor.tracks)
+
+    and filters on top, for finding the one you mean::
+
+        reactor.tracks.with_kind(TrackKind.VIDEO)
+        reactor.tracks.with_direction(TrackDirection.RECVONLY).one()
+
+    Each filter returns another `TrackList`, so they compose in any order. A track
+    whose kind or direction the session has not declared yet matches neither
+    filter — there is nothing to match it against.
+    """
+
+    def with_kind(self, kind: TrackKind | str) -> TrackList:
+        """Only the tracks carrying `kind` — ``"video"`` or ``"audio"``."""
+        wanted = TrackKind(kind)
+        return TrackList(track for track in self if track.kind is wanted)
+
+    def with_direction(self, direction: TrackDirection | str) -> TrackList:
+        """Only the tracks flowing `direction` — ``"sendonly"`` or ``"recvonly"``."""
+        wanted = TrackDirection(direction)
+        return TrackList(track for track in self if track.direction is wanted)
+
+    def one(self) -> Track:
+        """The single track in this list, or an error naming what is actually here.
+
+        For the common shape — "the model's video output", "the microphone slot" —
+        where the caller means one track and a second or a missing one is a
+        mistake worth hearing about rather than an index that happens to work.
+        """
+        if len(self) == 1:
+            return self[0]
+        if not self:
+            raise ValueError("no track matches, so there is no one() to take")
+        raise ValueError(
+            f"one() wants a single track and {len(self)} match: "
+            f"{', '.join(track.name for track in self)}. Narrow the filter, or "
+            f"pick from the list."
+        )
 
 
 class Track:
@@ -279,9 +325,10 @@ class Track:
     def on_frame(self, func: Callable) -> Callable:
         """Register a handler for this track's frames. Usable as a decorator.
 
-        Only this track's frames reach it. That is the point of registering here
-        rather than on the client: :meth:`Reactor.on_frame` sees every recvonly video
-        track at once, with nothing to tell them apart.
+        Only this track's frames reach it, which is why registration belongs on the
+        track. The client has no equivalent: a handler fed every recvonly video
+        track at once cannot tell them apart, and one that only ever worked for
+        video was the wrong shape to keep.
 
         On a **video** track the handler is given as many of
         ``(frame, frame_id, timestamp_us, user_data)`` as it declares parameters

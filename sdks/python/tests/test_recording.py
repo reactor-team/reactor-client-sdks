@@ -80,50 +80,56 @@ def _clip(playlist_url: str) -> Clip:
 
 
 class TestDownloadClip:
-    def test_concatenates_segments_in_order(self, server_url: str) -> None:
-        data = download_clip(_clip(f"{server_url}/hls/clip.m3u8"))
+    """`download_clip` is `async def` — a thin `asyncio.to_thread` wrapper
+    around the sync fetch below, so callers get `await download_clip(...)` in
+    one step instead of wrapping it themselves on every call site."""
+
+    async def test_concatenates_segments_in_order(self, server_url: str) -> None:
+        data = await download_clip(_clip(f"{server_url}/hls/clip.m3u8"))
         assert data == _SEG0 + _SEG1
 
-    def test_resolves_the_absolute_path_segment_without_doubling_it(self, server_url: str) -> None:
+    async def test_resolves_the_absolute_path_segment_without_doubling_it(
+        self, server_url: str
+    ) -> None:
         """The regression this suite exists for: a plain `base + segment`
         string-concat would request `/hls/clips/chunks/seg1.ts` (404) instead
         of `/clips/chunks/seg1.ts`."""
-        data = download_clip(_clip(f"{server_url}/hls/clip.m3u8"))
+        data = await download_clip(_clip(f"{server_url}/hls/clip.m3u8"))
         assert _SEG1 in data
 
-    def test_writes_to_path_when_given(self, server_url: str, tmp_path: object) -> None:
+    async def test_writes_to_path_when_given(self, server_url: str, tmp_path: object) -> None:
         out = tmp_path / "clip.ts"  # type: ignore[operator]
-        data = download_clip(_clip(f"{server_url}/hls/clip.m3u8"), out)
+        data = await download_clip(_clip(f"{server_url}/hls/clip.m3u8"), out)
         assert out.read_bytes() == data == _SEG0 + _SEG1
 
-    def test_returns_bytes_without_a_path(self, server_url: str) -> None:
-        data = download_clip(_clip(f"{server_url}/hls/clip.m3u8"))
+    async def test_returns_bytes_without_a_path(self, server_url: str) -> None:
+        data = await download_clip(_clip(f"{server_url}/hls/clip.m3u8"))
         assert isinstance(data, bytes)
         assert len(data) == len(_SEG0) + len(_SEG1)
 
-    def test_progress_is_reported_per_segment_in_order(self, server_url: str) -> None:
+    async def test_progress_is_reported_per_segment_in_order(self, server_url: str) -> None:
         calls: list[tuple[int, int]] = []
-        download_clip(
+        await download_clip(
             _clip(f"{server_url}/hls/clip.m3u8"),
             on_progress=lambda done, total: calls.append((done, total)),
         )
         assert calls == [(1, 2), (2, 2)]
 
-    def test_no_progress_callback_is_fine(self, server_url: str) -> None:
-        download_clip(_clip(f"{server_url}/hls/clip.m3u8"))  # must not raise
+    async def test_no_progress_callback_is_fine(self, server_url: str) -> None:
+        await download_clip(_clip(f"{server_url}/hls/clip.m3u8"))  # must not raise
 
-    def test_an_empty_playlist_raises_value_error(self, server_url: str) -> None:
+    async def test_an_empty_playlist_raises_value_error(self, server_url: str) -> None:
         with pytest.raises(ValueError, match="no segments"):
-            download_clip(_clip(f"{server_url}/hls/empty.m3u8"))
+            await download_clip(_clip(f"{server_url}/hls/empty.m3u8"))
 
-    def test_a_missing_playlist_raises_the_http_error(self, server_url: str) -> None:
+    async def test_a_missing_playlist_raises_the_http_error(self, server_url: str) -> None:
         import urllib.error
 
         with pytest.raises(urllib.error.HTTPError) as excinfo:
-            download_clip(_clip(f"{server_url}/hls/does-not-exist.m3u8"))
+            await download_clip(_clip(f"{server_url}/hls/does-not-exist.m3u8"))
         assert excinfo.value.code == 404
 
-    def test_a_missing_segment_raises_the_http_error(self, server_url: str) -> None:
+    async def test_a_missing_segment_raises_the_http_error(self, server_url: str) -> None:
         """The playlist resolves; a segment 404s mid-download."""
         import urllib.error
 
@@ -131,7 +137,21 @@ class TestDownloadClip:
         _ROUTES["/hls/broken.m3u8"] = (b"#EXTM3U\nseg0.ts\nmissing.ts\n", "application/x-mpegurl")
         try:
             with pytest.raises(urllib.error.HTTPError) as excinfo:
-                download_clip(_clip(broken))
+                await download_clip(_clip(broken))
             assert excinfo.value.code == 404
         finally:
             del _ROUTES["/hls/broken.m3u8"]
+
+    async def test_runs_off_the_event_loop_thread(self, server_url: str) -> None:
+        """The whole point of making this `async def`: the fetch must not
+        block the loop, which a naive `async def` wrapping a synchronous body
+        directly (no `to_thread`) would do."""
+        loop_thread = threading.current_thread()
+        seen_from: list[threading.Thread] = []
+
+        def on_progress(_done: int, _total: int) -> None:
+            seen_from.append(threading.current_thread())
+
+        await download_clip(_clip(f"{server_url}/hls/clip.m3u8"), on_progress=on_progress)
+
+        assert seen_from and all(t is not loop_thread for t in seen_from)

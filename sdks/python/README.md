@@ -34,12 +34,15 @@ async def main():
         def on_ready(status):
             asyncio.create_task(r.send_command("set_prompt", {"prompt": "a forest at dawn"}))
 
-        def on_frame(bgra, width, height, frame_id, timestamp_us, user_data):
-            print(f"frame: {width}x{height}")
-
-        r.on("frame", on_frame)
-
         await r.connect()
+
+        # The model's video output, whatever it is called.
+        output = r.tracks.with_direction("recvonly").with_kind("video").one()
+
+        @output.on_frame
+        def render(frame):
+            print(f"frame: {frame.shape}")
+
         await asyncio.sleep(30)  # keep the session open while frames arrive
 
 
@@ -91,6 +94,30 @@ def forward(bgra, width, height, frame_id, timestamp_us, user_data):
     ...
 ```
 
+### Finding a track
+
+`reactor.tracks` is a list, so it iterates and indexes like one — with filters that
+chain when you would rather describe the track than name it:
+
+```python
+reactor.tracks                                              # all of them
+reactor.tracks.with_kind(TrackKind.VIDEO)                   # or "video"
+reactor.tracks.with_direction(TrackDirection.RECVONLY)      # or "recvonly"
+
+# The one you mean, with an error naming the candidates if there is not exactly one.
+output = reactor.tracks.with_direction("recvonly").with_kind("video").one()
+```
+
+The filters compose in either order, and a track whose kind the session has not
+declared yet matches neither.
+
+There is no client-wide `reactor.on_frame`: it was removed in 0.9.0. It only ever
+worked for video — there was no `on_audio` counterpart — and a single handler fed
+every recvonly video track cannot tell them apart, which is the case the `Track`
+object exists for. `on("frame", …)` and `on("audio", …)` remain for raw
+client-wide bytes; use a track's `on_frame` for decoded frames, and `.one()` above
+when you do not want to hardcode the name.
+
 **No audio device is ever opened.** A sendonly audio track carries only the PCM
 you push into it, and a model's audio arrives at `on_frame` for you to play with
 whatever you like — nothing is captured from your microphone or played through
@@ -101,7 +128,8 @@ yet, so handlers can be registered first and the name is checked as soon as the
 declaration arrives.
 
 The name-based calls — `publish_track`, `pause_track`, `push_video_frame`,
-`push_audio_frame`, `on("frame", …)` — all still work exactly as before.
+`push_audio_frame`, `on("frame", …)` — all still work exactly as before. The one
+removal is `reactor.on_frame`; see "Finding a track" above for what replaces it.
 
 ## Errors
 
@@ -109,7 +137,7 @@ A failed operation raises an exception carrying a code you can branch on, rather
 than only a sentence you can print:
 
 ```python
-from reactor_sdk import ReactorFFIError, UnauthorizedError, ConflictError
+from reactor_sdk import ReactorError, UnauthorizedError, ConflictError
 
 try:
     await reactor.connect()
@@ -117,7 +145,7 @@ except UnauthorizedError:
     ...                      # the token is missing, expired or out of scope
 except ConflictError:
     ...                      # a previous run left the session orphaned
-except ReactorFFIError as error:
+except ReactorError as error:
     if error.recoverable:    # a timeout, a 5xx, a transport that dropped
         await reactor.reconnect()
     else:
@@ -133,25 +161,25 @@ except RateLimitedError as error:
     await asyncio.sleep((error.retry_after_ms or 1000) / 1000)
 ```
 
-`ReactorFFIError` is the base of all of them, so `except ReactorFFIError` still
+`ReactorError` is the base of all of them, so `except ReactorError` still
 catches everything. The classes are `InvalidStateError`, `DisconnectedError`,
 `NetworkError`, `RequestTimeoutError`, `TransportError`, `UnauthorizedError`,
 `NotFoundError`, `ConflictError`, `RateLimitedError`, `BadRequestError`,
 `ServerError`, `VersionMismatchError`, `DecodeError`, `SessionTerminalError`,
 `MessageTooLargeError` and `AbortedError`.
 
-**One list.** The `on_error` event reports the same codes, in the same shape plus
-`timestamp_ms` — so the same failure is the same code whichever way you receive
-it:
+**One class.** The `on_error` event hands you the exact same `ReactorError` a
+failed call raises — not a separate type that happens to agree — plus
+`timestamp_ms`, only ever set here:
 
 ```python
 @reactor.on_error
-def log(error):                  # a ReactorError
+def log(error):                  # a ReactorError — an UnauthorizedError, etc.
     print(error.code, error.operation, error.recoverable)
 ```
 
 A command or a control request the model itself rejects reports the model's own
-code, which this package cannot enumerate — those raise `ReactorFFIError` with
+code, which this package cannot enumerate — those raise `ReactorError` with
 `.code` set to whatever arrived, so match on `error.code` for anything not in the
 list above.
 
@@ -163,14 +191,13 @@ every segment it names and hands you the concatenated bytes:
 
 ```python
 clip = await reactor.request_clip(10)
-data = await asyncio.to_thread(download_clip, clip, "clip.ts")
+data = await download_clip(clip, "clip.ts")
 ```
 
 It's the interleaved MPEG-TS bytes, not an MP4 — playable as-is by most players
 (`ffplay`, VLC, mpv); remux with `ffmpeg -i clip.ts -c copy clip.mp4` if you need
 that container specifically. Pass `on_progress=lambda done, total: ...` to track
-it, and omit the path to get the bytes back without writing a file. It's
-synchronous like `fetch_jwt`, so run it in a thread from async code.
+it, and omit the path to get the bytes back without writing a file.
 
 ## Documentation & Resources
 
