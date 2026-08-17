@@ -271,6 +271,44 @@ class TestPushFrame:
         reactor.track("camera").push_frame(b"\x00" * 4, width=1, height=1, user_data=b"n=1")
         assert captured["video"][1] == {"user_data": b"n=1"}
 
+    def test_a_tag_on_an_audio_track_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An audio frame has nowhere to carry one — the wire format has no
+        metadata trailer for it. Accepting the argument and dropping it would mean
+        a caller believing their frames are tagged when nothing is."""
+        reactor, _ = _connected(monkeypatch)
+        with pytest.raises(TypeError, match="nowhere to carry a tag"):
+            reactor.track("mic").push_frame(b"\x00\x00" * 480, user_data=b"n=1")
+
+    def test_dimensions_that_contradict_an_array_are_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Not redundant, contradictory: one of the two is what the caller thinks
+        is going on the wire, and silently picking the other is unfindable."""
+        reactor, _ = _connected(monkeypatch)
+        frame = np.zeros((1, 2, 3), dtype=np.uint8)
+        with pytest.raises(ValueError, match="carries its own shape"):
+            reactor.track("camera").push_frame(frame, width=1280, height=720)
+
+    def test_dimensions_that_agree_with_an_array_are_allowed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Someone porting from push_video_frame() passes both, and they agree.
+        Refusing that would be pedantry."""
+        reactor, _ = _connected(monkeypatch)
+        captured = self._captured(reactor)
+        reactor.track("camera").push_frame(np.zeros((1, 2, 3), dtype=np.uint8), width=2, height=1)
+        assert captured["video"][0][2:] == (2, 1)
+
+    def test_an_argument_of_the_other_kind_that_loses_nothing_is_let_through(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The line the guards are drawn on: refuse where ignoring would throw away
+        what the caller meant, allow where it is merely unused."""
+        reactor, _ = _connected(monkeypatch)
+        captured = self._captured(reactor)
+        reactor.track("camera").push_frame(b"\x00" * 4, width=1, height=1, sample_rate=16000)
+        assert captured["video"][0][0] == "camera"
+
     def test_audio_works_out_how_many_samples_it_was_given(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

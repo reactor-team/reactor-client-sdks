@@ -30,7 +30,7 @@ import logging
 import weakref
 from collections.abc import Callable
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, overload
 
 from ._media import (
     _bgra_to_rgb_array,
@@ -41,6 +41,11 @@ from ._media import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - types only
+    # Imported for annotations only, so numpy stays an optional dependency: a
+    # checker resolves these, and nothing at run time ever looks them up.
+    import numpy as np
+    from numpy.typing import NDArray
+
     from .client import Reactor
 
 _log = logging.getLogger(__name__)
@@ -163,6 +168,35 @@ class Track:
         self._require(TrackDirection.SENDONLY, "unpublish()")
         return self._reactor().unpublish_track(self._name)
 
+    # The two shapes of a frame, told apart by the one thing that already
+    # distinguishes them: BGRA pixels are `uint8` and i16 PCM is `int16`. That is the
+    # format, not a convention invented here — so an editor can offer the right
+    # arguments without the caller restating a kind the session already declared.
+    #
+    # `bytes` appears in both, because raw bytes carry no dtype and could be either.
+    # A checker then picks the overload the keywords fit, which is the best that can
+    # be done for them; the runtime guards below catch what it cannot.
+
+    @overload
+    def push_frame(
+        self,
+        data: NDArray[np.uint8] | bytes,
+        *,
+        width: int | None = ...,
+        height: int | None = ...,
+        user_data: bytes | None = ...,
+    ) -> None: ...
+
+    @overload
+    def push_frame(
+        self,
+        data: NDArray[np.int16] | bytes,
+        *,
+        sample_rate: int = ...,
+        num_channels: int = ...,
+        samples_per_channel: int | None = ...,
+    ) -> None: ...
+
     def push_frame(
         self,
         data: Any,
@@ -197,14 +231,22 @@ class Track:
 
             mic.push_frame(pcm, sample_rate=48000, num_channels=1)
 
-        The video-only and audio-only arguments are ignored by the other kind rather
-        than rejected, so a caller passing `sample_rate` to a video track is not
-        stopped — but everything the frame actually needs is required.
+        An argument the track's kind has no use for is refused rather than ignored —
+        but only where ignoring it would throw away what the caller meant. Passing
+        `sample_rate` to a video track is merely redundant and is let through;
+        passing `user_data` to an audio track means a tag that never goes anywhere,
+        and that is an error.
         """
         self._require(TrackDirection.SENDONLY, "push_frame()")
         reactor = self._reactor()
 
         if self._kind is TrackKind.AUDIO:
+            if user_data is not None:
+                raise TypeError(
+                    f"push_frame(): track {self._name!r} is audio, and an audio frame "
+                    f"has nowhere to carry a tag — the wire format has no metadata "
+                    f"trailer for one. Only video frames can be tagged."
+                )
             pcm = data.tobytes() if _is_array(data) else bytes(data)
             if samples_per_channel is None:
                 # i16 samples, interleaved across channels: two bytes each.
@@ -214,8 +256,21 @@ class Track:
             )
             return
 
-        bgra, width, height = _as_bgra(data, width, height, self._name)
-        reactor.push_video_frame(self._name, bgra, width, height, user_data=user_data)
+        bgra, actual_width, actual_height = _as_bgra(data, width, height, self._name)
+        if _is_array(data) and (
+            (width is not None and width != actual_width)
+            or (height is not None and height != actual_height)
+        ):
+            # Dimensions that disagree with the array are not redundant, they are
+            # contradictory: one of the two is what the caller believes is going on
+            # the wire, and silently picking the other is how an afternoon goes.
+            raise ValueError(
+                f"push_frame(): track {self._name!r} was given a "
+                f"{actual_width}x{actual_height} array together with width={width} "
+                f"height={height}. An array carries its own shape; drop the "
+                f"arguments, or pass the bytes if the other size is the intended one."
+            )
+        reactor.push_video_frame(self._name, bgra, actual_width, actual_height, user_data=user_data)
 
     # ------------------------------------------------------------------
     # Receiving
