@@ -66,6 +66,24 @@ pub mod codes {
     pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
 }
 
+/// Whether a code names a failure about the moment rather than about the request.
+///
+/// The recoverable ones are the ones where nothing about the call was wrong: the
+/// connection went, the network did not answer, the platform was busy or broken,
+/// the reply did not arrive in time. Everything else describes the request, and
+/// repeating it unchanged fails the same way.
+pub fn code_is_recoverable(code: &str) -> bool {
+    matches!(
+        code,
+        codes::DISCONNECTED
+            | codes::NETWORK_ERROR
+            | codes::REQUEST_TIMEOUT
+            | codes::TRANSPORT_ERROR
+            | codes::RATE_LIMITED
+            | codes::SERVER_ERROR
+    )
+}
+
 /// A failure, in the terms a caller can act on.
 ///
 /// This is what [`CoreError`] flattens down to for a binding — a `Display` string
@@ -224,17 +242,20 @@ impl CoreError {
     }
 
     /// Whether the same call could succeed later.
+    ///
+    /// Derived from the code, and deliberately not from the variant. Some
+    /// failures reach a caller wearing a code rather than their own variant — a
+    /// clip request turns its timeout into `Recording { code: REQUEST_TIMEOUT }`
+    /// so the code is the documented one — and answering this per variant meant
+    /// answering it twice, from two places that could disagree. They did: the
+    /// same timeout was recoverable from `send_command` and not from
+    /// `request_clip`.
+    ///
+    /// One vocabulary was the point of the codes; this is that applied one level
+    /// down. A code the platform sent that is not one of ours falls through to
+    /// false, which is the safe direction: never promise a retry will help.
     pub fn recoverable(&self) -> bool {
-        match self {
-            CoreError::Http(_) | CoreError::Timeout(_) | CoreError::Peer(_) => true,
-            CoreError::Status { status, .. } => *status == 429 || *status >= 500,
-            // A request the platform rejected because the connection went is
-            // exactly the kind that passes once it is back.
-            CoreError::ControlRequest { code, .. }
-            | CoreError::CommandRequest { code, .. }
-            | CoreError::Recording { code, .. } => code == codes::DISCONNECTED,
-            _ => false,
-        }
+        code_is_recoverable(self.code())
     }
 
     /// The HTTP status behind this failure, if it came from one.
@@ -400,6 +421,58 @@ mod tests {
         // Absent means the server said nothing, not "retry now".
         assert_eq!(throttled(None).details(None).retry_after_ms, None);
         assert_eq!(CoreError::Aborted.details(None).retry_after_ms, None);
+    }
+
+    /// The bug this replaced. `request_clip` turns its timeout into a
+    /// `Recording` carrying the documented code, so answering recoverability per
+    /// variant made the same timeout retryable from `send_command` and not from
+    /// `request_clip` — a caller backing off correctly in one place and giving up
+    /// in the other, for one condition.
+    #[test]
+    fn a_timeout_is_recoverable_however_it_is_wrapped() {
+        let direct = CoreError::Timeout("clip request".into());
+        let wrapped = CoreError::Recording {
+            code: codes::REQUEST_TIMEOUT.into(),
+            message: "clip request timed out".into(),
+        };
+
+        assert_eq!(direct.code(), wrapped.code());
+        assert!(direct.recoverable());
+        assert!(
+            wrapped.recoverable(),
+            "a wrapped timeout is the same timeout"
+        );
+    }
+
+    /// Every code our own call sites wrap into a request variant, answered the
+    /// same as it would have been arriving any other way.
+    #[test]
+    fn a_wrapped_code_answers_like_the_code_it_is() {
+        let wrapped = |code: &str| CoreError::Recording {
+            code: code.into(),
+            message: String::new(),
+        };
+
+        assert!(wrapped(codes::DISCONNECTED).recoverable());
+        assert!(wrapped(codes::REQUEST_TIMEOUT).recoverable());
+        assert!(!wrapped(codes::BAD_REQUEST).recoverable());
+        assert!(!wrapped(codes::INVALID_STATE).recoverable());
+        assert!(!wrapped(codes::INTERNAL_ERROR).recoverable());
+        // A code the platform sent that means nothing here. False is the safe
+        // direction: never promise that retrying will help.
+        assert!(!wrapped("PROMPT_REJECTED").recoverable());
+    }
+
+    /// The second divergence of the same kind, found while fixing the first:
+    /// recoverability used to be `status >= 500`, so a 501 was retryable while
+    /// its code said VERSION_MISMATCH. Unreachable in practice — `check_status`
+    /// turns 426/501 into `VersionMismatch` first — but the two answers have to
+    /// agree wherever it is constructed.
+    #[test]
+    fn a_version_mismatch_is_never_recoverable_whatever_its_status() {
+        assert!(!status(501).recoverable());
+        assert!(!status(426).recoverable());
+        assert!(!CoreError::VersionMismatch("too old".into()).recoverable());
     }
 
     #[test]
