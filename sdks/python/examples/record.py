@@ -7,6 +7,12 @@ request_recording().  Prints the resulting playlist URL and, if --download
 is given, fetches all HLS segments and writes them as a concatenated
 byte stream to the output file.
 
+Uses request_clip()/request_recording() + download_clip() separately by
+default: this example wants the Clip's metadata (session_id, the markers,
+predicted_ready_at_ms) to print regardless of --download. Pass --simple to
+see the other side instead — reactor.download_clip()/download_recording()
+doing the request and the download in one call, with no Clip in sight.
+
 Usage:
     # Clip of the last 10 seconds
     python -m examples.record --clip 10
@@ -17,6 +23,9 @@ Usage:
     # Download the clip segments to a file
     python -m examples.record --clip 10 --download clip.ts
 
+    # The one-call form: request + download together, no Clip printed
+    python -m examples.record --clip 10 --download clip.ts --simple
+
 Environment variables (overridden by flags):
     REACTOR_API_URL, REACTOR_MODEL, REACTOR_JWT, REACTOR_LOCAL
 """
@@ -26,13 +35,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-import urllib.request
 from pathlib import Path
-from urllib.parse import urljoin
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from reactor_sdk import Clip, ReactorError
+from reactor_sdk import Clip, Reactor, ReactorError, download_clip
 
 from .reactor_client import make_reactor
 
@@ -47,6 +54,15 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--download", metavar="FILE", help="Download HLS segments and write to FILE (e.g. clip.ts)"
     )
+    p.add_argument(
+        "--simple",
+        action="store_true",
+        help=(
+            "Use reactor.download_clip()/download_recording() — request and download in one "
+            "call, no Clip metadata printed. Implies --download is where the file goes; without "
+            "it, prints how many bytes came back instead."
+        ),
+    )
     p.add_argument("--model", metavar="NAME", help="Model name (overrides REACTOR_MODEL)")
     p.add_argument("--api-url", metavar="URL", help="Coordinator URL (overrides REACTOR_API_URL)")
     p.add_argument("--jwt", metavar="TOKEN", help="JWT token (overrides REACTOR_JWT)")
@@ -59,33 +75,45 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _download_segments(playlist_url: str, out_path: str) -> None:
-    """Fetch an HLS playlist and concatenate all .ts segments into out_path."""
-    print(f"Downloading playlist: {playlist_url}", file=sys.stderr)
+async def _download(clip: Clip, out_path: str) -> None:
+    """Fetch every segment `clip.playlist_url` names and write them to out_path."""
+    print(f"Downloading playlist: {clip.playlist_url}", file=sys.stderr)
 
-    with urllib.request.urlopen(playlist_url) as resp:
-        playlist = resp.read().decode()
+    def on_progress(done: int, total: int) -> None:
+        print(f"  [{done}/{total}]", file=sys.stderr)
 
-    segments = [
-        line.strip() for line in playlist.splitlines() if line.strip() and not line.startswith("#")
-    ]
-    if not segments:
-        print("No segments found in playlist", file=sys.stderr)
-        return
-
-    print(f"Fetching {len(segments)} segment(s) → {out_path}", file=sys.stderr)
-    with open(out_path, "wb") as out:
-        for i, seg in enumerate(segments, 1):
-            # `urljoin` resolves both relative segment names and the
-            # absolute-path URIs (`/clips/chunks/...`) the coordinator emits —
-            # a plain string-concat mishandles the latter into a doubled path.
-            url = urljoin(playlist_url, seg)
-            print(f"  [{i}/{len(segments)}] {url}", file=sys.stderr)
-            with urllib.request.urlopen(url) as r:
-                out.write(r.read())
+    await download_clip(clip, out_path, on_progress=on_progress)
 
     size_kb = Path(out_path).stat().st_size // 1024
     print(f"Saved {size_kb} KB to {out_path}", file=sys.stderr)
+
+
+async def _simple(reactor: Reactor, args: argparse.Namespace) -> None:
+    """The other half of this example: request + download in one call, no
+    Clip in sight — reactor.download_clip() / reactor.download_recording()."""
+
+    def on_progress(done: int, total: int) -> None:
+        print(f"  [{done}/{total}]", file=sys.stderr)
+
+    try:
+        if args.recording:
+            print("Requesting + downloading recording…", file=sys.stderr)
+            result = await reactor.download_recording(args.download, on_progress=on_progress)
+        else:
+            print(f"Requesting + downloading clip ({args.clip}s)…", file=sys.stderr)
+            result = await reactor.download_clip(args.clip, args.download, on_progress=on_progress)
+    except ReactorError as exc:
+        print(f"Clip request failed: {exc}", file=sys.stderr)
+        await reactor.disconnect()
+        reactor.close()
+        sys.exit(1)
+
+    if args.download:
+        size_kb = Path(args.download).stat().st_size // 1024
+        print(f"Saved {size_kb} KB to {args.download}", file=sys.stderr)
+    else:
+        assert result is not None  # no path given: bytes, not None, came back
+        print(f"Got {len(result) // 1024} KB back, not written anywhere (pass --download for that)")
 
 
 async def main() -> None:
@@ -109,6 +137,12 @@ async def main() -> None:
     await asyncio.wait_for(ready.wait(), timeout=60)
     print("Ready.", file=sys.stderr)
 
+    if args.simple:
+        await _simple(reactor, args)
+        await reactor.disconnect()
+        reactor.close()
+        return
+
     clip: Clip
     try:
         if args.recording:
@@ -131,7 +165,7 @@ async def main() -> None:
     print(f"predicted_ready_ms: {clip.predicted_ready_at_ms:.0f}")
 
     if args.download:
-        _download_segments(clip.playlist_url, args.download)
+        await _download(clip, args.download)
 
     await reactor.disconnect()
     reactor.close()

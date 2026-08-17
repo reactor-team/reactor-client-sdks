@@ -183,6 +183,31 @@ code, which this package cannot enumerate — those raise `ReactorError` with
 `.code` set to whatever arrived, so match on `error.code` for anything not in the
 list above.
 
+## Recordings
+
+```python
+await reactor.download_clip(10, "clip.ts")   # last 10 seconds, streamed to the file
+await reactor.download_recording("full.ts")  # whole session, streamed to the file
+
+data = await reactor.download_clip(10)       # no path: returns the assembled bytes instead
+```
+
+Give it a path and it streams the download straight there without holding the whole
+thing in memory — the one that matters for `download_recording()`, which has no upper
+bound on length. Omit the path and it returns the assembled bytes, which does mean
+holding the whole clip in memory: fine for a short clip, not the default choice for
+a long recording. Either way it's the interleaved MPEG-TS bytes, not an MP4 — playable
+as-is by most players (`ffplay`, VLC, mpv); remux with `ffmpeg -i clip.ts -c copy
+clip.mp4` if you need that container specifically. Pass `on_progress=lambda done,
+total: ...` to track it.
+
+`download_clip()`/`download_recording()` are `request_clip(seconds)` /
+`request_recording()` plus the download, in one call. Reach for the two-step form —
+`clip = await reactor.request_clip(10)`, then `download_clip(clip, path)` (the
+module-level function, not the method above) when you're ready — if you also want
+`clip.session_id`, its `start_marker`/`end_marker`, or `predicted_ready_at_ms`, or want
+to decide whether to download it at all before you do.
+
 ## Documentation & Resources
 
 See the [full documentation](https://docs.reactor.inc/sdk-reference/using-the-sdk#python) for platform

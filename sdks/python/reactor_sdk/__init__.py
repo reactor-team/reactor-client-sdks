@@ -24,6 +24,7 @@ except PackageNotFoundError:
     __version__ = "0.0.0.dev"
 
 from ._auth import AuthError, fetch_jwt
+from ._recording import download_clip
 from .client import (
     DEFAULT_API_URL,
     LOCAL_API_URL,
@@ -83,6 +84,7 @@ __all__ = [
     "AbortedError",
     "AuthError",
     "fetch_jwt",
+    "download_clip",
     "DEFAULT_API_URL",
     "LOCAL_API_URL",
     "__version__",
