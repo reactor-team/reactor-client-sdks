@@ -155,10 +155,6 @@ class TestAttributes:
 class TestRaisedFromAnOperation:
     """End to end from the completion callback, which is where this has to work."""
 
-    @pytest.fixture(autouse=True)
-    def _no_real_destroy(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(Reactor, "_destroy_handle", lambda self: None)
-
     def _reactor(self) -> Reactor:
         reactor = Reactor("https://api.reactor.inc", "m")
         reactor._handle = 1234
