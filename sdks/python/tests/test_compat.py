@@ -135,93 +135,12 @@ class TestFrameConversion:
 
 
 class TestDecorators:
-    def test_on_frame_delivers_an_rgb_array(self) -> None:
-        reactor = Reactor(model_name="m")
-        seen: list[Any] = []
+    """`Reactor.on_frame` was removed in 0.9.0 and its tests went with it.
 
-        @reactor.on_frame
-        def handler(frame: Any) -> None:
-            seen.append(frame)
-
-        reactor._fire("frame", bytes([10, 20, 30, 255]) * 4, 2, 2, 7, 8, b"tag")
-
-        assert len(seen) == 1
-        assert seen[0].shape == (2, 2, 3)
-        assert seen[0][0, 0].tolist() == [30, 20, 10]
-
-    def test_on_frame_can_also_take_the_metadata(self) -> None:
-        """A handler that declares the extra parameters gets the trailer with the image,
-        so reading metadata needs no second handler."""
-        reactor = Reactor(model_name="m")
-        seen: list[tuple] = []
-
-        @reactor.on_frame
-        def handler(frame: Any, frame_id: int, timestamp_us: int, user_data: bytes) -> None:
-            seen.append((frame.shape, frame_id, timestamp_us, user_data))
-
-        reactor._fire("frame", bytes([1, 2, 3, 255]) * 4, 2, 2, 7, 1234, b"tag")
-
-        assert seen == [((2, 2, 3), 7, 1234, b"tag")]
-
-    def test_on_frame_gives_a_handler_only_what_it_asks_for(self) -> None:
-        """The prefix rule: N parameters means the first N of
-        (frame, frame_id, timestamp_us, user_data)."""
-        reactor = Reactor(model_name="m")
-        two: list[tuple] = []
-        three: list[tuple] = []
-
-        @reactor.on_frame
-        def with_id(frame: Any, frame_id: int) -> None:
-            two.append((frame.shape, frame_id))
-
-        @reactor.on_frame
-        def with_time(frame: Any, frame_id: int, timestamp_us: int) -> None:
-            three.append((frame_id, timestamp_us))
-
-        reactor._fire("frame", bytes([1, 2, 3, 255]), 1, 1, 5, 99, b"x")
-
-        assert two == [((1, 1, 3), 5)]
-        assert three == [(5, 99)]
-
-    def test_on_frame_gives_star_args_everything(self) -> None:
-        reactor = Reactor(model_name="m")
-        seen: list[tuple] = []
-
-        @reactor.on_frame
-        def handler(*args: Any) -> None:
-            seen.append(args)
-
-        reactor._fire("frame", bytes([1, 2, 3, 255]), 1, 1, 3, 4, b"z")
-
-        assert len(seen[0]) == 4
-        assert seen[0][1:] == (3, 4, b"z")
-
-    def test_an_untagged_frame_reaches_a_metadata_handler_with_empty_values(self) -> None:
-        """A frame with no trailer is not withheld: the handler is told there was none."""
-        reactor = Reactor(model_name="m")
-        seen: list[tuple] = []
-
-        @reactor.on_frame
-        def handler(_frame: Any, frame_id: int, timestamp_us: int, user_data: bytes) -> None:
-            seen.append((frame_id, timestamp_us, user_data))
-
-        reactor._fire("frame", bytes([0, 0, 0, 255]), 1, 1, 0, 0, b"")
-
-        assert seen == [(0, 0, b"")]
-
-    def test_a_bound_method_is_measured_without_self(self) -> None:
-        """inspect drops the bound instance, so `def h(self, frame)` counts as one."""
-        reactor = Reactor(model_name="m")
-        seen: list[Any] = []
-
-        class Renderer:
-            def handle(self, frame: Any) -> None:
-                seen.append(frame.shape)
-
-        reactor.on_frame(Renderer().handle)
-        reactor._fire("frame", bytes([0, 0, 0, 255]), 1, 1, 0, 0, b"")
-
-        assert seen == [(1, 1, 3)]
+    What it pinned — the prefix rule that hands a handler as many arguments as it
+    declares — lives on in `Track.on_frame`, and is tested there. The helper it
+    rests on is still shared, so the one test of that stays here.
+    """
 
     def test_an_unreadable_signature_falls_back_to_the_old_contract(self) -> None:
         """A callable inspect cannot read gets one argument, which is the shape this
@@ -229,16 +148,6 @@ class TestDecorators:
         from reactor_sdk.client import _positional_arity
 
         assert _positional_arity(print, 4) >= 1
-
-    def test_on_frame_returns_the_function(self) -> None:
-        """So the decorated name stays callable."""
-        reactor = Reactor(model_name="m")
-
-        @reactor.on_frame
-        def handler(_frame: Any) -> str:
-            return "still me"
-
-        assert handler(None) == "still me"
 
     def test_bare_on_status_sees_every_change(self) -> None:
         reactor = Reactor(model_name="m")

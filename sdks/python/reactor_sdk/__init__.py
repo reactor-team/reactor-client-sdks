@@ -52,7 +52,7 @@ from .errors import (
     UnauthorizedError,
     VersionMismatchError,
 )
-from .track import Track, TrackDirection, TrackKind
+from .track import Track, TrackDirection, TrackKind, TrackList
 
 __all__ = [
     "Reactor",
@@ -60,6 +60,7 @@ __all__ = [
     "Track",
     "TrackKind",
     "TrackDirection",
+    "TrackList",
     "Clip",
     "FileRef",
     "ReactorError",
