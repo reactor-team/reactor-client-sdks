@@ -18,7 +18,7 @@ use crate::backoff::PollConfig;
 use crate::control::ControlCorrelator;
 use crate::coordinator::{CoordinatorClient, CoordinatorConfig};
 use crate::data::DataCorrelator;
-use crate::error::{codes, Component, CoreError, ReactorError};
+use crate::error::{codes, CoreError, ErrorDetails, ReactorError};
 use crate::events::{Dispatcher, ReactorEvent};
 use crate::messaging::build_command_payload;
 use crate::peer::{PeerConnectionState, PeerEvent};
@@ -240,13 +240,7 @@ impl Reactor {
         match self.connect_inner(connect_options).await {
             Ok(()) => Ok(()),
             Err(error) => {
-                self.emit_error(
-                    codes::CONNECTION_FAILED,
-                    error.to_string(),
-                    Component::Api,
-                    true,
-                    None,
-                );
+                self.emit_error(error.details(Some("connect")));
                 self.teardown(false, true).await;
                 Err(error)
             }
@@ -331,13 +325,7 @@ impl Reactor {
                 Ok(())
             }
             Err(error) => {
-                self.emit_error(
-                    codes::RECONNECTION_FAILED,
-                    error.to_string(),
-                    Component::Gpu,
-                    true,
-                    None,
-                );
+                self.emit_error(error.details(Some("reconnect")));
                 self.teardown(true, true).await;
                 Err(error)
             }
@@ -548,13 +536,11 @@ impl Reactor {
                     !state.closing && state.status != ReactorStatus::Disconnected
                 };
                 if should_report {
-                    self.emit_error(
-                        codes::GPU_CONNECTION_ERROR,
+                    self.emit_error(ErrorDetails::new(
+                        codes::DISCONNECTED,
                         format!("peer connection state: {connection_state:?}"),
-                        Component::Gpu,
                         true,
-                        None,
-                    );
+                    ));
                     self.teardown(true, true).await;
                 }
             }
@@ -590,7 +576,7 @@ impl Reactor {
                 // arrived after a timeout already cancelled the correlation).
                 // There is no awaiting caller left to deliver it to, so this
                 // is the only signal callers get that it failed.
-                self.emit_error(&error.code, error.message, Component::Gpu, true, None);
+                self.emit_error(ErrorDetails::new(error.code, error.message, true));
             }
         }
     }
@@ -700,13 +686,7 @@ impl Reactor {
         }
         if let Err(error) = self.peer.send_data(&pending.payload, true) {
             self.data.cancel(&pending.request_id);
-            self.emit_error(
-                codes::MESSAGE_SEND_FAILED,
-                error.to_string(),
-                Component::Gpu,
-                false,
-                None,
-            );
+            self.emit_error(error.details(Some("send_command")));
             return Err(error);
         }
         match timeout(&self.platform, request_timeout, command, pending.receiver).await {
@@ -777,13 +757,7 @@ impl Reactor {
             )),
         })
         .inspect_err(|error| {
-            self.emit_error(
-                codes::TRACK_PUBLISH_FAILED,
-                error.to_string(),
-                Component::Gpu,
-                false,
-                None,
-            );
+            self.emit_error(error.details(Some("publish_track")));
         })
     }
 
@@ -905,7 +879,7 @@ impl Reactor {
     pub async fn request_clip(&self, duration_seconds: f64) -> Result<Clip, CoreError> {
         if !duration_seconds.is_finite() || duration_seconds <= 0.0 {
             return Err(CoreError::Recording {
-                code: codes::INVALID_DURATION.to_string(),
+                code: codes::BAD_REQUEST.to_string(),
                 message: "duration_seconds must be a positive finite number".to_string(),
             });
         }
@@ -931,7 +905,7 @@ impl Reactor {
     ) -> Result<Clip, CoreError> {
         if self.status() != ReactorStatus::Ready {
             return Err(CoreError::Recording {
-                code: codes::DISCONNECTED.to_string(),
+                code: codes::INVALID_STATE.to_string(),
                 message: format!("cannot request clip while status is {}", self.status()),
             });
         }
@@ -1139,21 +1113,17 @@ impl Reactor {
         }
     }
 
-    fn emit_error(
-        &self,
-        code: &str,
-        message: String,
-        component: Component,
-        recoverable: bool,
-        retry_after_ms: Option<f64>,
-    ) {
+    /// Publish a failure on the event stream.
+    ///
+    /// Takes the details rather than picking a code, so the event and the failed
+    /// call it came from report the same one. The call sites that have a
+    /// `CoreError` pass `error.details(Some(operation))`; the two that do not —
+    /// a transport that dropped on its own, and a code the platform sent
+    /// unprompted — build theirs with `ErrorDetails::new`.
+    fn emit_error(&self, details: ErrorDetails) {
         let error = ReactorError {
-            code: code.to_string(),
-            message,
+            details,
             timestamp_ms: self.platform.now_ms(),
-            recoverable,
-            component,
-            retry_after_ms,
         };
         self.state.lock().unwrap().last_error = Some(error.clone());
         self.dispatcher.dispatch(ReactorEvent::Error(error));
@@ -1521,7 +1491,7 @@ mod tests {
         let error = reactor
             .last_error()
             .expect("uncorrelated error should surface globally");
-        assert_eq!(error.code, "BAD_COMMAND");
+        assert_eq!(error.details.code, "BAD_COMMAND");
     }
 
     /// A timeout cancels the pending correlation so a late reply is not

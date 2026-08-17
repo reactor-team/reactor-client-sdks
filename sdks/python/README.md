@@ -98,6 +98,58 @@ declaration arrives.
 The name-based calls — `publish_track`, `pause_track`, `push_video_frame`,
 `push_audio_frame`, `on("frame", …)` — all still work exactly as before.
 
+## Errors
+
+A failed operation raises an exception carrying a code you can branch on, rather
+than only a sentence you can print:
+
+```python
+from reactor_sdk import ReactorFFIError, UnauthorizedError, ConflictError
+
+try:
+    await reactor.connect()
+except UnauthorizedError:
+    ...                      # the token is missing, expired or out of scope
+except ConflictError:
+    ...                      # a previous run left the session orphaned
+except ReactorFFIError as error:
+    if error.recoverable:    # a timeout, a 5xx, a transport that dropped
+        await reactor.reconnect()
+    else:
+        raise
+```
+
+Every exception has `.code`, `.message`, `.recoverable`, `.status` (when the
+failure came from an HTTP one), `.operation` (which call failed) and
+`.retry_after_ms` (the server's `Retry-After`, when it sent one):
+
+```python
+except RateLimitedError as error:
+    await asyncio.sleep((error.retry_after_ms or 1000) / 1000)
+```
+
+`ReactorFFIError` is the base of all of them, so `except ReactorFFIError` still
+catches everything. The classes are `InvalidStateError`, `DisconnectedError`,
+`NetworkError`, `RequestTimeoutError`, `TransportError`, `UnauthorizedError`,
+`NotFoundError`, `ConflictError`, `RateLimitedError`, `BadRequestError`,
+`ServerError`, `VersionMismatchError`, `DecodeError`, `SessionTerminalError`,
+`MessageTooLargeError` and `AbortedError`.
+
+**One list.** The `on_error` event reports the same codes, in the same shape plus
+`timestamp_ms` — so the same failure is the same code whichever way you receive
+it:
+
+```python
+@reactor.on_error
+def log(error):                  # a ReactorError
+    print(error.code, error.operation, error.recoverable)
+```
+
+A command or a control request the model itself rejects reports the model's own
+code, which this package cannot enumerate — those raise `ReactorFFIError` with
+`.code` set to whatever arrived, so match on `error.code` for anything not in the
+list above.
+
 ## Documentation & Resources
 
 See the [full documentation](https://docs.reactor.inc/sdk-reference/using-the-sdk#python) for platform

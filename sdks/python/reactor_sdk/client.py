@@ -26,9 +26,11 @@ from ._ffi import (
     get_lib,
 )
 
-# Re-exported from `client` as well as `_media`: both have been importable from here
-# since before the split, and `tests/test_compat.py` reaches for them by that path.
+# Re-exported from `client` as well as their own modules: all of these have been
+# importable from here since before the split, and the tests reach for them by that
+# path.
 from ._media import _bgra_to_rgb_array, _positional_arity
+from .errors import ReactorFFIError, error_from_payload  # noqa: F401  (re-export)
 from .track import Track, TrackDirection, TrackKind
 
 # ---------------------------------------------------------------------------
@@ -81,21 +83,25 @@ class FileRef:
 
 @dataclass
 class ReactorError:
-    """Error event payload."""
+    """Error event payload.
+
+    The same codes and the same fields a failed call raises — see
+    :mod:`reactor_sdk.errors` — plus when it happened. `operation` names the call
+    the failure came from, where one did; a transport that dropped on its own has
+    none.
+    """
 
     code: str
     message: str
     timestamp_ms: float
     recoverable: bool
-    component: str
+    status: int | None = None
+    operation: str | None = None
     retry_after_ms: float | None = None
 
     def __str__(self) -> str:
-        return f"[{self.component}:{self.code}] {self.message}"
-
-
-class ReactorFFIError(Exception):
-    """Raised when a reactor FFI async operation fails."""
+        where = f"{self.operation}: " if self.operation else ""
+        return f"{where}[{self.code}] {self.message}"
 
 
 _log = logging.getLogger(__name__)
@@ -531,7 +537,8 @@ class Reactor:
                     message=d.get("message", ""),
                     timestamp_ms=d.get("timestamp_ms", 0.0),
                     recoverable=d.get("recoverable", False),
-                    component=d.get("component", "api"),
+                    status=d.get("status"),
+                    operation=d.get("operation"),
                     retry_after_ms=d.get("retry_after_ms"),
                 )
                 r._fire_on_loop("error", err)
@@ -755,7 +762,7 @@ class Reactor:
         pending = self._pending_completions
         holder: list[Any] = []
 
-        def _cb(ok: int, result_json: bytes | None, error_msg: bytes | None, _ud: Any) -> None:
+        def _cb(ok: int, result_json: bytes | None, error_json: bytes | None, _ud: Any) -> None:
             # Runs on the FFI's control thread.
             try:
                 if ok:
@@ -764,8 +771,8 @@ class Reactor:
                     )
                     _settle_from_foreign_thread(loop, future, payload, None)
                 else:
-                    msg = error_msg.decode() if error_msg else "unknown error"
-                    _settle_from_foreign_thread(loop, future, None, ReactorFFIError(msg))
+                    error = error_from_payload(error_json)
+                    _settle_from_foreign_thread(loop, future, None, error)
             finally:
                 # Fired exactly once, so the trampoline has no further use.
                 if holder:

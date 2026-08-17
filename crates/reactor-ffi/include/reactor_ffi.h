@@ -70,7 +70,9 @@ typedef struct ReactorHandle ReactorHandle;
 /* Status string: "disconnected" | "connecting" | "waiting" | "ready" */
 typedef void (*reactor_on_status_fn)(const char *status, void *userdata);
 
-/* JSON object: { code, message, recoverable, timestamp_ms, component } */
+/* JSON object: { code, message, recoverable, timestamp_ms, status?, operation? }
+ * — the same shape and the same codes as reactor_completion_fn's error_json,
+ * documented there. */
 typedef void (*reactor_on_error_fn)(const char *error_json, void *userdata);
 
 /* JSON object: model application message */
@@ -132,13 +134,38 @@ typedef struct ReactorCallbacks {
  * Called exactly once when an async operation completes.
  *   ok         : 1 on success, 0 on error
  *   result_json: JSON result string on success (NULL if the operation is void)
- *   error_msg  : human-readable error string on failure (NULL on success)
+ *   error_json : JSON error object on failure (NULL on success)
  * Both strings are freed after the callback returns; copy them if needed.
+ *
+ * The third argument used to be a bare human-readable string, and callers that
+ * only printed it now print JSON.  It carries what that string could not:
+ *
+ *   {
+ *     "code":        stable, matchable — see below; never empty
+ *     "message":     human-readable, the old string
+ *     "recoverable": bool — whether the same call could pass later
+ *     "status":      HTTP status, present only when the failure came from one
+ *     "operation":   which call failed, e.g. "connect", "send_command"
+ *   }
+ *
+ * "code" is one of INVALID_STATE, DISCONNECTED, NETWORK_ERROR, REQUEST_TIMEOUT,
+ * TRANSPORT_ERROR, UNAUTHORIZED, NOT_FOUND, CONFLICT, RATE_LIMITED, BAD_REQUEST,
+ * SERVER_ERROR, VERSION_MISMATCH, DECODE_FAILED, SESSION_TERMINAL,
+ * MESSAGE_TOO_LARGE, ABORTED, INTERNAL_ERROR — *or* a code the platform sent for
+ * a rejected control request, command or recording, which is open-ended.  Treat
+ * an unrecognised code as an error you cannot classify, never as a parse failure.
+ *
+ * on_error reports the same codes, in the same shape plus "timestamp_ms".  The
+ * two channels used to disagree — a 401 during connect was UNAUTHORIZED and not
+ * recoverable to the caller, and CONNECTION_FAILED and recoverable on the event.
+ * There is no "component" field: which tier of the platform failed is not
+ * something a caller can act on, and splitting the codes by it is what produced
+ * two names for one failure.
  */
 typedef void (*reactor_completion_fn)(
     int         ok,
     const char *result_json,
-    const char *error_msg,
+    const char *error_json,
     void       *userdata
 );
 
