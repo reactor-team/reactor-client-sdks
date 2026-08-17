@@ -11,8 +11,14 @@ Audio is pushed in 10 ms chunks (480 samples at 48 kHz, interleaved i16 PCM).
 The loop sleeps `chunk_duration - processing_time` between pushes to deliver
 frames at real-time pace.
 
+Without --duration it runs until Ctrl-C, which stops it cleanly — a WAV still ends
+with the file.
+
 Usage:
-    # Sine wave (A-440)
+    # Sine wave (A-440), until Ctrl-C
+    python -m examples.push_audio --track audio_input --sine 440
+
+    # Or for a fixed time
     python -m examples.push_audio --track audio_input --sine 440 --duration 10
 
     # Push a WAV file
@@ -22,7 +28,7 @@ Usage:
     python -m examples.push_audio --track my_track --wav speech.wav --duration 30
 
     # The microphone (needs `pip install "reactor-sdk[audio]"`)
-    python -m examples.push_audio --track audio_input --mic --duration 30
+    python -m examples.push_audio --track audio_input --mic
 
 Environment variables (overridden by flags):
     REACTOR_API_URL, REACTOR_MODEL, REACTOR_JWT, REACTOR_LOCAL
@@ -32,7 +38,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import math
+import signal
 import struct
 import sys
 import time
@@ -75,7 +83,7 @@ def _parse_args() -> argparse.Namespace:
         metavar="SECS",
         type=float,
         default=None,
-        help="Stop after N seconds (default: file duration or 30 s for sine)",
+        help="Stop after N seconds (default: run until Ctrl-C, or the end of a WAV)",
     )
     p.add_argument("--model", metavar="NAME")
     p.add_argument("--api-url", metavar="URL")
@@ -151,17 +159,18 @@ async def main() -> None:
     args = _parse_args()
     duration = args.duration
 
+    # No --duration means no end: the sine and the microphone are both endless
+    # sources, so Ctrl-C is the way out and `for` reads it as "until stopped".
+    until = f"{duration:.1f}s" if duration is not None else "until Ctrl-C"
+
     gen = None
     if args.mic:
         # No generator: the device produces the audio, on its own thread.
-        if duration is None:
-            duration = 30.0
+        pass
     elif args.sine is not None:
         freq = args.sine if args.sine > 0 else 440.0
-        if duration is None:
-            duration = 30.0
         gen = _sine_generator(freq, SAMPLE_RATE, CHUNK_SAMPLES)
-        print(f"Generating {freq:.0f} Hz sine wave, {duration:.1f}s", file=sys.stderr)
+        print(f"Generating {freq:.0f} Hz sine wave, {until}", file=sys.stderr)
     else:
         if not Path(args.wav).exists():
             print(f"File not found: {args.wav}", file=sys.stderr)
@@ -180,6 +189,14 @@ async def main() -> None:
     ready = asyncio.Event()
     reactor.on("status_changed", lambda s: ready.set() if s == "ready" else None)
 
+    # Without a duration, Ctrl-C is the normal way to stop rather than an accident,
+    # so it has to leave the session behind cleanly: a KeyboardInterrupt raised
+    # through the pushing below would unwind straight past unpublish() and
+    # disconnect(), and a creator that vanishes without disconnecting leaves the
+    # session orphaned — the next run cannot start until that clears.
+    stopping = asyncio.Event()
+    _install_interrupt_handler(stopping)
+
     print("Connecting…", file=sys.stderr)
     await reactor.connect()
     await asyncio.wait_for(ready.wait(), timeout=60)
@@ -187,53 +204,79 @@ async def main() -> None:
 
     # The track knows it is a sendonly audio track, so push_frame below needs no
     # kind in its name and no track name in its arguments.
-    track = await reactor.publish_track(args.track)
-
-    if args.mic:
-        # Nothing to pace here: the device delivers on its own thread at its own
-        # rate, which is the rate the far end wants. The helper pushes each block
-        # straight through, so this coroutine only has to wait.
-        with Microphone(track) as mic:
-            print(f"Capturing the microphone for {duration or 30:.0f}s…", file=sys.stderr)
-            await asyncio.sleep(duration or 30)
-        print(f"Done — captured {mic.blocks_sent} blocks", file=sys.stderr)
-        track.unpublish()
-        await reactor.disconnect()
-        reactor.close()
-        return
-
+    track = None
     chunks_sent = 0
     t_start = time.monotonic()
-    deadline = t_start + duration if duration else None
+    try:
+        track = await reactor.publish_track(args.track)
 
-    for chunk_pcm in gen:
-        loop_start = time.monotonic()
+        if args.mic:
+            # Nothing to pace here: the device delivers on its own thread at its own
+            # rate, which is the rate the far end wants. The helper pushes each block
+            # straight through, so this coroutine only has to wait.
+            with Microphone(track) as mic:
+                print(f"Capturing the microphone, {until}…", file=sys.stderr)
+                await _wait(stopping, duration)
+            print(f"Done — captured {mic.blocks_sent} blocks", file=sys.stderr)
+            return
 
-        if deadline and loop_start >= deadline:
-            break
+        deadline = t_start + duration if duration is not None else None
 
-        track.push_frame(
-            chunk_pcm,
-            samples_per_channel=CHUNK_SAMPLES,
-            sample_rate=SAMPLE_RATE,
-            num_channels=1,
+        for chunk_pcm in gen:
+            loop_start = time.monotonic()
+
+            if stopping.is_set():
+                print("Stopping…", file=sys.stderr)
+                break
+            if deadline and loop_start >= deadline:
+                break
+
+            track.push_frame(
+                chunk_pcm,
+                samples_per_channel=CHUNK_SAMPLES,
+                sample_rate=SAMPLE_RATE,
+                num_channels=1,
+            )
+            chunks_sent += 1
+
+            elapsed = time.monotonic() - loop_start
+            sleep_for = max(0.0, CHUNK_SECS - elapsed)
+            await asyncio.sleep(sleep_for)
+
+        total = time.monotonic() - t_start
+        print(
+            f"Done — pushed {chunks_sent} chunks ({chunks_sent * CHUNK_SECS:.2f}s audio) "
+            f"in {total:.2f}s real time",
+            file=sys.stderr,
         )
-        chunks_sent += 1
+    finally:
+        if track is not None:
+            track.unpublish()
+        await reactor.disconnect()
+        reactor.close()
 
-        elapsed = time.monotonic() - loop_start
-        sleep_for = max(0.0, CHUNK_SECS - elapsed)
-        await asyncio.sleep(sleep_for)
 
-    total = time.monotonic() - t_start
-    print(
-        f"Done — pushed {chunks_sent} chunks ({chunks_sent * CHUNK_SECS:.2f}s audio) "
-        f"in {total:.2f}s real time",
-        file=sys.stderr,
-    )
+async def _wait(stopping: asyncio.Event, duration: float | None) -> None:
+    """Wait for `duration`, or until interrupted when there is none."""
+    if duration is None:
+        await stopping.wait()
+        return
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(stopping.wait(), timeout=duration)
 
-    track.unpublish()
-    await reactor.disconnect()
-    reactor.close()
+
+def _install_interrupt_handler(stopping: asyncio.Event) -> None:
+    """Make Ctrl-C set `stopping` instead of raising.
+
+    `loop.add_signal_handler` is the clean path but is not implemented on Windows,
+    so fall back to `signal.signal` there and hop back onto the loop thread, since
+    a handler installed that way runs wherever the signal lands.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        loop.add_signal_handler(signal.SIGINT, stopping.set)
+    except NotImplementedError:
+        signal.signal(signal.SIGINT, lambda *_: loop.call_soon_threadsafe(stopping.set))
 
 
 if __name__ == "__main__":
