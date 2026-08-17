@@ -94,7 +94,8 @@ def forward(bgra, width, height, frame_id, timestamp_us, user_data):
 **No audio device is ever opened.** A sendonly audio track carries only the PCM
 you push into it, and a model's audio arrives at `on_frame` for you to play with
 whatever you like — nothing is captured from your microphone or played through
-your speakers on your behalf.
+your speakers on your behalf. See [Audio playback](#audio-playback) below for a
+speaker helper that plays what arrives.
 
 Naming a track before `connect()` is fine: the session has not declared anything
 yet, so handlers can be registered first and the name is checked as soon as the
@@ -102,6 +103,31 @@ declaration arrives.
 
 The name-based calls — `publish_track`, `pause_track`, `push_video_frame`,
 `push_audio_frame`, `on("frame", …)` — all still work exactly as before.
+
+## Audio playback
+
+`AudioPlayer` plays a recvonly audio track's frames through the system's default
+output device, so "just let me hear the model" doesn't mean writing a jitter
+buffer:
+
+```python
+from reactor_sdk import AudioPlayer
+
+speech = reactor.track("speech")  # a recvonly audio track
+AudioPlayer().attach(speech)
+```
+
+That's `track.on_raw_frame(...)` wired to a small PCM ring buffer underneath —
+call `AudioPlayer().submit(pcm, sample_rate, channels)` directly if you'd
+rather own the wiring, or are feeding it from the client-wide `on("audio", …)`
+event instead of a `Track`.
+
+Requires `sounddevice` (`pip install reactor-sdk[audio]`, or just
+`pip install sounddevice`) — imported lazily, on the first frame, so importing
+`reactor_sdk` never requires it. Without it installed, or without an output
+device to open, `AudioPlayer` logs once and plays nothing rather than raising:
+audio is usually the accompaniment to whatever an app actually came for, and a
+missing optional dependency shouldn't take that down too.
 
 ## Errors
 

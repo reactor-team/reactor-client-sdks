@@ -38,10 +38,9 @@ from numpy.typing import NDArray
 # Add parent directories to path for development
 sys.path.insert(0, str(__file__).rsplit("/", 3)[0] + "/src")
 
-from audio import AudioPlayer
 from controller import ReactorController
 
-from reactor_sdk import Reactor, ReactorStatus, TrackDirection, TrackKind
+from reactor_sdk import AudioPlayer, Reactor, ReactorStatus, TrackDirection, TrackKind
 
 # =============================================================================
 # Configuration
@@ -149,7 +148,6 @@ class ReactorApp:
         try:
             self._init_pygame()
             self._init_reactor()
-            self.audio.start()
             await self._connect()
             await self._main_loop()
         except KeyboardInterrupt:
@@ -271,12 +269,10 @@ class ReactorApp:
         session carries the model's tracks by the time `connect()` returns, so
         `reactor.tracks` is the list of what actually exists rather than a guess.
 
-        Registered on the track rather than on the client, so a model with more
-        than one recvonly audio track does not have them summed into one speaker
-        with no way to tell which was which. `on_raw_frame` because the player
-        wants the PCM and its format, not the numpy array `on_frame` would decode
-        — and because this runs on the SDK's audio delivery thread, where the cost
-        of a conversion is paid in audio (see audio.py).
+        `AudioPlayer.attach()` registers on the track rather than on the
+        client, so a model with more than one recvonly audio track does not
+        have them summed into one speaker with no way to tell which was
+        which.
         """
         track = next(
             (
@@ -293,9 +289,7 @@ class ReactorApp:
             )
             return
 
-        track.on_raw_frame(
-            lambda pcm, _samples, rate, channels: self.audio.submit(pcm, rate, channels)
-        )
+        self.audio.attach(track)
         self.audio_track = track.name
         logger.info("playing audio from track %r", track.name)
 

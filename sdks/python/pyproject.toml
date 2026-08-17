@@ -9,6 +9,12 @@ license = { text = "Apache-2.0" }
 # is in the standard library.
 dependencies = []
 
+[project.optional-dependencies]
+# reactor_sdk.AudioPlayer imports this lazily, on the first frame — so it costs
+# nothing to import reactor_sdk without it, and nothing plays without it either.
+# `pip install reactor-sdk[audio]` for playback, or install sounddevice yourself.
+audio = ["sounddevice>=0.4.6"]
+
 [project.urls]
 Repository = "https://github.com/reactor-team/reactor-client-sdks"
 

@@ -52,6 +52,7 @@ from .errors import (
     UnauthorizedError,
     VersionMismatchError,
 )
+from .playback import AudioPlayer
 from .track import Track, TrackDirection, TrackKind
 
 __all__ = [
@@ -60,6 +61,7 @@ __all__ = [
     "Track",
     "TrackKind",
     "TrackDirection",
+    "AudioPlayer",
     "Clip",
     "FileRef",
     "ReactorError",
