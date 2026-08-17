@@ -1,13 +1,11 @@
 # Pygame example app requirements.
 #
-# Install the SDK itself from a release wheel, or from this repository:
-#   pip install https://github.com/reactor-team/reactor-client-sdks/releases/...
-#   mise run build:wheel && pip install sdks/python/dist/*.whl
+# Install the SDK itself from a release wheel, or from this repository. Ask for the
+# `audio` extra: it brings PortAudio, which reactor_sdk.audio_devices.Speaker needs
+# to play what the model sends. Without it the app logs why and runs silently.
+#
+#   pip install "reactor-sdk[audio]"
+#   mise run build:wheel && pip install "sdks/python/dist/*.whl[audio]"
 
 pygame>=2.5.0
 numpy>=1.24.0
-
-# Plays the audio the model sends, through reactor_sdk.devices.Speaker. Optional —
-# without it the app runs silently, because the SDK deliberately opens no audio
-# device of its own. Installing `reactor-sdk[audio]` brings it in too.
-sounddevice>=0.4.6

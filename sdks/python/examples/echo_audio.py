@@ -2,9 +2,8 @@
 """
 Echo example — speak into the microphone and hear the model send it back.
 
-The full audio duplex, which is the case `AudioDevices` exists for: the model's
-recvonly audio track goes to the speakers, the microphone goes to its sendonly
-track, and both devices open and close together.
+The full audio duplex: the model's recvonly audio track goes to the speakers, the
+microphone goes to its sendonly track, and both devices close on the way out.
 
 The SDK opens no audio device of its own, so this needs PortAudio:
 
@@ -24,12 +23,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from reactor_sdk.audio_devices import AudioDevices
+from reactor_sdk.audio_devices import Microphone, Speaker
 
 from .reactor_client import make_reactor
 
@@ -81,39 +81,48 @@ async def main() -> None:
     # released either way — a creator that goes away without disconnecting leaves it
     # orphaned, and the next run cannot start until that clears.
     try:
-        # One object because this is one flow: it finds both audio tracks, publishes
-        # the one it captures into, opens both devices, and closes them on the way
-        # out. Either half may be missing, and a model that only sends audio is a
-        # normal session rather than an error.
-        async with AudioDevices(
-            reactor,
-            input_device=_device(args.input),
-            output_device=_device(args.output),
-        ) as audio:
-            if audio.speaker is None and audio.microphone is None:
-                print(
-                    f"{reactor._model_name} declares no audio tracks at all — "
-                    f"there is nothing to echo.",
-                    file=sys.stderr,
+        audio = reactor.tracks.with_kind("audio")
+        incoming = audio.with_direction("recvonly")
+        outgoing = audio.with_direction("sendonly")
+
+        if not incoming and not outgoing:
+            print(
+                f"{reactor._model_name} declares no audio tracks at all — "
+                f"there is nothing to echo.",
+                file=sys.stderr,
+            )
+            return
+
+        # An ExitStack because each half is conditional: a model that only sends
+        # audio is a normal session, and whichever devices did open have to close.
+        with contextlib.ExitStack() as devices:
+            speaker = mic = None
+            if incoming:
+                speaker = devices.enter_context(
+                    Speaker(incoming.one(), device=_device(args.output))
                 )
-                return
+            if outgoing:
+                # Publishing is what makes the push land: pushing into a slot that
+                # was never activated goes nowhere and says nothing.
+                track = await outgoing.one().publish()
+                devices.callback(track.unpublish)
+                mic = devices.enter_context(Microphone(track, device=_device(args.input)))
 
             print(
-                f"Speak. Playing {'yes' if audio.speaker else 'no'}, "
-                f"capturing {'yes' if audio.microphone else 'no'}, "
+                f"Speak. Playing {'yes' if speaker else 'no'}, "
+                f"capturing {'yes' if mic else 'no'}, "
                 f"for {args.duration:.0f}s.",
                 file=sys.stderr,
             )
             await asyncio.sleep(args.duration)
 
-            if audio.microphone is not None:
-                print(f"Sent {audio.microphone.blocks_sent} capture blocks.", file=sys.stderr)
-            if audio.speaker is not None and audio.speaker.under_runs:
+            if mic is not None:
+                print(f"Sent {mic.blocks_sent} capture blocks.", file=sys.stderr)
+            if speaker is not None and speaker.under_runs:
                 # Worth saying: it is the difference between "the model went quiet"
                 # and "we could not keep up with it".
                 print(
-                    f"{audio.speaker.under_runs} under-run(s), "
-                    f"{audio.speaker.dropped_ms} ms dropped.",
+                    f"{speaker.under_runs} under-run(s), {speaker.dropped_ms} ms dropped.",
                     file=sys.stderr,
                 )
     finally:

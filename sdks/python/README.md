@@ -140,15 +140,9 @@ arrives and what the device asks for; feed it yourself with `submit()` if the PC
 comes from somewhere else. `Microphone` captures the default input device into a
 sendonly track, in the block size the far end expects.
 
-For a model that takes audio and sends it back, `AudioDevices` is both ends in one
-object — it finds the two tracks, publishes the one it captures into, and closes
-both devices on the way out:
-
-```python
-async with AudioDevices(reactor) as audio:
-    print(audio.speaker, audio.microphone)   # either is None if the model has no such track
-    await asyncio.sleep(30)
-```
+Both are context managers, so a model that takes audio and sends it back is the two
+of them together — see
+[`echo_audio.py`](examples/echo_audio.py).
 
 They live in their own module rather than in `reactor_sdk`, because they are the
 one part of the SDK with a dependency — importing the package never reaches them,
