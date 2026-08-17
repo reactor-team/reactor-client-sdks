@@ -42,8 +42,8 @@ def make_reactor(
         raise ValueError("model_name is required (set REACTOR_MODEL or pass model_name=)")
 
     return Reactor(
-        resolved_url,
         resolved_model,
+        api_url=resolved_url,
         jwt=resolved_jwt,
         local=resolved_local,
     )

@@ -7,7 +7,7 @@ Example::
     from reactor_sdk import Reactor
 
     async def main():
-        async with Reactor("https://api.reactor.inc", "my-model", jwt="...") as r:
+        async with Reactor("my-model", jwt="...") as r:
             r.on("message", lambda msg: print("msg:", msg))
             await r.connect()
             await r.send_command("hello", {"text": "hi"})

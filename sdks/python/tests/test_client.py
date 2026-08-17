@@ -41,17 +41,17 @@ class TestLazyLoading:
         monkeypatch.setattr(ffi, "_lib", None)
         monkeypatch.setattr(ffi, "_load", explode)
 
-        Reactor("https://api.reactor.inc", "some-model")
+        Reactor("some-model")
 
 
 class TestStateWithoutAHandle:
     """A client that never connected answers from Python, without calling in."""
 
     def test_status_is_disconnected(self) -> None:
-        assert Reactor("https://api.reactor.inc", "m").status == "disconnected"
+        assert Reactor("m").status == "disconnected"
 
     def test_session_id_is_none(self) -> None:
-        assert Reactor("https://api.reactor.inc", "m").session_id is None
+        assert Reactor("m").session_id is None
 
     @pytest.mark.parametrize(
         "call",
@@ -68,19 +68,19 @@ class TestStateWithoutAHandle:
         ],
     )
     def test_operations_requiring_a_handle_raise(self, call) -> None:
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         with pytest.raises(RuntimeError, match="handle not created"):
             call(reactor)
 
     async def test_send_command_requires_a_handle(self) -> None:
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         with pytest.raises(RuntimeError, match="handle not created"):
             await reactor.send_command("hello", {})
 
 
 class TestHandlerRegistry:
     def test_fire_delivers_to_every_registered_handler_in_order(self) -> None:
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         seen: list[str] = []
         reactor.on("status_changed", lambda s: seen.append(f"a:{s}"))
         reactor.on("status_changed", lambda s: seen.append(f"b:{s}"))
@@ -90,10 +90,10 @@ class TestHandlerRegistry:
         assert seen == ["a:ready", "b:ready"]
 
     def test_fire_with_no_handlers_is_a_noop(self) -> None:
-        Reactor("https://api.reactor.inc", "m")._fire("status_changed", "ready")
+        Reactor("m")._fire("status_changed", "ready")
 
     def test_off_removes_only_the_given_handler(self) -> None:
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         seen: list[str] = []
 
         def keep(status: str) -> None:
@@ -111,7 +111,7 @@ class TestHandlerRegistry:
         assert seen == ["ready"]
 
     def test_off_of_an_unregistered_handler_is_a_noop(self) -> None:
-        Reactor("https://api.reactor.inc", "m").off("status_changed", lambda _: None)
+        Reactor("m").off("status_changed", lambda _: None)
 
     def test_a_raising_handler_does_not_stop_the_others(
         self, caplog: pytest.LogCaptureFixture
@@ -119,7 +119,7 @@ class TestHandlerRegistry:
         """One broken handler must not take the event down with it — and must not
         vanish either. The exception used to be swallowed outright, which is what made
         a buggy handler invisible."""
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         seen: list[str] = []
 
         def boom(_: str) -> None:
@@ -135,7 +135,7 @@ class TestHandlerRegistry:
         assert "handler is broken" in caplog.text
 
     def test_handlers_are_per_event_name(self) -> None:
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         seen: list[str] = []
         reactor.on("message", lambda _: seen.append("message"))
 
@@ -207,7 +207,7 @@ class TestSendCommandUploads:
     """
 
     def _reactor(self) -> Reactor:
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         reactor._handle = 1234
         return reactor
 
@@ -286,7 +286,7 @@ class TestUploadFileDispatch:
     """
 
     def _reactor(self) -> Reactor:
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         reactor._handle = 1234
         return reactor
 
@@ -432,7 +432,7 @@ class TestLoopDispatch:
 
     @pytest.mark.asyncio
     async def test_control_events_run_on_the_loop_thread(self) -> None:
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         reactor._loop = asyncio.get_running_loop()
         ran_on: list[int] = []
         reactor.on("status_changed", lambda _s: ran_on.append(threading.get_ident()))
@@ -453,7 +453,7 @@ class TestLoopDispatch:
     @pytest.mark.asyncio
     async def test_an_asyncio_event_can_be_set_from_a_handler(self) -> None:
         """The exact shape used by examples/main.py and five siblings."""
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         reactor._loop = asyncio.get_running_loop()
         ready = asyncio.Event()
 
@@ -467,7 +467,7 @@ class TestLoopDispatch:
         await asyncio.wait_for(ready.wait(), timeout=2)
 
     def test_without_a_loop_it_falls_back_to_inline(self) -> None:
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         seen: list[str] = []
         reactor.on("status_changed", seen.append)
 
@@ -479,7 +479,7 @@ class TestLoopDispatch:
         loop = asyncio.new_event_loop()
         loop.close()
 
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         reactor._loop = loop
         seen: list[str] = []
         reactor.on("status_changed", seen.append)
@@ -489,7 +489,7 @@ class TestLoopDispatch:
         assert seen == ["ready"]
 
     def test_no_handlers_means_nothing_is_scheduled(self) -> None:
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         reactor._loop = None
         reactor._fire_on_loop("status_changed", "ready")
 
@@ -551,7 +551,7 @@ class TestExitHook:
     def test_clients_without_a_handle_are_not_registered(self) -> None:
         from reactor_sdk.client import _LIVE_CLIENTS
 
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         assert reactor not in _LIVE_CLIENTS
 
     def test_a_fabricated_handle_is_never_handed_to_the_native_destroy(self) -> None:
@@ -566,7 +566,7 @@ class TestExitHook:
         """
         import gc
 
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         reactor._handle = 1234
         del reactor
         gc.collect()
@@ -587,7 +587,7 @@ class TestExitHook:
             _LIVE_CLIENTS.discard(exploding)
 
     def test_del_on_a_client_without_a_handle_is_quiet(self) -> None:
-        Reactor("https://api.reactor.inc", "m").__del__()
+        Reactor("m").__del__()
 
 
 class TestNoAudioDeviceIsOpened:
@@ -617,7 +617,7 @@ class TestNoAudioDeviceIsOpened:
         )
         monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: fake_lib)
 
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         try:
             reactor._create_handle()
         finally:
@@ -653,7 +653,7 @@ class TestNoAudioDeviceIsOpened:
         a TypeError sends them to read what changed.
         """
         with pytest.raises(TypeError, match="adm_mode"):
-            Reactor("https://api.reactor.inc", "m", adm_mode=1)  # type: ignore[call-arg]
+            Reactor("m", adm_mode=1)  # type: ignore[call-arg]
 
 
 class TestConnectionId:
@@ -675,7 +675,7 @@ class TestConnectionId:
 
         fake_lib.reactor_connect = connect
         monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: fake_lib)
-        return Reactor("https://api.reactor.inc", "m", jwt="fake"), captured
+        return Reactor("m", jwt="fake"), captured
 
     async def test_omitting_it_passes_a_null_pointer(self, monkeypatch: pytest.MonkeyPatch) -> None:
         reactor, captured = self._connect_reactor(monkeypatch)
@@ -723,7 +723,7 @@ class TestConnectionIdRange:
             "reactor_connect must not be reached for an out-of-range connection_id"
         )
         monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: fake_lib)
-        reactor = Reactor("https://api.reactor.inc", "m", jwt="fake")
+        reactor = Reactor("m", jwt="fake")
 
         with pytest.raises(ValueError, match="connection_id"):
             await reactor.connect(connection_id=bad)
@@ -744,7 +744,7 @@ class TestConnectionIdRange:
 
         fake_lib.reactor_connect = connect
         monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: fake_lib)
-        reactor = Reactor("https://api.reactor.inc", "m", jwt="fake")
+        reactor = Reactor("m", jwt="fake")
 
         await reactor.connect(connection_id=boundary)
 
@@ -766,7 +766,7 @@ class TestOnTrack:
         fake_lib.reactor_tracks = lambda *a: 0
         monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: fake_lib)
 
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         reactor._create_handle()
         return reactor
 

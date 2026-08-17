@@ -157,7 +157,7 @@ class TestRaisedFromAnOperation:
     """End to end from the completion callback, which is where this has to work."""
 
     def _reactor(self) -> Reactor:
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         reactor._handle = 1234
         return reactor
 
@@ -205,7 +205,7 @@ class TestOnErrorEvent:
         fake_lib = mock.Mock()
         fake_lib.reactor_create_with_adm = lambda *a: 1234
 
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         received: list[ReactorError] = []
         reactor.on("error", received.append)
 
@@ -240,7 +240,7 @@ class TestOnErrorEvent:
         fake_lib = mock.Mock()
         fake_lib.reactor_create_with_adm = lambda *a: 1234
 
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         received: list[ReactorError] = []
         reactor.on("error", received.append)
 
@@ -319,7 +319,7 @@ class TestBackoffHint:
             None,
         )
 
-        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor = Reactor("m")
         reactor._handle = 1234
         with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
             with pytest.raises(RateLimitedError) as excinfo:

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, BinaryIO, overload
 
-from ._auth import fetch_jwt
+from ._auth import DEFAULT_API_URL, fetch_jwt
 from ._ffi import (
     COMPLETION_FN,
     ON_AUDIO_FN,
@@ -38,9 +38,6 @@ from .track import Track, TrackDirection, TrackKind, TrackList
 # ---------------------------------------------------------------------------
 # Public types
 # ---------------------------------------------------------------------------
-
-#: Reactor's production coordinator, used when no `api_url` is given.
-DEFAULT_API_URL = "https://api.reactor.inc"
 
 #: Where a local coordinator listens. `local=True` points at this.
 LOCAL_API_URL = "http://localhost:8080"
@@ -178,7 +175,7 @@ class Reactor:
 
     Example::
 
-        async with Reactor("wss://api.reactor.inc", "my-model", jwt=token) as r:
+        async with Reactor("my-model", jwt=token) as r:
             r.on("message", lambda msg: print(msg))
             await r.connect()
             await r.send_command("hello", {"text": "hi"})
@@ -186,47 +183,34 @@ class Reactor:
 
     def __init__(
         self,
-        api_url: str | None = None,
-        model_name: str | None = None,
+        model_name: str,
+        api_key: str | None = None,
         *,
         jwt: str | None = None,
-        api_key: str | None = None,
+        api_url: str = DEFAULT_API_URL,
         local: bool = False,
     ) -> None:
         """
         Args:
-            api_url: Coordinator base URL. Defaults to production.
             model_name: Model to connect to. Required.
-            jwt: A token to authenticate with.
             api_key: An API key to exchange for a token at connect time. Use one or
                 the other; `jwt` wins if both are given.
+            jwt: A token to authenticate with.
+            api_url: Coordinator base URL. Defaults to production.
             local: Local-dev mode — relaxes TLS verification and skips auth.
 
         No audio device is ever opened — see `_SYNTHETIC_ADM`.
         """
-        # Older releases took `model_name` first and `api_url` second. Both orders work:
-        # an api_url is always a URL and a model name never is, so the two cannot be
-        # confused. Keyword arguments are unambiguous either way.
-        if (
-            api_url is not None
-            and model_name is None
-            and not api_url.startswith(("http://", "https://"))
-        ):
-            api_url, model_name = None, api_url
-
-        if model_name is None:
-            raise TypeError("Reactor() requires model_name")
-
         # Local mode means a local coordinator, so it picks the URL. The production
         # default counts as "no choice made": callers routinely compute
         # `api_url or "https://api.reactor.inc"` and pass that alongside `local=True`,
         # which without this would aim local mode at production. An api_url that is
         # anything else was a real choice and is honoured, so a local coordinator on
         # another port still works.
-        if local and (api_url is None or api_url == DEFAULT_API_URL):
+        if local and api_url == DEFAULT_API_URL:
             api_url = LOCAL_API_URL
 
-        self._api_url = api_url or DEFAULT_API_URL
+        self._api_url = api_url
         self._model_name = model_name
         self._jwt = jwt
         self._api_key = api_key
@@ -1261,6 +1245,10 @@ class Reactor:
         mode. `name` and `mime_type` are inferred when not given — from the path
         or the file object's own `.name`, falling back to `"upload"`; MIME type is
         guessed from that name, falling back to `"application/octet-stream"`.
+
+        Only callable once the connection status is `"ready"` — raises
+        `InvalidStateError` otherwise, the same guard `request_clip()` and
+        `pause_track()` use.
         """
         self._require_handle()
         handle = self._handle

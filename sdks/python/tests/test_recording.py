@@ -216,7 +216,7 @@ class TestReactorDownloadConvenience:
             1, payload, None, None
         )
         monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: fake_lib)
-        reactor = Reactor("https://api.reactor.inc", "m", jwt="fake")
+        reactor = Reactor("m", jwt="fake")
         reactor._handle = 1234
         return reactor
 

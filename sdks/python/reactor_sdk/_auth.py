@@ -19,6 +19,10 @@ from typing import Any
 
 _log = logging.getLogger(__name__)
 
+#: Reactor's production coordinator. Defined here, not in client.py, so fetch_jwt()
+#: can default to it too — client.py re-exports it for the public `DEFAULT_API_URL`.
+DEFAULT_API_URL = "https://api.reactor.inc"
+
 #: Where the coordinator mints tokens.
 _TOKENS_PATH = "/tokens"
 
@@ -33,13 +37,16 @@ class AuthError(RuntimeError):
 
 def fetch_jwt(
     api_key: str,
-    api_url: str,
+    api_url: str = DEFAULT_API_URL,
     *,
     models: list[str] | None = None,
     max_sessions: int | None = None,
     expires_after: int | None = None,
 ) -> str:
     """Exchange `api_key` for a JWT, and return the token.
+
+    ``api_url`` defaults to Reactor's production coordinator, the same default
+    `Reactor()` itself uses — pass it explicitly only against a different one.
 
     Pass ``models`` to mint a **session-scoped** token: it can only create and operate
     sessions on those models, so a leak is worth a handful of sessions rather than
