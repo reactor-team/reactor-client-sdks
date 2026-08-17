@@ -1397,6 +1397,7 @@ mod tests {
             status: 401,
             context: "POST /sessions".into(),
             body: String::new(),
+            retry_after_ms: None,
         };
         let json = serde_json::to_value(error.details(Some("connect"))).unwrap();
         assert_eq!(json["code"], "UNAUTHORIZED");

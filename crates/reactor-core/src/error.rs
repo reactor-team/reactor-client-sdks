@@ -130,6 +130,9 @@ pub enum CoreError {
         status: u16,
         context: String,
         body: String,
+        /// The server's `Retry-After`, in milliseconds, when it sent one this
+        /// client could read. See `http::parse_retry_after_ms`.
+        retry_after_ms: Option<f64>,
     },
 
     /// HTTP 426 (client too old) or 501 (server too old).
@@ -242,6 +245,19 @@ impl CoreError {
         }
     }
 
+    /// How long the server asked us to wait before trying again.
+    ///
+    /// Only ever present on a status the server attached `Retry-After` to — a
+    /// 429 or a 503, in practice. Absent is not "retry immediately": it means the
+    /// server said nothing, and a caller that retries should back off on its own
+    /// terms.
+    pub fn retry_after_ms(&self) -> Option<f64> {
+        match self {
+            CoreError::Status { retry_after_ms, .. } => *retry_after_ms,
+            _ => None,
+        }
+    }
+
     /// Everything above, in the shape a binding hands to its caller.
     pub fn details(&self, operation: Option<&str>) -> ErrorDetails {
         ErrorDetails {
@@ -250,7 +266,7 @@ impl CoreError {
             recoverable: self.recoverable(),
             status: self.status(),
             operation: operation.map(str::to_string),
-            retry_after_ms: None,
+            retry_after_ms: self.retry_after_ms(),
         }
     }
 }
@@ -264,6 +280,16 @@ mod tests {
             status,
             context: "POST /sessions".into(),
             body: String::new(),
+            retry_after_ms: None,
+        }
+    }
+
+    fn throttled(retry_after_ms: Option<f64>) -> CoreError {
+        CoreError::Status {
+            status: 429,
+            context: "POST /sessions".into(),
+            body: String::new(),
+            retry_after_ms,
         }
     }
 
@@ -362,6 +388,20 @@ mod tests {
         assert!(!event.details.recoverable);
     }
 
+    /// The hint is the difference between backing off for as long as the server
+    /// asked and guessing — and a caller can only honour it if it survives the
+    /// trip out to them.
+    #[test]
+    fn a_backoff_hint_reaches_the_caller() {
+        let details = throttled(Some(2_000.0)).details(Some("connect"));
+        assert_eq!(details.code, codes::RATE_LIMITED);
+        assert_eq!(details.retry_after_ms, Some(2_000.0));
+
+        // Absent means the server said nothing, not "retry now".
+        assert_eq!(throttled(None).details(None).retry_after_ms, None);
+        assert_eq!(CoreError::Aborted.details(None).retry_after_ms, None);
+    }
+
     #[test]
     fn details_carry_the_status_and_the_operation() {
         let details = status(429).details(Some("connect"));
@@ -383,6 +423,7 @@ mod tests {
         // was reported as nothing".
         assert!(json.get("status").is_none());
         assert!(json.get("operation").is_none());
+        assert!(json.get("retry_after_ms").is_none());
         // Gone on purpose: which tier failed is our implementation detail, it
         // changes nothing a caller would do, and having it split the vocabulary
         // is what produced two names for one failure.

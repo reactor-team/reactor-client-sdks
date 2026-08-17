@@ -122,7 +122,12 @@ class ConflictError(ReactorFFIError):
 
 
 class RateLimitedError(ReactorFFIError):
-    """429: too many requests."""
+    """429: too many requests.
+
+    `retry_after_ms` carries the server's `Retry-After` when it sent one in the
+    delta-seconds form. None means it said nothing usable — back off on your own
+    terms rather than retrying immediately.
+    """
 
     code = "RATE_LIMITED"
 

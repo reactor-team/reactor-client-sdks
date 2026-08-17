@@ -225,3 +225,36 @@ class TestOneList:
         it split the vocabulary is what produced two codes for one failure."""
         error = error_from_payload(_payload(component="gpu"))
         assert not hasattr(error, "component")
+
+
+class TestBackoffHint:
+    """`Retry-After` is read off the HTTP response in the core; these pin that it
+    survives the trip out to a caller who can act on it."""
+
+    async def test_a_throttled_call_carries_the_servers_wait(self) -> None:
+        fake_lib = mock.Mock()
+        fake_lib.reactor_send_command = lambda h, n, a, u, completion, ud: completion(
+            0,
+            None,
+            _payload(
+                code="RATE_LIMITED",
+                status=429,
+                retry_after_ms=5000,
+                operation="send_command",
+            ),
+            None,
+        )
+
+        reactor = Reactor("https://api.reactor.inc", "m")
+        reactor._handle = 1234
+        with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
+            with pytest.raises(RateLimitedError) as excinfo:
+                await reactor.send_command("hello", {})
+
+        assert excinfo.value.retry_after_ms == 5000
+        assert excinfo.value.recoverable
+
+    def test_no_hint_is_none_rather_than_zero(self) -> None:
+        """Zero would read as "retry immediately", which is the opposite of what a
+        server that said nothing meant."""
+        assert error_from_payload(_payload(code="RATE_LIMITED")).retry_after_ms is None

@@ -121,7 +121,12 @@ except ReactorFFIError as error:
 
 Every exception has `.code`, `.message`, `.recoverable`, `.status` (when the
 failure came from an HTTP one), `.operation` (which call failed) and
-`.retry_after_ms` (when the platform sent a backoff hint).
+`.retry_after_ms` (the server's `Retry-After`, when it sent one):
+
+```python
+except RateLimitedError as error:
+    await asyncio.sleep((error.retry_after_ms or 1000) / 1000)
+```
 
 `ReactorFFIError` is the base of all of them, so `except ReactorFFIError` still
 catches everything. The classes are `InvalidStateError`, `DisconnectedError`,
