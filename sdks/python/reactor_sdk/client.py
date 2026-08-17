@@ -738,6 +738,17 @@ class Reactor:
         an existing session. Leave it `None` to register a new one, which is
         what every single-connection client wants.
         """
+        # Checked first, before anything here has a side effect: ctypes.c_uint32
+        # does not raise for a value outside its range, it wraps modulo 2**32,
+        # so a caller's -1 or a stray extra digit would silently adopt a
+        # different, real connection instead of failing. session_id needs no
+        # equivalent check — it is already a string, with no wrong-but-valid
+        # uint32 a typo in it could produce.
+        if connection_id is not None and not 0 <= connection_id < 2**32:
+            raise ValueError(
+                f"connection_id must fit in a uint32 (0 to {2**32 - 1}), got {connection_id}"
+            )
+
         token_changed = await self._resolve_token(session_id)
         if token_changed and self._handle is not None:
             # The native client is handed its token when it is created, so a re-minted
