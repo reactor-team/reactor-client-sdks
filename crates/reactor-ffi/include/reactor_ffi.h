@@ -132,13 +132,32 @@ typedef struct ReactorCallbacks {
  * Called exactly once when an async operation completes.
  *   ok         : 1 on success, 0 on error
  *   result_json: JSON result string on success (NULL if the operation is void)
- *   error_msg  : human-readable error string on failure (NULL on success)
+ *   error_json : JSON error object on failure (NULL on success)
  * Both strings are freed after the callback returns; copy them if needed.
+ *
+ * The third argument used to be a bare human-readable string, and callers that
+ * only printed it now print JSON.  It carries what that string could not:
+ *
+ *   {
+ *     "code":        stable, matchable — see below; never empty
+ *     "message":     human-readable, the old string
+ *     "component":   "api" | "gpu" — which tier failed
+ *     "recoverable": bool — whether the same call could pass later
+ *     "status":      HTTP status, present only when the failure came from one
+ *     "operation":   which call failed, e.g. "connect", "send_command"
+ *   }
+ *
+ * "code" is one of NETWORK_ERROR, UNAUTHORIZED, NOT_FOUND, CONFLICT,
+ * RATE_LIMITED, BAD_REQUEST, SERVER_ERROR, VERSION_MISMATCH, DECODE_FAILED,
+ * INVALID_STATE, SESSION_TERMINAL, MESSAGE_TOO_LARGE, PEER_ERROR,
+ * REQUEST_TIMEOUT, ABORTED, INTERNAL_ERROR — *or* a code the platform sent for a
+ * rejected control request, command or recording, which is open-ended.  Treat an
+ * unrecognised code as an error you cannot classify, never as a parse failure.
  */
 typedef void (*reactor_completion_fn)(
     int         ok,
     const char *result_json,
-    const char *error_msg,
+    const char *error_json,
     void       *userdata
 );
 

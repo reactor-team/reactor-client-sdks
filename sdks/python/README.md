@@ -98,6 +98,43 @@ declaration arrives.
 The name-based calls — `publish_track`, `pause_track`, `push_video_frame`,
 `push_audio_frame`, `on("frame", …)` — all still work exactly as before.
 
+## Errors
+
+A failed operation raises an exception carrying a code you can branch on, rather
+than only a sentence you can print:
+
+```python
+from reactor_sdk import ReactorFFIError, UnauthorizedError, ConflictError
+
+try:
+    await reactor.connect()
+except UnauthorizedError:
+    ...                      # the token is missing, expired or out of scope
+except ConflictError:
+    ...                      # a previous run left the session orphaned
+except ReactorFFIError as error:
+    if error.recoverable:    # a timeout, a 5xx, a transport that dropped
+        await reactor.reconnect()
+    else:
+        raise
+```
+
+Every exception has `.code`, `.message`, `.component` (`"api"` or `"gpu"`),
+`.recoverable`, `.status` (when the failure came from an HTTP one) and
+`.operation` (which call failed).
+
+`ReactorFFIError` is the base of all of them, so `except ReactorFFIError` still
+catches everything. The classes are `NetworkError`, `UnauthorizedError`,
+`NotFoundError`, `ConflictError`, `RateLimitedError`, `BadRequestError`,
+`ServerError`, `VersionMismatchError`, `DecodeError`, `InvalidStateError`,
+`SessionTerminalError`, `MessageTooLargeError`, `PeerError`,
+`RequestTimeoutError` and `AbortedError`.
+
+A command or a control request the model itself rejects reports the model's own
+code, which this package cannot enumerate — those raise `ReactorFFIError` with
+`.code` set to whatever arrived, so match on `error.code` for anything not in the
+list above.
+
 ## Documentation & Resources
 
 See the [full documentation](https://docs.reactor.inc/sdk-reference/using-the-sdk#python) for platform

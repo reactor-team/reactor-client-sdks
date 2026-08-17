@@ -302,6 +302,9 @@ struct Completion {
     f: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
     userdata: *mut c_void,
     gate: Arc<CallbackGate>,
+    /// The entry point this completion belongs to, reported as `operation` so a
+    /// host can say which call failed without tracking it itself.
+    operation: &'static str,
 }
 unsafe impl Send for Completion {}
 unsafe impl Sync for Completion {}
@@ -311,8 +314,14 @@ impl Completion {
         f: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
         userdata: *mut c_void,
         gate: Arc<CallbackGate>,
+        operation: &'static str,
     ) -> Self {
-        Self { f, userdata, gate }
+        Self {
+            f,
+            userdata,
+            gate,
+            operation,
+        }
     }
 
     fn resolve(self, result: Result<Option<serde_json::Value>, CoreError>) {
@@ -331,12 +340,35 @@ impl Completion {
                 }
             }
             Err(e) => {
-                if let Ok(cs) = CString::new(e.to_string()) {
+                // A JSON object rather than the Display string this used to send.
+                // The string was enough to log and not enough to branch on, so
+                // every binding above collapsed all of these into one error type;
+                // the code, the component and whether retrying is worth anything
+                // were all in the `CoreError` and all thrown away here.
+                let details = e.details(Some(self.operation));
+                let json = serde_json::to_string(&details)
+                    .unwrap_or_else(|_| fallback_error_json(&details.message));
+                if let Ok(cs) = CString::new(json) {
                     unsafe { func(0, std::ptr::null(), cs.as_ptr(), self.userdata) }
                 }
             }
         }
     }
+}
+
+/// A last-resort error payload, for the case where serialising the real one fails.
+///
+/// Reaching this means something is very wrong, but a host waiting on a completion
+/// must still be given a well-formed object — dropping the call would leave it
+/// awaiting forever, which is a worse failure than a vague error.
+fn fallback_error_json(message: &str) -> String {
+    serde_json::json!({
+        "code": reactor_core::error::codes::INTERNAL_ERROR,
+        "message": message,
+        "component": "api",
+        "recoverable": false,
+    })
+    .to_string()
 }
 
 // ── extern "C" API ───────────────────────────────────────────────────────────
@@ -672,7 +704,7 @@ pub unsafe extern "C" fn reactor_destroy(handle: *mut ReactorHandle) -> c_int {
 /// spawns something long-lived — `connect` and `reconnect` start a heartbeat —
 /// registers it for `reactor_destroy` to stop rather than leaking it.
 macro_rules! async_op {
-    ($handle:expr, $completion:expr, $userdata:expr, $body:expr) => {{
+    ($name:literal, $handle:expr, $completion:expr, $userdata:expr, $body:expr) => {{
         if $handle.is_null() {
             return;
         }
@@ -680,7 +712,7 @@ macro_rules! async_op {
         let reactor = handle.reactor.clone();
         let tasks = handle.tasks.clone();
         let body_tasks = handle.tasks.clone();
-        let completion = Completion::new($completion, $userdata, handle.gate.clone());
+        let completion = Completion::new($completion, $userdata, handle.gate.clone(), $name);
         let control_tx: HostSender<HostJob> = handle.hosts.control.sender();
         spawn_tracked(&tasks, async move {
             let result: Result<Option<serde_json::Value>, CoreError> =
@@ -712,6 +744,7 @@ pub unsafe extern "C" fn reactor_connect(
         Some(CStr::from_ptr(session_id).to_string_lossy().into_owned())
     };
     async_op!(
+        "connect",
         handle,
         completion,
         userdata,
@@ -741,6 +774,7 @@ pub unsafe extern "C" fn reactor_disconnect(
     userdata: *mut c_void,
 ) {
     async_op!(
+        "disconnect",
         handle,
         completion,
         userdata,
@@ -760,6 +794,7 @@ pub unsafe extern "C" fn reactor_reconnect(
     userdata: *mut c_void,
 ) {
     async_op!(
+        "reconnect",
         handle,
         completion,
         userdata,
@@ -787,6 +822,7 @@ pub unsafe extern "C" fn reactor_publish_track(
 ) {
     let name = CStr::from_ptr(name).to_string_lossy().into_owned();
     async_op!(
+        "publish_track",
         handle,
         completion,
         userdata,
@@ -810,6 +846,7 @@ pub unsafe extern "C" fn reactor_pause_track(
 ) {
     let name = CStr::from_ptr(name).to_string_lossy().into_owned();
     async_op!(
+        "pause_track",
         handle,
         completion,
         userdata,
@@ -831,6 +868,7 @@ pub unsafe extern "C" fn reactor_resume_track(
 ) {
     let name = CStr::from_ptr(name).to_string_lossy().into_owned();
     async_op!(
+        "resume_track",
         handle,
         completion,
         userdata,
@@ -852,6 +890,7 @@ pub unsafe extern "C" fn reactor_request_clip(
     userdata: *mut c_void,
 ) {
     async_op!(
+        "request_clip",
         handle,
         completion,
         userdata,
@@ -876,6 +915,7 @@ pub unsafe extern "C" fn reactor_request_recording(
     userdata: *mut c_void,
 ) {
     async_op!(
+        "request_recording",
         handle,
         completion,
         userdata,
@@ -901,6 +941,7 @@ pub unsafe extern "C" fn reactor_request_schema(
     userdata: *mut c_void,
 ) {
     async_op!(
+        "request_schema",
         handle,
         completion,
         userdata,
@@ -966,6 +1007,7 @@ pub unsafe extern "C" fn reactor_send_command(
         }
     };
     async_op!(
+        "send_command",
         handle,
         completion,
         userdata,
@@ -990,6 +1032,7 @@ pub unsafe extern "C" fn reactor_upload_file(
 ) {
     let path = CStr::from_ptr(path).to_string_lossy().into_owned();
     async_op!(
+        "upload_file",
         handle,
         completion,
         userdata,
@@ -1057,6 +1100,7 @@ pub unsafe extern "C" fn reactor_upload_bytes(
     let name = CStr::from_ptr(name).to_string_lossy().into_owned();
     let mime_type = CStr::from_ptr(mime_type).to_string_lossy().into_owned();
     async_op!(
+        "upload_bytes",
         handle,
         completion,
         userdata,
@@ -1333,6 +1377,34 @@ mod tests {
             // abort.
             reactor_free_string(std::ptr::null_mut());
         }
+    }
+
+    /// A host awaiting a completion is stuck forever if one never fires, so the
+    /// last-resort payload has to be something a binding can actually parse —
+    /// this is the path taken when serialising the real error has already failed.
+    #[test]
+    fn the_fallback_error_payload_is_a_well_formed_object() {
+        let json: serde_json::Value =
+            serde_json::from_str(&fallback_error_json("something went wrong")).unwrap();
+        assert_eq!(json["code"], "INTERNAL_ERROR");
+        assert_eq!(json["message"], "something went wrong");
+        assert_eq!(json["component"], "api");
+        assert_eq!(json["recoverable"], false);
+    }
+
+    /// The keys a binding reads, produced by the path that actually produces them.
+    #[test]
+    fn a_failed_operation_reports_a_code_and_the_call_that_failed() {
+        let error = CoreError::Status {
+            status: 401,
+            context: "POST /sessions".into(),
+            body: String::new(),
+        };
+        let json = serde_json::to_value(error.details(Some("connect"))).unwrap();
+        assert_eq!(json["code"], "UNAUTHORIZED");
+        assert_eq!(json["operation"], "connect");
+        assert_eq!(json["status"], 401);
+        assert_eq!(json["recoverable"], false);
     }
 
     #[test]
