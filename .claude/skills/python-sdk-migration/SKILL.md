@@ -47,25 +47,23 @@ there is nothing here to migrate.
 
 ## Migrating to `reactor-sdk` 1.0.0
 
-### The constructor's positional arguments changed meaning, silently
-
-This is the single most dangerous item here because it doesn't raise — it just does the wrong
-thing.
+### The constructor's positional arguments — good news, this one just works
 
 ```python
-# Old py-sdk: Reactor(model_name, api_key=None, api_url=DEFAULT_BASE_URL, local=False, ...)
-Reactor("my-model", "rk_live_...")   # model_name="my-model", api_key="rk_live_..."
-
-# This repo:   Reactor(api_url=None, model_name=None, *, jwt=None, api_key=None, local=False)
-Reactor("my-model", "rk_live_...")   # api_url="my-model", model_name="rk_live_..." — WRONG,
-                                      # and it will not fail until connect() tries to reach
-                                      # "my-model" as a URL.
+Reactor(model_name: str, api_key: str | None = None, *, jwt=None, api_url=DEFAULT_API_URL, local=False)
 ```
 
-**Always convert positional constructor calls to keyword arguments during this migration.**
-`Reactor(model_name="my-model", api_key="rk_live_...")` is unambiguous in both generations and
-is the only safe rewrite — don't rely on the new SDK's position-sniffing heuristic (it only
-protects `Reactor("my-model")` called with a single argument, not two).
+This is the old `py-sdk`'s own positional order (`Reactor(model_name, api_key=None,
+api_url=DEFAULT_BASE_URL, local=False, ...)`), exactly. A ported `Reactor("my-model",
+"rk_live_...")` call needs **no rewrite at all** — `model_name` and `api_key` land right.
+
+This was not always true: an earlier post-1.0.0 build took `(api_url, model_name)` positionally
+in either order, sniffed by which one looked like a URL — a real footgun, since it failed
+silently rather than raising, and the sniffing only protected a single positional argument, not
+two. Fixed before this skill was last verified (below) by making `api_url` keyword-only with a
+concrete default, which removed the ambiguity outright rather than sniffing around it. If a
+version between there and here is what's actually installed, check the installed signature
+(`help(Reactor.__init__)`) before trusting this row.
 
 The old constructor's `model_tracks` parameter (preset tracks for codegen'd SDKs) has no
 equivalent — drop it, there is nothing to migrate it to.
@@ -108,11 +106,11 @@ This is the largest conceptual change and the reason nothing here is a rename.
 | `disconnect(recoverable: bool = False)` | `disconnect()` — no parameter, **always** terminates the session server-side, same as the old default (`recoverable=False`). There is no way to make it preserve the session instead. If old code called `disconnect(True)` expecting the session to survive for a later resume, call [`reconnect()`](../../sdks/python/reactor_sdk/client.py) directly now instead of `disconnect()` + `connect()` — it tears the live connection down itself without ending the session, and works from any status including `ready`, not only after a drop. |
 | `unpublish_track(name) -> None`, async | `unpublish_track(name) -> None`, **sync**. Drop the `await`. A failure is logged (`reactor_sdk` at `WARNING`), not raised — unpublish is commonly the last call in a `finally` block, and this deliberately doesn't interrupt it. (A 1.0.0-adjacent build had this returning `0`/`-1` instead of logging; if the installed package still does, it predates that fix.) |
 | `connect(*, session_id=None, connection_id=None, auto_resume_tracks=True)` | `connect(*, session_id=None, connection_id=None)` — `connection_id` is back (added post-1.0.0, closing a rewrite gap; same idea as the old parameter — adopt a connection slot a backend already registered for the session). `auto_resume_tracks` stays gone: every output track always starts subscribed; call `pause_track(name)` right after `connect()` for the ones you don't want yet. |
-| `fetch_jwt_token(...)` | `fetch_jwt(api_key, api_url, *, models=None, max_sessions=None, expires_after=None) -> str` — renamed **and** the signature changed (`api_url` is now required, not read from a default). It is synchronous; wrap it in `asyncio.to_thread()` from async code. |
+| `fetch_jwt_token(...)` | `fetch_jwt(api_key, api_url=DEFAULT_API_URL, *, models=None, max_sessions=None, expires_after=None) -> str` — renamed; `api_url` is optional, same production default `Reactor()` itself uses. It is synchronous; wrap it in `asyncio.to_thread()` from async code. |
 | `on(event: ReactorEvent, handler)` | `on(event: str, handler)` — `ReactorEvent` doesn't exist; event names are plain strings (`"status_changed"`, not `"statusChanged"`). |
 | `on_status(func)` / `on_status(ReactorStatus.READY)` / `on_status([READY, WAITING])` | Same three forms, same behavior — this one carried over unchanged. |
 | `send_command(command, data)` — fire-and-forget, reply arrives later as a `message` event | `await send_command(command, data) -> dict | None` — **awaits and returns the correlated reply**. To fire without waiting, `asyncio.create_task(reactor.send_command(...))`. |
-| `upload_file(...)` requiring a fully `READY` session | `upload_file(...)` needs only an active session (as soon as the coordinator creates one), not full `READY`. |
+| `upload_file(...)` requiring a fully `READY` session | Same requirement, unchanged — raises `InvalidStateError` before `ready`. (A 1.0.0-adjacent build relaxed this to only needing an active session, before the WebRTC handshake finished; fixed back to match `request_clip()`/`pause_track()`'s own guard before this skill was last verified, below.) |
 
 ---
 
@@ -151,19 +149,16 @@ This is the largest conceptual change and the reason nothing here is a rename.
 ## Migration procedure
 
 1. Run the "Confirm it's actually the old `py-sdk`" grep above across the target codebase.
-2. Convert every `Reactor(...)` construction to keyword arguments (`model_name=`, `api_key=`
-   or `jwt=`, `api_url=`, `local=`) — do this first, before anything else, since it's silent
-   if missed.
-3. Work through the tables top to bottom, fixing call sites. Prefer `grep -rn` for each old
+2. Work through the tables top to bottom, fixing call sites. Prefer `grep -rn` for each old
    symbol name over trying to remember where they're used.
-4. For anything touching media (`MediaStreamTrack`, `publish_track`, `get_remote_tracks`,
+3. For anything touching media (`MediaStreamTrack`, `publish_track`, `get_remote_tracks`,
    frame callbacks), expect to restructure, not just rename — read the "Media" section above
    and the current [`Track`](../../sdks/python/reactor_sdk/track.py) docstrings.
-5. Search for bare `except ConflictError` / `except VersionMismatchError` and re-verify what
+4. Search for bare `except ConflictError` / `except VersionMismatchError` and re-verify what
    condition they're meant to catch.
-6. Wrap connected lifetimes that call `publish_track()`/`track.publish()` in
+5. Wrap connected lifetimes that call `publish_track()`/`track.publish()` in
    `try`/`finally: await reactor.disconnect()` if they aren't already.
-7. Run the target codebase's own test suite. If it has none, at minimum exercise connect →
+6. Run the target codebase's own test suite. If it has none, at minimum exercise connect →
    publish/push → receive → disconnect once against `local=True` or a real key.
 8. Pin `reactor-sdk>=1.0` explicitly in the migrated project's dependency file — mid-1.0
    transition, a loose pin can silently resolve back to a `0.8.x` old-generation wheel on a
@@ -185,7 +180,10 @@ This is the largest conceptual change and the reason nothing here is a rename.
   `reactor.download_clip()`/`download_recording()`, `Speaker`/`Microphone`
   (`reactor_sdk.audio_devices`), `@reactor.on_track` handing over a `Track`, and
   `unpublish_track()`/`Track.unpublish()` logging instead of returning a code, are all merged
-  to `main`.
+  to `main`. `Reactor(model_name, api_key)`'s positional order, `fetch_jwt()`'s optional
+  `api_url`, and `upload_file()` requiring `ready` again are an open PR (#43) at time of
+  writing, **not yet on `main`** — check whether it has merged before trusting those three
+  specifically.
 
   If the repo has moved since, spot-check a table row against the actual source before
   trusting it on a large migration.
