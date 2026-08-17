@@ -5,6 +5,11 @@ Each of these exists because a real consumer uses that shape. The pygame example
 line that touches the SDK — only the formatter's own reordering and `Optional[X]` to
 `X | None` — and everything asserted here is what made that possible. They are
 regression tests in the strict sense: dropping any one of them breaks somebody.
+
+That example has since been extended to use newer API, so it is no longer a
+line-for-line copy of what migrated. The claim these tests encode is unchanged:
+none of those edits were forced by this SDK, and the shapes below still have to
+keep working for the code that has not been touched.
 """
 
 from __future__ import annotations

@@ -41,7 +41,7 @@ sys.path.insert(0, str(__file__).rsplit("/", 3)[0] + "/src")
 from audio import AudioPlayer
 from controller import ReactorController
 
-from reactor_sdk import Reactor, ReactorStatus
+from reactor_sdk import Reactor, ReactorStatus, TrackDirection, TrackKind
 
 # =============================================================================
 # Configuration
@@ -132,6 +132,10 @@ class ReactorApp:
 
         # The SDK opens no audio device, so playing what arrives is up to us.
         self.audio = AudioPlayer()
+        # The track being played, once one is found. None means the model declares
+        # no audio, which is why the app is silent — worth telling the user apart
+        # from an audio device that failed to open.
+        self.audio_track: str | None = None
 
         # Metadata from the most recent tagged frame, how many have carried one, and
         # whether the newest frame did — a stream can stop tagging, and stale values
@@ -198,13 +202,8 @@ class ReactorApp:
         def handle_error(error: object) -> None:
             logger.error(f"Reactor error: {error}")
 
-        # Received audio, straight to the speaker. Registered with `on` rather than a
-        # decorator because the payload is the raw PCM plus its format, and this
-        # handler runs on the SDK's audio delivery thread — see audio.py.
-        self.reactor.on(
-            "audio",
-            lambda pcm, _samples, rate, channels: self.audio.submit(pcm, rate, channels),
-        )
+        # Audio is wired up after connecting instead, once the model has said
+        # whether it has any — see _attach_audio.
 
         # Create controller
         self.controller = ReactorController(
@@ -262,6 +261,43 @@ class ReactorApp:
         except Exception as e:
             logger.error(f"Failed to connect: {e}")
             raise
+
+        self._attach_audio()
+
+    def _attach_audio(self) -> None:
+        """Play the model's audio track, if it declares one.
+
+        Called after connecting because that is when there is an answer: the
+        session carries the model's tracks by the time `connect()` returns, so
+        `reactor.tracks` is the list of what actually exists rather than a guess.
+
+        Registered on the track rather than on the client, so a model with more
+        than one recvonly audio track does not have them summed into one speaker
+        with no way to tell which was which. `on_raw_frame` because the player
+        wants the PCM and its format, not the numpy array `on_frame` would decode
+        — and because this runs on the SDK's audio delivery thread, where the cost
+        of a conversion is paid in audio (see audio.py).
+        """
+        track = next(
+            (
+                t
+                for t in self.reactor.tracks
+                if t.kind == TrackKind.AUDIO and t.direction == TrackDirection.RECVONLY
+            ),
+            None,
+        )
+        if track is None:
+            logger.info(
+                "%s declares no recvonly audio track, so there is nothing to play",
+                self.model_name,
+            )
+            return
+
+        track.on_raw_frame(
+            lambda pcm, _samples, rate, channels: self.audio.submit(pcm, rate, channels)
+        )
+        self.audio_track = track.name
+        logger.info("playing audio from track %r", track.name)
 
     async def _cleanup(self) -> None:
         """Clean up resources."""
@@ -460,6 +496,8 @@ class ReactorApp:
             self.frames_received = 0
 
         status_text += f" | Frames: {self.frames_received}"
+        # Says which of the two silences this is: no audio track, or one playing.
+        status_text += f" | Audio: {self.audio_track or 'none'}"
         self.frames_rendered += 1
 
         text_surface = self.font_small.render(status_text, True, (200, 200, 200))

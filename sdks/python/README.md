@@ -91,6 +91,11 @@ def forward(bgra, width, height, frame_id, timestamp_us, user_data):
     ...
 ```
 
+**No audio device is ever opened.** A sendonly audio track carries only the PCM
+you push into it, and a model's audio arrives at `on_frame` for you to play with
+whatever you like — nothing is captured from your microphone or played through
+your speakers on your behalf.
+
 Naming a track before `connect()` is fine: the session has not declared anything
 yet, so handlers can be registered first and the name is checked as soon as the
 declaration arrives.
