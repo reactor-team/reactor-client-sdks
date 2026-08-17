@@ -28,10 +28,11 @@ from ._ffi import (
 
 # Re-exported from `client` as well as their own modules: all of these have been
 # importable from here since before the split, and the tests reach for them by that
-# path.
-from ._media import _bgra_to_rgb_array, _positional_arity
+# path. The two media helpers have no caller left here now that the client-wide
+# `on_frame` is gone — `Track` uses them — but the import path stays.
+from ._media import _bgra_to_rgb_array, _positional_arity  # noqa: F401  (re-export)
 from .errors import ReactorFFIError, error_from_payload  # noqa: F401  (re-export)
-from .track import Track, TrackDirection, TrackKind
+from .track import Track, TrackDirection, TrackKind, TrackList
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -153,11 +154,6 @@ atexit.register(_close_live_clients)
 #: the microphone streamed in its place, which is what `examples/push_audio.py`
 #: was silently doing.
 _SYNTHETIC_ADM = 0
-
-#: What `on_frame` offers a handler, in order. A handler is given as many of these as it
-#: declares parameters for, so the historical one-argument contract keeps working while a
-#: handler that wants the metadata trailer just asks for more.
-FRAME_HANDLER_ARGUMENTS = ("frame", "frame_id", "timestamp_us", "user_data")
 
 #: What a registered handler returns: `None` from a plain function, or a coroutine from
 #: an `async def` one — `_fire` inspects this to decide whether to schedule it.
@@ -305,58 +301,6 @@ class Reactor:
     #
     # The same events as `on`, registered by decorating. Each returns the function
     # unchanged, so the decorated name stays callable.
-
-    def on_frame(self, func: Callable) -> Callable:
-        """Register a handler for decoded video frames.
-
-        The handler is given as many of ``(frame, frame_id, timestamp_us, user_data)``
-        as it declares parameters for, so it can ask for only what it uses::
-
-            @reactor.on_frame
-            def render(frame): ...                                  # just the image
-
-            @reactor.on_frame
-            def render(frame, frame_id, timestamp_us, user_data): ...  # and the trailer
-
-        ``frame`` is an RGB ``numpy`` array of shape ``(height, width, 3)``, ready for
-        anything that renders images — width and height are its shape, which is why they
-        are not passed separately. The other three are the metadata trailer, and are
-        ``0``, ``0`` and ``b""`` on a frame that carries none.
-
-        One argument is what this decorator has always given, so existing handlers are
-        unaffected; a handler taking ``*args`` gets all four.
-
-        ``on("frame", ...)`` remains the other shape of the same event, handing over the
-        untouched BGRA bytes with the dimensions and the trailer. Prefer it when the
-        conversion is not wanted — for forwarding the bytes somewhere, say.
-
-        Requires numpy, which is not a dependency of this package: installing it is the
-        price of the conversion.
-        """
-        take = _positional_arity(func, len(FRAME_HANDLER_ARGUMENTS))
-
-        def handler(
-            bgra: bytes,
-            width: int,
-            height: int,
-            frame_id: int,
-            timestamp_us: int,
-            user_data: bytes,
-        ) -> _HandlerResult:
-            # The array is built first because it is what every handler wants; the
-            # conversion is the cost of this decorator either way.
-            arguments = (
-                _bgra_to_rgb_array(bgra, width, height),
-                frame_id,
-                timestamp_us,
-                user_data,
-            )
-            # Returned rather than discarded: `func` may be `async def`, in which case
-            # this is a coroutine that `_fire` needs to see in order to schedule it.
-            return func(*arguments[:take])
-
-        self.on("frame", handler)
-        return func
 
     def on_status(self, arg: Callable | str | Sequence[str] | None = None) -> Callable:
         """Register a handler for status changes.
@@ -977,8 +921,13 @@ class Reactor:
         return track
 
     @property
-    def tracks(self) -> list[Track]:
+    def tracks(self) -> TrackList:
         """Every track the session declares, in declaration order.
+
+        A list, so it iterates and indexes like one, with filters that chain::
+
+            reactor.tracks.with_kind(TrackKind.VIDEO)
+            reactor.tracks.with_direction(TrackDirection.RECVONLY).one()
 
         Empty until the model's capabilities arrive, shortly after `connect()`.
         """
@@ -998,7 +947,7 @@ class Reactor:
             _log.debug("could not decode the paused-track list")
             return frozenset()
 
-    def _sync_tracks(self) -> list[Track]:
+    def _sync_tracks(self) -> TrackList:
         """Adopt what the session declares onto the `Track` registry.
 
         The registry is only ever added to. A disconnect empties the native list,
@@ -1010,9 +959,9 @@ class Reactor:
             declared = json.loads(raw) if raw else []
         except ValueError:
             _log.debug("could not decode the declared-track list")
-            return []
+            return TrackList()
 
-        tracks = []
+        tracks = TrackList()
         for entry in declared:
             name = entry.get("name")
             if not name:

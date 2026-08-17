@@ -34,12 +34,15 @@ async def main():
         def on_ready(status):
             asyncio.create_task(r.send_command("set_prompt", {"prompt": "a forest at dawn"}))
 
-        def on_frame(bgra, width, height, frame_id, timestamp_us, user_data):
-            print(f"frame: {width}x{height}")
-
-        r.on("frame", on_frame)
-
         await r.connect()
+
+        # The model's video output, whatever it is called.
+        output = r.tracks.with_direction("recvonly").with_kind("video").one()
+
+        @output.on_frame
+        def render(frame):
+            print(f"frame: {frame.shape}")
+
         await asyncio.sleep(30)  # keep the session open while frames arrive
 
 
@@ -91,6 +94,30 @@ def forward(bgra, width, height, frame_id, timestamp_us, user_data):
     ...
 ```
 
+### Finding a track
+
+`reactor.tracks` is a list, so it iterates and indexes like one — with filters that
+chain when you would rather describe the track than name it:
+
+```python
+reactor.tracks                                              # all of them
+reactor.tracks.with_kind(TrackKind.VIDEO)                   # or "video"
+reactor.tracks.with_direction(TrackDirection.RECVONLY)      # or "recvonly"
+
+# The one you mean, with an error naming the candidates if there is not exactly one.
+output = reactor.tracks.with_direction("recvonly").with_kind("video").one()
+```
+
+The filters compose in either order, and a track whose kind the session has not
+declared yet matches neither.
+
+There is no client-wide `reactor.on_frame`: it was removed in 0.9.0. It only ever
+worked for video — there was no `on_audio` counterpart — and a single handler fed
+every recvonly video track cannot tell them apart, which is the case the `Track`
+object exists for. `on("frame", …)` and `on("audio", …)` remain for raw
+client-wide bytes; use a track's `on_frame` for decoded frames, and `.one()` above
+when you do not want to hardcode the name.
+
 **No audio device is ever opened.** A sendonly audio track carries only the PCM
 you push into it, and a model's audio arrives at `on_frame` for you to play with
 whatever you like — nothing is captured from your microphone or played through
@@ -102,7 +129,8 @@ yet, so handlers can be registered first and the name is checked as soon as the
 declaration arrives.
 
 The name-based calls — `publish_track`, `pause_track`, `push_video_frame`,
-`push_audio_frame`, `on("frame", …)` — all still work exactly as before.
+`push_audio_frame`, `on("frame", …)` — all still work exactly as before. The one
+removal is `reactor.on_frame`; see "Finding a track" above for what replaces it.
 
 ## Audio playback
 

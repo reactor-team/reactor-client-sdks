@@ -53,7 +53,7 @@ from .errors import (
     VersionMismatchError,
 )
 from .playback import AudioPlayer
-from .track import Track, TrackDirection, TrackKind
+from .track import Track, TrackDirection, TrackKind, TrackList
 
 __all__ = [
     "Reactor",
@@ -61,6 +61,7 @@ __all__ = [
     "Track",
     "TrackKind",
     "TrackDirection",
+    "TrackList",
     "AudioPlayer",
     "Clip",
     "FileRef",
