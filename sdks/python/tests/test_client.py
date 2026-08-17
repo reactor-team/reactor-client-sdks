@@ -511,14 +511,14 @@ class TestSettleFromForeignThread:
 
     @pytest.mark.asyncio
     async def test_delivers_an_error(self) -> None:
-        from reactor_sdk.client import ReactorFFIError, _settle_from_foreign_thread
+        from reactor_sdk.client import ReactorError, _settle_from_foreign_thread
 
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
 
-        _settle_from_foreign_thread(loop, future, None, ReactorFFIError("boom"))
+        _settle_from_foreign_thread(loop, future, None, ReactorError("boom"))
 
-        with pytest.raises(ReactorFFIError, match="boom"):
+        with pytest.raises(ReactorError, match="boom"):
             await asyncio.wait_for(future, timeout=2)
 
     @pytest.mark.asyncio

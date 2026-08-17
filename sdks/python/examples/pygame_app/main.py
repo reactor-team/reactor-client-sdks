@@ -41,7 +41,7 @@ sys.path.insert(0, str(__file__).rsplit("/", 3)[0] + "/src")
 from audio import AudioPlayer
 from controller import ReactorController
 
-from reactor_sdk import Reactor, ReactorStatus, TrackDirection, TrackKind
+from reactor_sdk import Reactor, ReactorStatus, TrackDirection, TrackKind, TrackList
 
 # =============================================================================
 # Configuration
@@ -136,6 +136,9 @@ class ReactorApp:
         # no audio, which is why the app is silent — worth telling the user apart
         # from an audio device that failed to open.
         self.audio_track: str | None = None
+        # Likewise for video: which track is on screen, or None when the model
+        # declares none — worth telling apart from a stream that simply stalled.
+        self.video_track: str | None = None
 
         # Metadata from the most recent tagged frame, how many have carried one, and
         # whether the newest frame did — a stream can stop tagging, and stale values
@@ -180,19 +183,7 @@ class ReactorApp:
             local=self.local,
         )
 
-        # Set up event handlers using decorators
-        # Four parameters, so the trailer arrives with the image. A handler that only
-        # wants the image declares one, which is what this used to be.
-        @self.reactor.on_frame
-        def handle_frame(
-            frame: NDArray[np.uint8],
-            frame_id: int,
-            timestamp_us: int,
-            user_data: bytes,
-        ) -> None:
-            self.current_frame = frame
-            self.frames_received += 1
-            self._note_frame_metadata(frame_id, timestamp_us, user_data)
+        # Video is wired up after connecting, like audio — see _attach_media.
 
         @self.reactor.on_status
         def handle_status(status: ReactorStatus) -> None:
@@ -262,37 +253,70 @@ class ReactorApp:
             logger.error(f"Failed to connect: {e}")
             raise
 
-        self._attach_audio()
+        self._attach_media()
 
-    def _attach_audio(self) -> None:
-        """Play the model's audio track, if it declares one.
+    def _attach_media(self) -> None:
+        """Register on the tracks the model actually declares.
 
         Called after connecting because that is when there is an answer: the
         session carries the model's tracks by the time `connect()` returns, so
-        `reactor.tracks` is the list of what actually exists rather than a guess.
+        `reactor.tracks` is what exists rather than a guess.
 
-        Registered on the track rather than on the client, so a model with more
-        than one recvonly audio track does not have them summed into one speaker
-        with no way to tell which was which. `on_raw_frame` because the player
-        wants the PCM and its format, not the numpy array `on_frame` would decode
-        — and because this runs on the SDK's audio delivery thread, where the cost
-        of a conversion is paid in audio (see audio.py).
+        Both handlers go on their track rather than on the client. For audio that
+        is what keeps two recvonly audio tracks from being summed into one speaker
+        with nothing to say which was which; for video it is the only way, since
+        the client-wide `on_frame` was removed for exactly that reason.
         """
-        track = next(
-            (
-                t
-                for t in self.reactor.tracks
-                if t.kind == TrackKind.AUDIO and t.direction == TrackDirection.RECVONLY
-            ),
-            None,
-        )
-        if track is None:
+        recvonly = self.reactor.tracks.with_direction(TrackDirection.RECVONLY)
+        self._attach_video(recvonly.with_kind(TrackKind.VIDEO))
+        self._attach_audio(recvonly.with_kind(TrackKind.AUDIO))
+
+    def _attach_video(self, tracks: TrackList) -> None:
+        """Display the model's video track. Four parameters, so the metadata
+        trailer arrives with the image; a handler wanting only the image declares
+        one."""
+        if not tracks:
+            logger.warning("%s declares no recvonly video track", self.model_name)
+            return
+        if len(tracks) > 1:
+            logger.info(
+                "%s declares %d video tracks (%s); displaying %r",
+                self.model_name,
+                len(tracks),
+                ", ".join(t.name for t in tracks),
+                tracks[0].name,
+            )
+
+        @tracks[0].on_frame
+        def handle_frame(
+            frame: NDArray[np.uint8],
+            frame_id: int,
+            timestamp_us: int,
+            user_data: bytes,
+        ) -> None:
+            self.current_frame = frame
+            self.frames_received += 1
+            self._note_frame_metadata(frame_id, timestamp_us, user_data)
+
+        self.video_track = tracks[0].name
+        logger.info("displaying video from track %r", tracks[0].name)
+
+    def _attach_audio(self, tracks: TrackList) -> None:
+        """Play the model's audio track, if it declares one.
+
+        `on_raw_frame` because the player wants the PCM and its format, not the
+        numpy array `on_frame` would decode — and because this runs on the SDK's
+        audio delivery thread, where the cost of a conversion is paid in audio
+        (see audio.py).
+        """
+        if not tracks:
             logger.info(
                 "%s declares no recvonly audio track, so there is nothing to play",
                 self.model_name,
             )
             return
 
+        track = tracks[0]
         track.on_raw_frame(
             lambda pcm, _samples, rate, channels: self.audio.submit(pcm, rate, channels)
         )
@@ -497,6 +521,7 @@ class ReactorApp:
 
         status_text += f" | Frames: {self.frames_received}"
         # Says which of the two silences this is: no audio track, or one playing.
+        status_text += f" | Video: {self.video_track or 'none'}"
         status_text += f" | Audio: {self.audio_track or 'none'}"
         self.frames_rendered += 1
 
