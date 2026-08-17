@@ -57,13 +57,6 @@ class _FakeLib:
         self.freed.append(getattr(ptr, "value", ptr))
 
 
-@pytest.fixture(autouse=True)
-def _no_real_destroy(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`_handle` below is a fake int — `__del__` must not hand it to the real
-    `reactor_destroy` at GC time."""
-    monkeypatch.setattr(Reactor, "_destroy_handle", lambda self: None)
-
-
 def _connected(
     monkeypatch: pytest.MonkeyPatch,
     tracks: list[dict] | None = None,

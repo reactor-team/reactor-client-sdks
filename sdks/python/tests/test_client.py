@@ -197,12 +197,6 @@ class TestSendCommandUploads:
     `FileRef` at all, so a command with a file parameter was unreachable before.
     """
 
-    @pytest.fixture(autouse=True)
-    def _no_real_destroy(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """`_handle` below is a fake int, not a real native pointer — `__del__`
-        must not hand it to the real `reactor_destroy` at GC time."""
-        monkeypatch.setattr(Reactor, "_destroy_handle", lambda self: None)
-
     def _reactor(self) -> Reactor:
         reactor = Reactor("https://api.reactor.inc", "m")
         reactor._handle = 1234
@@ -281,12 +275,6 @@ class TestUploadFileDispatch:
     was already byte-based (`Reactor::upload_file(name, mime_type, bytes)`) —
     only the old FFI wrapper forced a filesystem path.
     """
-
-    @pytest.fixture(autouse=True)
-    def _no_real_destroy(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """`_handle` below is a fake int, not a real native pointer — `__del__`
-        must not hand it to the real `reactor_destroy` at GC time."""
-        monkeypatch.setattr(Reactor, "_destroy_handle", lambda self: None)
 
     def _reactor(self) -> Reactor:
         reactor = Reactor("https://api.reactor.inc", "m")
