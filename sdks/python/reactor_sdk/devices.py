@@ -6,12 +6,15 @@ to put your microphone on the wire, and a model sending audio does not make your
 speakers play. That is the right default for scripts, servers and pipelines, and
 it leaves both jobs to the application.
 
-These are those jobs, done::
+These are those jobs, done. One end at a time::
 
     output = reactor.tracks.with_direction("recvonly").with_kind("audio").one()
-    mic = await reactor.track("mic").publish()
+    with Speaker(output):
+        await asyncio.sleep(30)
 
-    with Speaker(output), Microphone(mic):
+or both at once, for a model that takes audio and sends it back::
+
+    async with AudioDevices(reactor):
         await asyncio.sleep(30)
 
 Both need `sounddevice`, which is not a dependency of this package —
@@ -388,3 +391,102 @@ class Microphone:
             num_channels=self._channels,
         )
         self._blocks += 1
+
+
+class AudioDevices:
+    """Both ends of the audio for one session: what plays, and what captures.
+
+    For the full-duplex case — a model that takes audio and sends it back — where
+    wiring a `Speaker` and a `Microphone` separately means finding two tracks,
+    publishing one of them, and remembering to stop both::
+
+        async with AudioDevices(reactor) as audio:
+            print(audio.speaker, audio.microphone)
+            await asyncio.sleep(30)
+
+    It holds the two objects rather than replacing them; `speaker` and
+    `microphone` are the real thing, and either is None when the model declares
+    no track for it. Half a duplex is a normal session, not an error: a model that
+    only sends audio gets a speaker and no microphone.
+
+    `start` is a coroutine because it publishes the sendonly track. Pushing into a
+    slot that was never activated goes nowhere and says nothing, so leaving that to
+    the caller would leave the trap this class exists to close.
+    """
+
+    def __init__(
+        self,
+        reactor: Any,
+        *,
+        input_device: int | str | None = None,
+        output_device: int | str | None = None,
+    ) -> None:
+        """
+        Args:
+            reactor: The client whose declared tracks to wire devices to.
+            input_device: Which capture device, in `sounddevice`'s terms.
+            output_device: Which playout device, in `sounddevice`'s terms.
+        """
+        self._reactor = reactor
+        self._input_device = input_device
+        self._output_device = output_device
+        self._speaker: Speaker | None = None
+        self._microphone: Microphone | None = None
+
+    @property
+    def speaker(self) -> Speaker | None:
+        """The speaker, once started, or None if the model sends no audio."""
+        return self._speaker
+
+    @property
+    def microphone(self) -> Microphone | None:
+        """The microphone, once started, or None if the model takes no audio."""
+        return self._microphone
+
+    async def start(self) -> AudioDevices:
+        """Find the audio tracks, publish the sendonly one, and open the devices.
+
+        Returns itself. Raises if `sounddevice` is missing, like the two devices it
+        holds — an application that would rather run without sound catches that.
+        """
+        audio = self._reactor.tracks.with_kind("audio")
+
+        incoming = audio.with_direction("recvonly")
+        if incoming:
+            self._speaker = Speaker(incoming[0], device=self._output_device).start()
+        else:
+            _log.info("the model declares no recvonly audio track; nothing to play")
+
+        outgoing = audio.with_direction("sendonly")
+        if outgoing:
+            track = await outgoing[0].publish()
+            self._microphone = Microphone(track, device=self._input_device).start()
+        else:
+            _log.info("the model declares no sendonly audio track; nothing to capture")
+
+        return self
+
+    def stop(self) -> None:
+        """Close both devices, and unpublish what `start` published."""
+        if self._speaker is not None:
+            self._speaker.stop()
+            self._speaker = None
+
+        if self._microphone is not None:
+            track = self._microphone._track
+            self._microphone.stop()
+            self._microphone = None
+            # Published here, so released here — leaving a slot active after the
+            # device feeding it has closed sends silence for the rest of the session.
+            track.unpublish()
+
+    async def __aenter__(self) -> AudioDevices:
+        return await self.start()
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.stop()

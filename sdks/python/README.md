@@ -140,6 +140,16 @@ arrives and what the device asks for; feed it yourself with `submit()` if the PC
 comes from somewhere else. `Microphone` captures the default input device into a
 sendonly track, in the block size the far end expects.
 
+For a model that takes audio and sends it back, `AudioDevices` is both ends in one
+object — it finds the two tracks, publishes the one it captures into, and closes
+both devices on the way out:
+
+```python
+async with AudioDevices(reactor) as audio:
+    print(audio.speaker, audio.microphone)   # either is None if the model has no such track
+    await asyncio.sleep(30)
+```
+
 Both need PortAudio, which is not a dependency of this package:
 
 ```bash
@@ -251,7 +261,8 @@ environment variables (see [`reactor_client.py`](examples/reactor_client.py)):
 |---|---|
 | [`main.py`](examples/main.py) | Minimal connect → list the model's tracks → send a command → disconnect. |
 | [`push_video.py`](examples/push_video.py) | Stream generated frames into a `sendonly` video track. |
-| [`push_audio.py`](examples/push_audio.py) | Stream a sine tone or a WAV file into a `sendonly` audio track. |
+| [`push_audio.py`](examples/push_audio.py) | Stream a sine tone, a WAV file, or the microphone into a `sendonly` audio track. |
+| [`echo_audio.py`](examples/echo_audio.py) | The full audio duplex: microphone out, the model's audio to the speakers. |
 | [`pause_resume.py`](examples/pause_resume.py) | Pause and resume a `recvonly` track subscription, counting only that track's frames. |
 | [`record.py`](examples/record.py) | Request a clip or full-session recording and download the HLS segments. |
 | [`frame_metadata.py`](examples/frame_metadata.py) | Read the per-frame metadata trailer off an incoming track. |

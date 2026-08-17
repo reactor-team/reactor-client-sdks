@@ -22,7 +22,7 @@ from unittest import mock
 
 import pytest
 
-from reactor_sdk import Microphone, Reactor, Speaker
+from reactor_sdk import AudioDevices, Microphone, Reactor, Speaker
 from reactor_sdk.devices import BYTES_PER_SAMPLE, MAX_BUFFER_MS, PREROLL_MS
 
 RATE = 48_000
@@ -108,14 +108,18 @@ class _FakeLib:
     def __init__(self) -> None:
         self._buffers: list[Any] = []
         self.pushed: list[tuple] = []
+        self.published: list[bytes] = []
+        self.unpublished: list[bytes] = []
 
     def _string(self, payload: object) -> int:
         buffer = ctypes.create_string_buffer(json.dumps(payload).encode())
         self._buffers.append(buffer)
         return ctypes.cast(buffer, ctypes.c_void_p).value or 0
 
+    declared: list[dict] = DECLARED
+
     def reactor_tracks(self, _handle: object) -> int:
-        return self._string(DECLARED)
+        return self._string(self.declared)
 
     def reactor_paused_tracks(self, _handle: object) -> int:
         return self._string([])
@@ -124,6 +128,14 @@ class _FakeLib:
 
     def reactor_push_audio_frame(self, _h, name, buf, spc, rate, channels) -> None:
         self.pushed.append((name, len(bytes(buf)), spc.value, rate.value, channels.value))
+
+    def reactor_publish_track(self, _h, name, completion, _ud) -> None:
+        self.published.append(name)
+        completion(1, b"{}", None, None)
+
+    def reactor_unpublish_track(self, _h, name) -> int:
+        self.unpublished.append(name)
+        return 0
 
 
 @pytest.fixture
@@ -351,3 +363,85 @@ class TestMicrophone:
         with Microphone(client.track("mic")):
             pass
         assert sd.input.closed
+
+
+class TestAudioDevices:
+    """The full duplex in one object, for the flow that wants both ends."""
+
+    def _declaring(
+        self, monkeypatch: pytest.MonkeyPatch, tracks: list[dict]
+    ) -> tuple[Reactor, _FakeLib]:
+        client = Reactor("https://api.reactor.inc", "m")
+        client._handle = 1234
+        lib = _FakeLib()
+        lib.declared = tracks
+        monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: lib)
+        return client, lib
+
+    async def test_it_wires_both_ends_and_publishes_what_it_captures_into(
+        self, sd: _FakeSoundDevice, reactor: tuple[Reactor, _FakeLib]
+    ) -> None:
+        """Publishing is the part a caller forgets: a microphone pushing into a slot
+        that was never activated goes nowhere and says nothing."""
+        client, lib = reactor
+
+        audio = await AudioDevices(client).start()
+
+        assert audio.speaker is not None
+        assert audio.microphone is not None
+        assert lib.published == [b"mic"], "the captured track has to be published"
+        assert sd.input is not None and sd.output is None, (
+            "capture opens at once; playout waits for the first frame, which says its format"
+        )
+
+    async def test_half_a_duplex_is_a_normal_session(
+        self, sd: _FakeSoundDevice, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A model that only sends audio gets a speaker and no microphone. Refusing
+        that would make the object useless for the commoner case."""
+        client, _ = self._declaring(
+            monkeypatch, [{"name": "speech", "kind": "audio", "direction": "recvonly"}]
+        )
+        audio = await AudioDevices(client).start()
+
+        assert audio.speaker is not None
+        assert audio.microphone is None
+
+    async def test_a_model_with_no_audio_leaves_both_unset(
+        self, sd: _FakeSoundDevice, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client, _ = self._declaring(
+            monkeypatch, [{"name": "output", "kind": "video", "direction": "recvonly"}]
+        )
+        audio = await AudioDevices(client).start()
+
+        assert (audio.speaker, audio.microphone) == (None, None)
+
+    async def test_stop_closes_both_and_releases_the_slot_it_took(
+        self, sd: _FakeSoundDevice, reactor: tuple[Reactor, _FakeLib]
+    ) -> None:
+        """Published here, so released here: a slot left active after the device
+        feeding it closed sends silence for the rest of the session."""
+        client, lib = reactor
+        audio = await AudioDevices(client).start()
+
+        audio.stop()
+
+        assert sd.input.closed
+        assert lib.unpublished == [b"mic"]
+        assert (audio.speaker, audio.microphone) == (None, None)
+
+    async def test_as_an_async_context_manager(
+        self, sd: _FakeSoundDevice, reactor: tuple[Reactor, _FakeLib]
+    ) -> None:
+        client, lib = reactor
+        async with AudioDevices(client) as audio:
+            assert audio.microphone is not None
+        assert lib.unpublished == [b"mic"]
+
+    async def test_the_devices_it_is_given_reach_the_streams(
+        self, sd: _FakeSoundDevice, reactor: tuple[Reactor, _FakeLib]
+    ) -> None:
+        client, _ = reactor
+        await AudioDevices(client, input_device="Mic A", output_device=3).start()
+        assert sd.input.kwargs["device"] == "Mic A"
