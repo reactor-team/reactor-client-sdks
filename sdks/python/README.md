@@ -3,7 +3,7 @@
 [![PyPI: reactor-sdk](https://img.shields.io/pypi/v/reactor-sdk.svg?label=reactor-sdk)](https://pypi.org/project/reactor-sdk/)
 [![PyPI Downloads](https://img.shields.io/pypi/dm/reactor-sdk.svg?label=downloads)](https://pypi.org/project/reactor-sdk/)
 [![build](https://img.shields.io/github/actions/workflow/status/reactor-team/reactor-client-sdks/ci.yml?branch=main)](https://github.com/reactor-team/reactor-client-sdks/actions)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](../../LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/reactor-team/reactor-client-sdks/blob/main/LICENSE)
 
 Connect your Python app to a live [Reactor](https://reactor.inc) model: send
 commands, receive real-time video and audio. Built for scripts, servers and
@@ -15,6 +15,37 @@ computer-vision pipelines, authenticating with your API key server-side.
 pip install reactor-sdk            # Python 3.10+, no runtime dependencies
 pip install "reactor-sdk[audio]"   # adds PortAudio, for the microphone/speaker helpers
 ```
+
+### Supported platforms
+
+Each release ships one wheel per platform, carrying a prebuilt `libreactor_ffi`
+for it. There is no source distribution: the package is useless without that
+native library, and building it needs a Rust toolchain and a libwebrtc download.
+
+| Platform | Wheel | Requires |
+|---|---|---|
+| Linux x86_64 | `manylinux_2_34_x86_64` | glibc 2.34+ (Ubuntu 22.04, Debian 12, RHEL 9, Amazon Linux 2023) |
+| Linux aarch64 | `manylinux_2_34_aarch64` | glibc 2.34+ |
+| macOS arm64 | `macosx_11_0_arm64` | macOS 11+ |
+| macOS x86_64 | `macosx_13_0_x86_64` | macOS 13+ — libwebrtc's floor on this architecture |
+| Windows x86_64 | `win_amd64` | Windows 10+ |
+
+Any interpreter 3.10 or newer works on all of them: the SDK reaches the library
+through `ctypes` and links no libpython, so the wheels are tagged
+`py3-none-<platform>` and there is nothing per-version to match.
+
+Anything outside that table — musl distributions, glibc older than 2.34, 32-bit,
+Windows on ARM — has no wheel, and **pip will not say so**: 0.8.0 and earlier
+were a single `py3-none-any` wheel that installs anywhere, so pip walks back to
+one of those and leaves you on an older SDK with a different API. Pin a floor to
+turn that into an error:
+
+```bash
+pip install "reactor-sdk>=1.0"
+```
+
+To run somewhere with no wheel, build the library yourself and point the SDK at
+it with `REACTOR_FFI_LIB` — see [Development](#development).
 
 ## Quickstart
 
@@ -145,7 +176,7 @@ with Speaker(speaker), Microphone(mic):
 - Both raise when PortAudio is missing, so catch that if you would rather run
   silent.
 
-[`echo_audio.py`](examples/echo_audio.py) runs both together.
+[`echo_audio.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/echo_audio.py) runs both together.
 
 ## Errors
 
@@ -232,22 +263,22 @@ await download_clip(clip, "clip.ts")          # the module-level function
 
 ## Samples
 
-Runnable scripts in [`examples/`](examples/), driven by `REACTOR_API_URL` /
+Runnable scripts in [`examples/`](https://github.com/reactor-team/reactor-client-sdks/tree/main/sdks/python/examples), driven by `REACTOR_API_URL` /
 `REACTOR_MODEL` / `REACTOR_JWT` / `REACTOR_LOCAL` (see
-[`reactor_client.py`](examples/reactor_client.py)):
+[`reactor_client.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/reactor_client.py)):
 
 | Script | Demonstrates |
 |---|---|
-| [`main.py`](examples/main.py) | Connect, list the model's tracks, send a command, disconnect. |
-| [`push_video.py`](examples/push_video.py) | Stream generated frames into a `sendonly` video track. |
-| [`push_audio.py`](examples/push_audio.py) | Stream a sine tone, a WAV file, or the microphone into a `sendonly` audio track. |
-| [`echo_audio.py`](examples/echo_audio.py) | Full audio duplex: microphone out, the model's audio to the speakers. |
-| [`pause_resume.py`](examples/pause_resume.py) | Pause and resume a `recvonly` track, counting only that track's frames. |
-| [`record.py`](examples/record.py) | Request a clip or a full-session recording and download it. |
-| [`frame_metadata.py`](examples/frame_metadata.py) | Read the per-frame metadata trailer off an incoming track. |
-| [`frame_metadata_roundtrip.py`](examples/frame_metadata_roundtrip.py) | Tag outgoing frames and match the ones that come back. |
-| [`metadata_publisher.py`](examples/metadata_publisher.py) | Publish tagged frames with no UI — pair with `pygame_app/`. |
-| [`pygame_app/`](examples/pygame_app/) | Live video, speaker playback, and a control UI built from the model's capabilities. |
+| [`main.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/main.py) | Connect, list the model's tracks, send a command, disconnect. |
+| [`push_video.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/push_video.py) | Stream generated frames into a `sendonly` video track. |
+| [`push_audio.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/push_audio.py) | Stream a sine tone, a WAV file, or the microphone into a `sendonly` audio track. |
+| [`echo_audio.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/echo_audio.py) | Full audio duplex: microphone out, the model's audio to the speakers. |
+| [`pause_resume.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/pause_resume.py) | Pause and resume a `recvonly` track, counting only that track's frames. |
+| [`record.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/record.py) | Request a clip or a full-session recording and download it. |
+| [`frame_metadata.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/frame_metadata.py) | Read the per-frame metadata trailer off an incoming track. |
+| [`frame_metadata_roundtrip.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/frame_metadata_roundtrip.py) | Tag outgoing frames and match the ones that come back. |
+| [`metadata_publisher.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/metadata_publisher.py) | Publish tagged frames with no UI — pair with `pygame_app/`. |
+| [`pygame_app/`](https://github.com/reactor-team/reactor-client-sdks/tree/main/sdks/python/examples/pygame_app) | Live video, speaker playback, and a control UI built from the model's capabilities. |
 
 Every example except `main.py` and `pygame_app/` imports its sibling
 `reactor_client.py`, so run those as modules (from `sdks/python/`):
@@ -257,7 +288,7 @@ REACTOR_MODEL=my-model REACTOR_JWT=<token> python examples/main.py
 REACTOR_MODEL=my-model REACTOR_JWT=<token> python -m examples.push_video --track video_input
 ```
 
-`pygame_app/` is standalone — see its own [README](examples/pygame_app/README.md).
+`pygame_app/` is standalone — see its own [README](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/pygame_app/README.md).
 
 ## Development
 
@@ -271,12 +302,19 @@ Tests that need the compiled library skip without it, so `pytest` is clean on a
 fresh checkout. `mise run build:wheel` without one produces a pure-Python wheel
 with a warning — fine for an editable install, not for a release.
 
-Rebuild the native library after pulling changes under `crates/`:
-`cargo build -p reactor-ffi --release`. A signature that moved in the FFI but not
-in your build fails at the call rather than at load, so it looks like a hang, not a
-version error.
+### The native library
 
-See the repo-wide [`CONTRIBUTING.md`](../../CONTRIBUTING.md) for the rest (DCO,
+At import time it is resolved in three places, in order: `REACTOR_FFI_LIB`, then
+next to the installed package (where the wheels put it), then `target/release/`
+in an enclosing checkout. On a platform with no wheel, `cargo build -p
+reactor-ffi --release` and an install from source is the whole story, and
+`REACTOR_FFI_LIB` points the installed SDK at a local build.
+
+Rebuild it after pulling changes under `crates/`: a signature that moved in the
+FFI but not in your build fails at the call rather than at load, so it looks like
+a hang, not a version error.
+
+See the repo-wide [`CONTRIBUTING.md`](https://github.com/reactor-team/reactor-client-sdks/blob/main/CONTRIBUTING.md) for the rest (DCO,
 commit conventions, opening a PR).
 
 ## Documentation
@@ -286,4 +324,4 @@ covers platform concepts and the other language SDKs.
 
 ## License
 
-Apache-2.0 — see [`LICENSE`](../../LICENSE).
+Apache-2.0 — see [`LICENSE`](https://github.com/reactor-team/reactor-client-sdks/blob/main/LICENSE).

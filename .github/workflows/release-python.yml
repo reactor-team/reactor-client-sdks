@@ -4,8 +4,8 @@
 # sdks/python/pyproject.toml — the version is the release switch, so shipping is
 # "bump the version and merge". Everything else on main is a no-op here.
 #
-# The wheels go out as GitHub release assets. PyPI is wired up below but switched
-# off; see the publish-pypi job for what turning it on takes.
+# The wheels go out as GitHub release assets and to PyPI, in that order — see the
+# publish-pypi job. A bump that reaches main is a public release.
 #
 # Linux builds inside a manylinux container so its wheels carry a manylinux tag that
 # is earned rather than asserted; mac and Windows build on the runner. See
@@ -359,7 +359,7 @@ jobs:
           set -euo pipefail
           cd dist
           # Namespaced, because this repo will also tag Rust crates one day and
-          # python-v0.9.0 says which thing shipped.
+          # python-v1.0.0 says which thing shipped.
           echo "tag=python-v${{ needs.detect-version.outputs.version }}" >> "$GITHUB_OUTPUT"
           sha256sum ./*.whl | tee SHA256SUMS
           ls -lh
@@ -383,36 +383,42 @@ jobs:
             --notes "$(cat <<EOF
           \`reactor-sdk\` ${VERSION} — platform wheels for the Python SDK.
 
+          \`\`\`
+          pip install reactor-sdk==${VERSION}
+          \`\`\`
+
           Each wheel bundles \`libreactor_ffi\` for its platform and is tagged
           \`py3-none-<platform>\`: the SDK reaches the native library through ctypes and
           links no libpython, so one wheel per platform covers every supported
           interpreter (3.10+).
 
-          Install a wheel directly:
+          Linux needs glibc 2.34 or newer (x86_64, aarch64), macOS 11+ on arm64 and
+          13+ on x86_64, and Windows x86_64. There is no sdist, so on anything else
+          pip resolves to an older release instead of failing — pin
+          \`reactor-sdk>=1.0\` to turn that into an error. The README has the table.
+
+          The same wheels are attached here. To install one directly:
 
           \`\`\`
           pip install https://github.com/${{ github.repository }}/releases/download/${TAG}/<wheel>
           \`\`\`
 
-          Checksums are in \`SHA256SUMS\`. Not on PyPI yet.
+          Checksums are in \`SHA256SUMS\`.
           EOF
           )"
 
-  # ── 3. PyPI — wired, switched off ───────────────────────────────────────────
+  # ── 3. PyPI ─────────────────────────────────────────────────────────────────
   #
-  # To turn this on:
+  # Live. Uploads happen through PyPI trusted publishing (OIDC): the `pypi`
+  # environment below, plus a publisher registered at
+  # https://pypi.org/manage/project/reactor-sdk/settings/publishing/ for
+  # reactor-team/reactor-client-sdks, workflow release-python.yml, environment
+  # pypi. There is no API token, and none should be added — the whole point is
+  # that no long-lived credential exists to leak.
   #
-  #   1. Configure trusted publishing on PyPI for the reactor-sdk project:
-  #      https://pypi.org/manage/project/reactor-sdk/settings/publishing/
-  #      Publisher: reactor-team/reactor-client-sdks, workflow: release-python.yml,
-  #      environment: pypi. No API token is needed, and none should be added.
-  #   2. Create the `pypi` environment in this repository's settings.
-  #   3. Set the repository variable PUBLISH_TO_PYPI to `true`.
-  #
-  # The wheels themselves are already in a publishable shape: Linux is built in a
-  # manylinux_2_34 container and repaired by auditwheel, and the mac and Windows tags
-  # are set from the floor the bundled library actually needs. Nothing here is
-  # waiting on packaging work — only on the decision to publish.
+  # PUBLISH_TO_PYPI is the kill switch. Set it to anything but `true` and releases
+  # keep going out as GitHub assets while PyPI is skipped, which is what you want
+  # if a bad wheel ever ships — PyPI never lets a version be replaced, only yanked.
   publish-pypi:
     name: Publish to PyPI
     needs: [detect-version, build-wheels, release]
