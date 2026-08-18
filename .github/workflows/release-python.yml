@@ -419,11 +419,17 @@ jobs:
   # PUBLISH_TO_PYPI is the kill switch. Set it to anything but `true` and releases
   # keep going out as GitHub assets while PyPI is skipped, which is what you want
   # if a bad wheel ever ships — PyPI never lets a version be replaced, only yanked.
+  #
+  # It is read in a step rather than in the `if` below, and that is load-bearing:
+  # the variable lives on the `pypi` environment, and a job-level condition is
+  # evaluated before the environment is resolved — the condition is what decides
+  # whether the job starts at all. Read there it is always empty, so the switch
+  # looked permanently off and 1.0.0 shipped its GitHub release without ever
+  # reaching PyPI. Steps run after the environment is in place, so they see it.
   publish-pypi:
     name: Publish to PyPI
     needs: [detect-version, build-wheels, release]
     if: >-
-      vars.PUBLISH_TO_PYPI == 'true' &&
       github.event_name == 'push' &&
       needs.detect-version.outputs.bumped == 'true'
     runs-on: ubuntu-latest
@@ -440,10 +446,20 @@ jobs:
       - name: List wheels
         run: ls -lh dist/
 
-      # PyPI refuses to re-upload an existing version, so check rather than fail.
-      - name: Check whether this version is already published
+      # Two reasons not to upload, both of them decided here: the kill switch,
+      # which only exists once the environment is resolved (see the note on the
+      # job), and a version PyPI already has — it refuses a re-upload, so this
+      # checks rather than fails.
+      - name: Check the kill switch, and whether this version is already published
         id: check
+        env:
+          PUBLISH_TO_PYPI: ${{ vars.PUBLISH_TO_PYPI }}
         run: |
+          if [ "$PUBLISH_TO_PYPI" != "true" ]; then
+            echo "::notice::PUBLISH_TO_PYPI is ${PUBLISH_TO_PYPI:-unset}, not 'true' — not publishing"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           VERSION="${{ needs.detect-version.outputs.version }}"
           if curl -sf -o /dev/null "https://pypi.org/pypi/reactor-sdk/${VERSION}/json"; then
             echo "::notice::reactor-sdk ${VERSION} is already on PyPI — skipping"
