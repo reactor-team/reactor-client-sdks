@@ -3,6 +3,7 @@ members = [
     "crates/reactor-protocol",
     "crates/reactor-core",
     "crates/reactor-ffi",
+    "crates/reactor-wasm",
 ]
 resolver = "2"
 
@@ -15,6 +16,7 @@ repository = "https://github.com/reactor-team/reactor-client-sdks"
 [workspace.dependencies]
 reactor-protocol = { path = "crates/reactor-protocol" }
 reactor-core     = { path = "crates/reactor-core" }
+reactor-wasm     = { path = "crates/reactor-wasm" }
 reactor-webrtc   = "0.7"
 
 serde       = { version = "1",   features = ["derive"] }

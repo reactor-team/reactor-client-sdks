@@ -41,12 +41,49 @@ pub use async_trait::async_trait;
 
 use std::sync::Arc;
 
-/// Boxed future.
+// ── Send bounds: on for native hosts, off for wasm ───────────────────────────
+//
+// A native host runs the core on a work-stealing runtime, so every host future
+// must be able to move between threads and the trait objects must be shareable:
+// `Send + Sync` throughout.
+//
+// The browser has neither property and needs neither. `RtcPeerConnection`, a
+// `MediaStreamTrack`, a `js_sys::Function` — none of them are `Send`, because a
+// JS value belongs to the agent that created it. Requiring `Send` there would
+// not make anything safer; it would make the browser transport unwritable
+// except through a wrapper that lies about it. wasm is single-threaded, one
+// microtask at a time, so the guarantee the bound exists to provide already
+// holds structurally.
+//
+// Hence the split below, which is invisible to native builds: the FFI, and the
+// SDKs on top of it, see exactly the bounds they saw before. Host traits pair
+// this with `#[cfg_attr(target_family = "wasm", async_trait(?Send))]`, and a
+// wasm implementor must use the same `(?Send)` form.
+
+/// Boxed future — `Send` on native hosts, thread-local under wasm.
+#[cfg(not(target_family = "wasm"))]
 pub type BoxFut<'a, T> = futures::future::BoxFuture<'a, T>;
+/// Boxed future — `Send` on native hosts, thread-local under wasm.
+#[cfg(target_family = "wasm")]
+pub type BoxFut<'a, T> = futures::future::LocalBoxFuture<'a, T>;
+
+#[cfg(not(target_family = "wasm"))]
 pub type SharedHttp = Arc<dyn crate::http::HttpClient + Send + Sync>;
+#[cfg(not(target_family = "wasm"))]
 pub type SharedAuth = Arc<dyn crate::http::AuthProvider + Send + Sync>;
+#[cfg(not(target_family = "wasm"))]
 pub type SharedPlatform = Arc<dyn crate::runtime::Platform + Send + Sync>;
+#[cfg(not(target_family = "wasm"))]
 pub type SharedPeer = Arc<dyn crate::peer::PeerTransport + Send + Sync>;
+
+#[cfg(target_family = "wasm")]
+pub type SharedHttp = Arc<dyn crate::http::HttpClient>;
+#[cfg(target_family = "wasm")]
+pub type SharedAuth = Arc<dyn crate::http::AuthProvider>;
+#[cfg(target_family = "wasm")]
+pub type SharedPlatform = Arc<dyn crate::runtime::Platform>;
+#[cfg(target_family = "wasm")]
+pub type SharedPeer = Arc<dyn crate::peer::PeerTransport>;
 
 /// SDK type reported in `client_info` when the binding does not override it.
 pub const DEFAULT_SDK_TYPE: &str = "rust";

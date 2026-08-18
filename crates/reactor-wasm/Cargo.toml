@@ -1,0 +1,52 @@
+[package]
+name        = "reactor-wasm"
+description = "WebAssembly binding for reactor-core: implements the host traits with browser APIs and exposes a wasm-bindgen client to JavaScript"
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+repository.workspace  = true
+
+[lib]
+name       = "reactor_wasm"
+# cdylib is what wasm-pack links; rlib keeps the crate usable from Rust.
+crate-type = ["cdylib", "rlib"]
+
+# Everything here is browser code. Under a non-wasm target the crate compiles to
+# nothing (see src/lib.rs), so the dependencies are declared per-target too and a
+# host-side `cargo check --workspace` never builds web-sys at all.
+[target.'cfg(target_family = "wasm")'.dependencies]
+reactor-core = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+async-trait  = { workspace = true }
+futures      = { workspace = true }
+log          = { workspace = true }
+
+wasm-bindgen         = "0.2.100"
+wasm-bindgen-futures = "0.4.50"
+js-sys               = "0.3.77"
+serde-wasm-bindgen   = "0.6.5"
+console_log          = "1.0"
+
+[target.'cfg(target_family = "wasm")'.dependencies.web-sys]
+version  = "0.3.77"
+features = [
+  # Logging
+  "console",
+  # Global scopes: the SDK runs on a page and in a worker.
+  "Window", "WorkerGlobalScope",
+  # fetch
+  "Headers", "Request", "RequestInit", "Response",
+  # RTCPeerConnection
+  "RtcPeerConnection", "RtcConfiguration", "RtcIceServer",
+  "RtcDataChannel", "RtcDataChannelInit", "RtcDataChannelState", "RtcDataChannelType",
+  "RtcSessionDescriptionInit", "RtcSdpType", "RtcSessionDescription",
+  "RtcPeerConnectionIceEvent", "RtcIceCandidate", "RtcIceCandidateInit",
+  "RtcTrackEvent", "RtcRtpTransceiver", "RtcRtpTransceiverDirection",
+  "RtcRtpTransceiverInit", "RtcRtpSender",
+  "RtcPeerConnectionState", "RtcIceGatheringState",
+  # Media + messaging
+  "MediaStream", "MediaStreamTrack", "MessageEvent",
+  # Uploads
+  "Blob", "File",
+]

@@ -72,7 +72,8 @@ impl HttpResponse {
 /// Implementations should return `Ok` for any response the server produced
 /// (including 4xx/5xx) and `Err` only for transport-level failures
 /// (DNS, connect, abort).
-#[async_trait::async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 pub trait HttpClient {
     async fn request(&self, request: HttpRequest) -> Result<HttpResponse, CoreError>;
 }
@@ -80,7 +81,8 @@ pub trait HttpClient {
 /// Yields the JWT to attach to a request, called once per request so hosts
 /// can lazily mint short-lived tokens. Return `Ok(None)` for unauthenticated
 /// (local development) setups.
-#[async_trait::async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 pub trait AuthProvider {
     async fn jwt(&self) -> Result<Option<String>, CoreError>;
 }
@@ -89,7 +91,8 @@ pub trait AuthProvider {
 #[derive(Debug, Clone, Default)]
 pub struct StaticAuth(pub Option<String>);
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl AuthProvider for StaticAuth {
     async fn jwt(&self) -> Result<Option<String>, CoreError> {
         Ok(self.0.clone())
