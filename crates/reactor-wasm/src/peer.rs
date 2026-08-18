@@ -97,30 +97,31 @@ impl WasmPeerTransport {
     }
 
     /// Attach a local `MediaStreamTrack` to a sendonly track's sender.
-    pub fn replace_sender_track(
+    /// Awaited rather than fired and forgotten: `replaceTrack` rejects on a kind
+    /// mismatch and on a closed sender, and a caller told its track was published
+    /// while nothing is on the wire has no way to find that out.
+    pub async fn replace_sender_track(
         &self,
         track_name: &str,
         track: Option<&MediaStreamTrack>,
     ) -> Result<(), CoreError> {
-        let state = self.state.borrow();
-        let state = state.as_ref().ok_or_else(not_prepared)?;
-        let transceiver = state
-            .transceivers
-            .get(track_name)
-            .ok_or_else(|| no_transceiver(track_name))?;
-        let promise = transceiver.sender().replace_track(track);
-        // replaceTrack resolves asynchronously and the trait method is sync;
-        // report a rejection rather than dropping it silently, since a failed
-        // attach means the app is publishing nothing at all.
-        let name = track_name.to_string();
-        wasm_bindgen_futures::spawn_local(async move {
-            if let Err(error) = JsFuture::from(promise).await {
-                log::error!(
-                    "[reactor-wasm] replaceTrack on '{name}' failed: {}",
-                    describe(&error)
-                );
-            }
-        });
+        // Take the promise and release the borrow before awaiting: the peer state
+        // is reachable from the callbacks that run while we wait.
+        let promise = {
+            let state = self.state.borrow();
+            let state = state.as_ref().ok_or_else(not_prepared)?;
+            let transceiver = state
+                .transceivers
+                .get(track_name)
+                .ok_or_else(|| no_transceiver(track_name))?;
+            transceiver.sender().replace_track(track)
+        };
+        JsFuture::from(promise).await.map_err(|error| {
+            CoreError::InvalidState(format!(
+                "replaceTrack on '{track_name}' failed: {}",
+                describe(&error)
+            ))
+        })?;
         Ok(())
     }
 

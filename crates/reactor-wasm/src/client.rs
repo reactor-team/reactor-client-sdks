@@ -9,7 +9,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::channel::mpsc;
+use futures::channel::{mpsc, oneshot};
+use futures::future::{FutureExt, Shared};
 use futures::StreamExt;
 use js_sys::Function;
 use serde::Deserialize;
@@ -17,9 +18,9 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 
 use reactor_core::backoff::PollConfig;
-use reactor_core::error::{CoreError, ErrorDetails};
+use reactor_core::error::{CoreError, ErrorDetails, ReactorError};
 use reactor_core::events::ReactorEvent;
-use reactor_core::peer::PeerEvent;
+use reactor_core::peer::{PeerEvent, PeerTransport};
 use reactor_core::protocol::upload::FileRef;
 use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions};
 
@@ -164,6 +165,22 @@ struct Callbacks {
 
 type SharedCallbacks = Rc<RefCell<Callbacks>>;
 
+/// Resolves when the client is dropped. Cloneable, so every task the client
+/// spawns can wait on the same signal.
+type Shutdown = Shared<oneshot::Receiver<()>>;
+
+/// Run `task` until it finishes or the client is dropped, whichever comes first.
+///
+/// Every one of these tasks holds the reactor, and the reactor holds the
+/// transport whose sender feeds the pump — a cycle that dropping the JS handle
+/// cannot break on its own. Cancelling them on shutdown is what lets the whole
+/// graph go.
+fn spawn_until_shutdown(shutdown: Shutdown, task: impl std::future::Future<Output = ()> + 'static) {
+    spawn_local(async move {
+        futures::future::select(Box::pin(task), shutdown).await;
+    });
+}
+
 /// Call a listener, if one is registered.
 ///
 /// A listener that throws is logged and swallowed: it is application code
@@ -208,6 +225,9 @@ pub struct ReactorClient {
     peer: Arc<WasmPeerTransport>,
     auth: Arc<WasmAuthProvider>,
     callbacks: SharedCallbacks,
+    /// Dropped by `Drop`, which is what ends the spawned tasks.
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    shutdown: Shutdown,
 }
 
 #[wasm_bindgen]
@@ -235,6 +255,9 @@ impl ReactorClient {
         auth.set(jwt.map(JsValue::from).unwrap_or(JsValue::UNDEFINED))
             .map_err(|e| error_value(&e.details(None)))?;
 
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let shutdown = shutdown_rx.shared();
+
         let (peer_event_tx, peer_event_rx) = mpsc::unbounded::<PeerEvent>();
         let peer = Arc::new(WasmPeerTransport::new(peer_event_tx));
         let callbacks: SharedCallbacks = Rc::new(RefCell::new(Callbacks::default()));
@@ -256,7 +279,7 @@ impl ReactorClient {
         {
             let reactor = reactor.clone();
             let mut peer_events = peer_event_rx;
-            spawn_local(async move {
+            spawn_until_shutdown(shutdown.clone(), async move {
                 while let Some(event) = peer_events.next().await {
                     reactor.handle_peer_event(event).await;
                 }
@@ -267,7 +290,7 @@ impl ReactorClient {
         {
             let mut events = reactor.subscribe();
             let callbacks = callbacks.clone();
-            spawn_local(async move {
+            spawn_until_shutdown(shutdown.clone(), async move {
                 while let Some(event) = events.next().await {
                     dispatch(&callbacks, event);
                 }
@@ -279,6 +302,8 @@ impl ReactorClient {
             peer,
             auth,
             callbacks,
+            shutdown_tx: Some(shutdown_tx),
+            shutdown,
         })
     }
 
@@ -407,17 +432,19 @@ impl ReactorClient {
             .map_err(|e| error_value(&e.details(Some("publishTrack"))))?;
         self.peer
             .replace_sender_track(&name, Some(&track))
+            .await
             .map_err(|e| error_value(&e.details(Some("publishTrack"))))
     }
 
     /// Stop sending on a published track and release it.
     #[wasm_bindgen(js_name = unpublishTrack)]
-    pub fn unpublish_track(&self, name: String) -> Result<(), JsValue> {
+    pub async fn unpublish_track(&self, name: String) -> Result<(), JsValue> {
         self.reactor
             .unpublish_track(&name)
             .map_err(|e| error_value(&e.details(Some("unpublishTrack"))))?;
         self.peer
             .replace_sender_track(&name, None)
+            .await
             .map_err(|e| error_value(&e.details(Some("unpublishTrack"))))
     }
 
@@ -641,7 +668,9 @@ impl ReactorClient {
     /// spawn-and-forget rather than something to cancel.
     fn start_heartbeat(&self) {
         let reactor = self.reactor.clone();
-        spawn_local(async move { reactor.run_heartbeat().await });
+        spawn_until_shutdown(self.shutdown.clone(), async move {
+            reactor.run_heartbeat().await
+        });
     }
 
     fn mid_of(&self, name: &str) -> Option<String> {
@@ -650,6 +679,23 @@ impl ReactorClient {
             .into_iter()
             .find(|entry| entry.name == name)
             .map(|entry| entry.mid)
+    }
+}
+
+impl Drop for ReactorClient {
+    fn drop(&mut self) {
+        // Ends the pump, the dispatcher and the heartbeat. Without it they keep
+        // the reactor — and the transport, the listeners and the token source
+        // with it — alive for the lifetime of the page.
+        drop(self.shutdown_tx.take());
+        // A freed client must also stop decoding media. Ending the *session* is
+        // still `disconnect()`'s job, which a holder should call first: tearing
+        // down a session because a handle was garbage collected would be a
+        // surprising thing for a free() to do over the network.
+        let peer = self.peer.clone();
+        spawn_local(async move {
+            let _ = peer.close().await;
+        });
     }
 }
 
@@ -738,15 +784,18 @@ fn optional_string(value: Option<String>) -> JsValue {
 /// A rejected call, as a JS `Error` that also carries the core's error details.
 ///
 /// A message alone would force the SDK back to matching on text, which is what
-/// the core's typed codes exist to end — so `code`, `recoverable`, `status`,
-/// `operation` and `retry_after_ms` ride along as own properties, under the same
-/// names the `onError` event uses.
+/// the core's typed codes exist to end. So the thrown error is stamped into a
+/// full `ReactorError` — the same type, with the same field names, that the
+/// `onError` event delivers, `timestamp_ms` included — and a caller can handle
+/// both through one code path.
 fn error_value(details: &ErrorDetails) -> JsValue {
     let error = js_sys::Error::new(&details.message);
     error.set_name("ReactorError");
-    // Copy the serialized details onto the Error rather than setting each field
-    // by hand, so a thrown error and an `onError` event use the same names.
-    if let Ok(serialized) = to_js(details) {
+    let record = ReactorError {
+        details: details.clone(),
+        timestamp_ms: js_sys::Date::now(),
+    };
+    if let Ok(serialized) = to_js(&record) {
         if let Some(serialized) = serialized.dyn_ref::<js_sys::Object>() {
             let _ = js_sys::Object::assign(error.unchecked_ref(), serialized);
         }

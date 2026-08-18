@@ -133,9 +133,13 @@ tokens need. `""` sends no `Authorization` header.
 **Keep-alive.** `connect()` and `reconnect()` spawn the core's heartbeat; it
 exits on its own when the connection ends or another connect starts.
 
-**Lifetime.** The client owns wasm-side memory, so a JS holder must
-`disconnect()` and then `free()` it (or use `Symbol.dispose`) when it is done —
-dropping the reference alone leaks the client and leaves its tasks parked.
+**Lifetime.** A JS holder should `disconnect()` and then `free()` the client (or
+use `Symbol.dispose`) when it is done. `free()` cancels the pump, the dispatcher
+and the heartbeat, and closes the peer connection, which is what lets the whole
+graph be collected — the tasks hold the reactor, and the reactor holds the
+transport whose sender feeds the pump, so nothing else can break that cycle.
+Ending the session stays `disconnect()`'s job: tearing one down because a handle
+was collected would be a surprising thing for a `free()` to do over the network.
 
 ## What lives above this crate
 
