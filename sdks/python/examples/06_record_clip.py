@@ -1,49 +1,48 @@
 #!/usr/bin/env python3
 """06 · Record a clip — capture what just happened, and download it.
 
-Baseline plus `request_clip`, which asks the runtime for the last N seconds of
-the session and answers with an HLS manifest. `download_clip` then fetches the
-segments and writes one file.
+`request_clip` asks the runtime for the last N seconds and answers with an HLS
+manifest; `download_clip` fetches the segments into one file. The bytes are
+MPEG-TS, hence `.ts` — remux with `ffmpeg -i clip.ts -c copy clip.mp4` if needed.
 
-    uv run python examples/06_record_clip.py --clip 5 --out clip.ts
+`request_recording()` is the same call for the whole session.
 
-`request_recording()` is the same call for the whole session instead of a window.
+    uv run python examples/06_record_clip.py [seconds] [out.ts]
 
-What lands on disk is interleaved MPEG-TS, which is why the default is `.ts`:
-ffplay, VLC and mpv play it as-is, and `ffmpeg -i clip.ts -c copy clip.mp4`
-remuxes it if that container is what you need. Naming it `.mp4` would be a lie
-that some tools pick a demuxer from.
-
-Docs:
-  Recordings       https://docs.reactor.inc/concepts/recordings
-  Clip (type)      https://docs.reactor.inc/sdk-reference/python/types#clip
+Docs: https://docs.reactor.inc/concepts/recordings
+      https://docs.reactor.inc/sdk-reference/python/types#clip
 """
 
 from __future__ import annotations
 
-import argparse
 import asyncio
+import os
+import sys
 from pathlib import Path
 
-import common
+import display
 
-from reactor_sdk import Reactor, download_clip
+from reactor_sdk import DEFAULT_API_URL, Reactor, download_clip
 
+API_KEY = os.environ.get("REACTOR_API_KEY")
+MODEL = os.environ.get("REACTOR_MODEL", "helios")
+SHOW = os.environ.get("REACTOR_SHOW") == "1"
 
-def flags(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--clip", type=float, default=5.0, help="seconds to capture (default: 5)")
-    parser.add_argument("--out", default="clip.ts", help="where to write it (default: clip.ts)")
+PROMPT = "a forest at dawn, sunbeams through the canopy"
+OUTPUT_TRACK = "main_video"
 
 
 async def main() -> None:
-    args = common.parse(__doc__, flags)
+    clip_seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 5.0
+    out = sys.argv[2] if len(sys.argv) > 2 else "clip.ts"
+    if not API_KEY and os.environ.get("REACTOR_LOCAL") != "1":
+        sys.exit("set REACTOR_API_KEY — https://www.reactor.inc/account/api-keys")
 
     reactor = Reactor(
-        model_name=args.model,
-        api_key=args.api_key,
-        jwt=args.jwt,
-        api_url=args.api_url,
-        local=args.local,
+        model_name=MODEL,
+        api_key=API_KEY,
+        api_url=os.environ.get("REACTOR_API_URL", DEFAULT_API_URL),
+        local=os.environ.get("REACTOR_LOCAL") == "1",
     )
 
     @reactor.on_status
@@ -57,11 +56,12 @@ async def main() -> None:
     async with reactor:
         await reactor.connect()
         print(f"session: {reactor.session_id}")
-        await common.bootstrap(reactor, args.model)
+        await reactor.send_command("set_prompt", {"prompt": PROMPT})
+        await reactor.send_command("start", {})
 
-        output = reactor.track(common.track_name(args.model, "output"))
+        output = reactor.track(OUTPUT_TRACK)
         frames = 0
-        window = common.display(args, f"{args.model} · {output.name}")
+        window = display.window(f"{MODEL} · {OUTPUT_TRACK}", enabled=SHOW)
 
         @output.on_raw_frame
         def count(data: bytes, width: int, height: int, *_: object) -> None:
@@ -69,22 +69,18 @@ async def main() -> None:
             frames += 1
             window.submit(data, width, height)
 
-        # There has to be something to capture: a clip is cut from what the
-        # runtime already produced, so asking before any frames exist gets you an
-        # empty window rather than an error.
-        await window.hold(max(args.clip, args.seconds))
+        # A clip is cut from what the runtime already produced, so wait for it.
+        await window.hold(clip_seconds + 5)
         print(f"frames: {frames}")
 
-        clip = await reactor.request_clip(args.clip)
+        clip = await reactor.request_clip(clip_seconds)
         print(f"clip: {clip.kind} {clip.playlist_url}")
         print(f"window: {clip.start_marker:.1f} → {clip.end_marker:.1f}")
 
-        # The manifest is ready before every segment is: the runtime says when it
-        # expects to be finished, and the download waits that out for you.
-        # `reactor.download_clip(seconds, path)` does the request and this in one
-        # call, for when the Clip itself is of no interest.
-        await download_clip(clip, args.out)
-        print(f"saved: {args.out} ({Path(args.out).stat().st_size // 1024} KB)")
+        # The manifest is ready before every segment is; this waits that out.
+        # `reactor.download_clip(seconds, path)` does both in one call.
+        await download_clip(clip, out)
+        print(f"saved: {out} ({Path(out).stat().st_size // 1024} KB)")
 
 
 if __name__ == "__main__":

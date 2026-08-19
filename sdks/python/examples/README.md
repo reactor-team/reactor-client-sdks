@@ -21,10 +21,14 @@ minimum it needs, receive frames — and adds one new call on top. The diff
 against 01 is the lesson.
 
 "The minimum it needs" is per model and not optional: Helios stays silent until
-`set_prompt` and then `start`; SANA-Streaming wants `start` too, and edits the
-live track rather than generating from nothing. Those sequences live in
-`common.py`, taken from the models' own published schemas — check there first
-when an example connects and no frame ever arrives.
+`set_prompt` and then `start`; SANA-Streaming wants `start` too, and edits the live
+track rather than generating from nothing. Each example spells its own out at the
+top, from the model's published schema — the first place to look when nothing
+arrives.
+
+Tracks are asked for by name, `reactor.track("main_video")`, the way an app that
+knows its model does. `reactor.tracks` lists what a session declared, for
+discovering them instead.
 
 ## Docs
 
@@ -57,77 +61,60 @@ cd sdks/python
 export REACTOR_API_KEY=rk_...
 
 uv run python examples/01_connect_and_receive.py
-uv run python examples/03_pause_and_resume.py --seconds 6
-uv run python examples/06_record_clip.py --clip 5 --out clip.ts
+uv run python examples/02_upload_image.py ref.png
+uv run python examples/06_record_clip.py 5 clip.ts
 ```
 
-Example 02 needs an image to condition on, and 04 needs a model with an input
-track, so it defaults to SANA-Streaming:
-
-```bash
-uv run python examples/02_upload_image.py --image ref.png
-uv run python examples/04_publish_track.py --seconds 10
-```
-
-Against a local runtime instead of the cloud, same files:
+04 needs a model with an input track, so it defaults to SANA-Streaming; the rest
+default to Helios. Against a local runtime, same files:
 
 ```bash
 REACTOR_LOCAL=1 REACTOR_MODEL=my-model uv run python examples/01_connect_and_receive.py
 ```
 
-A model this repo does not know gets `set_prompt` and nothing else, which is
-right for most of them. If yours needs something else first, add it to
-`BOOTSTRAP` in `common.py`.
+Pointing one at another model means editing the constants at the top — which is
+the point: they are in the file you are already reading.
 
 ## Seeing the frames
 
-Every example receives video, and a frame count proves that something arrived —
-not that it was the right something. `--show` puts the stream in a window:
+A frame count proves something arrived, not that it was the right something.
+`REACTOR_SHOW=1` puts the stream in a window:
 
 ```bash
 pip install pygame
-uv run python examples/01_connect_and_receive.py --show
+REACTOR_SHOW=1 uv run python examples/01_connect_and_receive.py
 ```
 
-Two of them show two tiles side by side, which is where the flag earns its keep:
-04 puts what you push next to what the model sends back, and 05 puts the
-creator's stream next to the joiner's. In 03 the paused phase is a frozen frame
-you can watch stop and start.
+04 and 05 show two tiles: what you push beside what comes back, and the creator's
+stream beside the joiner's. In 03 the paused phase is a frozen frame. Closing the
+window ends the run.
 
-Closing the window ends the run early. Without the flag nothing changes and
-nothing extra is needed — the window lives in `common.py` and each example spends
-two lines on it.
+## Configuration
 
-Every example takes `--help`. Options come from flags, falling back to the
-environment:
+Environment only — each example reads what it needs at the top of the file:
 
-| Variable | Meaning |
+| Variable | |
 |---|---|
-| `REACTOR_API_KEY` | API key, exchanged for a session-scoped token at connect time |
-| `REACTOR_JWT` | a token to use as-is, instead of an API key |
-| `REACTOR_MODEL` | model to connect to (default: `helios`) |
+| `REACTOR_API_KEY` | required, unless `REACTOR_LOCAL=1` |
+| `REACTOR_JWT` | a token to use as-is instead |
+| `REACTOR_MODEL` | overrides the model the example defaults to |
 | `REACTOR_API_URL` | coordinator base URL |
-| `REACTOR_LOCAL` | `1` to talk to a local runtime |
+| `REACTOR_LOCAL` | `1` for a local runtime |
+| `REACTOR_SECONDS` | how long to hold the session |
+| `REACTOR_SHOW` | `1` for the window |
 
-Tracks are asked for by name — `reactor.track("main_video")` — the way an app that
-knows its model does, and the way the model's own schema page reads. The names sit
-in `common.py` next to the bootstrap, since which track a model declares is the
-same kind of fact as which command it takes. `reactor.tracks` lists what a session
-declared, for discovering them at runtime instead.
+Two examples take an argument: `02 <image>` and `06 [seconds] [out.ts]`.
 
-Frames are read with `on_raw_frame`, which hands over the decoded BGRA bytes and
-needs nothing installed — the window draws those bytes directly, so even `--show`
-needs no numpy. `on_frame` delivers the same frames as a numpy array if you would
-rather have one.
+Frames are read with `on_raw_frame` — decoded BGRA bytes, no numpy, which is also
+what the window draws. `on_frame` gives the same frames as numpy arrays.
 
-## What lives in `common.py`
+## What is shared
 
-Options parsing, the per-model bootstrap (which command, which prompt, which
-track), the throwaway frames two examples push, and the `--show` window. Nothing else:
-connecting, wiring events and tearing down stay in every example, even though
-that repeats them, because they are what you opened the file to read.
+`display.py`, and nothing else. It is ~120 lines of pygame that teach nothing
+about the SDK, identical in every example, and needed only by someone who asked
+to see the frames.
 
-The one exception is example 02: which command carries an image, and under what
-name, is model trivia — but `upload_file` is an SDK capability, and a capability
-buried in a helper is one nobody sees and nobody tests. So that whole sequence is
-in the example, spelled out.
+Everything else is in the example: which command the model needs, which track it
+emits on, which prompt goes out, how the client is built. A helper that answered
+those would be a helper that hid the lesson — and an example you have to read two
+files to understand is one file too many.

@@ -1,34 +1,43 @@
 #!/usr/bin/env python3
 """03 · Pause and resume — stop a track, then start it again.
 
-Baseline plus `track.pause()` and `track.resume()`. Frames are counted per phase,
-so the middle count being zero is the whole point.
+Frames are counted per phase; the middle count being zero is the point. Pausing
+tells the runtime to stop producing, so it is not a local mute.
 
-    uv run python examples/03_pause_and_resume.py --seconds 6
+    uv run python examples/03_pause_and_resume.py
 
-Docs:
-  Tracks       https://docs.reactor.inc/concepts/tracks
-  Track (API)  https://docs.reactor.inc/sdk-reference/python/track
+Docs: https://docs.reactor.inc/concepts/tracks
+      https://docs.reactor.inc/sdk-reference/python/track
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 
-import common
+import display
 
-from reactor_sdk import Reactor
+from reactor_sdk import DEFAULT_API_URL, Reactor
+
+API_KEY = os.environ.get("REACTOR_API_KEY")
+MODEL = os.environ.get("REACTOR_MODEL", "helios")
+SECONDS = float(os.environ.get("REACTOR_SECONDS", "6"))
+SHOW = os.environ.get("REACTOR_SHOW") == "1"
+
+PROMPT = "a forest at dawn, sunbeams through the canopy"
+OUTPUT_TRACK = "main_video"
 
 
 async def main() -> None:
-    args = common.parse(__doc__)
+    if not API_KEY and os.environ.get("REACTOR_LOCAL") != "1":
+        sys.exit("set REACTOR_API_KEY — https://www.reactor.inc/account/api-keys")
 
     reactor = Reactor(
-        model_name=args.model,
-        api_key=args.api_key,
-        jwt=args.jwt,
-        api_url=args.api_url,
-        local=args.local,
+        model_name=MODEL,
+        api_key=API_KEY,
+        api_url=os.environ.get("REACTOR_API_URL", DEFAULT_API_URL),
+        local=os.environ.get("REACTOR_LOCAL") == "1",
     )
 
     @reactor.on_status
@@ -42,13 +51,12 @@ async def main() -> None:
     async with reactor:
         await reactor.connect()
         print(f"session: {reactor.session_id}")
-        await common.bootstrap(reactor, args.model)
+        await reactor.send_command("set_prompt", {"prompt": PROMPT})
+        await reactor.send_command("start", {})
 
-        output = reactor.track(common.track_name(args.model, "output"))
-        print(f"track: {output.name}")
-
+        output = reactor.track(OUTPUT_TRACK)
         frames = 0
-        window = common.display(args, f"{args.model} · {output.name}")
+        window = display.window(f"{MODEL} · {OUTPUT_TRACK}", enabled=SHOW)
 
         @output.on_raw_frame
         def count(data: bytes, width: int, height: int, *_: object) -> None:
@@ -59,28 +67,18 @@ async def main() -> None:
         async def phase(label: str) -> int:
             nonlocal frames
             frames = 0
-            # Under `--show` the paused phase is the visible one: the last frame
-            # stays on screen, frozen, until the track is resumed.
-            await window.hold(args.seconds)
+            # With a window, the paused phase is a frozen frame you watch.
+            await window.hold(SECONDS)
             print(f"frames {label}: {frames}")
             return frames
 
         await phase("receiving")
 
-        # Pausing sets the receiver inactive and tells the runtime to stop
-        # producing, so this is not just a local mute: nothing is generated,
-        # nothing is sent, nothing is billed.
-        #
-        # Distinct from any `pause` *command* a model happens to expose (Helios
-        # has one, which suspends generation between chunks — see its schema at
-        # https://docs.reactor.inc/model-api-reference/helios/schema). This is
-        # the transport-level control every model has, whatever it calls its own.
+        # Transport-level, and separate from any `pause` command a model exposes.
         await output.pause()
-        print(f"paused: {output.paused}")
         during_pause = await phase("while paused")
 
         await output.resume()
-        print(f"paused: {output.paused}")
         await phase("after resume")
 
         if during_pause:

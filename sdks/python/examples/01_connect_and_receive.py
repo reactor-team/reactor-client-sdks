@@ -1,39 +1,47 @@
 #!/usr/bin/env python3
-"""01 · Connect, prompt, receive — the baseline every other example builds on.
+"""01 · Connect, prompt, receive — the baseline the other examples build on.
 
-Creates a client, connects, sends the one command the model needs, reads the
-reply back, and counts frames off the output track.
+    export REACTOR_API_KEY=rk_...
+    uv run python examples/01_connect_and_receive.py
 
-    uv run python examples/01_connect_and_receive.py --seconds 15
+    REACTOR_SHOW=1    show the video in a window (needs pygame)
+    REACTOR_LOCAL=1   use a local runtime instead of the cloud
 
-Options come from flags or from REACTOR_MODEL / REACTOR_API_URL /
-REACTOR_API_KEY / REACTOR_JWT / REACTOR_LOCAL.
-
-Docs:
-  Using the SDK       https://docs.reactor.inc/sdk-reference/using-the-sdk
-  Sessions            https://docs.reactor.inc/concepts/sessions
-  Commands & messages https://docs.reactor.inc/concepts/commands-and-messages
-  Helios              https://docs.reactor.inc/model-api-reference/helios/overview
+Docs: https://docs.reactor.inc/sdk-reference/using-the-sdk
+      https://docs.reactor.inc/concepts/sessions
+      https://docs.reactor.inc/concepts/commands-and-messages
+      https://docs.reactor.inc/model-api-reference/helios/schema
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 
-import common
+import display
 
-from reactor_sdk import Reactor
+from reactor_sdk import DEFAULT_API_URL, Reactor
+
+API_KEY = os.environ.get("REACTOR_API_KEY")
+MODEL = os.environ.get("REACTOR_MODEL", "helios")
+SECONDS = float(os.environ.get("REACTOR_SECONDS", "15"))
+SHOW = os.environ.get("REACTOR_SHOW") == "1"
+
+# Helios emits nothing until `start`, and `start` refuses without a prompt.
+PROMPT = "a forest at dawn, sunbeams through the canopy"
+OUTPUT_TRACK = "main_video"
 
 
 async def main() -> None:
-    args = common.parse(__doc__)
+    if not API_KEY and os.environ.get("REACTOR_LOCAL") != "1":
+        sys.exit("set REACTOR_API_KEY — https://www.reactor.inc/account/api-keys")
 
     reactor = Reactor(
-        model_name=args.model,
-        api_key=args.api_key,
-        jwt=args.jwt,
-        api_url=args.api_url,
-        local=args.local,
+        model_name=MODEL,
+        api_key=API_KEY,
+        api_url=os.environ.get("REACTOR_API_URL", DEFAULT_API_URL),
+        local=os.environ.get("REACTOR_LOCAL") == "1",
     )
 
     @reactor.on_status
@@ -44,37 +52,25 @@ async def main() -> None:
     def failed(error: Exception) -> None:
         print(f"error: {error}")
 
-    # Where a model's own answers arrive. A command's return value is its
-    # correlated reply, and most handlers return nothing — what they emit
-    # instead (`prompt_accepted`, `generation_started`, …) comes through here.
-    # https://docs.reactor.inc/concepts/commands-and-messages
+    # Most handlers return nothing and answer with a message instead.
     @reactor.on_message
     def message(msg: dict) -> None:
         print(f"message: {msg}")
 
-    # The context manager disconnects and releases the native client on the way
-    # out, including when the body raises — which also ends the session, so a
-    # crash does not leave one running on the platform.
+    # Disconnects and releases the client on the way out, even if the body raises.
     async with reactor:
         await reactor.connect()
         print(f"session: {reactor.session_id}")
 
-        # What this model needs before it emits anything. For Helios that is a
-        # prompt and then `start`; a model that begins on its own needs neither.
-        await common.bootstrap(reactor, args.model)
+        print(f"set_prompt -> {await reactor.send_command('set_prompt', {'prompt': PROMPT})}")
+        print(f"start -> {await reactor.send_command('start', {})}")
 
-        # By name, the way an app knows it: the model's schema declares
-        # `main_video`, and `reactor.tracks` lists what this session declared if
-        # you would rather look.
-        # https://docs.reactor.inc/concepts/tracks#output-tracks-model-to-app
-        output = reactor.track(common.track_name(args.model, "output"))
-        print(f"track: {output.name}")
-
+        # By name, as the model's schema declares it. `reactor.tracks` lists them.
+        output = reactor.track(OUTPUT_TRACK)
         frames = 0
-        window = common.display(args, f"{args.model} · {output.name}")
+        window = display.window(f"{MODEL} · {OUTPUT_TRACK}", enabled=SHOW)
 
-        # on_raw_frame hands over the bytes WebRTC decoded (BGRA) and needs
-        # nothing installed. on_frame is the same frames as a numpy array.
+        # Decoded BGRA bytes, no numpy. `on_frame` gives the same frames as arrays.
         @output.on_raw_frame
         def count(data: bytes, width: int, height: int, *_: object) -> None:
             nonlocal frames
@@ -83,8 +79,8 @@ async def main() -> None:
                 print(f"first frame: {width}x{height}")
             window.submit(data, width, height)
 
-        # `--show` puts these on screen; without it this is a plain sleep.
-        await window.hold(args.seconds)
+        # Sleeps, and draws while it waits when there is a window.
+        await window.hold(SECONDS)
         print(f"frames: {frames}")
 
 

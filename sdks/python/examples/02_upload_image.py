@@ -1,46 +1,47 @@
 #!/usr/bin/env python3
 """02 · Upload an image — conditioning a model on a file.
 
-`upload_file` puts bytes in the session's own store and hands back a `FileRef`.
-Pass that reference into a command as a value and the model receives the file;
-the SDK lifts it into the envelope's uploads section on the way out.
+`upload_file` returns a `FileRef`; pass it into a command as a value and the
+model receives the file. Helios takes prompt and image together through
+`set_conditioning` so `start` cannot observe a half-set session.
 
-    uv run python examples/02_upload_image.py --image ref.png
+    uv run python examples/02_upload_image.py ref.png
 
-Helios takes prompt and image together through `set_conditioning`, which its
-schema recommends over separate `set_prompt` and `set_image` calls: the pair
-cannot be split across the wire, so `start` can never observe a half-set session.
-That race is the reason this command exists, and the reason this example uses it.
-
-Docs:
-  File uploads    https://docs.reactor.inc/concepts/file-uploads
-  The FileRef     https://docs.reactor.inc/concepts/file-uploads#the-fileref-type
-  Helios commands https://docs.reactor.inc/model-api-reference/helios/schema
+Docs: https://docs.reactor.inc/concepts/file-uploads
+      https://docs.reactor.inc/model-api-reference/helios/schema
 """
 
 from __future__ import annotations
 
-import argparse
 import asyncio
+import os
+import sys
 
-import common
+import display
 
-from reactor_sdk import Reactor
+from reactor_sdk import DEFAULT_API_URL, Reactor
 
+API_KEY = os.environ.get("REACTOR_API_KEY")
+MODEL = os.environ.get("REACTOR_MODEL", "helios")
+SECONDS = float(os.environ.get("REACTOR_SECONDS", "15"))
+SHOW = os.environ.get("REACTOR_SHOW") == "1"
 
-def flags(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--image", required=True, help="reference image to condition on")
+PROMPT = "the same scene at night, lit by a campfire"
+OUTPUT_TRACK = "main_video"
 
 
 async def main() -> None:
-    args = common.parse(__doc__, flags)
+    if len(sys.argv) != 2:
+        sys.exit(f"usage: {sys.argv[0]} <image>")
+    image = sys.argv[1]
+    if not API_KEY and os.environ.get("REACTOR_LOCAL") != "1":
+        sys.exit("set REACTOR_API_KEY — https://www.reactor.inc/account/api-keys")
 
     reactor = Reactor(
-        model_name=args.model,
-        api_key=args.api_key,
-        jwt=args.jwt,
-        api_url=args.api_url,
-        local=args.local,
+        model_name=MODEL,
+        api_key=API_KEY,
+        api_url=os.environ.get("REACTOR_API_URL", DEFAULT_API_URL),
+        local=os.environ.get("REACTOR_LOCAL") == "1",
     )
 
     @reactor.on_status
@@ -51,9 +52,7 @@ async def main() -> None:
     def failed(error: Exception) -> None:
         print(f"error: {error}")
 
-    # `image_accepted` says the model decoded the file and at what size;
-    # `command_error` says it refused it. Either way it arrives as a message
-    # rather than as the command's return value.
+    # A refused upload arrives as `command_error`, not as a failed call.
     @reactor.on_message
     def message(msg: dict) -> None:
         print(f"message: {msg}")
@@ -62,21 +61,17 @@ async def main() -> None:
         await reactor.connect()
         print(f"session: {reactor.session_id}")
 
-        # Only callable once the session is ready: the bytes go to that session's
-        # store, and the runtime is told about them on the control channel. Name
-        # and MIME type are inferred from the path unless given.
-        uploaded = await reactor.upload_file(args.image)
+        # Needs a ready session: the bytes go to that session's store. Name and
+        # MIME type are inferred from the path.
+        uploaded = await reactor.upload_file(image)
         print(f"uploaded: {uploaded.name} {uploaded.mime_type} ({uploaded.size} bytes)")
-        print(f"upload_id: {uploaded.upload_id}")
 
-        # The FileRef as a plain argument value — no encoding, no second call.
-        await reactor.send_command("set_conditioning", {"prompt": common.PROMPT, "image": uploaded})
-        # Conditioning set atomically, so this cannot arrive too early.
+        await reactor.send_command("set_conditioning", {"prompt": PROMPT, "image": uploaded})
         await reactor.send_command("start", {})
 
-        output = reactor.track(common.track_name(args.model, "output"))
+        output = reactor.track(OUTPUT_TRACK)
         frames = 0
-        window = common.display(args, f"{args.model} · conditioned on {uploaded.name}")
+        window = display.window(f"{MODEL} · {uploaded.name}", enabled=SHOW)
 
         @output.on_raw_frame
         def count(data: bytes, width: int, height: int, *_: object) -> None:
@@ -84,9 +79,7 @@ async def main() -> None:
             frames += 1
             window.submit(data, width, height)
 
-        # With `--show`, whether the image took is a thing you can see rather
-        # than a number you have to trust.
-        await window.hold(args.seconds)
+        await window.hold(SECONDS)
         print(f"frames: {frames}")
 
 

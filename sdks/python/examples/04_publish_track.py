@@ -1,45 +1,56 @@
 #!/usr/bin/env python3
 """04 · Publish a track — sending media into a model.
 
-sana-streaming transforms what you stream at it: publish its `camera` input
-track, push frames in, and the edited version comes back on the output track.
-Publishing is what puts a sender behind the slot — pushing a frame before that
-raises rather than dropping it silently.
+SANA-Streaming edits what you stream at it: publish its `camera` track, push
+frames, and the edited result comes back on `main_video`. Publishing is what puts
+a sender behind the slot — pushing before it raises.
 
-    uv run python examples/04_publish_track.py --seconds 10
+Frames go out tagged with `user_data`; example 07 reads the trailer.
 
-Frames go out tagged. It costs one argument and it is the only way to match a
-frame you sent against whatever comes back — see 07 for the reading side.
+    uv run python examples/04_publish_track.py
 
-Docs:
-  Input tracks    https://docs.reactor.inc/concepts/tracks#input-tracks-app-to-model
-  Frame metadata  https://docs.reactor.inc/concepts/frame-metadata
-  SANA-Streaming  https://docs.reactor.inc/model-api-reference/sana-streaming/overview
-  Its commands    https://docs.reactor.inc/model-api-reference/sana-streaming/schema
+Docs: https://docs.reactor.inc/concepts/tracks#input-tracks-app-to-model
+      https://docs.reactor.inc/concepts/frame-metadata
+      https://docs.reactor.inc/model-api-reference/sana-streaming/schema
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 import time
 
-import common
+import display
 
-from reactor_sdk import Reactor
+from reactor_sdk import DEFAULT_API_URL, Reactor
 
-# The model takes the client stream at whatever size it is sent.
+API_KEY = os.environ.get("REACTOR_API_KEY")
+MODEL = os.environ.get("REACTOR_MODEL", "sana-streaming")
+SECONDS = float(os.environ.get("REACTOR_SECONDS", "15"))
+SHOW = os.environ.get("REACTOR_SHOW") == "1"
+
+PROMPT = "make it look like a watercolour painting"
+INPUT_TRACK = "camera"
+OUTPUT_TRACK = "main_video"
 WIDTH, HEIGHT, FPS = 640, 360, 15
 
 
+def frame(seq: int) -> bytes:
+    """A solid BGRA frame whose colour follows `seq` — an encoder fed identical
+    frames sends almost nothing."""
+    return bytes([seq * 7 % 256, seq * 13 % 256, seq * 29 % 256, 255]) * (WIDTH * HEIGHT)
+
+
 async def main() -> None:
-    args = common.parse(__doc__, default_model="sana-streaming")
+    if not API_KEY and os.environ.get("REACTOR_LOCAL") != "1":
+        sys.exit("set REACTOR_API_KEY — https://www.reactor.inc/account/api-keys")
 
     reactor = Reactor(
-        model_name=args.model,
-        api_key=args.api_key,
-        jwt=args.jwt,
-        api_url=args.api_url,
-        local=args.local,
+        model_name=MODEL,
+        api_key=API_KEY,
+        api_url=os.environ.get("REACTOR_API_URL", DEFAULT_API_URL),
+        local=os.environ.get("REACTOR_LOCAL") == "1",
     )
 
     @reactor.on_status
@@ -50,10 +61,6 @@ async def main() -> None:
     def failed(error: Exception) -> None:
         print(f"error: {error}")
 
-    # `prompt_accepted`, `generation_started` and `command_error` arrive here — a
-    # rejected command is a message, not a failed call, so a client that ignores
-    # messages sees nothing wrong.
-    # https://docs.reactor.inc/concepts/commands-and-messages
     @reactor.on_message
     def message(msg: dict) -> None:
         print(f"message: {msg}")
@@ -62,20 +69,19 @@ async def main() -> None:
         await reactor.connect()
         print(f"session: {reactor.session_id}")
 
-        # The input slot, by the name the model's schema gives it.
-        source = reactor.track(common.track_name(args.model, "input"))
-        print(f"publishing: {source.name}")
+        source = reactor.track(INPUT_TRACK)
         await source.publish()
+        print(f"publishing: {source.name}")
 
-        # Publish first, then tell the model to begin: it transforms the live
-        # track, so starting before there is a sender to read from buys nothing.
-        await common.bootstrap(reactor, args.model)
+        # Publish first: the model transforms a live track, so starting with no
+        # sender behind the slot buys nothing.
+        await reactor.send_command("set_prompt", {"prompt": PROMPT})
+        await reactor.send_command("start", {})
 
-        output = reactor.track(common.track_name(args.model, "output"))
+        output = reactor.track(OUTPUT_TRACK)
         received = 0
-        # Two tiles: what goes out on the left, what the model sends back on the
-        # right. Side by side is the only way to see that the edit landed.
-        window = common.display(args, f"{args.model} · sent | received", tiles=2)
+        # Two tiles: what goes out, and what comes back.
+        window = display.window(f"{MODEL} · sent | received", tiles=2, enabled=SHOW)
 
         @output.on_raw_frame
         def count(data: bytes, width: int, height: int, *_: object) -> None:
@@ -84,22 +90,15 @@ async def main() -> None:
             window.submit(data, width, height, tile=1)
 
         sent = 0
-        deadline = time.monotonic() + args.seconds
+        deadline = time.monotonic() + SECONDS
         while time.monotonic() < deadline and not window.closed:
-            # `user_data` rides along with the frame as its metadata. Anything
-            # goes — a sequence number here, so a frame can be identified later.
-            # https://docs.reactor.inc/concepts/frame-metadata
-            outgoing = common.frame(sent, WIDTH, HEIGHT)
+            outgoing = frame(sent)
             source.push_frame(
-                outgoing,
-                width=WIDTH,
-                height=HEIGHT,
-                user_data=f"seq={sent}".encode(),
+                outgoing, width=WIDTH, height=HEIGHT, user_data=f"seq={sent}".encode()
             )
             window.submit(outgoing, WIDTH, HEIGHT, tile=0)
             sent += 1
-            # Paces the push loop, and draws while it waits when there is a
-            # window — a plain sleep here would leave it frozen.
+            # Paces the loop, and draws while it waits.
             await window.hold(1 / FPS)
 
         source.unpublish()

@@ -1,46 +1,50 @@
 #!/usr/bin/env python3
 """07 · Frame metadata — what arrives alongside the pixels.
 
-Every decoded frame can carry a trailer the sender attached: a frame id, a
-wall-clock timestamp, and arbitrary bytes of its own. `on_raw_frame` hands all of
-it over; a frame with no trailer arrives with zeros and empty bytes instead.
+Every decoded frame can carry a trailer: a frame id, the sender's wall-clock
+timestamp, and arbitrary bytes. A frame without one arrives as zeros and empty
+bytes. The timestamps are the sender's clock, so they measure the model's pacing
+rather than the network's.
 
-    uv run python examples/07_frame_metadata.py --seconds 10
+`user_data` is empty unless the model mirrors it back, and no published model does
+today; example 04 shows the sending side.
 
-The timestamps are what makes this more than trivia: they are the sender's clock,
-so they measure the model's own pacing rather than the network's — two frames
-that arrive together were not necessarily produced together.
+Native-only: a browser gets a MediaStreamTrack with no per-frame hook.
 
-`user_data` is empty unless the model puts it there: a model that derives its
-output from your frame can mirror the bytes back, and none of the published ones
-does today. 04 shows the sending side of the same field.
+    uv run python examples/07_frame_metadata.py
 
-Native-only: a browser hands JS a MediaStreamTrack with no per-frame hook, so
-there is no JS counterpart to this example.
-
-Docs:
-  Frame metadata  https://docs.reactor.inc/concepts/frame-metadata
-  Track (API)     https://docs.reactor.inc/sdk-reference/python/track
+Docs: https://docs.reactor.inc/concepts/frame-metadata
+      https://docs.reactor.inc/sdk-reference/python/track
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 
-import common
+import display
 
-from reactor_sdk import Reactor
+from reactor_sdk import DEFAULT_API_URL, Reactor
+
+API_KEY = os.environ.get("REACTOR_API_KEY")
+MODEL = os.environ.get("REACTOR_MODEL", "helios")
+SECONDS = float(os.environ.get("REACTOR_SECONDS", "10"))
+SHOW = os.environ.get("REACTOR_SHOW") == "1"
+
+PROMPT = "a forest at dawn, sunbeams through the canopy"
+OUTPUT_TRACK = "main_video"
 
 
 async def main() -> None:
-    args = common.parse(__doc__)
+    if not API_KEY and os.environ.get("REACTOR_LOCAL") != "1":
+        sys.exit("set REACTOR_API_KEY — https://www.reactor.inc/account/api-keys")
 
     reactor = Reactor(
-        model_name=args.model,
-        api_key=args.api_key,
-        jwt=args.jwt,
-        api_url=args.api_url,
-        local=args.local,
+        model_name=MODEL,
+        api_key=API_KEY,
+        api_url=os.environ.get("REACTOR_API_URL", DEFAULT_API_URL),
+        local=os.environ.get("REACTOR_LOCAL") == "1",
     )
 
     @reactor.on_status
@@ -51,21 +55,18 @@ async def main() -> None:
     def failed(error: Exception) -> None:
         print(f"error: {error}")
 
+    with_trailer = without_trailer = tagged = 0
+    previous: int | None = None
+    gaps: list[int] = []
+
     async with reactor:
         await reactor.connect()
         print(f"session: {reactor.session_id}")
-        await common.bootstrap(reactor, args.model)
+        await reactor.send_command("set_prompt", {"prompt": PROMPT})
+        await reactor.send_command("start", {})
 
-        output = reactor.track(common.track_name(args.model, "output"))
-        print(f"track: {output.name}")
-
-        window = common.display(args, f"{args.model} · {output.name}")
-
-        with_trailer = 0
-        without_trailer = 0
-        tagged = 0
-        previous_timestamp: int | None = None
-        gaps: list[int] = []
+        output = reactor.track(OUTPUT_TRACK)
+        window = display.window(f"{MODEL} · {OUTPUT_TRACK}", enabled=SHOW)
 
         @output.on_raw_frame
         def inspect(
@@ -76,37 +77,31 @@ async def main() -> None:
             timestamp_us: int,
             user_data: bytes,
         ) -> None:
-            nonlocal with_trailer, without_trailer, tagged, previous_timestamp
+            nonlocal with_trailer, without_trailer, tagged, previous
             window.submit(data, width, height)
-            # No trailer at all looks like this: the ids and the timestamp are
-            # zero and there are no bytes. Worth checking before trusting either.
+
+            # No trailer at all: ids and timestamp zero, no bytes.
             if not frame_id and not timestamp_us and not user_data:
                 without_trailer += 1
                 return
 
             with_trailer += 1
-            if user_data:
-                tagged += 1
-            if previous_timestamp is not None and timestamp_us > previous_timestamp:
-                gaps.append(timestamp_us - previous_timestamp)
-            previous_timestamp = timestamp_us
+            tagged += bool(user_data)
+            if previous is not None and timestamp_us > previous:
+                gaps.append(timestamp_us - previous)
+            previous = timestamp_us
 
             if with_trailer <= 3:
-                print(
-                    f"frame {frame_id}: {width}x{height} "
-                    f"at {timestamp_us} us, user_data={user_data!r}"
-                )
+                print(f"frame {frame_id}: {width}x{height} at {timestamp_us} us, {user_data!r}")
 
-        await window.hold(args.seconds)
+        await window.hold(SECONDS)
 
     print(f"frames with a trailer: {with_trailer}")
     print(f"frames without one: {without_trailer}")
     print(f"frames carrying user_data: {tagged}")
     if gaps:
-        ordered = sorted(gaps)
-        median_us = ordered[len(ordered) // 2]
-        print(f"sender cadence: median {median_us / 1000:.1f} ms between frames")
-        print(f"                {1_000_000 / median_us:.1f} fps as the sender timed it")
+        median = sorted(gaps)[len(gaps) // 2]
+        print(f"sender cadence: {median / 1000:.1f} ms median, {1_000_000 / median:.1f} fps")
 
 
 if __name__ == "__main__":

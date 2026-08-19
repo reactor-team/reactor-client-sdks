@@ -1,43 +1,43 @@
 #!/usr/bin/env python3
 """05 · Multi-connection and session adoption — two clients, one session.
 
-The first client creates the session; the second joins the one that already
-exists by passing its id. Both receive the same stream. Only the creator ends
-the session on disconnect — an adopting client tears down its own transport and
-leaves the session alone, which is what makes this safe to do from a browser tab
-that may close at any moment.
+The first client creates the session; the second joins it by id. Only the creator
+ends it on disconnect, which is what makes adoption safe from a tab that may
+close at any moment. A backend-created session is the same story.
 
-    uv run python examples/05_multi_connection.py --seconds 10
+    uv run python examples/05_multi_connection.py
 
-A backend that created the session server-side is the same story: hand the id to
-whoever should watch, and they adopt it exactly like this.
-
-Docs:
-  Multiple connections per session
-      https://docs.reactor.inc/concepts/sessions#multiple-connections-per-session
-  Adopting an existing session
+Docs: https://docs.reactor.inc/concepts/sessions#multiple-connections-per-session
       https://docs.reactor.inc/concepts/sessions#adopting-an-existing-session
-  Who owns the session
       https://docs.reactor.inc/concepts/sessions#who-owns-the-session
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 from collections.abc import Callable
 
-import common
+import display
 
-from reactor_sdk import Reactor
+from reactor_sdk import DEFAULT_API_URL, Reactor
+
+API_KEY = os.environ.get("REACTOR_API_KEY")
+MODEL = os.environ.get("REACTOR_MODEL", "helios")
+SECONDS = float(os.environ.get("REACTOR_SECONDS", "10"))
+SHOW = os.environ.get("REACTOR_SHOW") == "1"
+
+PROMPT = "a forest at dawn, sunbeams through the canopy"
+OUTPUT_TRACK = "main_video"
 
 
-def client(args, label: str) -> Reactor:
+def client(label: str) -> Reactor:
     reactor = Reactor(
-        model_name=args.model,
-        api_key=args.api_key,
-        jwt=args.jwt,
-        api_url=args.api_url,
-        local=args.local,
+        model_name=MODEL,
+        api_key=API_KEY,
+        api_url=os.environ.get("REACTOR_API_URL", DEFAULT_API_URL),
+        local=os.environ.get("REACTOR_LOCAL") == "1",
     )
 
     @reactor.on_status
@@ -51,43 +51,38 @@ def client(args, label: str) -> Reactor:
     return reactor
 
 
-def count_frames(reactor: Reactor, model: str, label: str, window, tile: int) -> Callable[[], int]:
-    output = reactor.track(common.track_name(model, "output"))
+def count_frames(reactor: Reactor, window, tile: int) -> Callable[[], int]:
     frames = 0
 
-    @output.on_raw_frame
+    @reactor.track(OUTPUT_TRACK).on_raw_frame
     def count(data: bytes, width: int, height: int, *_: object) -> None:
         nonlocal frames
         frames += 1
         window.submit(data, width, height, tile=tile)
 
-    print(f"[{label}] track: {output.name}")
     return lambda: frames
 
 
 async def main() -> None:
-    args = common.parse(__doc__)
+    if not API_KEY and os.environ.get("REACTOR_LOCAL") != "1":
+        sys.exit("set REACTOR_API_KEY — https://www.reactor.inc/account/api-keys")
 
-    creator = client(args, "creator")
-    joiner = client(args, "joiner")
-
+    creator, joiner = client("creator"), client("joiner")
     # One tile per client: the same session, arriving twice.
-    window = common.display(args, f"{args.model} · creator | joiner", tiles=2)
+    window = display.window(f"{MODEL} · creator | joiner", tiles=2, enabled=SHOW)
 
     async with creator, joiner:
         await creator.connect()
-        session = creator.session_id
-        print(f"session: {session}")
-        await common.bootstrap(creator, args.model)
-        creator_frames = count_frames(creator, args.model, "creator", window, tile=0)
+        print(f"session: {creator.session_id}")
+        await creator.send_command("set_prompt", {"prompt": PROMPT})
+        await creator.send_command("start", {})
+        creator_frames = count_frames(creator, window, tile=0)
 
-        # Same session, second transport. The id is the whole handoff: no
-        # coordination between the two clients, and no second session created.
-        await joiner.connect(session_id=session)
-        print(f"[joiner] joined: {joiner.session_id}")
-        joiner_frames = count_frames(joiner, args.model, "joiner", window, tile=1)
+        # The id is the whole handoff — no second session, no coordination.
+        await joiner.connect(session_id=creator.session_id)
+        joiner_frames = count_frames(joiner, window, tile=1)
 
-        await window.hold(args.seconds)
+        await window.hold(SECONDS)
         print(f"frames creator: {creator_frames()}")
         print(f"frames joiner: {joiner_frames()}")
 

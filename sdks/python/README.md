@@ -296,19 +296,19 @@ the lesson. The same seven exist in every Reactor SDK.
 ```bash
 export REACTOR_API_KEY=rk_...
 uv run python examples/01_connect_and_receive.py
-uv run python examples/06_record_clip.py --clip 5 --out clip.ts
+uv run python examples/06_record_clip.py 5 clip.ts
 
-pip install pygame                                       # for --show
-uv run python examples/04_publish_track.py --show        # sent | received
+pip install pygame                                        # for the window
+REACTOR_SHOW=1 uv run python examples/04_publish_track.py  # sent | received
 ```
 
-`--show` puts the stream in a window, which is the only way to see that a model
-did the right thing rather than merely produce frames.
+`REACTOR_SHOW=1` puts the stream in a window, which is the only way to see that a
+model did the right thing rather than merely produce frames.
 
-Options come from flags or from `REACTOR_API_KEY` / `REACTOR_JWT` /
-`REACTOR_MODEL` / `REACTOR_API_URL` / `REACTOR_LOCAL`; `--help` on any of them
-lists the rest. See the [examples README](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/README.md)
-for what each one needs.
+Configuration is environment-only — `REACTOR_API_KEY` / `REACTOR_JWT` /
+`REACTOR_MODEL` / `REACTOR_API_URL` / `REACTOR_LOCAL` / `REACTOR_SECONDS` /
+`REACTOR_SHOW` — and each example reads what it needs at the top of the file. See
+the [examples README](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/README.md).
 
 ## Development
 
