@@ -756,6 +756,11 @@ pub unsafe extern "C" fn reactor_connect(
             r.connect(ConnectOptions {
                 session_id: sid,
                 connection_id: cid,
+                // The C ABI exposes no per-connect overrides; native hosts
+                // configure both at creation time, so the client's own
+                // defaults stand.
+                auto_resume_tracks: None,
+                max_sdp_attempts: None,
             })
             .await?;
             let r2 = r.clone();

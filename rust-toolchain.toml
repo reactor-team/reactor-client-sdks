@@ -1,4 +1,10 @@
 [toolchain]
 channel = "1.97.1"
 components = ["rustfmt", "clippy"]
-targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    # reactor-wasm (the browser binding). CI installs the toolchain from
+    # this file, so listing it here is what makes `clippy:wasm` runnable.
+    "wasm32-unknown-unknown",
+]

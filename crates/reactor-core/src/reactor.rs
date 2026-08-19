@@ -24,7 +24,7 @@ use crate::messaging::build_command_payload;
 use crate::peer::{PeerConnectionState, PeerEvent};
 use crate::protocol::recording::message_type;
 use crate::protocol::session::{
-    Capabilities, ClientInfo, ModelConfig, TrackCapability, TrackDirection,
+    Capabilities, ClientInfo, ModelConfig, SessionResponse, TrackCapability, TrackDirection,
 };
 use crate::protocol::upload::{CreateUploadRequest, FileRef};
 use crate::protocol::webrtc::{IceCandidate, TrackMappingEntry};
@@ -110,12 +110,25 @@ pub struct ConnectOptions {
     pub session_id: Option<String>,
     /// Use a pre-registered WebRTC connection id instead of registering one.
     pub connection_id: Option<u32>,
+    /// Override [`ReactorOptions::auto_resume_tracks`] for this connection.
+    /// Sticky: a later `reconnect()` keeps whatever this connect decided,
+    /// because a client that deliberately connected with its output tracks
+    /// paused does not want them resumed behind its back on a reconnect.
+    pub auto_resume_tracks: Option<bool>,
+    /// Override the SDP-answer poll attempt limit for this connection (and the
+    /// reconnects that follow it).
+    pub max_sdp_attempts: Option<u32>,
 }
 
 #[derive(Default)]
 struct State {
     status: ReactorStatus,
     session_id: Option<String>,
+    /// The session resource as the coordinator last reported it: slim after
+    /// creation, fully populated once the runtime accepted it. Kept so a
+    /// binding can read the session's model, cluster and server info without
+    /// re-fetching what connect() already had in its hands.
+    session_info: Option<SessionResponse>,
     created_session: bool,
     connection_id: Option<u32>,
     capabilities: Option<Capabilities>,
@@ -135,6 +148,10 @@ struct State {
     /// Incremented on every `connect()` / `reconnect()`.  Each `run_heartbeat`
     /// instance captures the epoch at spawn time and exits when it changes.
     heartbeat_epoch: u64,
+    /// Effective values for the current connection: the [`ReactorOptions`]
+    /// defaults unless the last `connect()` overrode them.
+    auto_resume_tracks: bool,
+    sdp_max_attempts: u32,
 }
 
 /// The Reactor client core. See the crate docs for the host contract.
@@ -179,11 +196,15 @@ impl Reactor {
             auth: deps.auth,
             platform: deps.platform,
             peer: deps.peer,
-            options,
             dispatcher: Dispatcher::new(),
             control: ControlCorrelator::new(),
             data: DataCorrelator::new(),
-            state: Mutex::new(State::default()),
+            state: Mutex::new(State {
+                auto_resume_tracks: options.auto_resume_tracks,
+                sdp_max_attempts: options.sdp_poll.max_attempts,
+                ..State::default()
+            }),
+            options,
         }
     }
 
@@ -201,6 +222,11 @@ impl Reactor {
 
     pub fn capabilities(&self) -> Option<Capabilities> {
         self.state.lock().unwrap().capabilities.clone()
+    }
+
+    /// The session resource from the coordinator, or `None` when disconnected.
+    pub fn session_info(&self) -> Option<SessionResponse> {
+        self.state.lock().unwrap().session_info.clone()
     }
 
     pub fn last_error(&self) -> Option<ReactorError> {
@@ -233,6 +259,12 @@ impl Reactor {
             state.closing = false;
             state.status = ReactorStatus::Connecting;
             state.heartbeat_epoch = state.heartbeat_epoch.wrapping_add(1);
+            if let Some(auto_resume) = connect_options.auto_resume_tracks {
+                state.auto_resume_tracks = auto_resume;
+            }
+            if let Some(attempts) = connect_options.max_sdp_attempts {
+                state.sdp_max_attempts = attempts;
+            }
         }
         self.dispatcher
             .dispatch(ReactorEvent::StatusChanged(ReactorStatus::Connecting));
@@ -260,7 +292,9 @@ impl Reactor {
                 let mut state = self.state.lock().unwrap();
                 state.session_id = Some(created.session_id.clone());
                 state.created_session = true;
-                created.session_id
+                let session_id = created.session_id.clone();
+                state.session_info = Some(created);
+                session_id
             }
         };
         self.dispatcher
@@ -270,11 +304,13 @@ impl Reactor {
         let session = self.coordinator.poll_session_ready(&session_id).await?;
         let capabilities = session
             .capabilities
+            .clone()
             .ok_or_else(|| CoreError::Decode("ready session missing capabilities".into()))?;
         {
             let mut state = self.state.lock().unwrap();
             state.tracks = capabilities.tracks.clone();
             state.capabilities = Some(capabilities.clone());
+            state.session_info = Some(session);
         }
         self.dispatcher
             .dispatch(ReactorEvent::CapabilitiesReceived(capabilities));
@@ -283,7 +319,7 @@ impl Reactor {
             .await?;
 
         self.set_status(ReactorStatus::Ready);
-        if self.options.auto_resume_tracks {
+        if self.state.lock().unwrap().auto_resume_tracks {
             self.auto_resume_recv_tracks().await;
         }
         Ok(())
@@ -329,7 +365,7 @@ impl Reactor {
         match self.establish_transport(&session_id, true, None).await {
             Ok(()) => {
                 self.set_status(ReactorStatus::Ready);
-                if self.options.auto_resume_tracks {
+                if self.state.lock().unwrap().auto_resume_tracks {
                     self.auto_resume_recv_tracks().await;
                 }
                 Ok(())
@@ -458,6 +494,7 @@ impl Reactor {
                 false
             } else {
                 state.session_id = None;
+                state.session_info = None;
                 state.created_session = false;
                 state.connection_id = None;
                 state.capabilities = None;
@@ -1063,7 +1100,10 @@ impl Reactor {
             self.platform.clone(),
             self.coordinator.transport_base_url(session_id),
             self.coordinator.client_info().clone(),
-            self.options.sdp_poll,
+            PollConfig {
+                max_attempts: self.state.lock().unwrap().sdp_max_attempts,
+                ..self.options.sdp_poll
+            },
         )
     }
 
@@ -1689,5 +1729,164 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(CoreError::InvalidState(msg)) if msg.contains("ready")));
+    }
+    // ── Session info + per-connect options ─────────────────────────────────────
+
+    /// Plays a connect as far as the ready session, then stops answering: the
+    /// ICE-servers request never resolves, so the connect neither completes nor
+    /// tears down and the state it built up stays readable.
+    struct ScriptedHttp;
+
+    #[async_trait::async_trait]
+    impl HttpClient for ScriptedHttp {
+        async fn request(&self, req: HttpRequest) -> Result<HttpResponse, CoreError> {
+            let json = |body: &str| {
+                Ok(HttpResponse {
+                    status: 200,
+                    headers: vec![],
+                    body: body.as_bytes().to_vec(),
+                })
+            };
+            if req.url.ends_with("/ice_servers") {
+                std::future::pending::<()>().await;
+                unreachable!()
+            }
+            if req.method == Method::Post && req.url.ends_with("/sessions") {
+                return json(r#"{"session_id": "sess_1", "state": "CREATED"}"#);
+            }
+            if req.method == Method::Get && req.url.ends_with("/sessions/sess_1") {
+                return json(
+                    r#"{
+                        "session_id": "sess_1",
+                        "state": "ACTIVE",
+                        "cluster": "test-cluster",
+                        "selected_transport": {"protocol": "webrtc", "version": "1.0"},
+                        "capabilities": {
+                            "protocol_version": "1.0",
+                            "tracks": [{"name": "output", "kind": "video", "direction": "recvonly"}]
+                        }
+                    }"#,
+                );
+            }
+            Err(CoreError::Http(format!(
+                "ScriptedHttp: no route for {}",
+                req.url
+            )))
+        }
+    }
+
+    /// A binding that wants the session's cluster, model or server version has
+    /// the whole resource `connect()` already fetched, rather than having to
+    /// re-request it.
+    #[tokio::test]
+    async fn the_session_resource_is_readable_once_capabilities_arrive() {
+        let reactor = Arc::new(Reactor::new(
+            ReactorDeps {
+                http: Arc::new(ScriptedHttp) as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: Arc::new(NullPeer) as SharedPeer,
+            },
+            ReactorOptions::new("http://localhost", "test-model"),
+        ));
+        let mut events = reactor.subscribe();
+
+        let r = reactor.clone();
+        let connecting = tokio::spawn(async move { r.connect(ConnectOptions::default()).await });
+
+        // Wait for the capabilities event: the same moment the session resource
+        // is recorded, and before the connect stalls on ICE servers.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while let Some(event) = events.next().await {
+                if matches!(event, ReactorEvent::CapabilitiesReceived(_)) {
+                    return;
+                }
+            }
+            panic!("capabilities were never published");
+        })
+        .await
+        .expect("capabilities should arrive");
+
+        let session = reactor.session_info().expect("session resource recorded");
+        assert_eq!(session.session_id, "sess_1");
+        assert_eq!(session.cluster.as_deref(), Some("test-cluster"));
+
+        connecting.abort();
+    }
+
+    /// Disconnecting ends the session, so what it looked like is no longer the
+    /// answer to "what session are we on".
+    #[tokio::test]
+    async fn the_session_resource_is_cleared_on_disconnect() {
+        let reactor = make_reactor();
+        {
+            let mut state = reactor.state.lock().unwrap();
+            state.session_id = Some("sess_1".into());
+            state.session_info = Some(SessionResponse {
+                session_id: "sess_1".into(),
+                state: crate::protocol::session::SessionState::Active,
+                model: None,
+                cluster: None,
+                server_info: None,
+                selected_transport: None,
+                capabilities: None,
+                extra: Default::default(),
+            });
+        }
+
+        reactor.disconnect(false).await.unwrap();
+
+        assert!(reactor.session_info().is_none());
+    }
+
+    /// The JS SDK takes both of these per connect, so a client cannot be asked
+    /// to decide them once at construction.
+    #[tokio::test]
+    async fn connect_options_override_the_client_defaults() {
+        let http = Arc::new(RecordingHttp::default());
+        let reactor = make_reactor_with_http(http.clone());
+        assert!(reactor.state.lock().unwrap().auto_resume_tracks);
+
+        // RecordingHttp has no route for session creation, so the connect fails
+        // immediately — after the overrides were taken, which is what matters.
+        let _ = reactor
+            .connect(ConnectOptions {
+                auto_resume_tracks: Some(false),
+                max_sdp_attempts: Some(3),
+                ..Default::default()
+            })
+            .await;
+
+        let state = reactor.state.lock().unwrap();
+        assert!(!state.auto_resume_tracks);
+        assert_eq!(state.sdp_max_attempts, 3);
+    }
+
+    /// A client that connected with its output tracks left paused must not have
+    /// them resumed behind its back by the next connect or reconnect, so an
+    /// override sticks until another one replaces it.
+    #[tokio::test]
+    async fn a_connect_option_sticks_until_it_is_overridden_again() {
+        let http = Arc::new(RecordingHttp::default());
+        let reactor = make_reactor_with_http(http.clone());
+
+        let _ = reactor
+            .connect(ConnectOptions {
+                auto_resume_tracks: Some(false),
+                ..Default::default()
+            })
+            .await;
+        let _ = reactor.connect(ConnectOptions::default()).await;
+
+        assert!(!reactor.state.lock().unwrap().auto_resume_tracks);
+
+        let _ = reactor
+            .connect(ConnectOptions {
+                auto_resume_tracks: Some(true),
+                ..Default::default()
+            })
+            .await;
+
+        assert!(reactor.state.lock().unwrap().auto_resume_tracks);
     }
 }

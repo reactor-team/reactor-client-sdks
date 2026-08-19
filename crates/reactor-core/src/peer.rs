@@ -59,7 +59,8 @@ pub struct PreparedOffer {
 /// * Media-level operations that the core cannot express (attaching a
 ///   camera track to a sender, rendering a remote track) stay in the host;
 ///   the core only drives the protocol around them.
-#[async_trait::async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 pub trait PeerTransport {
     /// Create the peer connection, transceivers and channels; return the
     /// local SDP offer and track mapping.

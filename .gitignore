@@ -1,4 +1,6 @@
 /target/
+# wasm-pack output
+/crates/reactor-wasm/pkg/
 __pycache__/
 *.py[cod]
 .venv/

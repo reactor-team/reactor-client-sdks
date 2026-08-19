@@ -11,6 +11,8 @@ monorepo_root = true
 # installs cargo-nextest as a prebuilt binary instead of compiling from source.
 "aqua:cargo-bins/cargo-binstall" = "1.21.0"
 "cargo:cargo-nextest" = "0.9.140"
+# wasm-pack builds crates/reactor-wasm into a loadable JS package.
+"cargo:wasm-pack" = "0.15.0"
 uv          = "0.11.31"
 ruff        = "0.15.22"
 shellcheck  = "0.11.0"
@@ -55,6 +57,24 @@ description = "[Quality] Clippy with warnings denied"
 # clang++ is generally too old to parse. macOS uses the platform libc++ and needs
 # nothing. On Linux, set CXX to a recent clang++ — see the CI workflow.
 run = "cargo clippy --workspace --all-targets -- -D warnings"
+
+[tasks."check:wasm"]
+description = "[Build] cargo check reactor-wasm for the browser target"
+run = "cargo check -p reactor-wasm --target wasm32-unknown-unknown"
+
+[tasks."clippy:wasm"]
+description = "[Quality] Clippy reactor-wasm for the browser target"
+# reactor-wasm compiles to nothing off a wasm target (see its lib.rs), so the
+# host-target `clippy` above lints none of it. This is the run that does.
+run = "cargo clippy -p reactor-wasm --target wasm32-unknown-unknown --all-targets -- -D warnings"
+
+[tasks."build:wasm"]
+description = "[Build] Build the browser binding into crates/reactor-wasm/pkg"
+# --target web: a native ES module, no bundler needed to load it. The JS SDK
+# depends on the generated pkg/ directory.
+run = """
+wasm-pack build crates/reactor-wasm   --target web   --out-dir pkg   --out-name reactor_wasm
+"""
 
 [tasks."test:rust"]
 description = "[Testing] Rust workspace tests via nextest + doctests"
@@ -123,6 +143,7 @@ description = "[Quality] Run all linters"
 depends = [
     "fmt:check",
     "clippy",
+    "clippy:wasm",
     "lint:python",
     "lint:abi",
     "lint:shell",

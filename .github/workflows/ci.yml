@@ -47,6 +47,25 @@ jobs:
       - name: mise.lock drift (vs merge-base)
         run: mise run lint:mise-lock
 
+  wasm:
+    name: browser binding (wasm32)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1   # reads rust-toolchain.toml,
+        with:                                            # including the wasm32 target
+          cache-on-failure: true
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      # reactor-wasm compiles to nothing off a wasm target, so the lint job's
+      # host-target clippy covers none of it. No clang needed here: this target
+      # pulls in reactor-core only, never reactor-ffi's libwebrtc glue.
+      - run: mise run clippy:wasm
+      # Proves the binding still links and that wasm-bindgen can emit the JS
+      # package the SDK imports — a clippy pass alone would not.
+      - run: mise run build:wasm
+
   test:
     name: rust + python tests
     runs-on: ubuntu-latest
@@ -69,13 +88,13 @@ jobs:
 
   ci-complete:
     name: CI Complete
-    needs: [lint, test]
+    needs: [lint, wasm, test]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Verify no job failed
         run: |
-          for r in "${{ needs.lint.result }}" "${{ needs.test.result }}"; do
+          for r in "${{ needs.lint.result }}" "${{ needs.wasm.result }}" "${{ needs.test.result }}"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::a required job failed ($r)"; exit 1
             fi
