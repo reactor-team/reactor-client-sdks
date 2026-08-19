@@ -71,6 +71,7 @@ export class Reactor implements Disposable {
     this.client?.free();
     this.client = undefined;
     this.clientPromise = undefined;
+    this.emitter.clear();
   }
 
   [Symbol.dispose](): void {

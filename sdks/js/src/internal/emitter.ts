@@ -37,4 +37,9 @@ export class Emitter<EventMap extends { [Name in keyof EventMap]: (...args: neve
       (handler as (...args: Parameters<EventMap[Name]>) => void)(...args);
     }
   }
+
+  /** Drops every registered handler for every event. */
+  clear(): void {
+    this.listeners.clear();
+  }
 }
