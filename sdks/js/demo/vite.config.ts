@@ -3,10 +3,16 @@ import { defineConfig, type Plugin } from "vite";
 
 const TOKENS_URL = "https://api.reactor.inc/tokens";
 
-async function readJsonBody(req: IncomingMessage): Promise<any> {
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(chunk as Buffer);
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+}
+
+function readApiKey(body: unknown): string | undefined {
+  if (typeof body !== "object" || body === null || !("apiKey" in body)) return undefined;
+  const { apiKey } = body as { apiKey?: unknown };
+  return typeof apiKey === "string" ? apiKey : undefined;
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -39,7 +45,7 @@ function generateJwtPlugin(): Plugin {
       server.middlewares.use("/api/generate-jwt", (req, res) => {
         void (async () => {
           try {
-            const { apiKey } = await readJsonBody(req);
+            const apiKey = readApiKey(await readJsonBody(req));
             if (!apiKey) return sendJson(res, 400, { error: "apiKey is required" });
 
             const upstream = await fetch(TOKENS_URL, {

@@ -120,6 +120,12 @@ export class Reactor implements Disposable {
 
   private async createClient(): Promise<ReactorClient> {
     const { ReactorClient: WasmReactorClient } = await loadReactorWasm();
+    // dispose() may have run while the wasm module was loading above; bail
+    // out before constructing a client that would otherwise outlive it and
+    // never get freed.
+    if (this.disposed) {
+      throw new Error("Reactor.dispose() was called while connecting.");
+    }
     const client = new WasmReactorClient(this.clientOptions, this.pendingJwt);
     client.onStatusChanged((status) => this.emitter.emit("statusChanged", status));
     client.onSessionIdChanged((sessionId) => this.emitter.emit("sessionIdChanged", sessionId));
