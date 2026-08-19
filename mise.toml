@@ -1,7 +1,10 @@
 # mise is the task runner + toolchain manager.
 # Run `mise install` to install pinned tools, `mise run <task>` to run tasks.
 # `mise lock` refreshes the committed mise.lock.
-min_version = "2026.6.12"
+# 2026.8.8 floor: older mise resolves conda: tools but writes no linux-x64 entry
+# for them into mise.lock, and linux-x64 is where CI runs — `lint:mise-lock`
+# fails on the gap. The clang pin below is the tool that needs it.
+min_version = "2026.8.8"
 monorepo_root = true
 
 [tools]
@@ -11,6 +14,18 @@ monorepo_root = true
 # installs cargo-nextest as a prebuilt binary instead of compiling from source.
 "aqua:cargo-bins/cargo-binstall" = "1.21.0"
 "cargo:cargo-nextest" = "0.9.140"
+# clang++ for reactor-webrtc-sys's C++ glue. The prebuilt libwebrtc archive
+# carries libc++ headers that track LLVM trunk, and a distro clang is generally
+# too old to parse them — CI used to install one from apt.llvm.org, which is
+# unpinned, unlocked, and once sat on a single step for half an hour. Here it is
+# a tool like any other: exact-pinned, checksummed per platform in mise.lock, and
+# restored from the cache the jobs already warm.
+#
+# Linux-only on purpose. macOS builds the glue against the platform libc++ and
+# Windows against the MSVC STL, so both already match their toolchain — and this
+# is a 426 MB install nobody on a laptop should pay for. `mise lock` still records
+# every platform, so the lockfile gate stays honest.
+"conda:clangxx" = { version = "21.1.8", os = ["linux"] }
 # wasm-pack builds crates/reactor-wasm into a loadable JS package.
 "cargo:wasm-pack" = "0.15.0"
 uv          = "0.11.31"

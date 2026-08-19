@@ -1,7 +1,7 @@
 name: Setup libwebrtc C++ toolchain
 description: >
-  Install a clang++ new enough to compile reactor-webrtc-sys's C++ glue and export
-  it as CXX. No-op off Linux.
+  Point CXX at the mise-pinned clang++ that compiles reactor-webrtc-sys's C++
+  glue. No-op off Linux.
 
 # Why this exists
 # ───────────────
@@ -13,41 +13,47 @@ description: >
 #   __format/unicode.h:204:19: error: invalid operands to binary expression
 #     ('_Iterator' (aka '__wrap_iter<const char *>') and '_Iterator')
 #
-# The build script honours an explicit CXX, so pinning a recent clang from
-# apt.llvm.org is enough. macOS builds against the platform libc++ and needs
-# nothing, hence the guard.
+# macOS builds the glue against the platform libc++ and Windows against the MSVC
+# STL, so both already match their toolchain — hence the Linux guard.
 #
-# Only the compiler is installed: libc++.a and libc++abi.a ship inside the
+# This used to install clang from apt.llvm.org, which cost ~9 minutes per job and
+# once sat on a single step for half an hour. clang is now a mise tool
+# (`conda:clangxx` in mise.toml): exact-pinned, checksummed per platform in
+# mise.lock, and restored from the cache every job already warms — the same deal
+# every other tool in this repo gets. mise-action must have run before this.
+#
+# Only the compiler comes from here: libc++.a and libc++abi.a ship inside the
 # prebuilt archive and are linked from there.
-
-inputs:
-  clang-version:
-    description: Major clang version to install from apt.llvm.org.
-    required: false
-    default: "20"
 
 runs:
   using: composite
   steps:
-    - name: Install clang ${{ inputs.clang-version }}
+    - name: Resolve the pinned clang++
       if: runner.os == 'Linux'
       shell: bash
-      env:
-        CLANG_VERSION: ${{ inputs.clang-version }}
       run: |
         set -euo pipefail
 
-        # Already present on the image? Then skip the repository dance.
-        if ! command -v "clang++-${CLANG_VERSION}" >/dev/null; then
-          curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
-          chmod +x /tmp/llvm.sh
-          if ! sudo /tmp/llvm.sh "${CLANG_VERSION}"; then
-            echo "::error::clang-${CLANG_VERSION} is not installable from apt.llvm.org for $(lsb_release -cs)."
-            echo "Available clang++ on this image:"
-            ls -1 /usr/bin/clang++* 2>/dev/null || echo "  (none)"
-            exit 1
-          fi
+        if ! command -v mise >/dev/null; then
+          echo "::error::mise is not on PATH — jdx/mise-action has to run before this."
+          exit 1
         fi
 
-        echo "CXX=clang++-${CLANG_VERSION}" >> "$GITHUB_ENV"
-        "clang++-${CLANG_VERSION}" --version
+        # `mise which` resolves the pin in mise.toml, installing it if the cache
+        # was cold. Anything else on the runner is ignored on purpose: the point
+        # of pinning is that CI and a contributor's laptop compile the glue with
+        # the same compiler.
+        mise install "conda:clangxx"
+        CXX="$(mise which clang++)"
+
+        # Compile something trivial before handing it to cargo. A conda toolchain
+        # that cannot find its own headers fails here, in two lines of log, rather
+        # than inside a cc-rs invocation several minutes later.
+        printf '#include <cstddef>\nint main() { return 0; }\n' > /tmp/cxx-probe.cpp
+        if ! "$CXX" -c /tmp/cxx-probe.cpp -o /tmp/cxx-probe.o; then
+          echo "::error::$CXX cannot compile a trivial translation unit."
+          exit 1
+        fi
+
+        echo "CXX=$CXX" >> "$GITHUB_ENV"
+        "$CXX" --version
