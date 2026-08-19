@@ -10,6 +10,13 @@ capability, and a capability hidden in a helper is one nobody sees.
 
 Frames are tagged on the way out, which costs one argument and is the only way to
 match a frame you sent to whatever comes back — see 06 for the other half.
+
+Docs:
+  File uploads    https://docs.reactor.inc/concepts/file-uploads
+  Input tracks    https://docs.reactor.inc/concepts/tracks#input-tracks-app-to-model
+  Frame metadata  https://docs.reactor.inc/concepts/frame-metadata
+  Your model's commands, whichever model you point this at:
+                  https://docs.reactor.inc/model-api-reference/overview
 """
 
 from __future__ import annotations
@@ -27,9 +34,10 @@ from reactor_sdk import Reactor
 # the client stream at whatever size it is sent.
 WIDTH, HEIGHT, FPS = 640, 360, 15
 
-# morpheus-v4 declares `set_image(image: UploadedFile)`. Another model will name
-# this differently — overridable rather than hardcoded, so pointing this example
-# at one costs a variable instead of a patch.
+# morpheus-v4 declares `set_image(image: UploadedFile)`, the same shape the docs
+# use in https://docs.reactor.inc/concepts/file-uploads#uploading-a-file. Another
+# model will name this differently — overridable rather than hardcoded, so
+# pointing this example at one costs a variable instead of a patch.
 IMAGE_COMMAND = os.environ.get("REACTOR_IMAGE_COMMAND", "set_image")
 IMAGE_PARAM = os.environ.get("REACTOR_IMAGE_PARAM", "image")
 
@@ -76,6 +84,7 @@ async def main() -> None:
         # The FileRef goes into the command as a value: the SDK lifts it out into
         # the envelope's uploads section, so the model receives the file itself
         # rather than a string it has to resolve.
+        # https://docs.reactor.inc/concepts/file-uploads#the-fileref-type
         await reactor.send_command(IMAGE_COMMAND, {IMAGE_PARAM: uploaded})
         await common.bootstrap(reactor, args.model)
 
@@ -99,6 +108,7 @@ async def main() -> None:
         while time.monotonic() < deadline:
             # `user_data` rides along with the frame as its metadata. Anything
             # goes — a sequence number here, so a frame can be identified later.
+            # https://docs.reactor.inc/concepts/frame-metadata
             source.push_frame(
                 common.frame(sent, WIDTH, HEIGHT),
                 width=WIDTH,

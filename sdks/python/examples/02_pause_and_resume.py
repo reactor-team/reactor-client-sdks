@@ -5,6 +5,10 @@ Baseline plus `track.pause()` and `track.resume()`. Frames are counted per phase
 so the middle count being zero is the whole point.
 
     uv run python examples/02_pause_and_resume.py --seconds 6
+
+Docs:
+  Tracks       https://docs.reactor.inc/concepts/tracks
+  Track (API)  https://docs.reactor.inc/sdk-reference/python/track
 """
 
 from __future__ import annotations
@@ -64,8 +68,9 @@ async def main() -> None:
         # nothing is sent, nothing is billed.
         #
         # Distinct from any `pause` *command* a model happens to expose (Helios
-        # has one, which suspends generation between chunks). This is the
-        # transport-level control every model has, whatever it calls its own.
+        # has one, which suspends generation between chunks — see its schema at
+        # https://docs.reactor.inc/model-api-reference/helios/schema). This is
+        # the transport-level control every model has, whatever it calls its own.
         await output.pause()
         print(f"paused: {output.paused}")
         during_pause = await phase("while paused")

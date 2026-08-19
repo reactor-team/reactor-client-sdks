@@ -8,6 +8,12 @@ reply back, and counts frames off the output track.
 
 Options come from flags or from REACTOR_MODEL / REACTOR_API_URL /
 REACTOR_API_KEY / REACTOR_JWT / REACTOR_LOCAL.
+
+Docs:
+  Using the SDK       https://docs.reactor.inc/sdk-reference/using-the-sdk
+  Sessions            https://docs.reactor.inc/concepts/sessions
+  Commands & messages https://docs.reactor.inc/concepts/commands-and-messages
+  Helios              https://docs.reactor.inc/model-api-reference/helios/overview
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ async def main() -> None:
     # Where a model's own answers arrive. A command's return value is its
     # correlated reply, and most handlers return nothing — what they emit
     # instead (`prompt_accepted`, `generation_started`, …) comes through here.
+    # https://docs.reactor.inc/concepts/commands-and-messages
     @reactor.on_message
     def message(msg: dict) -> None:
         print(f"message: {msg}")
@@ -58,6 +65,7 @@ async def main() -> None:
 
         # Named by shape rather than by string: whatever this model calls its
         # video output, there is one recvonly video track and this is it.
+        # https://docs.reactor.inc/concepts/tracks#output-tracks-model-to-app
         output = reactor.tracks.with_kind("video").with_direction("recvonly").one()
         print(f"track: {output.name}")
 

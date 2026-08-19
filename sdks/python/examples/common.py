@@ -15,6 +15,16 @@ see, and a helper that hides them leaves six files that teach nothing.
 One exception, because a rule with no exception would be a lie: when what a
 model demands *is itself* an SDK capability, it belongs in the example.
 `03_publish_track.py` uploads its own conditioning image for that reason.
+
+Docs:
+  Authentication (API keys, session-scoped tokens)
+      https://docs.reactor.inc/authentication
+  Commands and messages
+      https://docs.reactor.inc/concepts/commands-and-messages
+  Model API reference — every model's tracks, commands and messages
+      https://docs.reactor.inc/model-api-reference/overview
+  Python SDK reference
+      https://docs.reactor.inc/sdk-reference/python/reactor
 """
 
 from __future__ import annotations
@@ -36,7 +46,10 @@ PROMPT = "a forest at dawn, sunbeams through the canopy"
 #: manifests (`reactor.yaml`, `model_behaviour.md` in reactor-models), which is
 #: where to check when an example connects and no frame ever arrives.
 #:
-#: Anything not listed falls back to `set_prompt` alone, the common case.
+#: Anything not listed falls back to `set_prompt` alone, the common case. A
+#: model's published schema says which commands it takes and in what order they
+#: are valid — Helios' is at
+#: https://docs.reactor.inc/model-api-reference/helios/schema
 BOOTSTRAP: dict[str, list[tuple[str, dict[str, Any]]]] = {
     # Helios stays in WAITING and emits nothing until `start`, and `start`
     # refuses without a prompt — so the order here is the contract, not a

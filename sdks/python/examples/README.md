@@ -28,6 +28,27 @@ frame on its input track. Those sequences live in `common.py`, taken from the
 models' own manifests — check there first when an example connects and no frame
 ever arrives.
 
+## Docs
+
+Each example links the pages that explain what it is doing; these are the ones
+worth having open while reading any of them.
+
+| Page | |
+|---|---|
+| [Using the SDK](https://docs.reactor.inc/sdk-reference/using-the-sdk) | the Python and JS guides |
+| [Sessions](https://docs.reactor.inc/concepts/sessions) | lifecycle, multiple connections, adoption |
+| [Tracks](https://docs.reactor.inc/concepts/tracks) | input and output tracks, publishing, pausing |
+| [Commands & messages](https://docs.reactor.inc/concepts/commands-and-messages) | what you send, what the model sends back |
+| [File uploads](https://docs.reactor.inc/concepts/file-uploads) | `upload_file` and passing a `FileRef` in a command |
+| [Recordings](https://docs.reactor.inc/concepts/recordings) | clips, full-session recordings, playlists |
+| [Frame metadata](https://docs.reactor.inc/concepts/frame-metadata) | `frame_id`, `timestamp_us`, `user_data` |
+| [Model API reference](https://docs.reactor.inc/model-api-reference/overview) | per-model tracks, commands and messages |
+| [Python SDK reference](https://docs.reactor.inc/sdk-reference/python/reactor) | `Reactor`, [`Track`](https://docs.reactor.inc/sdk-reference/python/track), [types](https://docs.reactor.inc/sdk-reference/python/types) |
+
+A model's own reference page is the thing to check when a command is rejected or
+no frame arrives — [Helios' schema](https://docs.reactor.inc/model-api-reference/helios/schema),
+for instance, is where `start` requiring a prompt is written down.
+
 ## Running them
 
 Needs an API key from [reactor.inc](https://www.reactor.inc/account/api-keys),

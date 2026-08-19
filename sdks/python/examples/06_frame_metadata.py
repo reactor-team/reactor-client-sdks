@@ -11,11 +11,16 @@ The timestamps are what makes this more than trivia: they are the sender's clock
 so they measure the model's own pacing rather than the network's — two frames
 that arrive together were not necessarily produced together.
 
-`user_data` is empty unless the model attaches it, and today none of the
-published models do; 03 shows the sending side of the same field.
+`user_data` is empty unless the model puts it there: a model that derives its
+output from your frame can mirror the bytes back, and none of the published ones
+does today. 03 shows the sending side of the same field.
 
 Native-only: a browser hands JS a MediaStreamTrack with no per-frame hook, so
 there is no JS counterpart to this example.
+
+Docs:
+  Frame metadata  https://docs.reactor.inc/concepts/frame-metadata
+  Track (API)     https://docs.reactor.inc/sdk-reference/python/track
 """
 
 from __future__ import annotations

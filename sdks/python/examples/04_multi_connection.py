@@ -11,6 +11,14 @@ that may close at any moment.
 
 A backend that created the session server-side is the same story: hand the id to
 whoever should watch, and they adopt it exactly like this.
+
+Docs:
+  Multiple connections per session
+      https://docs.reactor.inc/concepts/sessions#multiple-connections-per-session
+  Adopting an existing session
+      https://docs.reactor.inc/concepts/sessions#adopting-an-existing-session
+  Who owns the session
+      https://docs.reactor.inc/concepts/sessions#who-owns-the-session
 """
 
 from __future__ import annotations

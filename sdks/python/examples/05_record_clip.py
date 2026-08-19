@@ -8,6 +8,10 @@ segments and writes one file.
     uv run python examples/05_record_clip.py --clip 5 --out clip.mp4
 
 `request_recording()` is the same call for the whole session instead of a window.
+
+Docs:
+  Recordings       https://docs.reactor.inc/concepts/recordings
+  Clip (type)      https://docs.reactor.inc/sdk-reference/python/types#clip
 """
 
 from __future__ import annotations
