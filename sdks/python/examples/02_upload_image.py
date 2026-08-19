@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""07 · Upload an image — conditioning a model on a file.
+"""02 · Upload an image — conditioning a model on a file.
 
 `upload_file` puts bytes in the session's own store and hands back a `FileRef`.
 Pass that reference into a command as a value and the model receives the file;
 the SDK lifts it into the envelope's uploads section on the way out.
 
-    uv run python examples/07_upload_image.py --image ref.png
+    uv run python examples/02_upload_image.py --image ref.png
 
 Helios takes prompt and image together through `set_conditioning`, which its
 schema recommends over separate `set_prompt` and `set_image` calls: the pair

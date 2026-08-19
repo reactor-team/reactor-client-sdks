@@ -14,7 +14,8 @@ see, and a helper that hides them leaves six files that teach nothing.
 
 One exception, because a rule with no exception would be a lie: when what a
 model demands *is itself* an SDK capability, it belongs in the example.
-`03_publish_track.py` uploads its own conditioning image for that reason.
+`02_upload_image.py` spells out its own upload and conditioning for that reason,
+rather than calling a helper that would hide both.
 
 Docs:
   Authentication (API keys, session-scoped tokens)

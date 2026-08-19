@@ -12,12 +12,12 @@ live video, speaker playback and a UI built from the model's own capabilities.
 | # | Example | Teaches | Model |
 |---|---|---|---|
 | 01 | [`01_connect_and_receive.py`](01_connect_and_receive.py) | Connect, send the model's first command, read the reply, count frames | Helios |
-| 02 | [`02_pause_and_resume.py`](02_pause_and_resume.py) | `track.pause()` / `track.resume()` — nothing generated while paused | Helios |
-| 03 | [`03_publish_track.py`](03_publish_track.py) | Publishing an input track and pushing tagged frames into it | SANA-Streaming |
-| 04 | [`04_multi_connection.py`](04_multi_connection.py) | Two clients on one session: `connect(session_id=…)` | Helios |
-| 05 | [`05_record_clip.py`](05_record_clip.py) | `request_clip` and downloading the result | Helios |
-| 06 | [`06_frame_metadata.py`](06_frame_metadata.py) | The trailer on each incoming frame: id, sender timestamp, `user_data` | Helios |
-| 07 | [`07_upload_image.py`](07_upload_image.py) | `upload_file`, then passing the `FileRef` into a command | Helios |
+| 02 | [`02_upload_image.py`](02_upload_image.py) | `upload_file`, then passing the `FileRef` into a command | Helios |
+| 03 | [`03_pause_and_resume.py`](03_pause_and_resume.py) | `track.pause()` / `track.resume()` — nothing generated while paused | Helios |
+| 04 | [`04_publish_track.py`](04_publish_track.py) | Publishing an input track and pushing tagged frames into it | SANA-Streaming |
+| 05 | [`05_multi_connection.py`](05_multi_connection.py) | Two clients on one session: `connect(session_id=…)` | Helios |
+| 06 | [`06_record_clip.py`](06_record_clip.py) | `request_clip` and downloading the result | Helios |
+| 07 | [`07_frame_metadata.py`](07_frame_metadata.py) | The trailer on each incoming frame: id, sender timestamp, `user_data` | Helios |
 
 Every example shares one spine — connect, wait for ready, give the model the
 minimum it needs, receive frames — and adds one new call on top. The diff
@@ -60,16 +60,16 @@ cd sdks/python
 export REACTOR_API_KEY=rk_...
 
 uv run python examples/01_connect_and_receive.py
-uv run python examples/02_pause_and_resume.py --seconds 6
-uv run python examples/05_record_clip.py --clip 5 --out clip.mp4
+uv run python examples/03_pause_and_resume.py --seconds 6
+uv run python examples/06_record_clip.py --clip 5 --out clip.mp4
 ```
 
-Example 03 needs a model with an input track, so it defaults to SANA-Streaming;
-07 needs an image to condition on:
+Example 02 needs an image to condition on, and 04 needs a model with an input
+track, so it defaults to SANA-Streaming:
 
 ```bash
-uv run python examples/03_publish_track.py --seconds 10
-uv run python examples/07_upload_image.py --image ref.png
+uv run python examples/02_upload_image.py --image ref.png
+uv run python examples/04_publish_track.py --seconds 10
 ```
 
 Against a local runtime instead of the cloud, same files:
@@ -104,7 +104,7 @@ throwaway frames two examples push. Nothing else: connecting, wiring events and
 tearing down stay in every example, even though that repeats them, because they
 are what you opened the file to read.
 
-The one exception is example 07: which command carries an image, and under what
+The one exception is example 02: which command carries an image, and under what
 name, is model trivia — but `upload_file` is an SDK capability, and a capability
 buried in a helper is one nobody sees and nobody tests. So that whole sequence is
 in the example, spelled out.

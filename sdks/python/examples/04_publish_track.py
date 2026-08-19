@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""03 · Publish a track — sending media into a model.
+"""04 · Publish a track — sending media into a model.
 
 sana-streaming transforms what you stream at it: publish its `camera` input
 track, push frames in, and the edited version comes back on the output track.
 Publishing is what puts a sender behind the slot — pushing a frame before that
 raises rather than dropping it silently.
 
-    uv run python examples/03_publish_track.py --seconds 10
+    uv run python examples/04_publish_track.py --seconds 10
 
 Frames go out tagged. It costs one argument and it is the only way to match a
-frame you sent against whatever comes back — see 06 for the reading side.
+frame you sent against whatever comes back — see 07 for the reading side.
 
 Docs:
   Input tracks    https://docs.reactor.inc/concepts/tracks#input-tracks-app-to-model

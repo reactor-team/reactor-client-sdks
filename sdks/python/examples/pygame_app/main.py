@@ -219,7 +219,7 @@ class ReactorApp:
         store. Anything slower here costs frames, because the SDK keeps only the newest
         while this is running.
 
-        See examples/06_frame_metadata.py for a process that does attach them.
+        See examples/04_publish_track.py for a process that does attach them.
         """
         if not user_data and not frame_id and not timestamp_us:
             self.last_frame_tagged = False

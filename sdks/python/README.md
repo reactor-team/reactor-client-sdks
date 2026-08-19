@@ -285,17 +285,17 @@ the lesson. The same seven exist in every Reactor SDK.
 | # | Script | Teaches |
 |---|---|---|
 | 01 | `01_connect_and_receive.py` | Connect, send the model's first command, read the reply, count frames. |
-| 02 | `02_pause_and_resume.py` | Pause and resume a track — nothing is generated while it is paused. |
-| 03 | `03_publish_track.py` | Publish a `sendonly` track and push tagged frames into it. |
-| 04 | `04_multi_connection.py` | Two clients on one session, the second adopting it by id. |
-| 05 | `05_record_clip.py` | Request a clip and download it. |
-| 06 | `06_frame_metadata.py` | Read the per-frame trailer: frame id, the sender's timestamp, `user_data`. |
-| 07 | `07_upload_image.py` | Upload a file and pass the `FileRef` into a command. |
+| 02 | `02_upload_image.py` | Upload a file and pass the `FileRef` into a command. |
+| 03 | `03_pause_and_resume.py` | Pause and resume a track — nothing is generated while it is paused. |
+| 04 | `04_publish_track.py` | Publish a `sendonly` track and push tagged frames into it. |
+| 05 | `05_multi_connection.py` | Two clients on one session, the second adopting it by id. |
+| 06 | `06_record_clip.py` | Request a clip and download it. |
+| 07 | `07_frame_metadata.py` | Read the per-frame trailer: frame id, the sender's timestamp, `user_data`. |
 
 ```bash
 export REACTOR_API_KEY=rk_...
 uv run python examples/01_connect_and_receive.py
-uv run python examples/05_record_clip.py --clip 5 --out clip.mp4
+uv run python examples/06_record_clip.py --clip 5 --out clip.mp4
 ```
 
 Options come from flags or from `REACTOR_API_KEY` / `REACTOR_JWT` /

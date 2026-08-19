@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""02 · Pause and resume — stop a track, then start it again.
+"""03 · Pause and resume — stop a track, then start it again.
 
 Baseline plus `track.pause()` and `track.resume()`. Frames are counted per phase,
 so the middle count being zero is the whole point.
 
-    uv run python examples/02_pause_and_resume.py --seconds 6
+    uv run python examples/03_pause_and_resume.py --seconds 6
 
 Docs:
   Tracks       https://docs.reactor.inc/concepts/tracks

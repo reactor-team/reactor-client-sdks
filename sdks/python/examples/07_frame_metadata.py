@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""06 · Frame metadata — what arrives alongside the pixels.
+"""07 · Frame metadata — what arrives alongside the pixels.
 
 Every decoded frame can carry a trailer the sender attached: a frame id, a
 wall-clock timestamp, and arbitrary bytes of its own. `on_raw_frame` hands all of
 it over; a frame with no trailer arrives with zeros and empty bytes instead.
 
-    uv run python examples/06_frame_metadata.py --seconds 10
+    uv run python examples/07_frame_metadata.py --seconds 10
 
 The timestamps are what makes this more than trivia: they are the sender's clock,
 so they measure the model's own pacing rather than the network's — two frames
@@ -13,7 +13,7 @@ that arrive together were not necessarily produced together.
 
 `user_data` is empty unless the model puts it there: a model that derives its
 output from your frame can mirror the bytes back, and none of the published ones
-does today. 03 shows the sending side of the same field.
+does today. 04 shows the sending side of the same field.
 
 Native-only: a browser hands JS a MediaStreamTrack with no per-frame hook, so
 there is no JS counterpart to this example.

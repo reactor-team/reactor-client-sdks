@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""04 · Multi-connection and session adoption — two clients, one session.
+"""05 · Multi-connection and session adoption — two clients, one session.
 
 The first client creates the session; the second joins the one that already
 exists by passing its id. Both receive the same stream. Only the creator ends
@@ -7,7 +7,7 @@ the session on disconnect — an adopting client tears down its own transport an
 leaves the session alone, which is what makes this safe to do from a browser tab
 that may close at any moment.
 
-    uv run python examples/04_multi_connection.py --seconds 10
+    uv run python examples/05_multi_connection.py --seconds 10
 
 A backend that created the session server-side is the same story: hand the id to
 whoever should watch, and they adopt it exactly like this.

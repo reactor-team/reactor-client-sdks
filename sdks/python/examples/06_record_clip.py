@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""05 · Record a clip — capture what just happened, and download it.
+"""06 · Record a clip — capture what just happened, and download it.
 
 Baseline plus `request_clip`, which asks the runtime for the last N seconds of
 the session and answers with an HLS manifest. `download_clip` then fetches the
 segments and writes one file.
 
-    uv run python examples/05_record_clip.py --clip 5 --out clip.mp4
+    uv run python examples/06_record_clip.py --clip 5 --out clip.mp4
 
 `request_recording()` is the same call for the whole session instead of a window.
 
