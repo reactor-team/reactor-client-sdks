@@ -4,7 +4,7 @@ import type {
   JwtSource,
   ReactorError,
   ReactorStatus,
-} from "./internal/reactor-wasm.types";
+} from './internal/reactor-wasm.types';
 
 export type { ConnectOptions, JwtSource, ReactorError, ReactorStatus };
 

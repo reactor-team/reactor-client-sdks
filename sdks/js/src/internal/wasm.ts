@@ -8,7 +8,7 @@
  * `Reactor` in a page shares one `init()` — a second `new Reactor(...)`, or a
  * reconnect, never re-runs it.
  */
-import type { ReactorWasmModule } from "./reactor-wasm.types";
+import type { ReactorWasmModule } from './reactor-wasm.types';
 
 let modulePromise: Promise<ReactorWasmModule> | null = null;
 
@@ -31,7 +31,7 @@ let modulePromise: Promise<ReactorWasmModule> | null = null;
  * relative to their own bundle, or this loader revisited to resolve against
  * `import.meta.url` instead.
  */
-const WASM_MODULE_SPECIFIER = "./wasm/reactor_wasm.js";
+const WASM_MODULE_SPECIFIER = './wasm/reactor_wasm.js';
 
 export function loadReactorWasm(): Promise<ReactorWasmModule> {
   if (!modulePromise) {
@@ -40,8 +40,8 @@ export function loadReactorWasm(): Promise<ReactorWasmModule> {
       // permanently poison every later `Reactor` in the page.
       modulePromise = null;
       throw new Error(
-        "reactor-wasm failed to load. Run `mise run build:wasm` (or, from a " +
-          "published install, reinstall the package) and try again.",
+        'reactor-wasm failed to load. Run `mise run build:wasm` (or, from a ' +
+          'published install, reinstall the package) and try again.',
         { cause },
       );
     });

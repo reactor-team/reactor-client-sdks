@@ -1,4 +1,4 @@
-export { Reactor } from "./reactor";
+export { Reactor } from './reactor';
 export type {
   ConnectOptions,
   JwtSource,
@@ -7,4 +7,4 @@ export type {
   ReactorEventName,
   ReactorOptions,
   ReactorStatus,
-} from "./types";
+} from './types';

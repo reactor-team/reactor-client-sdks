@@ -17,9 +17,9 @@
  * options this crate defines itself are camelCase.
  */
 
-export type ReactorStatus = "disconnected" | "connecting" | "waiting" | "ready";
-export type TrackKind = "audio" | "video";
-export type TrackDirection = "recvonly" | "sendonly";
+export type ReactorStatus = 'disconnected' | 'connecting' | 'waiting' | 'ready';
+export type TrackKind = 'audio' | 'video';
+export type TrackDirection = 'recvonly' | 'sendonly';
 
 export interface ClientOptions {
   modelName: string;
@@ -35,7 +35,7 @@ export interface ClientOptions {
   clipRequestTimeoutMs?: number;
   maxSessionAttempts?: number;
   maxSdpAttempts?: number;
-  logLevel?: "off" | "error" | "warn" | "info" | "debug" | "trace";
+  logLevel?: 'off' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
 }
 
 export interface ConnectOptions {

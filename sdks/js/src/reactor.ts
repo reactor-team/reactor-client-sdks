@@ -1,19 +1,19 @@
-import { Emitter } from "./internal/emitter";
-import type { ReactorClient } from "./internal/reactor-wasm.types";
-import { loadReactorWasm } from "./internal/wasm";
+import { Emitter } from './internal/emitter';
+import type { ReactorClient } from './internal/reactor-wasm.types';
+import { loadReactorWasm } from './internal/wasm';
 import type {
   ConnectOptions,
   JwtSource,
   ReactorEventMap,
   ReactorOptions,
   ReactorStatus,
-} from "./types";
+} from './types';
 
 /**
  * A live connection to a Reactor model.
  */
 export class Reactor implements Disposable {
-  private readonly clientOptions: Omit<ReactorOptions, "jwt">;
+  private readonly clientOptions: Omit<ReactorOptions, 'jwt'>;
   private pendingJwt: JwtSource | null | undefined;
   private client: ReactorClient | undefined;
   private clientPromise: Promise<ReactorClient> | undefined;
@@ -91,7 +91,7 @@ export class Reactor implements Disposable {
   /** Matches v2's `getStatus()`. The wasm binding's own terser `status()`
    *  name can be added alongside this later if it turns out to be worth it. */
   getStatus(): ReactorStatus {
-    return this.client?.status() ?? "disconnected";
+    return this.client?.status() ?? 'disconnected';
   }
 
   /** Matches v2's `getSessionId()`. See `getStatus()`. */
@@ -133,12 +133,12 @@ export class Reactor implements Disposable {
     // bail out before constructing a client that would otherwise outlive it
     // and never get freed.
     if (this.disposed) {
-      throw new Error("Reactor was disposed while connecting.");
+      throw new Error('Reactor was disposed while connecting.');
     }
     const client = new WasmReactorClient(this.clientOptions, this.pendingJwt);
-    client.onStatusChanged((status) => this.emitter.emit("statusChanged", status));
-    client.onSessionIdChanged((sessionId) => this.emitter.emit("sessionIdChanged", sessionId));
-    client.onError((error) => this.emitter.emit("error", error));
+    client.onStatusChanged((status) => this.emitter.emit('statusChanged', status));
+    client.onSessionIdChanged((sessionId) => this.emitter.emit('sessionIdChanged', sessionId));
+    client.onError((error) => this.emitter.emit('error', error));
     this.client = client;
     return client;
   }

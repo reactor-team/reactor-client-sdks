@@ -1,23 +1,23 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
-import { defineConfig, type Plugin } from "vite";
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { defineConfig, type Plugin } from 'vite';
 
-const TOKENS_URL = "https://api.reactor.inc/tokens";
+const TOKENS_URL = 'https://api.reactor.inc/tokens';
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(chunk as Buffer);
-  return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+  return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
 }
 
 function readApiKey(body: unknown): string | undefined {
-  if (typeof body !== "object" || body === null || !("apiKey" in body)) return undefined;
+  if (typeof body !== 'object' || body === null || !('apiKey' in body)) return undefined;
   const { apiKey } = body as { apiKey?: unknown };
-  return typeof apiKey === "string" ? apiKey : undefined;
+  return typeof apiKey === 'string' ? apiKey : undefined;
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.statusCode = status;
-  res.setHeader("Content-Type", "application/json");
+  res.setHeader('Content-Type', 'application/json');
   res.end(JSON.stringify(body));
 }
 
@@ -40,17 +40,17 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
  */
 function generateJwtPlugin(): Plugin {
   return {
-    name: "reactor-demo-generate-jwt",
+    name: 'reactor-demo-generate-jwt',
     configureServer(server) {
-      server.middlewares.use("/api/generate-jwt", (req, res) => {
+      server.middlewares.use('/api/generate-jwt', (req, res) => {
         void (async () => {
           try {
             const apiKey = readApiKey(await readJsonBody(req));
-            if (!apiKey) return sendJson(res, 400, { error: "apiKey is required" });
+            if (!apiKey) return sendJson(res, 400, { error: 'apiKey is required' });
 
             const upstream = await fetch(TOKENS_URL, {
-              method: "POST",
-              headers: { "Reactor-API-Key": apiKey, "Content-Type": "application/json" },
+              method: 'POST',
+              headers: { 'Reactor-API-Key': apiKey, 'Content-Type': 'application/json' },
               body: null,
             });
             const upstreamBody = await upstream.json().catch(() => ({}));
@@ -59,7 +59,7 @@ function generateJwtPlugin(): Plugin {
                 error: upstreamBody.detail ?? upstreamBody.error ?? `upstream HTTP ${upstream.status}`,
               });
             }
-            if (!upstreamBody.jwt) return sendJson(res, 502, { error: "upstream response had no jwt" });
+            if (!upstreamBody.jwt) return sendJson(res, 502, { error: 'upstream response had no jwt' });
             sendJson(res, 200, { jwt: upstreamBody.jwt });
           } catch (error) {
             sendJson(res, 500, { error: String(error) });
@@ -78,7 +78,7 @@ export default defineConfig({
       // npm symlinks node_modules/@reactor-team/js-sdk to the sdks/js
       // directory this demo lives under — one level above Vite's default
       // project root, which its filesystem allow-list would otherwise block.
-      allow: [".."],
+      allow: ['..'],
     },
   },
 });

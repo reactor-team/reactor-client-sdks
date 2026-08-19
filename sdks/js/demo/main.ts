@@ -1,16 +1,16 @@
 // Minimal, framework-free demo: connect, print status changes to the
 // console (and this page), disconnect. Exercises the same
 // `@reactor-team/js-sdk` package a plain-JS consumer would `npm install`.
-import { Reactor } from "@reactor-team/js-sdk";
-import type { Reactor as ReactorType } from "@reactor-team/js-sdk";
+import { Reactor } from '@reactor-team/js-sdk';
+import type { Reactor as ReactorType } from '@reactor-team/js-sdk';
 
-const statusEl = document.querySelector<HTMLSpanElement>("#status")!;
-const logEl = document.querySelector<HTMLDivElement>("#log")!;
-const modelNameEl = document.querySelector<HTMLInputElement>("#modelName")!;
-const apiUrlEl = document.querySelector<HTMLInputElement>("#apiUrl")!;
-const localEl = document.querySelector<HTMLInputElement>("#local")!;
-const jwtEl = document.querySelector<HTMLInputElement>("#jwt")!;
-const apiKeyEl = document.querySelector<HTMLInputElement>("#apiKey")!;
+const statusEl = document.querySelector<HTMLSpanElement>('#status')!;
+const logEl = document.querySelector<HTMLDivElement>('#log')!;
+const modelNameEl = document.querySelector<HTMLInputElement>('#modelName')!;
+const apiUrlEl = document.querySelector<HTMLInputElement>('#apiUrl')!;
+const localEl = document.querySelector<HTMLInputElement>('#local')!;
+const jwtEl = document.querySelector<HTMLInputElement>('#jwt')!;
+const apiKeyEl = document.querySelector<HTMLInputElement>('#apiKey')!;
 
 function log(message: string): void {
   console.log(message);
@@ -21,27 +21,27 @@ function log(message: string): void {
 // Demo-only convenience: persist every field in this browser's localStorage
 // so the form comes back as you left it. Fine for a local tool nobody else's
 // browser ever loads — never do this in a real app served to users.
-const STORAGE_PREFIX = "reactor-demo-";
+const STORAGE_PREFIX = 'reactor-demo-';
 
 function persistText(el: HTMLInputElement, key: string): void {
   const stored = localStorage.getItem(STORAGE_PREFIX + key);
   if (stored !== null) el.value = stored;
-  el.addEventListener("input", () => localStorage.setItem(STORAGE_PREFIX + key, el.value));
+  el.addEventListener('input', () => localStorage.setItem(STORAGE_PREFIX + key, el.value));
 }
 
 function persistCheckbox(el: HTMLInputElement, key: string): void {
   const stored = localStorage.getItem(STORAGE_PREFIX + key);
-  if (stored !== null) el.checked = stored === "true";
-  el.addEventListener("change", () => localStorage.setItem(STORAGE_PREFIX + key, String(el.checked)));
+  if (stored !== null) el.checked = stored === 'true';
+  el.addEventListener('change', () => localStorage.setItem(STORAGE_PREFIX + key, String(el.checked)));
 }
 
-persistCheckbox(localEl, "local");
-persistText(modelNameEl, "model-name");
-persistText(apiUrlEl, "api-url");
-persistText(jwtEl, "jwt");
-persistText(apiKeyEl, "api-key");
+persistCheckbox(localEl, 'local');
+persistText(modelNameEl, 'model-name');
+persistText(apiUrlEl, 'api-url');
+persistText(jwtEl, 'jwt');
+persistText(apiKeyEl, 'api-key');
 
-const generateJwtButton = document.querySelector<HTMLButtonElement>("#generateJwt")!;
+const generateJwtButton = document.querySelector<HTMLButtonElement>('#generateJwt')!;
 
 // A local runtime serves exactly one, already-loaded model and takes no auth
 // (see `local_start_session` in reactor-core's coordinator.rs — it never
@@ -56,28 +56,28 @@ function updateFieldAvailability(): void {
   generateJwtButton.disabled = disabledForLocal;
 }
 
-localEl.addEventListener("change", updateFieldAvailability);
+localEl.addEventListener('change', updateFieldAvailability);
 updateFieldAvailability();
 
-document.querySelector("#generateJwt")!.addEventListener("click", () => {
+document.querySelector('#generateJwt')!.addEventListener('click', () => {
   void (async () => {
     const apiKey = apiKeyEl.value.trim();
     if (!apiKey) {
-      log("generate JWT failed: enter an API key first");
+      log('generate JWT failed: enter an API key first');
       return;
     }
 
-    log("generating JWT...");
+    log('generating JWT...');
     try {
-      const response = await fetch("/api/generate-jwt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+      const response = await fetch('/api/generate-jwt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apiKey }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
       jwtEl.value = body.jwt;
-      log("JWT generated and filled in");
+      log('JWT generated and filled in');
     } catch (error) {
       log(`generate JWT failed: ${String(error)}`);
     }
@@ -92,10 +92,10 @@ let reactor: ReactorType | undefined;
 // reconnecting under the old settings.
 let reactorTargetKey: string | undefined;
 
-document.querySelector("#connect")!.addEventListener("click", () => {
+document.querySelector('#connect')!.addEventListener('click', () => {
   void (async () => {
     if (!localEl.checked && !modelNameEl.value.trim()) {
-      log("connect failed: enter a model name (required against prod)");
+      log('connect failed: enter a model name (required against prod)');
       return;
     }
     // The wasm binding requires a non-empty modelName unconditionally, even
@@ -103,13 +103,13 @@ document.querySelector("#connect")!.addEventListener("click", () => {
     // with — see `local_start_session` in coordinator.rs). The field is
     // disabled while `local` is checked, so fall back instead of trusting
     // whatever's left in it.
-    const modelName = localEl.checked ? modelNameEl.value.trim() || "local" : modelNameEl.value.trim();
+    const modelName = localEl.checked ? modelNameEl.value.trim() || 'local' : modelNameEl.value.trim();
     const apiUrl = apiUrlEl.value.trim() || undefined;
     const local = localEl.checked;
     const targetKey = JSON.stringify({ modelName, apiUrl, local });
 
     if (reactor && targetKey !== reactorTargetKey) {
-      log("connection target changed — disposing the previous instance first");
+      log('connection target changed — disposing the previous instance first');
       reactor[Symbol.dispose]();
       reactor = undefined;
     }
@@ -119,19 +119,19 @@ document.querySelector("#connect")!.addEventListener("click", () => {
     if (!reactor) {
       reactor = new Reactor({ modelName, apiUrl, local, jwt: jwtEl.value || undefined });
       reactorTargetKey = targetKey;
-      reactor.on("statusChanged", (status) => {
+      reactor.on('statusChanged', (status) => {
         statusEl.textContent = status;
         log(`statusChanged -> ${status}`);
       });
-      reactor.on("sessionIdChanged", (sessionId) => log(`sessionIdChanged -> ${sessionId}`));
-      reactor.on("error", (error) => log(`error -> ${error.code}: ${error.message}`));
+      reactor.on('sessionIdChanged', (sessionId) => log(`sessionIdChanged -> ${sessionId}`));
+      reactor.on('error', (error) => log(`error -> ${error.code}: ${error.message}`));
     } else {
       // The instance survived — still pick up whatever's in the JWT field
       // now, in case it was regenerated since the last connect.
       await reactor.setJwt(jwtEl.value || undefined);
     }
 
-    log("connecting...");
+    log('connecting...');
     try {
       await reactor.connect();
       log(`connected. sessionId=${reactor.getSessionId()}`);
@@ -141,13 +141,13 @@ document.querySelector("#connect")!.addEventListener("click", () => {
   })();
 });
 
-document.querySelector("#disconnect")!.addEventListener("click", () => {
+document.querySelector('#disconnect')!.addEventListener('click', () => {
   void (async () => {
     if (!reactor) return;
     // Default (recoverable = false): ends the session and frees the wasm
     // client in one step — the instance stays around, but a subsequent
     // connect() rebuilds the client from scratch.
     await reactor.disconnect();
-    log("disconnected");
+    log('disconnected');
   })();
 });

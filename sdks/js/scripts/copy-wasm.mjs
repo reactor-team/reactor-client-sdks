@@ -3,18 +3,18 @@
 // the rest of the built package, so `import("../wasm/reactor_wasm.js")` in
 // src/internal/wasm.ts resolves from an npm install with no separate build
 // step on the consumer's side. Run as part of `npm run build`, after tsup.
-import { cpSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { cpSync, existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const wasmPkgDir = join(packageRoot, "..", "..", "crates", "reactor-wasm", "pkg");
-const destDir = join(packageRoot, "dist", "wasm");
+const wasmPkgDir = join(packageRoot, '..', '..', 'crates', 'reactor-wasm', 'pkg');
+const destDir = join(packageRoot, 'dist', 'wasm');
 
 if (!existsSync(wasmPkgDir)) {
   console.error(
     `error: ${wasmPkgDir} does not exist.\n` +
-      "Build the browser binding first: `mise run build:wasm` (from the repo root).",
+      'Build the browser binding first: `mise run build:wasm` (from the repo root).',
   );
   process.exit(1);
 }
