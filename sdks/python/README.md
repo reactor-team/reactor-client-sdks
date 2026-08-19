@@ -190,7 +190,7 @@ with Speaker(speaker), Microphone(mic):
 - Both raise when PortAudio is missing, so catch that if you would rather run
   silent.
 
-[`echo_audio.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/echo_audio.py) runs both together.
+`Speaker` is wired up in [`pygame_app/`](https://github.com/reactor-team/reactor-client-sdks/tree/main/sdks/python/examples/pygame_app), which plays a model's audio track alongside its video.
 
 ## Errors
 
@@ -277,32 +277,35 @@ await download_clip(clip, "clip.ts")          # the module-level function
 
 ## Samples
 
-Runnable scripts in [`examples/`](https://github.com/reactor-team/reactor-client-sdks/tree/main/sdks/python/examples), driven by `REACTOR_API_URL` /
-`REACTOR_MODEL` / `REACTOR_JWT` / `REACTOR_LOCAL` (see
-[`reactor_client.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/reactor_client.py)):
+Six minimal examples in [`examples/`](https://github.com/reactor-team/reactor-client-sdks/tree/main/sdks/python/examples),
+one per capability. Each adds exactly one call to the same spine — connect, give
+the model what it needs, receive frames — so the diff against the first one is
+the lesson. The same six exist in every Reactor SDK.
 
-| Script | Demonstrates |
-|---|---|
-| [`main.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/main.py) | Connect, list the model's tracks, send a command, disconnect. |
-| [`push_video.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/push_video.py) | Stream generated frames into a `sendonly` video track. |
-| [`push_audio.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/push_audio.py) | Stream a sine tone, a WAV file, or the microphone into a `sendonly` audio track. |
-| [`echo_audio.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/echo_audio.py) | Full audio duplex: microphone out, the model's audio to the speakers. |
-| [`pause_resume.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/pause_resume.py) | Pause and resume a `recvonly` track, counting only that track's frames. |
-| [`record.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/record.py) | Request a clip or a full-session recording and download it. |
-| [`frame_metadata.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/frame_metadata.py) | Read the per-frame metadata trailer off an incoming track. |
-| [`frame_metadata_roundtrip.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/frame_metadata_roundtrip.py) | Tag outgoing frames and match the ones that come back. |
-| [`metadata_publisher.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/metadata_publisher.py) | Publish tagged frames with no UI — pair with `pygame_app/`. |
-| [`pygame_app/`](https://github.com/reactor-team/reactor-client-sdks/tree/main/sdks/python/examples/pygame_app) | Live video, speaker playback, and a control UI built from the model's capabilities. |
-
-Every example except `main.py` and `pygame_app/` imports its sibling
-`reactor_client.py`, so run those as modules (from `sdks/python/`):
+| # | Script | Teaches |
+|---|---|---|
+| 01 | `01_connect_and_receive.py` | Connect, send the model's first command, read the reply, count frames. |
+| 02 | `02_pause_and_resume.py` | Pause and resume a track — nothing is generated while it is paused. |
+| 03 | `03_publish_track.py` | Upload a conditioning image, publish a `sendonly` track, push frames into it. |
+| 04 | `04_multi_connection.py` | Two clients on one session, the second adopting it by id. |
+| 05 | `05_record_clip.py` | Request a clip and download it. |
+| 06 | `06_frame_metadata.py` | Tag outgoing frames and match the tags that come back. |
 
 ```bash
-REACTOR_MODEL=my-model REACTOR_JWT=<token> python examples/main.py
-REACTOR_MODEL=my-model REACTOR_JWT=<token> python -m examples.push_video --track video_input
+export REACTOR_API_KEY=rk_...
+uv run python examples/01_connect_and_receive.py
+uv run python examples/05_record_clip.py --clip 5 --out clip.mp4
 ```
 
-`pygame_app/` is standalone — see its own [README](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/pygame_app/README.md).
+Options come from flags or from `REACTOR_API_KEY` / `REACTOR_JWT` /
+`REACTOR_MODEL` / `REACTOR_API_URL` / `REACTOR_LOCAL`; `--help` on any of them
+lists the rest. See the [examples README](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/README.md)
+for what each one needs.
+
+[`pygame_app/`](https://github.com/reactor-team/reactor-client-sdks/tree/main/sdks/python/examples/pygame_app)
+is the opposite kind of sample: a whole application — live video, speaker
+playback, and a control UI built from the model's capabilities. Standalone, with
+its own [README](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/pygame_app/README.md).
 
 ## Development
 
