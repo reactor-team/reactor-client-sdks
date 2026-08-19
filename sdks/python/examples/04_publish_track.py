@@ -74,26 +74,34 @@ async def main() -> None:
 
         output = reactor.tracks.with_kind("video").with_direction("recvonly").one()
         received = 0
+        # Two tiles: what goes out on the left, what the model sends back on the
+        # right. Side by side is the only way to see that the edit landed.
+        window = common.display(args, f"{args.model} · sent | received", tiles=2)
 
         @output.on_raw_frame
-        def count(*_: object) -> None:
+        def count(data: bytes, width: int, height: int, *_: object) -> None:
             nonlocal received
             received += 1
+            window.submit(data, width, height, tile=1)
 
         sent = 0
         deadline = time.monotonic() + args.seconds
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and not window.closed:
             # `user_data` rides along with the frame as its metadata. Anything
             # goes — a sequence number here, so a frame can be identified later.
             # https://docs.reactor.inc/concepts/frame-metadata
+            outgoing = common.frame(sent, WIDTH, HEIGHT)
             source.push_frame(
-                common.frame(sent, WIDTH, HEIGHT),
+                outgoing,
                 width=WIDTH,
                 height=HEIGHT,
                 user_data=f"seq={sent}".encode(),
             )
+            window.submit(outgoing, WIDTH, HEIGHT, tile=0)
             sent += 1
-            await asyncio.sleep(1 / FPS)
+            # Paces the push loop, and draws while it waits when there is a
+            # window — a plain sleep here would leave it frozen.
+            await window.hold(1 / FPS)
 
         source.unpublish()
         print(f"frames sent: {sent}")

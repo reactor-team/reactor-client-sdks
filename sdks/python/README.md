@@ -296,7 +296,13 @@ the lesson. The same seven exist in every Reactor SDK.
 export REACTOR_API_KEY=rk_...
 uv run python examples/01_connect_and_receive.py
 uv run python examples/06_record_clip.py --clip 5 --out clip.mp4
+
+pip install pygame                                       # for --show
+uv run python examples/04_publish_track.py --show        # sent | received
 ```
+
+`--show` puts the stream in a window, which is the only way to see that a model
+did the right thing rather than merely produce frames.
 
 Options come from flags or from `REACTOR_API_KEY` / `REACTOR_JWT` /
 `REACTOR_MODEL` / `REACTOR_API_URL` / `REACTOR_LOCAL`; `--help` on any of them

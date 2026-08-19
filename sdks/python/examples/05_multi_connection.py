@@ -51,14 +51,15 @@ def client(args, label: str) -> Reactor:
     return reactor
 
 
-def count_frames(reactor: Reactor, label: str) -> Callable[[], int]:
+def count_frames(reactor: Reactor, label: str, window, tile: int) -> Callable[[], int]:
     output = reactor.tracks.with_kind("video").with_direction("recvonly").one()
     frames = 0
 
     @output.on_raw_frame
-    def count(*_: object) -> None:
+    def count(data: bytes, width: int, height: int, *_: object) -> None:
         nonlocal frames
         frames += 1
+        window.submit(data, width, height, tile=tile)
 
     print(f"[{label}] track: {output.name}")
     return lambda: frames
@@ -70,20 +71,23 @@ async def main() -> None:
     creator = client(args, "creator")
     joiner = client(args, "joiner")
 
+    # One tile per client: the same session, arriving twice.
+    window = common.display(args, f"{args.model} · creator | joiner", tiles=2)
+
     async with creator, joiner:
         await creator.connect()
         session = creator.session_id
         print(f"session: {session}")
         await common.bootstrap(creator, args.model)
-        creator_frames = count_frames(creator, "creator")
+        creator_frames = count_frames(creator, "creator", window, tile=0)
 
         # Same session, second transport. The id is the whole handoff: no
         # coordination between the two clients, and no second session created.
         await joiner.connect(session_id=session)
         print(f"[joiner] joined: {joiner.session_id}")
-        joiner_frames = count_frames(joiner, "joiner")
+        joiner_frames = count_frames(joiner, "joiner", window, tile=1)
 
-        await asyncio.sleep(args.seconds)
+        await window.hold(args.seconds)
         print(f"frames creator: {creator_frames()}")
         print(f"frames joiner: {joiner_frames()}")
 

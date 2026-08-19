@@ -1,12 +1,16 @@
 """Shared plumbing for the examples — and nothing more than that.
 
-Two things live here, and the split is deliberate:
+Three things live here, and the split is deliberate:
 
 * **Options** — reading the model, the URL and the credentials from flags or the
   environment. Boilerplate, identical in every language.
 * **The bootstrap** — the minimum command a model needs before it generates
   anything, plus the throwaway frames two examples push. Model trivia and test
   data: which command, which prompt, which pixels.
+* **The window** — `--show` puts the frames on screen. Every example receives
+  video, and a frame counter proves that something arrived, not that it was the
+  right something. Plumbing, and the same plumbing seven times over, so it lives
+  here and each example spends two lines on it.
 
 SDK mechanics stay in the examples, even where that means repeating them.
 Connecting, wiring events and tearing down are what a reader opened the file to
@@ -31,7 +35,10 @@ Docs:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
+import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -113,6 +120,11 @@ def parse(
         default=15.0,
         help="how long to keep the session open (default: 15)",
     )
+    parser.add_argument(
+        "--show",
+        action="store_true",
+        help="show the video in a window (needs pygame: pip install pygame)",
+    )
     if add is not None:
         add(parser)
     args = parser.parse_args()
@@ -132,6 +144,123 @@ async def bootstrap(reactor: Reactor, model: str) -> None:
     for command, data in BOOTSTRAP.get(model, _FALLBACK):
         reply = await reactor.send_command(command, data)
         print(f"bootstrap: {command} {data} -> {reply}")
+
+
+# ── the window ────────────────────────────────────────────────────────────────
+
+#: Tiles are scaled down to this width. A model's output can be 1280 wide, and
+#: two of those side by side do not fit on a laptop.
+MAX_TILE_WIDTH = 640
+
+
+class Display:
+    """A window showing frames as they arrive. One tile per stream.
+
+    Opt-in: `common.display()` returns a do-nothing stand-in unless `--show` was
+    passed, so an example has one code path either way and needs pygame only when
+    it is actually asked for a window.
+
+    Frames are submitted from the SDK's delivery thread and drawn from the event
+    loop, because that is the thread the window belongs to. Only the newest frame
+    per tile is kept: a window that fell behind should show what is happening
+    now, not work through a backlog.
+    """
+
+    def __init__(self, title: str, tiles: int = 1) -> None:
+        import pygame  # imported here so no window means no dependency
+
+        self._pygame = pygame
+        self._title = title
+        self._tiles = tiles
+        self._lock = threading.Lock()
+        self._latest: dict[int, tuple[bytes, int, int]] = {}
+        self._screen = None
+        self._box: tuple[int, int] | None = None
+        self._closed = False
+        self._drawn = 0
+        self._last_caption = 0.0
+
+    @property
+    def closed(self) -> bool:
+        """True once the window has been closed, so an example can stop early."""
+        return self._closed
+
+    def submit(self, data: bytes, width: int, height: int, tile: int = 0) -> None:
+        with self._lock:
+            self._latest[tile] = (data, width, height)
+
+    async def hold(self, seconds: float) -> None:
+        """Keep the session open for `seconds`, drawing while it lasts.
+
+        Returns early if the window is closed — the same thing every media app
+        does when its window goes away.
+        """
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline and not self._closed:
+            self._draw()
+            await asyncio.sleep(1 / 60)
+
+    def _draw(self) -> None:
+        pygame = self._pygame
+        with self._lock:
+            frames = dict(self._latest)
+        if not frames:
+            return
+
+        if self._screen is None:
+            _, width, height = next(iter(frames.values()))
+            scale = min(1.0, MAX_TILE_WIDTH / width)
+            self._box = (int(width * scale), int(height * scale))
+            pygame.init()
+            pygame.display.set_caption(self._title)
+            self._screen = pygame.display.set_mode((self._box[0] * self._tiles, self._box[1]))
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self._closed = True
+                pygame.quit()
+                self._screen = None
+                return
+
+        box = self._box
+        assert box is not None
+        for tile, (data, width, height) in frames.items():
+            surface = pygame.image.frombuffer(data, (width, height), "BGRA")
+            if (width, height) != box:
+                surface = pygame.transform.scale(surface, box)
+            self._screen.blit(surface, (tile * box[0], 0))
+        pygame.display.flip()
+
+        self._drawn += 1
+        now = time.monotonic()
+        if now - self._last_caption >= 1.0:
+            fps = self._drawn / (now - self._last_caption) if self._last_caption else 0.0
+            if fps:
+                pygame.display.set_caption(f"{self._title} — {fps:.0f} fps drawn")
+            self._drawn = 0
+            self._last_caption = now
+
+
+class _NoDisplay:
+    """What `display()` returns without `--show`: the same API, doing nothing."""
+
+    closed = False
+
+    def submit(self, data: bytes, width: int, height: int, tile: int = 0) -> None:
+        pass
+
+    async def hold(self, seconds: float) -> None:
+        await asyncio.sleep(seconds)
+
+
+def display(args: argparse.Namespace, title: str, tiles: int = 1) -> Display | _NoDisplay:
+    """A window if `--show` was passed, a stand-in with the same API if not."""
+    if not args.show:
+        return _NoDisplay()
+    try:
+        return Display(title, tiles)
+    except ImportError as exc:  # pragma: no cover - depends on the environment
+        raise SystemExit("--show needs pygame: pip install pygame") from exc
 
 
 def frame(seq: int, width: int, height: int) -> bytes:

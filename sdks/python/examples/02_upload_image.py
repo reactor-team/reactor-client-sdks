@@ -76,13 +76,17 @@ async def main() -> None:
 
         output = reactor.tracks.with_kind("video").with_direction("recvonly").one()
         frames = 0
+        window = common.display(args, f"{args.model} · conditioned on {uploaded.name}")
 
         @output.on_raw_frame
-        def count(*_: object) -> None:
+        def count(data: bytes, width: int, height: int, *_: object) -> None:
             nonlocal frames
             frames += 1
+            window.submit(data, width, height)
 
-        await asyncio.sleep(args.seconds)
+        # With `--show`, whether the image took is a thing you can see rather
+        # than a number you have to trust.
+        await window.hold(args.seconds)
         print(f"frames: {frames}")
 
 

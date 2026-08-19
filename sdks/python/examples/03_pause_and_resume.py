@@ -48,16 +48,20 @@ async def main() -> None:
         print(f"track: {output.name}")
 
         frames = 0
+        window = common.display(args, f"{args.model} · {output.name}")
 
         @output.on_raw_frame
-        def count(*_: object) -> None:
+        def count(data: bytes, width: int, height: int, *_: object) -> None:
             nonlocal frames
             frames += 1
+            window.submit(data, width, height)
 
         async def phase(label: str) -> int:
             nonlocal frames
             frames = 0
-            await asyncio.sleep(args.seconds)
+            # Under `--show` the paused phase is the visible one: the last frame
+            # stays on screen, frozen, until the track is resumed.
+            await window.hold(args.seconds)
             print(f"frames {label}: {frames}")
             return frames
 

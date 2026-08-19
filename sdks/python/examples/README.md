@@ -82,6 +82,25 @@ A model this repo does not know gets `set_prompt` and nothing else, which is
 right for most of them. If yours needs something else first, add it to
 `BOOTSTRAP` in `common.py`.
 
+## Seeing the frames
+
+Every example receives video, and a frame count proves that something arrived —
+not that it was the right something. `--show` puts the stream in a window:
+
+```bash
+pip install pygame
+uv run python examples/01_connect_and_receive.py --show
+```
+
+Two of them show two tiles side by side, which is where the flag earns its keep:
+04 puts what you push next to what the model sends back, and 05 puts the
+creator's stream next to the joiner's. In 03 the paused phase is a frozen frame
+you can watch stop and start.
+
+Closing the window ends the run early. Without the flag nothing changes and
+nothing extra is needed — the window lives in `common.py` and each example spends
+two lines on it.
+
 Every example takes `--help`. Options come from flags, falling back to the
 environment:
 
@@ -94,15 +113,16 @@ environment:
 | `REACTOR_LOCAL` | `1` to talk to a local runtime |
 
 Frames are read with `on_raw_frame`, which hands over the decoded BGRA bytes and
-needs nothing installed. `on_frame` delivers the same frames as a numpy array if
-you would rather have one.
+needs nothing installed — the window draws those bytes directly, so even `--show`
+needs no numpy. `on_frame` delivers the same frames as a numpy array if you would
+rather have one.
 
 ## What lives in `common.py`
 
-Options parsing, the per-model bootstrap (which command, which prompt) and the
-throwaway frames two examples push. Nothing else: connecting, wiring events and
-tearing down stay in every example, even though that repeats them, because they
-are what you opened the file to read.
+Options parsing, the per-model bootstrap (which command, which prompt), the
+throwaway frames two examples push, and the `--show` window. Nothing else:
+connecting, wiring events and tearing down stay in every example, even though
+that repeats them, because they are what you opened the file to read.
 
 The one exception is example 02: which command carries an image, and under what
 name, is model trivia — but `upload_file` is an SDK capability, and a capability

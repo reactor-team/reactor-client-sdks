@@ -70,6 +70,7 @@ async def main() -> None:
         print(f"track: {output.name}")
 
         frames = 0
+        window = common.display(args, f"{args.model} · {output.name}")
 
         # on_raw_frame hands over the bytes WebRTC decoded (BGRA) and needs
         # nothing installed. on_frame is the same frames as a numpy array.
@@ -79,8 +80,10 @@ async def main() -> None:
             frames += 1
             if frames == 1:
                 print(f"first frame: {width}x{height}")
+            window.submit(data, width, height)
 
-        await asyncio.sleep(args.seconds)
+        # `--show` puts these on screen; without it this is a plain sleep.
+        await window.hold(args.seconds)
         print(f"frames: {frames}")
 
 

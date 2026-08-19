@@ -59,6 +59,8 @@ async def main() -> None:
         output = reactor.tracks.with_kind("video").with_direction("recvonly").one()
         print(f"track: {output.name}")
 
+        window = common.display(args, f"{args.model} · {output.name}")
+
         with_trailer = 0
         without_trailer = 0
         tagged = 0
@@ -75,6 +77,7 @@ async def main() -> None:
             user_data: bytes,
         ) -> None:
             nonlocal with_trailer, without_trailer, tagged, previous_timestamp
+            window.submit(data, width, height)
             # No trailer at all looks like this: the ids and the timestamp are
             # zero and there are no bytes. Worth checking before trusting either.
             if not frame_id and not timestamp_us and not user_data:
@@ -94,7 +97,7 @@ async def main() -> None:
                     f"at {timestamp_us} us, user_data={user_data!r}"
                 )
 
-        await asyncio.sleep(args.seconds)
+        await window.hold(args.seconds)
 
     print(f"frames with a trailer: {with_trailer}")
     print(f"frames without one: {without_trailer}")

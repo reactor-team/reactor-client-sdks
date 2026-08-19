@@ -56,16 +56,18 @@ async def main() -> None:
 
         output = reactor.tracks.with_kind("video").with_direction("recvonly").one()
         frames = 0
+        window = common.display(args, f"{args.model} · {output.name}")
 
         @output.on_raw_frame
-        def count(*_: object) -> None:
+        def count(data: bytes, width: int, height: int, *_: object) -> None:
             nonlocal frames
             frames += 1
+            window.submit(data, width, height)
 
         # There has to be something to capture: a clip is cut from what the
         # runtime already produced, so asking before any frames exist gets you an
         # empty window rather than an error.
-        await asyncio.sleep(max(args.clip, args.seconds))
+        await window.hold(max(args.clip, args.seconds))
         print(f"frames: {frames}")
 
         clip = await reactor.request_clip(args.clip)
