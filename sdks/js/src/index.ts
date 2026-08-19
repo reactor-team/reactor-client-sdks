@@ -5,6 +5,7 @@ export type {
   ReactorError,
   ReactorEventMap,
   ReactorEventName,
+  ReactorMessage,
   ReactorOptions,
   ReactorStatus,
 } from './types';

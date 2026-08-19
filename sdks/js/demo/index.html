@@ -10,8 +10,17 @@
       input { width: 100%; box-sizing: border-box; padding: 0.4rem; font-size: 1rem; }
       button { margin-top: 1rem; margin-right: 0.5rem; padding: 0.5rem 1rem; font-size: 1rem; }
       #status { font-weight: bold; }
-      #log { margin-top: 1rem; padding: 0.75rem; background: #111; color: #0f0; font-family: monospace;
+      #logToolbar { margin-top: 1rem; display: flex; justify-content: space-between; align-items: center;
+                    background: #111; color: #0f0; font-family: monospace; font-size: 0.85rem;
+                    padding: 0.4rem 0.75rem; border-bottom: 1px solid #333; }
+      #logToolbar button { margin: 0; padding: 0.2rem 0.6rem; font-size: 0.8rem;
+                            background: #222; color: #0f0; border: 1px solid #0f0; cursor: pointer; }
+      #logToolbar button + button { margin-left: 0.4rem; }
+      #log { padding: 0.75rem; background: #111; color: #0f0; font-family: monospace;
              font-size: 0.85rem; height: 240px; overflow-y: auto; white-space: pre-wrap; }
+      #commands { margin-top: 0.5rem; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+      #commands button { margin: 0; padding: 0.3rem 0.6rem; font-size: 0.85rem; }
+      #commandsEmpty { margin-top: 0.5rem; font-size: 0.85rem; color: #666; }
     </style>
   </head>
   <body>
@@ -22,15 +31,25 @@
     <label>Reactor API key <input id="apiKey" type="password" placeholder="" /></label>
     <label>API URL (blank = default) <input id="apiUrl" placeholder="" /></label>
     <label>Model name <input id="modelName" value="" /></label>
-    <label>JWT (optional) <input id="jwt" /></label>
-    <button id="generateJwt">Generate JWT</button>
 
     <button id="connect">Connect</button>
-    <button id="disconnect">Disconnect</button>
+    <button id="disconnect" disabled>Disconnect</button>
 
-    
-    
+    <label>Command <input id="command" placeholder="e.g. set_caption" disabled /></label>
+    <label>Data (JSON) <input id="commandData" value="{}" disabled /></label>
+    <button id="sendCommand" disabled>Send Command</button>
+    <button id="getSchema" disabled>Get Schema</button>
 
+    <p id="commandsEmpty">Available commands appear here once the session reaches "ready".</p>
+    <div id="commands"></div>
+
+    <div id="logToolbar">
+      <span>Log</span>
+      <span>
+        <button id="copyLog">Copy</button>
+        <button id="clearLog">Clear</button>
+      </span>
+    </div>
     <div id="log"></div>
 
     <script type="module" src="./main.ts"></script>

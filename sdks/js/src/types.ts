@@ -3,10 +3,11 @@ import type {
   ConnectOptions,
   JwtSource,
   ReactorError,
+  ReactorMessage,
   ReactorStatus,
 } from './internal/reactor-wasm.types';
 
-export type { ConnectOptions, JwtSource, ReactorError, ReactorStatus };
+export type { ConnectOptions, JwtSource, ReactorError, ReactorMessage, ReactorStatus };
 
 /**
  * `Reactor` construction options. Only `modelName` is required.
@@ -28,6 +29,13 @@ export interface ReactorEventMap {
   statusChanged: (status: ReactorStatus) => void;
   sessionIdChanged: (sessionId: string | undefined) => void;
   error: (error: ReactorError) => void;
+  /** Application-scope payload from the model. */
+  message: (message: ReactorMessage) => void;
+  /** Platform-scope payload — naming matches v2 and Python's `runtime_message`. */
+  runtimeMessage: (message: ReactorMessage) => void;
+  /** The model's command schema (an OpenAPI document), fired once the
+   *  auto-request on `"ready"` lands — see `getSchema()`. */
+  schema: (schema: unknown) => void;
 }
 
 export type ReactorEventName = keyof ReactorEventMap;

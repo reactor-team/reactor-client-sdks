@@ -1,10 +1,13 @@
+import { AwaitQueue } from 'awaitqueue';
 import { Emitter } from './internal/emitter';
+import { extractFileRefs } from './internal/file-ref';
 import type { ReactorClient } from './internal/reactor-wasm.types';
 import { loadReactorWasm } from './internal/wasm';
 import type {
   ConnectOptions,
   JwtSource,
   ReactorEventMap,
+  ReactorMessage,
   ReactorOptions,
   ReactorStatus,
 } from './types';
@@ -18,8 +21,22 @@ export class Reactor implements Disposable {
   private client: ReactorClient | undefined;
   private clientPromise: Promise<ReactorClient> | undefined;
   private disposed = false;
+  private schema: unknown;
+  /** Bumped on every `refreshSchema()` call — lets a call detect it's been
+   *  superseded by a newer one even when `client` itself hasn't changed
+   *  (e.g. two "ready" transitions on the same reused client). */
+  private schemaRefreshId = 0;
 
   private readonly emitter = new Emitter<ReactorEventMap>();
+  /** Serializes connect()/reconnect()/disconnect() (and the free() inside
+   *  disconnect()/[Symbol.dispose]) against each other — matches v2's own
+   *  use of the same library (`WebRTCTransportClient`'s peerConnectionQueue)
+   *  to serialize concurrent operations on shared wasm/webrtc state. Calling
+   *  into the client concurrently with one of these (e.g. a user clicking
+   *  Disconnect mid-connect) races its internal state and can throw
+   *  ("attempted to take ownership of Rust value while it was borrowed") or
+   *  corrupt it outright. */
+  private readonly queue = new AwaitQueue();
 
   constructor(options: ReactorOptions) {
     const { jwt, ...clientOptions } = options;
@@ -31,8 +48,10 @@ export class Reactor implements Disposable {
 
   async connect(options?: ConnectOptions): Promise<void> {
     this.assertNotDisposed();
-    const client = await this.getOrCreateClient();
-    await client.connect(options);
+    await this.queue.push(async () => {
+      const client = await this.getOrCreateClient();
+      await client.connect(options);
+    }, 'connect');
   }
 
   /**
@@ -46,21 +65,72 @@ export class Reactor implements Disposable {
    * Note this only governs the *local* resource graph — the binding's own
    * `disconnect()` always ends the session server-side regardless of this
    * flag, so `recoverable` isn't a way to keep the session itself alive.
+   *
+   * Queued behind any in-flight `connect()`/`reconnect()` — see `queue`'s
+   * docs for why calling into the client concurrently with one of those is
+   * unsafe.
    */
   async disconnect(recoverable = false): Promise<void> {
     this.assertNotDisposed();
-    if (this.client) {
-      await this.client.disconnect();
-    }
-    if (!recoverable) {
-      this.freeClient();
-    }
+    await this.queue.push(async () => {
+      if (this.client) {
+        await this.client.disconnect();
+      }
+      if (!recoverable) {
+        this.freeClient();
+      }
+    }, 'disconnect');
   }
 
   async reconnect(): Promise<void> {
     this.assertNotDisposed();
+    await this.queue.push(async () => {
+      const client = await this.getOrCreateClient();
+      await client.reconnect();
+    }, 'reconnect');
+  }
+
+  // ── Messaging ───────────────────────────────────────────────────────────
+
+  /**
+   * Sends a command to the model and resolves with its correlated reply.
+   * Rejects, same as `connect`/`disconnect`, if the session isn't `"ready"`.
+   *
+   * `undefined` means the handler acknowledged the command but sent no
+   * reply body. The binding's own typed signature promises `undefined` for
+   * that case, but its serializer (serde_wasm_bindgen's `json_compatible`
+   * mode) actually hands back `null` — normalized here so callers can rely
+   * on the documented type instead of the binding's serialization quirk.
+   *
+   * A `FileRef` (from `uploadFile`) may be passed as a top-level value in
+   * `data` alongside regular parameters — it is extracted and sent as a
+   * separate upload reference rather than embedded in the JSON payload.
+   */
+  async sendCommand(
+    command: string,
+    data?: Record<string, unknown>,
+  ): Promise<ReactorMessage | undefined> {
+    this.assertNotDisposed();
     const client = await this.getOrCreateClient();
-    await client.reconnect();
+    const extracted = extractFileRefs(data);
+    const reply = await client.sendCommand(command, extracted.data, extracted.uploads);
+    return reply ?? undefined;
+  }
+
+  /** Requests the model's command schema directly. Most callers don't need
+   *  this — it's already fetched once and cached as soon as the session
+   *  reaches `"ready"`; use `getSchema()` for that. */
+  async requestSchema(): Promise<unknown> {
+    this.assertNotDisposed();
+    const client = await this.getOrCreateClient();
+    return client.requestSchema();
+  }
+
+  /** The model's command schema (an OpenAPI document), cached from the
+   *  `requestSchema()` call fired automatically on `"ready"`. `undefined`
+   *  until that reply has landed. */
+  getSchema(): unknown {
+    return this.schema;
   }
 
   setJwt(jwt?: JwtSource | null): Promise<void> {
@@ -82,8 +152,17 @@ export class Reactor implements Disposable {
   [Symbol.dispose](): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.freeClient();
+    const client = this.client;
+    this.client = undefined;
+    this.clientPromise = undefined;
+    this.schema = undefined;
     this.emitter.clear();
+    if (client) {
+      // Queued behind any in-flight connect()/reconnect()/disconnect(), same
+      // as freeClient() — this can't await that itself, since [Symbol.dispose]
+      // is synchronous per the `using` contract.
+      void this.queue.push(() => client.free(), 'dispose').catch(() => {});
+    }
   }
 
   // ── Introspection ───────────────────────────────────────────────────────
@@ -136,20 +215,57 @@ export class Reactor implements Disposable {
       throw new Error('Reactor was disposed while connecting.');
     }
     const client = new WasmReactorClient(this.clientOptions, this.pendingJwt);
-    client.onStatusChanged((status) => this.emitter.emit('statusChanged', status));
+    client.onStatusChanged((status) => {
+      this.emitter.emit('statusChanged', status);
+      if (status === 'ready') void this.refreshSchema(client);
+    });
     client.onSessionIdChanged((sessionId) => this.emitter.emit('sessionIdChanged', sessionId));
     client.onError((error) => this.emitter.emit('error', error));
+    client.onMessage((message) => this.emitter.emit('message', message));
+    client.onRuntimeMessage((message) => this.emitter.emit('runtimeMessage', message));
     this.client = client;
     return client;
   }
 
-  /** Frees the wasm resource graph, if one exists. Reusable — unlike
-   *  `[Symbol.dispose]`, this doesn't set the permanent `disposed` flag, so
-   *  a later `connect()`/`reconnect()` lazily builds a fresh client. */
+  /** Fired once per `"ready"` transition — see `getSchema()`. `getSchema()`
+   *  isn't guaranteed populated by the time a `statusChanged` "ready" handler
+   *  runs (this fetch is async and dispatched separately), so callers that
+   *  need the schema as soon as it lands should listen for `schema` instead
+   *  of reading `getSchema()` synchronously off `statusChanged`.
+   *
+   *  Guards against a stale reply: if `disconnect()`/a later `connect()`
+   *  replaces `client` before this resolves, or a newer `refreshSchema()`
+   *  call for the same client wins the race, the result is discarded rather
+   *  than clobbering `this.schema` (or emitting `schema`) with old data.
+   *
+   *  A rejection here (e.g. the session drops mid-request) surfaces like any
+   *  other binding failure, through the same `error` event as `onError`. */
+  private async refreshSchema(client: ReactorClient): Promise<void> {
+    const refreshId = ++this.schemaRefreshId;
+    try {
+      const schema = await client.requestSchema();
+      if (this.client !== client || refreshId !== this.schemaRefreshId) return;
+      this.schema = schema;
+      this.emitter.emit('schema', this.schema);
+    } catch (cause) {
+      if (this.client !== client || refreshId !== this.schemaRefreshId) return;
+      this.emitter.emit('error', cause as Parameters<ReactorEventMap['error']>[0]);
+    }
+  }
+
+  /** Frees the wasm resource graph, if one exists, and clears the cached
+   *  schema. Reusable — unlike `[Symbol.dispose]`, this doesn't set the
+   *  permanent `disposed` flag, so a later `connect()`/`reconnect()` lazily
+   *  builds a fresh client.
+   *
+   *  Only called from within `disconnect()`'s queued task, so `client.free()`
+   *  is safe to call directly here — the queue already guarantees no other
+   *  operation is running concurrently against it. */
   private freeClient(): void {
     this.client?.free();
     this.client = undefined;
     this.clientPromise = undefined;
+    this.schema = undefined;
   }
 
   private assertNotDisposed(): void {

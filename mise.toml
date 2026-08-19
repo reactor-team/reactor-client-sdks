@@ -132,15 +132,14 @@ dir = "sdks/python"
 run = "uv run --group dev --locked pytest"
 
 [tasks.test]
-description = "[Testing] Every test suite (Rust + Python)"
-depends = ["test:rust", "test:python"]
+description = "[Testing] Every test suite (Rust + Python + JS)"
+depends = ["test:rust", "test:python", "test:js"]
 
 # ── JS SDK ────────────────────────────────────────────────────────────────────
 # Node/npm aren't in [tools] above yet — every task here just shells out to
-# whatever `npm` is on PATH. Pin Node here once the JS SDK needs CI beyond
-# lint/type-check/build (see .github/workflows/ci.yml's `lint` and `wasm`
-# jobs, which use actions/setup-node instead, matching how Rust is handled:
-# an action owns the toolchain, mise stays out of its way).
+# whatever `npm` is on PATH (see .github/workflows/ci.yml's `lint`, `wasm` and
+# `test` jobs, which use actions/setup-node instead, matching how Rust is
+# handled: an action owns the toolchain, mise stays out of its way).
 
 [tasks."install:js"]
 description = "[Setup] npm install the JS SDK"
@@ -155,6 +154,13 @@ run = [
     "npm run lint",
     "npm run type-check",
 ]
+
+[tasks."test:js"]
+description = "[Testing] JS SDK unit tests via vitest"
+dir = "sdks/js"
+depends = ["install:js"]
+# Pure-JS unit tests against a mocked ReactorClient — no wasm build needed.
+run = "npm run test"
 
 [tasks."build:js"]
 description = "[Build] Build the JS SDK to dist/ (needs build:wasm first)"
