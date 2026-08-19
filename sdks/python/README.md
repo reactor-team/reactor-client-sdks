@@ -295,7 +295,7 @@ the lesson. The same seven exist in every Reactor SDK.
 ```bash
 export REACTOR_API_KEY=rk_...
 uv run python examples/01_connect_and_receive.py
-uv run python examples/06_record_clip.py --clip 5 --out clip.mp4
+uv run python examples/06_record_clip.py --clip 5 --out clip.ts
 
 pip install pygame                                       # for --show
 uv run python examples/04_publish_track.py --show        # sent | received

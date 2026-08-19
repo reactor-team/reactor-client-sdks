@@ -5,9 +5,14 @@ Baseline plus `request_clip`, which asks the runtime for the last N seconds of
 the session and answers with an HLS manifest. `download_clip` then fetches the
 segments and writes one file.
 
-    uv run python examples/06_record_clip.py --clip 5 --out clip.mp4
+    uv run python examples/06_record_clip.py --clip 5 --out clip.ts
 
 `request_recording()` is the same call for the whole session instead of a window.
+
+What lands on disk is interleaved MPEG-TS, which is why the default is `.ts`:
+ffplay, VLC and mpv play it as-is, and `ffmpeg -i clip.ts -c copy clip.mp4`
+remuxes it if that container is what you need. Naming it `.mp4` would be a lie
+that some tools pick a demuxer from.
 
 Docs:
   Recordings       https://docs.reactor.inc/concepts/recordings
@@ -27,7 +32,7 @@ from reactor_sdk import Reactor, download_clip
 
 def flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--clip", type=float, default=5.0, help="seconds to capture (default: 5)")
-    parser.add_argument("--out", default="clip.mp4", help="where to write it (default: clip.mp4)")
+    parser.add_argument("--out", default="clip.ts", help="where to write it (default: clip.ts)")
 
 
 async def main() -> None:

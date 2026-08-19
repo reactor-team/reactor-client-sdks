@@ -61,7 +61,7 @@ export REACTOR_API_KEY=rk_...
 
 uv run python examples/01_connect_and_receive.py
 uv run python examples/03_pause_and_resume.py --seconds 6
-uv run python examples/06_record_clip.py --clip 5 --out clip.mp4
+uv run python examples/06_record_clip.py --clip 5 --out clip.ts
 ```
 
 Example 02 needs an image to condition on, and 04 needs a model with an input
