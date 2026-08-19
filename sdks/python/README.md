@@ -190,7 +190,8 @@ with Speaker(speaker), Microphone(mic):
 - Both raise when PortAudio is missing, so catch that if you would rather run
   silent.
 
-`Speaker` is wired up in [`pygame_app/`](https://github.com/reactor-team/reactor-client-sdks/tree/main/sdks/python/examples/pygame_app), which plays a model's audio track alongside its video.
+Neither has an example yet — the samples below are video-only. Until one lands,
+the docstrings on `Speaker` and `Microphone` are the reference.
 
 ## Errors
 
@@ -308,11 +309,6 @@ Options come from flags or from `REACTOR_API_KEY` / `REACTOR_JWT` /
 `REACTOR_MODEL` / `REACTOR_API_URL` / `REACTOR_LOCAL`; `--help` on any of them
 lists the rest. See the [examples README](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/README.md)
 for what each one needs.
-
-[`pygame_app/`](https://github.com/reactor-team/reactor-client-sdks/tree/main/sdks/python/examples/pygame_app)
-is the opposite kind of sample: a whole application — live video, speaker
-playback, and a control UI built from the model's capabilities. Standalone, with
-its own [README](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/pygame_app/README.md).
 
 ## Development
 

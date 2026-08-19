@@ -1,15 +1,16 @@
 """Tests for the API surface that keeps code written against earlier releases working.
 
-Each of these exists because a real consumer uses that shape. The pygame example in
-`examples/pygame_app` came across from the previous SDK with no changes to a single
-line that touches the SDK — only the formatter's own reordering and `Optional[X]` to
-`X | None` — and everything asserted here is what made that possible. They are
-regression tests in the strict sense: dropping any one of them breaks somebody.
+Each of these exists because a real consumer uses that shape. They were written
+against an application that came across from the previous SDK with no changes to a
+single line that touches the SDK — only the formatter's own reordering and
+`Optional[X]` to `X | None` — and everything asserted here is what made that
+possible. They are regression tests in the strict sense: dropping any one of them
+breaks somebody.
 
-That example has since been extended to use newer API, so it is no longer a
-line-for-line copy of what migrated. The claim these tests encode is unchanged:
-none of those edits were forced by this SDK, and the shapes below still have to
-keep working for the code that has not been touched.
+That application no longer lives in this repository, which changes nothing about
+the claim these tests encode: none of the edits it needed were forced by this SDK,
+and the shapes below still have to keep working for code that has not been
+touched.
 """
 
 from __future__ import annotations
@@ -103,8 +104,8 @@ class TestLocalMode:
 
     def test_local_overrides_the_production_default(self) -> None:
         """The shape that matters: callers compute `api_url or PROD` and pass it with
-        `local=True`, which would otherwise aim local mode at production. The pygame
-        example does exactly that."""
+        `local=True`, which would otherwise aim local mode at production. Real
+        applications do exactly that."""
         r = Reactor(model_name="m", api_url=DEFAULT_API_URL, local=True)
         assert r._api_url == LOCAL_API_URL
 

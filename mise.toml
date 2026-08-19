@@ -115,7 +115,7 @@ dir = "sdks/python"
 run = [
     "ruff check .",
     "ruff format --check .",
-    "python3 -m compileall -q examples/*.py examples/pygame_app/*.py",
+    "python3 -m compileall -q examples/*.py",
 ]
 
 [tasks."build:wheel"]
