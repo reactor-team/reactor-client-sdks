@@ -40,6 +40,7 @@ from reactor_sdk import DEFAULT_API_URL, Reactor
 DEFAULT_MODEL = "helios"
 
 PROMPT = "a forest at dawn, sunbeams through the canopy"
+EDIT_PROMPT = "make it look like a watercolour painting"
 
 #: What each model needs before it produces anything — in order, because for
 #: some of them it is more than one command. Taken from the models' own
@@ -55,11 +56,10 @@ BOOTSTRAP: dict[str, list[tuple[str, dict[str, Any]]]] = {
     # refuses without a prompt — so the order here is the contract, not a
     # preference.
     "helios": [("set_prompt", {"prompt": PROMPT}), ("start", {})],
-    # morpheus-v4 has no `start`: it begins as soon as it has a reference image,
-    # a prompt (it has a built-in default) and a live frame on its input track.
-    # The image is 03's job, since uploading is the capability that example is
-    # about. The prompt is recorded but does not currently drive the output.
-    "morpheus-v4": [("set_prompt", {"prompt": PROMPT})],
+    # sana-streaming edits the live `camera` track rather than generating from
+    # scratch, so its prompt is an edit instruction and optional — with none set
+    # the output stays close to the input. `start` is not optional.
+    "sana-streaming": [("set_prompt", {"prompt": EDIT_PROMPT}), ("start", {})],
 }
 
 _FALLBACK: list[tuple[str, dict[str, Any]]] = [("set_prompt", {"prompt": PROMPT})]

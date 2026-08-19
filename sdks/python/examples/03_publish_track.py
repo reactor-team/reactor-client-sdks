@@ -1,53 +1,38 @@
 #!/usr/bin/env python3
-"""03 · Publish a track, upload an image — sending media into a model.
+"""03 · Publish a track — sending media into a model.
 
-morpheus-v4 generates from a reference image plus whatever you stream at it, and
-produces nothing until it has both. The upload is therefore in this file rather
-than in `common.py`: what a model demands is trivia, but `upload_file` is an SDK
-capability, and a capability hidden in a helper is one nobody sees.
+sana-streaming transforms what you stream at it: publish its `camera` input
+track, push frames in, and the edited version comes back on the output track.
+Publishing is what puts a sender behind the slot — pushing a frame before that
+raises rather than dropping it silently.
 
-    uv run python examples/03_publish_track.py --image ref.png
+    uv run python examples/03_publish_track.py --seconds 10
 
-Frames are tagged on the way out, which costs one argument and is the only way to
-match a frame you sent to whatever comes back — see 06 for the other half.
+Frames go out tagged. It costs one argument and it is the only way to match a
+frame you sent against whatever comes back — see 06 for the reading side.
 
 Docs:
-  File uploads    https://docs.reactor.inc/concepts/file-uploads
   Input tracks    https://docs.reactor.inc/concepts/tracks#input-tracks-app-to-model
   Frame metadata  https://docs.reactor.inc/concepts/frame-metadata
-  Your model's commands, whichever model you point this at:
-                  https://docs.reactor.inc/model-api-reference/overview
+  SANA-Streaming  https://docs.reactor.inc/model-api-reference/sana-streaming/overview
+  Its commands    https://docs.reactor.inc/model-api-reference/sana-streaming/schema
 """
 
 from __future__ import annotations
 
-import argparse
 import asyncio
-import os
 import time
 
 import common
 
 from reactor_sdk import Reactor
 
-# morpheus-v4 letterboxes the reference image to its 1280x720 output, and takes
-# the client stream at whatever size it is sent.
+# The model takes the client stream at whatever size it is sent.
 WIDTH, HEIGHT, FPS = 640, 360, 15
-
-# morpheus-v4 declares `set_image(image: UploadedFile)`, the same shape the docs
-# use in https://docs.reactor.inc/concepts/file-uploads#uploading-a-file. Another
-# model will name this differently — overridable rather than hardcoded, so
-# pointing this example at one costs a variable instead of a patch.
-IMAGE_COMMAND = os.environ.get("REACTOR_IMAGE_COMMAND", "set_image")
-IMAGE_PARAM = os.environ.get("REACTOR_IMAGE_PARAM", "image")
-
-
-def flags(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--image", required=True, help="conditioning image to upload")
 
 
 async def main() -> None:
-    args = common.parse(__doc__, flags, default_model="morpheus-v4")
+    args = common.parse(__doc__, default_model="sana-streaming")
 
     reactor = Reactor(
         model_name=args.model,
@@ -65,9 +50,10 @@ async def main() -> None:
     def failed(error: Exception) -> None:
         print(f"error: {error}")
 
-    # `image_accepted` and `conditions_ready` arrive here, and `command_error`
-    # does too — a rejected upload (wrong type, undecodable) is a message rather
-    # than a failed command, so a client that ignores messages sees nothing wrong.
+    # `prompt_accepted`, `generation_started` and `command_error` arrive here — a
+    # rejected command is a message, not a failed call, so a client that ignores
+    # messages sees nothing wrong.
+    # https://docs.reactor.inc/concepts/commands-and-messages
     @reactor.on_message
     def message(msg: dict) -> None:
         print(f"message: {msg}")
@@ -76,24 +62,15 @@ async def main() -> None:
         await reactor.connect()
         print(f"session: {reactor.session_id}")
 
-        # Uploading needs a ready session: the bytes go to the session's own
-        # object store, and the runtime is told about them on the control channel.
-        # What comes back is a reference to pass in a command, not the bytes again.
-        uploaded = await reactor.upload_file(args.image)
-        print(f"uploaded: {uploaded.name} ({uploaded.size} bytes) as {uploaded.upload_id}")
-        # The FileRef goes into the command as a value: the SDK lifts it out into
-        # the envelope's uploads section, so the model receives the file itself
-        # rather than a string it has to resolve.
-        # https://docs.reactor.inc/concepts/file-uploads#the-fileref-type
-        await reactor.send_command(IMAGE_COMMAND, {IMAGE_PARAM: uploaded})
-        await common.bootstrap(reactor, args.model)
-
-        # The input slot, by shape again: the model declares one sendonly video
-        # track, and publishing is what puts a sender behind it. Pushing frames
-        # before that raises rather than dropping them silently.
+        # The input slot, found by shape rather than by name: this model declares
+        # one sendonly video track, whatever it happens to call it.
         source = reactor.tracks.with_kind("video").with_direction("sendonly").one()
         print(f"publishing: {source.name}")
         await source.publish()
+
+        # Publish first, then tell the model to begin: it transforms the live
+        # track, so starting before there is a sender to read from buys nothing.
+        await common.bootstrap(reactor, args.model)
 
         output = reactor.tracks.with_kind("video").with_direction("recvonly").one()
         received = 0

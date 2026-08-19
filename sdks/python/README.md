@@ -277,19 +277,20 @@ await download_clip(clip, "clip.ts")          # the module-level function
 
 ## Samples
 
-Six minimal examples in [`examples/`](https://github.com/reactor-team/reactor-client-sdks/tree/main/sdks/python/examples),
+Seven minimal examples in [`examples/`](https://github.com/reactor-team/reactor-client-sdks/tree/main/sdks/python/examples),
 one per capability. Each adds exactly one call to the same spine — connect, give
 the model what it needs, receive frames — so the diff against the first one is
-the lesson. The same six exist in every Reactor SDK.
+the lesson. The same seven exist in every Reactor SDK.
 
 | # | Script | Teaches |
 |---|---|---|
 | 01 | `01_connect_and_receive.py` | Connect, send the model's first command, read the reply, count frames. |
 | 02 | `02_pause_and_resume.py` | Pause and resume a track — nothing is generated while it is paused. |
-| 03 | `03_publish_track.py` | Upload a reference image, publish a `sendonly` track, push tagged frames into it. |
+| 03 | `03_publish_track.py` | Publish a `sendonly` track and push tagged frames into it. |
 | 04 | `04_multi_connection.py` | Two clients on one session, the second adopting it by id. |
 | 05 | `05_record_clip.py` | Request a clip and download it. |
 | 06 | `06_frame_metadata.py` | Read the per-frame trailer: frame id, the sender's timestamp, `user_data`. |
+| 07 | `07_upload_image.py` | Upload a file and pass the `FileRef` into a command. |
 
 ```bash
 export REACTOR_API_KEY=rk_...
