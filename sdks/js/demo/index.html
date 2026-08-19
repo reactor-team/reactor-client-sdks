@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Reactor JS SDK — local demo</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+      label { display: block; margin-top: 0.75rem; font-size: 0.9rem; }
+      input { width: 100%; box-sizing: border-box; padding: 0.4rem; font-size: 1rem; }
+      button { margin-top: 1rem; margin-right: 0.5rem; padding: 0.5rem 1rem; font-size: 1rem; }
+      #status { font-weight: bold; }
+      #log { margin-top: 1rem; padding: 0.75rem; background: #111; color: #0f0; font-family: monospace;
+             font-size: 0.85rem; height: 240px; overflow-y: auto; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h1>Reactor JS SDK — local demo</h1>
+    <p>Status: <span id="status">not connected</span></p>
+
+    <label><input id="local" type="checkbox" checked style="width: auto" /> Local runtime</label>
+    <label>Reactor API key <input id="apiKey" type="password" placeholder="" /></label>
+    <label>API URL (blank = default) <input id="apiUrl" placeholder="" /></label>
+    <label>Model name <input id="modelName" value="" /></label>
+    <label>JWT (optional) <input id="jwt" /></label>
+    <button id="generateJwt">Generate JWT</button>
+
+    <button id="connect">Connect</button>
+    <button id="disconnect">Disconnect</button>
+    <button id="dispose">Dispose</button>
+
+    
+    
+
+    <div id="log"></div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

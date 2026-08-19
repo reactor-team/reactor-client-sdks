@@ -135,6 +135,45 @@ run = "uv run --group dev --locked pytest"
 description = "[Testing] Every test suite (Rust + Python)"
 depends = ["test:rust", "test:python"]
 
+# ── JS SDK ────────────────────────────────────────────────────────────────────
+# Node/npm aren't in [tools] above yet — every task here just shells out to
+# whatever `npm` is on PATH. Pin Node here once the JS SDK needs CI beyond
+# lint/type-check/build (see .github/workflows/ci.yml's `js-sdk` job, which
+# uses actions/setup-node instead, matching how Rust is handled: an action
+# owns the toolchain, mise stays out of its way).
+
+[tasks."install:js"]
+description = "[Setup] npm install the JS SDK"
+dir = "sdks/js"
+run = "npm install"
+
+[tasks."lint:js"]
+description = "[Quality] Lint + type-check the JS SDK"
+dir = "sdks/js"
+depends = ["install:js"]
+run = [
+    "npm run lint",
+    "npm run type-check",
+]
+
+[tasks."build:js"]
+description = "[Build] Build the JS SDK to dist/ (needs build:wasm first)"
+dir = "sdks/js"
+depends = ["install:js"]
+run = "npm run build"
+
+[tasks."run:js-sdk-local"]
+description = "[Dev] Open a minimal Vite demo that connects and logs status changes"
+dir = "sdks/js/demo"
+# Depends on build:js (which itself needs crates/reactor-wasm/pkg, hence
+# build:wasm) so `dist/wasm` is always fresh before the demo starts — running
+# these out of order used to fail at runtime with a confusing wasm-load error.
+depends = ["build:wasm", "build:js"]
+run = [
+    "npm install",
+    "npm run dev",
+]
+
 # ── Lints ─────────────────────────────────────────────────────────────────────
 
 [tasks."lint:abi"]
@@ -160,6 +199,7 @@ depends = [
     "clippy",
     "clippy:wasm",
     "lint:python",
+    "lint:js",
     "lint:abi",
     "lint:shell",
     "lint:mise-tools-root",
