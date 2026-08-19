@@ -31,9 +31,9 @@ use crate::platform::WasmPlatform;
 use crate::types::{
     CapabilitiesListener, CapabilitiesOutput, ClientOptionsInput, ClipOutput, CommandData,
     CommandReply, ConnectOptionsInput, ErrorListener, FileRefOutput, JwtSourceInput,
-    MessageListener, ReactorErrorOutput, SchemaOutput, SdpTransformInput, SessionIdListener,
-    SessionInfoOutput, Status, StatusListener, StringsOutput, TrackListener, TrackMappingOutput,
-    TracksOutput, UploadsInput,
+    MessageListener, ReactorErrorOutput, SchemaOutput, SessionIdListener, SessionInfoOutput,
+    Status, StatusListener, StringsOutput, TrackListener, TrackMappingOutput, TracksOutput,
+    UploadsInput,
 };
 
 /// Coordinator URL used when none is given.
@@ -316,28 +316,6 @@ impl ReactorClient {
         self.auth
             .set(jwt.map(JsValue::from).unwrap_or(JsValue::UNDEFINED))
             .map_err(|e| error_value(&e.details(Some("setJwt"))))
-    }
-
-    /// Install a `(sdp: string) => string` transform applied to the local offer
-    /// before it is set and sent, or `null` to remove it.
-    ///
-    /// Browsers need a few normalizations on their own offer that libwebrtc
-    /// hosts do not (dynamic payload types inside \[96,127\], no
-    /// telephone-event, Chrome-style attribute ordering). That logic is data
-    /// munging, not session logic, so it stays in the SDK that already has it
-    /// rather than being ported into the core.
-    #[wasm_bindgen(js_name = setSdpTransform)]
-    pub fn set_sdp_transform(&self, transform: Option<SdpTransformInput>) -> Result<(), JsValue> {
-        let Some(transform) = transform.map(JsValue::from).filter(|t| !t.is_null()) else {
-            self.peer.set_sdp_transform(None);
-            return Ok(());
-        };
-        if !transform.is_function() {
-            return Err(invalid("sdp transform must be a function or null"));
-        }
-        self.peer
-            .set_sdp_transform(Some(transform.unchecked_into()));
-        Ok(())
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────

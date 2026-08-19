@@ -67,9 +67,6 @@ export interface ConnectOptions {
  *  Returning "" sends no Authorization header. */
 export type JwtSource = string | (() => string | Promise<string>);
 
-/** Rewrites the local SDP offer before it is set and sent. */
-export type SdpTransform = (sdp: string) => string;
-
 export interface TrackCapability {
   name: string;
   kind: TrackKind;
@@ -169,9 +166,6 @@ extern "C" {
 
     #[wasm_bindgen(typescript_type = "JwtSource")]
     pub type JwtSourceInput;
-
-    #[wasm_bindgen(typescript_type = "SdpTransform")]
-    pub type SdpTransformInput;
 
     #[wasm_bindgen(typescript_type = "Record<string, unknown>")]
     pub type CommandData;

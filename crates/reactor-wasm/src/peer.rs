@@ -63,12 +63,6 @@ pub struct WasmPeerTransport {
     received_tracks: ReceivedTracks,
     /// SCTP's negotiated `maxMessageSize`, read once the answer is applied.
     max_message_bytes: Cell<usize>,
-    /// Optional `(sdp: string) => string` applied to the local offer before it
-    /// is set and sent. The browser's offer needs a few normalizations the
-    /// native stacks don't (dynamic payload types in range, no telephone-event,
-    /// Chrome-style attribute ordering); that logic lives in the JS SDK, which
-    /// already has it, and this is where it gets to run.
-    sdp_transform: RefCell<Option<js_sys::Function>>,
 }
 
 impl WasmPeerTransport {
@@ -78,7 +72,6 @@ impl WasmPeerTransport {
             event_tx,
             received_tracks: Rc::new(RefCell::new(HashMap::new())),
             max_message_bytes: Cell::new(DEFAULT_MAX_MESSAGE_BYTES),
-            sdp_transform: RefCell::new(None),
         }
     }
 
@@ -89,11 +82,6 @@ impl WasmPeerTransport {
 
     pub fn received_track(&self, mid: &str) -> Option<ReceivedTrack> {
         self.received_tracks.borrow().get(mid).cloned()
-    }
-
-    /// Install (or clear, with `None`) the local-offer SDP transform.
-    pub fn set_sdp_transform(&self, transform: Option<js_sys::Function>) {
-        *self.sdp_transform.borrow_mut() = transform;
     }
 
     /// Attach a local `MediaStreamTrack` to a sendonly track's sender.
@@ -123,20 +111,6 @@ impl WasmPeerTransport {
             ))
         })?;
         Ok(())
-    }
-
-    /// Apply the JS SDP transform, if one is installed.
-    fn transform_offer(&self, sdp: String) -> Result<String, CoreError> {
-        let transform = self.sdp_transform.borrow().clone();
-        let Some(transform) = transform else {
-            return Ok(sdp);
-        };
-        let result = transform
-            .call1(&JsValue::null(), &JsValue::from_str(&sdp))
-            .map_err(|e| CoreError::Http(format!("sdp transform threw: {}", describe(&e))))?;
-        result.as_string().ok_or_else(|| {
-            CoreError::Decode("sdp transform must return the transformed sdp string".into())
-        })
     }
 
     /// Cache SCTP's negotiated `maxMessageSize` so the core can reject an
@@ -310,12 +284,18 @@ impl PeerTransport for WasmPeerTransport {
         );
 
         // ── Offer ─────────────────────────────────────────────────────────────
+        //
+        // The browser's offer is sent as the browser wrote it. The JS SDK used to
+        // rewrite it first — payload types remapped into [96,127], telephone-event
+        // stripped, attributes reordered — to work around a GStreamer runtime that
+        // mishandled H265 on payload type 45. That runtime is not what this client
+        // talks to, so the workaround is not carried over: munging an offer we do
+        // not need to munge is a way to break codec negotiation, not a safety net.
         let offer = JsFuture::from(pc.create_offer()).await.map_err(js_err)?;
         let sdp_offer = js_sys::Reflect::get(&offer, &JsValue::from_str("sdp"))
             .ok()
             .and_then(|value| value.as_string())
             .ok_or_else(|| CoreError::Decode("createOffer returned no sdp".into()))?;
-        let sdp_offer = self.transform_offer(sdp_offer)?;
 
         let local = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
         local.set_sdp(&sdp_offer);

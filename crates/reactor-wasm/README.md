@@ -45,7 +45,7 @@ rather than `any`:
 | Area | Calls |
 | --- | --- |
 | Lifecycle | `connect(options?)`, `disconnect()`, `reconnect()` |
-| Configuration | `setJwt(jwt)`, `setSdpTransform(fn)` |
+| Configuration | `setJwt(jwt)` |
 | Messaging | `sendCommand(command, data?, uploads?)`, `requestSchema()` |
 | Tracks | `publishTrack(name, track)`, `unpublishTrack(name)`, `pauseTrack(name)`, `resumeTrack(name)`, `tracks()`, `trackMapping()`, `pausedTracks()` |
 | Recording | `requestClip(seconds)`, `requestRecording()` |
@@ -114,11 +114,14 @@ Native builds are untouched.
 channels are opened with `binaryType = "arraybuffer"` — otherwise frames arrive
 as `Blob`s and would need an async read before the core could decode them.
 
-**SDP transform.** `setSdpTransform` hands the local offer to JS before it is set
-and sent. Browsers need normalizations the native stacks do not (dynamic payload
-types inside [96,127], no telephone-event, Chrome-style attribute ordering);
-that is data munging rather than session logic, so it stays in the SDK, which
-already implements and tests it, instead of being ported into Rust.
+**No SDP munging.** The offer goes out as the browser wrote it. The JS SDK
+rewrites its own offer today — payload types remapped into [96,127],
+telephone-event stripped, attributes reordered — but that exists for a GStreamer
+runtime that mishandled H265 on payload type 45, which is not the runtime this
+client talks to. Rewriting an offer that needs no rewriting is a way to break
+codec negotiation, so the new SDK should drop `utils/sdp.ts` rather than port
+it. If some future runtime needs it back, it belongs behind a hook here, not as
+an unconditional transform.
 
 **Errors.** A rejected call throws an `Error` with `name === "ReactorError"`
 carrying the core's `code`, `recoverable`, `status`, `operation` and
