@@ -138,9 +138,9 @@ depends = ["test:rust", "test:python"]
 # ── JS SDK ────────────────────────────────────────────────────────────────────
 # Node/npm aren't in [tools] above yet — every task here just shells out to
 # whatever `npm` is on PATH. Pin Node here once the JS SDK needs CI beyond
-# lint/type-check/build (see .github/workflows/ci.yml's `js-sdk` job, which
-# uses actions/setup-node instead, matching how Rust is handled: an action
-# owns the toolchain, mise stays out of its way).
+# lint/type-check/build (see .github/workflows/ci.yml's `lint` and `wasm`
+# jobs, which use actions/setup-node instead, matching how Rust is handled:
+# an action owns the toolchain, mise stays out of its way).
 
 [tasks."install:js"]
 description = "[Setup] npm install the JS SDK"
