@@ -62,6 +62,10 @@ async def main() -> None:
         # Pausing sets the receiver inactive and tells the runtime to stop
         # producing, so this is not just a local mute: nothing is generated,
         # nothing is sent, nothing is billed.
+        #
+        # Distinct from any `pause` *command* a model happens to expose (Helios
+        # has one, which suspends generation between chunks). This is the
+        # transport-level control every model has, whatever it calls its own.
         await output.pause()
         print(f"paused: {output.paused}")
         during_pause = await phase("while paused")

@@ -38,6 +38,13 @@ async def main() -> None:
     def failed(error: Exception) -> None:
         print(f"error: {error}")
 
+    # Where a model's own answers arrive. A command's return value is its
+    # correlated reply, and most handlers return nothing — what they emit
+    # instead (`prompt_accepted`, `generation_started`, …) comes through here.
+    @reactor.on_message
+    def message(msg: dict) -> None:
+        print(f"message: {msg}")
+
     # The context manager disconnects and releases the native client on the way
     # out, including when the body raises — which also ends the session, so a
     # crash does not leave one running on the platform.
@@ -45,7 +52,9 @@ async def main() -> None:
         await reactor.connect()
         print(f"session: {reactor.session_id}")
 
-        print(f"reply: {await common.bootstrap(reactor, args.model)}")
+        # What this model needs before it emits anything. For Helios that is a
+        # prompt and then `start`; a model that begins on its own needs neither.
+        await common.bootstrap(reactor, args.model)
 
         # Named by shape rather than by string: whatever this model calls its
         # video output, there is one recvonly video track and this is it.

@@ -31,22 +31,37 @@ DEFAULT_MODEL = "helios"
 
 PROMPT = "a forest at dawn, sunbeams through the canopy"
 
-#: The minimum command a model needs before it produces anything, by model name.
-#: Anything not listed falls back to `set_prompt`, which is the common case.
-BOOTSTRAP: dict[str, tuple[str, dict[str, Any]]] = {
-    "helios": ("set_prompt", {"prompt": PROMPT}),
+#: What each model needs before it produces anything — in order, because for
+#: some of them it is more than one command. Taken from the models' own
+#: manifests (`reactor.yaml`, `model_behaviour.md` in reactor-models), which is
+#: where to check when an example connects and no frame ever arrives.
+#:
+#: Anything not listed falls back to `set_prompt` alone, the common case.
+BOOTSTRAP: dict[str, list[tuple[str, dict[str, Any]]]] = {
+    # Helios stays in WAITING and emits nothing until `start`, and `start`
+    # refuses without a prompt — so the order here is the contract, not a
+    # preference.
+    "helios": [("set_prompt", {"prompt": PROMPT}), ("start", {})],
+    # morpheus-v4 has no `start`: it begins as soon as it has a reference image,
+    # a prompt (it has a built-in default) and a live frame on its input track.
+    # The image is 03's job, since uploading is the capability that example is
+    # about. The prompt is recorded but does not currently drive the output.
+    "morpheus-v4": [("set_prompt", {"prompt": PROMPT})],
 }
 
-_FALLBACK: tuple[str, dict[str, Any]] = ("set_prompt", {"prompt": PROMPT})
+_FALLBACK: list[tuple[str, dict[str, Any]]] = [("set_prompt", {"prompt": PROMPT})]
 
 
 def parse(
     description: str | None,
     add: Callable[[argparse.ArgumentParser], None] | None = None,
+    default_model: str = DEFAULT_MODEL,
 ) -> argparse.Namespace:
-    """Options from flags, defaulting to the environment.
+    """Options from flags, then the environment, then the example's own default.
 
     `add` receives the parser so an example can declare its own flags.
+    `default_model` is for the examples that need a particular kind of model —
+    one with an input track, say — rather than any model at all.
     """
     parser = argparse.ArgumentParser(
         description=description,
@@ -54,8 +69,8 @@ def parse(
     )
     parser.add_argument(
         "--model",
-        default=os.environ.get("REACTOR_MODEL", DEFAULT_MODEL),
-        help=f"model to connect to (env REACTOR_MODEL, default {DEFAULT_MODEL})",
+        default=os.environ.get("REACTOR_MODEL", default_model),
+        help=f"model to connect to (env REACTOR_MODEL, default {default_model})",
     )
     parser.add_argument(
         "--api-url",
@@ -92,15 +107,17 @@ def parse(
     return args
 
 
-async def bootstrap(reactor: Reactor, model: str) -> dict[str, Any] | None:
-    """Send the one command this model needs before it generates anything.
+async def bootstrap(reactor: Reactor, model: str) -> None:
+    """Give this model the minimum it needs before it generates anything.
 
-    Returns the model's reply, which `send_command` correlates for you — `None`
-    when the handler acknowledged the command without answering.
+    `send_command` correlates each command with its reply and returns it, or
+    `None` when the handler acknowledged the command without answering — which
+    is the usual case, since most models answer with a message instead. Register
+    `on_message` to see those.
     """
-    command, data = BOOTSTRAP.get(model, _FALLBACK)
-    print(f"bootstrap: {command} {data}")
-    return await reactor.send_command(command, data)
+    for command, data in BOOTSTRAP.get(model, _FALLBACK):
+        reply = await reactor.send_command(command, data)
+        print(f"bootstrap: {command} {data} -> {reply}")
 
 
 def frame(seq: int, width: int, height: int) -> bytes:

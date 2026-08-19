@@ -286,10 +286,10 @@ the lesson. The same six exist in every Reactor SDK.
 |---|---|---|
 | 01 | `01_connect_and_receive.py` | Connect, send the model's first command, read the reply, count frames. |
 | 02 | `02_pause_and_resume.py` | Pause and resume a track — nothing is generated while it is paused. |
-| 03 | `03_publish_track.py` | Upload a conditioning image, publish a `sendonly` track, push frames into it. |
+| 03 | `03_publish_track.py` | Upload a reference image, publish a `sendonly` track, push tagged frames into it. |
 | 04 | `04_multi_connection.py` | Two clients on one session, the second adopting it by id. |
 | 05 | `05_record_clip.py` | Request a clip and download it. |
-| 06 | `06_frame_metadata.py` | Tag outgoing frames and match the tags that come back. |
+| 06 | `06_frame_metadata.py` | Read the per-frame trailer: frame id, the sender's timestamp, `user_data`. |
 
 ```bash
 export REACTOR_API_KEY=rk_...

@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """03 · Publish a track, upload an image — sending media into a model.
 
-This model transforms what you send it, and needs a conditioning image before it
-will produce anything. The upload is therefore in this file rather than in
-`common.py`: what a model demands is trivia, but `upload_file` is an SDK
-capability, and hiding a capability in a helper is how it ends up untested.
+morpheus-v4 generates from a reference image plus whatever you stream at it, and
+produces nothing until it has both. The upload is therefore in this file rather
+than in `common.py`: what a model demands is trivia, but `upload_file` is an SDK
+capability, and a capability hidden in a helper is one nobody sees.
 
-    REACTOR_MODEL=morpheus-v4 uv run python examples/03_publish_track.py --image ref.png
+    uv run python examples/03_publish_track.py --image ref.png
 
-The command that takes the image differs per model; override it with
-REACTOR_IMAGE_COMMAND / REACTOR_IMAGE_PARAM when it is not `set_image` /
-`image`.
+Frames are tagged on the way out, which costs one argument and is the only way to
+match a frame you sent to whatever comes back — see 06 for the other half.
 """
 
 from __future__ import annotations
@@ -24,10 +23,13 @@ import common
 
 from reactor_sdk import Reactor
 
-WIDTH, HEIGHT, FPS = 512, 512, 15
+# morpheus-v4 letterboxes the reference image to its 1280x720 output, and takes
+# the client stream at whatever size it is sent.
+WIDTH, HEIGHT, FPS = 640, 360, 15
 
-# Unconfirmed for morpheus-v4 — see the open question on REA-5322. Overridable
-# so a wrong default here costs a flag, not a patch.
+# morpheus-v4 declares `set_image(image: UploadedFile)`. Another model will name
+# this differently — overridable rather than hardcoded, so pointing this example
+# at one costs a variable instead of a patch.
 IMAGE_COMMAND = os.environ.get("REACTOR_IMAGE_COMMAND", "set_image")
 IMAGE_PARAM = os.environ.get("REACTOR_IMAGE_PARAM", "image")
 
@@ -37,7 +39,7 @@ def flags(parser: argparse.ArgumentParser) -> None:
 
 
 async def main() -> None:
-    args = common.parse(__doc__, flags)
+    args = common.parse(__doc__, flags, default_model="morpheus-v4")
 
     reactor = Reactor(
         model_name=args.model,
@@ -55,6 +57,13 @@ async def main() -> None:
     def failed(error: Exception) -> None:
         print(f"error: {error}")
 
+    # `image_accepted` and `conditions_ready` arrive here, and `command_error`
+    # does too — a rejected upload (wrong type, undecodable) is a message rather
+    # than a failed command, so a client that ignores messages sees nothing wrong.
+    @reactor.on_message
+    def message(msg: dict) -> None:
+        print(f"message: {msg}")
+
     async with reactor:
         await reactor.connect()
         print(f"session: {reactor.session_id}")
@@ -64,7 +73,11 @@ async def main() -> None:
         # What comes back is a reference to pass in a command, not the bytes again.
         uploaded = await reactor.upload_file(args.image)
         print(f"uploaded: {uploaded.name} ({uploaded.size} bytes) as {uploaded.upload_id}")
+        # The FileRef goes into the command as a value: the SDK lifts it out into
+        # the envelope's uploads section, so the model receives the file itself
+        # rather than a string it has to resolve.
         await reactor.send_command(IMAGE_COMMAND, {IMAGE_PARAM: uploaded})
+        await common.bootstrap(reactor, args.model)
 
         # The input slot, by shape again: the model declares one sendonly video
         # track, and publishing is what puts a sender behind it. Pushing frames
@@ -84,7 +97,14 @@ async def main() -> None:
         sent = 0
         deadline = time.monotonic() + args.seconds
         while time.monotonic() < deadline:
-            source.push_frame(common.frame(sent, WIDTH, HEIGHT), width=WIDTH, height=HEIGHT)
+            # `user_data` rides along with the frame as its metadata. Anything
+            # goes — a sequence number here, so a frame can be identified later.
+            source.push_frame(
+                common.frame(sent, WIDTH, HEIGHT),
+                width=WIDTH,
+                height=HEIGHT,
+                user_data=f"seq={sent}".encode(),
+            )
             sent += 1
             await asyncio.sleep(1 / FPS)
 
