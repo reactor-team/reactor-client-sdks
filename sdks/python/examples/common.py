@@ -5,8 +5,9 @@ Three things live here, and the split is deliberate:
 * **Options** — reading the model, the URL and the credentials from flags or the
   environment. Boilerplate, identical in every language.
 * **The bootstrap** — the minimum command a model needs before it generates
-  anything, plus the throwaway frames two examples push. Model trivia and test
-  data: which command, which prompt, which pixels.
+  anything, the names of its tracks, plus the throwaway frames two examples push.
+  Model trivia and test data: which command, which prompt, which track, which
+  pixels.
 * **The window** — `--show` puts the frames on screen. Every example receives
   video, and a frame counter proves that something arrived, not that it was the
   right something. Plumbing, and the same plumbing seven times over, so it lives
@@ -71,6 +72,27 @@ BOOTSTRAP: dict[str, list[tuple[str, dict[str, Any]]]] = {
 }
 
 _FALLBACK: list[tuple[str, dict[str, Any]]] = [("set_prompt", {"prompt": PROMPT})]
+
+#: Track names, per model, from the same published schemas. A model declares
+#: these; an app knows them the way it knows its command names, so the examples
+#: ask for them by name rather than groping for "the one recvonly video track" —
+#: which stops working the moment a model declares two.
+#:
+#: `reactor.tracks` lists what the session declared, if you would rather discover
+#: them at runtime than write them down.
+TRACKS: dict[str, dict[str, str]] = {
+    "helios": {"output": "main_video"},
+    # `camera` is what SANA reads the client stream from; `main_video` is the
+    # edited result coming back.
+    "sana-streaming": {"output": "main_video", "input": "camera"},
+}
+
+_FALLBACK_TRACKS = {"output": "main_video", "input": "camera"}
+
+
+def track_name(model: str, direction: str) -> str:
+    """The name of this model's `output` or `input` track."""
+    return TRACKS.get(model, _FALLBACK_TRACKS).get(direction, _FALLBACK_TRACKS[direction])
 
 
 def parse(

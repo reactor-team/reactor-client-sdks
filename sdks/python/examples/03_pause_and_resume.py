@@ -44,7 +44,7 @@ async def main() -> None:
         print(f"session: {reactor.session_id}")
         await common.bootstrap(reactor, args.model)
 
-        output = reactor.tracks.with_kind("video").with_direction("recvonly").one()
+        output = reactor.track(common.track_name(args.model, "output"))
         print(f"track: {output.name}")
 
         frames = 0

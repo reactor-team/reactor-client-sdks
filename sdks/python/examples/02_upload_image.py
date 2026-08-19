@@ -74,7 +74,7 @@ async def main() -> None:
         # Conditioning set atomically, so this cannot arrive too early.
         await reactor.send_command("start", {})
 
-        output = reactor.tracks.with_kind("video").with_direction("recvonly").one()
+        output = reactor.track(common.track_name(args.model, "output"))
         frames = 0
         window = common.display(args, f"{args.model} · conditioned on {uploaded.name}")
 

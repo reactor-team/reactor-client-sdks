@@ -4,9 +4,6 @@ Seven minimal examples, one per capability. Each teaches exactly one thing, and
 the same seven exist in every Reactor SDK — so the set doubles as a conformance
 grid: an example missing from an SDK is a code path that SDK has never run.
 
-For a full application rather than a lesson, see [`pygame_app/`](pygame_app) —
-live video, speaker playback and a UI built from the model's own capabilities.
-
 ## The set
 
 | # | Example | Teaches | Model |
@@ -112,6 +109,12 @@ environment:
 | `REACTOR_API_URL` | coordinator base URL |
 | `REACTOR_LOCAL` | `1` to talk to a local runtime |
 
+Tracks are asked for by name — `reactor.track("main_video")` — the way an app that
+knows its model does, and the way the model's own schema page reads. The names sit
+in `common.py` next to the bootstrap, since which track a model declares is the
+same kind of fact as which command it takes. `reactor.tracks` lists what a session
+declared, for discovering them at runtime instead.
+
 Frames are read with `on_raw_frame`, which hands over the decoded BGRA bytes and
 needs nothing installed — the window draws those bytes directly, so even `--show`
 needs no numpy. `on_frame` delivers the same frames as a numpy array if you would
@@ -119,8 +122,8 @@ rather have one.
 
 ## What lives in `common.py`
 
-Options parsing, the per-model bootstrap (which command, which prompt), the
-throwaway frames two examples push, and the `--show` window. Nothing else:
+Options parsing, the per-model bootstrap (which command, which prompt, which
+track), the throwaway frames two examples push, and the `--show` window. Nothing else:
 connecting, wiring events and tearing down stay in every example, even though
 that repeats them, because they are what you opened the file to read.
 

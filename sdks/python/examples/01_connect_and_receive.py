@@ -63,10 +63,11 @@ async def main() -> None:
         # prompt and then `start`; a model that begins on its own needs neither.
         await common.bootstrap(reactor, args.model)
 
-        # Named by shape rather than by string: whatever this model calls its
-        # video output, there is one recvonly video track and this is it.
+        # By name, the way an app knows it: the model's schema declares
+        # `main_video`, and `reactor.tracks` lists what this session declared if
+        # you would rather look.
         # https://docs.reactor.inc/concepts/tracks#output-tracks-model-to-app
-        output = reactor.tracks.with_kind("video").with_direction("recvonly").one()
+        output = reactor.track(common.track_name(args.model, "output"))
         print(f"track: {output.name}")
 
         frames = 0

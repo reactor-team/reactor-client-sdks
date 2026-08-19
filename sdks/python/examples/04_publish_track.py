@@ -62,9 +62,8 @@ async def main() -> None:
         await reactor.connect()
         print(f"session: {reactor.session_id}")
 
-        # The input slot, found by shape rather than by name: this model declares
-        # one sendonly video track, whatever it happens to call it.
-        source = reactor.tracks.with_kind("video").with_direction("sendonly").one()
+        # The input slot, by the name the model's schema gives it.
+        source = reactor.track(common.track_name(args.model, "input"))
         print(f"publishing: {source.name}")
         await source.publish()
 
@@ -72,7 +71,7 @@ async def main() -> None:
         # track, so starting before there is a sender to read from buys nothing.
         await common.bootstrap(reactor, args.model)
 
-        output = reactor.tracks.with_kind("video").with_direction("recvonly").one()
+        output = reactor.track(common.track_name(args.model, "output"))
         received = 0
         # Two tiles: what goes out on the left, what the model sends back on the
         # right. Side by side is the only way to see that the edit landed.

@@ -51,8 +51,8 @@ def client(args, label: str) -> Reactor:
     return reactor
 
 
-def count_frames(reactor: Reactor, label: str, window, tile: int) -> Callable[[], int]:
-    output = reactor.tracks.with_kind("video").with_direction("recvonly").one()
+def count_frames(reactor: Reactor, model: str, label: str, window, tile: int) -> Callable[[], int]:
+    output = reactor.track(common.track_name(model, "output"))
     frames = 0
 
     @output.on_raw_frame
@@ -79,13 +79,13 @@ async def main() -> None:
         session = creator.session_id
         print(f"session: {session}")
         await common.bootstrap(creator, args.model)
-        creator_frames = count_frames(creator, "creator", window, tile=0)
+        creator_frames = count_frames(creator, args.model, "creator", window, tile=0)
 
         # Same session, second transport. The id is the whole handoff: no
         # coordination between the two clients, and no second session created.
         await joiner.connect(session_id=session)
         print(f"[joiner] joined: {joiner.session_id}")
-        joiner_frames = count_frames(joiner, "joiner", window, tile=1)
+        joiner_frames = count_frames(joiner, args.model, "joiner", window, tile=1)
 
         await window.hold(args.seconds)
         print(f"frames creator: {creator_frames()}")
