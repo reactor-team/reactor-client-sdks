@@ -42,7 +42,7 @@ jobs:
           version: ${{ env.MISE_VERSION }}
       - uses: actions/setup-node@v4   # Node isn't mise-pinned yet; see mise.toml's "JS SDK" section
         with:
-          node-version: "20"
+          node-version: "24"
       - run: hk validate
       - run: mise run fmt:check
       - name: Install clang for the libwebrtc C++ glue
@@ -79,7 +79,7 @@ jobs:
       - run: mise run build:wasm
       - uses: actions/setup-node@v4   # Node isn't mise-pinned yet; see mise.toml's "JS SDK" section
         with:
-          node-version: "20"
+          node-version: "24"
       # Builds the JS SDK against the real reactor-wasm output above — the
       # one thing a local checkout without a Rust toolchain can't verify.
       - run: mise run build:js
