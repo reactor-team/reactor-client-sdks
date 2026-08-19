@@ -1,5 +1,5 @@
 // Minimal, framework-free demo: connect, print status changes to the
-// console (and this page), disconnect, dispose. Exercises the same
+// console (and this page), disconnect. Exercises the same
 // `@reactor-team/js-sdk` package a plain-JS consumer would `npm install`.
 import { Reactor } from "@reactor-team/js-sdk";
 import type { Reactor as ReactorType } from "@reactor-team/js-sdk";
@@ -110,12 +110,12 @@ document.querySelector("#connect")!.addEventListener("click", () => {
 
     if (reactor && targetKey !== reactorTargetKey) {
       log("connection target changed — disposing the previous instance first");
-      reactor.dispose();
+      reactor[Symbol.dispose]();
       reactor = undefined;
     }
 
     // Reuse the existing instance across a disconnect/connect cycle — only
-    // `dispose()` needs a fresh one, per the Reactor class docs.
+    // disposing it (`reactor[Symbol.dispose]()`) needs a fresh one.
     if (!reactor) {
       reactor = new Reactor({ modelName, apiUrl, local, jwt: jwtEl.value || undefined });
       reactorTargetKey = targetKey;
@@ -144,15 +144,10 @@ document.querySelector("#connect")!.addEventListener("click", () => {
 document.querySelector("#disconnect")!.addEventListener("click", () => {
   void (async () => {
     if (!reactor) return;
+    // Default (recoverable = false): ends the session and frees the wasm
+    // client in one step — the instance stays around, but a subsequent
+    // connect() rebuilds the client from scratch.
     await reactor.disconnect();
     log("disconnected");
   })();
-});
-
-document.querySelector("#dispose")!.addEventListener("click", () => {
-  if (!reactor) return;
-  reactor.dispose();
-  log("disposed");
-  reactor = undefined;
-  statusEl.textContent = "not connected";
 });

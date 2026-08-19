@@ -35,10 +35,26 @@ export class Reactor implements Disposable {
     await client.connect(options);
   }
 
-  async disconnect(): Promise<void> {
+  /**
+   * Ends the connection. Matches v2's `disconnect(recoverable)`: by default
+   * (`recoverable = false`) this also frees the wasm resource graph — the
+   * pump/dispatcher/heartbeat tasks and the peer connection — same as the
+   * old standalone `dispose()`. Pass `recoverable: true` to keep the wasm
+   * client alive so a later `connect()`/`reconnect()` doesn't have to
+   * reload wasm and reconstruct it from scratch.
+   *
+   * Note this only governs the *local* resource graph — the binding's own
+   * `disconnect()` always ends the session server-side regardless of this
+   * flag, so `recoverable` isn't a way to keep the session itself alive.
+   */
+  async disconnect(recoverable = false): Promise<void> {
     this.assertNotDisposed();
-    if (!this.client) return;
-    await this.client.disconnect();
+    if (this.client) {
+      await this.client.disconnect();
+    }
+    if (!recoverable) {
+      this.freeClient();
+    }
   }
 
   async reconnect(): Promise<void> {
@@ -58,24 +74,16 @@ export class Reactor implements Disposable {
   }
 
   /**
-   * Release the wasm resource graph: cancels the pump/dispatcher/heartbeat
-   * tasks and closes the peer connection. Distinct from `disconnect()`,
-   * which ends the session server-side — see the class docs.
-   *
-   * A no-op if `connect()`/`reconnect()` was never called: there is no wasm
-   * client to free.
+   * Supports `using reactor = new Reactor(...)`: releases the wasm resource
+   * graph and drops every registered event handler for good. Unlike a plain
+   * `disconnect()`, this instance is unusable afterward — construct a new
+   * `Reactor` instead of trying to `connect()` again.
    */
-  dispose(): void {
+  [Symbol.dispose](): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.client?.free();
-    this.client = undefined;
-    this.clientPromise = undefined;
+    this.freeClient();
     this.emitter.clear();
-  }
-
-  [Symbol.dispose](): void {
-    this.dispose();
   }
 
   // ── Introspection ───────────────────────────────────────────────────────
@@ -121,11 +129,11 @@ export class Reactor implements Disposable {
 
   private async createClient(): Promise<ReactorClient> {
     const { ReactorClient: WasmReactorClient } = await loadReactorWasm();
-    // dispose() may have run while the wasm module was loading above; bail
-    // out before constructing a client that would otherwise outlive it and
-    // never get freed.
+    // [Symbol.dispose] may have run while the wasm module was loading above;
+    // bail out before constructing a client that would otherwise outlive it
+    // and never get freed.
     if (this.disposed) {
-      throw new Error("Reactor.dispose() was called while connecting.");
+      throw new Error("Reactor was disposed while connecting.");
     }
     const client = new WasmReactorClient(this.clientOptions, this.pendingJwt);
     client.onStatusChanged((status) => this.emitter.emit("statusChanged", status));
@@ -135,9 +143,18 @@ export class Reactor implements Disposable {
     return client;
   }
 
+  /** Frees the wasm resource graph, if one exists. Reusable — unlike
+   *  `[Symbol.dispose]`, this doesn't set the permanent `disposed` flag, so
+   *  a later `connect()`/`reconnect()` lazily builds a fresh client. */
+  private freeClient(): void {
+    this.client?.free();
+    this.client = undefined;
+    this.clientPromise = undefined;
+  }
+
   private assertNotDisposed(): void {
     if (this.disposed) {
-      throw new Error("Reactor.dispose() was already called on this instance.");
+      throw new Error("This Reactor was disposed and can't be used again — construct a new one.");
     }
   }
 }

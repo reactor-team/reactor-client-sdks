@@ -30,26 +30,28 @@ reactor.on("error", (error) => console.error(error.code, error.message));
 
 await reactor.connect();
 // ... reactor.getStatus() === "ready" once the session is up ...
-await reactor.disconnect();
-reactor.dispose(); // or: `using reactor = new Reactor(...)`
+await reactor.disconnect(); // ends the session AND frees the wasm client
 ```
 
 Construction never touches WebAssembly — `reactor-wasm` is fetched and
 instantiated lazily on the first `connect()`/`reconnect()` call, and cached
 after that, so building a `Reactor` you never connect costs nothing.
 
-## `disconnect()` vs `dispose()`
+## `disconnect()` and disposal
 
-Two different steps, both needed:
+`disconnect(recoverable = false)` matches v2's signature:
 
-- **`disconnect()`** ends the session server-side. A disposed-but-not-yet-
-  disconnected `Reactor` can still be reconnected — nothing about the session
-  itself changes until you call this.
-- **`dispose()`** (also reachable via `using reactor = new Reactor(...)` /
-  `reactor[Symbol.dispose]()`) releases the underlying wasm resource graph —
-  the pump, dispatcher and heartbeat tasks — so the object can actually be
-  garbage collected. It does not end the session; call `disconnect()` first
-  if that's what you want.
+- **`disconnect()`** (the default) ends the session server-side and frees the
+  underlying wasm resource graph — the pump, dispatcher and heartbeat tasks —
+  in one step. The `Reactor` instance itself is still usable: a later
+  `connect()`/`reconnect()` lazily builds a fresh wasm client.
+- **`disconnect(true)`** ends the session but keeps the wasm client alive, so
+  a later `connect()`/`reconnect()` doesn't have to reload wasm and
+  reconstruct it from scratch.
+- **`using reactor = new Reactor(...)`** (or calling `reactor[Symbol.dispose]()`
+  directly) tears the instance down for good — same resource release as a
+  plain `disconnect()`, plus dropping every registered event handler. Do this
+  when you're done with the object entirely, not on every disconnect.
 
 ## Status and session id
 
