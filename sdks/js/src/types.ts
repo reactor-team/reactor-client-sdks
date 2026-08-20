@@ -1,6 +1,7 @@
 import type {
   ClientOptions as WasmClientOptions,
   ConnectOptions,
+  FileRef,
   JwtSource,
   ReactorError,
   ReactorMessage,
@@ -13,6 +14,7 @@ import type {
 
 export type {
   ConnectOptions,
+  FileRef,
   JwtSource,
   ReactorError,
   ReactorMessage,

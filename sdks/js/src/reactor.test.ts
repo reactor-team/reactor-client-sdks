@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
+  FileRef,
   ReactorMessage,
   ReactorStatus,
   TrackCapability,
@@ -165,6 +166,18 @@ const { FakeReactorClient } = vi.hoisted(() => {
     }
     getStreamByName(): MediaStream | undefined {
       return this.streamByNameResult;
+    }
+
+    uploadFileCalls: Array<{ file: Blob; name: string | undefined }> = [];
+    uploadFileResult: FileRef = {
+      upload_id: 'up_1',
+      name: 'upload',
+      mime_type: 'application/octet-stream',
+      size: 0,
+    };
+    uploadFile(file: Blob, name: string | undefined): Promise<FileRef> {
+      this.uploadFileCalls.push({ file, name });
+      return Promise.resolve(this.uploadFileResult);
     }
   }
 
@@ -521,6 +534,69 @@ describe('Reactor tracks', () => {
     expect(reactor.getStreamByMid('0')).toBeUndefined();
     expect(reactor.getTrackByName('model-output')).toBeUndefined();
     expect(reactor.getStreamByName('model-output')).toBeUndefined();
+  });
+});
+
+describe('Reactor.uploadFile', () => {
+  it('passes the file and optional name through to the binding', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const file = new Blob(['hi']);
+
+    const ref = await reactor.uploadFile(file, { name: 'photo.jpg' });
+
+    expect(ref).toEqual(client.uploadFileResult);
+    expect(client.uploadFileCalls).toEqual([{ file, name: 'photo.jpg' }]);
+  });
+
+  it('omits name when no options are given, leaving the binding to default it', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const file = new Blob(['hi']);
+
+    await reactor.uploadFile(file);
+
+    expect(client.uploadFileCalls).toEqual([{ file, name: undefined }]);
+  });
+
+  it('round-trips: an uploaded FileRef passed into sendCommand lands in uploads', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const file = new Blob(['hi']);
+
+    const ref = await reactor.uploadFile(file, { name: 'photo.jpg' });
+    await reactor.sendCommand('set_image', { image: ref, caption: 'a cat' });
+
+    expect(client.sendCommandCalls).toEqual([
+      { command: 'set_image', data: { caption: 'a cat' }, uploads: { image: ref } },
+    ]);
+  });
+
+  it('waits out an in-flight uploadFile() before disconnecting or freeing the client', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const gate = createDeferred<void>();
+    const originalUploadFile = client.uploadFile.bind(client);
+    client.uploadFile = (file, name) => {
+      const call = originalUploadFile(file, name);
+      return gate.promise.then(() => call);
+    };
+
+    const uploadPromise = reactor.uploadFile(new Blob(['hi']));
+    const disconnectPromise = reactor.disconnect();
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(client.disconnectCalls).toBe(0);
+    expect(client.freeCalls).toBe(0);
+
+    gate.resolve();
+    await uploadPromise;
+    await disconnectPromise;
+
+    expect(client.disconnectCalls).toBe(1);
+    expect(client.freeCalls).toBe(1);
   });
 });
 
