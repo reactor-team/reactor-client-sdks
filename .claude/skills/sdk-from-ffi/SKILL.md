@@ -8,7 +8,8 @@ description: >
   boundary, callback threading, string ownership, or wheel-style packaging is supposed to
   work for a binding. Also use it when a binding crashes on teardown, receives frames
   that never arrive, or silently sends nothing — those are the failure modes this
-  methodology exists to prevent.
+  methodology exists to prevent. Also use it for the seven example scenarios every SDK
+  ships, which are parity requirements rather than documentation.
 ---
 
 # Building an SDK on `reactor-ffi`
@@ -184,6 +185,68 @@ dependencies, and the device helpers carry theirs.
 
 ---
 
+## The seven scenarios, which are the real test suite
+
+Every SDK ships the same seven examples, and they are parity requirements rather than
+documentation: an example missing from a binding is a code path that binding has never
+run. Every bug in this list was found by one of them and by no unit test, because a unit
+test agrees with the fixture you wrote for it.
+
+[`sdks/python/examples/`](../../../sdks/python/examples/) is the reference. Port the set,
+keep the numbering, and keep each one teaching exactly one thing:
+
+| # | Teaches | What it caught |
+|---|---|---|
+| 01 | Connect, send the model's first command, read the reply, count frames | Nothing arrives until the model's own minimum is met, and that minimum is per model |
+| 02 | Upload a file, pass the `FileRef` into a command | — |
+| 03 | Pause and resume a track | Nothing is generated while paused, which is only visible as a frozen frame |
+| 04 | Publish a track and push tagged frames into it | A publish request nobody can decode is a request nobody answers |
+| 05 | Two clients on one session, the second adopting it by id | A creator that leaves without disconnecting orphans the session |
+| 06 | Request a clip and download it | Auth, readiness, and the container — three separate shipped bugs |
+| 07 | Read the per-frame trailer: frame id, sender timestamp, `user_data` | A tag is dropped unless the far end declared that it reads tags |
+
+What the set costs to learn the hard way:
+
+- **A frame count proves something arrived, not that it was the right something.** Give the
+  examples an opt-in window (`REACTOR_SHOW=1` over pygame/SDL in Python) and put the frame
+  drawing in the one file they share. Everything else stays in the example, spelled out:
+  a reader who has to open two files to understand one example is reading one file too many.
+- **Ask for tracks by name** — `reactor.track("main_video")` — the way an app that knows its
+  model does. Listing and filtering by kind or direction is for discovery, not for use.
+- **A model name is `owner/name`.** A bare name resolves under `reactor/`, so it works by
+  luck of ownership and answers 403 for anyone else's model. Write the owner in the example.
+- **Publishing is what puts a sender behind the slot.** Pushing before it must raise, and
+  a publish does not survive the session leaving ready.
+- **Clip readiness is in media time, not wall clock.** The manifest appears once the
+  recording passes the end of the chunk holding the window, and a snap clip's window ends
+  at *now*, so its boundary chunk is always the open one — waiting before asking moves the
+  target. The runtime's `predicted_ready_at_ms` is a wall clock plus media seconds, so it
+  is only right for a model generating at real time; a model at a tenth of that reaches the
+  boundary ten times later. Bound the wait on the session still being alive, not on a
+  number: a clip becomes ready because the model keeps generating, so once the session is
+  gone a 202 is a 202 forever.
+- **The playlist is fragmented MP4, and the init segment is a comment line.**
+  `#EXT-X-MAP:URI="…"` carries the `ftyp`/`moov`; a parser that skips `#` lines drops the
+  one part that makes the rest readable and writes a file no player opens. Fetch it first,
+  write it first.
+- **A clip's segments can be presigned on another host.** The playlist needs the bearer
+  token; a presigned URL *rejects* one rather than ignoring it. Send auth same-origin only.
+- **Run them against a local runtime, not only against production.** A paid session can be
+  killed mid-run by billing enforcement, and every failure then wears a disguise: a clip
+  that never becomes ready, a track that reports itself unpublished, a peer connection that
+  merely says `Disconnected`. `python -m reactor_runtime.serve` in a directory with a
+  `reactor.yaml` runs a model from source, costs nothing, and lets you write the model the
+  scenario needs — including shapes the published fleet does not have.
+- **A model may be on a runtime your binding cannot talk to.** The current runtime speaks
+  `reactor_wire.v1` protobuf on the control channel; an older one parses that channel as
+  JSON and drops what it cannot decode, so a request times out with nothing logged
+  anywhere. Before blaming your binding, check which runtime the model runs.
+- **Fixtures that you invented agree with you.** The Python clip tests passed for weeks
+  against a playlist shape nothing serves. Copy the fixture from the code that builds the
+  real manifest and say in the fixture where it came from.
+
+---
+
 ## Testing
 
 - **Fake the library, not your own code.** Python's tests hand `get_lib()` a fake exposing
@@ -240,6 +303,8 @@ and building that needs a Rust toolchain plus a libwebrtc download.
 - [ ] README documents the platform table, the library resolution order, and rebuilding
       after `crates/` changes.
 - [ ] The SDK's own lint/test tasks are in `mise.toml` and wired into CI.
+- [ ] All seven examples exist, numbered as in `sdks/python/examples/`, and each has been
+      run against a live model — not only against a fake.
 
 Repo conventions — Linear ticket, branch naming, DCO, stacked PRs — are in
 [`CONTRIBUTING.md`](../../../CONTRIBUTING.md) and the `pr-workflow` skill.
