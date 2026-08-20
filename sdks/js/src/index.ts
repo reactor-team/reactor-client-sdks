@@ -1,9 +1,27 @@
 export { Reactor } from './reactor';
+export {
+  ReactorError,
+  NetworkError,
+  UnauthorizedError,
+  NotFoundError,
+  ConflictError,
+  RateLimitedError,
+  BadRequestError,
+  ServerError,
+  VersionMismatchError,
+  DecodeError,
+  InvalidStateError,
+  SessionTerminalError,
+  MessageTooLargeError,
+  TransportError,
+  DisconnectedError,
+  RequestTimeoutError,
+  AbortedError,
+} from './errors';
 export type {
   ConnectOptions,
   FileRef,
   JwtSource,
-  ReactorError,
   ReactorEventMap,
   ReactorEventName,
   ReactorMessage,

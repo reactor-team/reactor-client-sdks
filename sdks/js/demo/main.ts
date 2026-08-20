@@ -45,19 +45,27 @@ interface OpenApiCommand {
 // controls.
 function commandsFromSchema(schema: unknown): OpenApiCommand[] {
   const paths = (schema as { paths?: unknown } | null)?.paths;
-  if (!paths || typeof paths !== 'object') return [];
+
+  if (!paths || typeof paths !== 'object') {
+    return [];
+  }
 
   const commands: OpenApiCommand[] = [];
+
   for (const pathItem of Object.values(paths as Record<string, unknown>)) {
     const post = (
       pathItem as {
         post?: { operationId?: unknown; summary?: unknown; requestBody?: unknown };
       } | null
     )?.post;
-    if (typeof post?.operationId !== 'string') continue;
+
+    if (typeof post?.operationId !== 'string') {
+      continue;
+    }
     const dataSchema = (
       post.requestBody as { content?: { ['application/json']?: { schema?: unknown } } } | undefined
     )?.content?.['application/json']?.schema;
+
     commands.push({
       name: post.operationId,
       description: typeof post.summary === 'string' ? post.summary : undefined,
@@ -73,11 +81,16 @@ function commandsFromSchema(schema: unknown): OpenApiCommand[] {
 // instantiator.
 function stubDataFor(dataSchema: unknown): Record<string, unknown> {
   const properties = (dataSchema as { properties?: unknown } | null)?.properties;
-  if (!properties || typeof properties !== 'object') return {};
+
+  if (!properties || typeof properties !== 'object') {
+    return {};
+  }
 
   const stub: Record<string, unknown> = {};
+
   for (const [key, propSchema] of Object.entries(properties as Record<string, unknown>)) {
     const prop = propSchema as { default?: unknown; type?: unknown } | null;
+
     if (prop && 'default' in prop) {
       stub[key] = prop.default;
       continue;
@@ -112,8 +125,11 @@ function renderCommands(commands: OpenApiCommand[] | undefined): void {
   commandsEmptyEl.style.display = commands?.length ? 'none' : '';
   for (const command of commands ?? []) {
     const button = document.createElement('button');
+
     button.textContent = command.name;
-    if (command.description) button.title = command.description;
+    if (command.description) {
+      button.title = command.description;
+    }
     button.addEventListener('click', () => {
       commandEl.value = command.name;
       commandDataEl.value = JSON.stringify(stubDataFor(command.dataSchema));
@@ -139,10 +155,13 @@ function renderTrack(name: string, stream: MediaStream | undefined): void {
   const kind = reactor.tracks().find((track) => track.name === name)?.kind ?? 'video';
 
   let element = trackElements.get(name);
+
   if (!element) {
     const wrapper = document.createElement('div');
+
     wrapper.className = 'track';
     const label = document.createElement('div');
+
     label.textContent = name;
     element = document.createElement(kind === 'audio' ? 'audio' : 'video');
     element.autoplay = true;
@@ -176,13 +195,19 @@ const STORAGE_PREFIX = 'reactor-demo-';
 
 function persistText(el: HTMLInputElement, key: string): void {
   const stored = localStorage.getItem(STORAGE_PREFIX + key);
-  if (stored !== null) el.value = stored;
+
+  if (stored !== null) {
+    el.value = stored;
+  }
   el.addEventListener('input', () => localStorage.setItem(STORAGE_PREFIX + key, el.value));
 }
 
 function persistCheckbox(el: HTMLInputElement, key: string): void {
   const stored = localStorage.getItem(STORAGE_PREFIX + key);
-  if (stored !== null) el.checked = stored === 'true';
+
+  if (stored !== null) {
+    el.checked = stored === 'true';
+  }
   el.addEventListener('change', () => localStorage.setItem(STORAGE_PREFIX + key, String(el.checked)));
 }
 
@@ -201,6 +226,7 @@ persistText(apiKeyEl, 'api-key');
 // host/port, not something tied to prod vs. local.
 function updateFieldAvailability(): void {
   const disabledForLocal = localEl.checked;
+
   modelNameEl.disabled = disabledForLocal;
   apiKeyEl.disabled = disabledForLocal;
 }
@@ -217,8 +243,12 @@ updateFieldAvailability();
 let cachedJwt: { apiKey: string; promise: Promise<string> } | undefined;
 
 async function fetchJwt(apiKey: string): Promise<string> {
-  if (!apiKey) throw new Error('enter an API key first');
-  if (cachedJwt?.apiKey === apiKey) return cachedJwt.promise;
+  if (!apiKey) {
+    throw new Error('enter an API key first');
+  }
+  if (cachedJwt?.apiKey === apiKey) {
+    return cachedJwt.promise;
+  }
 
   log('generating JWT...');
   const promise = (async () => {
@@ -228,7 +258,10 @@ async function fetchJwt(apiKey: string): Promise<string> {
       body: JSON.stringify({ apiKey }),
     });
     const body = await response.json();
-    if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+
+    if (!response.ok) {
+      throw new Error(body.error ?? `HTTP ${response.status}`);
+    }
     log('JWT generated');
     return body.jwt as string;
   })();
@@ -237,7 +270,9 @@ async function fetchJwt(apiKey: string): Promise<string> {
   // Don't cache a failure — a transient fetch error shouldn't wedge every
   // later resolver call behind it.
   promise.catch(() => {
-    if (cachedJwt?.promise === promise) cachedJwt = undefined;
+    if (cachedJwt?.promise === promise) {
+      cachedJwt = undefined;
+    }
   });
   return promise;
 }
@@ -296,6 +331,7 @@ document.querySelector('#connect')!.addEventListener('click', () => {
         // Command/Data and their buttons only make sense against a "ready"
         // session — sendCommand would just reject otherwise.
         const isReady = status === 'ready';
+
         commandEl.disabled = !isReady;
         commandDataEl.disabled = !isReady;
         sendCommandButton.disabled = !isReady;
@@ -336,7 +372,9 @@ document.querySelector('#connect')!.addEventListener('click', () => {
 
 document.querySelector('#disconnect')!.addEventListener('click', () => {
   void (async () => {
-    if (!reactor) return;
+    if (!reactor) {
+      return;
+    }
     // Default (recoverable = false): ends the session and frees the wasm
     // client in one step — the instance stays around, but a subsequent
     // connect() rebuilds the client from scratch.
@@ -352,6 +390,7 @@ document.querySelector('#sendCommand')!.addEventListener('click', () => {
       return;
     }
     const command = commandEl.value.trim();
+
     if (!command) {
       log('send command failed: enter a command name');
       return;
@@ -359,6 +398,7 @@ document.querySelector('#sendCommand')!.addEventListener('click', () => {
 
     let data: Record<string, unknown> | undefined;
     const raw = commandDataEl.value.trim();
+
     try {
       data = raw ? JSON.parse(raw) : undefined;
     } catch (error) {
@@ -369,6 +409,7 @@ document.querySelector('#sendCommand')!.addEventListener('click', () => {
     log(`sendCommand(${command}, ${JSON.stringify(data)})...`);
     try {
       const reply = await reactor.sendCommand(command, data);
+
       log(`sendCommand -> ${JSON.stringify(reply)}`);
     } catch (error) {
       log(`sendCommand failed: ${String(error)}`);

@@ -5,8 +5,11 @@ import type { FileRef as WireFileRef } from './reactor-wasm.types';
  *  not a class, so there is no `instanceof` to lean on the way the Python
  *  SDK does with its dataclass. */
 function isFileRef(value: unknown): value is FileRef {
-  if (typeof value !== 'object' || value === null) return false;
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
   const candidate = value as Partial<FileRef>;
+
   return (
     typeof candidate.uploadId === 'string' &&
     typeof candidate.name === 'string' &&
@@ -51,13 +54,17 @@ export function extractFileRefs(data: Record<string, unknown> | undefined): {
   data: Record<string, unknown> | undefined;
   uploads: Record<string, WireFileRef> | undefined;
 } {
-  if (!data) return { data, uploads: undefined };
+  if (!data) {
+    return { data, uploads: undefined };
+  }
 
   let uploads: Record<string, WireFileRef> | undefined;
   let scalars: Record<string, unknown> | undefined;
 
   for (const [key, value] of Object.entries(data)) {
-    if (!isFileRef(value)) continue;
+    if (!isFileRef(value)) {
+      continue;
+    }
     uploads ??= {};
     scalars ??= { ...data };
     uploads[key] = toWireFileRef(value);

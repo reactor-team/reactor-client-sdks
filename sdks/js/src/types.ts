@@ -2,7 +2,6 @@ import type {
   ClientOptions as WasmClientOptions,
   ConnectOptions,
   JwtSource,
-  ReactorError,
   ReactorMessage,
   ReactorStatus,
   TrackCapability,
@@ -10,11 +9,11 @@ import type {
   TrackKind,
   TrackMappingEntry,
 } from './internal/reactor-wasm.types';
+import type { ReactorError } from './errors';
 
 export type {
   ConnectOptions,
   JwtSource,
-  ReactorError,
   ReactorMessage,
   ReactorStatus,
   TrackCapability,

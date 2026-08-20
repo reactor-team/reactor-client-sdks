@@ -9,6 +9,7 @@ export class Emitter<EventMap extends { [Name in keyof EventMap]: (...args: neve
 
   on<Name extends keyof EventMap>(event: Name, handler: EventMap[Name]): void {
     let handlers = this.listeners.get(event);
+
     if (!handlers) {
       handlers = new Set();
       this.listeners.set(event, handlers);
@@ -25,12 +26,16 @@ export class Emitter<EventMap extends { [Name in keyof EventMap]: (...args: neve
       this.off(event, wrapped);
       (handler as (...args: Parameters<EventMap[Name]>) => void)(...args);
     }) as EventMap[Name];
+
     this.on(event, wrapped);
   }
 
   emit<Name extends keyof EventMap>(event: Name, ...args: Parameters<EventMap[Name]>): void {
     const handlers = this.listeners.get(event);
-    if (!handlers) return;
+
+    if (!handlers) {
+      return;
+    }
     // Snapshot before calling: a handler is free to `off`/`once` itself or
     // register another one mid-dispatch without corrupting this pass.
     for (const handler of [...handlers]) {

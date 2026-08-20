@@ -1,4 +1,5 @@
 import { AwaitQueue } from 'awaitqueue';
+import { toReactorError, type ReactorError } from './errors';
 import { Emitter } from './internal/emitter';
 import { extractFileRefs, toPublicFileRef } from './internal/file-ref';
 import type { ReactorClient } from './internal/reactor-wasm.types';
@@ -24,6 +25,7 @@ export class Reactor implements Disposable {
   private client: ReactorClient | undefined;
   private clientPromise: Promise<ReactorClient> | undefined;
   private disposed = false;
+  private _lastError: ReactorError | undefined;
   private schema: unknown;
   /** Bumped on every `refreshSchema()` call — lets a call detect it's been
    *  superseded by a newer one even when `client` itself hasn't changed
@@ -41,6 +43,7 @@ export class Reactor implements Disposable {
 
   constructor(options: ReactorOptions) {
     const { jwt, ...clientOptions } = options;
+
     this.clientOptions = clientOptions;
     this.jwt = jwt ?? null;
   }
@@ -56,17 +59,22 @@ export class Reactor implements Disposable {
    */
   async connect(jwt?: JwtSource, options?: ConnectOptions): Promise<void> {
     this.assertNotDisposed();
-    if (this.getStatus() !== 'disconnected') {
-      throw new Error('Already connected or connecting.');
+    try {
+      if (this.getStatus() !== 'disconnected') {
+        throw new Error('Already connected or connecting.');
+      }
+      if (jwt !== undefined) {
+        this.jwt = jwt;
+        this.client?.setJwt(jwt);
+      }
+      await this.queue.push(async () => {
+        const client = await this.getOrCreateClient();
+
+        await client.connect(options);
+      }, 'connect');
+    } catch (cause) {
+      throw toReactorError(cause);
     }
-    if (jwt !== undefined) {
-      this.jwt = jwt;
-      this.client?.setJwt(jwt);
-    }
-    await this.queue.push(async () => {
-      const client = await this.getOrCreateClient();
-      await client.connect(options);
-    }, 'connect');
   }
 
   /**
@@ -86,29 +94,37 @@ export class Reactor implements Disposable {
    */
   async disconnect(recoverable = false): Promise<void> {
     this.assertNotDisposed();
-    await this.queue.push(async () => {
-      if (this.client) {
-        await this.client.disconnect();
-      }
-      if (!recoverable) {
-        this.freeClient();
-      }
-    }, 'disconnect');
+    try {
+      await this.queue.push(async () => {
+        if (this.client) {
+          await this.client.disconnect();
+        }
+        if (!recoverable) {
+          this.freeClient();
+        }
+      }, 'disconnect');
+    } catch (cause) {
+      throw toReactorError(cause);
+    }
   }
 
   async reconnect(): Promise<void> {
     this.assertNotDisposed();
-    await this.queue.push(async () => {
-      const client = await this.getOrCreateClient();
-      await client.reconnect();
-    }, 'reconnect');
+    try {
+      await this.queue.push(async () => {
+        const client = await this.getOrCreateClient();
+
+        await client.reconnect();
+      }, 'reconnect');
+    } catch (cause) {
+      throw toReactorError(cause);
+    }
   }
 
   // ── Messaging ───────────────────────────────────────────────────────────
 
   /**
    * Sends a command to the model and resolves with its correlated reply.
-   * Rejects, same as `connect`/`disconnect`, if the session isn't `"ready"`.
    *
    * `undefined` means the handler acknowledged the command but sent no
    * reply body. The binding's own typed signature promises `undefined` for
@@ -119,16 +135,31 @@ export class Reactor implements Disposable {
    * A `FileRef` (from `uploadFile`) may be passed as a top-level value in
    * `data` alongside regular parameters — it is extracted and sent as a
    * separate upload reference rather than embedded in the JSON payload.
+   *
+   * Unlike every other method here, this never rejects — a failure (the
+   * session isn't `"ready"`, the send itself fails, …) is reported through
+   * `getLastError()`/the `error` event instead, resolving with `undefined`.
+   * This is a JS-only compatibility shim, kept because callers routinely
+   * fire-and-forget `sendCommand(...)` without `await`/`catch`, and a
+   * rejection nobody handles is an unhandled-rejection warning at best. It
+   * is deliberately not applied to `publishTrack`/`uploadFile`/etc., which
+   * throw normally.
    */
   async sendCommand(
     command: string,
     data?: Record<string, unknown>,
   ): Promise<ReactorMessage | undefined> {
-    this.assertNotDisposed();
-    const client = await this.getOrCreateClient();
-    const extracted = extractFileRefs(data);
-    const reply = await client.sendCommand(command, extracted.data, extracted.uploads);
-    return reply ?? undefined;
+    try {
+      this.assertNotDisposed();
+      const client = await this.getOrCreateClient();
+      const extracted = extractFileRefs(data);
+      const reply = await client.sendCommand(command, extracted.data, extracted.uploads);
+
+      return reply ?? undefined;
+    } catch (cause) {
+      this.emitError(toReactorError(cause));
+      return undefined;
+    }
   }
 
   /** Requests the model's command schema directly. Most callers don't need
@@ -136,8 +167,13 @@ export class Reactor implements Disposable {
    *  reaches `"ready"`; use `getSchema()` for that. */
   async requestSchema(): Promise<unknown> {
     this.assertNotDisposed();
-    const client = await this.getOrCreateClient();
-    return client.requestSchema();
+    try {
+      const client = await this.getOrCreateClient();
+
+      return await client.requestSchema();
+    } catch (cause) {
+      throw toReactorError(cause);
+    }
   }
 
   /** The model's command schema (an OpenAPI document), cached from the
@@ -160,10 +196,15 @@ export class Reactor implements Disposable {
    */
   async publishTrack(name: string, track: MediaStreamTrack): Promise<void> {
     this.assertNotDisposed();
-    await this.queue.push(async () => {
-      const client = await this.getOrCreateClient();
-      await client.publishTrack(name, track);
-    }, 'publishTrack');
+    try {
+      await this.queue.push(async () => {
+        const client = await this.getOrCreateClient();
+
+        await client.publishTrack(name, track);
+      }, 'publishTrack');
+    } catch (cause) {
+      throw toReactorError(cause);
+    }
   }
 
   /**
@@ -177,10 +218,11 @@ export class Reactor implements Disposable {
     try {
       await this.queue.push(async () => {
         const client = await this.getOrCreateClient();
+
         await client.unpublishTrack(name);
       }, 'unpublishTrack');
     } catch (cause) {
-      this.emitter.emit('error', cause as Parameters<ReactorEventMap['error']>[0]);
+      this.emitter.emit('error', toReactorError(cause));
     }
   }
 
@@ -191,19 +233,29 @@ export class Reactor implements Disposable {
    */
   async pauseTrack(name: string): Promise<void> {
     this.assertNotDisposed();
-    await this.queue.push(async () => {
-      const client = await this.getOrCreateClient();
-      await client.pauseTrack(name);
-    }, 'pauseTrack');
+    try {
+      await this.queue.push(async () => {
+        const client = await this.getOrCreateClient();
+
+        await client.pauseTrack(name);
+      }, 'pauseTrack');
+    } catch (cause) {
+      throw toReactorError(cause);
+    }
   }
 
   /** Resumes a track previously stopped with `pauseTrack()`. */
   async resumeTrack(name: string): Promise<void> {
     this.assertNotDisposed();
-    await this.queue.push(async () => {
-      const client = await this.getOrCreateClient();
-      await client.resumeTrack(name);
-    }, 'resumeTrack');
+    try {
+      await this.queue.push(async () => {
+        const client = await this.getOrCreateClient();
+
+        await client.resumeTrack(name);
+      }, 'resumeTrack');
+    } catch (cause) {
+      throw toReactorError(cause);
+    }
   }
 
   // ── Uploads ─────────────────────────────────────────────────────────────
@@ -224,11 +276,17 @@ export class Reactor implements Disposable {
    */
   async uploadFile(file: File | Blob, options?: { name?: string }): Promise<FileRef> {
     this.assertNotDisposed();
-    const wireFileRef = await this.queue.push(async () => {
-      const client = await this.getOrCreateClient();
-      return client.uploadFile(file, options?.name);
-    }, 'uploadFile');
-    return toPublicFileRef(wireFileRef);
+    try {
+      const wireFileRef = await this.queue.push(async () => {
+        const client = await this.getOrCreateClient();
+
+        return client.uploadFile(file, options?.name);
+      }, 'uploadFile');
+
+      return toPublicFileRef(wireFileRef);
+    } catch (cause) {
+      throw toReactorError(cause);
+    }
   }
 
   /** All tracks the model declared, whether or not media has arrived for —
@@ -279,9 +337,12 @@ export class Reactor implements Disposable {
    * `Reactor` instead of trying to `connect()` again.
    */
   [Symbol.dispose](): void {
-    if (this.disposed) return;
+    if (this.disposed) {
+      return;
+    }
     this.disposed = true;
     const client = this.client;
+
     this.client = undefined;
     this.clientPromise = undefined;
     this.schema = undefined;
@@ -305,6 +366,13 @@ export class Reactor implements Disposable {
   /** See `getStatus()`. */
   getSessionId(): string | undefined {
     return this.client?.sessionId();
+  }
+
+  /** The most recent `ReactorError`, from either an `error` event or a
+   *  rejected call — whichever landed last. `undefined` until the first
+   *  failure. */
+  getLastError(): ReactorError | undefined {
+    return this._lastError;
   }
 
   // ── Events ──────────────────────────────────────────────────────────────
@@ -337,6 +405,7 @@ export class Reactor implements Disposable {
 
   private async createClient(): Promise<ReactorClient> {
     const { ReactorClient: WasmReactorClient } = await loadReactorWasm();
+
     // [Symbol.dispose] may have run while the wasm module was loading above;
     // bail out before constructing a client that would otherwise outlive it
     // and never get freed.
@@ -344,12 +413,15 @@ export class Reactor implements Disposable {
       throw new Error('Reactor was disposed while connecting.');
     }
     const client = new WasmReactorClient(this.clientOptions, this.jwt);
+
     client.onStatusChanged((status) => {
       this.emitter.emit('statusChanged', status);
-      if (status === 'ready') void this.refreshSchema(client);
+      if (status === 'ready') {
+        void this.refreshSchema(client);
+      }
     });
     client.onSessionIdChanged((sessionId) => this.emitter.emit('sessionIdChanged', sessionId));
-    client.onError((error) => this.emitter.emit('error', error));
+    client.onError((error) => this.emitError(toReactorError(error)));
     // DATA channel — the model's own application traffic.
     client.onMessage((message) => this.emitter.emit('message', message));
     // CONTROL channel — platform traffic (moderation, clip/recording lifecycle).
@@ -357,11 +429,14 @@ export class Reactor implements Disposable {
     client.onTrackReceived((name, mid) => {
       const track = client.getTrackByName(name);
       const stream = client.getStreamByName(name);
+
       // Structurally shouldn't happen — `reactor-core` only dispatches this
       // event once the track is already resolvable — but if it ever does
       // (e.g. a teardown racing the dispatch), skip rather than emitting a
       // lie about the (non-optional) type.
-      if (!track || !stream) return;
+      if (!track || !stream) {
+        return;
+      }
       this.emitter.emit('trackReceived', name, track, stream, mid);
     });
     this.client = client;
@@ -383,14 +458,20 @@ export class Reactor implements Disposable {
    *  other binding failure, through the same `error` event as `onError`. */
   private async refreshSchema(client: ReactorClient): Promise<void> {
     const refreshId = ++this.schemaRefreshId;
+
     try {
       const schema = await client.requestSchema();
-      if (this.client !== client || refreshId !== this.schemaRefreshId) return;
+
+      if (this.client !== client || refreshId !== this.schemaRefreshId) {
+        return;
+      }
       this.schema = schema;
       this.emitter.emit('schemaReceived', this.schema);
     } catch (cause) {
-      if (this.client !== client || refreshId !== this.schemaRefreshId) return;
-      this.emitter.emit('error', cause as Parameters<ReactorEventMap['error']>[0]);
+      if (this.client !== client || refreshId !== this.schemaRefreshId) {
+        return;
+      }
+      this.emitError(toReactorError(cause));
     }
   }
 
@@ -407,6 +488,14 @@ export class Reactor implements Disposable {
     this.client = undefined;
     this.clientPromise = undefined;
     this.schema = undefined;
+  }
+
+  /** Records `error` as the most recent failure and fires the `error`
+   *  event — the one place both happen together, so `getLastError()` never
+   *  drifts from what listeners were told. */
+  private emitError(error: ReactorError): void {
+    this._lastError = error;
+    this.emitter.emit('error', error);
   }
 
   private assertNotDisposed(): void {

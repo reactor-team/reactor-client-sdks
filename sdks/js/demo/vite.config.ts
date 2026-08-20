@@ -5,13 +5,19 @@ const TOKENS_URL = 'https://api.reactor.inc/tokens';
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
+
+  for await (const chunk of req) {
+    chunks.push(chunk as Buffer);
+  }
   return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
 }
 
 function readApiKey(body: unknown): string | undefined {
-  if (typeof body !== 'object' || body === null || !('apiKey' in body)) return undefined;
+  if (typeof body !== 'object' || body === null || !('apiKey' in body)) {
+    return undefined;
+  }
   const { apiKey } = body as { apiKey?: unknown };
+
   return typeof apiKey === 'string' ? apiKey : undefined;
 }
 
@@ -46,7 +52,10 @@ function generateJwtPlugin(): Plugin {
         void (async () => {
           try {
             const apiKey = readApiKey(await readJsonBody(req));
-            if (!apiKey) return sendJson(res, 400, { error: 'apiKey is required' });
+
+            if (!apiKey) {
+              return sendJson(res, 400, { error: 'apiKey is required' });
+            }
 
             const upstream = await fetch(TOKENS_URL, {
               method: 'POST',
@@ -54,12 +63,15 @@ function generateJwtPlugin(): Plugin {
               body: null,
             });
             const upstreamBody = await upstream.json().catch(() => ({}));
+
             if (!upstream.ok) {
               return sendJson(res, upstream.status, {
                 error: upstreamBody.detail ?? upstreamBody.error ?? `upstream HTTP ${upstream.status}`,
               });
             }
-            if (!upstreamBody.jwt) return sendJson(res, 502, { error: 'upstream response had no jwt' });
+            if (!upstreamBody.jwt) {
+              return sendJson(res, 502, { error: 'upstream response had no jwt' });
+            }
             sendJson(res, 200, { jwt: upstreamBody.jwt });
           } catch (error) {
             sendJson(res, 500, { error: String(error) });

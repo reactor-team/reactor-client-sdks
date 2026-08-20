@@ -75,23 +75,84 @@ to add them alongside `getStatus()`/`getSessionId()`.
 | --- | --- |
 | `statusChanged` | `ReactorStatus` |
 | `sessionIdChanged` | `string \| undefined` |
-| `error` | `ReactorError` (`code`, `message`, `recoverable`, `status?`, `operation?`, `retry_after_ms?`, `timestamp_ms`) |
+| `error` | `ReactorError` |
 
-A rejected call throws the same `ReactorError` shape as an `Error` with
-`name === "ReactorError"` — codes are open-ended (the platform can send its
-own), so match on the ones you can act on rather than trying to enumerate
-them all:
+## Errors
+
+There is **one class**, not two: the `error` event payload and a rejected
+call's error are the same shape, and the same instance type —
+`ReactorError`, carrying `code`, `message`, `recoverable`, `status?`,
+`operation?`, `retry_after_ms?` and `timestamp_ms`, plus the compatibility
+fields below.
+
+`ReactorError` is the base of a typed hierarchy keyed by `reactor-core`'s own
+precise, per-failure-kind classification (shared by every SDK on it) —
+`NetworkError`, `UnauthorizedError`, `NotFoundError`, `ConflictError`,
+`RateLimitedError`, `BadRequestError`, `ServerError`, `VersionMismatchError`,
+`DecodeError`, `InvalidStateError`, `SessionTerminalError`,
+`MessageTooLargeError`, `TransportError`, `DisconnectedError`,
+`RequestTimeoutError`, `AbortedError`. **Prefer catching a specific one over
+matching `error.code`** — `instanceof` always reflects the real, precise
+reason; `code` itself does not always (see below):
 
 ```ts
+import { Reactor, ReactorError, UnauthorizedError } from "@reactor-team/js-sdk";
+
 try {
   await reactor.connect();
 } catch (error) {
-  if (error instanceof Error && error.name === "ReactorError") {
-    // error as unknown as import("@reactor-team/js-sdk").ReactorError
+  if (error instanceof UnauthorizedError) {
+    await refreshToken();
+  } else if (error instanceof ReactorError && error.recoverable) {
+    await reactor.reconnect();
   }
   throw error;
 }
 ```
+
+Codes are open-ended — the platform can send its own for a command or
+recording it rejects — so an unrecognized one falls back to the base
+`ReactorError` rather than throwing.
+
+`getLastError()` returns the most recent `ReactorError`, from either an
+`error` event or a rejected call.
+
+Every `ReactorError` also carries three compatibility fields, kept alongside
+the canonical ones above: `timestamp` (same value as `timestamp_ms`),
+`retryAfter` (same value as `retry_after_ms`), and `component: "api" | "gpu"`
+(best-effort — there's no longer a reliable signal for which tier produced a
+given failure, so it's derived from the failure itself: any `status` present
+means an HTTP response came back from the coordinator, so `"api"`; otherwise
+the underlying canonical code decides — the ones that only arise once a
+session is already talking to the model over the data channel/transport
+(`TRANSPORT_ERROR`, `DISCONNECTED`, `MESSAGE_TOO_LARGE`, `REQUEST_TIMEOUT`,
+`SESSION_TERMINAL`, `DECODE_FAILED`) are `"gpu"`, everything else `"api"`).
+
+**`code` itself needs a closer look**, because it isn't always
+`reactor-core`'s canonical value. For a failure this package can attribute
+to one call (`operation` is `"connect"`, `"reconnect"`, `"publishTrack"`,
+`"unpublishTrack"`, or `"sendCommand"`), `code` is the single fixed string
+this package already reported for that call before it adopted
+`reactor-core`'s richer, shared vocabulary — e.g. every `connect()` failure
+reports `code: "CONNECTION_FAILED"` regardless of the underlying reason,
+exactly as before, so a caller already matching one of those fixed strings
+keeps matching unchanged. An unprompted transport drop (no `operation` at
+all) reports `"GPU_CONNECTION_ERROR"`, likewise unconditionally. For every
+other call (`pauseTrack`, `resumeTrack`, `uploadFile`, `requestSchema`,
+`setJwt`, `disconnect`) — none of which ever had a fixed code of their own —
+`code` is `reactor-core`'s canonical value directly, since there's nothing
+prior to preserve. Either way, the typed subclass you actually get is always
+based on the real, precise reason — only `code`'s *string* is sometimes
+collapsed for compatibility, which is exactly why `instanceof` is the
+recommended way to branch on a failure, not `code`.
+
+`sendCommand()` is the one exception to "rejects like everything else": it
+never throws, even when the session isn't `"ready"` or the send itself
+fails — that failure is reported through `getLastError()`/the `error` event
+instead, and the call resolves `undefined`. This is a JS-only compatibility
+shim for callers that fire-and-forget `sendCommand(...)` without
+`await`/`catch` — it is not applied to `publishTrack()`, `uploadFile()`, or
+anything else, which throw normally.
 
 ## Local demo
 

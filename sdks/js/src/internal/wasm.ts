@@ -53,6 +53,7 @@ async function importWasmModule(): Promise<ReactorWasmModule> {
   const module = (await import(
     /* @vite-ignore */ WASM_MODULE_SPECIFIER
   )) as ReactorWasmModule;
+
   await module.default();
   return module;
 }
