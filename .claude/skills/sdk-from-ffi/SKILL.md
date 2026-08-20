@@ -259,6 +259,14 @@ What the set costs to learn the hard way:
 
 ## Testing
 
+A binding lands with unit tests, and the seven scenarios do not substitute for them: those
+need a live session, so they cannot gate a pull request, and a binding whose only proof
+runs by hand is one whose next change breaks quietly. Two things the scenarios cannot
+reach at all, so cover them here: every row of the refuse-do-not-fail-quietly table
+raising the documented error rather than the language's default, and teardown in its
+awkward shapes — destroy with callbacks still registered, destroy twice, destroy while a
+frame is in flight.
+
 - **Fake the library, not your own code.** Python's tests hand `get_lib()` a fake exposing
   the handful of symbols under test, with real C buffers for the string getters so the
   free path is exercised too.
@@ -272,6 +280,31 @@ What the set costs to learn the hard way:
   wired to it.
 - **Test that a removal actually removed.** When you delete an event or a method, assert
   both that registering raises *and* that nothing fires the old name.
+
+---
+
+## CI carries the binding, one job per language
+
+Wire the SDK into CI as its own job, scoped to its own paths. One job per binding, so a
+change to one does not build another: nobody editing the Python SDK should pay for a C++
+toolchain, and a red C++ build on a Python-only PR teaches the team to ignore red.
+
+- **Trigger on the binding's paths plus the shared ones.** `sdks/<lang>/**` for the
+  binding, and `crates/**` plus the workflow file itself, because a core or ABI change is
+  every binding's business. Skipping a binding whose FFI just changed is how a drifted
+  declaration reaches a release.
+- **Keep one aggregating job as the only required check.** `ci-complete` already exists
+  for this: it `needs` every job, runs `if: always()`, and fails if any of them failed or
+  was cancelled. That is what makes path-scoping safe — a required check that is skipped
+  never reports, and the pull request waits forever. Add your job to its `needs` and to the
+  result loop, or it is not actually gating anything.
+- **Put the commands in `mise.toml`, not in the workflow.** `lint:<lang>` and `test:<lang>`
+  tasks, aggregated into `lint` and `test`, so the workflow calls one thing and a
+  contributor runs exactly what CI runs.
+- **Expect the native library to be the slow part.** CI builds `libreactor_ffi` before the
+  binding's tests can load it; cache it keyed on the toolchain lock, since the Rust cache
+  holds C++ objects and reusing objects built by a different compiler is an ABI mismatch
+  Cargo's fingerprint cannot see.
 
 ---
 
@@ -312,7 +345,9 @@ and building that needs a Rust toolchain plus a libwebrtc download.
       disconnecting orphans the session, and the next run cannot start until it clears.
 - [ ] README documents the platform table, the library resolution order, and rebuilding
       after `crates/` changes.
-- [ ] The SDK's own lint/test tasks are in `mise.toml` and wired into CI.
+- [ ] The SDK's own `lint:<lang>` / `test:<lang>` tasks are in `mise.toml`, and CI runs
+      them in a job scoped to `sdks/<lang>/**` plus `crates/**`, listed in `ci-complete`.
+- [ ] A change to another SDK does not build yours, and a change to `crates/` does.
 - [ ] All seven examples exist, numbered as in `sdks/python/examples/`, and each has been
       run against a published model in production. A local runtime does not discharge this.
 
