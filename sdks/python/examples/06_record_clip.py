@@ -5,9 +5,10 @@
 manifest; `reactor.download` fetches the segments into one file. The bytes are
 MPEG-TS, hence `.ts` — remux with `ffmpeg -i clip.ts -c copy clip.mp4` if needed.
 
-Recordings are cut into fixed-length chunks, so this waits for frames and then
-for longer than the window before asking: a clip whose end falls inside a chunk
-the session never produced never becomes ready.
+Readiness is in *media* time, not wall clock: the manifest appears once the
+recording passes the end of the chunk holding the window. `clip.now_marker` is
+that media clock, and it advances with frames produced — so this asks for a clip,
+checks how much media exists, and waits if there is not enough yet.
 
 `request_recording()` is the same call for the whole session.
 
@@ -34,9 +35,9 @@ SHOW = os.environ.get("REACTOR_SHOW") == "1"
 
 PROMPT = "a forest at dawn, sunbeams through the canopy"
 OUTPUT_TRACK = "main_video"
-# Helios records in 4s chunks; the chunk holding the end of the window has to
-# close before the manifest exists.
-CHUNK_SLACK = 8.0
+# Helios records in 4s chunks, and the coordinator needs the chunk *after* the
+# window to have closed — so a clip is servable once media time passes 8s.
+MIN_MEDIA = 8.0
 
 
 async def main() -> None:
@@ -76,24 +77,25 @@ async def main() -> None:
             frames += 1
             window.submit(data, width, height)
 
-        # Frames first: a model can take a while to produce anything, and wall
-        # clock since `start` says nothing about how much video exists.
-        while frames == 0:
-            await window.hold(0.5)
-        print("generating")
-        await window.hold(clip_seconds + CHUNK_SLACK)
-        print(f"frames: {frames}")
+        # A clip request is cheap and answers with the media clock, so it is also
+        # how you find out whether there is enough recorded to cut from.
+        while True:
+            clip = await reactor.request_clip(clip_seconds)
+            if clip.now_marker >= MIN_MEDIA:
+                break
+            print(f"media recorded: {clip.now_marker:.1f}s of {MIN_MEDIA:.0f}s")
+            await window.hold(5)
 
-        clip = await reactor.request_clip(clip_seconds)
+        print(f"frames: {frames}")
         print(f"clip: {clip.kind} {clip.playlist_url}")
         print(f"window: {clip.start_marker:.1f} → {clip.end_marker:.1f}")
         if clip.end_marker - clip.start_marker < clip_seconds * 0.5:
             print("warning: the session had less video than the window asked for")
 
-        # The coordinator serves playlists behind auth and answers 202 until the
-        # last chunk lands; this carries the token and waits that out.
+        # Carries the token and waits out the 202s. The chunk still has to close,
+        # which is media time again — generous rather than the 60s default.
         # `reactor.download_clip(seconds, path)` does the request and this in one.
-        await reactor.download(clip, out)
+        await reactor.download(clip, out, ready_timeout=300)
         print(f"saved: {out} ({Path(out).stat().st_size // 1024} KB)")
 
 

@@ -1264,6 +1264,7 @@ class Reactor:
         path: str | os.PathLike | None = None,
         *,
         on_progress: Callable[[int, int], None] | None = None,
+        ready_timeout: float | None = 60.0,
     ) -> bytes | None:
         """Download a `Clip` this client asked for, with this client's token.
 
@@ -1271,7 +1272,9 @@ class Reactor:
         module-level `download_clip()` needs a `jwt=` handed to it. This is the
         same call with the one already in hand.
         """
-        return await download_clip(clip, path, jwt=self._jwt, on_progress=on_progress)
+        return await download_clip(
+            clip, path, jwt=self._jwt, on_progress=on_progress, ready_timeout=ready_timeout
+        )
 
     @overload
     async def download_clip(
@@ -1295,6 +1298,7 @@ class Reactor:
         path: str | os.PathLike | None = None,
         *,
         on_progress: Callable[[int, int], None] | None = None,
+        ready_timeout: float | None = 60.0,
     ) -> bytes | None:
         """`request_clip()` and download it, in one call.
 
@@ -1304,7 +1308,9 @@ class Reactor:
         download depending on what it says.
         """
         clip = await self.request_clip(duration_seconds)
-        return await download_clip(clip, path, jwt=self._jwt, on_progress=on_progress)
+        return await download_clip(
+            clip, path, jwt=self._jwt, on_progress=on_progress, ready_timeout=ready_timeout
+        )
 
     @overload
     async def download_recording(
@@ -1325,6 +1331,7 @@ class Reactor:
         path: str | os.PathLike | None = None,
         *,
         on_progress: Callable[[int, int], None] | None = None,
+        ready_timeout: float | None = 60.0,
     ) -> bytes | None:
         """`request_recording()` and download it, in one call.
 
@@ -1333,7 +1340,9 @@ class Reactor:
         thing in memory — see `download_clip()` (the module-level function).
         """
         clip = await self.request_recording()
-        return await download_clip(clip, path, jwt=self._jwt, on_progress=on_progress)
+        return await download_clip(
+            clip, path, jwt=self._jwt, on_progress=on_progress, ready_timeout=ready_timeout
+        )
 
     # ------------------------------------------------------------------
     # File upload

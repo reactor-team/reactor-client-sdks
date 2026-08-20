@@ -39,7 +39,7 @@ async def download_clip(
     *,
     jwt: str | None = None,
     on_progress: Callable[[int, int], None] | None = None,
-    ready_timeout: float = 60.0,
+    ready_timeout: float | None = 60.0,
 ) -> bytes: ...
 @overload
 async def download_clip(
@@ -48,7 +48,7 @@ async def download_clip(
     *,
     jwt: str | None = None,
     on_progress: Callable[[int, int], None] | None = None,
-    ready_timeout: float = 60.0,
+    ready_timeout: float | None = 60.0,
 ) -> None: ...
 async def download_clip(
     clip: Clip,
@@ -56,7 +56,7 @@ async def download_clip(
     *,
     jwt: str | None = None,
     on_progress: Callable[[int, int], None] | None = None,
-    ready_timeout: float = 60.0,
+    ready_timeout: float | None = 60.0,
 ) -> bytes | None:
     """Fetch every segment `clip.playlist_url` names.
 
@@ -83,7 +83,10 @@ async def download_clip(
         on_progress: Called after each segment, as `on_progress(done, total)`.
             Runs on the worker thread this dispatches to, not the event loop.
         ready_timeout: How long to keep polling while the coordinator answers
-            202, which it does until the clip's last chunk has landed.
+            202. `None` polls until it stops. The wait is in *media* time, not
+            wall clock: the manifest appears once recorded media passes the end
+            of the chunk holding the window, so a model generating at half
+            real-time takes twice as long to get there.
 
     Raises:
         urllib.error.URLError: A fetch failed — the playlist itself, or one of
@@ -117,7 +120,7 @@ def _playlist_segments(playlist_url: str, jwt: str | None, ready_timeout: float)
     the one holding the end of the window has to close first. The response
     carries `Retry-After` — the chunk length — so that is what we wait.
     """
-    deadline = time.monotonic() + ready_timeout
+    deadline = None if ready_timeout is None else time.monotonic() + ready_timeout
     polls = 0
     while True:
         _log.debug("fetching playlist: %s", playlist_url)
@@ -127,19 +130,24 @@ def _playlist_segments(playlist_url: str, jwt: str | None, ready_timeout: float)
                 break
             retry_after = resp.headers.get("Retry-After")
         polls += 1
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
             raise TimeoutError(
                 f"playlist at {playlist_url!r} was still not ready after "
-                f"{ready_timeout:.0f}s and {polls} polls. A window that ends inside a "
-                f"chunk the session never produced never becomes ready — ask for a clip "
-                f"only once the model has been generating for longer than the window."
+                f"{ready_timeout:.0f}s and {polls} polls. Readiness is in media time, "
+                f"not wall clock: the manifest appears once the recording passes the end "
+                f"of the chunk holding the window. A model generating slower than "
+                f"real-time takes proportionally longer, and a session that stops "
+                f"generating never gets there — keep it running, or pass a longer "
+                f"ready_timeout (None to wait indefinitely)."
             )
         try:
             delay = float(retry_after or 2.0)
         except ValueError:  # an HTTP-date, which needs a trusted clock
             delay = 2.0
-        time.sleep(min(delay, remaining))
+        # A floor, so a `Retry-After: 0` is a retry rather than a spin.
+        delay = max(delay, 0.1)
+        time.sleep(delay if remaining is None else min(delay, remaining))
 
     segments = [
         line.strip() for line in playlist.splitlines() if line.strip() and not line.startswith("#")

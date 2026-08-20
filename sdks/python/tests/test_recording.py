@@ -289,9 +289,21 @@ class TestNotReadyYet:
         clip = _clip(f"{server_url}/never/clip.m3u8")
         with pytest.raises(TimeoutError) as excinfo:
             await download_clip(clip, ready_timeout=0.3)
-        # The message has to say what to do about it: a window ending inside a
-        # chunk the session never produced never becomes ready.
-        assert "never produced" in str(excinfo.value)
+        # The message has to say what to do about it, and the rule that explains
+        # the wait is the media-time one.
+        assert "media time" in str(excinfo.value)
+        assert "ready_timeout" in str(excinfo.value)
+
+    async def test_none_waits_indefinitely(self, server_url: str) -> None:
+        """The platform's own semantics: it becomes ready when it becomes ready."""
+        global _not_ready_seen
+        _not_ready_seen = 0
+        clip = _clip(f"{server_url}/slow/clip.m3u8")
+        with pytest.raises(urllib.error.HTTPError):
+            # Reaching a segment fetch at all is the assertion — the 202s were
+            # waited out with no deadline in play.
+            await download_clip(clip, ready_timeout=None)
+        assert _not_ready_seen == _NOT_READY_TIMES
 
     async def test_it_waits_what_retry_after_asks_for(self, server_url: str) -> None:
         """`Retry-After` is the chunk length; polling faster than that is noise."""
@@ -306,8 +318,11 @@ class TestNotReadyYet:
 
         with mock.patch("reactor_sdk._recording.time.sleep", spy):
             with pytest.raises(TimeoutError):
-                await download_clip(clip, ready_timeout=0.05)
-        assert slept and all(s == 0.0 for s in slept)
+                await download_clip(clip, ready_timeout=0.3)
+        # `Retry-After: 0` floors at 0.1s rather than spinning, and the last waits
+        # are shorter only because the deadline caps them.
+        assert slept[0] == 0.1
+        assert max(slept) == 0.1
 
 
 class TestReactorDownloadConvenience:
