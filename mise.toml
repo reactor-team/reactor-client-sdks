@@ -173,18 +173,6 @@ dir = "sdks/js"
 depends = ["install:js"]
 run = "npm run build"
 
-[tasks."run:js-sdk-local"]
-description = "[Dev] Open a minimal Vite demo that connects and logs status changes"
-dir = "sdks/js/demo"
-# Depends on build:js (which itself needs crates/reactor-wasm/pkg, hence
-# build:wasm) so `dist/wasm` is always fresh before the demo starts — running
-# these out of order used to fail at runtime with a confusing wasm-load error.
-depends = ["build:wasm", "build:js"]
-run = [
-    "npm install",
-    "npm run dev",
-]
-
 # ── Lints ─────────────────────────────────────────────────────────────────────
 
 [tasks."lint:abi"]
