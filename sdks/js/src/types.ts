@@ -48,20 +48,23 @@ export interface ReactorEventMap {
   /** Platform-scope payload — naming matches v2 and Python's `runtime_message`. */
   runtimeMessage: (message: ReactorMessage) => void;
   /** The model's command schema (an OpenAPI document), fired once the
-   *  auto-request on `"ready"` lands — see `getSchema()`. */
-  schema: (schema: unknown) => void;
+   *  auto-request on `"ready"` lands — see `getSchema()`. Matches v2's
+   *  event name for this exact trigger/payload. */
+  schemaReceived: (schema: unknown) => void;
   /** Fired when the model side of a track's media becomes available.
    *  Matches v2's `(name, track, stream)` shape — `Reactor` resolves the
    *  wasm binding's raw `(name, mid)` through `getTrackByName`/
    *  `getStreamByName` before emitting, so callers don't need an extra
-   *  step. `track`/`stream` are `undefined` if the media isn't resolvable
-   *  yet at the moment this fires; `mid` rides along as an extra escape
+   *  step. `reactor-core` only ever dispatches this once the track is
+   *  already resolvable (it drops the underlying event entirely otherwise),
+   *  so — matching v2's own guarantee — `track`/`stream` are always real
+   *  values here, never `undefined`; `mid` rides along as an extra escape
    *  hatch for callers that want the binding's own identifier (e.g. for
    *  `getTrackByMid`/`getStreamByMid`). */
   trackReceived: (
     name: string,
-    track: MediaStreamTrack | undefined,
-    stream: MediaStream | undefined,
+    track: MediaStreamTrack,
+    stream: MediaStream,
     mid: string | undefined,
   ) => void;
 }

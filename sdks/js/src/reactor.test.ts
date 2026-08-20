@@ -316,7 +316,7 @@ describe('Reactor schema', () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
     const onSchema = vi.fn();
-    reactor.on('schema', onSchema);
+    reactor.on('schemaReceived', onSchema);
 
     client.emitReady();
 
@@ -328,7 +328,7 @@ describe('Reactor schema', () => {
     const client = await currentClient(reactor);
     client.schemaError = Object.assign(new Error('boom'), { code: 'TIMEOUT' });
     const onSchema = vi.fn();
-    reactor.on('schema', onSchema);
+    reactor.on('schemaReceived', onSchema);
 
     client.emitReady();
     await vi.waitFor(() => expect(client.requestSchemaCalls).toBe(1));
@@ -403,6 +403,19 @@ describe('Reactor tracks', () => {
     expect(client.unpublishTrackCalls).toEqual(['camera']);
   });
 
+  it('unpublishTrack() never rejects, matching v2 — a failure is reported via the error event', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const failure = new Error('boom');
+    client.unpublishTrack = () => Promise.reject(failure);
+    const onError = vi.fn();
+    reactor.on('error', onError);
+
+    await expect(reactor.unpublishTrack('camera')).resolves.toBeUndefined();
+
+    expect(onError).toHaveBeenCalledWith(failure);
+  });
+
   it('reads tracks()/trackMapping()/pausedTracks() straight off the binding', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
@@ -440,15 +453,18 @@ describe('Reactor tracks', () => {
     expect(onTrackReceived).toHaveBeenCalledWith('model-output', track, stream, '0');
   });
 
-  it('emits undefined track/stream when they cannot be resolved yet', async () => {
+  it('does not emit if the track/stream cannot be resolved (structurally shouldn’t happen)', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
     const onTrackReceived = vi.fn();
     reactor.on('trackReceived', onTrackReceived);
 
+    // `reactor-core` only ever dispatches this event once the track is
+    // already resolvable; simulating the (should-be-impossible) case where
+    // it isn't, to check this doesn't emit a lie about the non-optional type.
     client.emitTrackReceived('model-output', undefined);
 
-    expect(onTrackReceived).toHaveBeenCalledWith('model-output', undefined, undefined, undefined);
+    expect(onTrackReceived).not.toHaveBeenCalled();
   });
 
   it('waits out an in-flight publishTrack() before disconnecting or freeing the client', async () => {

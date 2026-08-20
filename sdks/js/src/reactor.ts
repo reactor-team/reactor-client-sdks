@@ -154,12 +154,22 @@ export class Reactor implements Disposable {
     }, 'publishTrack');
   }
 
+  /**
+   * Unlike every other track method, this doesn't reject — matching v2,
+   * which reported a failure through the `error` event (not by throwing)
+   * since this is commonly the last call in a `finally` block, and raising
+   * there would replace whatever exception was already propagating.
+   */
   async unpublishTrack(name: string): Promise<void> {
     this.assertNotDisposed();
-    await this.queue.push(async () => {
-      const client = await this.getOrCreateClient();
-      await client.unpublishTrack(name);
-    }, 'unpublishTrack');
+    try {
+      await this.queue.push(async () => {
+        const client = await this.getOrCreateClient();
+        await client.unpublishTrack(name);
+      }, 'unpublishTrack');
+    } catch (cause) {
+      this.emitter.emit('error', cause as Parameters<ReactorEventMap['error']>[0]);
+    }
   }
 
   async pauseTrack(name: string): Promise<void> {
@@ -312,13 +322,14 @@ export class Reactor implements Disposable {
     // CONTROL channel — platform traffic (moderation, clip/recording lifecycle).
     client.onRuntimeMessage((message) => this.emitter.emit('runtimeMessage', message));
     client.onTrackReceived((name, mid) => {
-      this.emitter.emit(
-        'trackReceived',
-        name,
-        client.getTrackByName(name),
-        client.getStreamByName(name),
-        mid,
-      );
+      const track = client.getTrackByName(name);
+      const stream = client.getStreamByName(name);
+      // Structurally shouldn't happen — `reactor-core` only dispatches this
+      // event once the track is already resolvable — but if it ever does
+      // (e.g. a teardown racing the dispatch), skip rather than emitting a
+      // lie about the (non-optional) type.
+      if (!track || !stream) return;
+      this.emitter.emit('trackReceived', name, track, stream, mid);
     });
     this.client = client;
     return client;
@@ -327,8 +338,8 @@ export class Reactor implements Disposable {
   /** Fired once per `"ready"` transition — see `getSchema()`. `getSchema()`
    *  isn't guaranteed populated by the time a `statusChanged` "ready" handler
    *  runs (this fetch is async and dispatched separately), so callers that
-   *  need the schema as soon as it lands should listen for `schema` instead
-   *  of reading `getSchema()` synchronously off `statusChanged`.
+   *  need the schema as soon as it lands should listen for `schemaReceived`
+   *  instead of reading `getSchema()` synchronously off `statusChanged`.
    *
    *  Guards against a stale reply: if `disconnect()`/a later `connect()`
    *  replaces `client` before this resolves, or a newer `refreshSchema()`
@@ -343,7 +354,7 @@ export class Reactor implements Disposable {
       const schema = await client.requestSchema();
       if (this.client !== client || refreshId !== this.schemaRefreshId) return;
       this.schema = schema;
-      this.emitter.emit('schema', this.schema);
+      this.emitter.emit('schemaReceived', this.schema);
     } catch (cause) {
       if (this.client !== client || refreshId !== this.schemaRefreshId) return;
       this.emitter.emit('error', cause as Parameters<ReactorEventMap['error']>[0]);
