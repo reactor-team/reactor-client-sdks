@@ -20,7 +20,7 @@ import type {
  */
 export class Reactor implements Disposable {
   private readonly clientOptions: Omit<ReactorOptions, 'jwt'>;
-  private pendingJwt: JwtSource | null | undefined;
+  private jwt: JwtSource | null | undefined;
   private client: ReactorClient | undefined;
   private clientPromise: Promise<ReactorClient> | undefined;
   private disposed = false;
@@ -42,13 +42,27 @@ export class Reactor implements Disposable {
   constructor(options: ReactorOptions) {
     const { jwt, ...clientOptions } = options;
     this.clientOptions = clientOptions;
-    this.pendingJwt = jwt ?? null;
+    this.jwt = jwt ?? null;
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────────
 
-  async connect(options?: ConnectOptions): Promise<void> {
+  /**
+   * `jwt`, when given, replaces whatever `new Reactor({ jwt })` was given —
+   * including on a client that's still around from a recoverable
+   * `disconnect(true)`.
+   *
+   * Throws if already connected or connecting; call `disconnect()` first.
+   */
+  async connect(jwt?: JwtSource, options?: ConnectOptions): Promise<void> {
     this.assertNotDisposed();
+    if (this.getStatus() !== 'disconnected') {
+      throw new Error('Already connected or connecting.');
+    }
+    if (jwt !== undefined) {
+      this.jwt = jwt;
+      this.client?.setJwt(jwt);
+    }
     await this.queue.push(async () => {
       const client = await this.getOrCreateClient();
       await client.connect(options);
@@ -258,16 +272,6 @@ export class Reactor implements Disposable {
     return this.client?.getStreamByName(name);
   }
 
-  setJwt(jwt?: JwtSource | null): Promise<void> {
-    this.assertNotDisposed();
-    this.pendingJwt = jwt ?? null;
-    this.client?.setJwt(this.pendingJwt);
-    // The wasm binding's setJwt is synchronous; this stays `Promise<void>`
-    // to match connect/disconnect/reconnect and leave room for a future
-    // binding change without breaking callers who already `await` it.
-    return Promise.resolve();
-  }
-
   /**
    * Supports `using reactor = new Reactor(...)`: releases the wasm resource
    * graph and drops every registered event handler for good. Unlike a plain
@@ -339,7 +343,7 @@ export class Reactor implements Disposable {
     if (this.disposed) {
       throw new Error('Reactor was disposed while connecting.');
     }
-    const client = new WasmReactorClient(this.clientOptions, this.pendingJwt);
+    const client = new WasmReactorClient(this.clientOptions, this.jwt);
     client.onStatusChanged((status) => {
       this.emitter.emit('statusChanged', status);
       if (status === 'ready') void this.refreshSchema(client);

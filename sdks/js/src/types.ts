@@ -49,8 +49,8 @@ export interface FileRef {
  */
 export interface ReactorOptions extends WasmClientOptions {
   /** A token, or a resolver called before every authenticated request.
-   *  Omit for an unauthenticated local runtime. Replaceable later with
-   *  `setJwt()`. */
+   *  Omit for an unauthenticated local runtime. Replaceable later by passing
+   *  a new one to `connect()`. */
   jwt?: JwtSource;
 }
 

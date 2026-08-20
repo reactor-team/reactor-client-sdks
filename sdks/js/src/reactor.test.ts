@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { toPublicFileRef } from './internal/file-ref';
 import type {
+  ConnectOptions,
   FileRef,
   ReactorMessage,
   ReactorStatus,
@@ -11,6 +12,10 @@ import type {
 const { FakeReactorClient } = vi.hoisted(() => {
   class FakeReactorClient {
     static instances: FakeReactorClient[] = [];
+    // Set by a test right before triggering the construction it's meant for
+    // (a Reactor's first connect()), then consumed once — see connectImpl's
+    // own doc below for why this is a static, not an instance field.
+    static nextConnectImpl: (() => Promise<void>) | undefined;
 
     sendCommandCalls: Array<{
       command: string;
@@ -39,14 +44,23 @@ const { FakeReactorClient } = vi.hoisted(() => {
       readonly jwt: unknown,
     ) {
       FakeReactorClient.instances.push(this);
+      // Reactor.connect() now guards against a second call while not
+      // "disconnected", so a test can no longer get a handle on an
+      // already-constructed client and *then* make its (second) connect()
+      // hang — it has to arrange that before the first, only, connect() call
+      // reaches this constructor.
+      this.connectImpl = FakeReactorClient.nextConnectImpl;
+      FakeReactorClient.nextConnectImpl = undefined;
     }
 
-    // Overridable so a test can hold connect() open (e.g. `() =>
-    // someDeferred.promise`) to simulate disconnect() racing an in-flight
-    // connect().
+    // Overridable (directly, or via the static above) so a test can hold
+    // connect() open — e.g. `() => someDeferred.promise` — to simulate
+    // disconnect() racing an in-flight connect().
     connectImpl: (() => Promise<void>) | undefined;
+    connectCalls: Array<ConnectOptions | undefined> = [];
     disconnectCalls = 0;
     freeCalls = 0;
+    private _status: ReactorStatus = 'disconnected';
 
     publishTrackCalls: Array<{ name: string; track: MediaStreamTrack }> = [];
     unpublishTrackCalls: string[] = [];
@@ -63,20 +77,29 @@ const { FakeReactorClient } = vi.hoisted(() => {
 
     private trackReceivedListener: ((name: string, mid: string | undefined) => void) | undefined;
 
-    setJwt(): void {}
-    async connect(): Promise<void> {
+    setJwtCalls: unknown[] = [];
+    setJwt(jwt?: unknown): void {
+      this.setJwtCalls.push(jwt);
+    }
+    async connect(options?: ConnectOptions): Promise<void> {
+      this.connectCalls.push(options);
       if (this.connectImpl) await this.connectImpl();
+      this._status = 'ready';
     }
     disconnect(): Promise<void> {
       this.disconnectCalls += 1;
+      this._status = 'disconnected';
       return Promise.resolve();
     }
-    async reconnect(): Promise<void> {}
+    reconnect(): Promise<void> {
+      this._status = 'ready';
+      return Promise.resolve();
+    }
     free(): void {
       this.freeCalls += 1;
     }
     status(): ReactorStatus {
-      return 'ready';
+      return this._status;
     }
     sessionId(): string | undefined {
       return undefined;
@@ -244,9 +267,8 @@ describe('Reactor.sendCommand', () => {
 
   it('waits out an in-flight connect() before disconnecting or freeing the client', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
-    const client = await currentClient(reactor);
     const gate = createDeferred<void>();
-    client.connectImpl = () => gate.promise;
+    FakeReactorClient.nextConnectImpl = () => gate.promise;
 
     const connectPromise = reactor.connect();
     const disconnectPromise = reactor.disconnect();
@@ -257,6 +279,8 @@ describe('Reactor.sendCommand', () => {
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
+    const client = FakeReactorClient.instances.at(-1);
+    if (!client) throw new Error('no FakeReactorClient was constructed');
     expect(client.disconnectCalls).toBe(0);
     expect(client.freeCalls).toBe(0);
 
@@ -276,6 +300,79 @@ describe('Reactor.sendCommand', () => {
     const reply = await reactor.sendCommand('start');
 
     expect(reply).toBeUndefined();
+  });
+});
+
+describe('Reactor connect/construction options', () => {
+  it("forwards sessionId, connectionId, autoResumeTracks, and maxAttempts to the binding's connect()", async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const options: ConnectOptions = {
+      sessionId: 'session-1',
+      connectionId: 42,
+      autoResumeTracks: false,
+      maxAttempts: 3,
+    };
+
+    await reactor.connect(undefined, options);
+
+    const client = FakeReactorClient.instances.at(-1);
+    expect(client?.connectCalls).toEqual([options]);
+  });
+
+  it('connect(jwt) sets the jwt before the client is built, matching a caller with no options', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+
+    await reactor.connect('jwt-token');
+
+    // No client exists yet on a first connect(), so the jwt reaches the
+    // binding through its constructor argument (this.jwt), not a live
+    // client?.setJwt() call — exercised instead once a client already
+    // exists, in the next test.
+    const client = FakeReactorClient.instances.at(-1);
+    expect(client?.jwt).toBe('jwt-token');
+    expect(client?.connectCalls).toEqual([undefined]);
+  });
+
+  it('connect(jwt, options) sets the jwt and forwards options', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const options: ConnectOptions = { sessionId: 'session-1' };
+    const jwtResolver = () => 'jwt-token';
+
+    await reactor.connect(jwtResolver, options);
+
+    const client = FakeReactorClient.instances.at(-1);
+    expect(client?.jwt).toBe(jwtResolver);
+    expect(client?.connectCalls).toEqual([options]);
+  });
+
+  it('connect(jwt) updates a recoverably-disconnected client via client.setJwt(), not just this.jwt', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    await reactor.disconnect(true); // keeps the client alive, but disconnected
+
+    await reactor.connect('new-jwt-token');
+
+    expect(client.setJwtCalls).toEqual(['new-jwt-token']);
+  });
+
+  it('connect() rejects while already connected or connecting', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    await currentClient(reactor);
+
+    await expect(reactor.connect()).rejects.toThrow(/already connected|connecting/i);
+  });
+
+  it('forwards construction options — including local and apiUrl — straight through to the binding', async () => {
+    const reactor = new Reactor({ modelName: 'test-model', local: true, apiUrl: 'http://example.test' });
+
+    await reactor.connect();
+
+    const client = FakeReactorClient.instances.at(-1);
+    expect(client?.options).toEqual({
+      modelName: 'test-model',
+      local: true,
+      apiUrl: 'http://example.test',
+    });
   });
 });
 
