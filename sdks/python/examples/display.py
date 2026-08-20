@@ -39,7 +39,9 @@ class Display:
         self._screen = None
         self._box: tuple[int, int] | None = None
         self._closed = False
-        self._drawn = 0
+        self._submitted = 0
+        self._counted = 0
+        self._dirty = False
         self._last_caption = 0.0
 
     @property
@@ -50,6 +52,8 @@ class Display:
     def submit(self, data: bytes, width: int, height: int, tile: int = 0) -> None:
         with self._lock:
             self._latest[tile] = (data, width, height)
+            self._submitted += 1
+            self._dirty = True
 
     async def hold(self, seconds: float) -> None:
         """Sleep `seconds`, drawing while it lasts. Returns early if closed."""
@@ -62,6 +66,8 @@ class Display:
         pygame = self._pygame
         with self._lock:
             frames = dict(self._latest)
+            dirty, self._dirty = self._dirty, False
+            submitted = self._submitted
         if not frames:
             return
 
@@ -72,7 +78,11 @@ class Display:
             pygame.init()
             pygame.display.set_caption(self._title)
             self._screen = pygame.display.set_mode((self._box[0] * self._tiles, self._box[1]))
+            self._last_caption = time.monotonic()
+            dirty = True
 
+        # Always pumped, drawn or not: this is what closing the window goes
+        # through.
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self._closed = True
@@ -82,21 +92,23 @@ class Display:
 
         box = self._box
         assert box is not None
-        for tile, (data, width, height) in frames.items():
-            surface = pygame.image.frombuffer(data, (width, height), "BGRA")
-            if (width, height) != box:
-                surface = pygame.transform.scale(surface, box)
-            self._screen.blit(surface, (tile * box[0], 0))
-        pygame.display.flip()
+        if dirty:
+            for tile, (data, width, height) in frames.items():
+                surface = pygame.image.frombuffer(data, (width, height), "BGRA")
+                if (width, height) != box:
+                    surface = pygame.transform.scale(surface, box)
+                self._screen.blit(surface, (tile * box[0], 0))
+            pygame.display.flip()
 
-        self._drawn += 1
-        now = time.monotonic()
-        if now - self._last_caption >= 1.0:
-            fps = self._drawn / (now - self._last_caption) if self._last_caption else 0.0
-            if fps:
-                pygame.display.set_caption(f"{self._title} — {fps:.0f} fps drawn")
-            self._drawn = 0
-            self._last_caption = now
+        # Frames arrived, not redraws: this loop runs at 60Hz whatever the model
+        # is doing, and reporting that as fps would be reporting the window's
+        # health rather than the stream's.
+        elapsed = time.monotonic() - self._last_caption
+        if elapsed >= 1.0:
+            fps = (submitted - self._counted) / elapsed
+            pygame.display.set_caption(f"{self._title} — {fps:.1f} fps")
+            self._counted = submitted
+            self._last_caption += elapsed
 
 
 class _NoDisplay:
