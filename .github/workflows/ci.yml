@@ -85,7 +85,7 @@ jobs:
       - run: mise run build:js
 
   test:
-    name: rust + python tests
+    name: rust + python + js tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -110,6 +110,12 @@ jobs:
       - name: Build libreactor_ffi for the ctypes contract tests
         run: cargo build -p reactor-ffi --release
       - run: mise run test:python
+      - uses: actions/setup-node@v4   # Node isn't mise-pinned yet; see mise.toml's "JS SDK" section
+        with:
+          node-version: "24"
+      # Unit tests against a mocked ReactorClient — no wasm build needed here,
+      # unlike the `wasm` job's build:js.
+      - run: mise run test:js
 
   ci-complete:
     name: CI Complete
