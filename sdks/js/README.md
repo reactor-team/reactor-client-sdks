@@ -33,6 +33,9 @@ await reactor.connect();
 await reactor.disconnect(); // ends the session AND frees the wasm client
 ```
 
+The token can also be passed directly to `connect(jwt, options?)` instead of
+the constructor.
+
 Construction never touches WebAssembly — `reactor-wasm` is fetched and
 instantiated lazily on the first `connect()`/`reconnect()` call, and cached
 after that, so building a `Reactor` you never connect costs nothing.
