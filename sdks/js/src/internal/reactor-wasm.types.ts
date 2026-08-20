@@ -38,6 +38,7 @@ export interface ClientOptions {
   sdpBackoffInitialMs?: number;
   sdpBackoffMaxMs?: number;
   sdpBackoffMultiplier?: number;
+  modelTracks?: TrackCapability[];
   logLevel?: 'off' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
 }
 

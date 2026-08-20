@@ -21,6 +21,7 @@ use reactor_core::backoff::PollConfig;
 use reactor_core::error::{CoreError, ErrorDetails, ReactorError};
 use reactor_core::events::ReactorEvent;
 use reactor_core::peer::{PeerEvent, PeerTransport};
+use reactor_core::protocol::session::TrackCapability;
 use reactor_core::protocol::upload::FileRef;
 use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions};
 
@@ -75,6 +76,8 @@ struct ClientOptions {
     sdp_backoff_max_ms: Option<u64>,
     /// Growth factor applied to the delay between SDP-answer poll retries.
     sdp_backoff_multiplier: Option<f64>,
+    /// See `ReactorOptions::preset_tracks`.
+    model_tracks: Option<Vec<TrackCapability>>,
     /// `"off"`, `"error"`, `"warn"`, `"info"`, `"debug"` or `"trace"`.
     /// Defaults to `"warn"`: the core logs freely at debug, and a browser
     /// console is a user-facing surface.
@@ -146,6 +149,7 @@ impl ClientOptions {
                 ..options.sdp_poll
             };
         }
+        options.preset_tracks = self.model_tracks;
         Ok(options)
     }
 }
