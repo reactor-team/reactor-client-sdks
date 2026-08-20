@@ -61,6 +61,12 @@ async def main() -> None:
     def failed(error: Exception) -> None:
         print(f"error: {error}")
 
+    # Where a session end announces itself, among the runtime's other traffic —
+    # worth having when a clip never becomes ready.
+    @reactor.on_message
+    def message(msg: dict) -> None:
+        print(f"message: {msg}")
+
     async with reactor:
         await reactor.connect()
         print(f"session: {reactor.session_id}")

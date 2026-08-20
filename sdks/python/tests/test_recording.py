@@ -285,6 +285,26 @@ class TestNotReadyYet:
             await download_clip(clip)
         assert _not_ready_seen == _NOT_READY_TIMES
 
+    async def test_it_stops_when_the_session_that_feeds_the_clock_ends(
+        self, server_url: str
+    ) -> None:
+        """A 202 after the session ended is a 202 forever."""
+        clip = _clip(f"{server_url}/never/clip.m3u8")
+        with pytest.raises(TimeoutError) as excinfo:
+            # ready_timeout is generous on purpose: what ends this wait is the
+            # predicate, not the clock.
+            await download_clip(clip, ready_timeout=30, while_live=lambda: False)
+        assert "session ended" in str(excinfo.value)
+
+    async def test_it_keeps_waiting_while_the_session_lives(self, server_url: str) -> None:
+        global _not_ready_seen
+        _not_ready_seen = 0
+        clip = _clip(f"{server_url}/slow/clip.m3u8")
+        with pytest.raises(urllib.error.HTTPError):
+            # Reaching a segment fetch means the 202s were waited out.
+            await download_clip(clip, while_live=lambda: True)
+        assert _not_ready_seen == _NOT_READY_TIMES
+
     async def test_it_gives_up_after_ready_timeout(self, server_url: str) -> None:
         clip = _clip(f"{server_url}/never/clip.m3u8")
         with pytest.raises(TimeoutError) as excinfo:

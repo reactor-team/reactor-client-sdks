@@ -1273,7 +1273,12 @@ class Reactor:
         same call with the one already in hand.
         """
         return await download_clip(
-            clip, path, jwt=self._jwt, on_progress=on_progress, ready_timeout=ready_timeout
+            clip,
+            path,
+            jwt=self._jwt,
+            on_progress=on_progress,
+            ready_timeout=ready_timeout,
+            while_live=lambda: self.status == ReactorStatus.READY,
         )
 
     @overload

@@ -40,6 +40,7 @@ async def download_clip(
     jwt: str | None = None,
     on_progress: Callable[[int, int], None] | None = None,
     ready_timeout: float | None = 60.0,
+    while_live: Callable[[], bool] | None = None,
 ) -> bytes: ...
 @overload
 async def download_clip(
@@ -49,6 +50,7 @@ async def download_clip(
     jwt: str | None = None,
     on_progress: Callable[[int, int], None] | None = None,
     ready_timeout: float | None = 60.0,
+    while_live: Callable[[], bool] | None = None,
 ) -> None: ...
 async def download_clip(
     clip: Clip,
@@ -57,6 +59,7 @@ async def download_clip(
     jwt: str | None = None,
     on_progress: Callable[[int, int], None] | None = None,
     ready_timeout: float | None = 60.0,
+    while_live: Callable[[], bool] | None = None,
 ) -> bytes | None:
     """Fetch every segment `clip.playlist_url` names.
 
@@ -82,6 +85,10 @@ async def download_clip(
             clip without a live client.
         on_progress: Called after each segment, as `on_progress(done, total)`.
             Runs on the worker thread this dispatches to, not the event loop.
+        while_live: Called before each retry; `False` ends the wait. The media
+            clock only advances while the session generates, so a 202 after it
+            has ended is a 202 forever. `Reactor.download()` passes its own
+            status.
         ready_timeout: Grace period past `clip.predicted_ready_at_ms` before a
             202 becomes a `TimeoutError`. `None` polls until the coordinator
             stops saying 202 — the JS SDK's default, which it can afford because
@@ -101,7 +108,9 @@ async def download_clip(
         TimeoutError: The playlist was still 202 when `ready_timeout` ran out.
         ValueError: The playlist named no segments at all.
     """
-    return await asyncio.to_thread(_download_clip_sync, clip, path, jwt, on_progress, ready_timeout)
+    return await asyncio.to_thread(
+        _download_clip_sync, clip, path, jwt, on_progress, ready_timeout, while_live
+    )
 
 
 def _open(url: str, jwt: str | None, *, same_origin_as: str | None = None):
@@ -142,6 +151,7 @@ def _playlist_segments(
     jwt: str | None,
     ready_timeout: float | None,
     predicted_ready_at_ms: float = 0.0,
+    while_live: Callable[[], bool] | None = None,
 ) -> list[str]:
     """The segment names in the playlist, waiting out the 202s first.
 
@@ -167,6 +177,16 @@ def _playlist_segments(
                 break
             retry_after = resp.headers.get("Retry-After")
         polls += 1
+        # The chunk closes because the model keeps producing. Once the session is
+        # gone, no amount of waiting closes it.
+        if while_live is not None and not while_live():
+            raise TimeoutError(
+                f"playlist at {playlist_url!r} was not ready when the session ended, "
+                f"after {polls} polls. The chunk holding the end of the window had not "
+                f"closed, and media time only advances while the session generates — so "
+                f"this clip cannot become ready. Ask for the clip earlier, or keep the "
+                f"session connected until the download finishes."
+            )
         remaining = None if deadline is None else deadline - time.monotonic()
         if remaining is not None and remaining <= 0:
             raise TimeoutError(
@@ -201,9 +221,12 @@ def _download_clip_sync(
     path: str | os.PathLike | None,
     jwt: str | None,
     on_progress: Callable[[int, int], None] | None,
-    ready_timeout: float,
+    ready_timeout: float | None,
+    while_live: Callable[[], bool] | None = None,
 ) -> bytes | None:
-    segments = _playlist_segments(clip.playlist_url, jwt, ready_timeout, clip.predicted_ready_at_ms)
+    segments = _playlist_segments(
+        clip.playlist_url, jwt, ready_timeout, clip.predicted_ready_at_ms, while_live
+    )
     total = len(segments)
 
     if path is not None:
