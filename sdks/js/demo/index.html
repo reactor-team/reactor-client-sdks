@@ -21,6 +21,13 @@
       #commands { margin-top: 0.5rem; display: flex; flex-wrap: wrap; gap: 0.4rem; }
       #commands button { margin: 0; padding: 0.3rem 0.6rem; font-size: 0.85rem; }
       #commandsEmpty { margin-top: 0.5rem; font-size: 0.85rem; color: #666; }
+      #tracksSection { margin-top: 0.5rem; border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem; }
+      #tracksSection > p { margin: 0 0 0.5rem; font-weight: bold; font-size: 0.9rem; }
+      #tracks { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+      #tracks .track { font-size: 0.8rem; color: #333; border: 1px solid #ccc; border-radius: 6px;
+                        padding: 0.5rem; background: #fafafa; }
+      #tracks .track > div:first-child { font-weight: bold; margin-bottom: 0.4rem; }
+      #tracks video, #tracks audio { display: block; width: 240px; background: #000; }
     </style>
   </head>
   <body>
@@ -42,6 +49,11 @@
 
     <p id="commandsEmpty">Available commands appear here once the session reaches "ready".</p>
     <div id="commands"></div>
+
+    <div id="tracksSection">
+      <p>Received tracks</p>
+      <div id="tracks"></div>
+    </div>
 
     <div id="logToolbar">
       <span>Log</span>

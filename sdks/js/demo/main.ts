@@ -18,6 +18,7 @@ const sendCommandButton = document.querySelector<HTMLButtonElement>('#sendComman
 const getSchemaButton = document.querySelector<HTMLButtonElement>('#getSchema')!;
 const commandsEl = document.querySelector<HTMLDivElement>('#commands')!;
 const commandsEmptyEl = document.querySelector<HTMLParagraphElement>('#commandsEmpty')!;
+const tracksEl = document.querySelector<HTMLDivElement>('#tracks')!;
 
 function log(message: string): void {
   console.log(message);
@@ -121,6 +122,51 @@ function renderCommands(commands: OpenApiCommand[] | undefined): void {
     });
     commandsEl.append(button);
   }
+}
+
+// One <video> or <audio> per received track name, created lazily and reused
+// across later `trackReceived` events for the same name (e.g. a reconnect).
+const trackElements = new Map<string, HTMLVideoElement | HTMLAudioElement>();
+
+function renderTrack(name: string, stream: MediaStream | undefined): void {
+  if (!reactor || !stream) {
+    log(`trackReceived(${name}): no stream resolved`);
+    return;
+  }
+  // `tracks()` carries the declared `kind` per name — trackReceived's own
+  // payload doesn't, so this is the only way to know whether to render a
+  // <video> or an <audio> element for it.
+  const kind = reactor.tracks().find((track) => track.name === name)?.kind ?? 'video';
+
+  let element = trackElements.get(name);
+  if (!element) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'track';
+    const label = document.createElement('div');
+    label.textContent = name;
+    element = document.createElement(kind === 'audio' ? 'audio' : 'video');
+    element.autoplay = true;
+    if (element instanceof HTMLVideoElement) {
+      element.playsInline = true;
+      // Muted so a locally-published webcam/mic doesn't echo back through
+      // its own model-side round-trip — audio-kind tracks stay unmuted,
+      // since muting those would defeat the point of rendering them at all.
+      element.muted = true;
+    } else {
+      // Audio elements render as nothing visible otherwise — controls make
+      // it obvious in the demo that a stream is attached and playing.
+      element.controls = true;
+    }
+    wrapper.append(label, element);
+    tracksEl.append(wrapper);
+    trackElements.set(name, element);
+  }
+  element.srcObject = stream;
+}
+
+function clearTracks(): void {
+  tracksEl.innerHTML = '';
+  trackElements.clear();
 }
 
 // Demo-only convenience: persist every field in this browser's localStorage
@@ -240,6 +286,10 @@ document.querySelector('#connect')!.addEventListener('click', () => {
         jwt: local ? undefined : () => fetchJwt(apiKeyEl.value.trim()),
       });
       reactorTargetKey = targetKey;
+      // Debug-only convenience: poke at the instance from devtools, e.g.
+      // `reactor.tracks()` — it's otherwise unreachable from the console
+      // since it's a module-scoped variable, not a global.
+      (window as unknown as { reactor: ReactorType }).reactor = reactor;
       reactor.on('statusChanged', (status) => {
         statusEl.textContent = status;
         log(`statusChanged -> ${status}`);
@@ -255,12 +305,19 @@ document.querySelector('#connect')!.addEventListener('click', () => {
         // rather than offering a mid-transition disconnect.
         connectButton.disabled = status !== 'disconnected';
         disconnectButton.disabled = !isReady;
-        if (status === 'disconnected') renderCommands(undefined);
+        if (status === 'disconnected') {
+          renderCommands(undefined);
+          clearTracks();
+        }
       });
       reactor.on('sessionIdChanged', (sessionId) => log(`sessionIdChanged -> ${sessionId}`));
       reactor.on('error', (error) => log(`error -> ${error.code}: ${error.message}`));
       reactor.on('message', (message) => log(`message -> ${JSON.stringify(message)}`));
       reactor.on('runtimeMessage', (message) => log(`runtimeMessage -> ${JSON.stringify(message)}`));
+      reactor.on('trackReceived', (name, _track, stream, mid) => {
+        log(`trackReceived -> name=${name} mid=${mid}`);
+        renderTrack(name, stream);
+      });
       // The auto-request on "ready" fires this once it lands — reading
       // getSchema() straight off statusChanged("ready") would race it, since
       // that fetch is async and dispatched separately.

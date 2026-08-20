@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ReactorMessage, ReactorStatus } from './internal/reactor-wasm.types';
+import type {
+  ReactorMessage,
+  ReactorStatus,
+  TrackCapability,
+  TrackMappingEntry,
+} from './internal/reactor-wasm.types';
 
 const { FakeReactorClient } = vi.hoisted(() => {
   class FakeReactorClient {
@@ -40,6 +45,21 @@ const { FakeReactorClient } = vi.hoisted(() => {
     connectImpl: (() => Promise<void>) | undefined;
     disconnectCalls = 0;
     freeCalls = 0;
+
+    publishTrackCalls: Array<{ name: string; track: MediaStreamTrack }> = [];
+    unpublishTrackCalls: string[] = [];
+    pauseTrackCalls: string[] = [];
+    resumeTrackCalls: string[] = [];
+    tracksResult: TrackCapability[] = [];
+    trackMappingResult: TrackMappingEntry[] = [];
+    pausedTracksResult: string[] = [];
+    peerConnectionResult: RTCPeerConnection | undefined;
+    trackByMidResult: MediaStreamTrack | undefined;
+    streamByMidResult: MediaStream | undefined;
+    trackByNameResult: MediaStreamTrack | undefined;
+    streamByNameResult: MediaStream | undefined;
+
+    private trackReceivedListener: ((name: string, mid: string | undefined) => void) | undefined;
 
     setJwt(): void {}
     async connect(): Promise<void> {
@@ -89,6 +109,9 @@ const { FakeReactorClient } = vi.hoisted(() => {
     onRuntimeMessage(listener: (message: ReactorMessage) => void): void {
       this.runtimeMessageListener = listener;
     }
+    onTrackReceived(listener: (name: string, mid: string | undefined) => void): void {
+      this.trackReceivedListener = listener;
+    }
 
     emitReady(): void {
       this.statusListener?.('ready');
@@ -98,6 +121,50 @@ const { FakeReactorClient } = vi.hoisted(() => {
     }
     emitRuntimeMessage(message: ReactorMessage): void {
       this.runtimeMessageListener?.(message);
+    }
+    emitTrackReceived(name: string, mid: string | undefined): void {
+      this.trackReceivedListener?.(name, mid);
+    }
+
+    publishTrack(name: string, track: MediaStreamTrack): Promise<void> {
+      this.publishTrackCalls.push({ name, track });
+      return Promise.resolve();
+    }
+    unpublishTrack(name: string): Promise<void> {
+      this.unpublishTrackCalls.push(name);
+      return Promise.resolve();
+    }
+    pauseTrack(name: string): Promise<void> {
+      this.pauseTrackCalls.push(name);
+      return Promise.resolve();
+    }
+    resumeTrack(name: string): Promise<void> {
+      this.resumeTrackCalls.push(name);
+      return Promise.resolve();
+    }
+    tracks(): TrackCapability[] {
+      return this.tracksResult;
+    }
+    trackMapping(): TrackMappingEntry[] {
+      return this.trackMappingResult;
+    }
+    pausedTracks(): string[] {
+      return this.pausedTracksResult;
+    }
+    getPeerConnection(): RTCPeerConnection | undefined {
+      return this.peerConnectionResult;
+    }
+    getTrackByMid(): MediaStreamTrack | undefined {
+      return this.trackByMidResult;
+    }
+    getStreamByMid(): MediaStream | undefined {
+      return this.streamByMidResult;
+    }
+    getTrackByName(): MediaStreamTrack | undefined {
+      return this.trackByNameResult;
+    }
+    getStreamByName(): MediaStream | undefined {
+      return this.streamByNameResult;
     }
   }
 
@@ -249,7 +316,7 @@ describe('Reactor schema', () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
     const onSchema = vi.fn();
-    reactor.on('schema', onSchema);
+    reactor.on('schemaReceived', onSchema);
 
     client.emitReady();
 
@@ -261,7 +328,7 @@ describe('Reactor schema', () => {
     const client = await currentClient(reactor);
     client.schemaError = Object.assign(new Error('boom'), { code: 'TIMEOUT' });
     const onSchema = vi.fn();
-    reactor.on('schema', onSchema);
+    reactor.on('schemaReceived', onSchema);
 
     client.emitReady();
     await vi.waitFor(() => expect(client.requestSchemaCalls).toBe(1));
@@ -316,6 +383,144 @@ describe('Reactor schema', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(reactor.getSchema()).toEqual({ commands: ['second'] });
+  });
+});
+
+describe('Reactor tracks', () => {
+  it('delegates publishTrack/unpublishTrack/pauseTrack/resumeTrack to the binding', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const track = {} as MediaStreamTrack;
+
+    await reactor.publishTrack('camera', track);
+    await reactor.pauseTrack('camera');
+    await reactor.resumeTrack('camera');
+    await reactor.unpublishTrack('camera');
+
+    expect(client.publishTrackCalls).toEqual([{ name: 'camera', track }]);
+    expect(client.pauseTrackCalls).toEqual(['camera']);
+    expect(client.resumeTrackCalls).toEqual(['camera']);
+    expect(client.unpublishTrackCalls).toEqual(['camera']);
+  });
+
+  it('unpublishTrack() never rejects — a failure is reported via the error event', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const failure = new Error('boom');
+    client.unpublishTrack = () => Promise.reject(failure);
+    const onError = vi.fn();
+    reactor.on('error', onError);
+
+    await expect(reactor.unpublishTrack('camera')).resolves.toBeUndefined();
+
+    expect(onError).toHaveBeenCalledWith(failure);
+  });
+
+  it('reads tracks()/trackMapping()/pausedTracks() straight off the binding', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    client.tracksResult = [{ name: 'model-output', kind: 'video', direction: 'recvonly' }];
+    client.trackMappingResult = [
+      { name: 'model-output', kind: 'video', direction: 'recvonly', mid: '0' },
+    ];
+    client.pausedTracksResult = ['model-output'];
+
+    expect(reactor.tracks()).toEqual(client.tracksResult);
+    expect(reactor.trackMapping()).toEqual(client.trackMappingResult);
+    expect(reactor.pausedTracks()).toEqual(['model-output']);
+  });
+
+  it('falls back to empty introspection results before a client exists', () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+
+    expect(reactor.tracks()).toEqual([]);
+    expect(reactor.trackMapping()).toEqual([]);
+    expect(reactor.pausedTracks()).toEqual([]);
+  });
+
+  it('re-emits trackReceived resolved to (name, track, stream, mid)', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const track = {} as MediaStreamTrack;
+    const stream = {} as MediaStream;
+    client.trackByNameResult = track;
+    client.streamByNameResult = stream;
+    const onTrackReceived = vi.fn();
+    reactor.on('trackReceived', onTrackReceived);
+
+    client.emitTrackReceived('model-output', '0');
+
+    expect(onTrackReceived).toHaveBeenCalledWith('model-output', track, stream, '0');
+  });
+
+  it('does not emit if the track/stream cannot be resolved (structurally shouldn’t happen)', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const onTrackReceived = vi.fn();
+    reactor.on('trackReceived', onTrackReceived);
+
+    // `reactor-core` only ever dispatches this event once the track is
+    // already resolvable; simulating the (should-be-impossible) case where
+    // it isn't, to check this doesn't emit a lie about the non-optional type.
+    client.emitTrackReceived('model-output', undefined);
+
+    expect(onTrackReceived).not.toHaveBeenCalled();
+  });
+
+  it('waits out an in-flight publishTrack() before disconnecting or freeing the client', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const gate = createDeferred<void>();
+    const originalPublishTrack = client.publishTrack.bind(client);
+    client.publishTrack = (name, track) => {
+      const call = originalPublishTrack(name, track);
+      return gate.promise.then(() => call);
+    };
+
+    const publishPromise = reactor.publishTrack('camera', {} as MediaStreamTrack);
+    const disconnectPromise = reactor.disconnect();
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(client.disconnectCalls).toBe(0);
+    expect(client.freeCalls).toBe(0);
+
+    gate.resolve();
+    await publishPromise;
+    await disconnectPromise;
+
+    expect(client.disconnectCalls).toBe(1);
+    expect(client.freeCalls).toBe(1);
+  });
+
+  it('resolves media through the getXByMid/getXByName escape hatches', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const peerConnection = {} as RTCPeerConnection;
+    const track = {} as MediaStreamTrack;
+    const stream = {} as MediaStream;
+    client.peerConnectionResult = peerConnection;
+    client.trackByMidResult = track;
+    client.streamByMidResult = stream;
+    client.trackByNameResult = track;
+    client.streamByNameResult = stream;
+
+    expect(reactor.getPeerConnection()).toBe(peerConnection);
+    expect(reactor.getTrackByMid('0')).toBe(track);
+    expect(reactor.getStreamByMid('0')).toBe(stream);
+    expect(reactor.getTrackByName('model-output')).toBe(track);
+    expect(reactor.getStreamByName('model-output')).toBe(stream);
+  });
+
+  it('falls back to undefined escape hatches before a client exists', () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+
+    expect(reactor.getPeerConnection()).toBeUndefined();
+    expect(reactor.getTrackByMid('0')).toBeUndefined();
+    expect(reactor.getStreamByMid('0')).toBeUndefined();
+    expect(reactor.getTrackByName('model-output')).toBeUndefined();
+    expect(reactor.getStreamByName('model-output')).toBeUndefined();
   });
 });
 

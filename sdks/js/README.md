@@ -39,7 +39,7 @@ after that, so building a `Reactor` you never connect costs nothing.
 
 ## `disconnect()` and disposal
 
-`disconnect(recoverable = false)` matches v2's signature:
+`disconnect(recoverable = false)`:
 
 - **`disconnect()`** (the default) ends the session server-side and frees the
   underlying wasm resource graph — the pump, dispatcher and heartbeat tasks —
@@ -60,9 +60,9 @@ reactor.getStatus();     // ReactorStatus: "disconnected" | "connecting" | "wait
 reactor.getSessionId();  // string | undefined
 ```
 
-Matches v2's names. `reactor-wasm`'s own binding uses the terser `status()` /
-`sessionId()` internally — not exposed here yet, kept simple until there's a
-real reason to add them alongside `getStatus()`/`getSessionId()`.
+`reactor-wasm`'s own binding uses the terser `status()`/`sessionId()`
+internally — not exposed here yet, kept simple until there's a real reason
+to add them alongside `getStatus()`/`getSessionId()`.
 
 ## Events
 
