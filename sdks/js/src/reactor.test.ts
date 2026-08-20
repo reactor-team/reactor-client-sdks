@@ -59,6 +59,7 @@ const { FakeReactorClient } = vi.hoisted(() => {
     connectImpl: (() => Promise<void>) | undefined;
     connectCalls: Array<ConnectOptions | undefined> = [];
     disconnectCalls = 0;
+    reconnectCalls: unknown[] = [];
     freeCalls = 0;
     private _status: ReactorStatus = 'disconnected';
 
@@ -91,7 +92,8 @@ const { FakeReactorClient } = vi.hoisted(() => {
       this._status = 'disconnected';
       return Promise.resolve();
     }
-    reconnect(): Promise<void> {
+    reconnect(options?: unknown): Promise<void> {
+      this.reconnectCalls.push(options);
       this._status = 'ready';
       return Promise.resolve();
     }
@@ -234,6 +236,26 @@ function createDeferred<T = void>() {
 
 beforeEach(() => {
   FakeReactorClient.instances = [];
+});
+
+describe('Reactor.reconnect', () => {
+  it('forwards options straight through to the binding', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    await reactor.reconnect({ maxAttempts: 3 });
+
+    expect(client.reconnectCalls).toEqual([{ maxAttempts: 3 }]);
+  });
+
+  it('is callable with no options, same as v2', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    await reactor.reconnect();
+
+    expect(client.reconnectCalls).toEqual([undefined]);
+  });
 });
 
 describe('Reactor.sendCommand', () => {

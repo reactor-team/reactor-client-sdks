@@ -813,7 +813,7 @@ pub unsafe extern "C" fn reactor_reconnect(
         completion,
         userdata,
         |r: Arc<Reactor>, tasks: TaskSet| async move {
-            r.reconnect().await?;
+            r.reconnect(None).await?;
             let r2 = r.clone();
             spawn_tracked(&tasks, async move { r2.run_heartbeat().await });
             Ok(None)

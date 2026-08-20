@@ -406,9 +406,14 @@ impl Reactor {
     /// first if there is one, without terminating the session server-side (the
     /// whole point of calling this instead of `disconnect()` then `connect()`).
     ///
+    /// `max_sdp_attempts`, if given, overrides the SDP-answer poll attempt
+    /// limit for this reconnect (and sticks for whatever follows, same as
+    /// [`ConnectOptions::max_sdp_attempts`]) — otherwise the last `connect()`'s
+    /// value carries over unchanged.
+    ///
     /// Errors if there is no session to reconnect to at all — nothing has ever
     /// connected, or a previous `disconnect()` already terminated it.
-    pub async fn reconnect(&self) -> Result<(), CoreError> {
+    pub async fn reconnect(&self, max_sdp_attempts: Option<u32>) -> Result<(), CoreError> {
         let currently_ready = self.state.lock().unwrap().status == ReactorStatus::Ready;
         if currently_ready {
             // recoverable=true: keep the session this reconnect is about to reuse.
@@ -422,6 +427,9 @@ impl Reactor {
                 .session_id
                 .clone()
                 .ok_or_else(|| CoreError::InvalidState("reconnect() without a session".into()))?;
+            if let Some(attempts) = max_sdp_attempts {
+                state.sdp_max_attempts = attempts;
+            }
             // Reset transport state and bump epoch atomically with the guard check.
             state.closing = false;
             state.peer_connected = false;
@@ -1588,7 +1596,7 @@ mod tests {
         // before that, not whether the reconnect attempt itself completes. It does
         // have to actually be reached, though: the old "reject while ready" guard
         // would also leave delete_count() at 0, for the wrong reason.
-        let _ = reactor.reconnect().await;
+        let _ = reactor.reconnect(None).await;
 
         assert_eq!(http.delete_count(), 0);
         assert!(
@@ -1602,8 +1610,27 @@ mod tests {
     #[tokio::test]
     async fn reconnect_without_a_session_errors() {
         let reactor = make_reactor();
-        let result = reactor.reconnect().await;
+        let result = reactor.reconnect(None).await;
         assert!(matches!(result, Err(CoreError::InvalidState(_))));
+    }
+
+    /// A caller can override the SDP-poll attempt limit for a specific
+    /// reconnect, same as `ConnectOptions::max_sdp_attempts` does for connect.
+    #[tokio::test]
+    async fn reconnect_overrides_sdp_max_attempts() {
+        let http = Arc::new(RecordingHttp::default());
+        let reactor = make_reactor_with_http(http.clone());
+        {
+            let mut state = reactor.state.lock().unwrap();
+            state.session_id = Some("s1".to_string());
+            state.created_session = false;
+        }
+
+        // RecordingHttp has no ICE-servers route, so the reconnect fails
+        // immediately — after the override was taken, which is what matters.
+        let _ = reactor.reconnect(Some(3)).await;
+
+        assert_eq!(reactor.state.lock().unwrap().sdp_max_attempts, 3);
     }
 
     // ── Heartbeat ─────────────────────────────────────────────────────────────
