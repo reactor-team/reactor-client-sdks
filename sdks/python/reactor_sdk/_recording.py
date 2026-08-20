@@ -112,24 +112,34 @@ def _open(url: str, jwt: str | None, *, same_origin_as: str | None = None):
 def _playlist_segments(playlist_url: str, jwt: str | None, ready_timeout: float) -> list[str]:
     """The segment names in the playlist, waiting out the 202s first.
 
-    The coordinator answers 202 until the clip's boundary chunk has landed —
-    which is not an error and not instant: a paused model closes no chunks, and
-    a long recording's final chunk is large.
+    202 means the clip's boundary chunk has not been uploaded yet, which is not
+    an error and not instant: recordings are cut into fixed-length chunks, and
+    the one holding the end of the window has to close first. The response
+    carries `Retry-After` — the chunk length — so that is what we wait.
     """
     deadline = time.monotonic() + ready_timeout
-    delay = 0.2
+    polls = 0
     while True:
         _log.debug("fetching playlist: %s", playlist_url)
         with _open(playlist_url, jwt) as resp:
             if resp.status != 202:
                 playlist = resp.read().decode()
                 break
-        if time.monotonic() >= deadline:
+            retry_after = resp.headers.get("Retry-After")
+        polls += 1
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise TimeoutError(
-                f"playlist at {playlist_url!r} was still not ready after {ready_timeout:.0f}s"
+                f"playlist at {playlist_url!r} was still not ready after "
+                f"{ready_timeout:.0f}s and {polls} polls. A window that ends inside a "
+                f"chunk the session never produced never becomes ready — ask for a clip "
+                f"only once the model has been generating for longer than the window."
             )
-        time.sleep(delay)
-        delay = min(delay * 2, 2.0)
+        try:
+            delay = float(retry_after or 2.0)
+        except ValueError:  # an HTTP-date, which needs a trusted clock
+            delay = 2.0
+        time.sleep(min(delay, remaining))
 
     segments = [
         line.strip() for line in playlist.splitlines() if line.strip() and not line.startswith("#")

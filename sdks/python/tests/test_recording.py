@@ -12,6 +12,7 @@ from __future__ import annotations
 import http.server
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
@@ -63,11 +64,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if _not_ready_seen < _NOT_READY_TIMES:
                 _not_ready_seen += 1
                 self.send_response(202)
+                # What the coordinator sends: the chunk length, in seconds.
+                self.send_header("Retry-After", "0")
                 self.end_headers()
                 return
             route = _ROUTES["/hls/clip.m3u8"]
         elif self.path == "/never/clip.m3u8":
             self.send_response(202)
+            self.send_header("Retry-After", "0")
             self.end_headers()
             return
         elif self.path in _PROTECTED:
@@ -283,8 +287,27 @@ class TestNotReadyYet:
 
     async def test_it_gives_up_after_ready_timeout(self, server_url: str) -> None:
         clip = _clip(f"{server_url}/never/clip.m3u8")
-        with pytest.raises(TimeoutError):
+        with pytest.raises(TimeoutError) as excinfo:
             await download_clip(clip, ready_timeout=0.3)
+        # The message has to say what to do about it: a window ending inside a
+        # chunk the session never produced never becomes ready.
+        assert "never produced" in str(excinfo.value)
+
+    async def test_it_waits_what_retry_after_asks_for(self, server_url: str) -> None:
+        """`Retry-After` is the chunk length; polling faster than that is noise."""
+        slept: list[float] = []
+        clip = _clip(f"{server_url}/never/clip.m3u8")
+
+        real_sleep = time.sleep
+
+        def spy(seconds: float) -> None:
+            slept.append(seconds)
+            real_sleep(0)
+
+        with mock.patch("reactor_sdk._recording.time.sleep", spy):
+            with pytest.raises(TimeoutError):
+                await download_clip(clip, ready_timeout=0.05)
+        assert slept and all(s == 0.0 for s in slept)
 
 
 class TestReactorDownloadConvenience:

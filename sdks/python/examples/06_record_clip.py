@@ -2,8 +2,12 @@
 """06 · Record a clip — capture what just happened, and download it.
 
 `request_clip` asks the runtime for the last N seconds and answers with an HLS
-manifest; `download_clip` fetches the segments into one file. The bytes are
+manifest; `reactor.download` fetches the segments into one file. The bytes are
 MPEG-TS, hence `.ts` — remux with `ffmpeg -i clip.ts -c copy clip.mp4` if needed.
+
+Recordings are cut into fixed-length chunks, so this waits for frames and then
+for longer than the window before asking: a clip whose end falls inside a chunk
+the session never produced never becomes ready.
 
 `request_recording()` is the same call for the whole session.
 
@@ -30,6 +34,9 @@ SHOW = os.environ.get("REACTOR_SHOW") == "1"
 
 PROMPT = "a forest at dawn, sunbeams through the canopy"
 OUTPUT_TRACK = "main_video"
+# Helios records in 4s chunks; the chunk holding the end of the window has to
+# close before the manifest exists.
+CHUNK_SLACK = 8.0
 
 
 async def main() -> None:
@@ -69,13 +76,19 @@ async def main() -> None:
             frames += 1
             window.submit(data, width, height)
 
-        # A clip is cut from what the runtime already produced, so wait for it.
-        await window.hold(clip_seconds + 5)
+        # Frames first: a model can take a while to produce anything, and wall
+        # clock since `start` says nothing about how much video exists.
+        while frames == 0:
+            await window.hold(0.5)
+        print("generating")
+        await window.hold(clip_seconds + CHUNK_SLACK)
         print(f"frames: {frames}")
 
         clip = await reactor.request_clip(clip_seconds)
         print(f"clip: {clip.kind} {clip.playlist_url}")
         print(f"window: {clip.start_marker:.1f} → {clip.end_marker:.1f}")
+        if clip.end_marker - clip.start_marker < clip_seconds * 0.5:
+            print("warning: the session had less video than the window asked for")
 
         # The coordinator serves playlists behind auth and answers 202 until the
         # last chunk lands; this carries the token and waits that out.
