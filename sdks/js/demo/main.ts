@@ -128,14 +128,9 @@ function renderCommands(commands: OpenApiCommand[] | undefined): void {
 // across later `trackReceived` events for the same name (e.g. a reconnect).
 const trackElements = new Map<string, HTMLVideoElement | HTMLAudioElement>();
 
-function renderTrack(name: string): void {
-  if (!reactor) return;
-  // `getStreamByName` (rather than resolving the event's own `mid`) so this
-  // works regardless of whether the mid was already assigned by the time
-  // `trackReceived` fired.
-  const stream = reactor.getStreamByName(name);
-  if (!stream) {
-    log(`trackReceived(${name}): no stream found via getStreamByName`);
+function renderTrack(name: string, stream: MediaStream | undefined): void {
+  if (!reactor || !stream) {
+    log(`trackReceived(${name}): no stream resolved`);
     return;
   }
   // `tracks()` carries the declared `kind` per name — trackReceived's own
@@ -319,9 +314,9 @@ document.querySelector('#connect')!.addEventListener('click', () => {
       reactor.on('error', (error) => log(`error -> ${error.code}: ${error.message}`));
       reactor.on('message', (message) => log(`message -> ${JSON.stringify(message)}`));
       reactor.on('runtimeMessage', (message) => log(`runtimeMessage -> ${JSON.stringify(message)}`));
-      reactor.on('trackReceived', (name, mid) => {
+      reactor.on('trackReceived', (name, _track, stream, mid) => {
         log(`trackReceived -> name=${name} mid=${mid}`);
-        renderTrack(name);
+        renderTrack(name, stream);
       });
       // The auto-request on "ready" fires this once it lands — reading
       // getSchema() straight off statusChanged("ready") would race it, since

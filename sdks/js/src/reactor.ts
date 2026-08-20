@@ -139,33 +139,43 @@ export class Reactor implements Disposable {
 
   /**
    * Publishes a local `MediaStreamTrack` under `name` — the counterpart to a
-   * `sendonly` track the model declares. Awaitable, like v2. Not queued
-   * behind connect()/disconnect()/reconnect() — same as `sendCommand()`, this
-   * is a caller-driven request/reply against an already-live client, not a
-   * step in the client's own construction/teardown.
+   * `sendonly` track the model declares. Awaitable, like v2. Queued behind
+   * connect()/disconnect()/reconnect() (unlike `sendCommand()`): a track
+   * operation awaits its own control round-trip, and a concurrent
+   * disconnect() freeing the wasm client mid-await would otherwise resume
+   * into a freed client — the same class of use-after-free `queue` exists to
+   * prevent for connect/disconnect/reconnect themselves.
    */
   async publishTrack(name: string, track: MediaStreamTrack): Promise<void> {
     this.assertNotDisposed();
-    const client = await this.getOrCreateClient();
-    await client.publishTrack(name, track);
+    await this.queue.push(async () => {
+      const client = await this.getOrCreateClient();
+      await client.publishTrack(name, track);
+    }, 'publishTrack');
   }
 
   async unpublishTrack(name: string): Promise<void> {
     this.assertNotDisposed();
-    const client = await this.getOrCreateClient();
-    await client.unpublishTrack(name);
+    await this.queue.push(async () => {
+      const client = await this.getOrCreateClient();
+      await client.unpublishTrack(name);
+    }, 'unpublishTrack');
   }
 
   async pauseTrack(name: string): Promise<void> {
     this.assertNotDisposed();
-    const client = await this.getOrCreateClient();
-    await client.pauseTrack(name);
+    await this.queue.push(async () => {
+      const client = await this.getOrCreateClient();
+      await client.pauseTrack(name);
+    }, 'pauseTrack');
   }
 
   async resumeTrack(name: string): Promise<void> {
     this.assertNotDisposed();
-    const client = await this.getOrCreateClient();
-    await client.resumeTrack(name);
+    await this.queue.push(async () => {
+      const client = await this.getOrCreateClient();
+      await client.resumeTrack(name);
+    }, 'resumeTrack');
   }
 
   /** All tracks the model declared, whether or not media has arrived for —
@@ -175,8 +185,8 @@ export class Reactor implements Disposable {
   }
 
   /** Same as `tracks()`, plus each entry's negotiated `mid` — the id
-   *  `trackReceived`'s second argument and the `getXByMid` escape hatches
-   *  key on. Only populated once SDP negotiation has assigned mids. */
+   *  `trackReceived`'s `mid` argument and the `getXByMid` escape hatches key
+   *  on. Only populated once SDP negotiation has assigned mids. */
   trackMapping(): TrackMappingEntry[] {
     return this.client?.trackMapping() ?? [];
   }
@@ -301,7 +311,15 @@ export class Reactor implements Disposable {
     client.onMessage((message) => this.emitter.emit('message', message));
     // CONTROL channel — platform traffic (moderation, clip/recording lifecycle).
     client.onRuntimeMessage((message) => this.emitter.emit('runtimeMessage', message));
-    client.onTrackReceived((name, mid) => this.emitter.emit('trackReceived', name, mid));
+    client.onTrackReceived((name, mid) => {
+      this.emitter.emit(
+        'trackReceived',
+        name,
+        client.getTrackByName(name),
+        client.getStreamByName(name),
+        mid,
+      );
+    });
     this.client = client;
     return client;
   }

@@ -425,15 +425,57 @@ describe('Reactor tracks', () => {
     expect(reactor.pausedTracks()).toEqual([]);
   });
 
-  it('re-emits trackReceived with the raw (name, mid) the binding hands back', async () => {
+  it('re-emits trackReceived resolved to (name, track, stream, mid), matching v2', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
+    const track = {} as MediaStreamTrack;
+    const stream = {} as MediaStream;
+    client.trackByNameResult = track;
+    client.streamByNameResult = stream;
     const onTrackReceived = vi.fn();
     reactor.on('trackReceived', onTrackReceived);
 
     client.emitTrackReceived('model-output', '0');
 
-    expect(onTrackReceived).toHaveBeenCalledWith('model-output', '0');
+    expect(onTrackReceived).toHaveBeenCalledWith('model-output', track, stream, '0');
+  });
+
+  it('emits undefined track/stream when they cannot be resolved yet', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const onTrackReceived = vi.fn();
+    reactor.on('trackReceived', onTrackReceived);
+
+    client.emitTrackReceived('model-output', undefined);
+
+    expect(onTrackReceived).toHaveBeenCalledWith('model-output', undefined, undefined, undefined);
+  });
+
+  it('waits out an in-flight publishTrack() before disconnecting or freeing the client', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const gate = createDeferred<void>();
+    const originalPublishTrack = client.publishTrack.bind(client);
+    client.publishTrack = (name, track) => {
+      const call = originalPublishTrack(name, track);
+      return gate.promise.then(() => call);
+    };
+
+    const publishPromise = reactor.publishTrack('camera', {} as MediaStreamTrack);
+    const disconnectPromise = reactor.disconnect();
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(client.disconnectCalls).toBe(0);
+    expect(client.freeCalls).toBe(0);
+
+    gate.resolve();
+    await publishPromise;
+    await disconnectPromise;
+
+    expect(client.disconnectCalls).toBe(1);
+    expect(client.freeCalls).toBe(1);
   });
 
   it('resolves media through the getXByMid/getXByName escape hatches', async () => {
