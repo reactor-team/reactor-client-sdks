@@ -1264,13 +1264,21 @@ class Reactor:
         path: str | os.PathLike | None = None,
         *,
         on_progress: Callable[[int, int], None] | None = None,
-        ready_timeout: float | None = 60.0,
+        ready_timeout: float | None = None,
     ) -> bytes | None:
         """Download a `Clip` this client asked for, with this client's token.
 
         The coordinator serves playlists and segments behind auth, so the
         module-level `download_clip()` needs a `jwt=` handed to it. This is the
         same call with the one already in hand.
+
+        It also waits without a deadline, where the module-level function
+        defaults to a bounded one. A clip becomes ready because the model keeps
+        generating, and this client knows whether it still is: the wait ends by
+        itself when the session does. Any number here would instead be a guess
+        about how fast the model generates — `predicted_ready_at_ms` is the
+        runtime adding *media* seconds to a wall clock, so it is only right for a
+        model running at real-time. Pass `ready_timeout` to bound it anyway.
         """
         return await download_clip(
             clip,
@@ -1303,7 +1311,7 @@ class Reactor:
         path: str | os.PathLike | None = None,
         *,
         on_progress: Callable[[int, int], None] | None = None,
-        ready_timeout: float | None = 60.0,
+        ready_timeout: float | None = None,
     ) -> bytes | None:
         """`request_clip()` and download it, in one call.
 
@@ -1336,7 +1344,7 @@ class Reactor:
         path: str | os.PathLike | None = None,
         *,
         on_progress: Callable[[int, int], None] | None = None,
-        ready_timeout: float | None = 60.0,
+        ready_timeout: float | None = None,
     ) -> bytes | None:
         """`request_recording()` and download it, in one call.
 

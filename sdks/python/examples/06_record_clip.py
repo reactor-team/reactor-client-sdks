@@ -97,12 +97,11 @@ async def main() -> None:
         if clip.end_marker - clip.start_marker < clip_seconds * 0.5:
             print("warning: the session had less video than the window asked for")
 
-        # Carries the token and waits out the 202s. No deadline: a clip becomes
-        # ready because the model keeps generating, so `download` gives up on its
-        # own once the session ends — the only way it can never arrive.
+        # Carries the token and waits out the 202s with no deadline, giving up on
+        # its own if the session ends — the only way a clip can never arrive.
         # `reactor.download_clip(seconds, path)` does the request and this in one.
         print("waiting for the recorder to pass the end of the window…")
-        download = asyncio.create_task(reactor.download(clip, out, ready_timeout=None))
+        download = asyncio.create_task(reactor.download(clip, out))
         while not download.done():
             await window.hold(0.5)  # the wait can outlast the clip it waits for
         await download

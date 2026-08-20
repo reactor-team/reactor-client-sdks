@@ -91,14 +91,15 @@ async def download_clip(
             status.
         ready_timeout: Grace period past `clip.predicted_ready_at_ms` before a
             202 becomes a `TimeoutError`. `None` polls until the coordinator
-            stops saying 202 — the JS SDK's default, which it can afford because
-            a browser caller holds an `AbortSignal`; here the work runs in a
-            thread that cannot be interrupted, so a bound is the default.
+            stops saying 202 — the JS SDK's default, and `Reactor.download()`'s,
+            which can afford it because `while_live` ends the wait. Bounded here
+            because a caller without a live client has no such signal, and the
+            work runs in a thread that cannot be interrupted.
 
-            Anchoring on the runtime's own prediction is what lets one number
-            serve both cases: readiness is in *media* time, so a model
-            generating at a tenth of real-time reaches the boundary chunk ten
-            times later, and the runtime is what knows when.
+            Treat any number as a guess. It is anchored on the runtime's own
+            prediction, but that prediction adds *media* seconds to a wall
+            clock: a model generating at a tenth of real-time reaches the
+            boundary chunk ten times later than predicted.
 
     Raises:
         urllib.error.URLError: A fetch failed — the playlist itself, or one of
