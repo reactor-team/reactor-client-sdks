@@ -19,8 +19,10 @@ Read it before writing the second one: none of these are style preferences, and 
 found by shipping the mistake first.
 
 The shape is always the same. A Rust core (`crates/reactor-core`) does the protocol and
-WebRTC; `crates/reactor-ffi` exposes it as 24 C functions; your SDK is a binding over
-those plus an object model that hides them. **You are writing the object model, not a
+WebRTC; `crates/reactor-ffi` exposes it as a small set of C functions —
+`scripts/check-abi-parity.py` reports the current count, so take it from there rather than
+from a number written down somewhere; your SDK is a binding over those plus an object model
+that hides them. **You are writing the object model, not a
 transport.** If a decision can be made in the core instead, make it there — every binding
 inherits the fix.
 
@@ -87,11 +89,20 @@ must keep the pointers alive anyway** — leak them deliberately. Python keeps a
 list of orphaned trampolines and never empties it: a small permanent leak beats a jump into
 freed memory. See `_ORPHANED_CALLBACKS` in `client.py`.
 
-**3. Know which strings you own.** `reactor_status` returns a `const char *` static literal
-— do not free it. `reactor_session_id`, `reactor_tracks`, `reactor_paused_tracks` and every
-`error_json` return heap memory you must pass to `reactor_free_string`. The asymmetry is
-deliberate and easy to get backwards in both directions: freeing the static one corrupts
-the heap, not freeing the others leaks on every property read.
+**3. Know which strings you own.** Three cases, and the header states which for every
+function — read it there rather than inferring from a name:
+
+- **Static, never free.** `reactor_status` returns a `const char *` literal.
+- **Yours, must free.** `reactor_session_id`, `reactor_tracks`, `reactor_paused_tracks`, and
+  the error object `reactor_unpublish_track` returns on failure. Pass each to
+  `reactor_free_string`.
+- **Borrowed, never free.** Every string handed *to* a callback — a completion's
+  `result_json` and `error_json`, `on_error`'s `error_json`, a message's `msg_json`. The FFI
+  frees them once the callback returns, so copy what you keep.
+
+The asymmetry is deliberate and easy to get backwards in all three directions: freeing the
+static one corrupts the heap, freeing a borrowed one is a double free, and not freeing the
+owned ones leaks on every property read.
 
 **4. Do not let a callback keep the client alive.** Callbacks capture the client *weakly*
 in Python, because a handler parked in a capture thread would otherwise hold the session —
