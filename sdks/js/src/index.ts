@@ -19,6 +19,8 @@ export {
   AbortedError,
 } from './errors';
 export type {
+  ConnectionStats,
+  ConnectionTimings,
   ConnectOptions,
   FileRef,
   JwtSource,

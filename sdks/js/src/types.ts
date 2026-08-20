@@ -53,6 +53,48 @@ export interface ReactorOptions extends WasmClientOptions {
   jwt?: JwtSource;
 }
 
+/**
+ * Timing breakdown of the `connect()` handshake, recorded once per connection
+ * and included in every subsequent `ConnectionStats` update. All durations
+ * are in milliseconds (from `performance.now()`).
+ *
+ * `sessionCreationMs` covers session creation/adoption (the binding's
+ * `"connecting"` phase); `transportConnectingMs` covers the session-ready
+ * wait and transport handshake together (the `"waiting"` phase) — a coarser
+ * split than v2's, since that breakdown now happens inside `reactor-core`
+ * and isn't observable from here.
+ */
+export interface ConnectionTimings {
+  sessionCreationMs: number;
+  transportConnectingMs: number;
+  /** End-to-end: connect() invocation → status "ready". */
+  totalMs: number;
+}
+
+export interface ConnectionStats {
+  /** ICE candidate-pair round-trip time in milliseconds */
+  rtt?: number | undefined;
+  /** ICE candidate type: "host", "srflx", "prflx", or "relay" (TURN) */
+  candidateType?: string | undefined;
+  /** Estimated available incoming bitrate in bits/second */
+  availableIncomingBitrate?: number | undefined;
+  /** Estimated available outgoing bitrate in bits/second */
+  availableOutgoingBitrate?: number | undefined;
+  /** Real-time incoming bitrate in bits/second */
+  incomingBitrate?: number | undefined;
+  /** Real-time outgoing bitrate in bits/second */
+  outgoingBitrate?: number | undefined;
+  /** Received video frames per second */
+  framesPerSecond?: number | undefined;
+  /** Ratio of packets lost (0-1) */
+  packetLossRatio?: number | undefined;
+  /** Network jitter in seconds (from inbound-rtp) */
+  jitter?: number | undefined;
+  /** Timing breakdown of the initial connection handshake (set once, persisted until disconnect) */
+  connectionTimings?: ConnectionTimings | undefined;
+  timestamp: number;
+}
+
 export interface ReactorEventMap {
   statusChanged: (status: ReactorStatus) => void;
   sessionIdChanged: (sessionId: string | undefined) => void;
@@ -79,6 +121,9 @@ export interface ReactorEventMap {
     stream: MediaStream,
     mid: string | undefined,
   ) => void;
+  /** Fired every `STATS_INTERVAL_MS` while the session is "ready" — see
+   *  `getStats()`. */
+  statsUpdate: (stats: ConnectionStats) => void;
 }
 
 export type ReactorEventName = keyof ReactorEventMap;
