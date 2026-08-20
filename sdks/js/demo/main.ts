@@ -18,6 +18,7 @@ const sendCommandButton = document.querySelector<HTMLButtonElement>('#sendComman
 const getSchemaButton = document.querySelector<HTMLButtonElement>('#getSchema')!;
 const commandsEl = document.querySelector<HTMLDivElement>('#commands')!;
 const commandsEmptyEl = document.querySelector<HTMLParagraphElement>('#commandsEmpty')!;
+const tracksEl = document.querySelector<HTMLDivElement>('#tracks')!;
 
 function log(message: string): void {
   console.log(message);
@@ -121,6 +122,42 @@ function renderCommands(commands: OpenApiCommand[] | undefined): void {
     });
     commandsEl.append(button);
   }
+}
+
+// One <video> per received track name, created lazily and reused across
+// later `trackReceived` events for the same name (e.g. a reconnect).
+const trackVideos = new Map<string, HTMLVideoElement>();
+
+function renderTrack(name: string): void {
+  if (!reactor) return;
+  // `getStreamByName` (rather than resolving the event's own `mid`) so this
+  // works regardless of whether the mid was already assigned by the time
+  // `trackReceived` fired.
+  const stream = reactor.getStreamByName(name);
+  if (!stream) {
+    log(`trackReceived(${name}): no stream found via getStreamByName`);
+    return;
+  }
+  let video = trackVideos.get(name);
+  if (!video) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'track';
+    const label = document.createElement('div');
+    label.textContent = name;
+    video = document.createElement('video');
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true;
+    wrapper.append(label, video);
+    tracksEl.append(wrapper);
+    trackVideos.set(name, video);
+  }
+  video.srcObject = stream;
+}
+
+function clearTracks(): void {
+  tracksEl.innerHTML = '';
+  trackVideos.clear();
 }
 
 // Demo-only convenience: persist every field in this browser's localStorage
@@ -240,6 +277,10 @@ document.querySelector('#connect')!.addEventListener('click', () => {
         jwt: local ? undefined : () => fetchJwt(apiKeyEl.value.trim()),
       });
       reactorTargetKey = targetKey;
+      // Debug-only convenience: poke at the instance from devtools, e.g.
+      // `reactor.tracks()` — it's otherwise unreachable from the console
+      // since it's a module-scoped variable, not a global.
+      (window as unknown as { reactor: ReactorType }).reactor = reactor;
       reactor.on('statusChanged', (status) => {
         statusEl.textContent = status;
         log(`statusChanged -> ${status}`);
@@ -255,12 +296,19 @@ document.querySelector('#connect')!.addEventListener('click', () => {
         // rather than offering a mid-transition disconnect.
         connectButton.disabled = status !== 'disconnected';
         disconnectButton.disabled = !isReady;
-        if (status === 'disconnected') renderCommands(undefined);
+        if (status === 'disconnected') {
+          renderCommands(undefined);
+          clearTracks();
+        }
       });
       reactor.on('sessionIdChanged', (sessionId) => log(`sessionIdChanged -> ${sessionId}`));
       reactor.on('error', (error) => log(`error -> ${error.code}: ${error.message}`));
       reactor.on('message', (message) => log(`message -> ${JSON.stringify(message)}`));
       reactor.on('runtimeMessage', (message) => log(`runtimeMessage -> ${JSON.stringify(message)}`));
+      reactor.on('trackReceived', (name, mid) => {
+        log(`trackReceived -> name=${name} mid=${mid}`);
+        renderTrack(name);
+      });
       // The auto-request on "ready" fires this once it lands — reading
       // getSchema() straight off statusChanged("ready") would race it, since
       // that fetch is async and dispatched separately.

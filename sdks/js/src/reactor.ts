@@ -10,6 +10,8 @@ import type {
   ReactorMessage,
   ReactorOptions,
   ReactorStatus,
+  TrackCapability,
+  TrackMappingEntry,
 } from './types';
 
 /**
@@ -133,6 +135,80 @@ export class Reactor implements Disposable {
     return this.schema;
   }
 
+  // ── Tracks ──────────────────────────────────────────────────────────────
+
+  /**
+   * Publishes a local `MediaStreamTrack` under `name` — the counterpart to a
+   * `sendonly` track the model declares. Awaitable, like v2. Not queued
+   * behind connect()/disconnect()/reconnect() — same as `sendCommand()`, this
+   * is a caller-driven request/reply against an already-live client, not a
+   * step in the client's own construction/teardown.
+   */
+  async publishTrack(name: string, track: MediaStreamTrack): Promise<void> {
+    this.assertNotDisposed();
+    const client = await this.getOrCreateClient();
+    await client.publishTrack(name, track);
+  }
+
+  async unpublishTrack(name: string): Promise<void> {
+    this.assertNotDisposed();
+    const client = await this.getOrCreateClient();
+    await client.unpublishTrack(name);
+  }
+
+  async pauseTrack(name: string): Promise<void> {
+    this.assertNotDisposed();
+    const client = await this.getOrCreateClient();
+    await client.pauseTrack(name);
+  }
+
+  async resumeTrack(name: string): Promise<void> {
+    this.assertNotDisposed();
+    const client = await this.getOrCreateClient();
+    await client.resumeTrack(name);
+  }
+
+  /** All tracks the model declared, whether or not media has arrived for —
+   *  or been published to — them yet. Empty before a client exists. */
+  tracks(): TrackCapability[] {
+    return this.client?.tracks() ?? [];
+  }
+
+  /** Same as `tracks()`, plus each entry's negotiated `mid` — the id
+   *  `trackReceived`'s second argument and the `getXByMid` escape hatches
+   *  key on. Only populated once SDP negotiation has assigned mids. */
+  trackMapping(): TrackMappingEntry[] {
+    return this.client?.trackMapping() ?? [];
+  }
+
+  pausedTracks(): string[] {
+    return this.client?.pausedTracks() ?? [];
+  }
+
+  // ── Escape hatches ──────────────────────────────────────────────────────
+
+  /** Drops to the raw `RTCPeerConnection` for anything this class doesn't
+   *  wrap directly. `undefined` before a client exists. */
+  getPeerConnection(): RTCPeerConnection | undefined {
+    return this.client?.getPeerConnection();
+  }
+
+  getTrackByMid(mid: string): MediaStreamTrack | undefined {
+    return this.client?.getTrackByMid(mid);
+  }
+
+  getStreamByMid(mid: string): MediaStream | undefined {
+    return this.client?.getStreamByMid(mid);
+  }
+
+  getTrackByName(name: string): MediaStreamTrack | undefined {
+    return this.client?.getTrackByName(name);
+  }
+
+  getStreamByName(name: string): MediaStream | undefined {
+    return this.client?.getStreamByName(name);
+  }
+
   setJwt(jwt?: JwtSource | null): Promise<void> {
     this.assertNotDisposed();
     this.pendingJwt = jwt ?? null;
@@ -225,6 +301,7 @@ export class Reactor implements Disposable {
     client.onMessage((message) => this.emitter.emit('message', message));
     // CONTROL channel — platform traffic (moderation, clip/recording lifecycle).
     client.onRuntimeMessage((message) => this.emitter.emit('runtimeMessage', message));
+    client.onTrackReceived((name, mid) => this.emitter.emit('trackReceived', name, mid));
     this.client = client;
     return client;
   }

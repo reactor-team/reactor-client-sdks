@@ -5,9 +5,23 @@ import type {
   ReactorError,
   ReactorMessage,
   ReactorStatus,
+  TrackCapability,
+  TrackDirection,
+  TrackKind,
+  TrackMappingEntry,
 } from './internal/reactor-wasm.types';
 
-export type { ConnectOptions, JwtSource, ReactorError, ReactorMessage, ReactorStatus };
+export type {
+  ConnectOptions,
+  JwtSource,
+  ReactorError,
+  ReactorMessage,
+  ReactorStatus,
+  TrackCapability,
+  TrackDirection,
+  TrackKind,
+  TrackMappingEntry,
+};
 
 /**
  * `Reactor` construction options. Only `modelName` is required.
@@ -36,6 +50,12 @@ export interface ReactorEventMap {
   /** The model's command schema (an OpenAPI document), fired once the
    *  auto-request on `"ready"` lands — see `getSchema()`. */
   schema: (schema: unknown) => void;
+  /** Fired when the model side of a track's media becomes available. Only
+   *  `name` and `mid` are resolved here — matching the wasm binding, not
+   *  v2's `(name, track, stream)` shape — so look up the actual
+   *  `MediaStreamTrack`/`MediaStream` via `getTrackByMid`/`getStreamByMid`
+   *  (or the by-name variants) once this fires. */
+  trackReceived: (name: string, mid: string | undefined) => void;
 }
 
 export type ReactorEventName = keyof ReactorEventMap;

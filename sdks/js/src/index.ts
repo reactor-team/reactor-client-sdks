@@ -8,4 +8,8 @@ export type {
   ReactorMessage,
   ReactorOptions,
   ReactorStatus,
+  TrackCapability,
+  TrackDirection,
+  TrackKind,
+  TrackMappingEntry,
 } from './types';

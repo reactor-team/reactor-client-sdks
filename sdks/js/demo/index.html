@@ -21,6 +21,9 @@
       #commands { margin-top: 0.5rem; display: flex; flex-wrap: wrap; gap: 0.4rem; }
       #commands button { margin: 0; padding: 0.3rem 0.6rem; font-size: 0.85rem; }
       #commandsEmpty { margin-top: 0.5rem; font-size: 0.85rem; color: #666; }
+      #tracks { margin-top: 0.5rem; display: flex; flex-wrap: wrap; gap: 0.75rem; }
+      #tracks .track { font-size: 0.8rem; color: #333; }
+      #tracks video { display: block; width: 240px; background: #000; }
     </style>
   </head>
   <body>
@@ -42,6 +45,9 @@
 
     <p id="commandsEmpty">Available commands appear here once the session reaches "ready".</p>
     <div id="commands"></div>
+
+    <p>Received tracks</p>
+    <div id="tracks"></div>
 
     <div id="logToolbar">
       <span>Log</span>
