@@ -124,9 +124,9 @@ function renderCommands(commands: OpenApiCommand[] | undefined): void {
   }
 }
 
-// One <video> per received track name, created lazily and reused across
-// later `trackReceived` events for the same name (e.g. a reconnect).
-const trackVideos = new Map<string, HTMLVideoElement>();
+// One <video> or <audio> per received track name, created lazily and reused
+// across later `trackReceived` events for the same name (e.g. a reconnect).
+const trackElements = new Map<string, HTMLVideoElement | HTMLAudioElement>();
 
 function renderTrack(name: string): void {
   if (!reactor) return;
@@ -138,26 +138,40 @@ function renderTrack(name: string): void {
     log(`trackReceived(${name}): no stream found via getStreamByName`);
     return;
   }
-  let video = trackVideos.get(name);
-  if (!video) {
+  // `tracks()` carries the declared `kind` per name — trackReceived's own
+  // payload doesn't, so this is the only way to know whether to render a
+  // <video> or an <audio> element for it.
+  const kind = reactor.tracks().find((track) => track.name === name)?.kind ?? 'video';
+
+  let element = trackElements.get(name);
+  if (!element) {
     const wrapper = document.createElement('div');
     wrapper.className = 'track';
     const label = document.createElement('div');
     label.textContent = name;
-    video = document.createElement('video');
-    video.autoplay = true;
-    video.playsInline = true;
-    video.muted = true;
-    wrapper.append(label, video);
+    element = document.createElement(kind === 'audio' ? 'audio' : 'video');
+    element.autoplay = true;
+    if (element instanceof HTMLVideoElement) {
+      element.playsInline = true;
+      // Muted so a locally-published webcam/mic doesn't echo back through
+      // its own model-side round-trip — audio-kind tracks stay unmuted,
+      // since muting those would defeat the point of rendering them at all.
+      element.muted = true;
+    } else {
+      // Audio elements render as nothing visible otherwise — controls make
+      // it obvious in the demo that a stream is attached and playing.
+      element.controls = true;
+    }
+    wrapper.append(label, element);
     tracksEl.append(wrapper);
-    trackVideos.set(name, video);
+    trackElements.set(name, element);
   }
-  video.srcObject = stream;
+  element.srcObject = stream;
 }
 
 function clearTracks(): void {
   tracksEl.innerHTML = '';
-  trackVideos.clear();
+  trackElements.clear();
 }
 
 // Demo-only convenience: persist every field in this browser's localStorage
