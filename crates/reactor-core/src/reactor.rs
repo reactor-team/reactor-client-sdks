@@ -167,7 +167,23 @@ struct State {
 /// and `b` name the same tracks, regardless of the order either side listed
 /// them in.
 fn tracks_match(a: &[TrackCapability], b: &[TrackCapability]) -> bool {
-    a.len() == b.len() && a.iter().all(|track| b.contains(track))
+    if a.len() != b.len() {
+        return false;
+    }
+    // True multiset equality, not "every item in `a` is present somewhere in
+    // `b`" — that weaker check would let a preset with a duplicate name (e.g.
+    // `[A, A]`) match real tracks `[A, B]`, since both `A`s independently find
+    // a match in `b` while `B` goes unrepresented.
+    let mut remaining: Vec<&TrackCapability> = b.iter().collect();
+    for track in a {
+        match remaining.iter().position(|candidate| *candidate == track) {
+            Some(index) => {
+                remaining.swap_remove(index);
+            }
+            None => return false,
+        }
+    }
+    true
 }
 
 /// The Reactor client core. See the crate docs for the host contract.
@@ -323,14 +339,12 @@ impl Reactor {
             // build the SDP offer while the session-ready poll is still in
             // flight instead of waiting for it to report capabilities first.
             let signaling = self.signaling(&session_id);
-            let (session_result, prepared_result) = futures::future::join(
-                self.coordinator.poll_session_ready(&session_id),
-                async {
+            let (session_result, prepared_result) =
+                futures::future::join(self.coordinator.poll_session_ready(&session_id), async {
                     let ice_servers = signaling.ice_servers().await?;
                     self.peer.prepare(&ice_servers, &preset).await
-                },
-            )
-            .await;
+                })
+                .await;
             let session = session_result?;
             let capabilities = session
                 .capabilities
@@ -2033,6 +2047,25 @@ mod tests {
         }
     }
 
+    /// A duplicate name in the preset must not let it stand in for a real
+    /// track it doesn't actually name — `[a, a]` is not `[a, b]`, even though
+    /// naive "every preset item is present in the real list" logic would
+    /// think so (both `a`s independently find a match, `b` goes unchecked).
+    #[test]
+    fn tracks_match_rejects_a_duplicate_preset_standing_in_for_a_missing_track() {
+        let preset = vec![output_track("a"), output_track("a")];
+        let real = vec![output_track("a"), output_track("b")];
+        assert!(!tracks_match(&preset, &real));
+        assert!(!tracks_match(&real, &preset));
+    }
+
+    #[test]
+    fn tracks_match_accepts_a_genuine_duplicate_on_both_sides() {
+        let a = vec![output_track("a"), output_track("a")];
+        let b = vec![output_track("a"), output_track("a")];
+        assert!(tracks_match(&a, &b));
+    }
+
     /// A preset that disagrees with the coordinator's real tracks fails fast,
     /// with the never-sent offer discarded, instead of registering a
     /// connection for tracks the caller didn't ask for.
@@ -2061,7 +2094,10 @@ mod tests {
         .await
         .expect("a mismatch should fail fast rather than hang");
 
-        assert!(matches!(result, Err(CoreError::PresetTracksMismatch { .. })));
+        assert!(matches!(
+            result,
+            Err(CoreError::PresetTracksMismatch { .. })
+        ));
         assert!(
             peer.closed.load(std::sync::atomic::Ordering::SeqCst),
             "the never-sent offer's peer connection should be closed"
@@ -2113,7 +2149,10 @@ mod tests {
         .await
         .expect("a matching preset should reach connection registration");
 
-        assert_eq!(peer.prepared_tracks.lock().unwrap().as_ref().map(Vec::len), Some(2));
+        assert_eq!(
+            peer.prepared_tracks.lock().unwrap().as_ref().map(Vec::len),
+            Some(2)
+        );
 
         connecting.abort();
     }
