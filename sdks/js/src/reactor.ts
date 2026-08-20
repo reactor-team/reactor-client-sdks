@@ -169,6 +169,11 @@ export class Reactor implements Disposable {
     }
   }
 
+  /**
+   * Stops a received track: the receiver goes inactive and the runtime stops
+   * producing it. Awaitable, and queued behind connect()/disconnect()/
+   * reconnect() for the same reason as `publishTrack()`.
+   */
   async pauseTrack(name: string): Promise<void> {
     this.assertNotDisposed();
     await this.queue.push(async () => {
@@ -177,6 +182,7 @@ export class Reactor implements Disposable {
     }, 'pauseTrack');
   }
 
+  /** Resumes a track previously stopped with `pauseTrack()`. */
   async resumeTrack(name: string): Promise<void> {
     this.assertNotDisposed();
     await this.queue.push(async () => {
