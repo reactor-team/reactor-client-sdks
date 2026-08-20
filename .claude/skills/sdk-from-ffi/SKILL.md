@@ -332,6 +332,44 @@ and building that needs a Rust toolchain plus a libwebrtc download.
 
 ---
 
+## Ship it as a stack, not as one SDK-shaped PR
+
+A binding is thousands of lines and a review of thousands of lines is not a review. The
+bugs that matter here are one-liners in the boring parts — a string freed twice, a callback
+context released before teardown, a request whose reply nobody awaits — and those get found
+in a diff someone can hold in their head. Every serious finding on this repo's SDK work
+came from a reviewer reading a small diff, and none from reading a large one.
+
+So slice it. Each PR does one thing, is green on its own, and leaves `main` working if the
+rest of the stack never lands. A rough order, each of these a PR:
+
+1. **Scaffold**: package manifest, directory layout, the `lint:<lang>` / `test:<lang>` tasks
+   and the CI job — with nothing in it yet. Landing the toolchain before the code means the
+   next nine PRs are reviewed by a green pipeline rather than by hope.
+2. **FFI declarations** plus `check-abi-parity.py` taught about them. No object model.
+3. **Client lifetime**: create, connect, disconnect, destroy, status and error events.
+4. **Receiving**: tracks by name, frame callbacks, the trailer.
+5. **Sending**: publish, push, unpublish, and the refusals that go with them.
+6. **Commands and messages**, including the request/response correlation.
+7. **Recording**: request a clip, download it, assemble it.
+8. **Audio devices**, if the language has a story for them — optional, off the mandatory
+   import path.
+9. **The seven examples**, once there is enough SDK to run them.
+10. **The version bump**, alone, because it is the release switch.
+
+- **Each PR carries its own Linear ticket and its own tests.** A PR that adds a code path
+  without the test that pins it is a PR that lands untested — the stack is not a promise
+  to test later.
+- **Do not stack a refactor under a feature.** Rename in its own PR, or the diff that
+  matters disappears into the one that does not.
+- **Rebase the stack when its base merges**, and re-run the affected scenarios: a binding
+  rebased onto a changed FFI compiles and then fails at the call. `gt` handles the
+  mechanics; the `pr-stack` skill covers getting a stack green and merged.
+- **A stack is not an excuse to defer the parity bar.** The seven scenarios and the unit
+  tests are conditions for the *last* PR of the stack, not for a follow-up nobody files.
+
+---
+
 ## Before opening the PR
 
 - [ ] `check-abi-parity.py` knows about your binding's declarations.
@@ -348,8 +386,11 @@ and building that needs a Rust toolchain plus a libwebrtc download.
 - [ ] The SDK's own `lint:<lang>` / `test:<lang>` tasks are in `mise.toml`, and CI runs
       them in a job scoped to `sdks/<lang>/**` plus `crates/**`, listed in `ci-complete`.
 - [ ] A change to another SDK does not build yours, and a change to `crates/` does.
+- [ ] This is one slice of a stack, not the whole binding: it does one thing, it is green
+      on its own, and `main` still works if nothing after it lands.
 - [ ] All seven examples exist, numbered as in `sdks/python/examples/`, and each has been
       run against a published model in production. A local runtime does not discharge this.
 
-Repo conventions — Linear ticket, branch naming, DCO, stacked PRs — are in
-[`CONTRIBUTING.md`](../../../CONTRIBUTING.md) and the `pr-workflow` skill.
+Repo conventions — Linear ticket, branch naming, DCO, commit messages — are in
+[`CONTRIBUTING.md`](../../../CONTRIBUTING.md). Driving a stack to merge is the
+`pr-stack` skill; opening a single PR well is `pr-workflow`.
