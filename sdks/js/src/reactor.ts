@@ -38,6 +38,10 @@ export class Reactor implements Disposable {
   private stats: ConnectionStats | undefined;
   private connectionTimings: ConnectionTimings | undefined;
   private statsPollHandle: ReturnType<typeof setInterval> | undefined;
+  /** Bumped on every `startStatsPolling()`/`stopStatsPolling()` call — lets an
+   *  in-flight `getStats()` recognize it's stale once it resolves, even if
+   *  `this.client` hasn't changed in the meantime. */
+  private statsPollGeneration = 0;
   /** Set on the "connecting" status transition, cleared once `connectionTimings`
    *  is finalized on "ready" — see `handleStatusChanged()`. */
   private connectStartTime: number | undefined;
@@ -548,6 +552,7 @@ export class Reactor implements Disposable {
 
   private startStatsPolling(client: ReactorClient): void {
     this.stopStatsPolling();
+    const generation = ++this.statsPollGeneration;
     const extractStats = createRTCStatsExtractor();
 
     this.statsPollHandle = setInterval(() => {
@@ -559,8 +564,14 @@ export class Reactor implements Disposable {
       peerConnection
         .getStats()
         .then((report) => {
-          if (this.client !== client) {
-            return; // superseded by a later client
+          // `stopStatsPolling()` only clears the interval — it can't cancel
+          // a `getStats()` call already in flight. A recoverable disconnect
+          // or a status flicker back to "ready" can leave `this.client`
+          // pointing at this same `client`, so that identity alone can't
+          // tell a stale sample from a live one; the generation bumped by
+          // every `startStatsPolling()`/`stopStatsPolling()` call can.
+          if (generation !== this.statsPollGeneration) {
+            return;
           }
           this.stats = { ...extractStats(report), connectionTimings: this.connectionTimings };
           this.emitter.emit('statsUpdate', this.stats);
@@ -572,6 +583,7 @@ export class Reactor implements Disposable {
   }
 
   private stopStatsPolling(): void {
+    this.statsPollGeneration += 1;
     if (this.statsPollHandle !== undefined) {
       clearInterval(this.statsPollHandle);
       this.statsPollHandle = undefined;

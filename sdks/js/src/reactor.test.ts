@@ -805,6 +805,37 @@ describe('Reactor stats', () => {
     expect(getStats).toHaveBeenCalledTimes(1);
   });
 
+  it('discards an in-flight getStats() sample that resolves after polling was stopped', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const gate = createDeferred<RTCStatsReport>();
+    const getStats = vi.fn().mockReturnValue(gate.promise);
+
+    client.peerConnectionResult = { getStats } as unknown as RTCPeerConnection;
+    const onStatsUpdate = vi.fn();
+
+    reactor.on('statsUpdate', onStatsUpdate);
+
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    expect(getStats).toHaveBeenCalledTimes(1); // in flight, not yet resolved
+
+    // Recoverable: stops polling but keeps this same `client` (and its
+    // `getPeerConnection()`) alive — the scenario a plain `this.client !==
+    // client` check inside the pending `.then()` couldn't have caught.
+    await reactor.disconnect(true);
+    expect(reactor.getStats()).toBeUndefined();
+
+    gate.resolve({ forEach: () => {}, get: () => undefined } as unknown as RTCStatsReport);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(reactor.getStats()).toBeUndefined();
+    expect(onStatsUpdate).not.toHaveBeenCalled();
+  });
+
   it('does not poll while getPeerConnection() is undefined', async () => {
     vi.useFakeTimers();
     const reactor = new Reactor({ modelName: 'test-model' });

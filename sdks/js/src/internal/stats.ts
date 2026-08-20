@@ -47,6 +47,11 @@ export function createRTCStatsExtractor(): RTCStatsExtractor {
   let lastBytesReceived: number | undefined;
   let lastBytesSent: number | undefined;
   let lastCandPairTimestamp: number | undefined;
+  // An ICE restart or failover nominates a different candidate-pair, whose
+  // byte counters start from their own, unrelated baseline — diffing against
+  // the previous pair's counters would produce a bogus (often negative)
+  // bitrate for that one sample.
+  let lastCandPairId: string | undefined;
 
   return (report: RTCStatsReport) => {
     let candPairId: string | undefined;
@@ -87,22 +92,24 @@ export function createRTCStatsExtractor(): RTCStatsExtractor {
         if (localCandidate?.candidateType) {
           candidateType = localCandidate.candidateType;
         }
+        const samePair = lastCandPairId === candPairId;
         const timeDiff: number =
-          lastCandPairTimestamp !== undefined ? stat.timestamp - lastCandPairTimestamp : 0;
+          samePair && lastCandPairTimestamp !== undefined ? stat.timestamp - lastCandPairTimestamp : 0;
 
         if (stat.bytesReceived !== undefined) {
-          if (lastBytesReceived !== undefined && timeDiff > 0) {
+          if (samePair && lastBytesReceived !== undefined && timeDiff > 0) {
             incomingBitrate = (((stat.bytesReceived - lastBytesReceived) * 8) / timeDiff) * 1000; /* Bits/Second */
           }
           lastBytesReceived = stat.bytesReceived;
         }
         if (stat.bytesSent !== undefined) {
-          if (lastBytesSent !== undefined && timeDiff > 0) {
+          if (samePair && lastBytesSent !== undefined && timeDiff > 0) {
             outgoingBitrate = (((stat.bytesSent - lastBytesSent) * 8) / timeDiff) * 1000; /* Bits/Second */
           }
           lastBytesSent = stat.bytesSent;
         }
         lastCandPairTimestamp = stat.timestamp;
+        lastCandPairId = candPairId;
       }
 
       // If there is more than one video stream the stats will be from the first one encountered.

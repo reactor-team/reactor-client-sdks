@@ -166,6 +166,47 @@ describe('createRTCStatsExtractor()', () => {
     expect(second.outgoingBitrate).toBe(3_500_000);
   });
 
+  it('resets the bitrate baseline when the nominated candidate-pair changes (an ICE restart or failover)', () => {
+    const baseTimestamp = 1_777_674_503_920;
+    const makeCandidatePairReport = (id: string, timestamp: number, bytesReceived: number, bytesSent: number) =>
+      makeReport([
+        [
+          id,
+          {
+            id,
+            type: 'candidate-pair',
+            state: 'succeeded',
+            nominated: true,
+            timestamp,
+            bytesReceived,
+            bytesSent,
+            localCandidateId: 'lc1',
+          },
+        ],
+        ['lc1', { type: 'local-candidate', candidateType: 'host' }],
+      ]);
+
+    const extract = createRTCStatsExtractor();
+
+    extract(makeCandidatePairReport('cp1', baseTimestamp, 1_000_000, 1_025_000));
+    const second = extract(makeCandidatePairReport('cp1', baseTimestamp + 1_600, 1_500_000, 1_725_000));
+
+    expect(second.incomingBitrate).toBe(2_500_000);
+
+    // ICE nominates a different pair — its byte counters start from their
+    // own, unrelated baseline, so this sample must not diff against cp1's.
+    const third = extract(makeCandidatePairReport('cp2', baseTimestamp + 3_200, 10, 20));
+
+    expect(third.incomingBitrate).toBeUndefined();
+    expect(third.outgoingBitrate).toBeUndefined();
+
+    // cp2's own next sample establishes a baseline and diffs normally.
+    const fourth = extract(makeCandidatePairReport('cp2', baseTimestamp + 4_800, 210, 420));
+
+    expect(fourth.incomingBitrate).toBe(1_000);
+    expect(fourth.outgoingBitrate).toBe(2_000);
+  });
+
   it('ignores a second video inbound-rtp stat when one was already read', () => {
     const report = makeReport([
       ['ir1', { id: 'ir1', type: 'inbound-rtp', kind: 'video', framesPerSecond: 30 }],
