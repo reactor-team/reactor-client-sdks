@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """04 · Publish a track — sending media into a model.
 
-Morpheus animates a reference identity with what you stream at it: publish its
-`webcam` track, push frames, and the result comes back on `main_video`.
-Publishing is what puts a sender behind the slot — pushing before it raises.
+X2 edits what you stream at it: publish its `source` track, push frames, and the
+re-rendered result comes back on `main_video`. Publishing is what puts a sender
+behind the slot — pushing before it raises.
 
 Frames go out tagged with `user_data`; example 07 reads the trailer.
 
-    uv run python examples/04_publish_track.py <reference.png>
+    uv run python examples/04_publish_track.py
 
 Docs: https://docs.reactor.inc/concepts/tracks#input-tracks-app-to-model
       https://docs.reactor.inc/concepts/frame-metadata
-      https://docs.reactor.inc/concepts/file-uploads
+      https://docs.reactor.inc/model-api-reference/x2/schema
 """
 
 from __future__ import annotations
@@ -26,15 +26,17 @@ import display
 from reactor_sdk import DEFAULT_API_URL, Reactor
 
 API_KEY = os.environ.get("REACTOR_API_KEY")
-MODEL = os.environ.get("REACTOR_MODEL", "morpheus-v4")
+# Namespaced, as every model is: a bare name resolves under `reactor/`, and this
+# one belongs to `xmax`.
+MODEL = os.environ.get("REACTOR_MODEL", "xmax/x2")
 SECONDS = float(os.environ.get("REACTOR_SECONDS", "15"))
 SHOW = os.environ.get("REACTOR_SHOW") == "1"
 
-# Morpheus starts on its own once a reference image, a prompt, and a live
-# `webcam` frame all exist. The prompt has a built-in default; the image does
-# not, which is why this example takes one.
-PROMPT = "a painterly portrait, soft studio light"
-INPUT_TRACK = "webcam"
+# X2 generates once it has a non-empty prompt and frames to edit. A reference
+# image (`set_reference_image`) and a drag pointer (`set_pointer`) steer it
+# further; neither is needed to start.
+PROMPT = "repaint the scene as a watercolour painting"
+INPUT_TRACK = "source"
 OUTPUT_TRACK = "main_video"
 WIDTH, HEIGHT, FPS = 640, 360, 15
 
@@ -46,9 +48,6 @@ def frame(seq: int) -> bytes:
 
 
 async def main() -> None:
-    if len(sys.argv) < 2:
-        sys.exit("usage: 04_publish_track.py <reference.png>")
-    reference = sys.argv[1]
     if not API_KEY and os.environ.get("REACTOR_LOCAL") != "1":
         sys.exit("set REACTOR_API_KEY — https://www.reactor.inc/account/api-keys")
 
@@ -79,12 +78,10 @@ async def main() -> None:
         await source.publish()
         print(f"publishing: {source.name}")
 
-        # Publish first: the model animates a live track, so conditioning it with
-        # no sender behind the slot buys nothing. There is no `start` — Morpheus
-        # begins as soon as the image, the prompt and the frames are all in.
+        # Publish first: the model edits a live track, so a prompt with no sender
+        # behind the slot buys nothing. There is no `start` — X2 begins once it
+        # has both a prompt and frames.
         print(f"set_prompt -> {await reactor.send_command('set_prompt', {'prompt': PROMPT})}")
-        uploaded = await reactor.upload_file(reference)
-        print(f"set_image -> {await reactor.send_command('set_image', {'image': uploaded})}")
 
         output = reactor.track(OUTPUT_TRACK)
         received = 0
