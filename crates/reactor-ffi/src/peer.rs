@@ -212,7 +212,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             let recv = recv_tracks.clone();
             let name_mids = recv_name_mids.clone();
             let track_idx = recv_track_idx.clone();
-            obs = obs.on_track(move |kind, mut track| {
+            obs = obs.on_track(move |kind, track| {
                 let idx = track_idx.fetch_add(1, Ordering::SeqCst);
                 let (name, mid) = name_mids
                     .lock()
@@ -490,6 +490,29 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         // Dropped by reactor-webrtc unless the peer declared that it strips the
         // trailer, so tagging a frame is safe whatever the far end supports.
         track.push_video_frame_with_metadata(data, width, height, user_data);
+    }
+
+    fn push_video_frame_with_metadata_at(
+        &self,
+        track_name: &str,
+        data: &[u8],
+        width: u32,
+        height: u32,
+        user_data: &[u8],
+        capture_time_us: i64,
+    ) {
+        let s = self.state.lock().unwrap();
+        let Some(track) = s.local_tracks.get(track_name) else {
+            warn!(
+                "[peer] push_video_frame_with_metadata_at: no video source for track \
+                 '{track_name}'"
+            );
+            return;
+        };
+        // reactor-webrtc keys the trailer by capture millisecond, per track — so
+        // the same capture time across several tracks is exactly the intended use
+        // (one tick, several views), not a collision.
+        track.push_video_frame_with_metadata_at(data, width, height, user_data, capture_time_us);
     }
 }
 

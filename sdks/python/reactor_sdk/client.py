@@ -1141,6 +1141,7 @@ class Reactor:
         width: int,
         height: int,
         user_data: bytes | None = None,
+        capture_time_us: int | None = None,
     ) -> None:
         """Push a raw BGRA video frame into a named sendonly track.
 
@@ -1150,11 +1151,30 @@ class Reactor:
 
         A tag is dropped unless the far end declared that it reads them, so
         tagging is safe whatever the model was built against.
+
+        Pass ``capture_time_us`` to stamp the frame with the time it was captured
+        instead of the time it is pushed. Tagging and stamping are independent:
+        either, both, or neither.
         """
         self._require_handle()
         buf = (ctypes.c_uint8 * len(data)).from_buffer_copy(data)
-        if user_data:
-            tag = (ctypes.c_uint8 * len(user_data)).from_buffer_copy(user_data)
+        tag_len = len(user_data) if user_data else 0
+        tag = (ctypes.c_uint8 * tag_len).from_buffer_copy(user_data) if user_data else None
+        # Three exports, one per combination the C ABI has a symbol for. The
+        # stamped one carries the tag too, so it covers stamped-and-untagged.
+        if capture_time_us is not None:
+            get_lib().reactor_push_video_frame_with_metadata_at(
+                ctypes.c_void_p(self._handle),
+                track_name.encode(),
+                buf,
+                ctypes.c_uint32(width),
+                ctypes.c_uint32(height),
+                tag,
+                ctypes.c_uint32(tag_len),
+                ctypes.c_int64(capture_time_us),
+            )
+            return
+        if tag is not None:
             get_lib().reactor_push_video_frame_with_metadata(
                 ctypes.c_void_p(self._handle),
                 track_name.encode(),
@@ -1162,7 +1182,7 @@ class Reactor:
                 ctypes.c_uint32(width),
                 ctypes.c_uint32(height),
                 tag,
-                ctypes.c_uint32(len(user_data)),
+                ctypes.c_uint32(tag_len),
             )
             return
         get_lib().reactor_push_video_frame(

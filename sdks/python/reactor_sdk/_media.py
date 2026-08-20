@@ -10,6 +10,26 @@ import inspect
 from collections.abc import Callable
 from typing import Any
 
+from ._ffi import get_lib
+
+
+def time_micros() -> int:
+    """The engine's monotonic clock in microseconds — the epoch a capture time is read in.
+
+    :meth:`Track.push_frame`'s ``capture_time_us`` is a point on *this* clock, not
+    on the system's: it is what the media engine timestamps against, and
+    ``time.time()`` is not a substitute for it.
+
+    Read it once per unit of produced media and stamp every track with that one
+    value. Tracks are synchronised by sharing a capture time, not by reaching the
+    encoder at the same moment::
+
+        now = time_micros()
+        for camera, frame in views.items():
+            camera.push_frame(frame, capture_time_us=now)
+    """
+    return int(get_lib().reactor_time_micros())
+
 
 def _numpy() -> Any:
     """Import numpy, or explain why it is needed.

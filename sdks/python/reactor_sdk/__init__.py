@@ -24,6 +24,7 @@ except PackageNotFoundError:
     __version__ = "0.0.0.dev"
 
 from ._auth import AuthError, fetch_jwt
+from ._media import time_micros
 from ._recording import download_clip
 from .client import (
     DEFAULT_API_URL,
@@ -85,6 +86,8 @@ __all__ = [
     "AuthError",
     "fetch_jwt",
     "download_clip",
+    # The clock a capture time is read in (see Track.push_frame).
+    "time_micros",
     "DEFAULT_API_URL",
     "LOCAL_API_URL",
     "__version__",

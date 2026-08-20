@@ -270,6 +270,7 @@ class Track:
         width: int | None = ...,
         height: int | None = ...,
         user_data: bytes | None = ...,
+        capture_time_us: int | None = ...,
     ) -> None: ...
 
     @overload
@@ -289,6 +290,7 @@ class Track:
         width: int | None = None,
         height: int | None = None,
         user_data: bytes | None = None,
+        capture_time_us: int | None = None,
         sample_rate: int = 48000,
         num_channels: int = 1,
         samples_per_channel: int | None = None,
@@ -311,6 +313,22 @@ class Track:
         Pass `user_data` to tag the frame; it reaches the model as that frame's
         metadata, and is dropped unless the far end declared that it reads tags.
 
+        Pass `capture_time_us` to say *when* the frame was captured, instead of
+        letting the push be its timestamp. That is what several tracks of one
+        capture need: push the same value on each and the far end reads one moment,
+        rather than the microseconds apart the pushes happened to land::
+
+            from reactor_sdk import time_micros
+
+            now = time_micros()
+            for camera, frame in views.items():
+                camera.push_frame(frame, capture_time_us=now)
+
+        It is a point on the engine's clock — :func:`reactor_sdk.time_micros` —
+        not on the system's, so a ``time.time()`` value is not a substitute.
+
+        Stamping and tagging are independent — pass either, both, or neither.
+
         **Audio.** Interleaved i16 PCM, as bytes or as a ``numpy`` int16 array.
         `samples_per_channel` is worked out from the length when not given::
 
@@ -319,8 +337,8 @@ class Track:
         An argument the track's kind has no use for is refused rather than ignored —
         but only where ignoring it would throw away what the caller meant. Passing
         `sample_rate` to a video track is merely redundant and is let through;
-        passing `user_data` to an audio track means a tag that never goes anywhere,
-        and that is an error.
+        passing `user_data` or `capture_time_us` to an audio track means a value
+        that never goes anywhere, and that is an error.
         """
         self._require_direction(TrackDirection.SENDONLY, "push_frame()")
         self._require_published("push_frame()")
@@ -332,6 +350,13 @@ class Track:
                     f"push_frame(): track {self._name!r} is audio, and an audio frame "
                     f"has nowhere to carry a tag — the wire format has no metadata "
                     f"trailer for one. Only video frames can be tagged."
+                )
+            if capture_time_us is not None:
+                raise TypeError(
+                    f"push_frame(): track {self._name!r} is audio, and an audio frame "
+                    f"carries no capture time of its own — a track's RTP timestamp "
+                    f"counts the samples handed to it, so the feed's own continuity "
+                    f"is the clock. Only video frames can be stamped."
                 )
             pcm = data.tobytes() if _is_array(data) else bytes(data)
             if samples_per_channel is None:
@@ -357,7 +382,12 @@ class Track:
                 f"arguments, or pass the bytes if the other size is the intended one."
             )
         reactor._push_video_frame(
-            self._name, bgra, actual_width, actual_height, user_data=user_data
+            self._name,
+            bgra,
+            actual_width,
+            actual_height,
+            user_data=user_data,
+            capture_time_us=capture_time_us,
         )
 
     # ------------------------------------------------------------------

@@ -142,6 +142,18 @@ def test_destroy_and_free_string_accept_null() -> None:
     lib.reactor_free_string(None)
 
 
+def test_the_engine_clock_is_readable_and_moves_forward() -> None:
+    """The clock `capture_time_us` is read in: no handle, and forward-moving — a
+    stamp only means anything against the value the next frame gets. Exposed as
+    `reactor_sdk.time_micros`, which is what a caller stamps its tracks from.
+    """
+    from reactor_sdk import time_micros
+
+    first = time_micros()
+    assert isinstance(first, int) and first > 0
+    assert time_micros() >= first
+
+
 def test_media_push_on_a_null_handle_is_a_noop() -> None:
     lib = _ffi.get_lib()
     pixels = (ctypes.c_uint8 * 4)()
@@ -149,4 +161,7 @@ def test_media_push_on_a_null_handle_is_a_noop() -> None:
 
     lib.reactor_push_video_frame(None, b"video", pixels, 1, 1)
     lib.reactor_push_video_frame_with_metadata(None, b"video", pixels, 1, 1, None, 0)
+    lib.reactor_push_video_frame_with_metadata_at(
+        None, b"video", pixels, 1, 1, None, 0, 1_700_000_000_000_000
+    )
     lib.reactor_push_audio_frame(None, b"audio", pcm, 2, 48000, 1)

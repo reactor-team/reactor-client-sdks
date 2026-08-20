@@ -139,9 +139,23 @@ camera = await reactor.track("camera").publish()   # or: await reactor.publish_t
 camera.push_frame(frame)                          # numpy array: shape carries the size
 camera.push_frame(bgra, width=640, height=480)    # bytes: size spelled out
 camera.push_frame(frame, user_data=b"seq=1")      # tag the frame's metadata
+camera.push_frame(frame, capture_time_us=t)        # stamp when it was captured
 camera.push_frame(pcm, sample_rate=48000)         # audio track: interleaved i16 PCM
 
 camera.unpublish()
+```
+
+Several cameras capturing one moment are one moment: push them with the same
+`capture_time_us` and that is what the far end reads, instead of the microseconds
+apart the pushes happened to land. The value is a point on the engine's clock —
+`time_micros()`, not `time.time()`.
+
+```python
+from reactor_sdk import time_micros
+
+now = time_micros()
+for camera, frame in views.items():
+    camera.push_frame(frame, capture_time_us=now)
 ```
 
 One `push_frame` and one `on_frame` for both kinds — the track knows which it is.

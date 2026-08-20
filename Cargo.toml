@@ -17,7 +17,10 @@ repository = "https://github.com/reactor-team/reactor-client-sdks"
 reactor-protocol = { path = "crates/reactor-protocol" }
 reactor-core     = { path = "crates/reactor-core" }
 reactor-wasm     = { path = "crates/reactor-wasm" }
-reactor-webrtc   = "0.7"
+# 0.10: `push_video_frame_with_metadata_at` — the outbound push that takes the
+# caller's capture time (reactor-webrtc #53). 0.8/0.9 are additive too (codec
+# preferences, awaitable set_track), so nothing here changed shape.
+reactor-webrtc   = "0.10"
 
 serde       = { version = "1",   features = ["derive"] }
 serde_json  = "1"

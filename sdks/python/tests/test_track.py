@@ -322,7 +322,7 @@ class TestPushFrame:
         reactor.track("camera").push_frame(b"\x01\x02\x03\x04", width=1, height=1)
         args, kwargs = captured["video"]
         assert args == ("camera", b"\x01\x02\x03\x04", 1, 1)
-        assert kwargs == {"user_data": None}
+        assert kwargs == {"user_data": None, "capture_time_us": None}
 
     def test_an_rgb_array_carries_its_own_dimensions_and_is_converted(
         self, monkeypatch: pytest.MonkeyPatch
@@ -362,7 +362,41 @@ class TestPushFrame:
         reactor, _ = _connected(monkeypatch)
         captured = self._captured(reactor)
         reactor.track("camera").push_frame(b"\x00" * 4, width=1, height=1, user_data=b"n=1")
-        assert captured["video"][1] == {"user_data": b"n=1"}
+        assert captured["video"][1] == {"user_data": b"n=1", "capture_time_us": None}
+
+    def test_a_capture_time_reaches_the_frame(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reactor, _ = _connected(monkeypatch)
+        captured = self._captured(reactor)
+        reactor.track("camera").push_frame(b"\x00" * 4, width=1, height=1, capture_time_us=42)
+        assert captured["video"][1] == {"user_data": None, "capture_time_us": 42}
+
+    def test_one_capture_time_stamps_every_track_of_that_capture(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Why the argument exists: three views of one tick are one moment, and
+        without it each push is stamped when it lands, microseconds apart."""
+        views = ["left_view", "right_view", "wrist_view"]
+        reactor, _ = _connected(
+            monkeypatch,
+            tracks=[{"name": v, "kind": "video", "direction": "sendonly"} for v in views],
+        )
+        stamped: list[tuple[str, int | None]] = []
+        reactor._push_video_frame = lambda name, *a, **k: stamped.append(  # type: ignore[method-assign]
+            (name, k.get("capture_time_us"))
+        )
+        now = 1_700_000_000_000_000
+        for view in views:
+            reactor.track(view).push_frame(b"\x00" * 4, width=1, height=1, capture_time_us=now)
+        assert stamped == [(v, now) for v in views]
+
+    def test_a_capture_time_on_an_audio_track_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An audio track's RTP timestamp counts the samples handed to it, so the
+        feed's own continuity is its clock — a capture time would go nowhere."""
+        reactor, _ = _connected(monkeypatch)
+        with pytest.raises(TypeError, match="carries no capture time of its own"):
+            reactor.track("mic").push_frame(b"\x00\x00" * 480, capture_time_us=42)
 
     def test_a_tag_on_an_audio_track_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """An audio frame has nowhere to carry one — the wire format has no

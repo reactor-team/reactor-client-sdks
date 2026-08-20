@@ -473,6 +473,41 @@ void reactor_push_video_frame_with_metadata(
 );
 
 /*
+ * The engine's monotonic clock, in microseconds — the epoch
+ * reactor_push_video_frame_with_metadata_at() reads its capture time in.
+ *
+ * Read it once per unit of produced media and stamp every track with that one
+ * value: tracks are synchronised by sharing a capture time, not by reaching the
+ * encoder at the same moment.  Unrelated to time(2)'s epoch — a UNIX timestamp is
+ * not a substitute.  Takes no handle.
+ */
+int64_t reactor_time_micros(void);
+
+/*
+ * Push a BGRA frame stamped with the caller's own capture time, in microseconds,
+ * read from reactor_time_micros(), optionally tagged with `user_data`.
+ *
+ * Without a capture time a frame is stamped as it is pushed, so several tracks
+ * capturing one moment arrive stamped microseconds apart.  Pass the same
+ * `capture_time_us` for every track of one capture and the far end reads them as
+ * the one moment they are.
+ *
+ * Stamping and tagging are independent: `user_data` may be NULL with
+ * `user_data_len` 0.  Same buffer requirements as the functions above: `data`
+ * must hold width * height * 4 bytes.
+ */
+void reactor_push_video_frame_with_metadata_at(
+    ReactorHandle *handle,
+    const char    *track_name,
+    const uint8_t *data,
+    uint32_t       width,
+    uint32_t       height,
+    const uint8_t *user_data,   /* nullable with user_data_len 0 */
+    uint32_t       user_data_len,
+    int64_t        capture_time_us
+);
+
+/*
  * Push interleaved i16 PCM audio into a named sendonly track.
  *   track_name          — name of the sendonly audio track
  *   data                — interleaved i16 PCM samples (little-endian)
