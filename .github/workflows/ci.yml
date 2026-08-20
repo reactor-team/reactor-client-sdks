@@ -40,6 +40,9 @@ jobs:
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
+      - uses: actions/setup-node@v4   # Node isn't mise-pinned yet; see mise.toml's "JS SDK" section
+        with:
+          node-version: "24"
       - run: hk validate
       - run: mise run fmt:check
       - name: Install clang for the libwebrtc C++ glue
@@ -47,6 +50,7 @@ jobs:
       # Covers reactor-ffi, which is why the clang above is needed.
       - run: mise run clippy
       - run: mise run lint:python
+      - run: mise run lint:js
       - name: ABI parity (lib.rs / reactor_ffi.h / _ffi.py)
         run: mise run lint:abi
       - run: mise run lint:shell
@@ -73,6 +77,12 @@ jobs:
       # Proves the binding still links and that wasm-bindgen can emit the JS
       # package the SDK imports — a clippy pass alone would not.
       - run: mise run build:wasm
+      - uses: actions/setup-node@v4   # Node isn't mise-pinned yet; see mise.toml's "JS SDK" section
+        with:
+          node-version: "24"
+      # Builds the JS SDK against the real reactor-wasm output above — the
+      # one thing a local checkout without a Rust toolchain can't verify.
+      - run: mise run build:js
 
   test:
     name: rust + python tests
