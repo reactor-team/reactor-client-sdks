@@ -82,11 +82,16 @@ async def download_clip(
             clip without a live client.
         on_progress: Called after each segment, as `on_progress(done, total)`.
             Runs on the worker thread this dispatches to, not the event loop.
-        ready_timeout: How long to keep polling while the coordinator answers
-            202. `None` polls until it stops. The wait is in *media* time, not
-            wall clock: the manifest appears once recorded media passes the end
-            of the chunk holding the window, so a model generating at half
-            real-time takes twice as long to get there.
+        ready_timeout: Grace period past `clip.predicted_ready_at_ms` before a
+            202 becomes a `TimeoutError`. `None` polls until the coordinator
+            stops saying 202 — the JS SDK's default, which it can afford because
+            a browser caller holds an `AbortSignal`; here the work runs in a
+            thread that cannot be interrupted, so a bound is the default.
+
+            Anchoring on the runtime's own prediction is what lets one number
+            serve both cases: readiness is in *media* time, so a model
+            generating at a tenth of real-time reaches the boundary chunk ten
+            times later, and the runtime is what knows when.
 
     Raises:
         urllib.error.URLError: A fetch failed — the playlist itself, or one of
@@ -112,7 +117,32 @@ def _open(url: str, jwt: str | None, *, same_origin_as: str | None = None):
     return urllib.request.urlopen(urllib.request.Request(url, headers=headers))
 
 
-def _playlist_segments(playlist_url: str, jwt: str | None, ready_timeout: float) -> list[str]:
+#: Bounds on the per-poll wait, matching the JS SDK: a floor so a `Retry-After: 0`
+#: is a retry rather than a spin, and a cap so a large one does not park the
+#: download for minutes when the chunk may land sooner.
+_MIN_RETRY_DELAY = 0.2
+_MAX_RETRY_DELAY = 2.0
+
+
+def _retry_delay(retry_after: str | None) -> float:
+    """What to wait after a 202, from `Retry-After`, clamped.
+
+    An HTTP-date is legal and unreadable here — turning one into a duration needs
+    a trusted clock — so it falls back like a missing header.
+    """
+    try:
+        delay = float(retry_after) if retry_after else _MAX_RETRY_DELAY
+    except ValueError:
+        delay = _MAX_RETRY_DELAY
+    return min(max(delay, _MIN_RETRY_DELAY), _MAX_RETRY_DELAY)
+
+
+def _playlist_segments(
+    playlist_url: str,
+    jwt: str | None,
+    ready_timeout: float | None,
+    predicted_ready_at_ms: float = 0.0,
+) -> list[str]:
     """The segment names in the playlist, waiting out the 202s first.
 
     202 means the clip's boundary chunk has not been uploaded yet, which is not
@@ -120,7 +150,14 @@ def _playlist_segments(playlist_url: str, jwt: str | None, ready_timeout: float)
     the one holding the end of the window has to close first. The response
     carries `Retry-After` — the chunk length — so that is what we wait.
     """
-    deadline = None if ready_timeout is None else time.monotonic() + ready_timeout
+    # Anchored at the runtime's prediction while that is still ahead, the way the
+    # JS SDK anchors its slack: the budget is grace past when the clip was
+    # expected, not from whenever the download happened to start.
+    if ready_timeout is None:
+        deadline = None
+    else:
+        ahead = predicted_ready_at_ms / 1000 - time.time() if predicted_ready_at_ms else 0.0
+        deadline = time.monotonic() + max(ahead, 0.0) + ready_timeout
     polls = 0
     while True:
         _log.debug("fetching playlist: %s", playlist_url)
@@ -141,12 +178,7 @@ def _playlist_segments(playlist_url: str, jwt: str | None, ready_timeout: float)
                 f"generating never gets there — keep it running, or pass a longer "
                 f"ready_timeout (None to wait indefinitely)."
             )
-        try:
-            delay = float(retry_after or 2.0)
-        except ValueError:  # an HTTP-date, which needs a trusted clock
-            delay = 2.0
-        # A floor, so a `Retry-After: 0` is a retry rather than a spin.
-        delay = max(delay, 0.1)
+        delay = _retry_delay(retry_after)
         time.sleep(delay if remaining is None else min(delay, remaining))
 
     segments = [
@@ -171,7 +203,7 @@ def _download_clip_sync(
     on_progress: Callable[[int, int], None] | None,
     ready_timeout: float,
 ) -> bytes | None:
-    segments = _playlist_segments(clip.playlist_url, jwt, ready_timeout)
+    segments = _playlist_segments(clip.playlist_url, jwt, ready_timeout, clip.predicted_ready_at_ms)
     total = len(segments)
 
     if path is not None:

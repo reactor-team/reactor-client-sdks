@@ -98,10 +98,10 @@ async def main() -> None:
         if clip.end_marker - clip.start_marker < clip_seconds * 0.5:
             print("warning: the session had less video than the window asked for")
 
-        # Carries the token and waits out the 202s. The chunk still has to close,
-        # which is media time again — generous rather than the 60s default.
-        # `reactor.download_clip(seconds, path)` does the request and this in one.
-        await reactor.download(clip, out, ready_timeout=300)
+        # Carries the token and waits out the 202s, on a budget anchored at the
+        # runtime's own predicted-ready. `reactor.download_clip(seconds, path)`
+        # does the request and this in one call.
+        await reactor.download(clip, out)
         print(f"saved: {out} ({Path(out).stat().st_size // 1024} KB)")
 
 

@@ -21,7 +21,7 @@ from unittest import mock
 import pytest
 
 from reactor_sdk import Clip, Reactor
-from reactor_sdk._recording import download_clip
+from reactor_sdk._recording import _retry_delay, download_clip
 
 # Distinct, length-different payloads so a swapped or duplicated segment shows
 # up as a content mismatch, not just a size difference that could hide it.
@@ -319,10 +319,27 @@ class TestNotReadyYet:
         with mock.patch("reactor_sdk._recording.time.sleep", spy):
             with pytest.raises(TimeoutError):
                 await download_clip(clip, ready_timeout=0.3)
-        # `Retry-After: 0` floors at 0.1s rather than spinning, and the last waits
-        # are shorter only because the deadline caps them.
-        assert slept[0] == 0.1
-        assert max(slept) == 0.1
+        # `Retry-After: 0` floors at 200ms rather than spinning, and the last
+        # waits are shorter only because the deadline caps them.
+        assert slept[0] == 0.2
+        assert max(slept) == 0.2
+
+
+class TestRetryDelay:
+    """`Retry-After`, clamped the way the JS SDK clamps it."""
+
+    @pytest.mark.parametrize(
+        ("header", "expected"),
+        [
+            ("4", 2.0),  # the coordinator's chunk length, capped to the ceiling
+            ("0", 0.2),  # "immediately" is still a wait, not a spin
+            ("300", 2.0),  # a chunk may land long before five minutes
+            (None, 2.0),  # no header
+            ("Wed, 21 Oct 2015 07:28:00 GMT", 2.0),  # legal, and needs a clock
+        ],
+    )
+    def test_it_is_clamped(self, header: str | None, expected: float) -> None:
+        assert _retry_delay(header) == expected
 
 
 class TestReactorDownloadConvenience:
