@@ -56,10 +56,15 @@ class Display:
             self._dirty = True
 
     async def hold(self, seconds: float) -> None:
-        """Sleep `seconds`, drawing while it lasts. Returns early if closed."""
+        """Sleep `seconds`, drawing while the window is open.
+
+        Still sleeps the full time once closed — a caller looping on `hold` until
+        something else finishes would otherwise spin.
+        """
         deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline and not self._closed:
-            self._draw()
+        while time.monotonic() < deadline:
+            if not self._closed:
+                self._draw()
             await asyncio.sleep(1 / 60)
 
     def _draw(self) -> None:

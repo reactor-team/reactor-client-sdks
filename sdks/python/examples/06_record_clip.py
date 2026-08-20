@@ -7,8 +7,9 @@ MPEG-TS, hence `.ts` — remux with `ffmpeg -i clip.ts -c copy clip.mp4` if need
 
 Readiness is in *media* time, not wall clock: the manifest appears once the
 recording passes the end of the chunk holding the window. `clip.now_marker` is
-that media clock, and it advances with frames produced — so this asks for a clip,
-checks how much media exists, and waits if there is not enough yet.
+that media clock — it advances with frames recorded, so a model generating at a
+fraction of real-time reaches the boundary proportionally later. This waits
+without a deadline, because the wait ends by itself when the session does.
 
 `request_recording()` is the same call for the whole session.
 
@@ -35,9 +36,6 @@ SHOW = os.environ.get("REACTOR_SHOW") == "1"
 
 PROMPT = "a forest at dawn, sunbeams through the canopy"
 OUTPUT_TRACK = "main_video"
-# Helios records in 4s chunks, and the coordinator needs the chunk *after* the
-# window to have closed — so a clip is servable once media time passes 8s.
-MIN_MEDIA = 8.0
 
 
 async def main() -> None:
@@ -89,25 +87,25 @@ async def main() -> None:
             await window.hold(0.5)
         await window.hold(1)
 
-        # A clip request is cheap and answers with the media clock, so it is also
-        # how you find out whether there is enough recorded to cut from.
-        while True:
-            clip = await reactor.request_clip(clip_seconds)
-            if clip.now_marker >= MIN_MEDIA:
-                break
-            print(f"media recorded: {clip.now_marker:.1f}s of {MIN_MEDIA:.0f}s")
-            await window.hold(5)
-
+        # The window ends at the media clock's "now", so the chunk holding its end
+        # is always the one still open. Waiting before asking only moves the end.
+        clip = await reactor.request_clip(clip_seconds)
         print(f"frames: {frames}")
         print(f"clip: {clip.kind} {clip.playlist_url}")
         print(f"window: {clip.start_marker:.1f} → {clip.end_marker:.1f}")
+        print(f"recorded so far: {clip.now_marker:.1f}s of media")
         if clip.end_marker - clip.start_marker < clip_seconds * 0.5:
             print("warning: the session had less video than the window asked for")
 
-        # Carries the token and waits out the 202s, on a budget anchored at the
-        # runtime's own predicted-ready. `reactor.download_clip(seconds, path)`
-        # does the request and this in one call.
-        await reactor.download(clip, out)
+        # Carries the token and waits out the 202s. No deadline: a clip becomes
+        # ready because the model keeps generating, so `download` gives up on its
+        # own once the session ends — the only way it can never arrive.
+        # `reactor.download_clip(seconds, path)` does the request and this in one.
+        print("waiting for the recorder to pass the end of the window…")
+        download = asyncio.create_task(reactor.download(clip, out, ready_timeout=None))
+        while not download.done():
+            await window.hold(0.5)  # the wait can outlast the clip it waits for
+        await download
         print(f"saved: {out} ({Path(out).stat().st_size // 1024} KB)")
 
 
