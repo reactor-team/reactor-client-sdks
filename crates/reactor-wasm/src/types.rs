@@ -43,7 +43,7 @@ export interface ClientOptions {
   clipRequestTimeoutMs?: number;
   /** Session-readiness poll attempts. Default 20. */
   maxSessionAttempts?: number;
-  /** SDP-answer poll attempts. Default 30. */
+  /** SDP-answer poll attempts. Default 6. */
   maxSdpAttempts?: number;
   /** Console log level. Default "warn". */
   logLevel?: "off" | "error" | "warn" | "info" | "debug" | "trace";
