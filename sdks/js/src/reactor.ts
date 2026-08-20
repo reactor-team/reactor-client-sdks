@@ -515,9 +515,7 @@ export class Reactor implements Disposable {
 
   /** Tracks `connectionTimings` off the binding's own "connecting" → "waiting"
    *  → "ready" status sequence (see `ReactorStatus`), and starts/stops stats
-   *  polling around the "ready" window — mirroring v2's
-   *  `startStatsPolling()`/`stopStatsPolling()`, which did the same off its
-   *  transport-level "connected" status. */
+   *  polling around the "ready" window. */
   private handleStatusChanged(client: ReactorClient, status: ReactorStatus): void {
     switch (status) {
       case 'connecting':
@@ -581,10 +579,9 @@ export class Reactor implements Disposable {
     this.stats = undefined;
   }
 
-  /** Called on every `disconnect()`, matching v2's `resetConnectionTimings()` +
-   *  `stopStatsPolling()` in the same place. Leaves `client`/`schema` alone —
-   *  that's `freeClient()`'s job, run separately when `disconnect()` isn't
-   *  recoverable. */
+  /** Called on every `disconnect()` and on `[Symbol.dispose]`. Leaves
+   *  `client`/`schema` alone — that's `freeClient()`'s job, run separately
+   *  when `disconnect()` isn't recoverable. */
   private resetConnectionState(): void {
     this.stopStatsPolling();
     this.connectionTimings = undefined;

@@ -1,6 +1,6 @@
 import type { ConnectionStats } from '../types';
 
-/** Matches v2's own polling cadence (`utils/webrtc.ts`'s `STATS_INTERVAL_MS`). */
+/** How often `Reactor` samples `getPeerConnection().getStats()` while ready. */
 export const STATS_INTERVAL_MS = 2_000;
 
 type RTCStatsExtractor = (report: RTCStatsReport) => ConnectionStats;
@@ -39,9 +39,9 @@ interface RTCStatsReportWithLookup extends RTCStatsReport {
 }
 
 /**
- * Ported from v2's `createRTCStatsExtractor()` — a closure over the previous
- * sample's byte counters and timestamp, needed to turn the peer connection's
- * cumulative candidate-pair counters into a real-time bitrate.
+ * A closure over the previous sample's byte counters and timestamp, needed
+ * to turn the peer connection's cumulative candidate-pair counters into a
+ * real-time bitrate.
  */
 export function createRTCStatsExtractor(): RTCStatsExtractor {
   let lastBytesReceived: number | undefined;

@@ -60,9 +60,10 @@ export interface ReactorOptions extends WasmClientOptions {
  *
  * `sessionCreationMs` covers session creation/adoption (the binding's
  * `"connecting"` phase); `transportConnectingMs` covers the session-ready
- * wait and transport handshake together (the `"waiting"` phase) — a coarser
- * split than v2's, since that breakdown now happens inside `reactor-core`
- * and isn't observable from here.
+ * wait and transport handshake together (the `"waiting"` phase) — that
+ * handshake happens entirely inside `reactor-core`, so this can only split
+ * on the phase boundaries the binding's status events expose, not on the
+ * finer steps within each one.
  */
 export interface ConnectionTimings {
   sessionCreationMs: number;
