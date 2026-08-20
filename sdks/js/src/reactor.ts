@@ -197,11 +197,10 @@ export class Reactor implements Disposable {
   /**
    * Uploads a file to the session's object store, resolving with a
    * `FileRef` to pass as a top-level value in a `sendCommand()`'s `data`
-   * (see `extractFileRefs`). Matches v2's `uploadFile(File | Blob, {name})`
-   * signature; the binding itself takes `(file, name?)` positionally and
-   * already applies v2's own defaulting — a bare `Blob`'s name falls back
-   * to `"upload"`, and an empty/missing mime type to
-   * `"application/octet-stream"` — so there's nothing to wrap here.
+   * (see `extractFileRefs`). The binding itself takes `(file, name?)`
+   * positionally and already applies the right defaulting — a bare
+   * `Blob`'s name falls back to `"upload"`, and an empty/missing mime type
+   * to `"application/octet-stream"` — so there's nothing to wrap here.
    *
    * Queued behind connect()/disconnect()/reconnect(), same as the track
    * ops: this awaits its own round-trip, and a concurrent disconnect()
