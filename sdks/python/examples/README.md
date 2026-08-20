@@ -11,7 +11,7 @@ grid: an example missing from an SDK is a code path that SDK has never run.
 | 01 | [`01_connect_and_receive.py`](01_connect_and_receive.py) | Connect, send the model's first command, read the reply, count frames | Helios |
 | 02 | [`02_upload_image.py`](02_upload_image.py) | `upload_file`, then passing the `FileRef` into a command | Helios |
 | 03 | [`03_pause_and_resume.py`](03_pause_and_resume.py) | `track.pause()` / `track.resume()` — nothing generated while paused | Helios |
-| 04 | [`04_publish_track.py`](04_publish_track.py) | Publishing an input track and pushing tagged frames into it | SANA-Streaming |
+| 04 | [`04_publish_track.py`](04_publish_track.py) | Publishing an input track and pushing tagged frames into it | X2 |
 | 05 | [`05_multi_connection.py`](05_multi_connection.py) | Two clients on one session: `connect(session_id=…)` | Helios |
 | 06 | [`06_record_clip.py`](06_record_clip.py) | `request_clip` and downloading the result | Helios |
 | 07 | [`07_frame_metadata.py`](07_frame_metadata.py) | The trailer on each incoming frame: id, sender timestamp, `user_data` | Helios |
@@ -21,8 +21,8 @@ minimum it needs, receive frames — and adds one new call on top. The diff
 against 01 is the lesson.
 
 "The minimum it needs" is per model and not optional: Helios stays silent until
-`set_prompt` and then `start`; SANA-Streaming wants `start` too, and edits the live
-track rather than generating from nothing. Each example spells its own out at the
+`set_prompt` and then `start`; X2 needs a prompt too, but no `start` — it edits
+the live track as soon as it has both. Each example spells its own out at the
 top, from the model's published schema — the first place to look when nothing
 arrives.
 
@@ -65,8 +65,8 @@ uv run python examples/02_upload_image.py ref.png
 uv run python examples/06_record_clip.py 5 clip.mp4
 ```
 
-04 needs a model with an input track, so it defaults to SANA-Streaming; the rest
-default to Helios. Against a local runtime, same files:
+04 needs a model with an input track, so it defaults to X2; the rest default to
+Helios. Against a local runtime, same files:
 
 ```bash
 REACTOR_LOCAL=1 REACTOR_MODEL=my-model uv run python examples/01_connect_and_receive.py
