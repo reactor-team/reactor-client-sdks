@@ -1,6 +1,7 @@
 export { Reactor } from './reactor';
 export type {
   ConnectOptions,
+  FileRef,
   JwtSource,
   ReactorError,
   ReactorEventMap,

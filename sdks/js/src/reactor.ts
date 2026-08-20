@@ -1,10 +1,11 @@
 import { AwaitQueue } from 'awaitqueue';
 import { Emitter } from './internal/emitter';
-import { extractFileRefs } from './internal/file-ref';
+import { extractFileRefs, toPublicFileRef } from './internal/file-ref';
 import type { ReactorClient } from './internal/reactor-wasm.types';
 import { loadReactorWasm } from './internal/wasm';
 import type {
   ConnectOptions,
+  FileRef,
   JwtSource,
   ReactorEventMap,
   ReactorMessage,
@@ -189,6 +190,31 @@ export class Reactor implements Disposable {
       const client = await this.getOrCreateClient();
       await client.resumeTrack(name);
     }, 'resumeTrack');
+  }
+
+  // ── Uploads ─────────────────────────────────────────────────────────────
+
+  /**
+   * Uploads a file to the session's object store, resolving with a
+   * `FileRef` to pass as a top-level value in a `sendCommand()`'s `data`
+   * (see `extractFileRefs`). The binding itself takes `(file, name?)`
+   * positionally and already applies the right defaulting — a bare
+   * `Blob`'s name falls back to `"upload"`, and an empty/missing mime type
+   * to `"application/octet-stream"` — so there's nothing to wrap here.
+   *
+   * Queued behind connect()/disconnect()/reconnect(), same as the track
+   * ops: this awaits its own round-trip, and a concurrent disconnect()
+   * freeing the wasm client mid-upload would otherwise resume into a freed
+   * client — the same use-after-free class of race the queue exists to
+   * prevent.
+   */
+  async uploadFile(file: File | Blob, options?: { name?: string }): Promise<FileRef> {
+    this.assertNotDisposed();
+    const wireFileRef = await this.queue.push(async () => {
+      const client = await this.getOrCreateClient();
+      return client.uploadFile(file, options?.name);
+    }, 'uploadFile');
+    return toPublicFileRef(wireFileRef);
   }
 
   /** All tracks the model declared, whether or not media has arrived for —
