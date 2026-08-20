@@ -1,6 +1,6 @@
 import { AwaitQueue } from 'awaitqueue';
 import { Emitter } from './internal/emitter';
-import { extractFileRefs } from './internal/file-ref';
+import { extractFileRefs, toPublicFileRef } from './internal/file-ref';
 import type { ReactorClient } from './internal/reactor-wasm.types';
 import { loadReactorWasm } from './internal/wasm';
 import type {
@@ -210,10 +210,11 @@ export class Reactor implements Disposable {
    */
   async uploadFile(file: File | Blob, options?: { name?: string }): Promise<FileRef> {
     this.assertNotDisposed();
-    return this.queue.push(async () => {
+    const wireFileRef = await this.queue.push(async () => {
       const client = await this.getOrCreateClient();
       return client.uploadFile(file, options?.name);
     }, 'uploadFile');
+    return toPublicFileRef(wireFileRef);
   }
 
   /** All tracks the model declared, whether or not media has arrived for —

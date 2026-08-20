@@ -1,7 +1,6 @@
 import type {
   ClientOptions as WasmClientOptions,
   ConnectOptions,
-  FileRef,
   JwtSource,
   ReactorError,
   ReactorMessage,
@@ -14,7 +13,6 @@ import type {
 
 export type {
   ConnectOptions,
-  FileRef,
   JwtSource,
   ReactorError,
   ReactorMessage,
@@ -24,6 +22,21 @@ export type {
   TrackKind,
   TrackMappingEntry,
 };
+
+/**
+ * A reference to a file already uploaded via `uploadFile()`, passed as a
+ * top-level value in `sendCommand()`'s `data` — see `extractFileRefs()`.
+ *
+ * camelCase — the wasm binding's own wire shape is snake_case (`upload_id`,
+ * `mime_type`), translated at the boundary in `internal/file-ref.ts` rather
+ * than exposed directly here.
+ */
+export interface FileRef {
+  uploadId: string;
+  name: string;
+  mimeType: string;
+  size: number;
+}
 
 /**
  * `Reactor` construction options. Only `modelName` is required.

@@ -1,13 +1,27 @@
 import { describe, expect, it } from 'vitest';
-import { extractFileRefs } from './file-ref';
-import type { FileRef } from './reactor-wasm.types';
+import { extractFileRefs, toPublicFileRef } from './file-ref';
+import type { FileRef as WireFileRef } from './reactor-wasm.types';
+import type { FileRef } from '../types';
 
-const fileRef: FileRef = {
+const wireFileRef: WireFileRef = {
   upload_id: 'up_1',
   name: 'photo.jpg',
   mime_type: 'image/jpeg',
   size: 1024,
 };
+
+const fileRef: FileRef = toPublicFileRef(wireFileRef);
+
+describe('toPublicFileRef', () => {
+  it('translates the wasm binding\'s snake_case wire shape to camelCase', () => {
+    expect(toPublicFileRef(wireFileRef)).toEqual({
+      uploadId: 'up_1',
+      name: 'photo.jpg',
+      mimeType: 'image/jpeg',
+      size: 1024,
+    });
+  });
+});
 
 describe('extractFileRefs', () => {
   it('passes through data with no FileRef values untouched', () => {
@@ -21,16 +35,19 @@ describe('extractFileRefs', () => {
     expect(extractFileRefs(undefined)).toEqual({ data: undefined, uploads: undefined });
   });
 
-  it('extracts a single top-level FileRef into uploads, leaving scalars in data', () => {
+  it('extracts a single top-level FileRef into uploads, translated to the wire shape', () => {
     const result = extractFileRefs({ image: fileRef, caption: 'a cat' });
-    expect(result.uploads).toEqual({ image: fileRef });
+    expect(result.uploads).toEqual({ image: wireFileRef });
     expect(result.data).toEqual({ caption: 'a cat' });
   });
 
   it('extracts multiple top-level FileRefs from a mixed payload', () => {
-    const other: FileRef = { ...fileRef, upload_id: 'up_2', name: 'b.png' };
+    const other: FileRef = { ...fileRef, uploadId: 'up_2', name: 'b.png' };
     const result = extractFileRefs({ front: fileRef, back: other, label: 'id card' });
-    expect(result.uploads).toEqual({ front: fileRef, back: other });
+    expect(result.uploads).toEqual({
+      front: wireFileRef,
+      back: { ...wireFileRef, upload_id: 'up_2', name: 'b.png' },
+    });
     expect(result.data).toEqual({ label: 'id card' });
   });
 
@@ -47,10 +64,16 @@ describe('extractFileRefs', () => {
   });
 
   it('does not treat a partial/shape-mismatched object as a FileRef', () => {
-    const almost = { upload_id: 'up_1', name: 'photo.jpg', mime_type: 'image/jpeg' };
+    const almost = { uploadId: 'up_1', name: 'photo.jpg', mimeType: 'image/jpeg' };
     const result = extractFileRefs({ image: almost });
     expect(result.uploads).toBeUndefined();
     expect(result.data).toEqual({ image: almost });
+  });
+
+  it('does not treat the wasm binding\'s own snake_case shape as a public FileRef', () => {
+    const result = extractFileRefs({ image: wireFileRef });
+    expect(result.uploads).toBeUndefined();
+    expect(result.data).toEqual({ image: wireFileRef });
   });
 
   it('does not mutate the original data object', () => {

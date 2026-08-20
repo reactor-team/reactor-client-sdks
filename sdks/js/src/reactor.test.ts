@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { toPublicFileRef } from './internal/file-ref';
 import type {
   FileRef,
   ReactorMessage,
@@ -225,10 +226,10 @@ describe('Reactor.sendCommand', () => {
     ]);
   });
 
-  it('extracts FileRef values into uploads before calling the binding', async () => {
+  it('extracts FileRef values into uploads, translated to the wire shape, before calling the binding', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
-    const fileRef = { upload_id: 'up_1', name: 'a.jpg', mime_type: 'image/jpeg', size: 10 };
+    const fileRef = { uploadId: 'up_1', name: 'a.jpg', mimeType: 'image/jpeg', size: 10 };
 
     await reactor.sendCommand('set_image', { image: fileRef, caption: 'a cat' });
 
@@ -236,7 +237,7 @@ describe('Reactor.sendCommand', () => {
       {
         command: 'set_image',
         data: { caption: 'a cat' },
-        uploads: { image: fileRef },
+        uploads: { image: { upload_id: 'up_1', name: 'a.jpg', mime_type: 'image/jpeg', size: 10 } },
       },
     ]);
   });
@@ -538,14 +539,14 @@ describe('Reactor tracks', () => {
 });
 
 describe('Reactor.uploadFile', () => {
-  it('passes the file and optional name through to the binding', async () => {
+  it('passes the file and optional name through to the binding, returning a camelCase FileRef', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
     const file = new Blob(['hi']);
 
     const ref = await reactor.uploadFile(file, { name: 'photo.jpg' });
 
-    expect(ref).toEqual(client.uploadFileResult);
+    expect(ref).toEqual(toPublicFileRef(client.uploadFileResult));
     expect(client.uploadFileCalls).toEqual([{ file, name: 'photo.jpg' }]);
   });
 
@@ -559,7 +560,7 @@ describe('Reactor.uploadFile', () => {
     expect(client.uploadFileCalls).toEqual([{ file, name: undefined }]);
   });
 
-  it('round-trips: an uploaded FileRef passed into sendCommand lands in uploads', async () => {
+  it('round-trips: an uploaded FileRef passed into sendCommand lands in uploads, translated back to the wire shape', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
     const file = new Blob(['hi']);
@@ -568,7 +569,11 @@ describe('Reactor.uploadFile', () => {
     await reactor.sendCommand('set_image', { image: ref, caption: 'a cat' });
 
     expect(client.sendCommandCalls).toEqual([
-      { command: 'set_image', data: { caption: 'a cat' }, uploads: { image: ref } },
+      {
+        command: 'set_image',
+        data: { caption: 'a cat' },
+        uploads: { image: client.uploadFileResult },
+      },
     ]);
   });
 
