@@ -77,6 +77,12 @@ async def main() -> None:
             frames += 1
             window.submit(data, width, height)
 
+        # The recorder has nothing to cut until a frame has been fed to it, and
+        # asking before that fails with "no media generated yet".
+        while frames == 0:
+            await window.hold(0.5)
+        await window.hold(1)
+
         # A clip request is cheap and answers with the media clock, so it is also
         # how you find out whether there is enough recorded to cut from.
         while True:
