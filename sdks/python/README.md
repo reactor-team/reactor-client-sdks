@@ -255,17 +255,22 @@ except AuthError:
 ## Recordings
 
 ```python
-await reactor.download_clip(10, "clip.ts")    # last 10 seconds, streamed to disk
-await reactor.download_recording("full.ts")   # whole session, streamed to disk
+await reactor.download_clip(10, "clip.mp4")   # last 10 seconds, streamed to disk
+await reactor.download_recording("full.mp4")  # whole session, streamed to disk
 
 data = await reactor.download_clip(10)        # no path: the assembled bytes
 ```
 
 - With a path the download streams straight to the file. Without one the whole clip
   is held in memory — fine for seconds, not for a session.
-- The bytes are MPEG-TS, not MP4. `ffplay`, VLC and mpv play it as-is; remux with
-  `ffmpeg -i clip.ts -c copy clip.mp4` if you need the container.
-- `on_progress=lambda done, total: ...` follows the download.
+- The bytes are a fragmented MP4: the playlist's `#EXT-X-MAP` init segment, then
+  its `.m4s` fragments. `ffplay`, VLC and mpv play the result as-is; a player
+  wanting a faststart moov takes
+  `ffmpeg -i clip.mp4 -c copy -movflags +faststart out.mp4`.
+- A clip cut from mid-session keeps its original timestamps, so its reported
+  duration runs from the session's start rather than from the clip's.
+- `on_progress=lambda done, total: ...` follows the download, counting the init
+  segment as its first part.
 
 `download_clip()` is `request_clip(seconds)` plus the download. Use the two-step
 form to inspect the `Clip` first — its markers, `session_id`,
@@ -273,7 +278,7 @@ form to inspect the `Clip` first — its markers, `session_id`,
 
 ```python
 clip = await reactor.request_clip(10)
-await download_clip(clip, "clip.ts")          # the module-level function
+await download_clip(clip, "clip.mp4")         # the module-level function
 ```
 
 ## Samples
@@ -288,15 +293,18 @@ the lesson. The same seven exist in every Reactor SDK.
 | 01 | `01_connect_and_receive.py` | Connect, send the model's first command, read the reply, count frames. |
 | 02 | `02_upload_image.py` | Upload a file and pass the `FileRef` into a command. |
 | 03 | `03_pause_and_resume.py` | Pause and resume a track — nothing is generated while it is paused. |
-| 04 | `04_publish_track.py` | Publish a `sendonly` track and push tagged frames into it. |
+| 04 | `04_publish_track.py` | Publish a track and push tagged frames into it. |
 | 05 | `05_multi_connection.py` | Two clients on one session, the second adopting it by id. |
 | 06 | `06_record_clip.py` | Request a clip and download it. |
 | 07 | `07_frame_metadata.py` | Read the per-frame trailer: frame id, the sender's timestamp, `user_data`. |
 
+Running them from a checkout needs the native library built first — see
+[Before the first run](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/README.md#before-the-first-run).
+
 ```bash
 export REACTOR_API_KEY=rk_...
 uv run python examples/01_connect_and_receive.py
-uv run python examples/06_record_clip.py 5 clip.ts
+uv run python examples/06_record_clip.py 5 clip.mp4
 
 pip install pygame                                        # for the window
 REACTOR_SHOW=1 uv run python examples/04_publish_track.py  # sent | received

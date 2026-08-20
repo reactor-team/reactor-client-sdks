@@ -51,10 +51,48 @@ A model's own reference page is the thing to check when a command is rejected or
 no frame arrives — [Helios' schema](https://docs.reactor.inc/model-api-reference/helios/schema),
 for instance, is where `start` requiring a prompt is written down.
 
+## Before the first run
+
+The SDK calls into a native library, `libreactor_ffi`, that this repository
+builds. A fresh checkout has no copy of it, and every example fails at import
+until one exists. Two ways to get there.
+
+**From the published wheel** — the library ships inside it, nothing to build:
+
+```bash
+pip install reactor-sdk
+```
+
+**From this checkout** — build the library once, then install the SDK from the
+working tree:
+
+```bash
+mise trust && mise install            # the pinned toolchain: Rust, uv, ruff, …
+cargo build -p reactor-ffi --release  # fetches the prebuilt libwebrtc for your target
+cd sdks/python && uv sync             # the SDK, resolving against that build
+```
+
+The `cargo build` is the slow step, once: `build.rs` downloads a matching
+prebuilt libwebrtc and the C++ glue compiles against it. `mise install` needs
+mise 2026.8.8 or newer — the toolchain lock names entries an older mise cannot
+read — so `mise self-update` first if yours predates it.
+
+At import the library is looked for in `REACTOR_FFI_LIB`, then beside the
+installed package, then in `target/release/` of an enclosing checkout. The third
+is why building in the checkout is enough: nothing has to be copied anywhere.
+
+Rebuild after pulling changes under `crates/`. A signature that moved in the FFI
+but not in your build fails at the call rather than at load, which reads as a
+hang rather than as a version error.
+
+The rest of the setup — the Intel-Mac caveat, git hooks, the full task list —
+is in [CONTRIBUTING.md](../../../CONTRIBUTING.md#getting-set-up), and how the
+library is resolved is in [the SDK README](../README.md#the-native-library).
+
 ## Running them
 
-Needs an API key from [reactor.inc](https://www.reactor.inc/account/api-keys),
-and the SDK installed (`pip install reactor-sdk`, or `uv sync` in a checkout).
+Needs an API key from [reactor.inc](https://www.reactor.inc/account/api-keys)
+and the steps above.
 
 ```bash
 cd sdks/python
