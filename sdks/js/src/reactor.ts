@@ -221,7 +221,9 @@ export class Reactor implements Disposable {
     });
     client.onSessionIdChanged((sessionId) => this.emitter.emit('sessionIdChanged', sessionId));
     client.onError((error) => this.emitter.emit('error', error));
+    // DATA channel — the model's own application traffic.
     client.onMessage((message) => this.emitter.emit('message', message));
+    // CONTROL channel — platform traffic (moderation, clip/recording lifecycle).
     client.onRuntimeMessage((message) => this.emitter.emit('runtimeMessage', message));
     this.client = client;
     return client;
