@@ -1347,6 +1347,70 @@ pub unsafe extern "C" fn reactor_push_video_frame_with_metadata(
         .push_video_frame_with_metadata(&name, slice, width, height, tag);
 }
 
+/// The engine's monotonic clock in microseconds — the epoch
+/// [`reactor_push_video_frame_with_metadata_at`] reads its capture time in.
+///
+/// Read it once per unit of produced media and stamp every track with that one
+/// value: tracks are synchronised by sharing a capture time, not by reaching the
+/// encoder at the same moment. It is a wall clock's opposite — no handle, no
+/// state, and unrelated to `time(2)`'s epoch, so a UNIX timestamp is not a
+/// substitute for it.
+#[no_mangle]
+pub extern "C" fn reactor_time_micros() -> i64 {
+    reactor_webrtc::time_micros()
+}
+
+/// Push a BGRA frame stamped with the caller's own capture time in microseconds,
+/// optionally tagged with `user_data`.
+///
+/// Same as [`reactor_push_video_frame_with_metadata`] but for the timestamp the
+/// frame carries: without one, each push is stamped as it happens, so several
+/// tracks capturing one moment arrive stamped microseconds apart. Pass the same
+/// `capture_time_us` for every track of one capture and the far end reads them as
+/// the one moment they are — read from [`reactor_time_micros`], the engine's
+/// clock rather than the system's.
+///
+/// `user_data` may be null with `user_data_len` 0 — stamping and tagging are
+/// independent choices.
+///
+/// # Safety
+///
+/// `handle` must come from `reactor_new`, `track_name` must be a NUL-terminated C
+/// string, `data` must point to `width * height * 4` readable bytes, and
+/// `user_data` must point to `user_data_len` readable bytes. All are borrowed for
+/// the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_push_video_frame_with_metadata_at(
+    handle: *mut ReactorHandle,
+    track_name: *const c_char,
+    data: *const u8,
+    width: u32,
+    height: u32,
+    user_data: *const u8,
+    user_data_len: u32,
+    capture_time_us: i64,
+) {
+    if handle.is_null() || track_name.is_null() || data.is_null() {
+        return;
+    }
+    let name = CStr::from_ptr(track_name).to_string_lossy();
+    let n = (width * height * 4) as usize;
+    let slice = std::slice::from_raw_parts(data, n);
+    let tag: &[u8] = if user_data.is_null() || user_data_len == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(user_data, user_data_len as usize)
+    };
+    (*handle).reactor.push_video_frame_with_metadata_at(
+        &name,
+        slice,
+        width,
+        height,
+        tag,
+        capture_time_us,
+    );
+}
+
 /// Push interleaved i16 PCM into a named sendonly audio track. No-op when the
 /// track has no attached audio source.
 ///
@@ -1445,6 +1509,16 @@ mod tests {
         assert_eq!(json["recoverable"], false);
     }
 
+    /// The clock a caller reads capture times from: no handle, and forward-moving,
+    /// which is the whole contract — a stamp is only meaningful against the value
+    /// the next frame gets.
+    #[test]
+    fn the_engine_clock_is_readable_without_a_handle_and_advances() {
+        let first = reactor_time_micros();
+        assert!(first > 0);
+        assert!(reactor_time_micros() >= first);
+    }
+
     #[test]
     fn null_handle_is_accepted_by_the_media_push_path() {
         let name = CString::new("video").unwrap();
@@ -1462,6 +1536,27 @@ mod tests {
                 1,
                 tag.as_ptr(),
                 tag.len() as u32,
+            );
+            reactor_push_video_frame_with_metadata_at(
+                std::ptr::null_mut(),
+                name.as_ptr(),
+                pixels.as_ptr(),
+                1,
+                1,
+                tag.as_ptr(),
+                tag.len() as u32,
+                1_700_000_000_000_000,
+            );
+            // Stamping without tagging is a valid combination, null tag included.
+            reactor_push_video_frame_with_metadata_at(
+                std::ptr::null_mut(),
+                name.as_ptr(),
+                pixels.as_ptr(),
+                1,
+                1,
+                std::ptr::null(),
+                0,
+                0,
             );
             reactor_push_audio_frame(
                 std::ptr::null_mut(),

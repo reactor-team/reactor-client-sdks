@@ -840,6 +840,29 @@ impl Reactor {
             .push_video_frame_with_metadata(track_name, data, width, height, user_data);
     }
 
+    /// Push a tagged frame stamped with `capture_time_us` (microseconds), the
+    /// timestamp the far end reads as the frame's own rather than the one the
+    /// transport would assign on push. Pass the same value for every track of one
+    /// capture and they arrive as one moment; `user_data` may be empty.
+    pub fn push_video_frame_with_metadata_at(
+        &self,
+        track_name: &str,
+        data: &[u8],
+        width: u32,
+        height: u32,
+        user_data: &[u8],
+        capture_time_us: i64,
+    ) {
+        self.peer.push_video_frame_with_metadata_at(
+            track_name,
+            data,
+            width,
+            height,
+            user_data,
+            capture_time_us,
+        );
+    }
+
     pub fn push_audio_frame(&self, track_name: &str, data: &[i16]) {
         self.peer.push_audio_frame(track_name, data);
     }

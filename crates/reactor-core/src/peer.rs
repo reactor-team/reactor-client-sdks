@@ -120,6 +120,28 @@ pub trait PeerTransport {
         self.push_video_frame(track_name, data, width, height);
     }
 
+    /// Push a tagged frame stamped with the caller's own capture time, in
+    /// microseconds.
+    ///
+    /// The capture time is what lines frames up *across* tracks: pushed with the
+    /// same value, one tick's several camera views carry one shared timestamp
+    /// instead of the arrival time each of them happened to be stamped with.
+    /// Tagging and stamping are independent — `user_data` may be empty.
+    ///
+    /// Defaults to dropping the capture time, so a transport that cannot carry
+    /// one still sends the frame and its tag.
+    fn push_video_frame_with_metadata_at(
+        &self,
+        track_name: &str,
+        data: &[u8],
+        width: u32,
+        height: u32,
+        user_data: &[u8],
+        _capture_time_us: i64,
+    ) {
+        self.push_video_frame_with_metadata(track_name, data, width, height, user_data);
+    }
+
     /// Push interleaved i16 PCM audio into the named sendonly track.
     /// Default implementation is a no-op — override in native transports.
     fn push_audio_frame(&self, _track_name: &str, _data: &[i16]) {}

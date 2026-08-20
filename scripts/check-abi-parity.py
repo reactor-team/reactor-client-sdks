@@ -3,8 +3,8 @@
 
 The exported surface of `reactor-ffi` is declared in three independent places:
 
-  1. `crates/reactor-ffi/src/lib.rs`  — the `#[no_mangle] pub unsafe extern "C"`
-     functions, which are the actual ABI.
+  1. `crates/reactor-ffi/src/lib.rs`  — the `#[no_mangle] pub extern "C"` functions
+     (`unsafe` for all but the few that take no pointer), which are the actual ABI.
   2. `crates/reactor-ffi/include/reactor_ffi.h` — the contract Go, C++, Kotlin and
      Swift bindings compile against. What is missing here does not exist for them.
   3. `sdks/python/reactor_sdk/_ffi.py` — the ctypes declarations. ctypes checks nothing
@@ -36,8 +36,13 @@ RUST_SRC = REPO_ROOT / "crates/reactor-ffi/src/lib.rs"
 HEADER = REPO_ROOT / "crates/reactor-ffi/include/reactor_ffi.h"
 CTYPES_SRC = REPO_ROOT / "sdks/python/reactor_sdk/_ffi.py"
 
-# `pub unsafe extern "C" fn reactor_foo(`  — the exported ABI.
-RUST_EXPORT = re.compile(r'pub\s+unsafe\s+extern\s+"C"\s+fn\s+(reactor_[a-z0-9_]+)\s*\(')
+# `pub unsafe extern "C" fn reactor_foo(` — the exported ABI. `unsafe` is optional
+# because a handful of exports have no pointer to uphold anything about (a clock
+# read, say); marking those `unsafe` to satisfy a regex would be a safety claim
+# made to a linter rather than to a caller.
+RUST_EXPORT = re.compile(
+    r'pub\s+(?:unsafe\s+)?extern\s+"C"\s+fn\s+(reactor_[a-z0-9_]+)\s*\('
+)
 
 # A `reactor_*` identifier in call/declaration position: followed by `(`.
 # Typedefs read `typedef void (*reactor_on_status_fn)(...)`, where the name is
