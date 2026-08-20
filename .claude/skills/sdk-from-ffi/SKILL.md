@@ -231,12 +231,22 @@ What the set costs to learn the hard way:
   write it first.
 - **A clip's segments can be presigned on another host.** The playlist needs the bearer
   token; a presigned URL *rejects* one rather than ignoring it. Send auth same-origin only.
-- **Run them against a local runtime, not only against production.** A paid session can be
-  killed mid-run by billing enforcement, and every failure then wears a disguise: a clip
-  that never becomes ready, a track that reports itself unpublished, a peer connection that
-  merely says `Disconnected`. `python -m reactor_runtime.serve` in a directory with a
-  `reactor.yaml` runs a model from source, costs nothing, and lets you write the model the
-  scenario needs — including shapes the published fleet does not have.
+- **Validate against published models in production. That is the bar.** It is the only
+  place the whole path exists: the coordinator serving `/clips`, segments presigned onto
+  another host, the codecs the fleet negotiates, the model contracts as deployed rather
+  than as declared in a manifest. A binding that has only ever met a local runtime has
+  not met auth, presigned URLs, or a session it does not own. Run the seven against a real
+  model, with a real key, before claiming parity.
+- **A local runtime is the fallback, for the two cases production cannot serve.** One: no
+  published model has the shape a scenario needs — an input track, batched emissions, a
+  track name you want to vary. Two: isolating a suspected binding bug from a platform one,
+  where a local run is the control. `python -m reactor_runtime.serve` in a directory with a
+  `reactor.yaml` runs a model from source. Treat a green local run as evidence about your
+  binding, never as a passed scenario.
+- **A failed production run is not automatically your bug.** Billing enforcement can close
+  a session mid-run, and every symptom then wears a disguise: a clip that never becomes
+  ready, a track that reports itself unpublished, a peer connection that only says
+  `Disconnected`. Read the session's own reason before changing code.
 - **A model may be on a runtime your binding cannot talk to.** The current runtime speaks
   `reactor_wire.v1` protobuf on the control channel; an older one parses that channel as
   JSON and drops what it cannot decode, so a request times out with nothing logged
@@ -304,7 +314,7 @@ and building that needs a Rust toolchain plus a libwebrtc download.
       after `crates/` changes.
 - [ ] The SDK's own lint/test tasks are in `mise.toml` and wired into CI.
 - [ ] All seven examples exist, numbered as in `sdks/python/examples/`, and each has been
-      run against a live model — not only against a fake.
+      run against a published model in production. A local runtime does not discharge this.
 
 Repo conventions — Linear ticket, branch naming, DCO, stacked PRs — are in
 [`CONTRIBUTING.md`](../../../CONTRIBUTING.md) and the `pr-workflow` skill.
