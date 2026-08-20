@@ -190,7 +190,8 @@ with Speaker(speaker), Microphone(mic):
 - Both raise when PortAudio is missing, so catch that if you would rather run
   silent.
 
-[`echo_audio.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/echo_audio.py) runs both together.
+Neither has an example yet — the samples below are video-only. Until one lands,
+the docstrings on `Speaker` and `Microphone` are the reference.
 
 ## Errors
 
@@ -254,17 +255,22 @@ except AuthError:
 ## Recordings
 
 ```python
-await reactor.download_clip(10, "clip.ts")    # last 10 seconds, streamed to disk
-await reactor.download_recording("full.ts")   # whole session, streamed to disk
+await reactor.download_clip(10, "clip.mp4")   # last 10 seconds, streamed to disk
+await reactor.download_recording("full.mp4")  # whole session, streamed to disk
 
 data = await reactor.download_clip(10)        # no path: the assembled bytes
 ```
 
 - With a path the download streams straight to the file. Without one the whole clip
   is held in memory — fine for seconds, not for a session.
-- The bytes are MPEG-TS, not MP4. `ffplay`, VLC and mpv play it as-is; remux with
-  `ffmpeg -i clip.ts -c copy clip.mp4` if you need the container.
-- `on_progress=lambda done, total: ...` follows the download.
+- The bytes are a fragmented MP4: the playlist's `#EXT-X-MAP` init segment, then
+  its `.m4s` fragments. `ffplay`, VLC and mpv play the result as-is; a player
+  wanting a faststart moov takes
+  `ffmpeg -i clip.mp4 -c copy -movflags +faststart out.mp4`.
+- A clip cut from mid-session keeps its original timestamps, so its reported
+  duration runs from the session's start rather than from the clip's.
+- `on_progress=lambda done, total: ...` follows the download, counting the init
+  segment as its first part.
 
 `download_clip()` is `request_clip(seconds)` plus the download. Use the two-step
 form to inspect the `Clip` first — its markers, `session_id`,
@@ -272,37 +278,45 @@ form to inspect the `Clip` first — its markers, `session_id`,
 
 ```python
 clip = await reactor.request_clip(10)
-await download_clip(clip, "clip.ts")          # the module-level function
+await download_clip(clip, "clip.mp4")         # the module-level function
 ```
 
 ## Samples
 
-Runnable scripts in [`examples/`](https://github.com/reactor-team/reactor-client-sdks/tree/main/sdks/python/examples), driven by `REACTOR_API_URL` /
-`REACTOR_MODEL` / `REACTOR_JWT` / `REACTOR_LOCAL` (see
-[`reactor_client.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/reactor_client.py)):
+Seven minimal examples in [`examples/`](https://github.com/reactor-team/reactor-client-sdks/tree/main/sdks/python/examples),
+one per capability. Each adds exactly one call to the same spine — connect, give
+the model what it needs, receive frames — so the diff against the first one is
+the lesson. The same seven exist in every Reactor SDK.
 
-| Script | Demonstrates |
-|---|---|
-| [`main.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/main.py) | Connect, list the model's tracks, send a command, disconnect. |
-| [`push_video.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/push_video.py) | Stream generated frames into a `sendonly` video track. |
-| [`push_audio.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/push_audio.py) | Stream a sine tone, a WAV file, or the microphone into a `sendonly` audio track. |
-| [`echo_audio.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/echo_audio.py) | Full audio duplex: microphone out, the model's audio to the speakers. |
-| [`pause_resume.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/pause_resume.py) | Pause and resume a `recvonly` track, counting only that track's frames. |
-| [`record.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/record.py) | Request a clip or a full-session recording and download it. |
-| [`frame_metadata.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/frame_metadata.py) | Read the per-frame metadata trailer off an incoming track. |
-| [`frame_metadata_roundtrip.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/frame_metadata_roundtrip.py) | Tag outgoing frames and match the ones that come back. |
-| [`metadata_publisher.py`](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/metadata_publisher.py) | Publish tagged frames with no UI — pair with `pygame_app/`. |
-| [`pygame_app/`](https://github.com/reactor-team/reactor-client-sdks/tree/main/sdks/python/examples/pygame_app) | Live video, speaker playback, and a control UI built from the model's capabilities. |
+| # | Script | Teaches |
+|---|---|---|
+| 01 | `01_connect_and_receive.py` | Connect, send the model's first command, read the reply, count frames. |
+| 02 | `02_upload_image.py` | Upload a file and pass the `FileRef` into a command. |
+| 03 | `03_pause_and_resume.py` | Pause and resume a track — nothing is generated while it is paused. |
+| 04 | `04_publish_track.py` | Publish a track and push tagged frames into it. |
+| 05 | `05_multi_connection.py` | Two clients on one session, the second adopting it by id. |
+| 06 | `06_record_clip.py` | Request a clip and download it. |
+| 07 | `07_frame_metadata.py` | Read the per-frame trailer: frame id, the sender's timestamp, `user_data`. |
 
-Every example except `main.py` and `pygame_app/` imports its sibling
-`reactor_client.py`, so run those as modules (from `sdks/python/`):
+Running them from a checkout needs the native library built first — see
+[Before the first run](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/README.md#before-the-first-run).
 
 ```bash
-REACTOR_MODEL=my-model REACTOR_JWT=<token> python examples/main.py
-REACTOR_MODEL=my-model REACTOR_JWT=<token> python -m examples.push_video --track video_input
+export REACTOR_API_KEY=rk_...
+uv run python examples/01_connect_and_receive.py
+uv run python examples/06_record_clip.py 5 clip.mp4
+
+pip install pygame                                        # for the window
+REACTOR_SHOW=1 uv run python examples/04_publish_track.py  # sent | received
 ```
 
-`pygame_app/` is standalone — see its own [README](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/pygame_app/README.md).
+`REACTOR_SHOW=1` puts the stream in a window, which is the only way to see that a
+model did the right thing rather than merely produce frames.
+
+Configuration is environment-only — `REACTOR_API_KEY` / `REACTOR_JWT` /
+`REACTOR_MODEL` / `REACTOR_API_URL` / `REACTOR_LOCAL` / `REACTOR_SECONDS` /
+`REACTOR_SHOW` — and each example reads what it needs at the top of the file. See
+the [examples README](https://github.com/reactor-team/reactor-client-sdks/blob/main/sdks/python/examples/README.md).
 
 ## Development
 

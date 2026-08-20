@@ -452,7 +452,7 @@ class TestLoopDispatch:
 
     @pytest.mark.asyncio
     async def test_an_asyncio_event_can_be_set_from_a_handler(self) -> None:
-        """The exact shape used by examples/main.py and five siblings."""
+        """The exact shape every example uses to wait for `ready`."""
         reactor = Reactor("m")
         reactor._loop = asyncio.get_running_loop()
         ready = asyncio.Event()

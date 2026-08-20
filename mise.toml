@@ -108,9 +108,14 @@ run = "ruff format ."
 [tasks."lint:python"]
 description = "[Quality] Lint + format-check the Python SDK with ruff"
 dir = "sdks/python"
+# compileall covers the examples: ruff parses them, but only a compile catches a
+# `python examples/…` that would die on the first line. Importing them would be
+# the stronger check and needs the native library, which this task does not build
+# — the ctypes contract tests in `test:python` are where that is covered.
 run = [
     "ruff check .",
     "ruff format --check .",
+    "python3 -m compileall -q examples/*.py",
 ]
 
 [tasks."build:wheel"]
