@@ -1,8 +1,13 @@
 """Download a clip's HLS segments into a single file, or into memory.
 
 Reactor does not host clips: `Clip.playlist_url` is a short-lived HLS media
-playlist naming the `.ts` segments that make it up, and it is on the caller to
-fetch and assemble them. Deliberately built on :mod:`urllib.request`, matching
+playlist naming the fragments that make it up, and it is on the caller to fetch
+and assemble them. The playlist is `#EXT-X-VERSION:7` fragmented MP4 — an
+`#EXT-X-MAP` init segment carrying `ftyp`/`moov`, then `.m4s` media fragments —
+so the init segment is the first thing fetched and the first thing written.
+Without it the fragments are headerless and no player will open them.
+
+Deliberately built on :mod:`urllib.request`, matching
 `_auth.py` — the SDK has no runtime dependencies, and a handful of GETs made
 once per clip is not worth changing that.
 
@@ -19,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
 import time
 import urllib.request
@@ -70,9 +76,10 @@ async def download_clip(
     which does mean holding the whole clip in memory — the tradeoff of asking
     for bytes instead of a file.
 
-    Either way it's interleaved MPEG-TS, playable as-is by most players
-    (`ffplay`, VLC, mpv). There is no MP4 assembly here: remux with
-    ``ffmpeg -i <path> -c copy out.mp4`` afterward if you need that container.
+    Either way the bytes are a fragmented MP4: the init segment followed by
+    its fragments, which is a playable file (`ffplay`, VLC, mpv) — hence `.mp4`
+    rather than `.ts`. A player that wants a faststart moov can be given one
+    with ``ffmpeg -i <path> -c copy -movflags +faststart out.mp4``.
 
     Args:
         clip: A `Clip` from `request_clip()` / `request_recording()`.
@@ -202,12 +209,54 @@ def _playlist_segments(
         delay = _retry_delay(retry_after)
         time.sleep(delay if remaining is None else min(delay, remaining))
 
-    segments = [
-        line.strip() for line in playlist.splitlines() if line.strip() and not line.startswith("#")
-    ]
+    return _parse_playlist(playlist, playlist_url)
+
+
+#: `#EXT-X-MAP:URI="…"` — the fMP4 init segment, carrying the `ftyp` and `moov`
+#: every fragment after it is parsed against.
+_INIT_URI = re.compile(r'URI="([^"]+)"')
+
+#: Fragment extensions that cannot stand on their own. A playlist naming these
+#: without an init segment would download to a file no player can open, so that
+#: is an error rather than a silently broken clip.
+_FRAGMENT_SUFFIXES = (".m4s", ".mp4", ".m4a", ".m4v")
+
+
+def _parse_playlist(playlist: str, playlist_url: str) -> list[str]:
+    """The URLs to fetch, in write order: init segment first, then fragments.
+
+    Both the coordinator and a local runtime emit `#EXT-X-VERSION:7` playlists
+    whose fragments are meaningless without the `#EXT-X-MAP` init segment. It is
+    a comment line, so a parser that skips comments drops the one part of the
+    clip that makes the rest readable.
+    """
+    init: str | None = None
+    segments: list[str] = []
+    for line in playlist.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("#EXT-X-MAP"):
+            match = _INIT_URI.search(line)
+            if match:
+                init = match.group(1)
+            continue
+        if line.startswith("#"):
+            continue
+        segments.append(line)
     if not segments:
         raise ValueError(f"playlist at {playlist_url!r} names no segments")
-    return segments
+    if init is None and any(_path_of(segment).endswith(_FRAGMENT_SUFFIXES) for segment in segments):
+        raise ValueError(
+            f"playlist at {playlist_url!r} names fragmented-MP4 segments but no "
+            f"#EXT-X-MAP init segment, so they cannot be assembled into a playable file"
+        )
+    return segments if init is None else [init, *segments]
+
+
+def _path_of(segment: str) -> str:
+    """The segment's path, without the query a presigned URL carries."""
+    return urlsplit(segment).path
 
 
 def _segment_url(playlist_url: str, segment: str) -> str:

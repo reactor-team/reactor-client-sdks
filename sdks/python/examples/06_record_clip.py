@@ -2,8 +2,9 @@
 """06 · Record a clip — capture what just happened, and download it.
 
 `request_clip` asks the runtime for the last N seconds and answers with an HLS
-manifest; `reactor.download` fetches the segments into one file. The bytes are
-MPEG-TS, hence `.ts` — remux with `ffmpeg -i clip.ts -c copy clip.mp4` if needed.
+manifest; `reactor.download` fetches its parts into one file. That manifest is
+fragmented MP4 — an `#EXT-X-MAP` init segment plus `.m4s` fragments — and the
+init segment goes in first, which is what makes the result playable as-is.
 
 Readiness is in *media* time, not wall clock: the manifest appears once the
 recording passes the end of the chunk holding the window. `clip.now_marker` is
@@ -13,7 +14,7 @@ without a deadline, because the wait ends by itself when the session does.
 
 `request_recording()` is the same call for the whole session.
 
-    uv run python examples/06_record_clip.py [seconds] [out.ts]
+    uv run python examples/06_record_clip.py [seconds] [out.mp4]
 
 Docs: https://docs.reactor.inc/concepts/recordings
       https://docs.reactor.inc/sdk-reference/python/types#clip
@@ -40,7 +41,7 @@ OUTPUT_TRACK = "main_video"
 
 async def main() -> None:
     clip_seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 5.0
-    out = sys.argv[2] if len(sys.argv) > 2 else "clip.ts"
+    out = sys.argv[2] if len(sys.argv) > 2 else "clip.mp4"
     if not API_KEY and os.environ.get("REACTOR_LOCAL") != "1":
         sys.exit("set REACTOR_API_KEY — https://www.reactor.inc/account/api-keys")
 

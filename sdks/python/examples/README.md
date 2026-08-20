@@ -62,7 +62,7 @@ export REACTOR_API_KEY=rk_...
 
 uv run python examples/01_connect_and_receive.py
 uv run python examples/02_upload_image.py ref.png
-uv run python examples/06_record_clip.py 5 clip.ts
+uv run python examples/06_record_clip.py 5 clip.mp4
 ```
 
 04 needs a model with an input track, so it defaults to SANA-Streaming; the rest
@@ -103,7 +103,7 @@ Environment only — each example reads what it needs at the top of the file:
 | `REACTOR_SECONDS` | how long to hold the session |
 | `REACTOR_SHOW` | `1` for the window |
 
-Two examples take an argument: `02 <image>` and `06 [seconds] [out.ts]`.
+Two examples take an argument: `02 <image>` and `06 [seconds] [out.mp4]`.
 
 Frames are read with `on_raw_frame` — decoded BGRA bytes, no numpy, which is also
 what the window draws. `on_frame` gives the same frames as numpy arrays.

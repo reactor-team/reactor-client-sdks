@@ -25,29 +25,64 @@ from reactor_sdk._recording import _retry_delay, download_clip
 
 # Distinct, length-different payloads so a swapped or duplicated segment shows
 # up as a content mismatch, not just a size difference that could hide it.
+_INIT = b"init-segment-ftyp-moov"
 _SEG0 = b"segment-zero-bytes"
 _SEG1 = b"segment-one-bytes-but-longer"
 
+#: The manifest both the coordinator (services/pkg/handlers/clips_handler.go)
+#: and a local runtime (recording/recorder.py) build: fragmented MP4, version 7,
+#: an `#EXT-X-MAP` init segment, then one `#EXTINF` + `.m4s` pair per fragment.
+#: Copied in shape from those builders on purpose — a fixture that invents its
+#: own playlist tests a contract nobody serves, and the missing init segment is
+#: exactly the bug that hid behind one.
+_FMP4_PLAYLIST = b"""#EXTM3U
+#EXT-X-VERSION:7
+#EXT-X-TARGETDURATION:4
+#EXT-X-PLAYLIST-TYPE:VOD
+#EXT-X-MAP:URI="/clips/chunks/sid/init.mp4"
+#EXTINF:4.000,
+chunk_00000.m4s
+#EXTINF:4.000,
+/clips/chunks/sid/chunk_00001.m4s
+#EXT-X-ENDLIST
+"""
+
 _ROUTES = {
-    # A relative name (resolves against the playlist's own URL) next to an
-    # absolute-path one (the shape the coordinator emits) — the exact mix
-    # urljoin has to get right.
-    "/hls/clip.m3u8": (
+    # A relative fragment name (resolves against the playlist's own URL) next to
+    # an absolute-path one — the exact mix urljoin has to get right, and the mix
+    # the real manifests contain.
+    "/hls/clip.m3u8": (_FMP4_PLAYLIST, "application/vnd.apple.mpegurl"),
+    "/clips/chunks/sid/init.mp4": (_INIT, "video/mp4"),
+    "/hls/chunk_00000.m4s": (_SEG0, "video/iso.segment"),
+    "/clips/chunks/sid/chunk_00001.m4s": (_SEG1, "video/iso.segment"),
+    # A transport-stream playlist, which needs no init segment: the lenient half
+    # of the parser, kept exercised so requiring an init never becomes universal.
+    "/hls/ts.m3u8": (
         b"#EXTM3U\n#EXTINF:4.0,\nseg0.ts\n#EXTINF:4.0,\n/clips/chunks/seg1.ts\n",
         "application/vnd.apple.mpegurl",
     ),
     "/hls/seg0.ts": (_SEG0, "video/mp2t"),
     "/clips/chunks/seg1.ts": (_SEG1, "video/mp2t"),
+    # Fragments with no `#EXT-X-MAP`: headerless, so unassemblable.
+    "/hls/no-init.m3u8": (
+        b"#EXTM3U\n#EXT-X-VERSION:7\n#EXTINF:4.0,\nchunk_00000.m4s\n#EXT-X-ENDLIST\n",
+        "application/vnd.apple.mpegurl",
+    ),
     "/hls/empty.m3u8": (b"#EXTM3U\n#EXT-X-ENDLIST\n", "application/vnd.apple.mpegurl"),
 }
 
 #: Paths the fake coordinator serves only to a bearer token, like the real one.
-_PROTECTED = {"/auth/clip.m3u8", "/auth/seg0.ts"}
+_PROTECTED = {"/auth/clip.m3u8", "/auth/init.mp4", "/auth/chunk_00000.m4s"}
 _TOKEN = "test-token"
 
 _AUTH_ROUTES = {
-    "/auth/clip.m3u8": (b"#EXTM3U\n#EXTINF:4.0,\nseg0.ts\n", "application/vnd.apple.mpegurl"),
-    "/auth/seg0.ts": (_SEG0, "video/mp2t"),
+    "/auth/clip.m3u8": (
+        b'#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-MAP:URI="init.mp4"\n'
+        b"#EXTINF:4.0,\nchunk_00000.m4s\n#EXT-X-ENDLIST\n",
+        "application/vnd.apple.mpegurl",
+    ),
+    "/auth/init.mp4": (_INIT, "video/mp4"),
+    "/auth/chunk_00000.m4s": (_SEG0, "video/iso.segment"),
 }
 
 #: 202 until asked `_NOT_READY_TIMES` times, the way the coordinator behaves
@@ -129,7 +164,7 @@ class TestDownloadClip:
 
     async def test_concatenates_segments_in_order(self, server_url: str) -> None:
         data = await download_clip(_clip(f"{server_url}/hls/clip.m3u8"))
-        assert data == _SEG0 + _SEG1
+        assert data == _INIT + _SEG0 + _SEG1
 
     async def test_resolves_the_absolute_path_segment_without_doubling_it(
         self, server_url: str
@@ -141,16 +176,16 @@ class TestDownloadClip:
         assert _SEG1 in data
 
     async def test_writes_to_path_when_given(self, server_url: str, tmp_path: object) -> None:
-        out = tmp_path / "clip.ts"  # type: ignore[operator]
+        out = tmp_path / "clip.mp4"  # type: ignore[operator]
         await download_clip(_clip(f"{server_url}/hls/clip.m3u8"), out)
-        assert out.read_bytes() == _SEG0 + _SEG1
+        assert out.read_bytes() == _INIT + _SEG0 + _SEG1
 
     async def test_returns_none_when_a_path_is_given(
         self, server_url: str, tmp_path: object
     ) -> None:
         """The whole point of taking a path: the caller gets a file, not also
         a second full copy of it sitting in memory as a return value."""
-        out = tmp_path / "clip.ts"  # type: ignore[operator]
+        out = tmp_path / "clip.mp4"  # type: ignore[operator]
         result = await download_clip(_clip(f"{server_url}/hls/clip.m3u8"), out)
         assert result is None
 
@@ -171,14 +206,14 @@ class TestDownloadClip:
             real_copyfileobj(fsrc, fdst, *a, **kw)
 
         monkeypatch.setattr(shutil, "copyfileobj", spy)
-        out = tmp_path / "clip.ts"  # type: ignore[operator]
+        out = tmp_path / "clip.mp4"  # type: ignore[operator]
         await download_clip(_clip(f"{server_url}/hls/clip.m3u8"), out)
-        assert len(calls) == 2  # one call per segment, none reused
+        assert len(calls) == 3  # init segment plus each fragment, none reused
 
     async def test_returns_bytes_without_a_path(self, server_url: str) -> None:
         data = await download_clip(_clip(f"{server_url}/hls/clip.m3u8"))
         assert isinstance(data, bytes)
-        assert len(data) == len(_SEG0) + len(_SEG1)
+        assert len(data) == len(_INIT) + len(_SEG0) + len(_SEG1)
 
     async def test_progress_is_reported_per_segment_in_order(self, server_url: str) -> None:
         calls: list[tuple[int, int]] = []
@@ -186,10 +221,32 @@ class TestDownloadClip:
             _clip(f"{server_url}/hls/clip.m3u8"),
             on_progress=lambda done, total: calls.append((done, total)),
         )
-        assert calls == [(1, 2), (2, 2)]
+        assert calls == [(1, 3), (2, 3), (3, 3)]
 
     async def test_no_progress_callback_is_fine(self, server_url: str) -> None:
         await download_clip(_clip(f"{server_url}/hls/clip.m3u8"))  # must not raise
+
+    async def test_the_init_segment_is_written_before_the_fragments(self, server_url: str) -> None:
+        """`#EXT-X-MAP` carries the `ftyp`/`moov` the fragments are parsed
+        against, so it has to be the first bytes of the file. It is a comment
+        line in the manifest, which is how it came to be skipped: the parser
+        dropped every `#` line and produced fragments no player can open."""
+        data = await download_clip(_clip(f"{server_url}/hls/clip.m3u8"))
+        assert isinstance(data, bytes)
+        assert data.startswith(_INIT)
+
+    async def test_fragments_without_an_init_segment_raise_value_error(
+        self, server_url: str
+    ) -> None:
+        """Better to say why than to hand back a file that cannot be played."""
+        with pytest.raises(ValueError, match="no #EXT-X-MAP init segment"):
+            await download_clip(_clip(f"{server_url}/hls/no-init.m3u8"))
+
+    async def test_a_transport_stream_playlist_needs_no_init_segment(self, server_url: str) -> None:
+        """`.ts` segments carry their own headers, so a playlist without an
+        `#EXT-X-MAP` is complete rather than broken."""
+        data = await download_clip(_clip(f"{server_url}/hls/ts.m3u8"))
+        assert data == _SEG0 + _SEG1
 
     async def test_an_empty_playlist_raises_value_error(self, server_url: str) -> None:
         with pytest.raises(ValueError, match="no segments"):
@@ -235,7 +292,7 @@ class TestAuthentication:
 
     async def test_the_token_reaches_the_playlist_and_its_segments(self, server_url: str) -> None:
         clip = _clip(f"{server_url}/auth/clip.m3u8")
-        assert await download_clip(clip, jwt=_TOKEN) == _SEG0
+        assert await download_clip(clip, jwt=_TOKEN) == _INIT + _SEG0
 
     async def test_without_a_token_the_playlist_is_unauthorized(self, server_url: str) -> None:
         clip = _clip(f"{server_url}/auth/clip.m3u8")
@@ -398,29 +455,29 @@ class TestReactorDownloadConvenience:
     ) -> None:
         reactor = self._reactor(monkeypatch, server_url, kind="clip")
         data = await reactor.download_clip(10)
-        assert data == _SEG0 + _SEG1
+        assert data == _INIT + _SEG0 + _SEG1
 
     async def test_download_clip_streams_to_a_path(
         self, monkeypatch: pytest.MonkeyPatch, server_url: str, tmp_path: object
     ) -> None:
         reactor = self._reactor(monkeypatch, server_url, kind="clip")
-        out = tmp_path / "clip.ts"  # type: ignore[operator]
+        out = tmp_path / "clip.mp4"  # type: ignore[operator]
         result = await reactor.download_clip(10, out)
         assert result is None
-        assert out.read_bytes() == _SEG0 + _SEG1
+        assert out.read_bytes() == _INIT + _SEG0 + _SEG1
 
     async def test_download_recording_requests_then_downloads(
         self, monkeypatch: pytest.MonkeyPatch, server_url: str
     ) -> None:
         reactor = self._reactor(monkeypatch, server_url, kind="recording")
         data = await reactor.download_recording()
-        assert data == _SEG0 + _SEG1
+        assert data == _INIT + _SEG0 + _SEG1
 
     async def test_download_recording_streams_to_a_path(
         self, monkeypatch: pytest.MonkeyPatch, server_url: str, tmp_path: object
     ) -> None:
         reactor = self._reactor(monkeypatch, server_url, kind="recording")
-        out = tmp_path / "recording.ts"  # type: ignore[operator]
+        out = tmp_path / "recording.mp4"  # type: ignore[operator]
         result = await reactor.download_recording(out)
         assert result is None
-        assert out.read_bytes() == _SEG0 + _SEG1
+        assert out.read_bytes() == _INIT + _SEG0 + _SEG1
