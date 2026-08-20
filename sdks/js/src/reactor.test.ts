@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DisconnectedError,
+  InvalidStateError,
   ReactorError,
   RequestTimeoutError,
   UnauthorizedError,
@@ -883,6 +884,9 @@ describe('Reactor error handling', () => {
       message: 'the connection dropped',
       recoverable: true,
     });
+    // A rejected call updates getLastError() too, not just the error event —
+    // see getLastError()'s doc comment.
+    expect(reactor.getLastError()).toMatchObject({ code: 'CONNECTION_FAILED' });
   });
 
   it('wraps a rejected publishTrack() the same way as connect()', async () => {
@@ -947,7 +951,7 @@ describe('Reactor error handling', () => {
     });
   });
 
-  it('getLastError() reflects the most recent failure', async () => {
+  it('getLastError() reflects the most recent failure, from an error event or a rejected call alike', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
 
@@ -956,5 +960,19 @@ describe('Reactor error handling', () => {
     client.emitError({ code: 'SERVER_ERROR', message: 'boom', operation: 'requestSchema' });
 
     expect(reactor.getLastError()?.code).toBe('SERVER_ERROR');
+
+    // A later rejected call — one that only throws, never emits `error` —
+    // must still update getLastError(), or it goes stale after that call.
+    client.pauseTrack = () =>
+      Promise.reject(
+        Object.assign(new Error('not ready'), {
+          name: 'ReactorError',
+          code: 'INVALID_STATE',
+          operation: 'pauseTrack',
+        }),
+      );
+
+    await expect(reactor.pauseTrack('camera')).rejects.toBeInstanceOf(InvalidStateError);
+    expect(reactor.getLastError()?.code).toBe('INVALID_STATE');
   });
 });

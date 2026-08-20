@@ -73,7 +73,7 @@ export class Reactor implements Disposable {
         await client.connect(options);
       }, 'connect');
     } catch (cause) {
-      throw toReactorError(cause);
+      throw this.captureError(cause);
     }
   }
 
@@ -104,7 +104,7 @@ export class Reactor implements Disposable {
         }
       }, 'disconnect');
     } catch (cause) {
-      throw toReactorError(cause);
+      throw this.captureError(cause);
     }
   }
 
@@ -117,7 +117,7 @@ export class Reactor implements Disposable {
         await client.reconnect();
       }, 'reconnect');
     } catch (cause) {
-      throw toReactorError(cause);
+      throw this.captureError(cause);
     }
   }
 
@@ -157,7 +157,7 @@ export class Reactor implements Disposable {
 
       return reply ?? undefined;
     } catch (cause) {
-      this.emitError(toReactorError(cause));
+      this.emitError(cause);
       return undefined;
     }
   }
@@ -172,7 +172,7 @@ export class Reactor implements Disposable {
 
       return await client.requestSchema();
     } catch (cause) {
-      throw toReactorError(cause);
+      throw this.captureError(cause);
     }
   }
 
@@ -203,7 +203,7 @@ export class Reactor implements Disposable {
         await client.publishTrack(name, track);
       }, 'publishTrack');
     } catch (cause) {
-      throw toReactorError(cause);
+      throw this.captureError(cause);
     }
   }
 
@@ -222,7 +222,7 @@ export class Reactor implements Disposable {
         await client.unpublishTrack(name);
       }, 'unpublishTrack');
     } catch (cause) {
-      this.emitter.emit('error', toReactorError(cause));
+      this.emitError(cause);
     }
   }
 
@@ -240,7 +240,7 @@ export class Reactor implements Disposable {
         await client.pauseTrack(name);
       }, 'pauseTrack');
     } catch (cause) {
-      throw toReactorError(cause);
+      throw this.captureError(cause);
     }
   }
 
@@ -254,7 +254,7 @@ export class Reactor implements Disposable {
         await client.resumeTrack(name);
       }, 'resumeTrack');
     } catch (cause) {
-      throw toReactorError(cause);
+      throw this.captureError(cause);
     }
   }
 
@@ -285,7 +285,7 @@ export class Reactor implements Disposable {
 
       return toPublicFileRef(wireFileRef);
     } catch (cause) {
-      throw toReactorError(cause);
+      throw this.captureError(cause);
     }
   }
 
@@ -421,7 +421,7 @@ export class Reactor implements Disposable {
       }
     });
     client.onSessionIdChanged((sessionId) => this.emitter.emit('sessionIdChanged', sessionId));
-    client.onError((error) => this.emitError(toReactorError(error)));
+    client.onError((error) => this.emitError(error));
     // DATA channel — the model's own application traffic.
     client.onMessage((message) => this.emitter.emit('message', message));
     // CONTROL channel — platform traffic (moderation, clip/recording lifecycle).
@@ -471,7 +471,7 @@ export class Reactor implements Disposable {
       if (this.client !== client || refreshId !== this.schemaRefreshId) {
         return;
       }
-      this.emitError(toReactorError(cause));
+      this.emitError(cause);
     }
   }
 
@@ -490,12 +490,21 @@ export class Reactor implements Disposable {
     this.schema = undefined;
   }
 
-  /** Records `error` as the most recent failure and fires the `error`
-   *  event — the one place both happen together, so `getLastError()` never
-   *  drifts from what listeners were told. */
-  private emitError(error: ReactorError): void {
+  /** Wraps `cause` and records it as the most recent failure, for a call
+   *  that's about to throw rather than emit — see `getLastError()`'s doc
+   *  comment. */
+  private captureError(cause: unknown): ReactorError {
+    const error = toReactorError(cause);
+
     this._lastError = error;
-    this.emitter.emit('error', error);
+    return error;
+  }
+
+  /** Wraps `cause`, records it as the most recent failure, and fires the
+   *  `error` event — the one place recording and emitting happen together,
+   *  so `getLastError()` never drifts from what listeners were told. */
+  private emitError(cause: unknown): void {
+    this.emitter.emit('error', this.captureError(cause));
   }
 
   private assertNotDisposed(): void {

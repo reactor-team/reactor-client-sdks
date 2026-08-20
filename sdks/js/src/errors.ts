@@ -154,15 +154,27 @@ const FIXED_CODE_BY_OPERATION: Record<string, string> = {
  * with this `operation` and canonical `code` — see `ReactorError.code`'s doc
  * comment for the reasoning. Always returns a string: `canonicalCode` itself
  * for any call with no fixed code of its own to preserve.
+ *
+ * `isBindingCode` distinguishes the two ways `operation` can be missing: a
+ * real unprompted transport drop from the binding (it still reported its own
+ * canonical `code`, just no `operation`) versus a purely local failure that
+ * never reached the binding at all (a wasm load/constructor throw, a call on
+ * a disposed client) — which has neither. Only the former gets relabelled;
+ * the latter keeps whatever `canonicalCode` already resolved to
+ * (`INTERNAL_ERROR` for one this package doesn't recognize).
  */
-function codeForDisplay(operation: string | undefined, canonicalCode: string): string {
+function codeForDisplay(
+  operation: string | undefined,
+  canonicalCode: string,
+  isBindingCode: boolean,
+): string {
   if (operation === 'sendCommand') {
     return canonicalCode === 'INVALID_STATE' ? 'NOT_READY' : 'MESSAGE_SEND_FAILED';
   }
   if (operation === undefined) {
     // An unprompted transport drop, not tied to a call the caller made —
     // the same kind of unprompted event used to have its own fixed code too.
-    return 'GPU_CONNECTION_ERROR';
+    return isBindingCode ? 'GPU_CONNECTION_ERROR' : canonicalCode;
   }
   return FIXED_CODE_BY_OPERATION[operation] ?? canonicalCode;
 }
@@ -330,7 +342,7 @@ export function toReactorError(cause: unknown): ReactorError {
   const canonicalCode = payload.code ?? ErrorClass.code;
 
   return new ErrorClass(message, {
-    code: codeForDisplay(payload.operation, canonicalCode),
+    code: codeForDisplay(payload.operation, canonicalCode, payload.code !== undefined),
     recoverable: payload.recoverable,
     status: payload.status,
     operation: payload.operation,

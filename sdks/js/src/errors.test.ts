@@ -157,6 +157,15 @@ describe("toReactorError()'s code display mapping (compatibility, best-effort)",
     expect(toReactorError({ code: 'TRANSPORT_ERROR' }).code).toBe('GPU_CONNECTION_ERROR');
   });
 
+  it('does not mislabel a purely local failure (no operation, no canonical code either) as an unprompted transport drop', () => {
+    // Unlike the case above, nothing here ever reached the binding — no
+    // `code` was reported at all — so this must stay INTERNAL_ERROR rather
+    // than being relabelled GPU_CONNECTION_ERROR just because `operation`
+    // happens to be missing too.
+    expect(toReactorError({}).code).toBe('INTERNAL_ERROR');
+    expect(toReactorError(new Error('wasm import failed')).code).toBe('INTERNAL_ERROR');
+  });
+
   it("keeps reactor-core's own code for an operation that never had a fixed code of its own", () => {
     for (const operation of ['pauseTrack', 'resumeTrack', 'uploadFile', 'requestSchema', 'setJwt']) {
       expect(toReactorError({ operation, code: 'UNAUTHORIZED' }).code).toBe('UNAUTHORIZED');
@@ -288,5 +297,6 @@ describe('toReactorError', () => {
 
     expect(wrapped).toBeInstanceOf(ReactorError);
     expect(wrapped.message).toBe('just a string');
+    expect(wrapped.code).toBe('INTERNAL_ERROR');
   });
 });
