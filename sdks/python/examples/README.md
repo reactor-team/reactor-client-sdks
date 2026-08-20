@@ -72,9 +72,9 @@ Helios. Against a local runtime, same files:
 REACTOR_LOCAL=1 REACTOR_MODEL=my-model uv run python examples/01_connect_and_receive.py
 ```
 
-Model names are namespaced — `helios` is `reactor/helios`, and 04's is
-`xmax/x2`. A bare name resolves under `reactor/`, so a model from another owner
-needs its prefix or the token exchange answers 403.
+Model names are `owner/name`, and the examples spell them out: `reactor/helios`,
+`xmax/x2`. A bare name resolves under `reactor/`, so dropping the prefix works
+only for models that owner publishes and answers 403 for anyone else's.
 
 Pointing one at another model means editing the constants at the top — which is
 the point: they are in the file you are already reading.

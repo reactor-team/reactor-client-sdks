@@ -21,7 +21,7 @@ import display
 from reactor_sdk import DEFAULT_API_URL, Reactor
 
 API_KEY = os.environ.get("REACTOR_API_KEY")
-MODEL = os.environ.get("REACTOR_MODEL", "helios")
+MODEL = os.environ.get("REACTOR_MODEL", "reactor/helios")
 SECONDS = float(os.environ.get("REACTOR_SECONDS", "6"))
 SHOW = os.environ.get("REACTOR_SHOW") == "1"
 

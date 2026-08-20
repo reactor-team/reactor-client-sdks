@@ -26,8 +26,6 @@ import display
 from reactor_sdk import DEFAULT_API_URL, Reactor
 
 API_KEY = os.environ.get("REACTOR_API_KEY")
-# Namespaced, as every model is: a bare name resolves under `reactor/`, and this
-# one belongs to `xmax`.
 MODEL = os.environ.get("REACTOR_MODEL", "xmax/x2")
 SECONDS = float(os.environ.get("REACTOR_SECONDS", "15"))
 SHOW = os.environ.get("REACTOR_SHOW") == "1"

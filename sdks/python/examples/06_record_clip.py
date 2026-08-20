@@ -32,7 +32,7 @@ import display
 from reactor_sdk import DEFAULT_API_URL, Reactor
 
 API_KEY = os.environ.get("REACTOR_API_KEY")
-MODEL = os.environ.get("REACTOR_MODEL", "helios")
+MODEL = os.environ.get("REACTOR_MODEL", "reactor/helios")
 SHOW = os.environ.get("REACTOR_SHOW") == "1"
 
 PROMPT = "a forest at dawn, sunbeams through the canopy"
