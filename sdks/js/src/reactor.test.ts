@@ -403,7 +403,7 @@ describe('Reactor tracks', () => {
     expect(client.unpublishTrackCalls).toEqual(['camera']);
   });
 
-  it('unpublishTrack() never rejects, matching v2 — a failure is reported via the error event', async () => {
+  it('unpublishTrack() never rejects — a failure is reported via the error event', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
     const failure = new Error('boom');
@@ -438,7 +438,7 @@ describe('Reactor tracks', () => {
     expect(reactor.pausedTracks()).toEqual([]);
   });
 
-  it('re-emits trackReceived resolved to (name, track, stream, mid), matching v2', async () => {
+  it('re-emits trackReceived resolved to (name, track, stream, mid)', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
     const track = {} as MediaStreamTrack;

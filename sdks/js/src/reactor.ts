@@ -31,13 +31,11 @@ export class Reactor implements Disposable {
 
   private readonly emitter = new Emitter<ReactorEventMap>();
   /** Serializes connect()/reconnect()/disconnect() (and the free() inside
-   *  disconnect()/[Symbol.dispose]) against each other — matches v2's own
-   *  use of the same library (`WebRTCTransportClient`'s peerConnectionQueue)
-   *  to serialize concurrent operations on shared wasm/webrtc state. Calling
-   *  into the client concurrently with one of these (e.g. a user clicking
-   *  Disconnect mid-connect) races its internal state and can throw
-   *  ("attempted to take ownership of Rust value while it was borrowed") or
-   *  corrupt it outright. */
+   *  disconnect()/[Symbol.dispose]) against each other. Calling into the
+   *  client concurrently with one of these (e.g. a user clicking Disconnect
+   *  mid-connect) races its internal state and can throw ("attempted to
+   *  take ownership of Rust value while it was borrowed") or corrupt it
+   *  outright. */
   private readonly queue = new AwaitQueue();
 
   constructor(options: ReactorOptions) {
@@ -57,11 +55,10 @@ export class Reactor implements Disposable {
   }
 
   /**
-   * Ends the connection. Matches v2's `disconnect(recoverable)`: by default
-   * (`recoverable = false`) this also frees the wasm resource graph — the
-   * pump/dispatcher/heartbeat tasks and the peer connection — same as the
-   * old standalone `dispose()`. Pass `recoverable: true` to keep the wasm
-   * client alive so a later `connect()`/`reconnect()` doesn't have to
+   * Ends the connection. By default (`recoverable = false`) this also frees
+   * the wasm resource graph — the pump/dispatcher/heartbeat tasks and the
+   * peer connection — in one step. Pass `recoverable: true` to keep the
+   * wasm client alive so a later `connect()`/`reconnect()` doesn't have to
    * reload wasm and reconstruct it from scratch.
    *
    * Note this only governs the *local* resource graph — the binding's own
@@ -139,7 +136,7 @@ export class Reactor implements Disposable {
 
   /**
    * Publishes a local `MediaStreamTrack` under `name` — the counterpart to a
-   * `sendonly` track the model declares. Awaitable, like v2. Queued behind
+   * `sendonly` track the model declares. Awaitable. Queued behind
    * connect()/disconnect()/reconnect() (unlike `sendCommand()`): a track
    * operation awaits its own control round-trip, and a concurrent
    * disconnect() freeing the wasm client mid-await would otherwise resume
@@ -155,10 +152,10 @@ export class Reactor implements Disposable {
   }
 
   /**
-   * Unlike every other track method, this doesn't reject — matching v2,
-   * which reported a failure through the `error` event (not by throwing)
-   * since this is commonly the last call in a `finally` block, and raising
-   * there would replace whatever exception was already propagating.
+   * Unlike every other track method, this doesn't reject — a failure is
+   * reported through the `error` event instead, since this is commonly the
+   * last call in a `finally` block, and raising there would replace
+   * whatever exception was already propagating.
    */
   async unpublishTrack(name: string): Promise<void> {
     this.assertNotDisposed();
@@ -263,13 +260,13 @@ export class Reactor implements Disposable {
 
   // ── Introspection ───────────────────────────────────────────────────────
 
-  /** Matches v2's `getStatus()`. The wasm binding's own terser `status()`
-   *  name can be added alongside this later if it turns out to be worth it. */
+  /** The wasm binding's own terser `status()` name can be added alongside
+   *  this later if it turns out to be worth it. */
   getStatus(): ReactorStatus {
     return this.client?.status() ?? 'disconnected';
   }
 
-  /** Matches v2's `getSessionId()`. See `getStatus()`. */
+  /** See `getStatus()`. */
   getSessionId(): string | undefined {
     return this.client?.sessionId();
   }
