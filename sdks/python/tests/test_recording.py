@@ -12,6 +12,8 @@ from __future__ import annotations
 import http.server
 import json
 import threading
+import urllib.error
+import urllib.request
 from collections.abc import Iterator
 from unittest import mock
 
@@ -38,10 +40,45 @@ _ROUTES = {
     "/hls/empty.m3u8": (b"#EXTM3U\n#EXT-X-ENDLIST\n", "application/vnd.apple.mpegurl"),
 }
 
+#: Paths the fake coordinator serves only to a bearer token, like the real one.
+_PROTECTED = {"/auth/clip.m3u8", "/auth/seg0.ts"}
+_TOKEN = "test-token"
+
+_AUTH_ROUTES = {
+    "/auth/clip.m3u8": (b"#EXTM3U\n#EXTINF:4.0,\nseg0.ts\n", "application/vnd.apple.mpegurl"),
+    "/auth/seg0.ts": (_SEG0, "video/mp2t"),
+}
+
+#: 202 until asked `_NOT_READY_TIMES` times, the way the coordinator behaves
+#: while a clip's last chunk is still landing.
+_NOT_READY_TIMES = 2
+_not_ready_seen = 0
+
 
 class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - stdlib method name
-        route = _ROUTES.get(self.path)
+        global _not_ready_seen
+
+        if self.path == "/slow/clip.m3u8":
+            if _not_ready_seen < _NOT_READY_TIMES:
+                _not_ready_seen += 1
+                self.send_response(202)
+                self.end_headers()
+                return
+            route = _ROUTES["/hls/clip.m3u8"]
+        elif self.path == "/never/clip.m3u8":
+            self.send_response(202)
+            self.end_headers()
+            return
+        elif self.path in _PROTECTED:
+            if self.headers.get("Authorization") != f"Bearer {_TOKEN}":
+                self.send_response(401)
+                self.end_headers()
+                return
+            route = _AUTH_ROUTES[self.path]
+        else:
+            route = _ROUTES.get(self.path)
+
         if route is None:
             self.send_response(404)
             self.end_headers()
@@ -187,6 +224,67 @@ class TestDownloadClip:
         await download_clip(_clip(f"{server_url}/hls/clip.m3u8"), on_progress=on_progress)
 
         assert seen_from and all(t is not loop_thread for t in seen_from)
+
+
+class TestAuthentication:
+    """The coordinator serves playlists and segments behind auth — 401 without."""
+
+    async def test_the_token_reaches_the_playlist_and_its_segments(self, server_url: str) -> None:
+        clip = _clip(f"{server_url}/auth/clip.m3u8")
+        assert await download_clip(clip, jwt=_TOKEN) == _SEG0
+
+    async def test_without_a_token_the_playlist_is_unauthorized(self, server_url: str) -> None:
+        clip = _clip(f"{server_url}/auth/clip.m3u8")
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            await download_clip(clip)
+        assert excinfo.value.code == 401
+
+    async def test_a_segment_on_another_host_is_asked_without_the_token(self) -> None:
+        """A presigned URL rejects an Authorization header rather than ignoring
+        it, so the token stops at the playlist's own origin."""
+        opened: list[tuple[str, dict[str, str]]] = []
+
+        class _Resp:
+            status = 200
+
+            def read(self) -> bytes:
+                return b"#EXTM3U\nhttps://elsewhere.example/seg0.ts\n"
+
+            def __enter__(self) -> _Resp:
+                return self
+
+            def __exit__(self, *_: object) -> None:
+                return None
+
+        def fake_urlopen(request: urllib.request.Request, *a: object, **k: object) -> _Resp:
+            opened.append((request.full_url, dict(request.headers)))
+            return _Resp()
+
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            await download_clip(_clip("https://coordinator.example/hls/clip.m3u8"), jwt=_TOKEN)
+
+        playlist_headers, segment_headers = opened[0][1], opened[1][1]
+        assert "Authorization" in playlist_headers
+        assert "Authorization" not in segment_headers
+
+
+class TestNotReadyYet:
+    """202 means the clip's last chunk has not landed — not an error."""
+
+    async def test_it_waits_out_the_202s(self, server_url: str) -> None:
+        global _not_ready_seen
+        _not_ready_seen = 0
+        clip = _clip(f"{server_url}/slow/clip.m3u8")
+        with pytest.raises(urllib.error.HTTPError):
+            # /slow/seg0.ts does not exist — reaching a segment fetch at all is
+            # the assertion: the 202s were waited out rather than raised on.
+            await download_clip(clip)
+        assert _not_ready_seen == _NOT_READY_TIMES
+
+    async def test_it_gives_up_after_ready_timeout(self, server_url: str) -> None:
+        clip = _clip(f"{server_url}/never/clip.m3u8")
+        with pytest.raises(TimeoutError):
+            await download_clip(clip, ready_timeout=0.3)
 
 
 class TestReactorDownloadConvenience:

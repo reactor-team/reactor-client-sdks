@@ -1243,6 +1243,37 @@ class Reactor:
         return Clip(**result)
 
     @overload
+    async def download(
+        self,
+        clip: Clip,
+        path: None = None,
+        *,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> bytes: ...
+    @overload
+    async def download(
+        self,
+        clip: Clip,
+        path: str | os.PathLike,
+        *,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> None: ...
+    async def download(
+        self,
+        clip: Clip,
+        path: str | os.PathLike | None = None,
+        *,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> bytes | None:
+        """Download a `Clip` this client asked for, with this client's token.
+
+        The coordinator serves playlists and segments behind auth, so the
+        module-level `download_clip()` needs a `jwt=` handed to it. This is the
+        same call with the one already in hand.
+        """
+        return await download_clip(clip, path, jwt=self._jwt, on_progress=on_progress)
+
+    @overload
     async def download_clip(
         self,
         duration_seconds: float,
@@ -1273,7 +1304,7 @@ class Reactor:
         download depending on what it says.
         """
         clip = await self.request_clip(duration_seconds)
-        return await download_clip(clip, path, on_progress=on_progress)
+        return await download_clip(clip, path, jwt=self._jwt, on_progress=on_progress)
 
     @overload
     async def download_recording(
@@ -1302,7 +1333,7 @@ class Reactor:
         thing in memory — see `download_clip()` (the module-level function).
         """
         clip = await self.request_recording()
-        return await download_clip(clip, path, on_progress=on_progress)
+        return await download_clip(clip, path, jwt=self._jwt, on_progress=on_progress)
 
     # ------------------------------------------------------------------
     # File upload

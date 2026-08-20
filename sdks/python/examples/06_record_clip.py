@@ -22,7 +22,7 @@ from pathlib import Path
 
 import display
 
-from reactor_sdk import DEFAULT_API_URL, Reactor, download_clip
+from reactor_sdk import DEFAULT_API_URL, Reactor
 
 API_KEY = os.environ.get("REACTOR_API_KEY")
 MODEL = os.environ.get("REACTOR_MODEL", "helios")
@@ -77,9 +77,10 @@ async def main() -> None:
         print(f"clip: {clip.kind} {clip.playlist_url}")
         print(f"window: {clip.start_marker:.1f} → {clip.end_marker:.1f}")
 
-        # The manifest is ready before every segment is; this waits that out.
-        # `reactor.download_clip(seconds, path)` does both in one call.
-        await download_clip(clip, out)
+        # The coordinator serves playlists behind auth and answers 202 until the
+        # last chunk lands; this carries the token and waits that out.
+        # `reactor.download_clip(seconds, path)` does the request and this in one.
+        await reactor.download(clip, out)
         print(f"saved: {out} ({Path(out).stat().st_size // 1024} KB)")
 
 
