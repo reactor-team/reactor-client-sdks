@@ -76,6 +76,27 @@ to add them alongside `getStatus()`/`getSessionId()`.
 | `statusChanged` | `ReactorStatus` |
 | `sessionIdChanged` | `string \| undefined` |
 | `error` | `ReactorError` |
+| `statsUpdate` | `ConnectionStats` |
+
+## Stats and timings
+
+```ts
+reactor.getStats();             // ConnectionStats | undefined
+reactor.getConnectionTimings();  // ConnectionTimings | undefined
+reactor.on("statsUpdate", (stats) => console.log(stats.rtt, stats.packetLossRatio));
+```
+
+While the session is `"ready"`, `getPeerConnection().getStats()` is polled
+every two seconds and reduced into a `ConnectionStats` — RTT, ICE candidate
+type, incoming/outgoing bitrate (both estimated and real-time), video FPS,
+packet loss ratio, and jitter — emitted as `statsUpdate` and readable
+directly off `getStats()`. Both are `undefined` before the first sample, and
+polling stops (clearing `getStats()`) as soon as the session leaves `"ready"`
+for any reason, not just an explicit `disconnect()`.
+
+`getConnectionTimings()` (also folded into every `ConnectionStats.connectionTimings`)
+is a millisecond breakdown of the most recent `connect()`/`reconnect()`
+handshake: `sessionCreationMs`, `transportConnectingMs`, `totalMs`.
 
 ## Errors
 

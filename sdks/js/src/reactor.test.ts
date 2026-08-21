@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DisconnectedError,
   InvalidStateError,
@@ -7,6 +7,7 @@ import {
   UnauthorizedError,
 } from './errors';
 import { toPublicFileRef } from './internal/file-ref';
+import { STATS_INTERVAL_MS } from './internal/stats';
 import type {
   ConnectOptions,
   FileRef,
@@ -157,6 +158,15 @@ const { FakeReactorClient } = vi.hoisted(() => {
 
     emitReady(): void {
       this.statusListener?.('ready');
+    }
+    emitConnecting(): void {
+      this.statusListener?.('connecting');
+    }
+    emitWaiting(): void {
+      this.statusListener?.('waiting');
+    }
+    emitDisconnected(): void {
+      this.statusListener?.('disconnected');
     }
     emitMessage(message: ReactorMessage): void {
       this.messageListener?.(message);
@@ -700,6 +710,169 @@ describe('Reactor tracks', () => {
     expect(reactor.getStreamByMid('0')).toBeUndefined();
     expect(reactor.getTrackByName('model-output')).toBeUndefined();
     expect(reactor.getStreamByName('model-output')).toBeUndefined();
+  });
+});
+
+describe('Reactor stats', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('getStats() and getConnectionTimings() are undefined before a client exists', () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+
+    expect(reactor.getStats()).toBeUndefined();
+    expect(reactor.getConnectionTimings()).toBeUndefined();
+  });
+
+  it('computes connectionTimings from the connecting/waiting/ready status sequence', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'performance'] });
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.emitConnecting();
+    vi.advanceTimersByTime(100);
+    client.emitWaiting();
+    vi.advanceTimersByTime(250);
+    client.emitReady();
+
+    expect(reactor.getConnectionTimings()).toEqual({
+      sessionCreationMs: 100,
+      transportConnectingMs: 250,
+      totalMs: 350,
+    });
+  });
+
+  it('polls getPeerConnection().getStats() every STATS_INTERVAL_MS once ready, emitting statsUpdate', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const report = { forEach: () => {}, get: () => undefined } as unknown as RTCStatsReport;
+    const getStats = vi.fn().mockResolvedValue(report);
+
+    client.peerConnectionResult = { getStats } as unknown as RTCPeerConnection;
+    const onStatsUpdate = vi.fn();
+
+    reactor.on('statsUpdate', onStatsUpdate);
+
+    client.emitReady();
+    expect(getStats).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    expect(getStats).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(onStatsUpdate).toHaveBeenCalledTimes(1));
+    expect(reactor.getStats()).toEqual(onStatsUpdate.mock.calls[0]?.[0]);
+
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    expect(getStats).toHaveBeenCalledTimes(2);
+  });
+
+  it('folds the current connectionTimings into every statsUpdate sample', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const report = { forEach: () => {}, get: () => undefined } as unknown as RTCStatsReport;
+
+    client.peerConnectionResult = { getStats: vi.fn().mockResolvedValue(report) } as unknown as RTCPeerConnection;
+
+    client.emitConnecting();
+    client.emitWaiting();
+    client.emitReady();
+
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+
+    expect(reactor.getStats()?.connectionTimings).toBe(reactor.getConnectionTimings());
+  });
+
+  it('stops polling and clears stats on disconnect()', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const report = { forEach: () => {}, get: () => undefined } as unknown as RTCStatsReport;
+    const getStats = vi.fn().mockResolvedValue(report);
+
+    client.peerConnectionResult = { getStats } as unknown as RTCPeerConnection;
+
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    expect(getStats).toHaveBeenCalledTimes(1);
+
+    await reactor.disconnect();
+    expect(reactor.getStats()).toBeUndefined();
+    expect(reactor.getConnectionTimings()).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS * 2);
+    expect(getStats).toHaveBeenCalledTimes(1);
+  });
+
+  it('discards an in-flight getStats() sample that resolves after polling was stopped', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const gate = createDeferred<RTCStatsReport>();
+    const getStats = vi.fn().mockReturnValue(gate.promise);
+
+    client.peerConnectionResult = { getStats } as unknown as RTCPeerConnection;
+    const onStatsUpdate = vi.fn();
+
+    reactor.on('statsUpdate', onStatsUpdate);
+
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    expect(getStats).toHaveBeenCalledTimes(1); // in flight, not yet resolved
+
+    // Recoverable: stops polling but keeps this same `client` (and its
+    // `getPeerConnection()`) alive — the scenario a plain `this.client !==
+    // client` check inside the pending `.then()` couldn't have caught.
+    await reactor.disconnect(true);
+    expect(reactor.getStats()).toBeUndefined();
+
+    gate.resolve({ forEach: () => {}, get: () => undefined } as unknown as RTCStatsReport);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(reactor.getStats()).toBeUndefined();
+    expect(onStatsUpdate).not.toHaveBeenCalled();
+  });
+
+  it('does not poll while getPeerConnection() is undefined', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.peerConnectionResult = undefined;
+    const onStatsUpdate = vi.fn();
+
+    reactor.on('statsUpdate', onStatsUpdate);
+
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS * 2);
+
+    expect(onStatsUpdate).not.toHaveBeenCalled();
+    expect(reactor.getStats()).toBeUndefined();
+  });
+
+  it('stops polling on any other status transition too, not just an explicit disconnect()', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const report = { forEach: () => {}, get: () => undefined } as unknown as RTCStatsReport;
+    const getStats = vi.fn().mockResolvedValue(report);
+
+    client.peerConnectionResult = { getStats } as unknown as RTCPeerConnection;
+
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    expect(getStats).toHaveBeenCalledTimes(1);
+
+    // e.g. a transport error dropping straight to "disconnected" without
+    // going through Reactor.disconnect() at all.
+    client.emitDisconnected();
+    expect(reactor.getStats()).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS * 2);
+    expect(getStats).toHaveBeenCalledTimes(1);
   });
 });
 

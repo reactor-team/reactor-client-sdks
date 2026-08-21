@@ -3,8 +3,11 @@ import { toReactorError, type ReactorError } from './errors';
 import { Emitter } from './internal/emitter';
 import { extractFileRefs, toPublicFileRef } from './internal/file-ref';
 import type { ReactorClient } from './internal/reactor-wasm.types';
+import { createRTCStatsExtractor, STATS_INTERVAL_MS } from './internal/stats';
 import { loadReactorWasm } from './internal/wasm';
 import type {
+  ConnectionStats,
+  ConnectionTimings,
   ConnectOptions,
   FileRef,
   JwtSource,
@@ -31,6 +34,18 @@ export class Reactor implements Disposable {
    *  superseded by a newer one even when `client` itself hasn't changed
    *  (e.g. two "ready" transitions on the same reused client). */
   private schemaRefreshId = 0;
+
+  private stats: ConnectionStats | undefined;
+  private connectionTimings: ConnectionTimings | undefined;
+  private statsPollHandle: ReturnType<typeof setInterval> | undefined;
+  /** Bumped on every `startStatsPolling()`/`stopStatsPolling()` call — lets an
+   *  in-flight `getStats()` recognize it's stale once it resolves, even if
+   *  `this.client` hasn't changed in the meantime. */
+  private statsPollGeneration = 0;
+  /** Set on the "connecting" status transition, cleared once `connectionTimings`
+   *  is finalized on "ready" — see `handleStatusChanged()`. */
+  private connectStartTime: number | undefined;
+  private waitingStartTime: number | undefined;
 
   private readonly emitter = new Emitter<ReactorEventMap>();
   /** Serializes connect()/reconnect()/disconnect() (and the free() inside
@@ -99,6 +114,7 @@ export class Reactor implements Disposable {
         if (this.client) {
           await this.client.disconnect();
         }
+        this.resetConnectionState();
         if (!recoverable) {
           this.freeClient();
         }
@@ -346,6 +362,7 @@ export class Reactor implements Disposable {
     this.client = undefined;
     this.clientPromise = undefined;
     this.schema = undefined;
+    this.resetConnectionState();
     this.emitter.clear();
     if (client) {
       // Queued behind any in-flight connect()/reconnect()/disconnect(), same
@@ -373,6 +390,18 @@ export class Reactor implements Disposable {
    *  failure. */
   getLastError(): ReactorError | undefined {
     return this._lastError;
+  }
+
+  /** The most recent WebRTC connection stats, polled every `STATS_INTERVAL_MS`
+   *  while "ready" — see `statsUpdate`. `undefined` before the first sample. */
+  getStats(): ConnectionStats | undefined {
+    return this.stats;
+  }
+
+  /** Timing breakdown from the most recent `connect()`/`reconnect()`
+   *  handshake — see `ConnectionTimings`. */
+  getConnectionTimings(): ConnectionTimings | undefined {
+    return this.connectionTimings;
   }
 
   // ── Events ──────────────────────────────────────────────────────────────
@@ -416,9 +445,7 @@ export class Reactor implements Disposable {
 
     client.onStatusChanged((status) => {
       this.emitter.emit('statusChanged', status);
-      if (status === 'ready') {
-        void this.refreshSchema(client);
-      }
+      this.handleStatusChanged(client, status);
     });
     client.onSessionIdChanged((sessionId) => this.emitter.emit('sessionIdChanged', sessionId));
     client.onError((error) => this.emitError(error));
@@ -488,6 +515,90 @@ export class Reactor implements Disposable {
     this.client = undefined;
     this.clientPromise = undefined;
     this.schema = undefined;
+  }
+
+  /** Tracks `connectionTimings` off the binding's own "connecting" → "waiting"
+   *  → "ready" status sequence (see `ReactorStatus`), and starts/stops stats
+   *  polling around the "ready" window. */
+  private handleStatusChanged(client: ReactorClient, status: ReactorStatus): void {
+    switch (status) {
+      case 'connecting':
+        this.connectStartTime = performance.now();
+        this.waitingStartTime = undefined;
+        break;
+      case 'waiting':
+        this.waitingStartTime = performance.now();
+        break;
+      case 'ready': {
+        const readyTime = performance.now();
+
+        if (this.connectStartTime != null) {
+          const waitingStartTime = this.waitingStartTime ?? readyTime;
+
+          this.connectionTimings = {
+            sessionCreationMs: waitingStartTime - this.connectStartTime,
+            transportConnectingMs: readyTime - waitingStartTime,
+            totalMs: readyTime - this.connectStartTime,
+          };
+        }
+        this.startStatsPolling(client);
+        void this.refreshSchema(client);
+        break;
+      }
+      default:
+        this.stopStatsPolling();
+    }
+  }
+
+  private startStatsPolling(client: ReactorClient): void {
+    this.stopStatsPolling();
+    const generation = ++this.statsPollGeneration;
+    const extractStats = createRTCStatsExtractor();
+
+    this.statsPollHandle = setInterval(() => {
+      const peerConnection = client.getPeerConnection();
+
+      if (!peerConnection) {
+        return;
+      }
+      peerConnection
+        .getStats()
+        .then((report) => {
+          // `stopStatsPolling()` only clears the interval — it can't cancel
+          // a `getStats()` call already in flight. A recoverable disconnect
+          // or a status flicker back to "ready" can leave `this.client`
+          // pointing at this same `client`, so that identity alone can't
+          // tell a stale sample from a live one; the generation bumped by
+          // every `startStatsPolling()`/`stopStatsPolling()` call can.
+          if (generation !== this.statsPollGeneration) {
+            return;
+          }
+          this.stats = { ...extractStats(report), connectionTimings: this.connectionTimings };
+          this.emitter.emit('statsUpdate', this.stats);
+        })
+        .catch(() => {
+          // Connection may be closing.
+        });
+    }, STATS_INTERVAL_MS);
+  }
+
+  private stopStatsPolling(): void {
+    this.statsPollGeneration += 1;
+    if (this.statsPollHandle !== undefined) {
+      clearInterval(this.statsPollHandle);
+      this.statsPollHandle = undefined;
+    }
+    this.stats = undefined;
+  }
+
+  /** Called on every `disconnect()` and on `[Symbol.dispose]`. Leaves
+   *  `client`/`schema` alone — that's `freeClient()`'s job, run separately
+   *  when `disconnect()` isn't recoverable. */
+  private resetConnectionState(): void {
+    this.stopStatsPolling();
+    this.connectionTimings = undefined;
+    this.connectStartTime = undefined;
+    this.waitingStartTime = undefined;
   }
 
   /** Wraps `cause` and records it as the most recent failure, for a call
