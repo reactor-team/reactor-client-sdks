@@ -2,12 +2,27 @@ import { createContext, useContext, useEffect, useRef, useSyncExternalStore, typ
 import { createReactorStore, type ReactorStore, type StoreApi } from './store';
 import type { ConnectOptions, JwtSource, ReactorOptions } from '../types';
 
+/**
+ * `connectOptions` for the provider — adds `autoConnect` to the core
+ * `ConnectOptions` for the React mount lifecycle. Read once, at first mount
+ * (see `ReactorProvider`'s effect deps below) — changing these after mount
+ * doesn't tear down or reconnect the session.
+ */
+export interface ReactorConnectOptions extends ConnectOptions {
+  /** Connect automatically once the provider mounts. Default `false`. */
+  autoConnect?: boolean;
+}
+
 export interface ReactorProviderProps {
   apiUrl?: string | undefined;
   modelName: string;
   local?: boolean | undefined;
-  jwt?: JwtSource | undefined;
-  connectOptions?: ConnectOptions | undefined;
+  /** Static token, or a resolver called before every authenticated request
+   *  — see `JwtSource`. Required for `autoConnect` against a non-local
+   *  runtime; can also be supplied later via an explicit `connect()` call
+   *  instead. */
+  jwtToken?: JwtSource | undefined;
+  connectOptions?: ReactorConnectOptions | undefined;
   children?: ReactNode;
 }
 
@@ -26,11 +41,12 @@ export function ReactorProvider({
   apiUrl,
   modelName,
   local,
-  jwt,
+  jwtToken,
   connectOptions,
   children,
 }: ReactorProviderProps) {
   const storeRef = useRef<StoreApi<ReactorStore> | undefined>(undefined);
+  const { autoConnect = false, ...pollingOptions } = connectOptions ?? {};
 
   if (storeRef.current === undefined) {
     // Built up field-by-field, not as one object literal, so an omitted prop
@@ -44,19 +60,27 @@ export function ReactorProvider({
     if (local !== undefined) {
       options.local = local;
     }
-    if (jwt !== undefined) {
-      options.jwt = jwt;
+    if (jwtToken !== undefined) {
+      options.jwt = jwtToken;
     }
 
-    storeRef.current = createReactorStore(options, connectOptions);
+    storeRef.current = createReactorStore(options, pollingOptions);
   }
 
   useEffect(() => {
     const store = storeRef.current;
 
+    if (autoConnect && store?.getState().status === 'disconnected') {
+      void store.getState().connect(jwtToken, pollingOptions);
+    }
+
     return () => {
       void store?.getState().internal.reactor.disconnect();
     };
+    // Mount-only: `autoConnect`/`jwtToken`/`pollingOptions` are read once at
+    // first mount, not resynced on every render — see `ReactorConnectOptions`'s
+    // doc comment.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return <ReactorContext.Provider value={storeRef.current}>{children}</ReactorContext.Provider>;

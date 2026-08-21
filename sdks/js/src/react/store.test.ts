@@ -99,4 +99,43 @@ describe('createReactorStore', () => {
 
     expect(store.getState().internal.reactor).toBe(store.getState().internal.reactor);
   });
+
+  it('mirrors trackReceived into tracks, keyed by name, and clears it on disconnect', async () => {
+    const store = createReactorStore({ modelName: 'test-model' });
+
+    await store.getState().connect();
+    const track = {} as MediaStreamTrack;
+
+    currentClient().emitTrackReceived('output', undefined);
+    // FakeReactorClient's trackByName default is undefined — Reactor only
+    // emits `trackReceived` once both track/stream resolve, so drive the
+    // store's listener directly via the fake's resolved getters instead.
+    currentClient().trackByNameResult = track;
+    currentClient().streamByNameResult = {} as MediaStream;
+    currentClient().emitTrackReceived('output', undefined);
+
+    expect(store.getState().tracks).toEqual({ output: track });
+
+    currentClient().emitDisconnected();
+    expect(store.getState().tracks).toEqual({});
+  });
+
+  it('exposes the jwt and defaultConnectOptions it was created with', () => {
+    const store = createReactorStore({ modelName: 'test-model', jwt: 'token' }, { autoResumeTracks: false });
+
+    expect(store.getState().jwtToken).toBe('token');
+    expect(store.getState().connectOptions).toEqual({ autoResumeTracks: false });
+  });
+
+  it('binds uploadFile to the underlying reactor, translating the wire FileRef to camelCase', async () => {
+    const store = createReactorStore({ modelName: 'test-model' });
+
+    await store.getState().connect();
+    const file = new Blob(['hi']);
+
+    const result = await store.getState().uploadFile(file, { name: 'a.txt' });
+
+    expect(currentClient().uploadFileCalls).toEqual([{ file, name: 'a.txt' }]);
+    expect(result).toEqual({ uploadId: 'up_1', name: 'upload', mimeType: 'application/octet-stream', size: 0 });
+  });
 });
