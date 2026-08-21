@@ -8,11 +8,21 @@ import {
 } from './errors';
 import { FakeReactorClient } from './internal/fake-reactor-client';
 import { toPublicFileRef } from './internal/file-ref';
+import { toPublicClip } from './internal/recording';
 import { STATS_INTERVAL_MS } from './internal/stats';
+import type * as RecordingModule from './recording';
 import type { ConnectOptions, ReactorMessage } from './internal/reactor-wasm.types';
 
 vi.mock('./internal/wasm', () => ({
   loadReactorWasm: () => Promise.resolve({ ReactorClient: FakeReactorClient }),
+}));
+
+// Only `Reactor.downloadClipAsFile()`'s delegation is under test here — the
+// standalone helper's own behavior (HLS parsing, mp4box remux, …) is covered
+// by `recording.test.ts`.
+vi.mock('./recording', async (importOriginal) => ({
+  ...(await importOriginal<typeof RecordingModule>()),
+  downloadClipAsFile: vi.fn(),
 }));
 
 // Import after the mock so `Reactor` picks up the faked wasm loader.
@@ -109,7 +119,9 @@ describe('Reactor.sendCommand', () => {
     await Promise.resolve();
     const client = FakeReactorClient.instances.at(-1);
 
-    if (!client) {throw new Error('no FakeReactorClient was constructed');}
+    if (!client) {
+      throw new Error('no FakeReactorClient was constructed');
+    }
     expect(client.disconnectCalls).toBe(0);
     expect(client.freeCalls).toBe(0);
 
@@ -349,6 +361,42 @@ describe('Reactor schema', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(reactor.getSchema()).toEqual({ commands: ['second'] });
+  });
+});
+
+describe('Reactor.requestClip / requestRecording / downloadClipAsFile', () => {
+  it('requestClip forwards durationSeconds and translates the wire Clip to camelCase', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    const clip = await reactor.requestClip(10);
+
+    expect(client.requestClipCalls).toEqual([10]);
+    expect(clip).toEqual(toPublicClip(client.requestClipResult));
+  });
+
+  it('requestRecording takes no arguments and translates the wire Clip to camelCase', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    const clip = await reactor.requestRecording();
+
+    expect(client.requestRecordingCalls).toBe(1);
+    expect(clip).toEqual(toPublicClip(client.requestRecordingResult));
+  });
+
+  it('downloadClipAsFile delegates to the standalone helper with the same arguments', async () => {
+    const { downloadClipAsFile } = await import('./recording');
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const clip = toPublicClip((await currentClient(reactor)).requestClipResult);
+    const blob = new Blob(['mp4-bytes']);
+
+    vi.mocked(downloadClipAsFile).mockResolvedValueOnce(blob);
+
+    const result = await reactor.downloadClipAsFile(clip, 'out.mp4', { jwt: 'jwt-token' });
+
+    expect(result).toBe(blob);
+    expect(downloadClipAsFile).toHaveBeenCalledWith(clip, 'out.mp4', { jwt: 'jwt-token' });
   });
 });
 

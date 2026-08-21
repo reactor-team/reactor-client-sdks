@@ -18,7 +18,17 @@ export {
   RequestTimeoutError,
   AbortedError,
 } from './errors';
+export {
+  DEFAULT_PLAYLIST_POLL_SLACK_MS,
+  RecordingError,
+  createPlayableManifestUrl,
+  downloadClipAsFile,
+  fetchPlaylist,
+  parsePlaylist,
+} from './recording';
+export type { DownloadClipOptions, FetchPlaylistOptions } from './recording';
 export type {
+  Clip,
   ConnectionStats,
   ConnectionTimings,
   ConnectOptions,

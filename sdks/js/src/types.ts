@@ -96,6 +96,28 @@ export interface ConnectionStats {
   timestamp: number;
 }
 
+/**
+ * A finished (or soon-available) clip, from `requestClip()` / `requestRecording()`.
+ *
+ * The runtime returns immediately on every request — it does not block until
+ * the in-progress chunk finalizes. `predictedReadyAtMs` is the runtime's own
+ * estimate of when `playlistUrl` becomes fetchable; `fetchPlaylist()` and
+ * `downloadClipAsFile()` poll past it until the manifest is actually ready.
+ */
+export interface Clip {
+  sessionId: string;
+  /** `"snap"` from `requestClip()`, `"recording"` from `requestRecording()`. */
+  kind: string;
+  /** Session-relative seconds since recorder start. */
+  startMarker: number;
+  endMarker: number;
+  nowMarker: number;
+  /** Unix epoch in milliseconds. */
+  predictedReadyAtMs: number;
+  /** Absolute HLS manifest URL — short-lived; re-issuing the request produces a fresh one. */
+  playlistUrl: string;
+}
+
 export interface ReactorEventMap {
   statusChanged: (status: ReactorStatus) => void;
   sessionIdChanged: (sessionId: string | undefined) => void;
