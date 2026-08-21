@@ -26,6 +26,18 @@ monorepo_root = true
 # is a 426 MB install nobody on a laptop should pay for. `mise lock` still records
 # every platform, so the lockfile gate stays honest.
 "conda:clangxx" = { version = "21.1.8", os = ["linux"] }
+# clang-format and clang-tidy for the C++ SDK, at the same LLVM version as the
+# clangxx above — one toolchain, so the formatter a contributor runs is the one
+# the gate runs. Unlike clangxx these are small and needed on every platform:
+# `lint:cpp` is a formatting gate, and a gate checking a version nobody can
+# install locally teaches people to push and hope.
+"conda:clang-format" = "21.1.8"
+"conda:clang-tools"  = "21.1.8"
+# CMake + Ninja build the C++ SDK. Pinned rather than taken from PATH because a
+# generator and a build system are exactly the things that differ between a
+# laptop and a runner.
+cmake = "4.4.2"
+ninja = "1.13.2"
 # wasm-pack builds crates/reactor-wasm into a loadable JS package.
 "cargo:wasm-pack" = "0.15.0"
 uv          = "0.11.31"
@@ -137,8 +149,8 @@ dir = "sdks/python"
 run = "uv run --group dev --locked pytest"
 
 [tasks.test]
-description = "[Testing] Every test suite (Rust + Python + JS)"
-depends = ["test:rust", "test:python", "test:js"]
+description = "[Testing] Every test suite (Rust + Python + JS + C++)"
+depends = ["test:rust", "test:python", "test:js", "test:cpp"]
 
 # ── JS SDK ────────────────────────────────────────────────────────────────────
 # Node/npm aren't in [tools] above yet — every task here just shells out to
@@ -173,6 +185,98 @@ dir = "sdks/js"
 depends = ["install:js"]
 run = "npm run build"
 
+# ── C++ SDK ───────────────────────────────────────────────────────────────────
+# Needs a release build of libreactor_ffi to link against; `build:cpp` makes one.
+# Rebuild it after pulling changes under crates/ — reactor_abi_version() turns a
+# stale library into a message instead of a hang, but only when the library on
+# disk is the one you think it is.
+
+[tasks."build:ffi"]
+description = "[Build] Build libreactor_ffi in release mode (what the C++ SDK links)"
+# Deliberately its own task, and deliberately not a dependency of `build:cpp`.
+# On Linux this compiles reactor-webrtc-sys's C++ glue, which needs the pinned
+# conda clang++ (see the CI action) — while the SDK itself must be built with the
+# platform toolchain, because the conda one brings a sysroot whose glibc cannot
+# resolve the symbols the resulting .so needs. Two compilers, two tasks, so
+# neither run has to guess which is which.
+run = "cargo build -p reactor-ffi --release"
+
+[tasks."build:cpp"]
+description = "[Build] Configure + build the C++ SDK (needs build:ffi first)"
+run = [
+    "cmake -S sdks/cpp -B sdks/cpp/build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+    "cmake --build sdks/cpp/build",
+]
+
+[tasks."fmt:cpp"]
+description = "[Format] Format the C++ SDK with clang-format"
+# --others so a file that is new and not yet `git add`ed is formatted too. Plain
+# `git ls-files` lists only tracked files, which means a new file is unformatted
+# and unchecked until it is committed — a false green precisely when a file is
+# most likely to need the check. --exclude-standard keeps ignored paths out.
+run = "git ls-files --cached --others --exclude-standard 'sdks/cpp/**/*.[ch]pp' | xargs -r clang-format -i"
+
+[tasks."fmt:cpp:check"]
+description = "[Format] Check C++ SDK formatting with clang-format"
+# Split out of lint:cpp because it needs nothing built and no network, which is
+# what makes it usable from the pre-commit hook.
+run = "git ls-files --cached --others --exclude-standard 'sdks/cpp/**/*.[ch]pp' | xargs -r clang-format --dry-run --Werror"
+
+[tasks."lint:cpp"]
+description = "[Quality] Format-check + clang-tidy the C++ SDK"
+# clang-format needs nothing built. clang-tidy needs the compile database, hence
+# the depends: it type-checks every translation unit, so it is a compile, not a
+# lint over text.
+depends = ["build:cpp", "fmt:cpp:check"]
+run = [
+    """
+    # clang-tidy resolves the compiler's builtin headers (stdarg.h and friends)
+    # from its own resource directory, and the conda clang-tools package ships
+    # none — so it has to be told where the compiler that produced the compile
+    # database keeps its own, or every file fails on a missing <stdarg.h>.
+    #
+    # Asked of the compiler rather than assumed, since the answer differs between
+    # a Mac with Xcode and CI's pinned clang. Only clang answers this; a host with
+    # only gcc gets a skip and a reason instead of a wall of errors.
+    resource_dir="$(${CXX:-c++} -print-resource-dir 2>/dev/null || true)"
+    if [ -z "$resource_dir" ]; then
+      # A gate that quietly checks nothing is worse than no gate, so CI sets
+      # REACTOR_REQUIRE_CLANG_TIDY and this becomes a failure there.
+      if [ -n "${REACTOR_REQUIRE_CLANG_TIDY:-}" ]; then
+        echo "lint:cpp: ${CXX:-c++} reports no clang resource directory, and REACTOR_REQUIRE_CLANG_TIDY is set. Point CXX at a clang++." >&2
+        exit 1
+      fi
+      echo "lint:cpp: skipping clang-tidy - ${CXX:-c++} reports no clang resource directory (set CXX to a clang++)"
+      exit 0
+    fi
+    # tests/package is excluded because clang-tidy is given this build's compile
+    # database and that fixture is not in it: it belongs to a separate project,
+    # configured against the *installed* package by test:cpp:package. Analysed
+    # without its own flags it is parsed as neither C++17 nor with an include
+    # path, which buries the real output under thousands of errors from inside
+    # libstdc++. A git pathspec glob matches across '/', hence the exclusion
+    # rather than a narrower pattern.
+    git ls-files --cached --others --exclude-standard \
+        'sdks/cpp/src/**/*.cpp' 'sdks/cpp/tests/*.cpp' ':(exclude)sdks/cpp/tests/package/*' \
+      | xargs -r clang-tidy -p sdks/cpp/build --quiet --extra-arg=-resource-dir="$resource_dir"
+    """,
+]
+
+[tasks."test:cpp:package"]
+description = "[Testing] Install the C++ package, move it, and build a consumer against it"
+# The steps live in a script for the reason clang-tidy's do: `run` is handed to
+# /bin/sh, which on a Debian runner is dash and refuses `set -o pipefail`, and a
+# gate whose failure mode differs between a laptop and CI is not a gate.
+run = "scripts/cpp-package-check.sh"
+
+[tasks."test:cpp"]
+description = "[Testing] C++ SDK unit tests via ctest, and the installed package"
+# test:cpp:package rides along rather than standing beside this in CI, because
+# what CI runs for this binding is `test:cpp` — a guard listed anywhere it does
+# not reach is a guard that only holds until someone forgets to run it.
+depends = ["build:cpp", "test:cpp:package"]
+run = "ctest --test-dir sdks/cpp/build --output-on-failure"
+
 # ── Lints ─────────────────────────────────────────────────────────────────────
 
 [tasks."lint:abi"]
@@ -199,6 +303,7 @@ depends = [
     "clippy:wasm",
     "lint:python",
     "lint:js",
+    "lint:cpp",
     "lint:abi",
     "lint:shell",
     "lint:mise-tools-root",

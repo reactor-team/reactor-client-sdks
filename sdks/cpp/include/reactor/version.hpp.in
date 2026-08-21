@@ -1,0 +1,22 @@
+// Generated from version.hpp.in by CMake. The version lives in one place — the
+// project() call in CMakeLists.txt — because bumping it there and merging is
+// what publishes a release.
+#pragma once
+
+#include <string_view>
+
+#define REACTOR_SDK_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define REACTOR_SDK_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define REACTOR_SDK_VERSION_PATCH @PROJECT_VERSION_PATCH@
+#define REACTOR_SDK_VERSION "@PROJECT_VERSION@"
+
+namespace reactor {
+
+/// The SDK's version, as a string.
+///
+/// A function rather than only a macro so it reports what the *linked* library
+/// is, not what the headers on the include path said at compile time. Those can
+/// differ, and when they do this is the one that matters.
+std::string_view version() noexcept;
+
+}  // namespace reactor

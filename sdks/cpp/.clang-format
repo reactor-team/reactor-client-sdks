@@ -1,0 +1,21 @@
+# Google style at 100 columns, matching the Python SDK's line-length so a
+# reviewer moving between the two bindings is not re-learning where lines break.
+---
+Language: Cpp
+BasedOnStyle: Google
+ColumnLimit: 100
+DerivePointerAlignment: false
+PointerAlignment: Left
+IncludeBlocks: Regroup
+IncludeCategories:
+  # The FFI header first among our own: it is the contract everything else wraps.
+  - Regex: '^<reactor_ffi\.h>$'
+    Priority: 1
+  - Regex: '^<catch2/'
+    Priority: 4
+  - Regex: '^<.*\.h>$'
+    Priority: 2
+  - Regex: '^<.*>$'
+    Priority: 3
+  - Regex: '.*'
+    Priority: 5
