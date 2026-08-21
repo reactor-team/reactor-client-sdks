@@ -268,6 +268,22 @@ export class AbortedError extends ReactorError {
   static override readonly code = 'ABORTED';
 }
 
+/**
+ * A `requestClip()`/`requestRecording()` call failed because the model's
+ * recorder is disabled or has crashed.
+ *
+ * Unlike every other code here, `RECORDER_DISABLED` isn't platform-sent —
+ * `reactor-core` produces it by matching known reason strings on an
+ * otherwise free-text `ClipFailed` message, as a stopgap until that message
+ * carries a structured reason (tracked as REA-5403). Treat it as best-effort:
+ * a clip failure for the same underlying reason may still arrive as the
+ * base `ReactorError` (`code: "INTERNAL_ERROR"`) if the reason text ever
+ * changes upstream.
+ */
+export class RecorderDisabledError extends ReactorError {
+  static override readonly code = 'RECORDER_DISABLED';
+}
+
 /** Every code this package has a class for. Anything else — a platform code
  *  for a rejected request — falls back to `ReactorError` with `code` set to
  *  it. */
@@ -288,6 +304,7 @@ const ERROR_CLASSES = [
   DisconnectedError,
   RequestTimeoutError,
   AbortedError,
+  RecorderDisabledError,
 ] as const;
 
 interface ReactorErrorClass {

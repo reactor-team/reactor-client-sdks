@@ -46,6 +46,23 @@ pub fn clip_from_ready(ready: ClipReady, coordinator_base_url: &str) -> Clip {
     }
 }
 
+/// Classify a `ClipFailed` message's free-text `reason` into a
+/// [`crate::error::codes`] value — `RECORDER_DISABLED` for the two reasons
+/// the model runtime is known to send when its recorder is disabled or has
+/// crashed, `INTERNAL_ERROR` for anything else.
+///
+/// See `codes::RECORDER_DISABLED`'s doc comment: this is a stopgap
+/// string-match kept only until `ClipFailed` carries a structured reason
+/// (REA-5403).
+pub fn clip_failed_code(reason: &str) -> &'static str {
+    match reason {
+        "recorder disabled" | "recorder disabled or encoder crashed" => {
+            crate::error::codes::RECORDER_DISABLED
+        }
+        _ => crate::error::codes::INTERNAL_ERROR,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +99,26 @@ mod tests {
             "https://api.reactor.inc",
         );
         assert_eq!(clip.playlist_url, "https://cdn/b.m3u8");
+    }
+
+    #[test]
+    fn recognizes_the_known_recorder_disabled_reasons() {
+        assert_eq!(
+            clip_failed_code("recorder disabled"),
+            crate::error::codes::RECORDER_DISABLED
+        );
+        assert_eq!(
+            clip_failed_code("recorder disabled or encoder crashed"),
+            crate::error::codes::RECORDER_DISABLED
+        );
+    }
+
+    #[test]
+    fn falls_back_to_internal_error_for_any_other_reason() {
+        assert_eq!(
+            clip_failed_code("something else entirely"),
+            crate::error::codes::INTERNAL_ERROR
+        );
+        assert_eq!(clip_failed_code(""), crate::error::codes::INTERNAL_ERROR);
     }
 }

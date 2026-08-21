@@ -18,6 +18,7 @@ export {
   DisconnectedError,
   RequestTimeoutError,
   AbortedError,
+  RecorderDisabledError,
 } from './errors';
 export {
   DEFAULT_PLAYLIST_POLL_SLACK_MS,
