@@ -1,3 +1,5 @@
+'use client';
+
 import { useContext, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { resolveJwtSource } from '../internal/jwt-resolver';
