@@ -35,17 +35,14 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "awaitqueue": "^3.3.1"
+    "awaitqueue": "^3.3.1",
+    "zustand": "^5.0.0"
   },
   "peerDependencies": {
-    "react": "^18.0.0 || ^19.0.0",
-    "zustand": "^5.0.0"
+    "react": "^18.0.0 || ^19.0.0"
   },
   "peerDependenciesMeta": {
     "react": {
-      "optional": true
-    },
-    "zustand": {
       "optional": true
     }
   },
@@ -62,7 +59,6 @@
     "tsup": "^8.3.0",
     "typescript": "^5.6.0",
     "typescript-eslint": "^8.67.0",
-    "vitest": "^4.1.11",
-    "zustand": "^5.0.0"
+    "vitest": "^4.1.11"
   }
 }
