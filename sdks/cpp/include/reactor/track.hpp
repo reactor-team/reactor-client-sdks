@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <memory>
 #include <optional>
 #include <string>
@@ -40,6 +41,17 @@ struct Bytes {
   bool empty() const noexcept { return size == 0; }
   const std::uint8_t* begin() const noexcept { return data; }
   const std::uint8_t* end() const noexcept { return data + size; }
+};
+
+/// A borrowed run of interleaved 16-bit PCM samples.
+///
+/// A length, not just a pointer, so `push_audio` can check it against the channel
+/// count instead of trusting it — the FFI reads what it is told to read.
+struct Samples {
+  const std::int16_t* data = nullptr;
+  std::size_t size = 0;
+
+  bool empty() const noexcept { return size == 0; }
 };
 
 /// What flows on a track.
@@ -159,6 +171,75 @@ class Track {
   /// Receive decoded audio frames. Refuses the wrong kind or direction, as
   /// `on_frame` does.
   Subscription on_audio(std::function<void(const AudioFrame&)> handler);
+
+  // ── Sending ────────────────────────────────────────────────────────────────
+
+  /// Whether this sendonly slot is activated.
+  ///
+  /// Kept by the SDK rather than read back, because the session does not record
+  /// it: `publish` is a control request and `unpublish` a notification, and
+  /// neither leaves anything to query. **It is cleared whenever the status leaves
+  /// `Ready`** — a reconnect resumes recvonly tracks and nothing else, so a slot
+  /// published before one is not published after it.
+  bool published() const;
+
+  /// Activate the send slot, so the model has something to receive on.
+  ///
+  /// Publishing is what puts a sender behind the slot: pushing before it drops the
+  /// frame, and this SDK refuses rather than letting it. Throws on a recvonly
+  /// track, and on a session that is not `Ready`.
+  std::future<void> publish();
+
+  /// Deactivate the send slot.
+  ///
+  /// Synchronous — there is no round trip, only a local state change and a
+  /// fire-and-forget notification. Throws when the notification could not be made;
+  /// the track then stays published, so a retry is possible.
+  void unpublish();
+
+  /// Stop this track. Nothing is generated while paused, which on a video track
+  /// is visible only as a frozen frame.
+  std::future<void> pause();
+
+  /// Start it again.
+  std::future<void> resume();
+
+  /// What a pushed frame carries besides its pixels.
+  struct FrameOptions {
+    /// Bytes the far end reads as this frame's metadata. Sent as-is — JSON,
+    /// protobuf or anything else is between the caller and the model — and
+    /// dropped silently by a peer that did not declare it reads them, so tagging
+    /// is safe whatever the far end supports.
+    Bytes user_data;
+
+    /// The moment this frame was captured, read from `reactor::time_micros()`.
+    ///
+    /// Read it **once per unit of produced media** and give every track the same
+    /// value: tracks are synchronised by sharing a capture time, not by reaching
+    /// the encoder at the same moment. Left empty, the frame is stamped as it is
+    /// pushed, so several tracks capturing one moment arrive microseconds apart.
+    std::optional<std::int64_t> capture_time_us;
+  };
+
+  /// Push one BGRA frame into this track.
+  ///
+  /// `bgra` must hold exactly `width * height * 4` bytes — checked here, because
+  /// the FFI reads what it is told to read and a wrong length is a read past the
+  /// end of the caller's buffer.
+  ///
+  /// Throws `InvalidStateError` on a recvonly track, before `publish()`, or once
+  /// the session has left `Ready`; `BadRequestError` on a buffer that does not
+  /// match. Each of those reaches the FFI, finds nothing to do, and returns — so a
+  /// caller pushing at 30fps would see a model receiving nothing and no reason
+  /// why.
+  void push_frame(Bytes bgra, std::uint32_t width, std::uint32_t height,
+                  const FrameOptions& options = {});
+
+  /// Push interleaved 16-bit PCM into this track.
+  ///
+  /// `sample_rate` must be 48000 and `channels` 1, which is what the source
+  /// expects; `pcm.size` must divide evenly by `channels`.
+  void push_audio(Samples pcm, std::uint32_t sample_rate = 48'000, std::uint32_t channels = 1);
 
  private:
   friend class Reactor;

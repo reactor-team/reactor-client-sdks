@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <future>
 #include <map>
 #include <memory>
@@ -60,13 +61,29 @@ class Pending {
   }
 
   void fail(const std::exception_ptr& error) {
-    if (claim()) {
-      deliver_error(error);
+    if (!claim()) {
+      return;
     }
+    if (on_failure) {
+      try {
+        on_failure();
+      } catch (...) {  // NOLINT(bugprone-empty-catch)
+        // A rollback that throws must not replace the failure the caller is about
+        // to be told about, which is the one that actually explains what happened.
+      }
+    }
+    deliver_error(error);
   }
 
   /// Which call this is, for an error payload that does not name one.
   std::string operation;
+
+  /// Run when this call fails, before the caller hears about it.
+  ///
+  /// The publish path needs it: it records the slot as published *before* sending
+  /// the request, so that a frame pushed in between is refused rather than dropped
+  /// — and that has to come back off if the request is refused.
+  std::function<void()> on_failure;
 
   /// The client that is tracking this, so a completion can hand it back.
   std::weak_ptr<ClientImpl> owner;
@@ -203,6 +220,20 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   Subscription add_audio_handler(const std::string& name,
                                  std::function<void(const AudioFrame&)> handler);
 
+  // ── Sending ────────────────────────────────────────────────────────────────
+
+  bool is_published(const std::string& name) const;
+
+  void begin_publish(std::unique_ptr<Pending> op, const std::string& name);
+  void unpublish(const std::string& name);
+  void begin_pause(std::unique_ptr<Pending> op, const std::string& name);
+  void begin_resume(std::unique_ptr<Pending> op, const std::string& name);
+
+  void push_video(const std::string& name, Bytes bgra, std::uint32_t width, std::uint32_t height,
+                  const Track::FrameOptions& options);
+  void push_audio(const std::string& name, Samples pcm, std::uint32_t sample_rate,
+                  std::uint32_t channels);
+
   // ── Session ────────────────────────────────────────────────────────────────
 
   /// Exchange the key for a token if there is one to exchange, then connect.
@@ -227,7 +258,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
                                              {}}));
       return;
     }
-    Pending* raw = track(std::move(op));
+    Pending* raw = track_pending(std::move(op));
     ffi().reconnect(handle, &completion_trampoline, raw);
   }
 
@@ -243,7 +274,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
       op->settle(Json::object());
       return;
     }
-    Pending* raw = track(std::move(op));
+    Pending* raw = track_pending(std::move(op));
     ffi().disconnect(handle, &completion_trampoline, raw);
   }
 
@@ -303,6 +334,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     callbacks.on_status = &on_status_trampoline;
     callbacks.on_error = &on_error_trampoline;
     callbacks.on_track = &on_track_trampoline;
+    callbacks.on_capabilities = &on_capabilities_trampoline;
     callbacks.on_frame = &on_frame_trampoline;
     callbacks.on_audio = &on_audio_trampoline;
     callbacks.userdata = context.get();
@@ -322,7 +354,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     context_ = context.release();
   }
 
-  Pending* track(std::unique_ptr<Pending> op) {
+  Pending* track_pending(std::unique_ptr<Pending> op) {
     op->owner = weak_from_this();
     const std::lock_guard<std::mutex> lock(mutex_);
     const std::uint64_t id = next_pending_id_++;
@@ -396,6 +428,20 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   static void on_error_trampoline(const char* error_json, void* userdata) noexcept;
   static void on_track_trampoline(const char* name, const char* mid_or_null,
                                   void* userdata) noexcept;
+  static void on_capabilities_trampoline(const char* caps_json, void* userdata) noexcept;
+
+  /// Forget what the session declared, so the next read asks again.
+  void invalidate_declared();
+
+  /// Forget which slots were published.
+  ///
+  /// Called the moment the status leaves `Ready`, on the library's own thread —
+  /// not from the dispatcher, because a push racing the status change has to see
+  /// the new answer, not the one the queue has not got to yet.
+  void clear_published();
+
+  /// The handle, or a thrown error naming what a caller has to do first.
+  ReactorHandle* require_ready_handle(const char* action, const std::string& track_name) const;
 
   /// Media, and the reason these are separate from everything above: they run
   /// *inline*, on the thread the library called on, and never go near the
@@ -448,6 +494,24 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   mutable std::mutex media_mutex_;
   std::map<std::string, Handlers<const VideoFrame&>> video_handlers_;
   std::map<std::string, Handlers<const AudioFrame&>> audio_handlers_;
+
+  /// Which sendonly slots are activated.
+  ///
+  /// The session does not record this: `publish_track` is a request and
+  /// `unpublish_track` a notification, and neither leaves anything to query. So it
+  /// is kept here — and **cleared whenever the status leaves `Ready`**, because a
+  /// reconnect resumes recvonly tracks and nothing else. Remembering otherwise
+  /// would let a push through onto a slot with no sender behind it, which is the
+  /// silent failure this SDK exists to refuse.
+  std::set<std::string> published_;
+
+  /// What the session declared, cached.
+  ///
+  /// Cached only because `push_frame` validates against it, and a JSON parse per
+  /// frame at 30fps is not a validation, it is a cost. Invalidated on every status
+  /// change, on new capabilities and on a new track — the three things that can
+  /// change the answer — so `[]`-before-accepted still reads as `[]`.
+  mutable std::optional<std::map<std::string, Declared>> declared_cache_;
 
   /// The SDP media id per track, as tracks arrive. Renegotiated on a reconnect.
   std::map<std::string, std::string> track_mids_;
