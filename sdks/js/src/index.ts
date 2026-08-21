@@ -29,6 +29,7 @@ export {
 export type { DownloadClipOptions, FetchPlaylistOptions } from './recording';
 export type {
   Clip,
+  ClipKind,
   ConnectionStats,
   ConnectionTimings,
   ConnectOptions,

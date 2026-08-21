@@ -96,6 +96,9 @@ export interface ConnectionStats {
   timestamp: number;
 }
 
+/** Discriminator on a {@link Clip}. `"snap"` from `requestClip()`, `"recording"` from `requestRecording()`. */
+export type ClipKind = 'snap' | 'recording';
+
 /**
  * A finished (or soon-available) clip, from `requestClip()` / `requestRecording()`.
  *
@@ -106,8 +109,7 @@ export interface ConnectionStats {
  */
 export interface Clip {
   sessionId: string;
-  /** `"snap"` from `requestClip()`, `"recording"` from `requestRecording()`. */
-  kind: string;
+  kind: ClipKind;
   /** Session-relative seconds since recorder start. */
   startMarker: number;
   endMarker: number;
