@@ -238,33 +238,13 @@ run = "git ls-files --cached --others --exclude-standard 'sdks/cpp/**/*.[ch]pp' 
 description = "[Quality] Format-check + clang-tidy the C++ SDK"
 # clang-format needs nothing built. clang-tidy needs the compile database, hence
 # the depends: it type-checks every translation unit, so it is a compile, not a
-# lint over text.
+# lint over text. Finding a resource directory it can use is fiddly enough to
+# live in a script — see scripts/clang-tidy-cpp.sh.
 depends = ["build:cpp", "fmt:cpp:check"]
-run = [
-    """
-    # clang-tidy resolves the compiler's builtin headers (stdarg.h and friends)
-    # from its own resource directory, and the conda clang-tools package ships
-    # none — so it has to be told where the compiler that produced the compile
-    # database keeps its own, or every file fails on a missing <stdarg.h>.
-    #
-    # Asked of the compiler rather than assumed, since the answer differs between
-    # a Mac with Xcode and CI's pinned clang. Only clang answers this; a host with
-    # only gcc gets a skip and a reason instead of a wall of errors.
-    resource_dir="$(${CXX:-c++} -print-resource-dir 2>/dev/null || true)"
-    if [ -z "$resource_dir" ]; then
-      # A gate that quietly checks nothing is worse than no gate, so CI sets
-      # REACTOR_REQUIRE_CLANG_TIDY and this becomes a failure there.
-      if [ -n "${REACTOR_REQUIRE_CLANG_TIDY:-}" ]; then
-        echo "lint:cpp: ${CXX:-c++} reports no clang resource directory, and REACTOR_REQUIRE_CLANG_TIDY is set. Point CXX at a clang++." >&2
-        exit 1
-      fi
-      echo "lint:cpp: skipping clang-tidy - ${CXX:-c++} reports no clang resource directory (set CXX to a clang++)"
-      exit 0
-    fi
-    git ls-files --cached --others --exclude-standard 'sdks/cpp/src/**/*.cpp' 'sdks/cpp/tests/*.cpp' \
-      | xargs -r clang-tidy -p sdks/cpp/build --quiet --extra-arg=-resource-dir="$resource_dir"
-    """,
-]
+run = """
+git ls-files --cached --others --exclude-standard 'sdks/cpp/src/**/*.cpp' 'sdks/cpp/tests/*.cpp' \
+  | xargs -r scripts/clang-tidy-cpp.sh sdks/cpp/build
+"""
 
 [tasks."test:cpp"]
 description = "[Testing] C++ SDK unit tests via ctest"

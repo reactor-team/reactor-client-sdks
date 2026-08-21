@@ -43,6 +43,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(REACTOR_SDK_BUILD_TESTS "Build the C++ SDK unit tests" ${PROJECT_IS_TOP_LEVEL})
 option(REACTOR_SDK_BUILD_EXAMPLES "Build the C++ SDK examples" ${PROJECT_IS_TOP_LEVEL})
 
+# The device helpers, in a target of their own. On by default so they are built
+# and tested, and separate so that linking `reactor::sdk` brings in no audio
+# library at all — which is what keeps the mandatory path unable to open a
+# microphone.
+option(REACTOR_SDK_BUILD_AUDIO "Build the optional reactor::sdk_audio target" ON)
+
 set(REACTOR_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." CACHE PATH
     "Root of the reactor-client-sdks checkout, where crates/ and target/ live")
 
@@ -181,6 +187,68 @@ set_target_properties(
   INSTALL_RPATH "$<IF:$<PLATFORM_ID:Darwin>,@loader_path,$ORIGIN>"
 )
 
+# ── Audio devices (optional) ──────────────────────────────────────────────────
+#
+# Deliberately not part of reactor::sdk. The core is pinned to the synthetic audio
+# module and cannot be talked out of it; real devices are an opt-in extra, and a
+# consumer who never asks for them never links an audio library.
+
+if(REACTOR_SDK_BUILD_AUDIO)
+  add_library(reactor_sdk_audio src/audio/devices.cpp)
+  add_library(reactor::sdk_audio ALIAS reactor_sdk_audio)
+
+  target_link_libraries(reactor_sdk_audio PUBLIC reactor::sdk)
+  target_include_directories(
+    reactor_sdk_audio
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  )
+
+  # Single-header, public domain, pinned by tag. Fetched rather than vendored so
+  # the version is visible in one line and a bump is a one-line diff.
+  FetchContent_Declare(
+    miniaudio
+    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+    GIT_TAG 0.11.25
+    GIT_SHALLOW TRUE
+  )
+  FetchContent_MakeAvailable(miniaudio)
+
+  if(miniaudio_SOURCE_DIR)
+    target_include_directories(reactor_sdk_audio PRIVATE "${miniaudio_SOURCE_DIR}")
+    target_compile_definitions(reactor_sdk_audio PRIVATE REACTOR_SDK_HAVE_MINIAUDIO)
+    if(APPLE)
+      target_link_libraries(
+        reactor_sdk_audio
+        PRIVATE "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreFoundation"
+      )
+    elseif(UNIX)
+      find_package(Threads REQUIRED)
+      target_link_libraries(reactor_sdk_audio PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
+    endif()
+  else()
+    message(WARNING
+      "miniaudio was not available; reactor::sdk_audio will build without a backend and "
+      "its Speaker/Microphone will refuse to start rather than play silence.")
+  endif()
+
+  # Warnings are errors for our own code. miniaudio's own translation unit is
+  # third-party C that we do not get to fix, so the file that includes it opts out
+  # of the strictest of them rather than the project opting out globally.
+  target_compile_options(
+    reactor_sdk_audio
+    PRIVATE
+      $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-Wall;-Wextra;-Werror;-Wno-unused-function>
+      $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/W4;/WX>
+  )
+
+  set_target_properties(
+    reactor_sdk_audio PROPERTIES
+    OUTPUT_NAME reactor_sdk_audio
+    EXPORT_NAME sdk_audio
+    POSITION_INDEPENDENT_CODE ON
+  )
+endif()
+
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 if(REACTOR_SDK_BUILD_TESTS)
@@ -201,8 +269,13 @@ endif()
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
+set(REACTOR_INSTALL_TARGETS reactor_sdk)
+if(REACTOR_SDK_BUILD_AUDIO)
+  list(APPEND REACTOR_INSTALL_TARGETS reactor_sdk_audio)
+endif()
+
 install(
-  TARGETS reactor_sdk
+  TARGETS ${REACTOR_INSTALL_TARGETS}
   EXPORT reactor-sdk-targets
   ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
   LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
