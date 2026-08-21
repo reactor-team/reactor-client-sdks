@@ -2,10 +2,13 @@ import { AwaitQueue } from 'awaitqueue';
 import { toReactorError, type ReactorError } from './errors';
 import { Emitter } from './internal/emitter';
 import { extractFileRefs, toPublicFileRef } from './internal/file-ref';
+import { toPublicClip } from './internal/recording';
 import type { ReactorClient } from './internal/reactor-wasm.types';
 import { createRTCStatsExtractor, STATS_INTERVAL_MS } from './internal/stats';
 import { loadReactorWasm } from './internal/wasm';
+import { downloadClipAsFile as downloadClipAsFileFn, type DownloadClipOptions } from './recording';
 import type {
+  Clip,
   ConnectionStats,
   ConnectionTimings,
   ConnectOptions,
@@ -278,6 +281,46 @@ export class Reactor implements Disposable {
     } catch (cause) {
       throw this.captureError(cause);
     }
+  }
+
+  // ── Recording ───────────────────────────────────────────────────────────
+
+  /**
+   * Requests a clip covering the last `durationSeconds` of the session.
+   * `reactor-core` correlates the reply itself (and enforces `"ready"`), so
+   * this is a thin delegation, same as `requestSchema()`. See
+   * `downloadClipAsFile()` to turn the result into a file.
+   */
+  async requestClip(durationSeconds: number): Promise<Clip> {
+    this.assertNotDisposed();
+    try {
+      const client = await this.getOrCreateClient();
+
+      return toPublicClip(await client.requestClip(durationSeconds));
+    } catch (cause) {
+      throw this.captureError(cause);
+    }
+  }
+
+  /** Requests a clip covering the entire session up to now. See `requestClip()`. */
+  async requestRecording(): Promise<Clip> {
+    this.assertNotDisposed();
+    try {
+      const client = await this.getOrCreateClient();
+
+      return toPublicClip(await client.requestRecording());
+    } catch (cause) {
+      throw this.captureError(cause);
+    }
+  }
+
+  /** Thin delegation to the standalone `downloadClipAsFile()` — see its own doc comment. */
+  async downloadClipAsFile(
+    clip: Clip,
+    filename: string | null = 'reactor-clip.mp4',
+    options?: DownloadClipOptions,
+  ): Promise<Blob> {
+    return downloadClipAsFileFn(clip, filename, options);
   }
 
   // ── Uploads ─────────────────────────────────────────────────────────────
