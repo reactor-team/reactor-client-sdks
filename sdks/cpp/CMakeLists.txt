@@ -125,6 +125,7 @@ configure_file(
 
 add_library(
   reactor_sdk
+  src/detail/ffi.cpp
   src/errors.cpp
   src/version.cpp
 )
@@ -143,6 +144,7 @@ target_include_directories(
     # <reactor/…>, never <reactor_ffi.h>, so the C ABI does not leak into
     # anyone's translation units.
     "${REACTOR_FFI_INCLUDE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
 target_link_libraries(reactor_sdk PUBLIC nlohmann_json::nlohmann_json)

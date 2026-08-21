@@ -1,0 +1,23 @@
+# Test code, on top of the SDK's own config.
+#
+# A test file's job here is to impersonate a C library: hand out raw pointers,
+# malloc what the FFI would have malloc'd, free it the way the FFI frees it, and
+# keep per-process state a C callback can reach without a `this`. The checks
+# disabled below all fire on exactly that, and following them would mean testing a
+# C++-shaped fake instead of the boundary the SDK actually has.
+
+InheritParentConfig: true
+
+Checks: >
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -cppcoreguidelines-owning-memory,
+  -cppcoreguidelines-no-malloc,
+  -cppcoreguidelines-pro-type-vararg,
+  -cppcoreguidelines-avoid-const-or-ref-data-members,
+  -bugprone-use-after-move,
+  -performance-unnecessary-value-param
+
+CheckOptions:
+  # A fake library's statics belong to the file, not to a class.
+  - key: readability-identifier-naming.StaticVariableCase
+    value: lower_case
