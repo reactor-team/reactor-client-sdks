@@ -372,6 +372,32 @@ fn fallback_error_json(message: &str) -> String {
 
 // ── extern "C" API ───────────────────────────────────────────────────────────
 
+/// The version of the C ABI this library exposes, reported by
+/// [`reactor_abi_version`] and stated in prose at the top of `reactor_ffi.h`.
+///
+/// Bump it when an existing declaration changes — a parameter added or removed, a
+/// type changed, a return value repurposed. Do **not** bump it when a function is
+/// added: a binding built against the older version calls every function it knows
+/// about exactly as before, so refusing to run would strand it for no reason.
+pub const ABI_VERSION: u32 = 1;
+
+/// The ABI version, so a binding can refuse a library it was not built for.
+///
+/// [`scripts/check-abi-parity.py`] compares the hand-written copies of this ABI by
+/// function *name*; arity and types are not checked and cannot be. So a function
+/// that gained a parameter still links, still resolves, and corrupts the stack at
+/// the call — a hang, or an operation silently doing nothing, never a version
+/// error. Twice now the library on disk was simply older than the crates. This is
+/// the guard that turns that into a message.
+///
+/// Takes no handle and no lock: it is readable before anything is created.
+///
+/// [`scripts/check-abi-parity.py`]: https://github.com/reactor-team/reactor-client-sdks/blob/main/scripts/check-abi-parity.py
+#[no_mangle]
+pub extern "C" fn reactor_abi_version() -> u32 {
+    ABI_VERSION
+}
+
 /// Create a client. The returned handle must be released with
 /// [`reactor_destroy`].
 ///
@@ -1517,6 +1543,40 @@ mod tests {
         let first = reactor_time_micros();
         assert!(first > 0);
         assert!(reactor_time_micros() >= first);
+    }
+
+    /// The version exists twice — here as a constant, and in the header as the
+    /// REACTOR_ABI_VERSION macro a binding compiles against. It has to: the whole
+    /// check is "what the header said" against "what the library says", and one
+    /// number cannot compare against itself. So this is the test that keeps the two
+    /// copies one number, which is the same drift the guard exists to catch.
+    #[test]
+    fn the_headers_macro_matches_the_version_this_library_reports() {
+        const MARKER: &str = "#define REACTOR_ABI_VERSION ";
+        let header = include_str!("../include/reactor_ffi.h");
+
+        let occurrences = header.matches(MARKER).count();
+        assert_eq!(
+            occurrences, 1,
+            "reactor_ffi.h must define REACTOR_ABI_VERSION exactly once — \
+             found {occurrences}"
+        );
+
+        let declared: u32 = header
+            .split(MARKER)
+            .nth(1)
+            .and_then(|rest| rest.lines().next())
+            .expect("unreachable: the marker was just counted")
+            .trim()
+            .parse()
+            .expect("REACTOR_ABI_VERSION must be an integer");
+
+        assert_eq!(
+            declared, ABI_VERSION,
+            "reactor_ffi.h defines REACTOR_ABI_VERSION as {declared}, lib.rs \
+             reports {ABI_VERSION}. Bump both, or neither."
+        );
+        assert_eq!(reactor_abi_version(), ABI_VERSION);
     }
 
     #[test]

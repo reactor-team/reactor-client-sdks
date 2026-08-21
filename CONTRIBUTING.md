@@ -68,7 +68,11 @@ local `cargo build` automatically).
 - ABI: `mise run lint:abi` checks that `lib.rs`, `reactor_ffi.h` and
   `_ffi.py` all declare the same C ABI surface — a real safeguard now that
   the header, the Rust `#[no_mangle]` functions, and the Python `ctypes`
-  bindings are three separate places the same signature has to match.
+  bindings are three separate places the same signature has to match. It
+  compares function *names*, though, so **changing an existing signature
+  also means bumping `ABI_VERSION` in `crates/reactor-ffi/src/lib.rs` and
+  the version the header states**. Adding a function does not: bindings
+  built against the older version still call everything they know about.
 - Git hooks (installed via `mise run install-hooks`) run the fast subset of
   these on `pre-commit` and the heavier, compiling checks on `pre-push` —
   so most issues surface before you even open a PR.
