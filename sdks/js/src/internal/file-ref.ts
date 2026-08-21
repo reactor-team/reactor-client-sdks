@@ -1,22 +1,5 @@
-import type { FileRef } from '../types';
+import { FileRef } from '../file-ref';
 import type { FileRef as WireFileRef } from './reactor-wasm.types';
-
-/** Structural check — `FileRef` is a plain object on the public boundary,
- *  not a class, so there is no `instanceof` to lean on the way the Python
- *  SDK does with its dataclass. */
-function isFileRef(value: unknown): value is FileRef {
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
-  const candidate = value as Partial<FileRef>;
-
-  return (
-    typeof candidate.uploadId === 'string' &&
-    typeof candidate.name === 'string' &&
-    typeof candidate.mimeType === 'string' &&
-    typeof candidate.size === 'number'
-  );
-}
 
 /** camelCase → the wasm binding's own snake_case wire shape. */
 function toWireFileRef(fileRef: FileRef): WireFileRef {
@@ -28,15 +11,10 @@ function toWireFileRef(fileRef: FileRef): WireFileRef {
   };
 }
 
-/** The wasm binding's snake_case wire shape → the public, camelCase one —
- *  what `Reactor.uploadFile()` actually hands back to a caller. */
+/** The wasm binding's snake_case wire shape → the public `FileRef` — what
+ *  `Reactor.uploadFile()` actually hands back to a caller. */
 export function toPublicFileRef(fileRef: WireFileRef): FileRef {
-  return {
-    uploadId: fileRef.upload_id,
-    name: fileRef.name,
-    mimeType: fileRef.mime_type,
-    size: fileRef.size,
-  };
+  return new FileRef(fileRef.upload_id, fileRef.name, fileRef.mime_type, fileRef.size);
 }
 
 /**
@@ -62,7 +40,7 @@ export function extractFileRefs(data: Record<string, unknown> | undefined): {
   let scalars: Record<string, unknown> | undefined;
 
   for (const [key, value] of Object.entries(data)) {
-    if (!isFileRef(value)) {
+    if (!(value instanceof FileRef)) {
       continue;
     }
     uploads ??= {};
