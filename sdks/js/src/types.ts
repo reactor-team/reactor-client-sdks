@@ -37,6 +37,96 @@ export interface FileRef {
   size: number;
 }
 
+/** One command the model declares in its capabilities. */
+export interface CommandCapability {
+  name: string;
+  description?: string;
+  schema?: unknown;
+}
+
+/**
+ * The runtime's declared capabilities for the session — negotiated tracks,
+ * and the command set when the model exposes one. Pushed once available (no
+ * explicit request needed) — see `Reactor.getCapabilities()`/
+ * `capabilitiesReceived`.
+ *
+ * camelCase — the wasm binding's own wire shape is snake_case
+ * (`protocol_version`, `emission_fps`), translated at the boundary in
+ * `internal/capabilities.ts` rather than exposed directly here.
+ */
+export interface Capabilities {
+  protocolVersion: string;
+  tracks: TrackCapability[];
+  commands?: CommandCapability[];
+  emissionFps?: number;
+}
+
+/** One OpenAPI operation (the `post` of an event/webhook path item). */
+export interface ModelSchemaOperation {
+  operationId?: string;
+  summary?: string;
+  description?: string;
+  requestBody?: {
+    required?: boolean;
+    content?: Record<string, { schema?: Record<string, unknown> }>;
+  };
+  responses?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/** An OpenAPI path item; the runtime only populates `post`. */
+export interface ModelSchemaPathItem {
+  post?: ModelSchemaOperation;
+  [key: string]: unknown;
+}
+
+/**
+ * The model's OpenAPI 3.1 schema, returned by `requestSchema()`/cached by
+ * `getSchema()`. A pass-through of the runtime's document, not a shape this
+ * SDK reshapes: client-triggerable events live under `paths` as
+ * `POST /events/<name>` operations, outbound model messages under
+ * `webhooks`, and media tracks under `x-reactor.tracks`. Read the parts you
+ * need.
+ */
+export interface ModelSchema {
+  openapi: string;
+  info: { title: string; version: string; description?: string };
+  paths?: Record<string, ModelSchemaPathItem>;
+  webhooks?: Record<string, ModelSchemaPathItem>;
+  'x-reactor'?: {
+    tracks?: Array<{ name: string; kind: string; direction: string }>;
+  };
+  components?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/**
+ * Severity tier of a content-moderation event delivered as the inner
+ * payload of a `runtimeMessage` with `type === "moderation"`. `"warn"`
+ * continues the session (informational only); `"terminate"` ends it shortly
+ * after the message is dispatched.
+ */
+export type ModerationAction = 'warn' | 'terminate';
+
+/**
+ * Inner payload of a `runtimeMessage` with `type === "moderation"`. Surfaces
+ * a content-moderation outcome to the client app on any moderatable input
+ * (free-text fields, file uploads) the configured policy flags — subscribe
+ * via `reactor.on("runtimeMessage", ...)` and filter on `type`.
+ */
+export interface ModerationEvent {
+  action: ModerationAction;
+  /** Modality of the flagged input. `"text"` for string fields, `"image"`
+   *  for file-upload payloads with an image MIME type. */
+  input_kind: 'text' | 'image';
+  /** Name of the inbound command/event whose payload was flagged. */
+  command: string;
+  /** Category labels that flagged (e.g. `["sexual"]`, `["violence/graphic"]`). */
+  categories: string[];
+  /** Short human-readable summary suitable for UI rendering. */
+  message: string;
+}
+
 /**
  * `Reactor` construction options. Only `modelName` is required.
  *
@@ -128,9 +218,12 @@ export interface ReactorEventMap {
   message: (message: ReactorMessage) => void;
   /** Platform-scope payload, same name as the Python SDK's `runtime_message`. */
   runtimeMessage: (message: ReactorMessage) => void;
-  /** The model's command schema (an OpenAPI document), fired once the
-   *  auto-request on `"ready"` lands — see `getSchema()`. */
-  schemaReceived: (schema: unknown) => void;
+  /** The model's command schema, fired once the auto-request on `"ready"`
+   *  lands — see `getSchema()`. */
+  schemaReceived: (schema: ModelSchema) => void;
+  /** The runtime's declared capabilities, fired once available — see
+   *  `getCapabilities()`. */
+  capabilitiesReceived: (capabilities: Capabilities) => void;
   /** Fired when the model side of a track's media becomes available.
    *  `Reactor` resolves the wasm binding's raw `(name, mid)` through
    *  `getTrackByName`/`getStreamByName` before emitting, so callers don't
