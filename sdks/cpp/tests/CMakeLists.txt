@@ -11,7 +11,11 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Catch2)
 
-add_executable(reactor_sdk_tests smoke_test.cpp)
+add_executable(
+  reactor_sdk_tests
+  errors_test.cpp
+  smoke_test.cpp
+)
 
 target_link_libraries(reactor_sdk_tests PRIVATE reactor::sdk Catch2::Catch2WithMain)
 

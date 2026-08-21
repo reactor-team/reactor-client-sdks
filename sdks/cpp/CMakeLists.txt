@@ -138,7 +138,11 @@ configure_file(
   @ONLY
 )
 
-add_library(reactor_sdk src/version.cpp)
+add_library(
+  reactor_sdk
+  src/errors.cpp
+  src/version.cpp
+)
 add_library(reactor::sdk ALIAS reactor_sdk)
 
 target_compile_features(reactor_sdk PUBLIC cxx_std_17)
