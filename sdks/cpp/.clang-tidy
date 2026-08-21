@@ -10,6 +10,12 @@
 #                                    void*, which is what reinterpret_cast is for
 #   *-pro-bounds-pointer-arithmetic — the FFI hands over pointer + length pairs
 #   *-non-private-member-variables-in-classes — plain data types are plain data
+#   *-macro-usage                  — the SDK's macros generate *declarations*
+#                                    (sixteen error classes, the FFI symbol
+#                                    table) from one list, which is the one job
+#                                    a constexpr template cannot do. The
+#                                    alternative is sixteen hand-written copies
+#                                    and sixteen chances to get one wrong.
 Checks: >
   -*,
   bugprone-*,
@@ -23,7 +29,8 @@ Checks: >
   -cppcoreguidelines-pro-type-reinterpret-cast,
   -cppcoreguidelines-pro-bounds-pointer-arithmetic,
   -cppcoreguidelines-non-private-member-variables-in-classes,
-  -cppcoreguidelines-avoid-do-while
+  -cppcoreguidelines-avoid-do-while,
+  -cppcoreguidelines-macro-usage
 
 WarningsAsErrors: '*'
 HeaderFilterRegex: 'sdks/cpp/(include|src)/.*'
