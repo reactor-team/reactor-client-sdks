@@ -166,9 +166,10 @@ function Status() {
 }
 ```
 
-`react` and `zustand` are optional peer dependencies — the base
-`@reactor-team/js-sdk` entry point never requires either installed; only
-`@reactor-team/js-sdk/react` does.
+`react` is an optional peer dependency — the base `@reactor-team/js-sdk`
+entry point never requires it installed; only `@reactor-team/js-sdk/react`
+does. `zustand` is a regular dependency, installed automatically — it's an
+internal implementation detail, never exposed on the public API.
 
 `useReactor(selector)` also carries `sessionId`, `lastError`, `lastMessage`,
 and action bindings for `connect`/`disconnect`/`reconnect`/`publish`/
