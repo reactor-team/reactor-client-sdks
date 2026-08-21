@@ -27,6 +27,7 @@
 #include "reactor/errors.hpp"
 #include "reactor/json.hpp"
 #include "reactor/reactor.hpp"
+#include "reactor/recording.hpp"
 #include "reactor/track.hpp"
 
 namespace reactor {
@@ -134,6 +135,35 @@ class PendingOptionalJson final : public Pending {
     }
     promise.set_value(std::move(result));
   }
+  void deliver_error(const std::exception_ptr& error) override { promise.set_exception(error); }
+};
+
+/// A call that answers with a clip.
+class PendingClip final : public Pending {
+ public:
+  std::promise<Clip> promise;
+
+  /// The client the clip should be able to reach, so `download()` can bound its
+  /// wait on the session still being alive.
+  std::weak_ptr<ClientImpl> client;
+
+ private:
+  void deliver(Json result) override;
+  void deliver_error(const std::exception_ptr& error) override { promise.set_exception(error); }
+};
+
+/// A download in flight: the promise, plus the progress callback it has to keep
+/// alive for the length of the transfer.
+class PendingDownload final : public Pending {
+ public:
+  std::promise<void> promise;
+  std::function<void(std::uint32_t, std::uint32_t)> on_progress;
+
+  /// The C progress callback. `userdata` is this object.
+  static void progress_trampoline(std::uint32_t done, std::uint32_t total, void* userdata) noexcept;
+
+ private:
+  void deliver(Json /*result*/) override { promise.set_value(); }
   void deliver_error(const std::exception_ptr& error) override { promise.set_exception(error); }
 };
 
@@ -287,6 +317,16 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   void begin_upload_file(std::unique_ptr<Pending> op, const std::string& path);
   void begin_upload_bytes(std::unique_ptr<Pending> op, Bytes data, const std::string& name,
                           const std::string& mime_type);
+
+  // ── Recording ──────────────────────────────────────────────────────────────
+
+  void begin_request_clip(std::unique_ptr<Pending> op, double duration_seconds);
+  void begin_request_recording(std::unique_ptr<Pending> op);
+  void begin_download(std::unique_ptr<Pending> op, const std::string& playlist_url,
+                      const std::string& path, std::optional<double> ready_timeout_seconds);
+
+  /// Whether this client still has a session that could produce a clip.
+  bool has_live_session() const;
 
   Subscription add_video_handler(const std::string& name,
                                  std::function<void(const VideoFrame&)> handler);

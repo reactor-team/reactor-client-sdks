@@ -27,6 +27,7 @@
 
 #include "reactor/errors.hpp"
 #include "reactor/json.hpp"
+#include "reactor/recording.hpp"
 #include "reactor/status.hpp"
 #include "reactor/subscription.hpp"
 #include "reactor/track.hpp"
@@ -200,6 +201,15 @@ class Reactor {
   /// path — a frame just rendered, a buffer just decoded. `data` is borrowed for
   /// the call only.
   std::future<FileRef> upload_bytes(Bytes data, std::string name, std::string mime_type);
+
+  /// Ask for a clip of the last `duration_seconds` of the session.
+  ///
+  /// Resolves when the platform has accepted the request, which is not the same as
+  /// the clip being ready — `Clip::download()` is what waits for that.
+  std::future<Clip> request_clip(double duration_seconds);
+
+  /// Ask for a recording of the whole session.
+  std::future<Clip> request_recording();
 
   /// Called for each application message the model sends.
   ///
