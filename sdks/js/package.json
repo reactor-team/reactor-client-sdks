@@ -34,7 +34,13 @@
     "mp4box": "^2.4.1"
   },
   "peerDependencies": {
+    "hls.js": "^1.6.0",
     "react": "^18.0.0 || ^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "hls.js": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
@@ -43,6 +49,7 @@
     "@types/react": "^19.0.0",
     "eslint": "^9.39.5",
     "eslint-plugin-react-hooks": "^5.0.0",
+    "hls.js": "^1.6.0",
     "jsdom": "^25.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

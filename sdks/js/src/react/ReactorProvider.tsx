@@ -11,7 +11,11 @@ export interface ReactorProviderProps {
   children?: ReactNode;
 }
 
-const ReactorContext = createContext<StoreApi<ReactorStore> | undefined>(undefined);
+/** Exported so a component can optionally read the nearest provider's store
+ *  without requiring one — e.g. `ClipPlayer`, which works both inside and
+ *  outside a `ReactorProvider`. Most consumers want `useReactor`/`useReactorStore`
+ *  instead, which throw outside a provider rather than returning `undefined`. */
+export const ReactorContext = createContext<StoreApi<ReactorStore> | undefined>(undefined);
 
 /**
  * Owns a `Reactor` instance (built once, lazily, on first render) and exposes
