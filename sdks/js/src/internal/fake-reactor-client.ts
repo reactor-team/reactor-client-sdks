@@ -1,4 +1,5 @@
 import type {
+  Capabilities as WireCapabilities,
   Clip as WireClip,
   ConnectOptions,
   FileRef,
@@ -80,6 +81,8 @@ export class FakeReactorClient {
   streamByNameResult: MediaStream | undefined;
 
   private trackReceivedListener: ((name: string, mid: string | undefined) => void) | undefined;
+  private capabilitiesReceivedListener: ((capabilities: WireCapabilities) => void) | undefined;
+  capabilitiesResult: WireCapabilities | undefined;
 
   emitError(error: unknown): void {
     this.errorListener?.(error);
@@ -184,6 +187,13 @@ export class FakeReactorClient {
   onTrackReceived(listener: (name: string, mid: string | undefined) => void): void {
     this.trackReceivedListener = listener;
   }
+  onCapabilitiesReceived(listener: (capabilities: WireCapabilities) => void): void {
+    this.capabilitiesReceivedListener = listener;
+  }
+
+  capabilities(): WireCapabilities | undefined {
+    return this.capabilitiesResult;
+  }
 
   emitReady(): void {
     this.statusListener?.('ready');
@@ -208,6 +218,9 @@ export class FakeReactorClient {
   }
   emitTrackReceived(name: string, mid: string | undefined): void {
     this.trackReceivedListener?.(name, mid);
+  }
+  emitCapabilitiesReceived(capabilities: WireCapabilities): void {
+    this.capabilitiesReceivedListener?.(capabilities);
   }
 
   publishTrack(name: string, track: MediaStreamTrack): Promise<void> {

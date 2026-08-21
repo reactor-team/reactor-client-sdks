@@ -28,13 +28,20 @@ export {
 } from './recording';
 export type { DownloadClipOptions, FetchPlaylistOptions } from './recording';
 export type {
+  Capabilities,
   Clip,
   ClipKind,
+  CommandCapability,
   ConnectionStats,
   ConnectionTimings,
   ConnectOptions,
   FileRef,
   JwtSource,
+  ModelSchema,
+  ModelSchemaOperation,
+  ModelSchemaPathItem,
+  ModerationAction,
+  ModerationEvent,
   ReactorEventMap,
   ReactorEventName,
   ReactorMessage,

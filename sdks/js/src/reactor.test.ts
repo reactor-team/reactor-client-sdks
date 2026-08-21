@@ -364,6 +364,66 @@ describe('Reactor schema', () => {
   });
 });
 
+describe('Reactor capabilities', () => {
+  it('is undefined before capabilitiesReceived fires', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+
+    await currentClient(reactor);
+
+    expect(reactor.getCapabilities()).toBeUndefined();
+  });
+
+  it('caches the capabilities and translates the wire shape to camelCase once received', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.emitCapabilitiesReceived({
+      protocol_version: '1.0',
+      tracks: [{ name: 'output', kind: 'video', direction: 'recvonly' }],
+      commands: [{ name: 'set_image' }],
+      emission_fps: 30,
+    });
+
+    expect(reactor.getCapabilities()).toEqual({
+      protocolVersion: '1.0',
+      tracks: [{ name: 'output', kind: 'video', direction: 'recvonly' }],
+      commands: [{ name: 'set_image' }],
+      emissionFps: 30,
+    });
+  });
+
+  it('omits optional fields the wire payload left out, rather than passing them through as undefined', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.emitCapabilitiesReceived({ protocol_version: '1.0', tracks: [] });
+
+    expect(reactor.getCapabilities()).toEqual({ protocolVersion: '1.0', tracks: [] });
+  });
+
+  it('emits a capabilitiesReceived event with the translated value', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const onCapabilities = vi.fn();
+
+    reactor.on('capabilitiesReceived', onCapabilities);
+    client.emitCapabilitiesReceived({ protocol_version: '1.0', tracks: [] });
+
+    expect(onCapabilities).toHaveBeenCalledWith({ protocolVersion: '1.0', tracks: [] });
+  });
+
+  it('is cleared on disconnect and on dispose', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.emitCapabilitiesReceived({ protocol_version: '1.0', tracks: [] });
+    expect(reactor.getCapabilities()).not.toBeUndefined();
+
+    await reactor.disconnect();
+    expect(reactor.getCapabilities()).toBeUndefined();
+  });
+});
+
 describe('Reactor.requestClip / requestRecording / downloadClipAsFile', () => {
   it('requestClip forwards durationSeconds and translates the wire Clip to camelCase', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
