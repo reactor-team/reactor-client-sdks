@@ -8,6 +8,7 @@ import {
 } from './errors';
 import { FakeReactorClient } from './internal/fake-reactor-client';
 import { toPublicFileRef } from './internal/file-ref';
+import { FileRef } from './file-ref';
 import { toPublicClip } from './internal/recording';
 import { STATS_INTERVAL_MS } from './internal/stats';
 import type * as RecordingModule from './recording';
@@ -89,7 +90,7 @@ describe('Reactor.sendCommand', () => {
   it('extracts FileRef values into uploads, translated to the wire shape, before calling the binding', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
-    const fileRef = { uploadId: 'up_1', name: 'a.jpg', mimeType: 'image/jpeg', size: 10 };
+    const fileRef = new FileRef('up_1', 'a.jpg', 'image/jpeg', 10);
 
     await reactor.sendCommand('set_image', { image: fileRef, caption: 'a cat' });
 
