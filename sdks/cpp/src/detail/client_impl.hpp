@@ -107,6 +107,68 @@ class PendingVoid final : public Pending {
   void deliver_error(const std::exception_ptr& error) override { promise.set_exception(error); }
 };
 
+/// A call whose answer is a JSON document: request_schema.
+class PendingJson final : public Pending {
+ public:
+  std::promise<Json> promise;
+
+ private:
+  void deliver(Json result) override { promise.set_value(std::move(result)); }
+  void deliver_error(const std::exception_ptr& error) override { promise.set_exception(error); }
+};
+
+/// A call whose answer may legitimately be nothing: send_command.
+///
+/// A handler that ran and returned no message is a success with no value, which is
+/// a different thing from a failure — and folding the two together is how a caller
+/// ends up treating a working setter as a broken one.
+class PendingOptionalJson final : public Pending {
+ public:
+  std::promise<std::optional<Json>> promise;
+
+ private:
+  void deliver(Json result) override {
+    if (result.is_null() || (result.is_object() && result.empty())) {
+      promise.set_value(std::nullopt);
+      return;
+    }
+    promise.set_value(std::move(result));
+  }
+  void deliver_error(const std::exception_ptr& error) override { promise.set_exception(error); }
+};
+
+/// A call that answers with an uploaded file's reference.
+class PendingFileRef final : public Pending {
+ public:
+  std::promise<FileRef> promise;
+
+ private:
+  void deliver(Json result) override {
+    FileRef ref;
+    if (result.is_object()) {
+      ref.upload_id = result.value("upload_id", std::string{});
+      ref.name = result.value("name", std::string{});
+      ref.mime_type = result.value("mime_type", std::string{});
+      ref.size = result.value("size", std::uint64_t{0});
+    }
+    if (ref.upload_id.empty()) {
+      // The upload reported success and gave nothing to refer to it by, which no
+      // command could use. A decode failure, not a silent empty reference.
+      promise.set_exception(as_exception_ptr(
+          ErrorDetails{std::string{codes::DECODE_FAILED},
+                       "the upload succeeded but returned no upload_id: " + result.dump(),
+                       false,
+                       {},
+                       "upload_file",
+                       {},
+                       {}}));
+      return;
+    }
+    promise.set_value(std::move(ref));
+  }
+  void deliver_error(const std::exception_ptr& error) override { promise.set_exception(error); }
+};
+
 // ── The client's state ───────────────────────────────────────────────────────
 
 class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
@@ -214,6 +276,17 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   Track track(const std::string& name);
 
   Handlers<Track>& track_handlers() { return track_handlers_; }
+  Handlers<const Json&>& message_handlers() { return message_handlers_; }
+  Handlers<const Json&>& runtime_message_handlers() { return runtime_message_handlers_; }
+
+  // ── Commands, messages, uploads ────────────────────────────────────────────
+
+  void begin_send_command(std::unique_ptr<Pending> op, const std::string& command, const Json& args,
+                          const std::map<std::string, FileRef>& uploads);
+  void begin_request_schema(std::unique_ptr<Pending> op);
+  void begin_upload_file(std::unique_ptr<Pending> op, const std::string& path);
+  void begin_upload_bytes(std::unique_ptr<Pending> op, Bytes data, const std::string& name,
+                          const std::string& mime_type);
 
   Subscription add_video_handler(const std::string& name,
                                  std::function<void(const VideoFrame&)> handler);
@@ -335,6 +408,8 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     callbacks.on_error = &on_error_trampoline;
     callbacks.on_track = &on_track_trampoline;
     callbacks.on_capabilities = &on_capabilities_trampoline;
+    callbacks.on_message = &on_message_trampoline;
+    callbacks.on_runtime_message = &on_runtime_message_trampoline;
     callbacks.on_frame = &on_frame_trampoline;
     callbacks.on_audio = &on_audio_trampoline;
     callbacks.userdata = context.get();
@@ -429,6 +504,11 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   static void on_track_trampoline(const char* name, const char* mid_or_null,
                                   void* userdata) noexcept;
   static void on_capabilities_trampoline(const char* caps_json, void* userdata) noexcept;
+  static void on_message_trampoline(const char* msg_json, void* userdata) noexcept;
+  static void on_runtime_message_trampoline(const char* msg_json, void* userdata) noexcept;
+
+  /// Deliver a parsed message to `handlers`, on the dispatcher.
+  void fire_message(Handlers<const Json&>& handlers, const char* msg_json);
 
   /// Forget what the session declared, so the next read asks again.
   void invalidate_declared();
@@ -483,6 +563,8 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   Handlers<Status> status_handlers_;
   Handlers<const ReactorError&> error_handlers_;
   Handlers<Track> track_handlers_;
+  Handlers<const Json&> message_handlers_;
+  Handlers<const Json&> runtime_message_handlers_;
 
   /// Frame handlers, per track name.
   ///

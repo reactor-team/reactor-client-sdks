@@ -19,12 +19,14 @@
 #include <cstdint>
 #include <functional>
 #include <future>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 
 #include "reactor/errors.hpp"
+#include "reactor/json.hpp"
 #include "reactor/status.hpp"
 #include "reactor/subscription.hpp"
 #include "reactor/track.hpp"
@@ -100,6 +102,18 @@ struct ConnectOptions {
   std::optional<std::uint32_t> connection_id;
 };
 
+/// A file the platform is holding, ready to be passed into a command.
+///
+/// Returned by `upload_file` / `upload_bytes`, and handed to `send_command` as a
+/// named upload rather than embedded in the arguments — the platform resolves the
+/// reference on its side, so the bytes cross the wire once.
+struct FileRef {
+  std::string upload_id;
+  std::string name;
+  std::string mime_type;
+  std::uint64_t size = 0;
+};
+
 /// A Reactor client: one session, and the tracks and commands on it.
 ///
 /// Movable, not copyable — a session has one owner. Destroying it releases the
@@ -149,6 +163,56 @@ class Reactor {
 
   /// Called on every status change, with the new status.
   Subscription on_status(std::function<void(Status)> handler);
+
+  /// Send a command and wait for its correlated reply.
+  ///
+  /// The reply is `{type, data}`, or **empty** when the handler ran and
+  /// acknowledged the command without returning a message — an auto-generated
+  /// `set_<field>` setter, for instance. Empty is not a failure and is not folded
+  /// into one.
+  ///
+  /// Uploads are passed separately rather than embedded in `args`:
+  ///
+  ///     auto ref = reactor.upload_file("photo.jpg").get();
+  ///     reactor.send_command("set_image", {}, {{"image", ref}}).get();
+  ///
+  /// The Python SDK finds a `FileRef` sitting in the arguments and pulls it out;
+  /// C++ has no way to recognise one inside a `Json`, so it is named here instead.
+  /// Explicit costs a few characters and cannot silently miss one.
+  std::future<std::optional<Json>> send_command(std::string command, Json args = Json::object(),
+                                                std::map<std::string, FileRef> uploads = {});
+
+  /// The model's command schema, as an OpenAPI document.
+  ///
+  /// What to read when a command is rejected: it is the model's own account of
+  /// what it accepts, which is more current than any documentation.
+  std::future<Json> request_schema();
+
+  /// Upload a local file, for passing into a command.
+  ///
+  /// Needs a ready session — the upload is created against it. `NotFoundError`
+  /// when the path does not exist.
+  std::future<FileRef> upload_file(std::string path);
+
+  /// Upload bytes the caller already holds.
+  ///
+  /// The same result as `upload_file`, for a caller with the bytes rather than a
+  /// path — a frame just rendered, a buffer just decoded. `data` is borrowed for
+  /// the call only.
+  std::future<FileRef> upload_bytes(Bytes data, std::string name, std::string mime_type);
+
+  /// Called for each application message the model sends.
+  ///
+  /// The payload is the message as the model sent it: `{type, data}`. Model
+  /// messages and platform messages are separate events because they are separate
+  /// things — see `on_runtime_message`.
+  Subscription on_message(std::function<void(const Json&)> handler);
+
+  /// Called for each message from the runtime rather than from the model.
+  ///
+  /// Platform-level: session lifecycle notices, clip readiness. A caller reading
+  /// only `on_message` never has to filter these out of it.
+  Subscription on_runtime_message(std::function<void(const Json&)> handler);
 
   /// The track called `name`.
   ///
