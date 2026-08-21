@@ -1,0 +1,19 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Header-only and part of the public surface (`reactor::Json` is an alias for
+# nlohmann::json), so a consumer needs it on the include path too. The archives
+# carry a copy; a consumer who already pins their own gets theirs, which is the
+# point of asking rather than vendoring the headers into ours.
+find_dependency(nlohmann_json 3.11)
+
+include("${CMAKE_CURRENT_LIST_DIR}/reactor-sdk-targets.cmake")
+
+# The native library ships beside the archive's own lib/, and the imported
+# target's rpath already points at $ORIGIN / @loader_path. Reported here so a
+# consumer pointing at a different build can see which one they got.
+get_filename_component(REACTOR_SDK_LIB_DIR "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+set(REACTOR_SDK_VERSION "@PROJECT_VERSION@")
+
+check_required_components(reactor-sdk)

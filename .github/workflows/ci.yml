@@ -117,15 +117,64 @@ jobs:
       # unlike the `wasm` job's build:js.
       - run: mise run test:js
 
+  cpp:
+    name: C++ SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1   # reads rust-toolchain.toml
+        with:
+          cache-on-failure: true
+          # Keyed on the toolchain lockfile, as the other jobs are: the Rust cache
+          # holds the C++ objects reactor-webrtc-sys compiles with the pinned
+          # clang, and reusing objects built by a different one is an ABI mismatch
+          # Cargo's fingerprint cannot see.
+          cache-key: ${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      # Sets CXX to the pinned conda clang++, which the step below needs and the
+      # ones after it must not use.
+      - name: Install clang for the libwebrtc C++ glue
+        uses: ./.github/actions/setup-libwebrtc-cxx
+      - name: Build libreactor_ffi (the library the SDK links)
+        run: mise run build:ffi
+      # The pinned clang++ exists only to compile that glue against libwebrtc's
+      # own libc++ headers. It also brings conda's linker and sysroot, which
+      # cannot resolve the GLIBC_2.34 symbols the .so it just produced needs from
+      # the system glibc — so the SDK is built with the runner's own clang,
+      # against the same libc as everything else it links.
+      #
+      # By absolute path, not `command -v clang++`: mise puts the conda toolchain
+      # on PATH, so looking the name up finds the very compiler being avoided.
+      #
+      # clang rather than g++ because clang-tidy asks $CXX where the compiler
+      # keeps its builtin headers and only clang answers — and with
+      # REACTOR_REQUIRE_CLANG_TIDY set, a host that cannot answer fails the job
+      # instead of quietly skipping the check.
+      - name: Use the platform clang for the SDK itself
+        run: |
+          set -euo pipefail
+          if [ ! -x /usr/bin/clang++ ]; then
+            echo "::error::/usr/bin/clang++ is missing on this runner image."
+            exit 1
+          fi
+          echo "CXX=/usr/bin/clang++" >> "$GITHUB_ENV"
+          echo "REACTOR_REQUIRE_CLANG_TIDY=1" >> "$GITHUB_ENV"
+          /usr/bin/clang++ --version
+      # Fetches nlohmann/json and Catch2 at configure time.
+      - run: mise run lint:cpp
+      - run: mise run test:cpp
+
   ci-complete:
     name: CI Complete
-    needs: [lint, wasm, test]
+    needs: [lint, wasm, test, cpp]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Verify no job failed
         run: |
-          for r in "${{ needs.lint.result }}" "${{ needs.wasm.result }}" "${{ needs.test.result }}"; do
+          for r in "${{ needs.lint.result }}" "${{ needs.wasm.result }}" "${{ needs.test.result }}" "${{ needs.cpp.result }}"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::a required job failed ($r)"; exit 1
             fi
