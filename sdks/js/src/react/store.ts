@@ -1,5 +1,3 @@
-import { create } from 'zustand';
-import type { StoreApi } from 'zustand';
 import { Reactor } from '../reactor';
 import type { ReactorError } from '../errors';
 import type { ConnectOptions, JwtSource, ReactorMessage, ReactorOptions, ReactorStatus } from '../types';
@@ -41,6 +39,34 @@ export const defaultReactorState: ReactorState = {
   lastMessage: undefined,
 };
 
+export interface StoreApi<T> {
+  getState: () => T;
+  subscribe: (listener: () => void) => () => void;
+}
+
+/** Bare-bones observable-state container: a `set`/`get` pair for the
+ *  builder to mirror events into, `subscribe` for `useSyncExternalStore`. */
+function createStore<T extends object>(build: (set: (partial: Partial<T>) => void, get: () => T) => T): StoreApi<T> {
+  const listeners = new Set<() => void>();
+  let state: T;
+
+  const set = (partial: Partial<T>): void => {
+    state = { ...state, ...partial };
+    listeners.forEach((listener) => listener());
+  };
+  const get = (): T => state;
+
+  state = build(set, get);
+
+  return {
+    getState: get,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}
+
 /**
  * Builds a `Reactor` and the store mirroring it. `defaultConnectOptions` is
  * applied to every `connect()`/`reconnect()` call; a call-site `options`
@@ -50,7 +76,7 @@ export function createReactorStore(
   options: ReactorOptions,
   defaultConnectOptions?: ConnectOptions,
 ): StoreApi<ReactorStore> {
-  return create<ReactorStore>()((set, get) => {
+  return createStore<ReactorStore>((set, get) => {
     const reactor = new Reactor(options);
 
     reactor.on('statusChanged', (status) => set({ status }));

@@ -1,7 +1,5 @@
-import { createContext, useContext, useEffect, useRef, type ReactNode } from 'react';
-import { useStore } from 'zustand';
-import type { StoreApi } from 'zustand';
-import { createReactorStore, type ReactorStore } from './store';
+import { createContext, useContext, useEffect, useRef, useSyncExternalStore, type ReactNode } from 'react';
+import { createReactorStore, type ReactorStore, type StoreApi } from './store';
 import type { ConnectOptions, JwtSource, ReactorOptions } from '../types';
 
 export interface ReactorProviderProps {
@@ -70,5 +68,5 @@ export function useReactorStore<T>(selector: (state: ReactorStore) => T): T {
     throw new Error('useReactor must be used within a ReactorProvider');
   }
 
-  return useStore(store, selector);
+  return useSyncExternalStore(store.subscribe, () => selector(store.getState()));
 }
