@@ -20,13 +20,86 @@ env:
   MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
 
 jobs:
-  lint:
-    name: fmt + clippy + repo lints
+  # Which jobs have anything to do.
+  #
+  # One binding's PR must not build another's: nobody editing the Python SDK
+  # should pay for a C++ toolchain, and a red C++ build on a Python-only PR is
+  # what teaches a team to ignore red. The converse matters more — a change under
+  # crates/ is EVERY binding's business, because it can move the ABI out from
+  # under one, so it triggers all of them.
+  #
+  # Skipping is safe only because `ci-complete` is the single required check: it
+  # needs every job and runs `if: always()`, so a skipped job is a pass rather
+  # than a check that never reports and a pull request that waits forever.
+  changes:
+    name: what changed
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      python: ${{ steps.filter.outputs.python }}
+      js: ${{ steps.filter.outputs.js }}
+      cpp: ${{ steps.filter.outputs.cpp }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            shared: &shared
+              - '.github/workflows/ci.yml'
+              - '.github/actions/**'
+              - 'mise.toml'
+              - 'mise.lock'
+            core: &core
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+            rust:
+              - *shared
+              - *core
+            python:
+              - *shared
+              - *core
+              - 'sdks/python/**'
+            js:
+              - *shared
+              - *core
+              - 'sdks/js/**'
+            cpp:
+              - *shared
+              - *core
+              - 'sdks/cpp/**'
+
+  # Repo-wide checks: fast, text-only, and about the repository rather than about
+  # any one binding — so they always run and need no compiler.
+  repo:
+    name: repo lints
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # mise.lock drift check diffs against the merge-base
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - run: hk validate
+      - name: ABI parity (lib.rs / reactor_ffi.h / _ffi.py / sdks/cpp)
+        run: mise run lint:abi
+      - run: mise run lint:shell
+      - run: mise run lint:mise-tools-root
+      - name: mise.lock drift (vs merge-base)
+        run: mise run lint:mise-lock
+
+  rust:
+    name: Rust core
+    needs: changes
+    # Everything runs on a push to main: the filters answer "what did this pull
+    # request touch", and on main there is no pull request to ask about.
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1   # reads rust-toolchain.toml
         with:
           cache-on-failure: true
@@ -40,26 +113,40 @@ jobs:
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
-      - uses: actions/setup-node@v4   # Node isn't mise-pinned yet; see mise.toml's "JS SDK" section
-        with:
-          node-version: "24"
-      - run: hk validate
       - run: mise run fmt:check
       - name: Install clang for the libwebrtc C++ glue
         uses: ./.github/actions/setup-libwebrtc-cxx
       # Covers reactor-ffi, which is why the clang above is needed.
       - run: mise run clippy
-      - run: mise run lint:python
-      - run: mise run lint:js
-      - name: ABI parity (lib.rs / reactor_ffi.h / _ffi.py)
-        run: mise run lint:abi
-      - run: mise run lint:shell
-      - run: mise run lint:mise-tools-root
-      - name: mise.lock drift (vs merge-base)
-        run: mise run lint:mise-lock
+      - run: mise run test:rust
 
-  wasm:
-    name: browser binding (wasm32)
+  python:
+    name: Python SDK
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1   # reads rust-toolchain.toml
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - run: mise run lint:python
+      - name: Install clang for the libwebrtc C++ glue
+        uses: ./.github/actions/setup-libwebrtc-cxx
+      # Builds the cdylib so the ctypes contract tests run instead of skipping —
+      # they are the only check that _ffi.py's argtypes match the compiled ABI.
+      - name: Build libreactor_ffi for the ctypes contract tests
+        run: mise run build:ffi
+      - run: mise run test:python
+
+  js:
+    name: JS SDK + browser binding
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.js == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -70,65 +157,32 @@ jobs:
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
-      # reactor-wasm compiles to nothing off a wasm target, so the lint job's
+      - uses: actions/setup-node@v4   # Node isn't mise-pinned yet; see mise.toml's "JS SDK" section
+        with:
+          node-version: "24"
+      # reactor-wasm compiles to nothing off a wasm target, so the rust job's
       # host-target clippy covers none of it. No clang needed here: this target
       # pulls in reactor-core only, never reactor-ffi's libwebrtc glue.
       - run: mise run clippy:wasm
       # Proves the binding still links and that wasm-bindgen can emit the JS
       # package the SDK imports — a clippy pass alone would not.
       - run: mise run build:wasm
-      - uses: actions/setup-node@v4   # Node isn't mise-pinned yet; see mise.toml's "JS SDK" section
-        with:
-          node-version: "24"
-      # Builds the JS SDK against the real reactor-wasm output above — the
-      # one thing a local checkout without a Rust toolchain can't verify.
+      - run: mise run lint:js
+      # Builds the SDK against the real reactor-wasm output above — the one thing
+      # a local checkout without a Rust toolchain can't verify.
       - run: mise run build:js
-
-  test:
-    name: rust + python + js tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions-rust-lang/setup-rust-toolchain@v1   # reads rust-toolchain.toml
-        with:
-          cache-on-failure: true
-          # Keyed on the toolchain lockfile because the Rust cache holds C++
-          # objects: reactor-webrtc-sys compiles its glue with the clang mise
-          # pins, and reusing objects built by a different one is the ABI
-          # mismatch its build.rs warns about — silently, since Cargo's
-          # fingerprint does not see the compiler swap. A tool bump is a cache
-          # miss now, which is the safe direction.
-          cache-key: ${{ hashFiles('mise.lock') }}
-      - uses: jdx/mise-action@v4
-        with:
-          version: ${{ env.MISE_VERSION }}
-      - name: Install clang for the libwebrtc C++ glue
-        uses: ./.github/actions/setup-libwebrtc-cxx
-      - run: mise run test:rust
-      # Builds the cdylib so the ctypes contract tests run instead of skipping —
-      # they are the only check that _ffi.py's argtypes match the compiled ABI.
-      - name: Build libreactor_ffi for the ctypes contract tests
-        run: cargo build -p reactor-ffi --release
-      - run: mise run test:python
-      - uses: actions/setup-node@v4   # Node isn't mise-pinned yet; see mise.toml's "JS SDK" section
-        with:
-          node-version: "24"
-      # Unit tests against a mocked ReactorClient — no wasm build needed here,
-      # unlike the `wasm` job's build:js.
       - run: mise run test:js
 
   cpp:
     name: C++ SDK
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1   # reads rust-toolchain.toml
         with:
           cache-on-failure: true
-          # Keyed on the toolchain lockfile, as the other jobs are: the Rust cache
-          # holds the C++ objects reactor-webrtc-sys compiles with the pinned
-          # clang, and reusing objects built by a different one is an ABI mismatch
-          # Cargo's fingerprint cannot see.
           cache-key: ${{ hashFiles('mise.lock') }}
       - uses: jdx/mise-action@v4
         with:
@@ -168,13 +222,21 @@ jobs:
 
   ci-complete:
     name: CI Complete
-    needs: [lint, wasm, test, cpp]
+    needs: [changes, repo, rust, python, js, cpp]
     if: always()
     runs-on: ubuntu-latest
     steps:
+      # A skipped job is a pass: that is the whole point of the filters above, and
+      # what makes this the only check `main` needs to require. A *failed* or
+      # cancelled one is not, whichever job it was.
       - name: Verify no job failed
         run: |
-          for r in "${{ needs.lint.result }}" "${{ needs.wasm.result }}" "${{ needs.test.result }}" "${{ needs.cpp.result }}"; do
+          for r in "${{ needs.changes.result }}" \
+                   "${{ needs.repo.result }}" \
+                   "${{ needs.rust.result }}" \
+                   "${{ needs.python.result }}" \
+                   "${{ needs.js.result }}" \
+                   "${{ needs.cpp.result }}"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::a required job failed ($r)"; exit 1
             fi
