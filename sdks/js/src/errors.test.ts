@@ -12,6 +12,7 @@ import {
   NotFoundError,
   ReactorError,
   RateLimitedError,
+  RecorderDisabledError,
   RequestTimeoutError,
   ServerError,
   SessionTerminalError,
@@ -200,6 +201,7 @@ describe('typed subclasses', () => {
     [DisconnectedError, 'DISCONNECTED'],
     [RequestTimeoutError, 'REQUEST_TIMEOUT'],
     [AbortedError, 'ABORTED'],
+    [RecorderDisabledError, 'RECORDER_DISABLED'],
   ];
 
   it.each(cases)('%s defaults its code and extends ReactorError', (ErrorClass, code) => {
