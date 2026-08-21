@@ -37,6 +37,7 @@ export type {
   ConnectOptions,
   FileRef,
   JwtSource,
+  MessageScope,
   ModelSchema,
   ModelSchemaOperation,
   ModelSchemaPathItem,

@@ -145,6 +145,64 @@ describe('Reactor.sendCommand', () => {
   });
 });
 
+describe('Reactor.sendCommand runtime-scope compatibility shim', () => {
+  it('routes ("requestSchema", data, "runtime") to requestSchema(), bypassing the binding\'s sendCommand', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    const reply = await reactor.sendCommand('requestSchema', {}, 'runtime');
+
+    expect(reply).toBeUndefined();
+    expect(client.requestSchemaCalls).toBe(1);
+    expect(client.sendCommandCalls).toEqual([]);
+  });
+
+  it('swallows a requestSchema() failure instead of rejecting, matching sendCommand\'s own never-rejects contract', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.schemaError = Object.assign(new Error('boom'), { code: 'TIMEOUT' });
+
+    await expect(reactor.sendCommand('requestSchema', {}, 'runtime')).resolves.toBeUndefined();
+  });
+
+  it('no-ops on ("requestCapabilities", data, "runtime") — nothing to trigger, capabilities are pushed', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    const reply = await reactor.sendCommand('requestCapabilities', {}, 'runtime');
+
+    expect(reply).toBeUndefined();
+    expect(client.sendCommandCalls).toEqual([]);
+  });
+
+  it('falls through to a normal application-scope send for any other command, with a warning', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const reply = await reactor.sendCommand('set_prompt', { prompt: 'a cat' }, 'runtime');
+
+    expect(reply).toEqual({ type: 'ack', data: null });
+    expect(client.sendCommandCalls).toEqual([
+      { command: 'set_prompt', data: { prompt: 'a cat' }, uploads: undefined },
+    ]);
+    expect(warnSpy).toHaveBeenCalledOnce();
+    warnSpy.mockRestore();
+  });
+
+  it('omitting scope behaves exactly like "application"', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    await reactor.sendCommand('set_caption', { text: 'hi' });
+
+    expect(client.sendCommandCalls).toEqual([
+      { command: 'set_caption', data: { text: 'hi' }, uploads: undefined },
+    ]);
+  });
+});
+
 describe('Reactor connect/construction options', () => {
   it("forwards sessionId, connectionId, autoResumeTracks, and maxAttempts to the binding's connect()", async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
