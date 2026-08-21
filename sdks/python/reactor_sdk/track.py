@@ -78,6 +78,14 @@ VIDEO_FRAME_HANDLER_ARGUMENTS = ("frame", "frame_id", "timestamp_us", "user_data
 #: What an audio track's `on_frame` offers a handler, in order.
 AUDIO_FRAME_HANDLER_ARGUMENTS = ("frame", "sample_rate", "num_channels")
 
+#: The format a sendonly audio track sends in — the only one it has, rather than a
+#: default something below negotiates away from. Every local audio track is fed from
+#: one shared synthetic device that is driven at 48 kHz mono, and nothing between
+#: `push_frame` and the wire resamples. Receiving is the other way round: an incoming
+#: frame carries its own rate and channel count, and `on_frame` reports them.
+SEND_SAMPLE_RATE = 48000
+SEND_CHANNELS = 1
+
 
 class TrackList(list["Track"]):
     """The tracks a session declares — a plain list, with filters that chain.
@@ -291,8 +299,8 @@ class Track:
         height: int | None = None,
         user_data: bytes | None = None,
         capture_time_us: int | None = None,
-        sample_rate: int = 48000,
-        num_channels: int = 1,
+        sample_rate: int = SEND_SAMPLE_RATE,
+        num_channels: int = SEND_CHANNELS,
         samples_per_channel: int | None = None,
     ) -> None:
         """Push one frame into this sendonly track.
@@ -334,6 +342,14 @@ class Track:
 
             mic.push_frame(pcm, sample_rate=48000, num_channels=1)
 
+        Those are the only two values a sendonly track has, and another is an error
+        rather than a request. Every local audio track is fed from one shared
+        synthetic device driven at 48 kHz mono, and nothing on the way down
+        resamples — so 16 kHz PCM accepted here would reach the wire as 48 kHz mono:
+        not converted, but the same samples played three times too fast. Resample
+        before pushing. Receiving is the other way round — an incoming frame carries
+        its own rate and channel count, and :meth:`on_frame` reports them.
+
         An argument the track's kind has no use for is refused rather than ignored —
         but only where ignoring it would throw away what the caller meant. Passing
         `sample_rate` to a video track is merely redundant and is let through;
@@ -357,6 +373,19 @@ class Track:
                     f"carries no capture time of its own — a track's RTP timestamp "
                     f"counts the samples handed to it, so the feed's own continuity "
                     f"is the clock. Only video frames can be stamped."
+                )
+            if sample_rate != SEND_SAMPLE_RATE or num_channels != SEND_CHANNELS:
+                # Not "unsupported yet, so ignored": ignoring it is what makes it
+                # inaudible as a mistake. The samples go out at 48 kHz mono either
+                # way, so accepting another format sends the caller's audio at the
+                # wrong speed rather than converting it.
+                raise ValueError(
+                    f"push_frame(): track {self._name!r} was given "
+                    f"sample_rate={sample_rate} num_channels={num_channels}, and a "
+                    f"sendonly audio track sends only {SEND_SAMPLE_RATE} Hz mono. "
+                    f"Nothing below this call resamples, so those samples would go "
+                    f"out as {SEND_SAMPLE_RATE} Hz mono regardless — heard at the "
+                    f"wrong speed, not converted. Resample the PCM first."
                 )
             pcm = data.tobytes() if _is_array(data) else bytes(data)
             if samples_per_channel is None:
