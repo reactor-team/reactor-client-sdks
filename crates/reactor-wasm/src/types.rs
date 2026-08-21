@@ -45,6 +45,12 @@ export interface ClientOptions {
   maxSessionAttempts?: number;
   /** SDP-answer poll attempts. Default 6. */
   maxSdpAttempts?: number;
+  /** Initial delay before the first SDP-answer poll retry, in ms. Default 200. */
+  sdpBackoffInitialMs?: number;
+  /** Cap on the exponential backoff between SDP-answer poll retries, in ms. Default 15000. */
+  sdpBackoffMaxMs?: number;
+  /** Growth factor applied to the delay between SDP-answer poll retries. Default 2. */
+  sdpBackoffMultiplier?: number;
   /** Console log level. Default "warn". */
   logLevel?: "off" | "error" | "warn" | "info" | "debug" | "trace";
 }
