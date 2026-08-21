@@ -1,0 +1,102 @@
+import { Reactor } from '../reactor';
+import type { ReactorError } from '../errors';
+import type { ConnectOptions, JwtSource, ReactorMessage, ReactorOptions, ReactorStatus } from '../types';
+
+/** State kept reactive for `useReactor` selectors. Tracks/stats/schema aren't
+ *  mirrored here — reach them through the `internal.reactor` escape hatch. */
+export interface ReactorState {
+  status: ReactorStatus;
+  sessionId: string | undefined;
+  lastError: ReactorError | undefined;
+  /** Most recent app-scope `message` payload; `runtimeMessage` isn't mirrored
+   *  here — subscribe on `internal.reactor` for that. */
+  lastMessage: ReactorMessage | undefined;
+}
+
+export interface ReactorActions {
+  connect: (jwt?: JwtSource, options?: ConnectOptions) => Promise<void>;
+  disconnect: (recoverable?: boolean) => Promise<void>;
+  reconnect: (options?: ConnectOptions) => Promise<void>;
+  sendCommand: (command: string, data?: Record<string, unknown>) => Promise<ReactorMessage | undefined>;
+  publish: (name: string, track: MediaStreamTrack) => Promise<void>;
+  unpublish: (name: string) => Promise<void>;
+  pauseTrack: (name: string) => Promise<void>;
+  resumeTrack: (name: string) => Promise<void>;
+}
+
+export interface ReactorInternal {
+  /** Escape hatch: the underlying `Reactor` instance, for anything the
+   *  selector state / action bindings above don't cover. */
+  reactor: Reactor;
+}
+
+export type ReactorStore = ReactorState & ReactorActions & { internal: ReactorInternal };
+
+export const defaultReactorState: ReactorState = {
+  status: 'disconnected',
+  sessionId: undefined,
+  lastError: undefined,
+  lastMessage: undefined,
+};
+
+export interface StoreApi<T> {
+  getState: () => T;
+  subscribe: (listener: () => void) => () => void;
+}
+
+/** Bare-bones observable-state container: a `set`/`get` pair for the
+ *  builder to mirror events into, `subscribe` for `useSyncExternalStore`. */
+function createStore<T extends object>(build: (set: (partial: Partial<T>) => void, get: () => T) => T): StoreApi<T> {
+  const listeners = new Set<() => void>();
+  let state: T;
+
+  const set = (partial: Partial<T>): void => {
+    state = { ...state, ...partial };
+    listeners.forEach((listener) => listener());
+  };
+  const get = (): T => state;
+
+  state = build(set, get);
+
+  return {
+    getState: get,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}
+
+/**
+ * Builds a `Reactor` and the store mirroring it. `defaultConnectOptions` is
+ * applied to every `connect()`/`reconnect()` call; a call-site `options`
+ * argument still wins field-by-field.
+ */
+export function createReactorStore(
+  options: ReactorOptions,
+  defaultConnectOptions?: ConnectOptions,
+): StoreApi<ReactorStore> {
+  return createStore<ReactorStore>((set, get) => {
+    const reactor = new Reactor(options);
+
+    reactor.on('statusChanged', (status) => set({ status }));
+    reactor.on('sessionIdChanged', (sessionId) => set({ sessionId }));
+    reactor.on('error', (lastError) => set({ lastError }));
+    reactor.on('message', (lastMessage) => set({ lastMessage }));
+
+    return {
+      ...defaultReactorState,
+      internal: { reactor },
+      connect: (jwt, callOptions) =>
+        get().internal.reactor.connect(jwt, { ...defaultConnectOptions, ...callOptions }),
+      disconnect: (recoverable) => get().internal.reactor.disconnect(recoverable),
+      reconnect: (callOptions) =>
+        get().internal.reactor.reconnect({ ...defaultConnectOptions, ...callOptions }),
+      sendCommand: (command, data) => get().internal.reactor.sendCommand(command, data),
+      publish: (name, track) => get().internal.reactor.publishTrack(name, track),
+      unpublish: (name) => get().internal.reactor.unpublishTrack(name),
+      pauseTrack: (name) => get().internal.reactor.pauseTrack(name),
+      resumeTrack: (name) => get().internal.reactor.resumeTrack(name),
+    };
+  });
+}

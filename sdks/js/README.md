@@ -138,6 +138,43 @@ try {
 `undefined`. Every other call that can fail (`connect`, `publishTrack`,
 `uploadFile`, ...) throws normally.
 
+## React
+
+```tsx
+import { ReactorProvider, useReactor } from "@reactor-team/js-sdk";
+
+function App() {
+  return (
+    <ReactorProvider modelName="my-model" jwt={() => fetchToken()}>
+      <Status />
+    </ReactorProvider>
+  );
+}
+
+function Status() {
+  const { status, sendCommand } = useReactor((s) => ({
+    status: s.status,
+    sendCommand: s.sendCommand,
+  }));
+
+  return (
+    <div>
+      {status}
+      <button onClick={() => sendCommand("set_image", { url: "..." })}>Send</button>
+    </div>
+  );
+}
+```
+
+`react` is a peer dependency — install it yourself, matching your app's own
+version.
+
+`useReactor(selector)` also carries `sessionId`, `lastError`, `lastMessage`,
+and action bindings for `connect`/`disconnect`/`reconnect`/`publish`/
+`unpublish`/`pauseTrack`/`resumeTrack`. For anything else — tracks, stats,
+the raw event emitter — `useReactor((s) => s.internal.reactor)` gets you the
+underlying `Reactor` instance directly.
+
 ## Development
 
 ```bash
