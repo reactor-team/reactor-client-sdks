@@ -15,3 +15,6 @@ node_modules/
 
 # C++ SDK build tree (cmake -B sdks/cpp/build)
 /sdks/cpp/build/
+# clangd's index, written wherever it finds a compile_commands.json — which is
+# any directory, hence the leading **.
+**/.cache/clangd/
