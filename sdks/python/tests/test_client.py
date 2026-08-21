@@ -19,7 +19,14 @@ from unittest import mock
 
 import pytest
 
-from reactor_sdk import Clip, FileRef, Reactor, ReactorError
+from reactor_sdk import (
+    AbortedError,
+    Clip,
+    FileRef,
+    InvalidStateError,
+    Reactor,
+    ReactorError,
+)
 
 
 class TestLazyLoading:
@@ -654,6 +661,112 @@ class TestNoAudioDeviceIsOpened:
         """
         with pytest.raises(TypeError, match="adm_mode"):
             Reactor("m", adm_mode=1)  # type: ignore[call-arg]
+
+
+class TestLifecycleGuards:
+    """Two ways a caller's session or await can be lost without a word."""
+
+    def _reactor(self, monkeypatch: pytest.MonkeyPatch) -> tuple[Reactor, list]:
+        calls: list = []
+        state = {"status": b"disconnected"}
+        fake_lib = mock.Mock()
+        fake_lib.reactor_create_with_adm = lambda *a: 1234
+
+        def connect(handle, session_id, connection_id, completion, userdata):
+            calls.append("connect")
+            state["status"] = b"ready"
+            completion(1, b"{}", None, None)
+
+        def send_command(handle, name, args, uploads, completion, userdata):
+            calls.append("send_command")  # deliberately never completes
+
+        def disconnect(handle, completion, userdata):
+            calls.append("disconnect")
+            state["status"] = b"disconnected"
+            completion(1, b"{}", None, None)
+
+        fake_lib.reactor_connect = connect
+        fake_lib.reactor_send_command = send_command
+        fake_lib.reactor_disconnect = disconnect
+        fake_lib.reactor_destroy = lambda *a: (calls.append("destroy"), 0)[1]
+        fake_lib.reactor_status = lambda *a: state["status"]
+        monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: fake_lib)
+        return Reactor("m", jwt="fake"), calls
+
+    async def test_close_settles_an_await_still_in_flight(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """reactor_destroy retires the completion gate, so the FFI drops anything
+        still in flight. Without settling here the caller waits forever."""
+        reactor, _calls = self._reactor(monkeypatch)
+        await reactor.connect()
+        task = asyncio.ensure_future(reactor.send_command("hello", {}))
+        await asyncio.sleep(0)
+
+        reactor.close()
+
+        with pytest.raises(AbortedError, match="in flight"):
+            await asyncio.wait_for(task, timeout=2)
+
+    async def test_connect_while_connected_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A second connect() that changes the token scope used to rebuild the
+        native client, which left the first session live with nothing holding
+        its id."""
+        reactor, calls = self._reactor(monkeypatch)
+        await reactor.connect()
+
+        # The remedy matters as much as the refusal: reconnect() cycles the
+        # connection, where disconnect() would end the session server-side.
+        with pytest.raises(InvalidStateError, match=r"reconnect\(\)"):
+            await reactor.connect(session_id="s1")
+
+        assert "destroy" not in calls
+
+    async def test_disconnect_then_connect_still_works(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The guard is on status, not on having connected before — the sequence
+        disconnect() documents must keep working."""
+        reactor, calls = self._reactor(monkeypatch)
+        await reactor.connect()
+        await reactor.disconnect()
+        await reactor.connect(session_id="s1")
+        assert calls.count("connect") == 2
+
+    async def test_connect_after_a_failed_connect_still_works(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Retry after a blip is the common case, and it must not meet the guard.
+        The core routes a failed connect() through `teardown()`, which ends with
+        `set_status(Disconnected)` — so the status the guard reads is honest about
+        there being nothing left to lose."""
+        state = {"status": b"disconnected"}
+        attempts: list[int] = []
+        fake_lib = mock.Mock()
+        fake_lib.reactor_create_with_adm = lambda *a: 1234
+
+        def connect(handle, session_id, connection_id, completion, userdata):
+            attempts.append(1)
+            if len(attempts) == 1:
+                state["status"] = b"disconnected"  # what teardown() leaves behind
+                completion(0, None, b'{"code": "NETWORK", "message": "boom"}', None)
+            else:
+                state["status"] = b"ready"
+                completion(1, b"{}", None, None)
+
+        fake_lib.reactor_connect = connect
+        fake_lib.reactor_destroy = lambda *a: 0
+        fake_lib.reactor_status = lambda *a: state["status"]
+        monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: fake_lib)
+        reactor = Reactor("m", jwt="fake")
+
+        with pytest.raises(ReactorError):
+            await reactor.connect()
+        await reactor.connect()
+
+        assert len(attempts) == 2
 
 
 class TestConnectionId:

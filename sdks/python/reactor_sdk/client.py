@@ -32,7 +32,13 @@ from ._ffi import (
 # `on_frame` is gone — `Track` uses them — but the import path stays.
 from ._media import _bgra_to_rgb_array, _positional_arity  # noqa: F401  (re-export)
 from ._recording import download_clip
-from .errors import ReactorError, error_for_code, error_from_payload  # noqa: F401  (re-export)
+from .errors import (  # noqa: F401  (ReactorError and the helpers are re-exported)
+    AbortedError,
+    InvalidStateError,
+    ReactorError,
+    error_for_code,
+    error_from_payload,
+)
 from .track import Track, TrackDirection, TrackKind, TrackList
 
 # ---------------------------------------------------------------------------
@@ -682,13 +688,26 @@ class Reactor:
 
         # Completions for operations still in flight count too: the same guarantee
         # covers them, and an abandoned await can have left entries behind.
-        trampolines = self._cb_refs + list(self._pending_completions.values())
+        in_flight = list(self._pending_completions.values())
+        trampolines = self._cb_refs + [fn for fn, _loop, _future in in_flight]
         self._callbacks_struct = None
         self._cb_refs = []
         self._pending_completions = {}
         # Renegotiated with the next connection; the Track objects and their
         # handlers deliberately outlive the handle, but the mids do not.
         self._track_mids.clear()
+
+        # reactor_destroy has retired the completion gate, so Completion::resolve
+        # now drops anything still in flight rather than call a trampoline we are
+        # about to release. Nothing will arrive to wake these awaits, so settle
+        # them here; the helper no-ops on a future that is already done.
+        for _fn, op_loop, op_future in in_flight:
+            _settle_from_foreign_thread(
+                op_loop,
+                op_future,
+                None,
+                AbortedError("the client was closed while this operation was in flight"),
+            )
 
         if quiesced:
             return
@@ -745,7 +764,7 @@ class Reactor:
 
         fn = COMPLETION_FN(_cb)
         holder.append(fn)
-        pending[id(fn)] = fn
+        pending[id(fn)] = (fn, loop, future)
 
         dispatcher(fn)
         return await future
@@ -776,6 +795,21 @@ class Reactor:
         if connection_id is not None and not 0 <= connection_id < 2**32:
             raise ValueError(
                 f"connection_id must fit in a uint32 (0 to {2**32 - 1}), got {connection_id}"
+            )
+
+        # The core rejects connect() unless it is disconnected, and three tests
+        # there defend that. This binding can defeat it: a scope change below
+        # rebuilds the native client, and the guard then sees a fresh one at
+        # `disconnected` while the first session is still live on the coordinator
+        # with nothing left holding its id. Check here, where the status is still
+        # the real one.
+        status = self.get_status()
+        if self._handle is not None and status is not ReactorStatus.DISCONNECTED:
+            raise InvalidStateError(
+                f"connect() while status is {status.value} — connecting again would "
+                f"rebuild the client and leave this session live with nothing holding "
+                f"its id. reconnect() cycles it without ending it, disconnect() ends "
+                f"it, or use a second Reactor to adopt a different session."
             )
 
         token_changed = await self._resolve_token(session_id)
