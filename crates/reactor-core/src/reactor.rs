@@ -21,7 +21,7 @@ use crate::data::DataCorrelator;
 use crate::error::{codes, CoreError, ErrorDetails, ReactorError};
 use crate::events::{Dispatcher, ReactorEvent};
 use crate::messaging::build_command_payload;
-use crate::peer::{PeerConnectionState, PeerEvent};
+use crate::peer::{PeerConnectionState, PeerEvent, PreparedOffer};
 use crate::protocol::recording::message_type;
 use crate::protocol::session::{
     Capabilities, ClientInfo, ModelConfig, SessionResponse, TrackCapability, TrackDirection,
@@ -70,6 +70,14 @@ pub struct ReactorOptions {
     pub clip_request_timeout: Duration,
     pub session_poll: PollConfig,
     pub sdp_poll: PollConfig,
+    /// When the caller already knows the model's track list ahead of time,
+    /// `connect()` runs `poll_session_ready()` concurrently with building the
+    /// SDP offer instead of waiting for the poll to report capabilities
+    /// first. If the coordinator's real `capabilities.tracks` disagrees with
+    /// this once the poll resolves, `connect()` fails with
+    /// [`CoreError::PresetTracksMismatch`] rather than sending a mismatched
+    /// offer.
+    pub preset_tracks: Option<Vec<TrackCapability>>,
     /// When true, use the local HTTP runtime API (`/start_session` etc.)
     /// instead of the cloud coordinator API.
     pub local: bool,
@@ -96,6 +104,7 @@ impl ReactorOptions {
             clip_request_timeout: Duration::from_secs(10),
             session_poll: PollConfig::session(),
             sdp_poll: PollConfig::sdp(),
+            preset_tracks: None,
             local: false,
             heartbeat_interval: Duration::from_secs(10),
         }
@@ -152,6 +161,29 @@ struct State {
     /// defaults unless the last `connect()` overrode them.
     auto_resume_tracks: bool,
     sdp_max_attempts: u32,
+}
+
+/// Order-independent equality for the `preset_tracks` fast path: whether `a`
+/// and `b` name the same tracks, regardless of the order either side listed
+/// them in.
+fn tracks_match(a: &[TrackCapability], b: &[TrackCapability]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    // True multiset equality, not "every item in `a` is present somewhere in
+    // `b`" — that weaker check would let a preset with a duplicate name (e.g.
+    // `[A, A]`) match real tracks `[A, B]`, since both `A`s independently find
+    // a match in `b` while `B` goes unrepresented.
+    let mut remaining: Vec<&TrackCapability> = b.iter().collect();
+    for track in a {
+        match remaining.iter().position(|candidate| *candidate == track) {
+            Some(index) => {
+                remaining.swap_remove(index);
+            }
+            None => return false,
+        }
+    }
+    true
 }
 
 /// The Reactor client core. See the crate docs for the host contract.
@@ -301,22 +333,67 @@ impl Reactor {
             .dispatch(ReactorEvent::SessionIdChanged(Some(session_id.clone())));
         self.set_status(ReactorStatus::Waiting);
 
-        let session = self.coordinator.poll_session_ready(&session_id).await?;
-        let capabilities = session
-            .capabilities
-            .clone()
-            .ok_or_else(|| CoreError::Decode("ready session missing capabilities".into()))?;
-        {
-            let mut state = self.state.lock().unwrap();
-            state.tracks = capabilities.tracks.clone();
-            state.capabilities = Some(capabilities.clone());
-            state.session_info = Some(session);
-        }
-        self.dispatcher
-            .dispatch(ReactorEvent::CapabilitiesReceived(capabilities));
+        let preset_tracks = self.options.preset_tracks.clone();
+        if let Some(preset) = preset_tracks {
+            // Parallel path: the caller already knows the model's tracks, so
+            // build the SDP offer while the session-ready poll is still in
+            // flight instead of waiting for it to report capabilities first.
+            let signaling = self.signaling(&session_id);
+            let (session_result, prepared_result) =
+                futures::future::join(self.coordinator.poll_session_ready(&session_id), async {
+                    let ice_servers = signaling.ice_servers().await?;
+                    self.peer.prepare(&ice_servers, &preset).await
+                })
+                .await;
+            let session = session_result?;
+            let capabilities = session
+                .capabilities
+                .clone()
+                .ok_or_else(|| CoreError::Decode("ready session missing capabilities".into()))?;
 
-        self.establish_transport(&session_id, false, connect_options.connection_id)
-            .await?;
+            if !tracks_match(&capabilities.tracks, &preset) {
+                // The offer was built from the wrong track list — discard it
+                // without ever sending it, rather than negotiating a session
+                // the caller didn't ask for.
+                if prepared_result.is_ok() {
+                    let _ = self.peer.close().await;
+                }
+                return Err(CoreError::PresetTracksMismatch {
+                    expected: preset,
+                    actual: capabilities.tracks,
+                });
+            }
+            let prepared = prepared_result?;
+
+            {
+                let mut state = self.state.lock().unwrap();
+                state.tracks = capabilities.tracks.clone();
+                state.capabilities = Some(capabilities.clone());
+                state.session_info = Some(session);
+            }
+            self.dispatcher
+                .dispatch(ReactorEvent::CapabilitiesReceived(capabilities));
+
+            self.finish_transport(&session_id, false, connect_options.connection_id, prepared)
+                .await?;
+        } else {
+            let session = self.coordinator.poll_session_ready(&session_id).await?;
+            let capabilities = session
+                .capabilities
+                .clone()
+                .ok_or_else(|| CoreError::Decode("ready session missing capabilities".into()))?;
+            {
+                let mut state = self.state.lock().unwrap();
+                state.tracks = capabilities.tracks.clone();
+                state.capabilities = Some(capabilities.clone());
+                state.session_info = Some(session);
+            }
+            self.dispatcher
+                .dispatch(ReactorEvent::CapabilitiesReceived(capabilities));
+
+            self.establish_transport(&session_id, false, connect_options.connection_id)
+                .await?;
+        }
 
         self.set_status(ReactorStatus::Ready);
         if self.state.lock().unwrap().auto_resume_tracks {
@@ -329,9 +406,14 @@ impl Reactor {
     /// first if there is one, without terminating the session server-side (the
     /// whole point of calling this instead of `disconnect()` then `connect()`).
     ///
+    /// `max_sdp_attempts`, if given, overrides the SDP-answer poll attempt
+    /// limit for this reconnect (and sticks for whatever follows, same as
+    /// [`ConnectOptions::max_sdp_attempts`]) — otherwise the last `connect()`'s
+    /// value carries over unchanged.
+    ///
     /// Errors if there is no session to reconnect to at all — nothing has ever
     /// connected, or a previous `disconnect()` already terminated it.
-    pub async fn reconnect(&self) -> Result<(), CoreError> {
+    pub async fn reconnect(&self, max_sdp_attempts: Option<u32>) -> Result<(), CoreError> {
         let currently_ready = self.state.lock().unwrap().status == ReactorStatus::Ready;
         if currently_ready {
             // recoverable=true: keep the session this reconnect is about to reuse.
@@ -345,6 +427,9 @@ impl Reactor {
                 .session_id
                 .clone()
                 .ok_or_else(|| CoreError::InvalidState("reconnect() without a session".into()))?;
+            if let Some(attempts) = max_sdp_attempts {
+                state.sdp_max_attempts = attempts;
+            }
             // Reset transport state and bump epoch atomically with the guard check.
             state.closing = false;
             state.peer_connected = false;
@@ -395,9 +480,26 @@ impl Reactor {
         adopt_connection_id: Option<u32>,
     ) -> Result<(), CoreError> {
         let signaling = self.signaling(session_id);
-
         let ice_servers = signaling.ice_servers().await?;
         let tracks = self.state.lock().unwrap().tracks.clone();
+        let prepared = self.peer.prepare(&ice_servers, &tracks).await?;
+        self.finish_transport(session_id, reconnect, adopt_connection_id, prepared)
+            .await
+    }
+
+    /// Registers the connection and exchanges the SDP offer/answer for a peer
+    /// connection already built by [`Self::establish_transport`]'s sequential
+    /// path, or by `connect_inner`'s `preset_tracks` fast path, which builds
+    /// it concurrently with the session-ready poll instead of calling this
+    /// function's caller.
+    async fn finish_transport(
+        &self,
+        session_id: &str,
+        reconnect: bool,
+        adopt_connection_id: Option<u32>,
+        prepared: PreparedOffer,
+    ) -> Result<(), CoreError> {
+        let signaling = self.signaling(session_id);
 
         let gate_receiver = {
             let mut state = self.state.lock().unwrap();
@@ -407,7 +509,6 @@ impl Reactor {
             rx
         };
 
-        let prepared = self.peer.prepare(&ice_servers, &tracks).await?;
         {
             let mut state = self.state.lock().unwrap();
             state.track_mapping = prepared.track_mapping.clone();
@@ -1495,7 +1596,7 @@ mod tests {
         // before that, not whether the reconnect attempt itself completes. It does
         // have to actually be reached, though: the old "reject while ready" guard
         // would also leave delete_count() at 0, for the wrong reason.
-        let _ = reactor.reconnect().await;
+        let _ = reactor.reconnect(None).await;
 
         assert_eq!(http.delete_count(), 0);
         assert!(
@@ -1509,8 +1610,27 @@ mod tests {
     #[tokio::test]
     async fn reconnect_without_a_session_errors() {
         let reactor = make_reactor();
-        let result = reactor.reconnect().await;
+        let result = reactor.reconnect(None).await;
         assert!(matches!(result, Err(CoreError::InvalidState(_))));
+    }
+
+    /// A caller can override the SDP-poll attempt limit for a specific
+    /// reconnect, same as `ConnectOptions::max_sdp_attempts` does for connect.
+    #[tokio::test]
+    async fn reconnect_overrides_sdp_max_attempts() {
+        let http = Arc::new(RecordingHttp::default());
+        let reactor = make_reactor_with_http(http.clone());
+        {
+            let mut state = reactor.state.lock().unwrap();
+            state.session_id = Some("s1".to_string());
+            state.created_session = false;
+        }
+
+        // RecordingHttp has no ICE-servers route, so the reconnect fails
+        // immediately — after the override was taken, which is what matters.
+        let _ = reactor.reconnect(Some(3)).await;
+
+        assert_eq!(reactor.state.lock().unwrap().sdp_max_attempts, 3);
     }
 
     // ── Heartbeat ─────────────────────────────────────────────────────────────
@@ -1833,6 +1953,233 @@ mod tests {
         let session = reactor.session_info().expect("session resource recorded");
         assert_eq!(session.session_id, "sess_1");
         assert_eq!(session.cluster.as_deref(), Some("test-cluster"));
+
+        connecting.abort();
+    }
+
+    // ── preset_tracks fast path ─────────────────────────────────────────────
+
+    /// Like `ScriptedHttp`, but `/ice_servers` resolves immediately (empty
+    /// list) so the `preset_tracks` path's concurrent `peer.prepare()` can
+    /// actually complete, and `/connections` never resolves so a connect that
+    /// reaches registration parks there instead of completing or erroring.
+    struct PresetTracksHttp {
+        real_tracks_json: &'static str,
+        requests: std::sync::Mutex<Vec<(Method, String)>>,
+    }
+
+    impl PresetTracksHttp {
+        fn new(real_tracks_json: &'static str) -> Self {
+            Self {
+                real_tracks_json,
+                requests: Default::default(),
+            }
+        }
+
+        fn saw(&self, method: Method, url_suffix: &str) -> bool {
+            self.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(m, u)| *m == method && u.ends_with(url_suffix))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HttpClient for PresetTracksHttp {
+        async fn request(&self, req: HttpRequest) -> Result<HttpResponse, CoreError> {
+            self.requests
+                .lock()
+                .unwrap()
+                .push((req.method, req.url.clone()));
+            let json = |body: String| {
+                Ok(HttpResponse {
+                    status: 200,
+                    headers: vec![],
+                    body: body.into_bytes(),
+                })
+            };
+            if req.url.ends_with("/ice_servers") {
+                return json(r#"{"ice_servers": []}"#.to_string());
+            }
+            if req.method == Method::Post && req.url.ends_with("/sessions") {
+                return json(r#"{"session_id": "sess_1", "state": "CREATED"}"#.to_string());
+            }
+            if req.method == Method::Get && req.url.ends_with("/sessions/sess_1") {
+                return json(format!(
+                    r#"{{
+                        "session_id": "sess_1",
+                        "state": "ACTIVE",
+                        "selected_transport": {{"protocol": "webrtc", "version": "1.0"}},
+                        "capabilities": {{"protocol_version": "1.0", "tracks": {}}}
+                    }}"#,
+                    self.real_tracks_json
+                ));
+            }
+            if req.method == Method::Post && req.url.ends_with("/connections") {
+                std::future::pending::<()>().await;
+                unreachable!()
+            }
+            Err(CoreError::Http(format!(
+                "PresetTracksHttp: no route for {:?} {}",
+                req.method, req.url
+            )))
+        }
+    }
+
+    /// Records what it was asked to prepare, and whether it was later closed
+    /// without ever being sent.
+    #[derive(Default)]
+    struct SpyPeer {
+        prepared_tracks: std::sync::Mutex<Option<Vec<TrackCapability>>>,
+        closed: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl PeerTransport for SpyPeer {
+        async fn prepare(
+            &self,
+            _: &[IceServer],
+            tracks: &[TrackCapability],
+        ) -> Result<PreparedOffer, CoreError> {
+            *self.prepared_tracks.lock().unwrap() = Some(tracks.to_vec());
+            Ok(PreparedOffer {
+                sdp_offer: "offer".into(),
+                track_mapping: vec![],
+            })
+        }
+        async fn set_remote_description(&self, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn send_data(&self, _: &[u8], _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn send_control(&self, _: &[u8]) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn set_track_direction(&self, _: &str, _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn close(&self) -> Result<(), CoreError> {
+            self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn output_track(name: &str) -> TrackCapability {
+        TrackCapability {
+            name: name.into(),
+            kind: crate::protocol::session::TrackKind::Video,
+            direction: TrackDirection::Recvonly,
+        }
+    }
+
+    /// A duplicate name in the preset must not let it stand in for a real
+    /// track it doesn't actually name — `[a, a]` is not `[a, b]`, even though
+    /// naive "every preset item is present in the real list" logic would
+    /// think so (both `a`s independently find a match, `b` goes unchecked).
+    #[test]
+    fn tracks_match_rejects_a_duplicate_preset_standing_in_for_a_missing_track() {
+        let preset = vec![output_track("a"), output_track("a")];
+        let real = vec![output_track("a"), output_track("b")];
+        assert!(!tracks_match(&preset, &real));
+        assert!(!tracks_match(&real, &preset));
+    }
+
+    #[test]
+    fn tracks_match_accepts_a_genuine_duplicate_on_both_sides() {
+        let a = vec![output_track("a"), output_track("a")];
+        let b = vec![output_track("a"), output_track("a")];
+        assert!(tracks_match(&a, &b));
+    }
+
+    /// A preset that disagrees with the coordinator's real tracks fails fast,
+    /// with the never-sent offer discarded, instead of registering a
+    /// connection for tracks the caller didn't ask for.
+    #[tokio::test]
+    async fn preset_tracks_mismatch_fails_fast_without_registering_a_connection() {
+        let http = Arc::new(PresetTracksHttp::new(
+            r#"[{"name": "output", "kind": "video", "direction": "recvonly"}]"#,
+        ));
+        let peer = Arc::new(SpyPeer::default());
+        let mut opts = ReactorOptions::new("http://localhost", "test-model");
+        opts.preset_tracks = Some(vec![output_track("wrong")]);
+        let reactor = Arc::new(Reactor::new(
+            ReactorDeps {
+                http: http.clone() as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: peer.clone() as SharedPeer,
+            },
+            opts,
+        ));
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            reactor.connect(ConnectOptions::default()),
+        )
+        .await
+        .expect("a mismatch should fail fast rather than hang");
+
+        assert!(matches!(
+            result,
+            Err(CoreError::PresetTracksMismatch { .. })
+        ));
+        assert!(
+            peer.closed.load(std::sync::atomic::Ordering::SeqCst),
+            "the never-sent offer's peer connection should be closed"
+        );
+        assert!(
+            !http.saw(Method::Post, "/connections"),
+            "a mismatched preset must never reach connection registration"
+        );
+    }
+
+    /// A preset that agrees with the coordinator's real tracks (regardless of
+    /// list order) proceeds straight to registration using the offer already
+    /// built concurrently with the session-ready poll.
+    #[tokio::test]
+    async fn preset_tracks_matching_reality_proceeds_with_the_concurrently_built_offer() {
+        let http = Arc::new(PresetTracksHttp::new(
+            r#"[{"name": "b", "kind": "audio", "direction": "sendonly"},
+                {"name": "a", "kind": "video", "direction": "recvonly"}]"#,
+        ));
+        let peer = Arc::new(SpyPeer::default());
+        let mut opts = ReactorOptions::new("http://localhost", "test-model");
+        // Same tracks, deliberately listed in the other order.
+        opts.preset_tracks = Some(vec![
+            output_track("a"),
+            TrackCapability {
+                name: "b".into(),
+                kind: crate::protocol::session::TrackKind::Audio,
+                direction: TrackDirection::Sendonly,
+            },
+        ]);
+        let reactor = Arc::new(Reactor::new(
+            ReactorDeps {
+                http: http.clone() as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: peer.clone() as SharedPeer,
+            },
+            opts,
+        ));
+
+        let r = reactor.clone();
+        let connecting = tokio::spawn(async move { r.connect(ConnectOptions::default()).await });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !http.saw(Method::Post, "/connections") {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("a matching preset should reach connection registration");
+
+        assert_eq!(
+            peer.prepared_tracks.lock().unwrap().as_ref().map(Vec::len),
+            Some(2)
+        );
 
         connecting.abort();
     }

@@ -194,6 +194,16 @@ pub enum CoreError {
 
     #[error("operation aborted")]
     Aborted,
+
+    /// `ReactorOptions::preset_tracks` disagreed with the coordinator's real
+    /// `capabilities.tracks` once `poll_session_ready()` resolved. The SDP
+    /// offer built from the preset (concurrently, as the optimization this
+    /// guards) is discarded without ever being sent.
+    #[error("preset tracks {expected:?} do not match the session's real tracks {actual:?}")]
+    PresetTracksMismatch {
+        expected: Vec<crate::protocol::session::TrackCapability>,
+        actual: Vec<crate::protocol::session::TrackCapability>,
+    },
 }
 
 impl CoreError {
@@ -238,6 +248,9 @@ impl CoreError {
             CoreError::MessageTooLarge { .. } => codes::MESSAGE_TOO_LARGE,
             CoreError::Peer(_) => codes::TRANSPORT_ERROR,
             CoreError::Aborted => codes::ABORTED,
+            // An argument (the preset track list) rejected here before anything
+            // built from it was sent — same category as a rejected 4xx.
+            CoreError::PresetTracksMismatch { .. } => codes::BAD_REQUEST,
         }
     }
 

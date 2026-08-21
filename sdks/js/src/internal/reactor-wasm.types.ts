@@ -35,6 +35,10 @@ export interface ClientOptions {
   clipRequestTimeoutMs?: number;
   maxSessionAttempts?: number;
   maxSdpAttempts?: number;
+  sdpBackoffInitialMs?: number;
+  sdpBackoffMaxMs?: number;
+  sdpBackoffMultiplier?: number;
+  modelTracks?: TrackCapability[];
   logLevel?: 'off' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
 }
 
@@ -132,7 +136,9 @@ export declare class ReactorClient {
 
   connect(options?: ConnectOptions): Promise<void>;
   disconnect(): Promise<void>;
-  reconnect(): Promise<void>;
+  /** Only `maxAttempts` applies here — the rest of `ConnectOptions` only
+   *  makes sense when establishing a session in the first place. */
+  reconnect(options?: ConnectOptions): Promise<void>;
 
   sendCommand(
     command: string,

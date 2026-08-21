@@ -43,13 +43,24 @@ export interface ClientOptions {
   clipRequestTimeoutMs?: number;
   /** Session-readiness poll attempts. Default 20. */
   maxSessionAttempts?: number;
-  /** SDP-answer poll attempts. Default 30. */
+  /** SDP-answer poll attempts. Default 6. */
   maxSdpAttempts?: number;
+  /** Initial delay before the first SDP-answer poll retry, in ms. Default 200. */
+  sdpBackoffInitialMs?: number;
+  /** Cap on the exponential backoff between SDP-answer poll retries, in ms. Default 15000. */
+  sdpBackoffMaxMs?: number;
+  /** Growth factor applied to the delay between SDP-answer poll retries. Default 2. */
+  sdpBackoffMultiplier?: number;
+  /** Preset tracks, when known ahead of time — builds the SDP offer
+   *  concurrently with the session-ready poll rather than after. */
+  modelTracks?: TrackCapability[];
   /** Console log level. Default "warn". */
   logLevel?: "off" | "error" | "warn" | "info" | "debug" | "trace";
 }
 
-/** Per-connect options. Every field optional. */
+/** Per-connect options. Every field optional. Also accepted by `reconnect()`,
+ *  which only honors `maxAttempts` — the rest only make sense when
+ *  establishing a session in the first place. */
 export interface ConnectOptions {
   /** Adopt an existing session instead of creating one. An adopting client
    *  never ends the session it joined. */

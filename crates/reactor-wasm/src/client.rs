@@ -21,6 +21,7 @@ use reactor_core::backoff::PollConfig;
 use reactor_core::error::{CoreError, ErrorDetails, ReactorError};
 use reactor_core::events::ReactorEvent;
 use reactor_core::peer::{PeerEvent, PeerTransport};
+use reactor_core::protocol::session::TrackCapability;
 use reactor_core::protocol::upload::FileRef;
 use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions};
 
@@ -69,6 +70,14 @@ struct ClientOptions {
     clip_request_timeout_ms: Option<u64>,
     max_session_attempts: Option<u32>,
     max_sdp_attempts: Option<u32>,
+    /// Initial delay before the first SDP-answer poll retry.
+    sdp_backoff_initial_ms: Option<u64>,
+    /// Cap on the exponential backoff between SDP-answer poll retries.
+    sdp_backoff_max_ms: Option<u64>,
+    /// Growth factor applied to the delay between SDP-answer poll retries.
+    sdp_backoff_multiplier: Option<f64>,
+    /// See `ReactorOptions::preset_tracks`.
+    model_tracks: Option<Vec<TrackCapability>>,
     /// `"off"`, `"error"`, `"warn"`, `"info"`, `"debug"` or `"trace"`.
     /// Defaults to `"warn"`: the core logs freely at debug, and a browser
     /// console is a user-facing surface.
@@ -122,6 +131,25 @@ impl ClientOptions {
                 ..options.sdp_poll
             };
         }
+        if let Some(ms) = self.sdp_backoff_initial_ms {
+            options.sdp_poll = PollConfig {
+                initial: Duration::from_millis(ms),
+                ..options.sdp_poll
+            };
+        }
+        if let Some(ms) = self.sdp_backoff_max_ms {
+            options.sdp_poll = PollConfig {
+                max: Duration::from_millis(ms),
+                ..options.sdp_poll
+            };
+        }
+        if let Some(multiplier) = self.sdp_backoff_multiplier {
+            options.sdp_poll = PollConfig {
+                multiplier,
+                ..options.sdp_poll
+            };
+        }
+        options.preset_tracks = self.model_tracks;
         Ok(options)
     }
 }
@@ -342,9 +370,15 @@ impl ReactorClient {
     }
 
     /// Rebuild the transport on the same session, without ending it.
-    pub async fn reconnect(&self) -> Result<(), JsValue> {
+    ///
+    /// Only `maxAttempts` applies here — the rest of `ConnectOptions` (session
+    /// adoption, connection id, auto-resume) only makes sense at initial
+    /// connect time, same as the JS SDK's own `reconnect()` always ignored
+    /// them.
+    pub async fn reconnect(&self, options: Option<ConnectOptionsInput>) -> Result<(), JsValue> {
+        let options: JsConnectOptions = from_optional(options, "reconnect options")?;
         self.reactor
-            .reconnect()
+            .reconnect(options.max_attempts)
             .await
             .map_err(|e| error_value(&e.details(Some("reconnect"))))?;
         self.start_heartbeat();
