@@ -1,0 +1,102 @@
+/** @vitest-environment jsdom */
+import { describe, expect, it, vi } from 'vitest';
+import { NetworkError } from '../errors';
+import { FakeReactorClient } from '../internal/fake-reactor-client';
+
+vi.mock('../internal/wasm', () => ({
+  loadReactorWasm: () => Promise.resolve({ ReactorClient: FakeReactorClient }),
+}));
+
+// Import after the mock so `Reactor` (transitively, via `./store`) picks up
+// the faked wasm loader.
+const { createReactorStore } = await import('./store');
+
+function currentClient(): FakeReactorClient {
+  const client = FakeReactorClient.instances.at(-1);
+
+  if (!client) {
+    throw new Error('no FakeReactorClient constructed yet');
+  }
+
+  return client;
+}
+
+describe('createReactorStore', () => {
+  it('starts disconnected with no session, error, or message', () => {
+    const store = createReactorStore({ modelName: 'test-model' });
+
+    expect(store.getState()).toMatchObject({
+      status: 'disconnected',
+      sessionId: undefined,
+      lastError: undefined,
+      lastMessage: undefined,
+    });
+  });
+
+  it('mirrors statusChanged into status', async () => {
+    const store = createReactorStore({ modelName: 'test-model' });
+
+    await store.getState().connect();
+    currentClient().emitConnecting();
+    expect(store.getState().status).toBe('connecting');
+
+    currentClient().emitReady();
+    expect(store.getState().status).toBe('ready');
+  });
+
+  it('mirrors sessionIdChanged into sessionId', async () => {
+    const store = createReactorStore({ modelName: 'test-model' });
+
+    await store.getState().connect();
+    currentClient().emitSessionIdChanged('session-123');
+    expect(store.getState().sessionId).toBe('session-123');
+  });
+
+  it('mirrors an error event into lastError', async () => {
+    const store = createReactorStore({ modelName: 'test-model' });
+
+    await store.getState().connect();
+    currentClient().emitError({ code: 'NETWORK_ERROR', message: 'boom' });
+    expect(store.getState().lastError).toBeInstanceOf(NetworkError);
+  });
+
+  it('mirrors a message event into lastMessage', async () => {
+    const store = createReactorStore({ modelName: 'test-model' });
+
+    await store.getState().connect();
+    currentClient().emitMessage({ type: 'reply', data: { ok: true } });
+    expect(store.getState().lastMessage).toEqual({ type: 'reply', data: { ok: true } });
+  });
+
+  it('applies defaultConnectOptions, with a call-site option winning', async () => {
+    const store = createReactorStore({ modelName: 'test-model' }, { maxAttempts: 3 });
+
+    await store.getState().connect(undefined, { maxAttempts: 5 });
+    expect(currentClient().connectCalls.at(-1)).toEqual({ maxAttempts: 5 });
+  });
+
+  it('binds publish/unpublish/pauseTrack/resumeTrack to the underlying reactor', async () => {
+    const store = createReactorStore({ modelName: 'test-model' });
+
+    await store.getState().connect();
+    const track = {} as MediaStreamTrack;
+
+    await store.getState().publish('camera', track);
+    await store.getState().unpublish('camera');
+    await store.getState().pauseTrack('camera');
+    await store.getState().resumeTrack('camera');
+
+    const client = currentClient();
+
+    expect(client.publishTrackCalls).toEqual([{ name: 'camera', track }]);
+    expect(client.unpublishTrackCalls).toEqual(['camera']);
+    expect(client.pauseTrackCalls).toEqual(['camera']);
+    expect(client.resumeTrackCalls).toEqual(['camera']);
+  });
+
+  it('exposes the same Reactor instance through internal.reactor', () => {
+    const store = createReactorStore({ modelName: 'test-model' });
+
+    expect(store.getState().internal.reactor).toBe(store.getState().internal.reactor);
+  });
+});
