@@ -370,9 +370,15 @@ impl ReactorClient {
     }
 
     /// Rebuild the transport on the same session, without ending it.
-    pub async fn reconnect(&self) -> Result<(), JsValue> {
+    ///
+    /// Only `maxAttempts` applies here — the rest of `ConnectOptions` (session
+    /// adoption, connection id, auto-resume) only makes sense at initial
+    /// connect time, same as the JS SDK's own `reconnect()` always ignored
+    /// them.
+    pub async fn reconnect(&self, options: Option<ConnectOptionsInput>) -> Result<(), JsValue> {
+        let options: JsConnectOptions = from_optional(options, "reconnect options")?;
         self.reactor
-            .reconnect()
+            .reconnect(options.max_attempts)
             .await
             .map_err(|e| error_value(&e.details(Some("reconnect"))))?;
         self.start_heartbeat();

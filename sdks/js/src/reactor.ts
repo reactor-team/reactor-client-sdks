@@ -96,11 +96,17 @@ export class Reactor implements Disposable {
     }, 'disconnect');
   }
 
-  async reconnect(): Promise<void> {
+  /**
+   * Only `options.maxAttempts` has an effect here — the rest of
+   * `ConnectOptions` (session adoption, connection id, auto-resume) only
+   * makes sense when establishing a session in the first place, same as v2's
+   * `reconnect()` always ignored them.
+   */
+  async reconnect(options?: ConnectOptions): Promise<void> {
     this.assertNotDisposed();
     await this.queue.push(async () => {
       const client = await this.getOrCreateClient();
-      await client.reconnect();
+      await client.reconnect(options);
     }, 'reconnect');
   }
 

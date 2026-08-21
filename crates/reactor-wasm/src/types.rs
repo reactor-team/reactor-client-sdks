@@ -58,7 +58,9 @@ export interface ClientOptions {
   logLevel?: "off" | "error" | "warn" | "info" | "debug" | "trace";
 }
 
-/** Per-connect options. Every field optional. */
+/** Per-connect options. Every field optional. Also accepted by `reconnect()`,
+ *  which only honors `maxAttempts` — the rest only make sense when
+ *  establishing a session in the first place. */
 export interface ConnectOptions {
   /** Adopt an existing session instead of creating one. An adopting client
    *  never ends the session it joined. */
