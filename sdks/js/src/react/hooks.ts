@@ -1,6 +1,7 @@
-import { useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useReactorStore } from './ReactorProvider';
 import type { ReactorStore } from './store';
+import type { ConnectionStats, ReactorMessage } from '../types';
 
 function shallowEqual(a: unknown, b: unknown): boolean {
   if (Object.is(a, b)) {
@@ -44,4 +45,56 @@ function useShallowSelector<T>(selector: (state: ReactorStore) => T): (state: Re
  *  each call doesn't cause a re-render on every unrelated store update. */
 export function useReactor<T>(selector: (state: ReactorStore) => T): T {
   return useReactorStore(useShallowSelector(selector));
+}
+
+/** Subscribes to app-scope `message` payloads sent by the model via
+ *  `get_ctx().send()`. `handler` is kept in a ref so identity churn on
+ *  every render doesn't retrigger the subscription effect. */
+export function useReactorMessage(handler: (message: ReactorMessage) => void): void {
+  const reactor = useReactor((state) => state.internal.reactor);
+  const handlerRef = useRef(handler);
+
+  handlerRef.current = handler;
+
+  useEffect(() => {
+    const listener = (message: ReactorMessage) => handlerRef.current(message);
+
+    reactor.on('message', listener);
+    return () => reactor.off('message', listener);
+  }, [reactor]);
+}
+
+/** Subscribes to platform-scope `runtimeMessage` payloads (moderation,
+ *  clip/recording lifecycle, ...) — see `useReactorMessage` for app-scope
+ *  payloads instead. */
+export function useReactorInternalMessage(handler: (message: ReactorMessage) => void): void {
+  const reactor = useReactor((state) => state.internal.reactor);
+  const handlerRef = useRef(handler);
+
+  handlerRef.current = handler;
+
+  useEffect(() => {
+    const listener = (message: ReactorMessage) => handlerRef.current(message);
+
+    reactor.on('runtimeMessage', listener);
+    return () => reactor.off('runtimeMessage', listener);
+  }, [reactor]);
+}
+
+/** The most recent `statsUpdate` sample; `undefined` until the first one
+ *  arrives, and reset back to `undefined` on unmount or reactor change. */
+export function useStats(): ConnectionStats | undefined {
+  const reactor = useReactor((state) => state.internal.reactor);
+  const [stats, setStats] = useState<ConnectionStats | undefined>(undefined);
+
+  useEffect(() => {
+    setStats(undefined);
+    reactor.on('statsUpdate', setStats);
+    return () => {
+      reactor.off('statsUpdate', setStats);
+      setStats(undefined);
+    };
+  }, [reactor]);
+
+  return stats;
 }

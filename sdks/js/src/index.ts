@@ -36,5 +36,9 @@ export type {
 } from './types';
 export { ReactorProvider } from './react/ReactorProvider';
 export type { ReactorProviderProps } from './react/ReactorProvider';
-export { useReactor } from './react/hooks';
+export { useReactor, useReactorMessage, useReactorInternalMessage, useStats } from './react/hooks';
 export type { ReactorActions, ReactorState, ReactorStore } from './react/store';
+export { ReactorView } from './react/ReactorView';
+export type { ReactorViewProps } from './react/ReactorView';
+export { WebcamStream } from './react/WebcamStream';
+export type { WebcamStreamProps } from './react/WebcamStream';

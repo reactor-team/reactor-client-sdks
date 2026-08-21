@@ -1,8 +1,9 @@
 /** @vitest-environment jsdom */
 import { act, render, renderHook } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FakeReactorClient } from '../internal/fake-reactor-client';
+import { STATS_INTERVAL_MS } from '../internal/stats';
 import type { Reactor } from '../reactor';
 
 vi.mock('../internal/wasm', () => ({
@@ -12,7 +13,7 @@ vi.mock('../internal/wasm', () => ({
 // Import after the mock so `Reactor` (transitively, via `./store`) picks up
 // the faked wasm loader.
 const { ReactorProvider } = await import('./ReactorProvider');
-const { useReactor } = await import('./hooks');
+const { useReactor, useReactorMessage, useReactorInternalMessage, useStats } = await import('./hooks');
 
 function currentClient(): FakeReactorClient {
   const client = FakeReactorClient.instances.at(-1);
@@ -87,5 +88,135 @@ describe('useReactor', () => {
     const { result } = renderHook(() => useReactor((s) => s.internal.reactor), { wrapper: Provider });
 
     expect(result.current.getStatus()).toBe('disconnected');
+  });
+});
+
+describe('useReactorMessage', () => {
+  it('fires the latest handler on each app-scope message, not on runtimeMessage', async () => {
+    const handler = vi.fn();
+    let reactor: Reactor | undefined;
+
+    function Probe({ onMessage }: { onMessage: (message: unknown) => void }) {
+      reactor = useReactor((s) => s.internal.reactor);
+      useReactorMessage(onMessage);
+      return null;
+    }
+
+    const { rerender } = render(
+      <Provider>
+        <Probe onMessage={handler} />
+      </Provider>,
+    );
+
+    await act(() => reactor?.connect() ?? Promise.resolve());
+    act(() => currentClient().emitRuntimeMessage({ type: 'runtime', data: null }));
+    expect(handler).not.toHaveBeenCalled();
+
+    act(() => currentClient().emitMessage({ type: 'app', data: { value: 1 } }));
+    expect(handler).toHaveBeenCalledWith({ type: 'app', data: { value: 1 } });
+
+    const secondHandler = vi.fn();
+
+    rerender(
+      <Provider>
+        <Probe onMessage={secondHandler} />
+      </Provider>,
+    );
+    act(() => currentClient().emitMessage({ type: 'app', data: { value: 2 } }));
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(secondHandler).toHaveBeenCalledWith({ type: 'app', data: { value: 2 } });
+  });
+});
+
+describe('useReactorInternalMessage', () => {
+  it('fires on runtimeMessage but not on message', async () => {
+    const handler = vi.fn();
+    let reactor: Reactor | undefined;
+
+    function Probe() {
+      reactor = useReactor((s) => s.internal.reactor);
+      useReactorInternalMessage(handler);
+      return null;
+    }
+
+    render(
+      <Provider>
+        <Probe />
+      </Provider>,
+    );
+
+    await act(() => reactor?.connect() ?? Promise.resolve());
+    act(() => currentClient().emitMessage({ type: 'app', data: null }));
+    expect(handler).not.toHaveBeenCalled();
+
+    act(() => currentClient().emitRuntimeMessage({ type: 'runtime', data: { value: 1 } }));
+    expect(handler).toHaveBeenCalledWith({ type: 'runtime', data: { value: 1 } });
+  });
+});
+
+describe('useStats', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('is undefined until the first statsUpdate, then tracks each new sample', async () => {
+    vi.useFakeTimers();
+
+    let reactor: Reactor | undefined;
+    let stats: ReturnType<typeof useStats>;
+
+    function Probe() {
+      reactor = useReactor((s) => s.internal.reactor);
+      stats = useStats();
+      return null;
+    }
+
+    render(
+      <Provider>
+        <Probe />
+      </Provider>,
+    );
+
+    await act(() => reactor?.connect() ?? Promise.resolve());
+    expect(stats).toBeUndefined();
+
+    const report = { forEach: () => {}, get: () => undefined } as unknown as RTCStatsReport;
+
+    currentClient().peerConnectionResult = { getStats: vi.fn().mockResolvedValue(report) } as unknown as RTCPeerConnection;
+    act(() => currentClient().emitReady());
+
+    await act(() => vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS));
+    expect(stats).toEqual(reactor?.getStats());
+
+    const firstSample = stats;
+
+    await act(() => vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS));
+    expect(stats).toEqual(reactor?.getStats());
+    expect(stats).not.toBe(firstSample);
+  });
+
+  it('unsubscribes from statsUpdate on unmount', async () => {
+    let reactor: Reactor | undefined;
+
+    function Probe() {
+      reactor = useReactor((s) => s.internal.reactor);
+      useStats();
+      return null;
+    }
+
+    const { unmount } = render(
+      <Provider>
+        <Probe />
+      </Provider>,
+    );
+
+    await act(() => reactor?.connect() ?? Promise.resolve());
+
+    const offSpy = vi.spyOn(reactor as Reactor, 'off');
+
+    unmount();
+
+    expect(offSpy).toHaveBeenCalledWith('statsUpdate', expect.any(Function));
   });
 });
