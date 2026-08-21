@@ -69,6 +69,12 @@ struct ClientOptions {
     clip_request_timeout_ms: Option<u64>,
     max_session_attempts: Option<u32>,
     max_sdp_attempts: Option<u32>,
+    /// Initial delay before the first SDP-answer poll retry.
+    sdp_backoff_initial_ms: Option<u64>,
+    /// Cap on the exponential backoff between SDP-answer poll retries.
+    sdp_backoff_max_ms: Option<u64>,
+    /// Growth factor applied to the delay between SDP-answer poll retries.
+    sdp_backoff_multiplier: Option<f64>,
     /// `"off"`, `"error"`, `"warn"`, `"info"`, `"debug"` or `"trace"`.
     /// Defaults to `"warn"`: the core logs freely at debug, and a browser
     /// console is a user-facing surface.
@@ -119,6 +125,24 @@ impl ClientOptions {
         if let Some(attempts) = self.max_sdp_attempts {
             options.sdp_poll = PollConfig {
                 max_attempts: attempts,
+                ..options.sdp_poll
+            };
+        }
+        if let Some(ms) = self.sdp_backoff_initial_ms {
+            options.sdp_poll = PollConfig {
+                initial: Duration::from_millis(ms),
+                ..options.sdp_poll
+            };
+        }
+        if let Some(ms) = self.sdp_backoff_max_ms {
+            options.sdp_poll = PollConfig {
+                max: Duration::from_millis(ms),
+                ..options.sdp_poll
+            };
+        }
+        if let Some(multiplier) = self.sdp_backoff_multiplier {
+            options.sdp_poll = PollConfig {
+                multiplier,
                 ..options.sdp_poll
             };
         }

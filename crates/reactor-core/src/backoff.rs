@@ -23,13 +23,14 @@ impl PollConfig {
         }
     }
 
-    /// Defaults used for SDP-answer polling (200ms → 10s, 30 attempts).
+    /// Defaults used for SDP-answer polling (200ms → 15s, 6 attempts),
+    /// matching the JS SDK.
     pub fn sdp() -> Self {
         Self {
             initial: Duration::from_millis(200),
-            max: Duration::from_secs(10),
+            max: Duration::from_secs(15),
             multiplier: 2.0,
-            max_attempts: 30,
+            max_attempts: 6,
         }
     }
 

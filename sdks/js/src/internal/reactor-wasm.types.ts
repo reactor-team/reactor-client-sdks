@@ -35,6 +35,9 @@ export interface ClientOptions {
   clipRequestTimeoutMs?: number;
   maxSessionAttempts?: number;
   maxSdpAttempts?: number;
+  sdpBackoffInitialMs?: number;
+  sdpBackoffMaxMs?: number;
+  sdpBackoffMultiplier?: number;
   logLevel?: 'off' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
 }
 
