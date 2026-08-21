@@ -16,6 +16,7 @@ import type {
   ConnectOptions,
   FileRef,
   JwtSource,
+  MessageScope,
   ModelSchema,
   ReactorEventMap,
   ReactorMessage,
@@ -173,11 +174,18 @@ export class Reactor implements Disposable {
    * rejection nobody handles is an unhandled-rejection warning at best. It
    * is deliberately not applied to `publishTrack`/`uploadFile`/etc., which
    * throw normally.
+   *
+   * `scope` is forwarded to `sendRuntimeScopedCommand()` — see there for
+   * what `"runtime"` actually does.
    */
   async sendCommand(
     command: string,
     data?: Record<string, unknown>,
+    scope?: MessageScope,
   ): Promise<ReactorMessage | undefined> {
+    if (scope === 'runtime') {
+      return this.sendRuntimeScopedCommand(command, data);
+    }
     try {
       this.assertNotDisposed();
       const client = await this.getOrCreateClient();
@@ -188,6 +196,48 @@ export class Reactor implements Disposable {
     } catch (cause) {
       this.emitError(cause);
       return undefined;
+    }
+  }
+
+  /**
+   * Handles `sendCommand(command, data, "runtime")` — this SDK has no
+   * generic runtime-scope channel. `reactor-core`'s `send_command` is a
+   * single channel; `requestSchema`/clip requests/heartbeat are each their
+   * own dedicated RPC instead of a scoped envelope, so there's nothing
+   * generic to route a scope through at the wire level.
+   *
+   * `requestSchema` and `requestCapabilities` route to their direct
+   * equivalents below, neither of which returns a `ReactorMessage` the way a
+   * normal `sendCommand()` reply would, so both resolve `undefined`; the
+   * actual data surfaces through `getSchema()`/`schemaReceived` and
+   * `getCapabilities()`/`capabilitiesReceived` as it already does. Anything
+   * else has no runtime-scope destination to route to — rather than silently
+   * doing nothing, it falls through as a normal application-scope send, with
+   * a console warning.
+   */
+  private async sendRuntimeScopedCommand(
+    command: string,
+    data?: Record<string, unknown>,
+  ): Promise<ReactorMessage | undefined> {
+    switch (command) {
+      case 'requestSchema':
+        try {
+          await this.requestSchema();
+        } catch {
+          // requestSchema() already reports failures via captureError()/the
+          // error event; sendCommand's own contract never rejects.
+        }
+        return undefined;
+      case 'requestCapabilities':
+        // No dedicated "request" exists — reactor-core pushes capabilities
+        // once negotiated, so getCapabilities()/capabilitiesReceived already
+        // reflect the latest value with nothing left to trigger here.
+        return undefined;
+      default:
+        console.warn(
+          `[Reactor] sendCommand(${JSON.stringify(command)}, …, "runtime") has no runtime-scope destination in this SDK — sending as a normal application-scope command instead.`,
+        );
+        return this.sendCommand(command, data);
     }
   }
 
