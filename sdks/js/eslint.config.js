@@ -1,5 +1,6 @@
 // @ts-check
 import js from '@eslint/js';
+import stylistic from '@stylistic/eslint-plugin';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
@@ -34,11 +35,23 @@ export default tseslint.config(
     },
   },
   {
-    // Single quotes everywhere; backticks stay reserved for actual
-    // interpolation/multiline strings instead of doubling as a plain-string
-    // style (allowTemplateLiterals defaults to false).
+    plugins: {
+      '@stylistic': stylistic,
+    },
     rules: {
+      // Single quotes everywhere; backticks stay reserved for actual
+      // interpolation/multiline strings instead of doubling as a
+      // plain-string style (allowTemplateLiterals defaults to false).
       quotes: ['error', 'single', { avoidEscape: true }],
+      // Always brace if/else/for/while bodies, even one-liners.
+      curly: ['error', 'all'],
+      // Blank line after a const/let/var, unless followed by another
+      // const/let/var (so a run of declarations can stay tight).
+      '@stylistic/padding-line-between-statements': [
+        'error',
+        { blankLine: 'always', prev: ['const', 'let', 'var'], next: '*' },
+        { blankLine: 'any', prev: ['const', 'let', 'var'], next: ['const', 'let', 'var'] },
+      ],
     },
   },
 );

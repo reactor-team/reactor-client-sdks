@@ -27,6 +27,7 @@ describe('extractFileRefs', () => {
   it('passes through data with no FileRef values untouched', () => {
     const data = { prompt: 'hello', count: 3 };
     const result = extractFileRefs(data);
+
     expect(result.data).toBe(data);
     expect(result.uploads).toBeUndefined();
   });
@@ -37,6 +38,7 @@ describe('extractFileRefs', () => {
 
   it('extracts a single top-level FileRef into uploads, translated to the wire shape', () => {
     const result = extractFileRefs({ image: fileRef, caption: 'a cat' });
+
     expect(result.uploads).toEqual({ image: wireFileRef });
     expect(result.data).toEqual({ caption: 'a cat' });
   });
@@ -44,6 +46,7 @@ describe('extractFileRefs', () => {
   it('extracts multiple top-level FileRefs from a mixed payload', () => {
     const other: FileRef = { ...fileRef, uploadId: 'up_2', name: 'b.png' };
     const result = extractFileRefs({ front: fileRef, back: other, label: 'id card' });
+
     expect(result.uploads).toEqual({
       front: wireFileRef,
       back: { ...wireFileRef, upload_id: 'up_2', name: 'b.png' },
@@ -53,12 +56,14 @@ describe('extractFileRefs', () => {
 
   it('does not detect a FileRef nested inside another object', () => {
     const result = extractFileRefs({ wrapper: { image: fileRef } });
+
     expect(result.uploads).toBeUndefined();
     expect(result.data).toEqual({ wrapper: { image: fileRef } });
   });
 
   it('does not detect a FileRef nested inside an array', () => {
     const result = extractFileRefs({ images: [fileRef] });
+
     expect(result.uploads).toBeUndefined();
     expect(result.data).toEqual({ images: [fileRef] });
   });
@@ -66,18 +71,21 @@ describe('extractFileRefs', () => {
   it('does not treat a partial/shape-mismatched object as a FileRef', () => {
     const almost = { uploadId: 'up_1', name: 'photo.jpg', mimeType: 'image/jpeg' };
     const result = extractFileRefs({ image: almost });
+
     expect(result.uploads).toBeUndefined();
     expect(result.data).toEqual({ image: almost });
   });
 
   it('does not treat the wasm binding\'s own snake_case shape as a public FileRef', () => {
     const result = extractFileRefs({ image: wireFileRef });
+
     expect(result.uploads).toBeUndefined();
     expect(result.data).toEqual({ image: wireFileRef });
   });
 
   it('does not mutate the original data object', () => {
     const data = { image: fileRef, caption: 'a cat' };
+
     extractFileRefs(data);
     expect(data).toEqual({ image: fileRef, caption: 'a cat' });
   });

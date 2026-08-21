@@ -1,5 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  DisconnectedError,
+  InvalidStateError,
+  ReactorError,
+  RequestTimeoutError,
+  UnauthorizedError,
+} from './errors';
 import { toPublicFileRef } from './internal/file-ref';
+import { STATS_INTERVAL_MS } from './internal/stats';
 import type {
   ConnectOptions,
   FileRef,
@@ -78,13 +86,19 @@ const { FakeReactorClient } = vi.hoisted(() => {
 
     private trackReceivedListener: ((name: string, mid: string | undefined) => void) | undefined;
 
+    emitError(error: unknown): void {
+      this.errorListener?.(error);
+    }
+
     setJwtCalls: unknown[] = [];
     setJwt(jwt?: unknown): void {
       this.setJwtCalls.push(jwt);
     }
     async connect(options?: ConnectOptions): Promise<void> {
       this.connectCalls.push(options);
-      if (this.connectImpl) await this.connectImpl();
+      if (this.connectImpl) {
+        await this.connectImpl();
+      }
       this._status = 'ready';
     }
     disconnect(): Promise<void> {
@@ -118,8 +132,12 @@ const { FakeReactorClient } = vi.hoisted(() => {
 
     requestSchema(): Promise<unknown> {
       this.requestSchemaCalls += 1;
-      if (this.requestSchemaImpl) return this.requestSchemaImpl();
-      if (this.schemaError) return Promise.reject(this.schemaError);
+      if (this.requestSchemaImpl) {
+        return this.requestSchemaImpl();
+      }
+      if (this.schemaError) {
+        return Promise.reject(this.schemaError);
+      }
       return Promise.resolve(this.schemaResult);
     }
 
@@ -142,6 +160,15 @@ const { FakeReactorClient } = vi.hoisted(() => {
 
     emitReady(): void {
       this.statusListener?.('ready');
+    }
+    emitConnecting(): void {
+      this.statusListener?.('connecting');
+    }
+    emitWaiting(): void {
+      this.statusListener?.('waiting');
+    }
+    emitDisconnected(): void {
+      this.statusListener?.('disconnected');
     }
     emitMessage(message: ReactorMessage): void {
       this.messageListener?.(message);
@@ -222,7 +249,10 @@ const { Reactor } = await import('./reactor');
 async function currentClient(reactor: InstanceType<typeof Reactor>) {
   await reactor.connect();
   const client = FakeReactorClient.instances.at(-1);
-  if (!client) throw new Error('no FakeReactorClient was constructed');
+
+  if (!client) {
+    throw new Error('no FakeReactorClient was constructed');
+  }
   return client;
 }
 
@@ -231,6 +261,7 @@ function createDeferred<T = void>() {
   const promise = new Promise<T>((res) => {
     resolve = res;
   });
+
   return { promise, resolve };
 }
 
@@ -290,6 +321,7 @@ describe('Reactor.sendCommand', () => {
   it('waits out an in-flight connect() before disconnecting or freeing the client', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const gate = createDeferred<void>();
+
     FakeReactorClient.nextConnectImpl = () => gate.promise;
 
     const connectPromise = reactor.connect();
@@ -302,7 +334,8 @@ describe('Reactor.sendCommand', () => {
     await Promise.resolve();
     await Promise.resolve();
     const client = FakeReactorClient.instances.at(-1);
-    if (!client) throw new Error('no FakeReactorClient was constructed');
+
+    if (!client) {throw new Error('no FakeReactorClient was constructed');}
     expect(client.disconnectCalls).toBe(0);
     expect(client.freeCalls).toBe(0);
 
@@ -317,6 +350,7 @@ describe('Reactor.sendCommand', () => {
   it("normalizes the binding's null (a bodyless ack) to undefined", async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
+
     client.sendCommandReply = null;
 
     const reply = await reactor.sendCommand('start');
@@ -338,6 +372,7 @@ describe('Reactor connect/construction options', () => {
     await reactor.connect(undefined, options);
 
     const client = FakeReactorClient.instances.at(-1);
+
     expect(client?.connectCalls).toEqual([options]);
   });
 
@@ -351,6 +386,7 @@ describe('Reactor connect/construction options', () => {
     // client?.setJwt() call — exercised instead once a client already
     // exists, in the next test.
     const client = FakeReactorClient.instances.at(-1);
+
     expect(client?.jwt).toBe('jwt-token');
     expect(client?.connectCalls).toEqual([undefined]);
   });
@@ -363,6 +399,7 @@ describe('Reactor connect/construction options', () => {
     await reactor.connect(jwtResolver, options);
 
     const client = FakeReactorClient.instances.at(-1);
+
     expect(client?.jwt).toBe(jwtResolver);
     expect(client?.connectCalls).toEqual([options]);
   });
@@ -370,6 +407,7 @@ describe('Reactor connect/construction options', () => {
   it('connect(jwt) updates a recoverably-disconnected client via client.setJwt(), not just this.jwt', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
+
     await reactor.disconnect(true); // keeps the client alive, but disconnected
 
     await reactor.connect('new-jwt-token');
@@ -379,6 +417,7 @@ describe('Reactor connect/construction options', () => {
 
   it('connect() rejects while already connected or connecting', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
+
     await currentClient(reactor);
 
     await expect(reactor.connect()).rejects.toThrow(/already connected|connecting/i);
@@ -390,6 +429,7 @@ describe('Reactor connect/construction options', () => {
     await reactor.connect();
 
     const client = FakeReactorClient.instances.at(-1);
+
     expect(client?.options).toEqual({
       modelName: 'test-model',
       local: true,
@@ -401,6 +441,7 @@ describe('Reactor connect/construction options', () => {
 describe('Reactor schema', () => {
   it('is undefined before the session reaches ready', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
+
     await currentClient(reactor);
 
     expect(reactor.getSchema()).toBeUndefined();
@@ -421,17 +462,29 @@ describe('Reactor schema', () => {
     await vi.waitFor(() => expect(client.requestSchemaCalls).toBe(2));
   });
 
-  it('surfaces a failed auto-request through the error event instead of throwing', async () => {
+  it('surfaces a failed auto-request through the error event, wrapped as a ReactorError, instead of throwing', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
-    const schemaError = Object.assign(new Error('boom'), { code: 'TIMEOUT', name: 'ReactorError' });
+    const schemaError = Object.assign(new Error('boom'), {
+      code: 'TIMEOUT',
+      name: 'ReactorError',
+      operation: 'requestSchema',
+    });
+
     client.schemaError = schemaError;
 
-    const onError = vi.fn();
+    const onError = vi.fn<(error: ReactorError) => void>();
+
     reactor.on('error', onError);
 
     client.emitReady();
-    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(schemaError));
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+
+    const emitted = onError.mock.calls[0]![0];
+
+    expect(emitted).toBeInstanceOf(ReactorError);
+    expect(emitted).toMatchObject({ code: 'TIMEOUT', message: 'boom' });
+    expect(reactor.getLastError()).toBe(emitted);
     expect(reactor.getSchema()).toBeUndefined();
   });
 
@@ -449,6 +502,7 @@ describe('Reactor schema', () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
     const onSchema = vi.fn();
+
     reactor.on('schemaReceived', onSchema);
 
     client.emitReady();
@@ -459,8 +513,10 @@ describe('Reactor schema', () => {
   it('does not emit a schema event when the auto-request fails', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
+
     client.schemaError = Object.assign(new Error('boom'), { code: 'TIMEOUT' });
     const onSchema = vi.fn();
+
     reactor.on('schemaReceived', onSchema);
 
     client.emitReady();
@@ -473,6 +529,7 @@ describe('Reactor schema', () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const clientA = await currentClient(reactor);
     const gate = createDeferred<unknown>();
+
     clientA.requestSchemaImpl = () => gate.promise;
 
     clientA.emitReady();
@@ -482,6 +539,7 @@ describe('Reactor schema', () => {
     // (mirroring a real disconnect/reconnect cycle) builds clientB.
     await reactor.disconnect();
     const clientB = await currentClient(reactor);
+
     clientB.schemaResult = { commands: ['from-clientB'] };
     clientB.emitReady();
     await vi.waitFor(() => expect(reactor.getSchema()).toEqual({ commands: ['from-clientB'] }));
@@ -500,6 +558,7 @@ describe('Reactor schema', () => {
     const client = await currentClient(reactor);
     const gate = createDeferred<unknown>();
     let calls = 0;
+
     client.requestSchemaImpl = () => {
       calls += 1;
       return calls === 1 ? gate.promise : Promise.resolve({ commands: ['second'] });
@@ -539,19 +598,32 @@ describe('Reactor tracks', () => {
   it('unpublishTrack() never rejects — a failure is reported via the error event', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
-    const failure = new Error('boom');
-    client.unpublishTrack = () => Promise.reject(failure);
-    const onError = vi.fn();
+
+    client.unpublishTrack = () =>
+      Promise.reject(
+        Object.assign(new Error('boom'), {
+          name: 'ReactorError',
+          code: 'TRANSPORT_ERROR',
+          operation: 'unpublishTrack',
+        }),
+      );
+    const onError = vi.fn<(error: ReactorError) => void>();
+
     reactor.on('error', onError);
 
     await expect(reactor.unpublishTrack('camera')).resolves.toBeUndefined();
 
-    expect(onError).toHaveBeenCalledWith(failure);
+    expect(onError).toHaveBeenCalledTimes(1);
+    const error = onError.mock.calls[0]![0];
+
+    expect(error).toBeInstanceOf(ReactorError);
+    expect(error.message).toBe('boom');
   });
 
   it('reads tracks()/trackMapping()/pausedTracks() straight off the binding', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
+
     client.tracksResult = [{ name: 'model-output', kind: 'video', direction: 'recvonly' }];
     client.trackMappingResult = [
       { name: 'model-output', kind: 'video', direction: 'recvonly', mid: '0' },
@@ -576,9 +648,11 @@ describe('Reactor tracks', () => {
     const client = await currentClient(reactor);
     const track = {} as MediaStreamTrack;
     const stream = {} as MediaStream;
+
     client.trackByNameResult = track;
     client.streamByNameResult = stream;
     const onTrackReceived = vi.fn();
+
     reactor.on('trackReceived', onTrackReceived);
 
     client.emitTrackReceived('model-output', '0');
@@ -590,6 +664,7 @@ describe('Reactor tracks', () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
     const onTrackReceived = vi.fn();
+
     reactor.on('trackReceived', onTrackReceived);
 
     // `reactor-core` only ever dispatches this event once the track is
@@ -605,8 +680,10 @@ describe('Reactor tracks', () => {
     const client = await currentClient(reactor);
     const gate = createDeferred<void>();
     const originalPublishTrack = client.publishTrack.bind(client);
+
     client.publishTrack = (name, track) => {
       const call = originalPublishTrack(name, track);
+
       return gate.promise.then(() => call);
     };
 
@@ -633,6 +710,7 @@ describe('Reactor tracks', () => {
     const peerConnection = {} as RTCPeerConnection;
     const track = {} as MediaStreamTrack;
     const stream = {} as MediaStream;
+
     client.peerConnectionResult = peerConnection;
     client.trackByMidResult = track;
     client.streamByMidResult = stream;
@@ -654,6 +732,169 @@ describe('Reactor tracks', () => {
     expect(reactor.getStreamByMid('0')).toBeUndefined();
     expect(reactor.getTrackByName('model-output')).toBeUndefined();
     expect(reactor.getStreamByName('model-output')).toBeUndefined();
+  });
+});
+
+describe('Reactor stats', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('getStats() and getConnectionTimings() are undefined before a client exists', () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+
+    expect(reactor.getStats()).toBeUndefined();
+    expect(reactor.getConnectionTimings()).toBeUndefined();
+  });
+
+  it('computes connectionTimings from the connecting/waiting/ready status sequence', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'performance'] });
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.emitConnecting();
+    vi.advanceTimersByTime(100);
+    client.emitWaiting();
+    vi.advanceTimersByTime(250);
+    client.emitReady();
+
+    expect(reactor.getConnectionTimings()).toEqual({
+      sessionCreationMs: 100,
+      transportConnectingMs: 250,
+      totalMs: 350,
+    });
+  });
+
+  it('polls getPeerConnection().getStats() every STATS_INTERVAL_MS once ready, emitting statsUpdate', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const report = { forEach: () => {}, get: () => undefined } as unknown as RTCStatsReport;
+    const getStats = vi.fn().mockResolvedValue(report);
+
+    client.peerConnectionResult = { getStats } as unknown as RTCPeerConnection;
+    const onStatsUpdate = vi.fn();
+
+    reactor.on('statsUpdate', onStatsUpdate);
+
+    client.emitReady();
+    expect(getStats).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    expect(getStats).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(onStatsUpdate).toHaveBeenCalledTimes(1));
+    expect(reactor.getStats()).toEqual(onStatsUpdate.mock.calls[0]?.[0]);
+
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    expect(getStats).toHaveBeenCalledTimes(2);
+  });
+
+  it('folds the current connectionTimings into every statsUpdate sample', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const report = { forEach: () => {}, get: () => undefined } as unknown as RTCStatsReport;
+
+    client.peerConnectionResult = { getStats: vi.fn().mockResolvedValue(report) } as unknown as RTCPeerConnection;
+
+    client.emitConnecting();
+    client.emitWaiting();
+    client.emitReady();
+
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+
+    expect(reactor.getStats()?.connectionTimings).toBe(reactor.getConnectionTimings());
+  });
+
+  it('stops polling and clears stats on disconnect()', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const report = { forEach: () => {}, get: () => undefined } as unknown as RTCStatsReport;
+    const getStats = vi.fn().mockResolvedValue(report);
+
+    client.peerConnectionResult = { getStats } as unknown as RTCPeerConnection;
+
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    expect(getStats).toHaveBeenCalledTimes(1);
+
+    await reactor.disconnect();
+    expect(reactor.getStats()).toBeUndefined();
+    expect(reactor.getConnectionTimings()).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS * 2);
+    expect(getStats).toHaveBeenCalledTimes(1);
+  });
+
+  it('discards an in-flight getStats() sample that resolves after polling was stopped', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const gate = createDeferred<RTCStatsReport>();
+    const getStats = vi.fn().mockReturnValue(gate.promise);
+
+    client.peerConnectionResult = { getStats } as unknown as RTCPeerConnection;
+    const onStatsUpdate = vi.fn();
+
+    reactor.on('statsUpdate', onStatsUpdate);
+
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    expect(getStats).toHaveBeenCalledTimes(1); // in flight, not yet resolved
+
+    // Recoverable: stops polling but keeps this same `client` (and its
+    // `getPeerConnection()`) alive — the scenario a plain `this.client !==
+    // client` check inside the pending `.then()` couldn't have caught.
+    await reactor.disconnect(true);
+    expect(reactor.getStats()).toBeUndefined();
+
+    gate.resolve({ forEach: () => {}, get: () => undefined } as unknown as RTCStatsReport);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(reactor.getStats()).toBeUndefined();
+    expect(onStatsUpdate).not.toHaveBeenCalled();
+  });
+
+  it('does not poll while getPeerConnection() is undefined', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.peerConnectionResult = undefined;
+    const onStatsUpdate = vi.fn();
+
+    reactor.on('statsUpdate', onStatsUpdate);
+
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS * 2);
+
+    expect(onStatsUpdate).not.toHaveBeenCalled();
+    expect(reactor.getStats()).toBeUndefined();
+  });
+
+  it('stops polling on any other status transition too, not just an explicit disconnect()', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const report = { forEach: () => {}, get: () => undefined } as unknown as RTCStatsReport;
+    const getStats = vi.fn().mockResolvedValue(report);
+
+    client.peerConnectionResult = { getStats } as unknown as RTCPeerConnection;
+
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    expect(getStats).toHaveBeenCalledTimes(1);
+
+    // e.g. a transport error dropping straight to "disconnected" without
+    // going through Reactor.disconnect() at all.
+    client.emitDisconnected();
+    expect(reactor.getStats()).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS * 2);
+    expect(getStats).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -685,6 +926,7 @@ describe('Reactor.uploadFile', () => {
     const file = new Blob(['hi']);
 
     const ref = await reactor.uploadFile(file, { name: 'photo.jpg' });
+
     await reactor.sendCommand('set_image', { image: ref, caption: 'a cat' });
 
     expect(client.sendCommandCalls).toEqual([
@@ -701,8 +943,10 @@ describe('Reactor.uploadFile', () => {
     const client = await currentClient(reactor);
     const gate = createDeferred<void>();
     const originalUploadFile = client.uploadFile.bind(client);
+
     client.uploadFile = (file, name) => {
       const call = originalUploadFile(file, name);
+
       return gate.promise.then(() => call);
     };
 
@@ -729,9 +973,11 @@ describe('Reactor messaging events', () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
     const onMessage = vi.fn();
+
     reactor.on('message', onMessage);
 
     const payload: ReactorMessage = { type: 'greeting', data: { text: 'hi' } };
+
     client.emitMessage(payload);
 
     expect(onMessage).toHaveBeenCalledWith(payload);
@@ -741,11 +987,187 @@ describe('Reactor messaging events', () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
     const onRuntimeMessage = vi.fn();
+
     reactor.on('runtimeMessage', onRuntimeMessage);
 
     const payload: ReactorMessage = { type: 'moderation', data: { flagged: false } };
+
     client.emitRuntimeMessage(payload);
 
     expect(onRuntimeMessage).toHaveBeenCalledWith(payload);
+  });
+});
+
+describe('Reactor error handling', () => {
+  it('wraps an onError payload into the typed subclass matching its code', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const onError = vi.fn<(error: ReactorError) => void>();
+
+    reactor.on('error', onError);
+
+    client.emitError({
+      code: 'UNAUTHORIZED',
+      message: 'token expired',
+      recoverable: false,
+      status: 401,
+      operation: 'connect',
+      timestamp_ms: 123,
+    });
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    const error = onError.mock.calls[0]![0];
+
+    expect(error).toBeInstanceOf(UnauthorizedError);
+    expect(error).toBeInstanceOf(ReactorError);
+    // `code` is the fixed compatibility string this SDK already reported for
+    // any connect() failure — see errors.ts's `codeForDisplay()`. The
+    // canonical UNAUTHORIZED reason still drives the subclass above.
+    expect(error).toMatchObject({
+      code: 'CONNECTION_FAILED',
+      message: 'token expired',
+      recoverable: false,
+      status: 401,
+      operation: 'connect',
+      timestamp_ms: 123,
+    });
+  });
+
+  it('falls back to the base ReactorError class for a code with no matching subclass', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const onError = vi.fn<(error: ReactorError) => void>();
+
+    reactor.on('error', onError);
+
+    // `operation: 'requestSchema'` has no fixed compatibility code of its
+    // own (see errors.ts's `codeForDisplay()`), so `code` passes through
+    // unchanged — keeping this test focused on subclass fallback.
+    client.emitError({
+      code: 'SOME_NEW_PLATFORM_CODE',
+      message: 'model rejected the request',
+      operation: 'requestSchema',
+    });
+
+    const error = onError.mock.calls[0]![0];
+
+    expect(error).toBeInstanceOf(ReactorError);
+    expect(error.constructor).toBe(ReactorError);
+    expect(error.code).toBe('SOME_NEW_PLATFORM_CODE');
+  });
+
+  it('wraps a rejected connect() into the matching typed ReactorError subclass', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+
+    // A rejected connect() never reaches the fake's "ready" transition, so
+    // status stays 'disconnected' and the guard lets a second attempt
+    // through below — no currentClient()/disconnect() cycle needed.
+    FakeReactorClient.nextConnectImpl = () =>
+      Promise.reject(
+        Object.assign(new Error('the connection dropped'), {
+          name: 'ReactorError',
+          code: 'DISCONNECTED',
+          operation: 'connect',
+          recoverable: true,
+          timestamp_ms: 456,
+        }),
+      );
+
+    await expect(reactor.connect()).rejects.toBeInstanceOf(DisconnectedError);
+    await expect(reactor.connect()).rejects.toMatchObject({
+      code: 'CONNECTION_FAILED',
+      message: 'the connection dropped',
+      recoverable: true,
+    });
+    // A rejected call updates getLastError() too, not just the error event —
+    // see getLastError()'s doc comment.
+    expect(reactor.getLastError()).toMatchObject({ code: 'CONNECTION_FAILED' });
+  });
+
+  it('wraps a rejected publishTrack() the same way as connect()', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.publishTrack = () =>
+      Promise.reject(
+        Object.assign(new Error('timed out'), {
+          name: 'ReactorError',
+          code: 'REQUEST_TIMEOUT',
+          operation: 'publishTrack',
+        }),
+      );
+
+    await expect(reactor.publishTrack('camera', {} as MediaStreamTrack)).rejects.toBeInstanceOf(
+      RequestTimeoutError,
+    );
+  });
+
+  describe('sendCommand', () => {
+    it('never rejects: a failure resolves undefined, sets lastError, and emits error', async () => {
+      const reactor = new Reactor({ modelName: 'test-model' });
+      const client = await currentClient(reactor);
+
+      client.sendCommand = () =>
+        Promise.reject(
+          Object.assign(new Error('not ready'), {
+            name: 'ReactorError',
+            code: 'INVALID_STATE',
+            operation: 'sendCommand',
+          }),
+        );
+      const onError = vi.fn<(error: ReactorError) => void>();
+
+      reactor.on('error', onError);
+
+      const reply = await reactor.sendCommand('set_prompt', { prompt: 'a cat' });
+
+      expect(reply).toBeUndefined();
+      expect(onError).toHaveBeenCalledTimes(1);
+      const error = onError.mock.calls[0]![0];
+
+      expect(error).toBeInstanceOf(ReactorError);
+      // NOT_READY is the fixed compatibility code sendCommand already used
+      // for this exact case (session not ready) — see `codeForDisplay()`.
+      expect(error.code).toBe('NOT_READY');
+      expect(reactor.getLastError()).toBe(error);
+    });
+
+    it('still resolves with the reply on success, leaving lastError untouched', async () => {
+      const reactor = new Reactor({ modelName: 'test-model' });
+      const client = await currentClient(reactor);
+
+      client.emitError({ code: 'DISCONNECTED', message: 'earlier, unrelated failure' });
+      const priorError = reactor.getLastError();
+
+      const reply = await reactor.sendCommand('set_caption', { text: 'hi' });
+
+      expect(reply).toEqual({ type: 'ack', data: null });
+      expect(reactor.getLastError()).toBe(priorError);
+    });
+  });
+
+  it('getLastError() reflects the most recent failure, from an error event or a rejected call alike', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    expect(reactor.getLastError()).toBeUndefined();
+
+    client.emitError({ code: 'SERVER_ERROR', message: 'boom', operation: 'requestSchema' });
+
+    expect(reactor.getLastError()?.code).toBe('SERVER_ERROR');
+
+    // A later rejected call — one that only throws, never emits `error` —
+    // must still update getLastError(), or it goes stale after that call.
+    client.pauseTrack = () =>
+      Promise.reject(
+        Object.assign(new Error('not ready'), {
+          name: 'ReactorError',
+          code: 'INVALID_STATE',
+          operation: 'pauseTrack',
+        }),
+      );
+
+    await expect(reactor.pauseTrack('camera')).rejects.toBeInstanceOf(InvalidStateError);
+    expect(reactor.getLastError()?.code).toBe('INVALID_STATE');
   });
 });
