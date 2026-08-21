@@ -5,7 +5,12 @@
 # keep per-process state a C callback can reach without a `this`. The checks
 # disabled below all fire on exactly that, and following them would mean testing a
 # C++-shaped fake instead of the boundary the SDK actually has.
-
+#
+# bugprone-exception-escape is the one worth a sentence: every callable the fake
+# hands to a thread goes through FakeLibrary::spawn, which wraps it so nothing
+# escapes and a failed Catch2 assertion on a library thread fails the test rather
+# than terminating the run. The check cannot see that one wrapper from the lambdas
+# passed into it, so it flags each of them instead.
 InheritParentConfig: true
 
 Checks: >
@@ -15,6 +20,7 @@ Checks: >
   -cppcoreguidelines-pro-type-vararg,
   -cppcoreguidelines-avoid-const-or-ref-data-members,
   -bugprone-use-after-move,
+  -bugprone-exception-escape,
   -performance-unnecessary-value-param
 
 CheckOptions:

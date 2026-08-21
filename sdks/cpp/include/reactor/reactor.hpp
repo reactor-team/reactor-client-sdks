@@ -1,0 +1,177 @@
+// The client.
+//
+//     #include <reactor/reactor.hpp>
+//
+//     reactor::Reactor r{"reactor/helios", reactor::ApiKey{std::getenv("REACTOR_API_KEY")}};
+//
+//     auto status = r.on_status([](reactor::Status s) {
+//       std::cout << reactor::to_string(s) << '\n';
+//     });
+//
+//     r.connect().get();          // throws the typed error on failure
+//     …
+//     r.disconnect().get();
+//
+// A model name is `owner/name`. A bare name resolves under `reactor/`, so it
+// works by luck of ownership and answers 403 for anyone else's model.
+#pragma once
+
+#include <cstdint>
+#include <functional>
+#include <future>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+
+#include "reactor/errors.hpp"
+#include "reactor/status.hpp"
+#include "reactor/subscription.hpp"
+
+namespace reactor {
+
+namespace detail {
+/// The client's state, defined in reactor.cpp.
+///
+/// Not a nested private type: the C callbacks the library holds have to reach it,
+/// and a nested private one would put them inside the class or outside its access.
+class ClientImpl;
+}  // namespace detail
+
+/// Reactor's production coordinator.
+inline constexpr std::string_view DEFAULT_API_URL = "https://api.reactor.inc";
+
+/// A local runtime, for `reactor_runtime.serve` in a directory with a
+/// `reactor.yaml`. Pair it with `Options::local`.
+inline constexpr std::string_view LOCAL_API_URL = "http://localhost:8080";
+
+/// An API key, exchanged for a session-scoped JWT when connecting.
+///
+/// Scoped to this model, so a leak is worth a handful of sessions rather than
+/// everything the key can reach.
+struct ApiKey {
+  std::string value;
+};
+
+/// A JWT that was minted elsewhere.
+///
+/// For a server that already holds one, or one handed to a client by a backend
+/// that owns the key.
+struct Jwt {
+  std::string value;
+};
+
+/// Where control-event handlers run.
+///
+/// Given one, the SDK hands it a callable per event instead of using its own
+/// thread — for a host with a loop of its own (Qt, ASIO, a game loop) that would
+/// rather own when handlers run. It is called from a library thread, so it must
+/// be safe to call from any thread; everything it is handed is safe to run at any
+/// time.
+///
+/// Futures do **not** go through it. A promise is settled on the FFI's own
+/// completion thread, so `connect().get()` on the same thread that would have run
+/// the executor cannot deadlock against it.
+using Executor = std::function<void(std::function<void()>)>;
+
+/// Everything about a client that is not the model or the credential.
+struct Options {
+  /// The coordinator. Defaults to production.
+  std::string api_url{DEFAULT_API_URL};
+
+  /// Accept a dev coordinator's self-signed certificate, and speak its
+  /// local-development protocol.
+  bool local = false;
+
+  /// Where control events run. Empty means the SDK's own dispatcher thread.
+  Executor executor;
+};
+
+/// What `connect` may adopt instead of creating.
+struct ConnectOptions {
+  /// Join a session that already exists, rather than creating one. This is how a
+  /// second client attaches to the same session — see the multi-connection
+  /// example.
+  std::optional<std::string> session_id;
+
+  /// Adopt a connection id a backend already registered for this session. Most
+  /// callers leave this empty, as they do `session_id`.
+  std::optional<std::uint32_t> connection_id;
+};
+
+/// A Reactor client: one session, and the tracks and commands on it.
+///
+/// Movable, not copyable — a session has one owner. Destroying it releases the
+/// native handle; a client that was connected should `disconnect()` first, since
+/// a creator that goes away without disconnecting leaves the session orphaned
+/// and the next run cannot start until it clears.
+class Reactor {
+ public:
+  /// A client that will exchange `key` for a token when it connects.
+  Reactor(std::string model, ApiKey key, Options options = {});
+
+  /// A client that uses `jwt` as it is.
+  Reactor(std::string model, Jwt jwt, Options options = {});
+
+  ~Reactor();
+
+  Reactor(Reactor&&) noexcept;
+  Reactor& operator=(Reactor&&) noexcept;
+  Reactor(const Reactor&) = delete;
+  Reactor& operator=(const Reactor&) = delete;
+
+  /// Create (or adopt) a session and bring up the transport.
+  ///
+  /// Resolves when the session is `Ready`. Throws the typed error on failure —
+  /// `UnauthorizedError` for a token problem, `ConflictError` for a session left
+  /// orphaned by a run that went away without disconnecting.
+  std::future<void> connect(ConnectOptions options = {});
+
+  /// Cycle the connection without ending the session.
+  ///
+  /// After a transient failure, or deliberately from `Ready`. Fails when there is
+  /// no session to reconnect to. Note this is not `disconnect()` followed by
+  /// `connect()`: that ends the session server-side and cannot be undone.
+  std::future<void> reconnect();
+
+  /// End the session server-side and tear down the transport.
+  std::future<void> disconnect();
+
+  /// Where the session is now.
+  ///
+  /// Readable before `connect()` — a client that never connected reports
+  /// `Disconnected` rather than nothing.
+  Status status() const;
+
+  /// The session's id, once there is a session.
+  std::optional<std::string> session_id() const;
+
+  /// Called on every status change, with the new status.
+  Subscription on_status(std::function<void(Status)> handler);
+
+  /// Called when the session reports a failure that no call was waiting on — a
+  /// transport that dropped, a session the platform ended.
+  ///
+  /// The payload is a `ReactorError`, the same type a failed call throws. Match
+  /// on `code()`, or catch a subclass by taking a `const NetworkError&` after a
+  /// `dynamic_cast`; `recoverable()` is the property to branch on when the
+  /// specific code does not matter.
+  Subscription on_error(std::function<void(const ReactorError&)> handler);
+
+ private:
+  /// Shared, not unique, for two reasons: the callbacks the library holds capture
+  /// it *weakly*, so a handler parked on a capture thread cannot keep the session
+  /// open; and moving the `Reactor` cannot move the state, so the `userdata`
+  /// pointer the library was given stays valid.
+  std::shared_ptr<detail::ClientImpl> impl_;
+};
+
+/// The engine's monotonic clock, in microseconds.
+///
+/// The epoch a frame's capture time is read in. Read it once per unit of produced
+/// media and stamp every track with that one value: tracks are synchronised by
+/// sharing a capture time, not by reaching the encoder at the same moment.
+/// Unrelated to the system clock — a UNIX timestamp is not a substitute.
+std::int64_t time_micros() noexcept;
+
+}  // namespace reactor

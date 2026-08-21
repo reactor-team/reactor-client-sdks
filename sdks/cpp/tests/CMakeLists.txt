@@ -15,6 +15,7 @@ add_executable(
   reactor_sdk_tests
   errors_test.cpp
   ffi_test.cpp
+  reactor_test.cpp
   smoke_test.cpp
 )
 
