@@ -1,9 +1,18 @@
 import { Reactor } from '../reactor';
 import type { ReactorError } from '../errors';
-import type { ConnectOptions, JwtSource, MessageScope, ReactorMessage, ReactorOptions, ReactorStatus } from '../types';
+import type {
+  ConnectOptions,
+  FileRef,
+  JwtSource,
+  MessageScope,
+  ReactorMessage,
+  ReactorOptions,
+  ReactorStatus,
+} from '../types';
 
-/** State kept reactive for `useReactor` selectors. Tracks/stats/schema aren't
- *  mirrored here — reach them through the `internal.reactor` escape hatch. */
+/** State kept reactive for `useReactor` selectors. Stats/schema/capabilities
+ *  aren't mirrored here — reach them through the `internal.reactor` escape
+ *  hatch. */
 export interface ReactorState {
   status: ReactorStatus;
   sessionId: string | undefined;
@@ -11,6 +20,18 @@ export interface ReactorState {
   /** Most recent app-scope `message` payload; `runtimeMessage` isn't mirrored
    *  here — subscribe on `internal.reactor` for that. */
   lastMessage: ReactorMessage | undefined;
+  /** Media tracks received from the model, keyed by track name. Reset to
+   *  `{}` on every "disconnected" status transition — a fresh connection
+   *  invalidates whatever arrived under the previous one. */
+  tracks: Record<string, MediaStreamTrack>;
+  /** The `jwt` the store was created with — see `createReactorStore`'s
+   *  `options.jwt`. Set once at creation, not resynced afterward. */
+  jwtToken: JwtSource | undefined;
+  /** The `defaultConnectOptions` the store was created with — set once at
+   *  creation, not resynced afterward. Lets a component read the
+   *  provider-level defaults (e.g. `autoResumeTracks`) without threading
+   *  them through props of its own. */
+  connectOptions: ConnectOptions | undefined;
 }
 
 export interface ReactorActions {
@@ -26,6 +47,7 @@ export interface ReactorActions {
   unpublish: (name: string) => Promise<void>;
   pauseTrack: (name: string) => Promise<void>;
   resumeTrack: (name: string) => Promise<void>;
+  uploadFile: (file: File | Blob, options?: { name?: string }) => Promise<FileRef>;
 }
 
 export interface ReactorInternal {
@@ -41,6 +63,9 @@ export const defaultReactorState: ReactorState = {
   sessionId: undefined,
   lastError: undefined,
   lastMessage: undefined,
+  tracks: {},
+  jwtToken: undefined,
+  connectOptions: undefined,
 };
 
 export interface StoreApi<T> {
@@ -83,13 +108,18 @@ export function createReactorStore(
   return createStore<ReactorStore>((set, get) => {
     const reactor = new Reactor(options);
 
-    reactor.on('statusChanged', (status) => set({ status }));
+    reactor.on('statusChanged', (status) => {
+      set(status === 'disconnected' ? { status, tracks: {} } : { status });
+    });
     reactor.on('sessionIdChanged', (sessionId) => set({ sessionId }));
     reactor.on('error', (lastError) => set({ lastError }));
     reactor.on('message', (lastMessage) => set({ lastMessage }));
+    reactor.on('trackReceived', (name, track) => set({ tracks: { ...get().tracks, [name]: track } }));
 
     return {
       ...defaultReactorState,
+      jwtToken: options.jwt,
+      connectOptions: defaultConnectOptions,
       internal: { reactor },
       connect: (jwt, callOptions) =>
         get().internal.reactor.connect(jwt, { ...defaultConnectOptions, ...callOptions }),
@@ -101,6 +131,7 @@ export function createReactorStore(
       unpublish: (name) => get().internal.reactor.unpublishTrack(name),
       pauseTrack: (name) => get().internal.reactor.pauseTrack(name),
       resumeTrack: (name) => get().internal.reactor.resumeTrack(name),
+      uploadFile: (file, options) => get().internal.reactor.uploadFile(file, options),
     };
   });
 }

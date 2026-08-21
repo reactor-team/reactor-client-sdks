@@ -75,7 +75,7 @@ const CLIP: Clip = {
 };
 
 function withProvider({ children }: { children: ReactNode }) {
-  return createElement(ReactorProvider, { modelName: 'test-model', jwt: 'provider-jwt' }, children);
+  return createElement(ReactorProvider, { modelName: 'test-model', jwtToken: 'provider-jwt' }, children);
 }
 
 beforeEach(() => {
