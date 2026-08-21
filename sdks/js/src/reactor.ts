@@ -7,6 +7,7 @@ import { toPublicClip } from './internal/recording';
 import type { ReactorClient } from './internal/reactor-wasm.types';
 import { createRTCStatsExtractor, STATS_INTERVAL_MS } from './internal/stats';
 import { loadReactorWasm } from './internal/wasm';
+import type { FileRef } from './file-ref';
 import { downloadClipAsFile as downloadClipAsFileFn, type DownloadClipOptions } from './recording';
 import type {
   Capabilities,
@@ -14,7 +15,6 @@ import type {
   ConnectionStats,
   ConnectionTimings,
   ConnectOptions,
-  FileRef,
   JwtSource,
   MessageScope,
   ModelSchema,

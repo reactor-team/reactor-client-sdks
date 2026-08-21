@@ -1,14 +1,7 @@
 import { Reactor } from '../reactor';
 import type { ReactorError } from '../errors';
-import type {
-  ConnectOptions,
-  FileRef,
-  JwtSource,
-  MessageScope,
-  ReactorMessage,
-  ReactorOptions,
-  ReactorStatus,
-} from '../types';
+import type { FileRef } from '../file-ref';
+import type { ConnectOptions, JwtSource, MessageScope, ReactorMessage, ReactorOptions, ReactorStatus } from '../types';
 
 /** State kept reactive for `useReactor` selectors. Stats/schema/capabilities
  *  aren't mirrored here — reach them through the `internal.reactor` escape

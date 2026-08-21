@@ -31,21 +31,6 @@ export type {
  */
 export type MessageScope = 'application' | 'runtime';
 
-/**
- * A reference to a file already uploaded via `uploadFile()`, passed as a
- * top-level value in `sendCommand()`'s `data` — see `extractFileRefs()`.
- *
- * camelCase — the wasm binding's own wire shape is snake_case (`upload_id`,
- * `mime_type`), translated at the boundary in `internal/file-ref.ts` rather
- * than exposed directly here.
- */
-export interface FileRef {
-  uploadId: string;
-  name: string;
-  mimeType: string;
-  size: number;
-}
-
 /** One command the model declares in its capabilities. */
 export interface CommandCapability {
   name: string;

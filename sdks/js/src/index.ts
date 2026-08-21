@@ -27,6 +27,9 @@ export {
   parsePlaylist,
 } from './recording';
 export type { DownloadClipOptions, FetchPlaylistOptions } from './recording';
+export { FileRef, isFileRef } from './file-ref';
+export { normalizeJwtSource } from './jwt';
+export type { JwtResolver } from './jwt';
 export type {
   Capabilities,
   Clip,
@@ -35,7 +38,6 @@ export type {
   ConnectionStats,
   ConnectionTimings,
   ConnectOptions,
-  FileRef,
   JwtSource,
   MessageScope,
   ModelSchema,
