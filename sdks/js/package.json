@@ -23,6 +23,7 @@
   },
   "scripts": {
     "build": "tsup && node scripts/copy-wasm.mjs",
+    "prepack": "npm run build",
     "dev": "tsup --watch",
     "type-check": "tsc --noEmit",
     "lint": "eslint .",
