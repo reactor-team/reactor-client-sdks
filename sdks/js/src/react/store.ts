@@ -1,6 +1,6 @@
 import { Reactor } from '../reactor';
 import type { ReactorError } from '../errors';
-import type { ConnectOptions, JwtSource, ReactorMessage, ReactorOptions, ReactorStatus } from '../types';
+import type { ConnectOptions, JwtSource, MessageScope, ReactorMessage, ReactorOptions, ReactorStatus } from '../types';
 
 /** State kept reactive for `useReactor` selectors. Tracks/stats/schema aren't
  *  mirrored here — reach them through the `internal.reactor` escape hatch. */
@@ -17,7 +17,11 @@ export interface ReactorActions {
   connect: (jwt?: JwtSource, options?: ConnectOptions) => Promise<void>;
   disconnect: (recoverable?: boolean) => Promise<void>;
   reconnect: (options?: ConnectOptions) => Promise<void>;
-  sendCommand: (command: string, data?: Record<string, unknown>) => Promise<ReactorMessage | undefined>;
+  sendCommand: (
+    command: string,
+    data?: Record<string, unknown>,
+    scope?: MessageScope,
+  ) => Promise<ReactorMessage | undefined>;
   publish: (name: string, track: MediaStreamTrack) => Promise<void>;
   unpublish: (name: string) => Promise<void>;
   pauseTrack: (name: string) => Promise<void>;
@@ -92,7 +96,7 @@ export function createReactorStore(
       disconnect: (recoverable) => get().internal.reactor.disconnect(recoverable),
       reconnect: (callOptions) =>
         get().internal.reactor.reconnect({ ...defaultConnectOptions, ...callOptions }),
-      sendCommand: (command, data) => get().internal.reactor.sendCommand(command, data),
+      sendCommand: (command, data, scope) => get().internal.reactor.sendCommand(command, data, scope),
       publish: (name, track) => get().internal.reactor.publishTrack(name, track),
       unpublish: (name) => get().internal.reactor.unpublishTrack(name),
       pauseTrack: (name) => get().internal.reactor.pauseTrack(name),
