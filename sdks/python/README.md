@@ -140,7 +140,9 @@ camera.push_frame(frame)                          # numpy array: shape carries t
 camera.push_frame(bgra, width=640, height=480)    # bytes: size spelled out
 camera.push_frame(frame, user_data=b"seq=1")      # tag the frame's metadata
 camera.push_frame(frame, capture_time_us=t)        # stamp when it was captured
-camera.push_frame(pcm, sample_rate=48000)         # audio track: interleaved i16 PCM
+
+mic = await reactor.track("mic").publish()         # an audio track
+mic.push_frame(pcm)                               # interleaved i16 PCM, 48 kHz mono
 
 camera.unpublish()
 ```

@@ -32,6 +32,8 @@ import threading
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
+from .track import SEND_CHANNELS, SEND_SAMPLE_RATE
+
 if TYPE_CHECKING:  # pragma: no cover - types only
     from .track import Track
 
@@ -332,20 +334,35 @@ class Microphone:
         self,
         track: Track,
         *,
-        sample_rate: int = 48_000,
-        channels: int = 1,
+        sample_rate: int = SEND_SAMPLE_RATE,
+        channels: int = SEND_CHANNELS,
         device: int | str | None = None,
     ) -> None:
         """
         Args:
             track: The sendonly audio track to push into. Publish it first —
                 pushing into a slot that was never activated goes nowhere.
-            sample_rate: Capture rate in Hz. 48 kHz is what the wire uses; another
-                rate is resampled by the far end, or refused by the device.
-            channels: 1 for mono, which is what a microphone usually is.
+            sample_rate: Capture rate in Hz, and 48 kHz is the only one a sendonly
+                track sends in — see :meth:`Track.push_frame`. Nothing between the
+                device and the wire resamples, so capturing at another rate would
+                send those samples as 48 kHz mono and play them back at the wrong
+                speed. Resample yourself if the device will not give you 48 kHz.
+            channels: 1 for mono, which is what a microphone usually is, and the
+                only count a sendonly track sends.
             device: Which input device, in `sounddevice`'s terms — an index or a
                 name substring. None uses the system default.
         """
+        if sample_rate != SEND_SAMPLE_RATE or channels != SEND_CHANNELS:
+            # Here rather than at the first captured block: `_captured` runs on
+            # sounddevice's thread, where a raise is printed and swallowed instead
+            # of reaching whoever constructed this. No device is opened for a
+            # capture that could not have been sent.
+            raise ValueError(
+                f"Microphone(): sample_rate={sample_rate} channels={channels}, and a "
+                f"sendonly audio track sends only {SEND_SAMPLE_RATE} Hz mono — see "
+                f"Track.push_frame. Capture at {SEND_SAMPLE_RATE} Hz mono, or "
+                f"resample before pushing."
+            )
         self._track = track
         self._sample_rate = sample_rate
         self._channels = channels
