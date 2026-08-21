@@ -699,4 +699,20 @@ def _as_bgra(data: Any, width: int | None, height: int | None, name: str) -> tup
             f"pass width= and height= too, or pass a numpy array and they are read "
             f"from it."
         )
-    return bytes(data), width, height
+    # The FFI takes the pointer and the dimensions but not the length — see the
+    # `# Safety` note on `reactor_push_video_frame`, which states that a short
+    # buffer is read out of bounds. The array path above cannot get this wrong
+    # because it derives both from `shape`; this one takes the caller's word, so
+    # it is the one place the two numbers can disagree. `_push_audio_frame`
+    # already sizes its buffer from the metadata rather than the data for the
+    # same reason.
+    buffer = bytes(data)
+    expected = width * height * 4
+    if len(buffer) != expected:
+        raise ValueError(
+            f"push_frame(): track {name!r} was given {len(buffer)} bytes for a "
+            f"{width}x{height} BGRA frame, which needs exactly {expected}. The "
+            f"length is not carried across the FFI boundary — the dimensions are "
+            f"what the native side reads."
+        )
+    return buffer, width, height

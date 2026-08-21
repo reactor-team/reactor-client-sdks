@@ -314,6 +314,22 @@ class TestPushFrame:
         with pytest.raises(ValueError, match="carry no shape"):
             reactor.track("camera").push_frame(b"\x00" * 4)
 
+    def test_video_bytes_must_match_their_dimensions(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A short buffer is read out of bounds by the FFI, which takes the
+        dimensions but not the length. Refuse it here, naming both numbers."""
+        reactor, _ = _connected(monkeypatch)
+        with pytest.raises(ValueError, match="8294400"):
+            reactor.track("camera").push_frame(b"\x00" * 4, width=1920, height=1080)
+
+    def test_video_bytes_longer_than_their_dimensions_are_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A long buffer is memory-safe but silently sends a cropped frame, which
+        is the same class of mistake as a mismatched array shape."""
+        reactor, _ = _connected(monkeypatch)
+        with pytest.raises(ValueError, match="needs exactly 4"):
+            reactor.track("camera").push_frame(b"\x00" * 64, width=1, height=1)
+
     def test_video_bytes_are_passed_through_untouched(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
