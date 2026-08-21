@@ -27,6 +27,7 @@
 #include "reactor/errors.hpp"
 #include "reactor/status.hpp"
 #include "reactor/subscription.hpp"
+#include "reactor/track.hpp"
 
 namespace reactor {
 
@@ -148,6 +149,27 @@ class Reactor {
 
   /// Called on every status change, with the new status.
   Subscription on_status(std::function<void(Status)> handler);
+
+  /// The track called `name`.
+  ///
+  /// How an app that knows its model asks: `reactor.track("main_video")`. Throws
+  /// `NotFoundError`, listing what the session *does* declare, when the name is
+  /// not among them — the FFI would accept it and then do nothing, which is the
+  /// same thing a caller sees when a model sends nothing at all.
+  ///
+  /// Before the session has declared anything, any name is allowed: there is
+  /// nothing yet to contradict, and the refusals that matter happen when a handler
+  /// is registered or a frame is pushed.
+  Track track(const std::string& name);
+
+  /// Every track the session declared.
+  ///
+  /// For discovery. `tracks().with_kind(...)` and `.with_direction(...)` chain in
+  /// either order, and `.one()` insists there is exactly one.
+  TrackList tracks();
+
+  /// Called as each incoming track is received, with the track itself.
+  Subscription on_track(std::function<void(Track)> handler);
 
   /// Called when the session reports a failure that no call was waiting on — a
   /// transport that dropped, a session the platform ended.
