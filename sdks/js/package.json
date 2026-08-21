@@ -1,6 +1,6 @@
 {
   "name": "@reactor-team/js-sdk",
-  "version": "0.1.0",
+  "version": "2.13.0",
   "description": "Connect your JavaScript/TypeScript app to a live Reactor model in the browser.",
   "license": "Apache-2.0",
   "type": "module",
