@@ -1,4 +1,5 @@
 import { AwaitQueue } from 'awaitqueue';
+import { toPublicCapabilities } from './internal/capabilities';
 import { toReactorError, type ReactorError } from './errors';
 import { Emitter } from './internal/emitter';
 import { extractFileRefs, toPublicFileRef } from './internal/file-ref';
@@ -8,12 +9,14 @@ import { createRTCStatsExtractor, STATS_INTERVAL_MS } from './internal/stats';
 import { loadReactorWasm } from './internal/wasm';
 import { downloadClipAsFile as downloadClipAsFileFn, type DownloadClipOptions } from './recording';
 import type {
+  Capabilities,
   Clip,
   ConnectionStats,
   ConnectionTimings,
   ConnectOptions,
   FileRef,
   JwtSource,
+  ModelSchema,
   ReactorEventMap,
   ReactorMessage,
   ReactorOptions,
@@ -32,11 +35,12 @@ export class Reactor implements Disposable {
   private clientPromise: Promise<ReactorClient> | undefined;
   private disposed = false;
   private _lastError: ReactorError | undefined;
-  private schema: unknown;
+  private schema: ModelSchema | undefined;
   /** Bumped on every `refreshSchema()` call — lets a call detect it's been
    *  superseded by a newer one even when `client` itself hasn't changed
    *  (e.g. two "ready" transitions on the same reused client). */
   private schemaRefreshId = 0;
+  private capabilities: Capabilities | undefined;
 
   private stats: ConnectionStats | undefined;
   private connectionTimings: ConnectionTimings | undefined;
@@ -190,12 +194,12 @@ export class Reactor implements Disposable {
   /** Requests the model's command schema directly. Most callers don't need
    *  this — it's already fetched once and cached as soon as the session
    *  reaches `"ready"`; use `getSchema()` for that. */
-  async requestSchema(): Promise<unknown> {
+  async requestSchema(): Promise<ModelSchema> {
     this.assertNotDisposed();
     try {
       const client = await this.getOrCreateClient();
 
-      return await client.requestSchema();
+      return (await client.requestSchema()) as ModelSchema;
     } catch (cause) {
       throw this.captureError(cause);
     }
@@ -204,8 +208,16 @@ export class Reactor implements Disposable {
   /** The model's command schema (an OpenAPI document), cached from the
    *  `requestSchema()` call fired automatically on `"ready"`. `undefined`
    *  until that reply has landed. */
-  getSchema(): unknown {
+  getSchema(): ModelSchema | undefined {
     return this.schema;
+  }
+
+  /** The runtime's declared capabilities (negotiated tracks, and the
+   *  command set when the model exposes one) — pushed once available, no
+   *  explicit request needed. `undefined` until `capabilitiesReceived`
+   *  fires. */
+  getCapabilities(): Capabilities | undefined {
+    return this.capabilities;
   }
 
   // ── Tracks ──────────────────────────────────────────────────────────────
@@ -411,6 +423,7 @@ export class Reactor implements Disposable {
     this.client = undefined;
     this.clientPromise = undefined;
     this.schema = undefined;
+    this.capabilities = undefined;
     this.resetConnectionState();
     this.emitter.clear();
     if (client) {
@@ -509,6 +522,10 @@ export class Reactor implements Disposable {
     client.onMessage((message) => this.emitter.emit('message', message));
     // CONTROL channel — platform traffic (moderation, clip/recording lifecycle).
     client.onRuntimeMessage((message) => this.emitter.emit('runtimeMessage', message));
+    client.onCapabilitiesReceived((capabilities) => {
+      this.capabilities = toPublicCapabilities(capabilities);
+      this.emitter.emit('capabilitiesReceived', this.capabilities);
+    });
     client.onTrackReceived((name, mid) => {
       const track = client.getTrackByName(name);
       const stream = client.getStreamByName(name);
@@ -543,7 +560,7 @@ export class Reactor implements Disposable {
     const refreshId = ++this.schemaRefreshId;
 
     try {
-      const schema = await client.requestSchema();
+      const schema = (await client.requestSchema()) as ModelSchema;
 
       if (this.client !== client || refreshId !== this.schemaRefreshId) {
         return;
@@ -571,6 +588,7 @@ export class Reactor implements Disposable {
     this.client = undefined;
     this.clientPromise = undefined;
     this.schema = undefined;
+    this.capabilities = undefined;
   }
 
   /** Tracks `connectionTimings` off the binding's own "connecting" → "waiting"
