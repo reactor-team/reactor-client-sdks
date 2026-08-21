@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -131,6 +132,44 @@ void ClientImpl::on_track_trampoline(const char* name, const char* mid_or_null,
   }
 }
 
+void ClientImpl::fire_message(Handlers<const Json&>& handlers, const char* msg_json) {
+  // Parsed and copied here, not in the handler: the string is valid for this call
+  // only, and the handler runs later, on the dispatcher.
+  auto message = std::make_shared<Json>(
+      Json::parse(msg_json == nullptr ? "" : msg_json, nullptr, /*allow_exceptions=*/false));
+  if (message->is_discarded()) {
+    log_warn_once("message-unparseable",
+                  "a message arrived that is not valid JSON; it has been dropped");
+    return;
+  }
+  dispatcher_.post([weak = weak_from_this(), &handlers, message] {
+    if (const auto self = weak.lock()) {
+      handlers.invoke(*message);
+    }
+  });
+}
+
+void ClientImpl::on_message_trampoline(const char* msg_json, void* userdata) noexcept {
+  try {
+    if (const auto impl = from_userdata(userdata)) {
+      impl->fire_message(impl->message_handlers_, msg_json);
+    }
+  } catch (...) {
+  }
+}
+
+void ClientImpl::on_runtime_message_trampoline(const char* msg_json, void* userdata) noexcept {
+  try {
+    if (const auto impl = from_userdata(userdata)) {
+      // A separate event, not a filtered one: session lifecycle notices and clip
+      // readiness are the platform's business, and a caller reading only model
+      // messages should never have to sift them out.
+      impl->fire_message(impl->runtime_message_handlers_, msg_json);
+    }
+  } catch (...) {
+  }
+}
+
 void ClientImpl::on_capabilities_trampoline(const char* caps_json, void* userdata) noexcept {
   try {
     const auto impl = from_userdata(userdata);
@@ -235,7 +274,22 @@ void ClientImpl::settle_completion(Pending* raw, int ok, const char* result_json
     if (result_json != nullptr) {
       result = Json::parse(result_json, nullptr, /*allow_exceptions=*/false);
       if (result.is_discarded()) {
-        result = Json::object();
+        // A success whose payload cannot be parsed is not a success with an empty
+        // one. Substituting `{}` made request_schema() answer with a schema
+        // declaring nothing, which a caller cannot tell from a model that really
+        // declares nothing — and it hides exactly the ABI or server corruption
+        // worth knowing about. An absent payload (a null pointer) is different and
+        // still means "nothing to report".
+        raw->fail(as_exception_ptr(
+            ErrorDetails{std::string{codes::DECODE_FAILED},
+                         "this call succeeded but its result could not be read as JSON: " +
+                             std::string{result_json},
+                         false,
+                         {},
+                         raw->operation,
+                         {},
+                         {}}));
+        return;
       }
     }
     raw->settle(std::move(result));
@@ -422,6 +476,79 @@ void ClientImpl::begin_connect(std::unique_ptr<Pending> op, ConnectOptions optio
   ffi().connect(handle, session, connection, &completion_trampoline, raw);
 }
 
+// ── Commands, messages, uploads ──────────────────────────────────────────────
+
+void ClientImpl::begin_send_command(std::unique_ptr<Pending> op, const std::string& command,
+                                    const Json& args,
+                                    const std::map<std::string, FileRef>& uploads) {
+  try {
+    ReactorHandle* handle = require_ready_handle("send a command on", command);
+
+    const std::string args_json = args.is_null() ? "{}" : args.dump();
+
+    std::string uploads_json;
+    if (!uploads.empty()) {
+      Json object = Json::object();
+      for (const auto& [parameter, ref] : uploads) {
+        object[parameter] = Json{{"upload_id", ref.upload_id},
+                                 {"name", ref.name},
+                                 {"mime_type", ref.mime_type},
+                                 {"size", ref.size}};
+      }
+      uploads_json = object.dump();
+    }
+
+    auto* raw = track_pending(std::move(op));
+    ffi().send_command(handle, command.c_str(), args_json.c_str(),
+                       uploads_json.empty() ? nullptr : uploads_json.c_str(),
+                       &completion_trampoline, raw);
+  } catch (...) {
+    op->fail(std::current_exception());
+  }
+}
+
+void ClientImpl::begin_request_schema(std::unique_ptr<Pending> op) {
+  try {
+    ReactorHandle* handle = require_ready_handle("request the schema of", model_);
+    auto* raw = track_pending(std::move(op));
+    ffi().request_schema(handle, &completion_trampoline, raw);
+  } catch (...) {
+    op->fail(std::current_exception());
+  }
+}
+
+void ClientImpl::begin_upload_file(std::unique_ptr<Pending> op, const std::string& path) {
+  try {
+    // Checked here so the failure names the path, rather than arriving as whatever
+    // the coordinator says about an upload with no bytes.
+    if (!std::filesystem::exists(path)) {
+      throw NotFoundError{"no file at \"" + path + "\""};
+    }
+    ReactorHandle* handle = require_ready_handle("upload a file to", path);
+    auto* raw = track_pending(std::move(op));
+    ffi().upload_file(handle, path.c_str(), &completion_trampoline, raw);
+  } catch (...) {
+    op->fail(std::current_exception());
+  }
+}
+
+void ClientImpl::begin_upload_bytes(std::unique_ptr<Pending> op, Bytes data,
+                                    const std::string& name, const std::string& mime_type) {
+  try {
+    if (data.data == nullptr || data.size == 0) {
+      throw BadRequestError{"cannot upload an empty buffer as \"" + name + "\""};
+    }
+    ReactorHandle* handle = require_ready_handle("upload bytes to", name);
+    auto* raw = track_pending(std::move(op));
+    // Borrowed for the duration of the call, which the header states and this
+    // relies on: the FFI copies before returning.
+    ffi().upload_bytes(handle, data.data, data.size, name.c_str(), mime_type.c_str(),
+                       &completion_trampoline, raw);
+  } catch (...) {
+    op->fail(std::current_exception());
+  }
+}
+
 }  // namespace detail
 
 // ── Reactor ──────────────────────────────────────────────────────────────────
@@ -473,6 +600,57 @@ Subscription Reactor::on_status(std::function<void(Status)> handler) {
   return Subscription{[weak = std::weak_ptr<detail::ClientImpl>{impl_}, id] {
     if (const auto impl = weak.lock()) {
       impl->status_handlers().remove(id);
+    }
+  }};
+}
+
+std::future<std::optional<Json>> Reactor::send_command(std::string command, Json args,
+                                                       std::map<std::string, FileRef> uploads) {
+  auto op = std::make_unique<detail::PendingOptionalJson>();
+  op->operation = "send_command";
+  auto future = op->promise.get_future();
+  impl_->begin_send_command(std::move(op), command, args, uploads);
+  return future;
+}
+
+std::future<Json> Reactor::request_schema() {
+  auto op = std::make_unique<detail::PendingJson>();
+  op->operation = "request_schema";
+  auto future = op->promise.get_future();
+  impl_->begin_request_schema(std::move(op));
+  return future;
+}
+
+std::future<FileRef> Reactor::upload_file(std::string path) {
+  auto op = std::make_unique<detail::PendingFileRef>();
+  op->operation = "upload_file";
+  auto future = op->promise.get_future();
+  impl_->begin_upload_file(std::move(op), path);
+  return future;
+}
+
+std::future<FileRef> Reactor::upload_bytes(Bytes data, std::string name, std::string mime_type) {
+  auto op = std::make_unique<detail::PendingFileRef>();
+  op->operation = "upload_bytes";
+  auto future = op->promise.get_future();
+  impl_->begin_upload_bytes(std::move(op), data, name, mime_type);
+  return future;
+}
+
+Subscription Reactor::on_message(std::function<void(const Json&)> handler) {
+  const std::uint64_t id = impl_->message_handlers().add(std::move(handler));
+  return Subscription{[weak = std::weak_ptr<detail::ClientImpl>{impl_}, id] {
+    if (const auto impl = weak.lock()) {
+      impl->message_handlers().remove(id);
+    }
+  }};
+}
+
+Subscription Reactor::on_runtime_message(std::function<void(const Json&)> handler) {
+  const std::uint64_t id = impl_->runtime_message_handlers().add(std::move(handler));
+  return Subscription{[weak = std::weak_ptr<detail::ClientImpl>{impl_}, id] {
+    if (const auto impl = weak.lock()) {
+      impl->runtime_message_handlers().remove(id);
     }
   }};
 }
