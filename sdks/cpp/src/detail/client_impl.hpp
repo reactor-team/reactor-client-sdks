@@ -295,8 +295,51 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     std::weak_ptr<ClientImpl> impl;
   };
 
+  /// What a token was minted for.
+  ///
+  /// A session-scoped token cannot reach a session it did not create, so the scope
+  /// depends on the *call* rather than on the client: creating a session wants a
+  /// model-scoped token — a leak is then worth a handful of sessions on one model
+  /// rather than everything the key can reach — while adopting one created
+  /// elsewhere needs the broader token. A token minted for one connect is
+  /// therefore not necessarily right for the next.
+  enum class TokenScope : std::uint8_t { None, ThisModel, Unscoped };
+
   void set_api_key(std::string key) { api_key_ = std::move(key); }
-  void set_jwt(std::string jwt) { jwt_ = std::move(jwt); }
+
+  void set_jwt(std::string jwt) {
+    // Under the lock too. Only the constructor calls this today, where nothing else
+    // can see the object yet — but that is a fact about the caller, and the next
+    // caller will not know it.
+    const std::lock_guard<std::mutex> lock(mutex_);
+    jwt_ = std::move(jwt);
+    // A token the caller supplied is theirs, and its scope is not ours to reason
+    // about: whatever it can reach, it can reach.
+    minted_for_ = TokenScope::Unscoped;
+    caller_supplied_jwt_ = true;
+  }
+
+  /// Take a token this client minted, and drop the handle if it changed.
+  ///
+  /// The native client is handed its token at creation, so a new one only reaches
+  /// it through a new handle.
+  void adopt_minted_token(std::string jwt, TokenScope scope) {
+    bool changed = false;
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      // Compared under the lock rather than before it. This runs on whichever FFI
+      // thread answered the token request, while another connect may be reading or
+      // replacing the same optional — and an unlocked read of a string someone
+      // else is assigning is a race inside the string's own buffer, not merely a
+      // stale answer.
+      changed = !jwt_.has_value() || *jwt_ != jwt;
+      jwt_ = std::move(jwt);
+      minted_for_ = scope;
+    }
+    if (changed) {
+      destroy_handle();
+    }
+  }
 
   // ── Reads ──────────────────────────────────────────────────────────────────
 
@@ -506,7 +549,6 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   static void settle_completion(Pending* raw, int ok, const char* result_json,
                                 const char* error_json);
 
- public:
  private:
   // ── Handle ─────────────────────────────────────────────────────────────────
 
@@ -598,6 +640,12 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
 
   // ── Teardown ───────────────────────────────────────────────────────────────
 
+  /// Release the native handle, and with it the right to call back into us.
+  ///
+  /// Public because re-minting a token has to drop the handle: the native client
+  /// is handed its token at creation, so a new one only reaches it through a new
+  /// handle.
+ public:
   void destroy_handle() {
     ReactorHandle* to_destroy = nullptr;
     Context* to_release = nullptr;
@@ -679,6 +727,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     }
   }
 
+ private:
   /// Pointers deliberately never freed, because a callback may still reach them.
   ///
   /// The C++ twin of the Python SDK's `_ORPHANED_CALLBACKS`. It only grows on the
@@ -729,11 +778,12 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   void deliver_video(const std::string& name, const VideoFrame& frame);
   void deliver_audio(const std::string& name, const AudioFrame& frame);
 
-  /// Say once that frames are arriving for a track nothing is listening to.
+  /// Say once that frames are arriving for a track this session never declared.
   ///
-  /// A frame with no handler looks exactly like no frame at all, which is the
-  /// hardest thing to debug from the outside — so an unrecognised name is worth a
-  /// line, and a name nobody declared is worth a different one.
+  /// A frame nobody can route looks exactly like no frame at all, which is the
+  /// hardest thing to debug from the outside. A *declared* track with no handler
+  /// is silent: not caring about one of several outputs is a choice, and there is
+  /// always a gap between connect() resolving and a handler being registered.
   void warn_about_unhandled(const std::string& name);
 
   static std::shared_ptr<ClientImpl> from_userdata(void* userdata) {
@@ -750,6 +800,8 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   /// At most one of these: whichever constructor was used.
   std::optional<std::string> api_key_;
   std::optional<std::string> jwt_;
+  TokenScope minted_for_ = TokenScope::None;
+  bool caller_supplied_jwt_ = false;
 
   Dispatcher dispatcher_;
   Handlers<Status> status_handlers_;

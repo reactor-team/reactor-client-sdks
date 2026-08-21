@@ -732,12 +732,15 @@ TEST_CASE("a handler on a name the declarations turned out not to include is ref
 TEST_CASE("a frame for a track with no handler is dropped rather than crashing") {
   Connected fixture;
 
-  // Nothing registered anywhere. This is a diagnostic, not an error: the frame is
-  // dropped and the SDK says so once.
+  // A declared track with no handler: dropped, and *silently*. Not caring about
+  // one of several outputs is a choice, and there is always a gap between connect
+  // resolving and a handler being registered — warning there put a line in the
+  // output of every correct program.
   CHECK_NOTHROW(fixture.session.push_video("main_video", 2, 2));
   CHECK_NOTHROW(fixture.session.push_video("main_video", 2, 2));
 
-  // And a name nothing declared, which is the other half of the same message.
+  // A name nothing declared is different: nothing can route it, so it is worth a
+  // line — once.
   CHECK_NOTHROW(fixture.session.push_video("ghost_video", 2, 2));
   // Including the empty name the FFI sends for an unresolved transceiver.
   CHECK_NOTHROW(fixture.session.push_video("", 2, 2));

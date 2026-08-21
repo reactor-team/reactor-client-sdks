@@ -311,6 +311,9 @@ struct TokenExchange {
   std::weak_ptr<ClientImpl> impl;
   std::unique_ptr<Pending> op;
   ConnectOptions options;
+  /// What this token is being minted for, so the client can tell later whether
+  /// the one it holds is still the right one.
+  ClientImpl::TokenScope scope = ClientImpl::TokenScope::ThisModel;
 };
 
 void settle_exchange_as_aborted(TokenExchange& exchange) {
@@ -416,7 +419,10 @@ void resume_connect_with_token(TokenExchange& exchange, int ok, const char* resu
     return;
   }
 
-  impl->set_jwt(token);
+  // Records the scope with the token, and drops the handle if the token changed —
+  // the native client is handed its token at creation, so a new one only reaches
+  // it through a new handle.
+  impl->adopt_minted_token(token, exchange.scope);
   // Same call as the no-key path takes, now that there is a token. Running it
   // from this thread is fine: it is one of the library's own, and creating a
   // handle is not a callback of any handle.
@@ -426,24 +432,38 @@ void resume_connect_with_token(TokenExchange& exchange, int ok, const char* resu
 }  // namespace
 
 void ClientImpl::begin_connect(std::unique_ptr<Pending> op, ConnectOptions options) {
+  // The scope depends on the *call*, not on the client. Creating a session wants a
+  // model-scoped token: a leak is then worth a handful of sessions on one model
+  // rather than everything the key can reach. Adopting a session created
+  // elsewhere needs the broader one, because a scoped token cannot reach a session
+  // it did not create — which is a 403 on `get session`, and exactly what the
+  // multi-connection example hit.
+  const TokenScope wanted =
+      options.session_id.has_value() ? TokenScope::Unscoped : TokenScope::ThisModel;
+
   bool needs_token = false;
   std::string key;
   {
     const std::lock_guard<std::mutex> lock(mutex_);
-    needs_token = api_key_.has_value() && !jwt_.has_value();
+    // Not just "have we got one": a token minted for one connect is not
+    // necessarily right for the next. Never re-minted over a token the caller
+    // supplied, which is theirs.
+    needs_token = api_key_.has_value() && !caller_supplied_jwt_ &&
+                  (!jwt_.has_value() || minted_for_ != wanted);
     if (needs_token) {
       key = *api_key_;
     }
   }
 
   if (needs_token) {
-    // Scoped to this model, so a leaked token is worth a handful of sessions on
-    // one model rather than everything the key can reach.
-    const Json token_options = Json{{"models", Json::array({model_})}};
+    Json token_options = Json::object();
+    if (wanted == TokenScope::ThisModel) {
+      token_options["models"] = Json::array({model_});
+    }
     const std::string options_json = token_options.dump();
 
     auto exchange = std::make_shared<TokenExchange>(
-        TokenExchange{weak_from_this(), std::move(op), std::move(options)});
+        TokenExchange{weak_from_this(), std::move(op), std::move(options), wanted});
     // Watched before the request goes out: a completion arriving on another thread
     // while this one is still here must find it already registered.
     auto ticket = std::make_unique<TokenTicket>(TokenTicket{exchange});
