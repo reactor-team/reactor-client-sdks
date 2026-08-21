@@ -51,12 +51,14 @@ use futures::StreamExt;
 use reactor_core::auth::{fetch_jwt, TokenRequest};
 use reactor_core::error::CoreError;
 use reactor_core::events::ReactorEvent;
-use reactor_core::http::StaticAuth;
+use reactor_core::http::{check_status, StaticAuth};
 use reactor_core::peer::PeerEvent;
 use reactor_core::protocol::upload::FileRef;
 use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions};
+use reactor_core::recording::{clip_segment_requests, Readiness};
 use reactor_core::runtime::TokioPlatform;
-use reactor_core::SharedHttp;
+use reactor_core::state::ReactorStatus;
+use reactor_core::{SharedHttp, SharedPlatform};
 use reactor_webrtc::AdmMode;
 
 use self::callbacks::{CallbackGate, HostSender, HostThread, Overflow, Quiescence};
@@ -495,6 +497,206 @@ pub unsafe extern "C" fn reactor_fetch_jwt(
             .map(|jwt| Some(serde_json::json!({ "jwt": jwt })));
         resolve_detached(done, result);
     });
+}
+
+/// Download a clip's HLS segments into one playable file.
+///
+/// Reactor does not host clips: the playlist names the fragments and it is on the
+/// caller to fetch and assemble them. That assembly has rules that took three
+/// shipped bugs to learn — the `#EXT-X-MAP` init segment is a comment line and
+/// has to be written first, a presigned segment on another host *rejects* an
+/// `Authorization` header rather than ignoring it, and a 202 means the chunk
+/// holding the end of the window has not closed yet — so it lives in
+/// [`reactor_core::recording`] and every binding gets the same answer.
+///
+/// `handle` is optional and is what bounds the wait: given one, this stops asking
+/// as soon as that session stops being able to produce the clip. Only the session
+/// state is read, and it is read through a clone taken before this returns, so
+/// destroying the handle mid-download is safe and simply ends the waiting.
+///
+/// `ready_timeout_seconds` is the grace past when the runtime predicted the clip
+/// would be ready. Negative waits as long as the session lives, which is the right
+/// answer when a handle was given and the only sane one when the model generates
+/// slower than real time.
+///
+/// # Safety
+///
+/// `playlist_url` and `out_path` must be NUL-terminated C strings; `jwt` may be
+/// null. `handle` may be null; otherwise it must be live at the moment of the
+/// call. `progress` may be null.
+///
+/// `completion` is called exactly once and, like [`reactor_fetch_jwt`]'s, is not
+/// bounded by [`reactor_destroy`] — a download outlives the handle it was given.
+/// Keep its context alive until it fires.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_download_clip(
+    handle: *mut ReactorHandle,
+    playlist_url: *const c_char,
+    jwt: *const c_char,
+    out_path: *const c_char,
+    ready_timeout_seconds: c_double,
+    local: c_int,
+    progress: Option<unsafe extern "C" fn(u32, u32, *mut c_void)>,
+    completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
+    userdata: *mut c_void,
+) {
+    let done = detached_completion(completion, userdata, "download_clip");
+
+    if playlist_url.is_null() || out_path.is_null() {
+        return resolve_detached(
+            done,
+            Err(CoreError::InvalidState(
+                "download_clip requires a playlist_url and an out_path".into(),
+            )),
+        );
+    }
+
+    let playlist_url = CStr::from_ptr(playlist_url).to_string_lossy().into_owned();
+    let out_path = CStr::from_ptr(out_path).to_string_lossy().into_owned();
+    let jwt = (!jwt.is_null()).then(|| CStr::from_ptr(jwt).to_string_lossy().into_owned());
+
+    // Cloned now, while the handle is known live. An `Arc` keeps the session state
+    // readable for the length of the download even if the host destroys the handle
+    // meanwhile, which a raw pointer captured into the task would not.
+    let session = (!handle.is_null()).then(|| (*handle).reactor.clone());
+
+    let progress = progress.map(|f| ProgressCallback { f, userdata });
+    let http: SharedHttp = Arc::new(ReqwestHttpClient::new(local != 0));
+    let platform: SharedPlatform = Arc::new(TokioPlatform);
+
+    runtime().spawn(async move {
+        let readiness = Readiness {
+            timeout: (ready_timeout_seconds >= 0.0)
+                .then(|| std::time::Duration::from_secs_f64(ready_timeout_seconds)),
+            predicted_ready_at_ms: 0.0,
+            session_is_live: || match &session {
+                Some(reactor) => reactor.status() != ReactorStatus::Disconnected,
+                // Nothing to ask: the caller's timeout is the only bound there is.
+                None => true,
+            },
+        };
+
+        let result = download_clip_to_file(
+            &http,
+            &platform,
+            &playlist_url,
+            jwt.as_deref(),
+            &out_path,
+            &readiness,
+            progress.as_ref(),
+        )
+        .await;
+
+        resolve_detached(done, result.map(Some));
+    });
+}
+
+/// A host progress callback and the context to hand back to it.
+struct ProgressCallback {
+    f: unsafe extern "C" fn(u32, u32, *mut c_void),
+    userdata: *mut c_void,
+}
+
+// SAFETY: as for `Completion` — the host guarantees `userdata` is usable from the
+// threads this library calls back on.
+unsafe impl Send for ProgressCallback {}
+unsafe impl Sync for ProgressCallback {}
+
+impl ProgressCallback {
+    /// Report `done` of `total` segments written.
+    ///
+    /// Inside `block_in_place`, so a host that takes its time here hands the
+    /// worker's other tasks to another thread instead of stalling them — the same
+    /// promise the event callbacks make, kept the way an async task can keep it.
+    fn report(&self, done: u32, total: u32) {
+        tokio::task::block_in_place(|| unsafe { (self.f)(done, total, self.userdata) });
+    }
+}
+
+/// Fetch every segment of a clip and write them, in order, to `out_path`.
+async fn download_clip_to_file<L: Fn() -> bool>(
+    http: &SharedHttp,
+    platform: &SharedPlatform,
+    playlist_url: &str,
+    jwt: Option<&str>,
+    out_path: &str,
+    readiness: &Readiness<L>,
+    progress: Option<&ProgressCallback>,
+) -> Result<serde_json::Value, CoreError> {
+    // Opened before anything is asked of the network: an unwritable path is worth
+    // finding out about before a full-session recording is on the wire, not after.
+    let mut file = tokio::fs::File::create(out_path)
+        .await
+        .map_err(|e| CoreError::Http(format!("cannot write {out_path}: {e}")))?;
+
+    // Anything that fails from here leaves a partial file behind, and a truncated
+    // clip that looks like a clip is worse than no clip: it opens, plays some of
+    // itself, and gives no reason to suspect the download.
+    match write_segments(
+        http,
+        platform,
+        playlist_url,
+        jwt,
+        out_path,
+        readiness,
+        progress,
+        &mut file,
+    )
+    .await
+    {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            drop(file);
+            let _ = tokio::fs::remove_file(out_path).await;
+            Err(error)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn write_segments<L: Fn() -> bool>(
+    http: &SharedHttp,
+    platform: &SharedPlatform,
+    playlist_url: &str,
+    jwt: Option<&str>,
+    out_path: &str,
+    readiness: &Readiness<L>,
+    progress: Option<&ProgressCallback>,
+    file: &mut tokio::fs::File,
+) -> Result<serde_json::Value, CoreError> {
+    use tokio::io::AsyncWriteExt;
+
+    let requests = clip_segment_requests(http, platform, playlist_url, jwt, readiness).await?;
+    let total = requests.len() as u32;
+
+    let mut written = 0_u64;
+    for (index, request) in requests.into_iter().enumerate() {
+        let url = request.url.clone();
+        let response = http.request(request).await?;
+        check_status(&response, &format!("fetch clip segment {url}"))?;
+
+        // Written as each segment arrives rather than accumulated: a full-session
+        // recording has no bound on its size, and there is never a reason to hold
+        // more than one segment of it.
+        file.write_all(&response.body)
+            .await
+            .map_err(|e| CoreError::Http(format!("cannot write {out_path}: {e}")))?;
+        written += response.body.len() as u64;
+
+        if let Some(progress) = progress {
+            progress.report(index as u32 + 1, total);
+        }
+    }
+
+    file.flush()
+        .await
+        .map_err(|e| CoreError::Http(format!("cannot write {out_path}: {e}")))?;
+
+    Ok(serde_json::json!({
+        "path": out_path,
+        "bytes": written,
+        "segments": total,
+    }))
 }
 
 /// Create a client. The returned handle must be released with
@@ -1753,6 +1955,107 @@ mod tests {
         assert!(
             json["message"].as_str().unwrap().contains("model"),
             "the message must name the field that was wrong: {payload}"
+        );
+    }
+
+    /// Same rule as fetch_jwt's: no handle to have been validated first, so a
+    /// missing argument has to arrive as an error rather than as silence.
+    #[test]
+    fn a_download_with_nowhere_to_write_reports_it_rather_than_going_quiet() {
+        let recorded = Recorded::new();
+        let url = CString::new("https://api.reactor.inc/hls/clip.m3u8").unwrap();
+
+        unsafe {
+            reactor_download_clip(
+                std::ptr::null_mut(),
+                url.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                -1.0,
+                0,
+                None,
+                Some(record_completion),
+                &recorded as *const Recorded as *mut c_void,
+            );
+        }
+
+        let (ok, payload) = recorded.wait();
+        assert!(!ok);
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(json["code"], reactor_core::error::codes::INVALID_STATE);
+        assert_eq!(json["operation"], "download_clip");
+        assert_eq!(recorded.count(), 1);
+    }
+
+    /// The output file is opened before anything is asked of the network, so a path
+    /// that cannot be written fails now rather than after a full-session recording
+    /// has been fetched. The unroutable host in the URL is the assertion: reaching
+    /// it would hang, so a prompt failure proves nothing was attempted.
+    #[test]
+    fn an_unwritable_path_fails_before_any_request_is_made() {
+        let recorded = Recorded::new();
+        let url = CString::new("http://127.0.0.1:1/hls/clip.m3u8").unwrap();
+        let out = CString::new("/nonexistent-directory/clip.mp4").unwrap();
+
+        unsafe {
+            reactor_download_clip(
+                std::ptr::null_mut(),
+                url.as_ptr(),
+                std::ptr::null(),
+                out.as_ptr(),
+                -1.0,
+                0,
+                None,
+                Some(record_completion),
+                &recorded as *const Recorded as *mut c_void,
+            );
+        }
+
+        let (ok, payload) = recorded.wait();
+        assert!(!ok);
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert!(
+            json["message"]
+                .as_str()
+                .unwrap()
+                .contains("/nonexistent-directory/clip.mp4"),
+            "the message must name the path that could not be written: {payload}"
+        );
+    }
+
+    /// A partial clip is worse than none: it opens, plays some of itself, and gives
+    /// no reason to suspect the download. So a failed download leaves nothing.
+    #[test]
+    fn a_failed_download_leaves_no_partial_file_behind() {
+        let recorded = Recorded::new();
+        let out_path =
+            std::env::temp_dir().join(format!("reactor-clip-test-{}.mp4", std::process::id()));
+        let _ = std::fs::remove_file(&out_path);
+
+        // Port 1 on loopback refuses immediately, so the playlist fetch fails after
+        // the file has been created — which is the window this is about.
+        let url = CString::new("http://127.0.0.1:1/hls/clip.m3u8").unwrap();
+        let out = CString::new(out_path.to_str().unwrap()).unwrap();
+
+        unsafe {
+            reactor_download_clip(
+                std::ptr::null_mut(),
+                url.as_ptr(),
+                std::ptr::null(),
+                out.as_ptr(),
+                0.0,
+                0,
+                None,
+                Some(record_completion),
+                &recorded as *const Recorded as *mut c_void,
+            );
+        }
+
+        let (ok, _payload) = recorded.wait();
+        assert!(!ok, "a refused connection is a failure");
+        assert!(
+            !out_path.exists(),
+            "a failed download must not leave {out_path:?} behind"
         );
     }
 
