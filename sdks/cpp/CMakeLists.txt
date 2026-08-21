@@ -145,6 +145,7 @@ add_library(
   src/detail/log.cpp
   src/errors.cpp
   src/reactor.cpp
+  src/recording.cpp
   src/track.cpp
   src/version.cpp
 )
