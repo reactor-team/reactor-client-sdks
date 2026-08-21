@@ -11,7 +11,8 @@ vi.mock('../internal/wasm', () => ({
 
 // Import after the mock so `Reactor` (transitively, via `./store`) picks up
 // the faked wasm loader.
-const { ReactorProvider, useReactor } = await import('./index');
+const { ReactorProvider } = await import('./ReactorProvider');
+const { useReactor } = await import('./hooks');
 
 function currentClient(): FakeReactorClient {
   const client = FakeReactorClient.instances.at(-1);

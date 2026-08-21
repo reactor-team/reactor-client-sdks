@@ -140,7 +140,7 @@ try {
 ## React
 
 ```tsx
-import { ReactorProvider, useReactor } from "@reactor-team/js-sdk/react";
+import { ReactorProvider, useReactor } from "@reactor-team/js-sdk";
 
 function App() {
   return (
@@ -165,10 +165,8 @@ function Status() {
 }
 ```
 
-`react` is an optional peer dependency — the base `@reactor-team/js-sdk`
-entry point never requires it installed; only `@reactor-team/js-sdk/react`
-does. `zustand` is a regular dependency, installed automatically — it's an
-internal implementation detail, never exposed on the public API.
+`react` is a peer dependency — install it yourself, matching your app's own
+version.
 
 `useReactor(selector)` also carries `sessionId`, `lastError`, `lastMessage`,
 and action bindings for `connect`/`disconnect`/`reconnect`/`publish`/
