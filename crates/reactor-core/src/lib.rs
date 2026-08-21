@@ -17,6 +17,7 @@
 //! [`reactor::Reactor::handle_peer_event`]; the core pushes state changes,
 //! messages and errors back out through [`events::ReactorEvent`] subscriptions.
 
+pub mod auth;
 pub mod backoff;
 pub mod control;
 pub mod coordinator;
