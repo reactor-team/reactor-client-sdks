@@ -198,6 +198,52 @@ typedef void (*reactor_completion_fn)(
     void       *userdata
 );
 
+/* ── Authentication ───────────────────────────────────────────────────────── */
+
+/*
+ * Exchange an API key for a JWT.
+ *
+ * Takes no handle: everything below wants a token, and a caller holding a key
+ * needs this first.  It is one POST, and it lives here so a binding in a language
+ * with no HTTP client in its standard library does not have to take on a TLS
+ * stack to make it.
+ *
+ *   api_url      — coordinator base URL, e.g. "https://api.reactor.inc"
+ *   api_key      — the key to exchange
+ *   options_json — nullable.  JSON object:
+ *                    {
+ *                      "models":        ["owner/name", …],  // scopes the token
+ *                      "max_sessions":  n,                  // scoped tokens only
+ *                      "expires_after": seconds             // server clamps it
+ *                    }
+ *                  Null (or "{}") mints a token carrying everything the key's
+ *                  roles allow — fine server-to-server, wrong to hand to a client
+ *                  you do not control.  An **unrecognised key in this object is
+ *                  an error**: dropping a misspelt "models" in silence would mint
+ *                  exactly the unscoped token the caller was avoiding.
+ *   local        — non-zero to accept a dev coordinator's self-signed certificate
+ *   completion   — result_json is {"jwt": "…"} on success; on failure the usual
+ *                  error object, so a rejected key reports UNAUTHORIZED and an
+ *                  unreachable coordinator NETWORK_ERROR.
+ *
+ * There is no handle, so reactor_destroy() is not the boundary for the callback
+ * context here: the completion fires exactly once, and the context must stay
+ * valid until it does.  Release it from inside the completion, or after.
+ *
+ * For the same reason a null api_url or api_key *completes with an error*, where
+ * the handle-taking calls below return without completing at all.  There, a null
+ * handle is something the binding already had to check; here there is no handle to
+ * have checked, so the only alternative would be a future nothing ever resolves.
+ */
+void reactor_fetch_jwt(
+    const char           *api_url,
+    const char           *api_key,
+    const char           *options_json,  /* nullable */
+    int                   local,
+    reactor_completion_fn completion,
+    void                 *userdata
+);
+
 /* ── Lifecycle ────────────────────────────────────────────────────────────── */
 
 /*
