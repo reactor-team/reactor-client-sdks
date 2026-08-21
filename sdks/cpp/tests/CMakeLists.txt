@@ -16,6 +16,7 @@ add_executable(
   errors_test.cpp
   ffi_test.cpp
   reactor_test.cpp
+  track_test.cpp
   smoke_test.cpp
 )
 
