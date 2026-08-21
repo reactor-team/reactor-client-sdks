@@ -102,7 +102,11 @@ typedef void (*reactor_on_frame_fn)(
     const char *track_name,
     const uint8_t *data, uint32_t width, uint32_t height,
     uint64_t frame_id,       /* 0 when no metadata trailer present */
-    uint64_t timestamp_us,   /* wall-clock µs; 0 when no metadata  */
+    /* When the sender says it captured the frame, in µs on the sender's own
+     * clock — its declared capture time, or a reading its transport took for it.
+     * Differences between stamps from one sender are what it supports; it is not
+     * comparable with a local clock.  0 when no metadata. */
+    uint64_t timestamp_us,
     const uint8_t *user_data, uint32_t user_data_len, /* NULL/0 when no metadata */
     void *userdata
 );
