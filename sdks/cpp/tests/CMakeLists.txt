@@ -13,6 +13,7 @@ FetchContent_MakeAvailable(Catch2)
 
 add_executable(
   reactor_sdk_tests
+  command_test.cpp
   errors_test.cpp
   ffi_test.cpp
   reactor_test.cpp
