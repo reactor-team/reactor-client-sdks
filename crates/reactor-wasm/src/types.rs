@@ -51,6 +51,9 @@ export interface ClientOptions {
   sdpBackoffMaxMs?: number;
   /** Growth factor applied to the delay between SDP-answer poll retries. Default 2. */
   sdpBackoffMultiplier?: number;
+  /** Preset tracks, when known ahead of time — builds the SDP offer
+   *  concurrently with the session-ready poll rather than after. */
+  modelTracks?: TrackCapability[];
   /** Console log level. Default "warn". */
   logLevel?: "off" | "error" | "warn" | "info" | "debug" | "trace";
 }
