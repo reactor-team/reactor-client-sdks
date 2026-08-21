@@ -7,8 +7,10 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -49,7 +51,63 @@ class FakeSession {
     filled.tracks = &tracks;
     filled.paused_tracks = &paused_tracks;
     filled.free_string = &free_string;
+    filled.publish_track = &publish_track;
+    filled.unpublish_track = &unpublish_track;
+    filled.pause_track = &pause_track;
+    filled.resume_track = &resume_track;
+    filled.push_video_frame = &push_video_frame;
+    filled.push_video_frame_with_metadata = &push_video_frame_with_metadata;
+    filled.push_video_frame_with_metadata_at = &push_video_frame_with_metadata_at;
+    filled.push_audio_frame = &push_audio_frame;
+    filled.time_micros = &time_micros;
     return filled;
+  }
+
+  // ── What the SDK sent ─────────────────────────────────────────────────────
+
+  /// One recorded push. Which entry point was used matters: the plain one drops
+  /// the tag, and the tagged one stamps the time as it arrives.
+  struct Push {
+    std::string track;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::string user_data;
+    std::optional<std::int64_t> capture_time_us;
+    bool via_metadata_entry_point = false;
+  };
+  std::vector<Push> pushes;
+
+  struct AudioPush {
+    std::string track;
+    std::uint32_t samples_per_channel = 0;
+    std::uint32_t sample_rate = 0;
+    std::uint32_t channels = 0;
+  };
+  std::vector<AudioPush> audio_pushes;
+
+  std::vector<std::string> published;
+  std::vector<std::string> unpublished;
+  std::vector<std::string> paused_calls;
+  std::vector<std::string> resumed_calls;
+
+  /// What `publish_track` answers with. Empty means success.
+  std::string publish_error;
+
+  /// What the sync `unpublish_track` returns. Empty means success (null).
+  std::string unpublish_error;
+
+  /// What `reactor_status` answers. A test can move it without an event, which is
+  /// what a reconnect in flight looks like from the SDK's side.
+  std::string current_status = "ready";
+
+  /// Report a new status the way the library does: change it, then say so.
+  void set_status(const std::string& status) {
+    current_status = status;
+    if (callbacks_.on_status == nullptr) {
+      return;
+    }
+    spawn([this, status] { callbacks_.on_status(status.c_str(), callbacks_.userdata); });
+    join_all();
   }
 
   /// What `reactor_tracks` answers. The shape the runtime declares: an array of
@@ -60,6 +118,17 @@ class FakeSession {
                               R"({"name":"second_video","kind":"video","direction":"recvonly"}])";
 
   std::string paused_json = "[]";
+
+  /// Whether `publish_track` answers at all. False leaves the publish in flight,
+  /// which is the window where there is no sender behind the slot yet.
+  bool answer_publish = true;
+  reactor_completion_fn held_publish = nullptr;
+  void* held_publish_userdata = nullptr;
+
+  /// Called from `tracks()` after its answer is taken and before it is handed
+  /// back. Lets a test invalidate the SDK's cache *during* a read, which is the
+  /// race a generation counter is for.
+  std::function<void()> while_reading_tracks;
 
   /// Deliver a video frame the way the library does: inline, on its own thread,
   /// with the buffer valid only for the call.
@@ -90,6 +159,27 @@ class FakeSession {
                           callbacks_.userdata);
     });
     join_all();
+  }
+
+  /// Announce a new set of capabilities, as the runtime does when the session is
+  /// accepted and again after a renegotiation. What the SDK reads from it is that
+  /// the answer changed — the entries themselves it takes from `reactor_tracks`.
+  void push_capabilities() {
+    if (callbacks_.on_capabilities == nullptr) {
+      return;
+    }
+    spawn([this] {
+      const std::string caps = R"({"protocol_version":1,"tracks":[],"commands":[]})";
+      callbacks_.on_capabilities(caps.c_str(), callbacks_.userdata);
+    });
+    join_all();
+  }
+
+  /// Change what the session declares, the way it really changes: a new list plus
+  /// the event that says so.
+  void redeclare(std::string tracks_json) {
+    declared_json = std::move(tracks_json);
+    push_capabilities();
   }
 
   void push_track(const std::string& name, const char* mid) {
@@ -166,7 +256,7 @@ class FakeSession {
   }
 
   static const char* status(ReactorHandle* handle) {
-    return handle == nullptr ? "disconnected" : "ready";
+    return handle == nullptr ? "disconnected" : current().current_status.c_str();
   }
 
   static char* session_id(ReactorHandle* handle) {
@@ -174,9 +264,20 @@ class FakeSession {
   }
 
   static char* tracks(ReactorHandle* handle) {
+    auto& self = current();
+    // The answer is taken first and the hook runs after it: that is what a read
+    // racing an invalidation looks like — an answer built from the state before the
+    // change, handed back after it. Answering with the *new* list would be a race
+    // with nothing stale in it.
     // "[]" before the session is accepted, which is what lets a caller tell "no
     // tracks yet" from a name that does not exist.
-    return heap_copy(handle == nullptr ? "[]" : current().declared_json.c_str());
+    std::string answer = handle == nullptr ? "[]" : self.declared_json;
+    if (self.while_reading_tracks) {
+      const auto hook = self.while_reading_tracks;
+      self.while_reading_tracks = nullptr;
+      hook();
+    }
+    return heap_copy(answer.c_str());
   }
 
   static char* paused_tracks(ReactorHandle* handle) {
@@ -184,6 +285,97 @@ class FakeSession {
   }
 
   static void free_string(char* s) { std::free(s); }
+
+  static void publish_track(ReactorHandle* /*handle*/, const char* name,
+                            reactor_completion_fn completion, void* userdata) {
+    auto& self = current();
+    self.published.emplace_back(name == nullptr ? "" : name);
+    if (completion == nullptr) {
+      return;
+    }
+    if (!self.answer_publish) {
+      self.held_publish = completion;
+      self.held_publish_userdata = userdata;
+      return;
+    }
+
+    const std::string error = self.publish_error;
+    self.spawn([completion, userdata, error] {
+      if (error.empty()) {
+        completion(1, "{}", nullptr, userdata);
+      } else {
+        completion(0, nullptr, error.c_str(), userdata);
+      }
+    });
+  }
+
+  static char* unpublish_track(ReactorHandle* /*handle*/, const char* name) {
+    auto& self = current();
+    self.unpublished.emplace_back(name == nullptr ? "" : name);
+    if (self.unpublish_error.empty()) {
+      return nullptr;
+    }
+    return heap_copy(self.unpublish_error.c_str());
+  }
+
+  static void pause_track(ReactorHandle* /*handle*/, const char* name,
+                          reactor_completion_fn completion, void* userdata) {
+    auto& self = current();
+    self.paused_calls.emplace_back(name == nullptr ? "" : name);
+    if (completion != nullptr) {
+      self.spawn([completion, userdata] { completion(1, "{}", nullptr, userdata); });
+    }
+  }
+
+  static void resume_track(ReactorHandle* /*handle*/, const char* name,
+                           reactor_completion_fn completion, void* userdata) {
+    auto& self = current();
+    self.resumed_calls.emplace_back(name == nullptr ? "" : name);
+    if (completion != nullptr) {
+      self.spawn([completion, userdata] { completion(1, "{}", nullptr, userdata); });
+    }
+  }
+
+  static void push_video_frame(ReactorHandle* /*handle*/, const char* track,
+                               const std::uint8_t* /*data*/, std::uint32_t width,
+                               std::uint32_t height) {
+    current().pushes.push_back(
+        Push{track == nullptr ? "" : track, width, height, "", std::nullopt, false});
+  }
+
+  static void push_video_frame_with_metadata(ReactorHandle* /*handle*/, const char* track,
+                                             const std::uint8_t* /*data*/, std::uint32_t width,
+                                             std::uint32_t height, const std::uint8_t* user_data,
+                                             std::uint32_t user_data_len) {
+    current().pushes.push_back(Push{
+        track == nullptr ? "" : track, width, height,
+        user_data == nullptr ? std::string{}
+                             : std::string{reinterpret_cast<const char*>(user_data), user_data_len},
+        std::nullopt, true});
+  }
+
+  static void push_video_frame_with_metadata_at(ReactorHandle* /*handle*/, const char* track,
+                                                const std::uint8_t* /*data*/, std::uint32_t width,
+                                                std::uint32_t height, const std::uint8_t* user_data,
+                                                std::uint32_t user_data_len,
+                                                std::int64_t capture_time_us) {
+    current().pushes.push_back(Push{
+        track == nullptr ? "" : track, width, height,
+        user_data == nullptr ? std::string{}
+                             : std::string{reinterpret_cast<const char*>(user_data), user_data_len},
+        capture_time_us, true});
+  }
+
+  /// A clock that moves, which is all the contract is: a stamp only means anything
+  /// against the value the next frame gets.
+  static std::int64_t time_micros() { return ++current().clock_; }
+
+  static void push_audio_frame(ReactorHandle* /*handle*/, const char* track,
+                               const std::int16_t* /*data*/, std::uint32_t samples_per_channel,
+                               std::uint32_t sample_rate, std::uint32_t channels) {
+    current().audio_pushes.push_back(
+        AudioPush{track == nullptr ? "" : track, samples_per_channel, sample_rate, channels});
+  }
 
   static char* heap_copy(const char* text) {
     char* copy = static_cast<char*>(std::malloc(std::strlen(text) + 1));
@@ -194,6 +386,7 @@ class FakeSession {
   static FakeSession* current_instance;
 
   int handle_marker_ = 0;
+  std::int64_t clock_ = 1'700'000'000'000'000;
   ReactorCallbacks callbacks_{};
   std::mutex mutex_;
   std::vector<std::thread> threads_;
@@ -312,8 +505,7 @@ TEST_CASE("one() refuses both nothing and too much") {
                       .one(),
                   reactor::InvalidStateError);
 
-  FakeSession& session = fixture.session;
-  session.declared_json = "[]";
+  fixture.session.redeclare("[]");
   CHECK_THROWS_AS(fixture.client.tracks().one(), reactor::NotFoundError);
 }
 
@@ -518,12 +710,11 @@ TEST_CASE("a handler on a name the declarations turned out not to include is ref
   Connected fixture;
 
   // Asked for while nothing was declared yet.
-  fixture.session.declared_json = "[]";
+  fixture.session.redeclare("[]");
   auto guessed = fixture.client.track("main_vidoe");
 
   // Now the session says what it really has.
-  fixture.session.declared_json =
-      R"([{"name":"main_video","kind":"video","direction":"recvonly"}])";
+  fixture.session.redeclare(R"([{"name":"main_video","kind":"video","direction":"recvonly"}])");
 
   try {
     guessed.on_frame([](const reactor::VideoFrame&) {});
@@ -608,6 +799,8 @@ TEST_CASE("a track reported without a mid loses the one it had") {
   CHECK(eventually_mid(fixture, "main_video", std::nullopt));
 }
 
+// Not cached at all, unlike the declared list: this one changes without any event
+// to announce it, so every read asks.
 TEST_CASE("paused reads from the session rather than from a cache") {
   Connected fixture;
   CHECK_FALSE(fixture.client.track("main_video").paused());
@@ -620,6 +813,61 @@ TEST_CASE("paused reads from the session rather than from a cache") {
   // go on claiming otherwise.
   fixture.session.paused_json = "[]";
   CHECK_FALSE(fixture.client.track("main_video").paused());
+}
+
+// A publish in flight is not a publish. Until the request is answered there is no
+// sender behind the slot, so counting it as published let a push through to the
+// FFI, which takes the frame and drops it — and the caller is told nothing.
+TEST_CASE("pushing into a track whose publish is still in flight is refused") {
+  Connected fixture;
+  fixture.session.answer_publish = false;
+
+  auto track = fixture.client.track("input_video");
+  auto publishing = track.publish();
+
+  CHECK_FALSE(track.published());
+  const std::vector<std::uint8_t> pixels(static_cast<std::size_t>(4U) * 4U * 4U, 0);
+  REQUIRE_THROWS_AS(track.push_frame(reactor::Bytes{pixels.data(), pixels.size()}, 4, 4),
+                    reactor::InvalidStateError);
+  // And the refusal says what to wait for rather than telling them to do what they
+  // are already doing.
+  try {
+    track.push_frame(reactor::Bytes{pixels.data(), pixels.size()}, 4, 4);
+  } catch (const reactor::InvalidStateError& error) {
+    CHECK(std::string{error.what()}.find("still being published") != std::string::npos);
+  }
+
+  // Answered, and now it is a publish.
+  fixture.session.held_publish(1, "{}", nullptr, fixture.session.held_publish_userdata);
+  publishing.get();
+  CHECK(track.published());
+  CHECK_NOTHROW(track.push_frame(reactor::Bytes{pixels.data(), pixels.size()}, 4, 4));
+}
+
+// The declared list is read from the FFI without the media lock — a JSON parse is
+// not something to hold one across — so an event can invalidate the cache while
+// that read is in flight. Storing the read afterwards put the *older* list back
+// with nothing left to invalidate it, and a newly declared track stayed invisible.
+TEST_CASE("a list invalidated mid-read does not become the cached answer") {
+  Connected fixture;
+
+  // Warm nothing: the first read is the one that races. While the FFI is answering
+  // with the old list, the session declares a new one and says so.
+  fixture.session.while_reading_tracks = [&fixture] {
+    fixture.session.redeclare(R"([{"name":"main_video","kind":"video","direction":"recvonly"},)"
+                              R"({"name":"late_video","kind":"video","direction":"recvonly"}])");
+  };
+
+  // This read answers from the list that was current when it started.
+  (void)fixture.client.tracks();
+
+  // The next one must see the new list rather than a cache written after the
+  // invalidation.
+  std::vector<std::string> names;
+  for (const auto& track : fixture.client.tracks()) {
+    names.push_back(track.name());
+  }
+  CHECK(names == std::vector<std::string>{"main_video", "late_video"});
 }
 
 TEST_CASE("a track outliving its client refuses instead of dereferencing it") {
@@ -652,4 +900,331 @@ TEST_CASE("the kind and direction spellings round-trip") {
   // must not claim to understand.
   CHECK_FALSE(reactor::track_kind_from_string("haptic").has_value());
   CHECK_FALSE(reactor::track_direction_from_string("sendrecv").has_value());
+}
+
+// ── Sending ──────────────────────────────────────────────────────────────────
+
+namespace {
+
+/// A frame of the right size for `width` x `height`.
+std::vector<std::uint8_t> bgra_frame(std::uint32_t width, std::uint32_t height) {
+  return std::vector<std::uint8_t>(
+      static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4U, 0x40);
+}
+
+reactor::Bytes as_bytes(const std::vector<std::uint8_t>& buffer) {
+  return reactor::Bytes{buffer.data(), buffer.size()};
+}
+
+}  // namespace
+
+TEST_CASE("publishing activates the slot, and the SDK remembers it") {
+  Connected fixture;
+  auto input = fixture.client.track("input_video");
+
+  CHECK_FALSE(input.published());
+  input.publish().get();
+  CHECK(input.published());
+  CHECK(fixture.session.published == std::vector<std::string>{"input_video"});
+}
+
+// The flag goes on before the request is sent, so a frame pushed in between is
+// refused rather than dropped — which means a refused publish has to take it back
+// off, or the next push would be accepted onto a slot with nothing behind it.
+TEST_CASE("a refused publish leaves the track unpublished") {
+  Connected fixture;
+  fixture.session.publish_error =
+      R"({"code":"CONFLICT","message":"the model refused the slot","status":409})";
+
+  auto input = fixture.client.track("input_video");
+  CHECK_THROWS_AS(input.publish().get(), reactor::ConflictError);
+  CHECK_FALSE(input.published());
+}
+
+TEST_CASE("pushing a frame reaches the plain entry point when there is nothing to add") {
+  Connected fixture;
+  auto input = fixture.client.track("input_video");
+  input.publish().get();
+
+  const auto frame = bgra_frame(4, 2);
+  input.push_frame(as_bytes(frame), 4, 2);
+
+  REQUIRE(fixture.session.pushes.size() == 1);
+  const auto& push = fixture.session.pushes.front();
+  CHECK(push.track == "input_video");
+  CHECK(push.width == 4);
+  CHECK(push.height == 2);
+  CHECK_FALSE(push.via_metadata_entry_point);
+  CHECK(push.user_data.empty());
+  CHECK_FALSE(push.capture_time_us.has_value());
+}
+
+TEST_CASE("a tag and a capture time each reach the entry point that carries them") {
+  Connected fixture;
+  auto input = fixture.client.track("input_video");
+  input.publish().get();
+  const auto frame = bgra_frame(2, 2);
+
+  const std::vector<std::uint8_t> tag{'t', 'a', 'g'};
+
+  reactor::Track::FrameOptions tagged;
+  tagged.user_data = as_bytes(tag);
+  input.push_frame(as_bytes(frame), 2, 2, tagged);
+
+  reactor::Track::FrameOptions stamped;
+  stamped.capture_time_us = 1'234'567;
+  input.push_frame(as_bytes(frame), 2, 2, stamped);
+
+  reactor::Track::FrameOptions both;
+  both.user_data = as_bytes(tag);
+  both.capture_time_us = 7'654'321;
+  input.push_frame(as_bytes(frame), 2, 2, both);
+
+  REQUIRE(fixture.session.pushes.size() == 3);
+  CHECK(fixture.session.pushes[0].user_data == "tag");
+  CHECK_FALSE(fixture.session.pushes[0].capture_time_us.has_value());
+  // Stamping and tagging are independent: a stamped frame with no tag still goes
+  // through the entry point that takes both.
+  CHECK(fixture.session.pushes[1].user_data.empty());
+  CHECK(fixture.session.pushes[1].capture_time_us == std::int64_t{1'234'567});
+  CHECK(fixture.session.pushes[2].user_data == "tag");
+  CHECK(fixture.session.pushes[2].capture_time_us == std::int64_t{7'654'321});
+}
+
+// Tracks are synchronised by *sharing* a capture time, not by reaching the encoder
+// together. One read, stamped on every track, has to arrive unchanged on both.
+TEST_CASE("one capture time stamped on two tracks reaches both pushes unchanged") {
+  Connected fixture;
+  fixture.session.redeclare(R"([{"name":"input_video","kind":"video","direction":"sendonly"},)"
+                            R"({"name":"input_alpha","kind":"video","direction":"sendonly"}])");
+
+  auto first = fixture.client.track("input_video");
+  auto second = fixture.client.track("input_alpha");
+  first.publish().get();
+  second.publish().get();
+
+  const auto frame = bgra_frame(2, 2);
+  reactor::Track::FrameOptions options;
+  options.capture_time_us = reactor::time_micros();
+
+  first.push_frame(as_bytes(frame), 2, 2, options);
+  second.push_frame(as_bytes(frame), 2, 2, options);
+
+  REQUIRE(fixture.session.pushes.size() == 2);
+  CHECK(fixture.session.pushes[0].capture_time_us == options.capture_time_us);
+  CHECK(fixture.session.pushes[1].capture_time_us == options.capture_time_us);
+}
+
+TEST_CASE("pushing audio divides the interleaved samples by the channel count") {
+  Connected fixture;
+  fixture.session.redeclare(R"([{"name":"input_audio","kind":"audio","direction":"sendonly"}])");
+
+  auto input = fixture.client.track("input_audio");
+  input.publish().get();
+
+  const std::vector<std::int16_t> pcm(960, 7);
+  input.push_audio(reactor::Samples{pcm.data(), pcm.size()}, 48'000, 2);
+
+  REQUIRE(fixture.session.audio_pushes.size() == 1);
+  const auto& push = fixture.session.audio_pushes.front();
+  CHECK(push.track == "input_audio");
+  CHECK(push.samples_per_channel == 480);
+  CHECK(push.sample_rate == 48'000);
+  CHECK(push.channels == 2);
+}
+
+TEST_CASE("pausing and resuming reach the session") {
+  Connected fixture;
+  auto video = fixture.client.track("main_video");
+
+  video.pause().get();
+  video.resume().get();
+
+  CHECK(fixture.session.paused_calls == std::vector<std::string>{"main_video"});
+  CHECK(fixture.session.resumed_calls == std::vector<std::string>{"main_video"});
+}
+
+TEST_CASE("unpublishing is synchronous and clears the flag") {
+  Connected fixture;
+  auto input = fixture.client.track("input_video");
+  input.publish().get();
+
+  input.unpublish();
+
+  CHECK_FALSE(input.published());
+  CHECK(fixture.session.unpublished == std::vector<std::string>{"input_video"});
+}
+
+// A failed unpublish that cleared the flag would be unretryable: the slot is
+// still activated as far as the session knows, and the SDK would refuse to try
+// again.
+TEST_CASE("a failed unpublish leaves the track published, so it can be retried") {
+  Connected fixture;
+  auto input = fixture.client.track("input_video");
+  input.publish().get();
+
+  fixture.session.unpublish_error =
+      R"({"code":"NETWORK_ERROR","message":"the data channel dropped","recoverable":true})";
+  CHECK_THROWS_AS(input.unpublish(), reactor::NetworkError);
+  CHECK(input.published());
+
+  fixture.session.unpublish_error.clear();
+  CHECK_NOTHROW(input.unpublish());
+  CHECK_FALSE(input.published());
+}
+
+// ── The refusals ─────────────────────────────────────────────────────────────
+
+TEST_CASE("pushing into a recvonly track is refused, naming the direction") {
+  Connected fixture;
+  const auto frame = bgra_frame(2, 2);
+
+  try {
+    fixture.client.track("main_video").push_frame(as_bytes(frame), 2, 2);
+    FAIL("a push into a recvonly track must be refused");
+  } catch (const reactor::InvalidStateError& error) {
+    const std::string message = error.what();
+    CHECK(message.find("recvonly") != std::string::npos);
+    CHECK(message.find("on_frame") != std::string::npos);
+  }
+  CHECK(fixture.session.pushes.empty());
+}
+
+TEST_CASE("pushing before publish is refused") {
+  Connected fixture;
+  const auto frame = bgra_frame(2, 2);
+
+  try {
+    fixture.client.track("input_video").push_frame(as_bytes(frame), 2, 2);
+    FAIL("a push before publish must be refused");
+  } catch (const reactor::InvalidStateError& error) {
+    CHECK(std::string{error.what()}.find("publish()") != std::string::npos);
+  }
+  CHECK(fixture.session.pushes.empty());
+}
+
+// C++ hands the FFI a pointer and a size, and the FFI reads what it is told to
+// read — so this check is the only thing between a typo and a read past the end
+// of the caller's buffer.
+TEST_CASE("a frame whose length does not match its dimensions is refused") {
+  Connected fixture;
+  auto input = fixture.client.track("input_video");
+  input.publish().get();
+
+  const auto too_small = bgra_frame(2, 2);
+  try {
+    input.push_frame(as_bytes(too_small), 4, 4);
+    FAIL("a buffer that does not match must be refused");
+  } catch (const reactor::BadRequestError& error) {
+    const std::string message = error.what();
+    CHECK(message.find("4x4") != std::string::npos);
+    CHECK(message.find("64") != std::string::npos);  // expected
+    CHECK(message.find("16") != std::string::npos);  // actual
+  }
+
+  CHECK_THROWS_AS(input.push_frame(reactor::Bytes{}, 2, 2), reactor::BadRequestError);
+  CHECK(fixture.session.pushes.empty());
+}
+
+// A reconnect resumes recvonly tracks and nothing else, so a slot published before
+// one is not published after it. Remembering otherwise is exactly the silent
+// failure the refusals exist to prevent.
+TEST_CASE("a status leaving ready un-publishes everything") {
+  Connected fixture;
+  auto input = fixture.client.track("input_video");
+  input.publish().get();
+  CHECK(input.published());
+
+  fixture.session.set_status("connecting");
+  CHECK_FALSE(input.published());
+
+  const auto frame = bgra_frame(2, 2);
+  try {
+    input.push_frame(as_bytes(frame), 2, 2);
+    FAIL("a push after the session left ready must be refused");
+  } catch (const reactor::InvalidStateError& error) {
+    CHECK(std::string{error.what()}.find("publish()") != std::string::npos);
+  }
+}
+
+TEST_CASE("a push on a session that is no longer ready is refused even when published") {
+  Connected fixture;
+  auto input = fixture.client.track("input_video");
+  input.publish().get();
+
+  // The status changes without an event — a reconnect in flight, say. The push
+  // still has to be refused, because the FFI would take the frame and drop it.
+  fixture.session.current_status = "waiting";
+  const auto frame = bgra_frame(2, 2);
+  try {
+    input.push_frame(as_bytes(frame), 2, 2);
+    FAIL("a push while not ready must be refused");
+  } catch (const reactor::InvalidStateError& error) {
+    CHECK(std::string{error.what()}.find("waiting") != std::string::npos);
+  }
+}
+
+TEST_CASE("audio into a video track and frames into an audio track are both refused") {
+  Connected fixture;
+  fixture.session.redeclare(R"([{"name":"input_video","kind":"video","direction":"sendonly"},)"
+                            R"({"name":"input_audio","kind":"audio","direction":"sendonly"}])");
+
+  auto video = fixture.client.track("input_video");
+  auto audio = fixture.client.track("input_audio");
+  video.publish().get();
+  audio.publish().get();
+
+  const std::vector<std::int16_t> pcm(480, 0);
+  const auto frame = bgra_frame(2, 2);
+
+  CHECK_THROWS_AS(video.push_audio(reactor::Samples{pcm.data(), pcm.size()}),
+                  reactor::InvalidStateError);
+  CHECK_THROWS_AS(audio.push_frame(as_bytes(frame), 2, 2), reactor::InvalidStateError);
+}
+
+TEST_CASE("PCM that does not divide by the channel count is refused") {
+  Connected fixture;
+  fixture.session.redeclare(R"([{"name":"input_audio","kind":"audio","direction":"sendonly"}])");
+  auto input = fixture.client.track("input_audio");
+  input.publish().get();
+
+  const std::vector<std::int16_t> odd(481, 0);
+  CHECK_THROWS_AS(input.push_audio(reactor::Samples{odd.data(), odd.size()}, 48'000, 2),
+                  reactor::BadRequestError);
+  CHECK_THROWS_AS(input.push_audio(reactor::Samples{}, 48'000, 1), reactor::BadRequestError);
+  CHECK(fixture.session.audio_pushes.empty());
+}
+
+TEST_CASE("publishing a recvonly track is refused") {
+  Connected fixture;
+  try {
+    fixture.client.track("main_video").publish().get();
+    FAIL("publishing a recvonly track must be refused");
+  } catch (const reactor::InvalidStateError& error) {
+    CHECK(std::string{error.what()}.find("recvonly") != std::string::npos);
+  }
+  CHECK(fixture.session.published.empty());
+}
+
+TEST_CASE("publishing before there is a session is refused") {
+  FakeSession session;
+  const auto table = session.table();
+  const reactor::detail::FfiOverride override{&table};
+  reactor::Reactor client{"reactor/helios", reactor::Jwt{"token"}};
+
+  try {
+    client.track("input_video").publish().get();
+    FAIL("publishing without a session must be refused");
+  } catch (const reactor::InvalidStateError& error) {
+    CHECK(std::string{error.what()}.find("declared") != std::string::npos);
+  }
+}
+
+// There is no push_frame(name, …) on the client, and there must not be: a second
+// way to say the same thing, and the one that cannot check what it was asked.
+TEST_CASE("the client has no name-based twins of the track methods") {
+  static_assert(!std::is_invocable_v<decltype(&reactor::Reactor::track), reactor::Reactor&,
+                                     const std::string&, int>,
+                "Reactor::track takes a name and nothing else");
+  SUCCEED("asserted at compile time");
 }

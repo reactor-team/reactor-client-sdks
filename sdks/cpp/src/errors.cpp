@@ -1,6 +1,7 @@
 #include "reactor/errors.hpp"
 
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "reactor/json.hpp"
@@ -87,6 +88,12 @@ std::exception_ptr as_exception_ptr(ErrorDetails details) {
   }
   // Unreachable: rethrow() is [[noreturn]].
   return std::make_exception_ptr(ReactorError{"error could not be rethrown"});
+}
+
+void throw_error_payload(std::string_view json, std::string_view operation) {
+  // Through the error's own rethrow, so the caller catches the type it is written
+  // to catch rather than the base class.
+  error_from_payload(std::string{json}.c_str(), operation)->rethrow();
 }
 
 std::unique_ptr<ReactorError> error_from_payload(const char* json_or_null,

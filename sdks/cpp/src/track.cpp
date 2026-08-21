@@ -108,6 +108,45 @@ Subscription Track::on_audio(std::function<void(const AudioFrame&)> handler) {
   return client("receive audio")->add_audio_handler(name_, std::move(handler));
 }
 
+// ── Sending ──────────────────────────────────────────────────────────────────
+
+bool Track::published() const { return client("read the published state")->is_published(name_); }
+
+std::future<void> Track::publish() {
+  auto op = std::make_unique<detail::PendingVoid>();
+  op->operation = "publish_track";
+  auto future = op->promise.get_future();
+  client("publish")->begin_publish(std::move(op), name_);
+  return future;
+}
+
+void Track::unpublish() { client("unpublish")->unpublish(name_); }
+
+std::future<void> Track::pause() {
+  auto op = std::make_unique<detail::PendingVoid>();
+  op->operation = "pause_track";
+  auto future = op->promise.get_future();
+  client("pause")->begin_pause(std::move(op), name_);
+  return future;
+}
+
+std::future<void> Track::resume() {
+  auto op = std::make_unique<detail::PendingVoid>();
+  op->operation = "resume_track";
+  auto future = op->promise.get_future();
+  client("resume")->begin_resume(std::move(op), name_);
+  return future;
+}
+
+void Track::push_frame(Bytes bgra, std::uint32_t width, std::uint32_t height,
+                       const FrameOptions& options) {
+  client("push a frame")->push_video(name_, bgra, width, height, options);
+}
+
+void Track::push_audio(Samples pcm, std::uint32_t sample_rate, std::uint32_t channels) {
+  client("push audio")->push_audio(name_, pcm, sample_rate, channels);
+}
+
 // ── TrackList ────────────────────────────────────────────────────────────────
 
 TrackList TrackList::with_kind(TrackKind kind) const {
@@ -153,12 +192,23 @@ namespace detail {
 // ── What the session declared ────────────────────────────────────────────────
 
 std::vector<ClientImpl::Declared> ClientImpl::declared_tracks() const {
+  std::uint64_t generation = 0;
+  {
+    const std::lock_guard<std::mutex> lock(media_mutex_);
+    if (declared_cache_) {
+      return *declared_cache_;
+    }
+    generation = declared_generation_;
+  }
+
   OwnedString json;
   {
     const std::lock_guard<std::mutex> lock(mutex_);
     json = OwnedString{ffi().tracks(handle_)};
   }
   if (!json.has_value()) {
+    // Only a null handle answers null. Not cached: the next read is after a
+    // connect, and that is exactly when the answer changes.
     return {};
   }
 
@@ -200,6 +250,17 @@ std::vector<ClientImpl::Declared> ClientImpl::declared_tracks() const {
       continue;
     }
     declared.push_back(Declared{name, *kind, *direction});
+  }
+
+  {
+    const std::lock_guard<std::mutex> lock(media_mutex_);
+    // Only if nothing invalidated the cache while this read was in flight. If
+    // something did, this list is the older one and the caller still gets it —
+    // answering the question that was asked — but it does not become the answer to
+    // the next one.
+    if (generation == declared_generation_) {
+      declared_cache_ = declared;
+    }
   }
   return declared;
 }
@@ -440,6 +501,272 @@ void ClientImpl::warn_about_unhandled(const std::string& name) {
   }
   log_warn("frames are arriving on track \"" + name +
            "\", which this session did not declare. They are being dropped.");
+}
+
+// ── Sending ──────────────────────────────────────────────────────────────────
+
+bool ClientImpl::is_published(const std::string& name) const {
+  const std::lock_guard<std::mutex> lock(media_mutex_);
+  return published_.count(name) != 0;
+}
+
+bool ClientImpl::is_publishing(const std::string& name) const {
+  const std::lock_guard<std::mutex> lock(media_mutex_);
+  return publishing_.count(name) != 0;
+}
+
+namespace {
+
+/// Refuse a push onto a track with no sender behind it yet.
+///
+/// Two states, two messages: a publish that was never asked for says to publish,
+/// and one still in flight says to wait for it. Answering both with "publish() it
+/// first" sends a caller who just did that round the loop again.
+void require_published_state(const std::string& name, bool published, bool publishing) {
+  if (published) {
+    return;
+  }
+  if (publishing) {
+    throw InvalidStateError{"track \"" + name +
+                            "\" is still being published: the request has not been answered yet, "
+                            "so there is no sender behind it. Wait for the publish() future "
+                            "before pushing."};
+  }
+  throw InvalidStateError{"track \"" + name +
+                          "\" is not published: publish() it first, or the frame is dropped "
+                          "with nothing to send it."};
+}
+
+}  // namespace
+
+void ClientImpl::require_published(const std::string& name) const {
+  bool published = false;
+  bool publishing = false;
+  {
+    const std::lock_guard<std::mutex> lock(media_mutex_);
+    published = published_.count(name) != 0;
+    publishing = publishing_.count(name) != 0;
+  }
+  require_published_state(name, published, publishing);
+}
+
+void ClientImpl::invalidate_declared() {
+  const std::lock_guard<std::mutex> lock(media_mutex_);
+  declared_cache_.reset();
+  ++declared_generation_;
+}
+
+void ClientImpl::clear_published() {
+  const std::lock_guard<std::mutex> lock(media_mutex_);
+  published_.clear();
+  // A publish still in flight when the session left ready is not going to put a
+  // sender behind anything either.
+  publishing_.clear();
+}
+
+ReactorHandle* ClientImpl::require_ready_handle(const char* action,
+                                                const std::string& track_name) const {
+  ReactorHandle* handle = nullptr;
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    handle = handle_;
+  }
+  if (handle == nullptr) {
+    throw InvalidStateError{std::string{"cannot "} + action + " track \"" + track_name +
+                            "\": this client has not connected yet"};
+  }
+  const StaticString status{ffi().status(handle)};
+  if (status_from_string(status.view()) != Status::Ready) {
+    throw InvalidStateError{std::string{"cannot "} + action + " track \"" + track_name +
+                            "\": the session is " + std::string{status.view()} +
+                            ", not ready. Wait for connect() to resolve, or reconnect()."};
+  }
+  return handle;
+}
+
+namespace {
+
+/// Refuse a send on a track that cannot send.
+ClientImpl::Declared require_sendable(const std::string& name,
+                                      const std::optional<ClientImpl::Declared>& track,
+                                      const std::vector<std::string>& declared_names,
+                                      const char* action) {
+  if (!track) {
+    if (declared_names.empty()) {
+      throw InvalidStateError{std::string{"cannot "} + action + " track \"" + name +
+                              "\" yet: the session has not declared its tracks."};
+    }
+    throw NotFoundError{"this session declares no track called \"" + name + "\". It declares " +
+                        quoted_list(declared_names) + "."};
+  }
+  if (track->direction != TrackDirection::SendOnly) {
+    // The FFI accepts this and does nothing with it, so a caller pushing at 30fps
+    // sees a model receiving nothing and no reason why.
+    throw InvalidStateError{"track \"" + name +
+                            "\" is recvonly: the model sends on it and this client receives. "
+                            "Use on_frame() to receive, not push_frame()."};
+  }
+  return *track;
+}
+
+}  // namespace
+
+void ClientImpl::begin_publish(std::unique_ptr<Pending> op, const std::string& name) {
+  try {
+    const auto tracks = declared_tracks();
+    const Declared* found = find_declared(tracks, name);
+    require_sendable(name, found == nullptr ? std::nullopt : std::optional<Declared>{*found},
+                     names_of(tracks), "publish");
+    ReactorHandle* handle = require_ready_handle("publish", name);
+
+    // In flight, not published: there is no sender behind the slot until the
+    // request is answered, so a frame pushed in this window is refused with what to
+    // wait for rather than taken and dropped.
+    {
+      const std::lock_guard<std::mutex> lock(media_mutex_);
+      publishing_.insert(name);
+    }
+
+    auto* raw = track_pending(std::move(op));
+    raw->on_success = [weak = weak_from_this(), name] {
+      if (const auto self = weak.lock()) {
+        const std::lock_guard<std::mutex> lock(self->media_mutex_);
+        self->publishing_.erase(name);
+        self->published_.insert(name);
+      }
+    };
+    raw->on_failure = [weak = weak_from_this(), name] {
+      if (const auto self = weak.lock()) {
+        const std::lock_guard<std::mutex> lock(self->media_mutex_);
+        self->publishing_.erase(name);
+      }
+    };
+    ffi().publish_track(handle, name.c_str(), &completion_trampoline, raw);
+  } catch (...) {
+    op->fail(std::current_exception());
+  }
+}
+
+void ClientImpl::unpublish(const std::string& name) {
+  ReactorHandle* handle = nullptr;
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    handle = handle_;
+  }
+  if (handle == nullptr) {
+    // Nothing was ever published on a client with no handle, so there is nothing
+    // to undo and nothing to complain about.
+    return;
+  }
+
+  // The one sync call that reports failure by returning a heap error object.
+  const OwnedString error{ffi().unpublish_track(handle, name.c_str())};
+  if (error.has_value()) {
+    // Left published on purpose: a failed unpublish that cleared the flag would be
+    // unretryable, and the slot is still activated as far as the session knows.
+    throw_error_payload(error.view(), "unpublish_track");
+  }
+
+  const std::lock_guard<std::mutex> lock(media_mutex_);
+  published_.erase(name);
+}
+
+void ClientImpl::begin_pause(std::unique_ptr<Pending> op, const std::string& name) {
+  try {
+    if (!declared(name) && !declared_names().empty()) {
+      throw NotFoundError{"this session declares no track called \"" + name + "\". It declares " +
+                          quoted_list(declared_names()) + "."};
+    }
+    ReactorHandle* handle = require_ready_handle("pause", name);
+    auto* raw = track_pending(std::move(op));
+    ffi().pause_track(handle, name.c_str(), &completion_trampoline, raw);
+  } catch (...) {
+    op->fail(std::current_exception());
+  }
+}
+
+void ClientImpl::begin_resume(std::unique_ptr<Pending> op, const std::string& name) {
+  try {
+    if (!declared(name) && !declared_names().empty()) {
+      throw NotFoundError{"this session declares no track called \"" + name + "\". It declares " +
+                          quoted_list(declared_names()) + "."};
+    }
+    ReactorHandle* handle = require_ready_handle("resume", name);
+    auto* raw = track_pending(std::move(op));
+    ffi().resume_track(handle, name.c_str(), &completion_trampoline, raw);
+  } catch (...) {
+    op->fail(std::current_exception());
+  }
+}
+
+void ClientImpl::push_video(const std::string& name, Bytes bgra, std::uint32_t width,
+                            std::uint32_t height, const Track::FrameOptions& options) {
+  const auto tracks = declared_tracks();
+  const Declared* found = find_declared(tracks, name);
+  const Declared declared_track =
+      require_sendable(name, found == nullptr ? std::nullopt : std::optional<Declared>{*found},
+                       names_of(tracks), "push a frame into");
+
+  if (declared_track.kind != TrackKind::Video) {
+    throw InvalidStateError{"track \"" + name +
+                            "\" carries audio, not video. Use push_audio() for it."};
+  }
+
+  require_published(name);
+
+  const std::size_t expected =
+      static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4U;
+  if (bgra.data == nullptr || bgra.size != expected) {
+    // The FFI reads what it is told to read, so a wrong length here is a read past
+    // the end of the caller's own buffer.
+    throw BadRequestError{"a " + std::to_string(width) + "x" + std::to_string(height) +
+                          " BGRA frame is " + std::to_string(expected) + " bytes; this one is " +
+                          std::to_string(bgra.size) + "."};
+  }
+
+  ReactorHandle* handle = require_ready_handle("push a frame into", name);
+
+  const std::uint8_t* tag = options.user_data.empty() ? nullptr : options.user_data.data;
+  const auto tag_len = static_cast<std::uint32_t>(options.user_data.size);
+
+  if (options.capture_time_us) {
+    ffi().push_video_frame_with_metadata_at(handle, name.c_str(), bgra.data, width, height, tag,
+                                            tag_len, *options.capture_time_us);
+    return;
+  }
+  if (tag != nullptr) {
+    ffi().push_video_frame_with_metadata(handle, name.c_str(), bgra.data, width, height, tag,
+                                         tag_len);
+    return;
+  }
+  ffi().push_video_frame(handle, name.c_str(), bgra.data, width, height);
+}
+
+void ClientImpl::push_audio(const std::string& name, Samples pcm, std::uint32_t sample_rate,
+                            std::uint32_t channels) {
+  const auto tracks = declared_tracks();
+  const Declared* found = find_declared(tracks, name);
+  const Declared declared_track =
+      require_sendable(name, found == nullptr ? std::nullopt : std::optional<Declared>{*found},
+                       names_of(tracks), "push audio into");
+
+  if (declared_track.kind != TrackKind::Audio) {
+    throw InvalidStateError{"track \"" + name +
+                            "\" carries video, not audio. Use push_frame() for it."};
+  }
+  require_published(name);
+  if (channels == 0) {
+    throw BadRequestError{"channels must be at least 1"};
+  }
+  if (pcm.data == nullptr || pcm.size == 0 || pcm.size % channels != 0) {
+    throw BadRequestError{
+        "interleaved PCM must divide evenly by the channel count: " + std::to_string(pcm.size) +
+        " samples across " + std::to_string(channels) + " channels."};
+  }
+
+  ReactorHandle* handle = require_ready_handle("push audio into", name);
+  ffi().push_audio_frame(handle, name.c_str(), pcm.data,
+                         static_cast<std::uint32_t>(pcm.size / channels), sample_rate, channels);
 }
 
 }  // namespace detail
