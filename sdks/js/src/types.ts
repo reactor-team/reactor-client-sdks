@@ -4,6 +4,7 @@ import type {
   JwtSource,
   ReactorMessage,
   ReactorStatus,
+  SessionInfo,
   TrackCapability,
   TrackDirection,
   TrackKind,
@@ -21,6 +22,10 @@ export type {
   TrackKind,
   TrackMappingEntry,
 };
+
+/** The session resource, as the coordinator reports it — see
+ *  `Reactor.getSessionInfo()`. */
+export type SessionResponse = SessionInfo;
 
 /**
  * Scope tag for `sendCommand()`. This SDK has no generic runtime-scope

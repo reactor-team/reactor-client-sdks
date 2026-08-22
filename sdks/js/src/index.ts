@@ -52,6 +52,7 @@ export type {
   ReactorMessage,
   ReactorOptions,
   ReactorStatus,
+  SessionResponse,
   TrackCapability,
   TrackDirection,
   TrackKind,
