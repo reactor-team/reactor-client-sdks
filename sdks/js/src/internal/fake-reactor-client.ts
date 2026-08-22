@@ -5,6 +5,7 @@ import type {
   FileRef,
   ReactorMessage,
   ReactorStatus,
+  SessionInfo,
   TrackCapability,
   TrackMappingEntry,
 } from './reactor-wasm.types';
@@ -193,6 +194,12 @@ export class FakeReactorClient {
 
   capabilities(): WireCapabilities | undefined {
     return this.capabilitiesResult;
+  }
+
+  sessionInfoResult: SessionInfo | undefined;
+
+  sessionInfo(): SessionInfo | undefined {
+    return this.sessionInfoResult;
   }
 
   emitReady(): void {
