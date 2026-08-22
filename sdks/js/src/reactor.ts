@@ -22,6 +22,7 @@ import type {
   ReactorMessage,
   ReactorOptions,
   ReactorStatus,
+  SessionResponse,
   TrackCapability,
   TrackMappingEntry,
 } from './types';
@@ -275,6 +276,14 @@ export class Reactor implements Disposable {
    *  fires. */
   getCapabilities(): Capabilities | undefined {
     return this.capabilities;
+  }
+
+  /** The session resource, as the coordinator reports it — id, state,
+   *  model, cluster, server info, and (once negotiated) `capabilities`.
+   *  A live read straight off the wasm client, not cached — reflects
+   *  whatever's current. `undefined` before a client exists. */
+  getSessionInfo(): SessionResponse | undefined {
+    return this.client?.sessionInfo();
   }
 
   // ── Tracks ──────────────────────────────────────────────────────────────

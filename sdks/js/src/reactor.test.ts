@@ -563,6 +563,23 @@ describe('Reactor capabilities', () => {
   });
 });
 
+describe('Reactor.getSessionInfo', () => {
+  it('is undefined before a client exists', () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+
+    expect(reactor.getSessionInfo()).toBeUndefined();
+  });
+
+  it('reads live off the binding rather than caching a snapshot', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.sessionInfoResult = { session_id: 'sess_1', state: 'ready' };
+
+    expect(reactor.getSessionInfo()).toEqual({ session_id: 'sess_1', state: 'ready' });
+  });
+});
+
 describe('Reactor.requestClip / requestRecording / downloadClipAsFile', () => {
   it('requestClip forwards durationSeconds and translates the wire Clip to camelCase', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
