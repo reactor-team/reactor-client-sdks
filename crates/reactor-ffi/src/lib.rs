@@ -48,6 +48,7 @@ use std::os::raw::{c_char, c_double, c_int, c_void};
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
+use reactor_core::auth::{fetch_jwt, TokenRequest};
 use reactor_core::error::CoreError;
 use reactor_core::events::ReactorEvent;
 use reactor_core::http::StaticAuth;
@@ -55,6 +56,7 @@ use reactor_core::peer::PeerEvent;
 use reactor_core::protocol::upload::FileRef;
 use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions};
 use reactor_core::runtime::TokioPlatform;
+use reactor_core::SharedHttp;
 use reactor_webrtc::AdmMode;
 
 use self::callbacks::{CallbackGate, HostSender, HostThread, Overflow, Quiescence};
@@ -396,6 +398,103 @@ pub const ABI_VERSION: u32 = 1;
 #[no_mangle]
 pub extern "C" fn reactor_abi_version() -> u32 {
     ABI_VERSION
+}
+
+/// Fire a completion that belongs to no handle.
+///
+/// Handle-based completions travel over that handle's control thread, which is
+/// what makes blocking inside one tolerable. A handle-less call has no such
+/// thread, so its completion goes to the blocking pool instead of running on the
+/// tokio worker that produced the result: a host that takes its time in one must
+/// delay only itself, never the runtime.
+fn resolve_detached(completion: Completion, result: Result<Option<serde_json::Value>, CoreError>) {
+    runtime().spawn_blocking(move || completion.resolve(result));
+}
+
+/// A completion with no handle to be quiesced against.
+///
+/// [`reactor_destroy`] is the boundary for every callback a handle owns. These
+/// have no handle, so the gate is per call and open for exactly as long as the
+/// call: nothing can retire it early, and the caller keeps its context alive
+/// until the completion fires — which it always does, exactly once.
+fn detached_completion(
+    completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
+    userdata: *mut c_void,
+    operation: &'static str,
+) -> Completion {
+    Completion::new(
+        completion,
+        userdata,
+        Arc::new(CallbackGate::new()),
+        operation,
+    )
+}
+
+/// Exchange an API key for a JWT.
+///
+/// Takes no handle: there is no session yet, and a caller needs the token before
+/// it can create one. `options_json` may be null for a token carrying everything
+/// the key's roles allow; otherwise it is a JSON object of
+/// `{"models": ["owner/name", …], "max_sessions": n, "expires_after": seconds}`,
+/// where `models` makes the token session-scoped. **An unrecognised key in there
+/// is an error**, not a field to ignore: silently dropping a misspelt `models`
+/// would mint the unscoped token the caller was trying to avoid.
+///
+/// On success `result_json` is `{"jwt": "…"}`. On failure it is the usual error
+/// object, so a rejected key reports `UNAUTHORIZED` and an unreachable
+/// coordinator `NETWORK_ERROR`.
+///
+/// # Safety
+///
+/// `api_url` and `api_key` must be NUL-terminated C strings; `options_json` may be
+/// null, otherwise it must be a NUL-terminated C string holding a JSON object. All
+/// are copied before this returns.
+///
+/// `completion` is called exactly once, on a thread this library owns, and must
+/// stay callable until it does. There is no handle here, so [`reactor_destroy`] is
+/// not the boundary for it: whatever the callback context is, release it from
+/// inside the completion or after it has run.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_fetch_jwt(
+    api_url: *const c_char,
+    api_key: *const c_char,
+    options_json: *const c_char,
+    local: c_int,
+    completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
+    userdata: *mut c_void,
+) {
+    let done = detached_completion(completion, userdata, "fetch_jwt");
+
+    if api_url.is_null() || api_key.is_null() {
+        return resolve_detached(
+            done,
+            Err(CoreError::InvalidState(
+                "fetch_jwt requires an api_url and an api_key".into(),
+            )),
+        );
+    }
+
+    let api_url = CStr::from_ptr(api_url).to_string_lossy().into_owned();
+    let api_key = CStr::from_ptr(api_key).to_string_lossy().into_owned();
+
+    let request = if options_json.is_null() {
+        Ok(TokenRequest::default())
+    } else {
+        serde_json::from_str::<TokenRequest>(&CStr::from_ptr(options_json).to_string_lossy())
+            .map_err(|e| CoreError::InvalidState(format!("fetch_jwt options are not valid: {e}")))
+    };
+    let request = match request {
+        Ok(request) => request,
+        Err(e) => return resolve_detached(done, Err(e)),
+    };
+
+    let http: SharedHttp = Arc::new(ReqwestHttpClient::new(local != 0));
+    runtime().spawn(async move {
+        let result = fetch_jwt(&http, &api_url, &api_key, &request)
+            .await
+            .map(|jwt| Some(serde_json::json!({ "jwt": jwt })));
+        resolve_detached(done, result);
+    });
 }
 
 /// Create a client. The returned handle must be released with
@@ -1543,6 +1642,118 @@ mod tests {
         let first = reactor_time_micros();
         assert!(first > 0);
         assert!(reactor_time_micros() >= first);
+    }
+
+    /// What a completion was told, for the calls that take no handle: they answer
+    /// on a thread this library owns, so a test has to wait rather than assume.
+    struct Recorded {
+        calls: Mutex<Vec<(bool, String)>>,
+        fired: std::sync::Condvar,
+    }
+
+    impl Recorded {
+        fn new() -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                fired: std::sync::Condvar::new(),
+            }
+        }
+
+        /// The first completion, or a failed test. A completion that never fires is
+        /// the failure mode worth catching here: a binding awaiting it would hang,
+        /// which is what these calls exist to make impossible.
+        fn wait(&self) -> (bool, String) {
+            let mut calls = self.calls.lock().unwrap();
+            while calls.is_empty() {
+                let (guard, timeout) = self
+                    .fired
+                    .wait_timeout(calls, std::time::Duration::from_secs(5))
+                    .unwrap();
+                calls = guard;
+                assert!(!timeout.timed_out(), "the completion never fired");
+            }
+            calls[0].clone()
+        }
+
+        fn count(&self) -> usize {
+            self.calls.lock().unwrap().len()
+        }
+    }
+
+    unsafe extern "C" fn record_completion(
+        ok: c_int,
+        result: *const c_char,
+        error: *const c_char,
+        userdata: *mut c_void,
+    ) {
+        let recorded = &*(userdata as *const Recorded);
+        let payload = if ok == 1 { result } else { error };
+        let text = if payload.is_null() {
+            String::new()
+        } else {
+            CStr::from_ptr(payload).to_string_lossy().into_owned()
+        };
+        recorded.calls.lock().unwrap().push((ok == 1, text));
+        recorded.fired.notify_all();
+    }
+
+    /// The mirror image of the null-handle rule above, and deliberately so. A call
+    /// with no handle has no earlier guard a binding could have applied, so the only
+    /// alternatives are an error or a future nothing resolves.
+    #[test]
+    fn a_handle_less_call_reports_a_missing_argument_rather_than_going_quiet() {
+        let recorded = Recorded::new();
+        let key = CString::new("key").unwrap();
+
+        unsafe {
+            reactor_fetch_jwt(
+                std::ptr::null(),
+                key.as_ptr(),
+                std::ptr::null(),
+                0,
+                Some(record_completion),
+                &recorded as *const Recorded as *mut c_void,
+            );
+        }
+
+        let (ok, payload) = recorded.wait();
+        assert!(!ok);
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(json["code"], reactor_core::error::codes::INVALID_STATE);
+        assert_eq!(json["operation"], "fetch_jwt");
+        assert_eq!(recorded.count(), 1, "a completion fires exactly once");
+    }
+
+    /// A binding builds this JSON from its own caller's arguments, so a key can be
+    /// wrong — and scoping is the one place where ignoring an unknown key hands back
+    /// a *more* powerful token than was asked for. It has to fail, and it has to
+    /// fail before the key is ever sent anywhere.
+    #[test]
+    fn misspelt_token_options_are_refused_before_any_request_is_made() {
+        let recorded = Recorded::new();
+        let url = CString::new("https://api.reactor.inc").unwrap();
+        let key = CString::new("key").unwrap();
+        let options = CString::new(r#"{"model":["reactor/helios"]}"#).unwrap();
+
+        unsafe {
+            reactor_fetch_jwt(
+                url.as_ptr(),
+                key.as_ptr(),
+                options.as_ptr(),
+                0,
+                Some(record_completion),
+                &recorded as *const Recorded as *mut c_void,
+            );
+        }
+
+        let (ok, payload) = recorded.wait();
+        assert!(!ok);
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(json["code"], reactor_core::error::codes::INVALID_STATE);
+        assert!(
+            json["message"].as_str().unwrap().contains("model"),
+            "the message must name the field that was wrong: {payload}"
+        );
     }
 
     /// The version exists twice — here as a constant, and in the header as the
