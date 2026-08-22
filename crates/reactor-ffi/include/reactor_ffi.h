@@ -61,6 +61,35 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
+/* ── ABI version ──────────────────────────────────────────────────────────── */
+
+/*
+ * The version of this ABI, as a monotonic integer.
+ *
+ * Two halves of one check.  REACTOR_ABI_VERSION is what the header you are
+ * compiling against says; reactor_abi_version() is what the library you end up
+ * loading says.  Compare them at startup and refuse to run when they differ,
+ * naming both numbers — nothing else catches this failure.
+ * scripts/check-abi-parity.py compares the hand-written copies of this ABI *by
+ * function name only* — arity and types are not checked and cannot be — so a
+ * function that gained a parameter still links, still resolves, and corrupts the
+ * stack at the call.  It does not fail at load.  It looks like a hang, or like
+ * the operation silently doing nothing.  Twice now the library on disk was simply
+ * older than the crates.
+ *
+ * A macro rather than only prose so a binding can make that comparison without
+ * hard-coding a number of its own, which would be a third copy of it.
+ *
+ * Bump it when an existing declaration below changes: a parameter added or
+ * removed, a type changed, a return value repurposed.  Do NOT bump it when a
+ * function is added — a binding built against the older version calls everything
+ * it knows about exactly as before, and refusing to run would strand it for no
+ * reason.
+ */
+#define REACTOR_ABI_VERSION 1
+
+uint32_t reactor_abi_version(void);
+
 /* ── Opaque client handle ─────────────────────────────────────────────────── */
 
 typedef struct ReactorHandle ReactorHandle;
