@@ -222,13 +222,15 @@ export class Reactor implements Disposable {
     switch (command) {
       case 'requestSchema':
         try {
-          await this.requestSchema();
+          const client = await this.getOrCreateClient();
+
+          await this.refreshSchema(client);
         } catch (cause) {
-          // requestSchema() already ran this through captureError() before
-          // throwing — emit that same instance directly instead of
-          // re-capturing, so listeners still get the error event
-          // sendCommand's never-rejects contract promises them.
-          this.emitter.emit('error', cause as ReactorError);
+          // refreshSchema() reports failures itself when it has a client to
+          // key the race guard on; getOrCreateClient() failing before that
+          // doesn't, so report it here. Either way, sendCommand's own
+          // contract never rejects.
+          this.emitError(cause);
         }
         return undefined;
       case 'requestCapabilities':
@@ -627,6 +629,10 @@ export class Reactor implements Disposable {
       }
       this.schema = schema;
       this.emitter.emit('schemaReceived', this.schema);
+      // Also surface as a generic runtime-scope message so consumers that
+      // filter `runtimeMessage` by `type` (rather than the typed event) see
+      // it too — the same reply, two shapes.
+      this.emitter.emit('runtimeMessage', { type: 'modelSchema', data: this.schema });
     } catch (cause) {
       if (this.client !== client || refreshId !== this.schemaRefreshId) {
         return;

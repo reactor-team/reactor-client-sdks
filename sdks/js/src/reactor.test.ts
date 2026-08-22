@@ -147,7 +147,7 @@ describe('Reactor.sendCommand', () => {
 });
 
 describe('Reactor.sendCommand runtime-scope compatibility shim', () => {
-  it('routes ("requestSchema", data, "runtime") to requestSchema(), bypassing the binding\'s sendCommand', async () => {
+  it('routes ("requestSchema", data, "runtime") to a schema refresh, bypassing the binding\'s sendCommand', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
 
@@ -156,6 +156,26 @@ describe('Reactor.sendCommand runtime-scope compatibility shim', () => {
     expect(reply).toBeUndefined();
     expect(client.requestSchemaCalls).toBe(1);
     expect(client.sendCommandCalls).toEqual([]);
+    expect(reactor.getSchema()).toEqual({ commands: ['set_image'] });
+  });
+
+  it('emits both schemaReceived and a runtimeMessage("modelSchema") once the reply lands', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+
+    await currentClient(reactor);
+    const onSchema = vi.fn();
+    const onRuntimeMessage = vi.fn();
+
+    reactor.on('schemaReceived', onSchema);
+    reactor.on('runtimeMessage', onRuntimeMessage);
+
+    await reactor.sendCommand('requestSchema', {}, 'runtime');
+
+    expect(onSchema).toHaveBeenCalledWith({ commands: ['set_image'] });
+    expect(onRuntimeMessage).toHaveBeenCalledWith({
+      type: 'modelSchema',
+      data: { commands: ['set_image'] },
+    });
   });
 
   it('does not reject on a requestSchema() failure, matching sendCommand\'s own never-rejects contract — but still emits it as an error event', async () => {
@@ -385,6 +405,23 @@ describe('Reactor schema', () => {
     client.emitReady();
 
     await vi.waitFor(() => expect(onSchema).toHaveBeenCalledWith({ commands: ['set_image'] }));
+  });
+
+  it('also emits a runtimeMessage("modelSchema") once the auto-request on ready lands', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const onRuntimeMessage = vi.fn();
+
+    reactor.on('runtimeMessage', onRuntimeMessage);
+
+    client.emitReady();
+
+    await vi.waitFor(() =>
+      expect(onRuntimeMessage).toHaveBeenCalledWith({
+        type: 'modelSchema',
+        data: { commands: ['set_image'] },
+      }),
+    );
   });
 
   it('does not emit a schema event when the auto-request fails', async () => {
