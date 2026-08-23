@@ -1,4 +1,5 @@
 import type {
+  Clip as WireClip,
   ConnectOptions,
   FileRef,
   ReactorMessage,
@@ -133,6 +134,36 @@ export class FakeReactorClient {
       return Promise.reject(this.schemaError);
     }
     return Promise.resolve(this.schemaResult);
+  }
+
+  requestClipCalls: number[] = [];
+  requestClipResult: WireClip = {
+    session_id: 'sess_1',
+    kind: 'snap',
+    start_marker: 0,
+    end_marker: 10,
+    now_marker: 10,
+    predicted_ready_at_ms: 0,
+    playlist_url: 'https://api.reactor.test/clips?session_id=sess_1',
+  };
+  requestClip(durationSeconds: number): Promise<WireClip> {
+    this.requestClipCalls.push(durationSeconds);
+    return Promise.resolve(this.requestClipResult);
+  }
+
+  requestRecordingCalls = 0;
+  requestRecordingResult: WireClip = {
+    session_id: 'sess_1',
+    kind: 'recording',
+    start_marker: 0,
+    end_marker: 10,
+    now_marker: 10,
+    predicted_ready_at_ms: 0,
+    playlist_url: 'https://api.reactor.test/clips?session_id=sess_1',
+  };
+  requestRecording(): Promise<WireClip> {
+    this.requestRecordingCalls += 1;
+    return Promise.resolve(this.requestRecordingResult);
   }
 
   onStatusChanged(listener: (status: ReactorStatus) => void): void {
