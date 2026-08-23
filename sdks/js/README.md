@@ -149,7 +149,7 @@ function App() {
   const jwt = useCallback(() => fetchToken(), []);
 
   return (
-    <ReactorProvider modelName="my-model" jwt={jwt}>
+    <ReactorProvider modelName="my-model" jwtToken={jwt}>
       <Status />
     </ReactorProvider>
   );
@@ -173,12 +173,13 @@ function Status() {
 `react` is a peer dependency — install it yourself, matching your app's own
 version.
 
-`apiUrl`/`modelName`/`local`/`jwt`/`connectOptions` are live: changing any of
-them tears down the current `Reactor` and builds a fresh one (there's no way
-to reconnect an existing instance with a different model or endpoint). Pass a
-stable `jwt` and `connectOptions` (`useCallback`/`useMemo`, or hoist them
-outside the component) if you don't want an unrelated parent re-render to
-rebuild the connection.
+`apiUrl`/`modelName`/`local`/`jwtToken`/`connectOptions` are live (including
+`connectOptions.autoConnect`): changing any of them tears down the current
+`Reactor` and builds a fresh one (there's no way to reconnect an existing
+instance with a different model or endpoint). Pass a stable `jwtToken` and
+`connectOptions` (`useCallback`/`useMemo`, or hoist them outside the
+component) if you don't want an unrelated parent re-render to rebuild the
+connection.
 
 `useReactor(selector)` also carries `sessionId`, `lastError`, `lastMessage`,
 and action bindings for `connect`/`disconnect`/`reconnect`/`publish`/
