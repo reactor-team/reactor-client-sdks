@@ -107,7 +107,10 @@ shape** (snake_case), not this translated one — prefer `getCapabilities()`/
 ```ts
 const clip = await reactor.requestClip(10); // last 10 seconds
 // or: const clip = await reactor.requestRecording(); // the whole session so far
-const blob = await reactor.downloadClipAsFile(clip); // triggers a browser download, returns the Blob
+
+// downloadClipAsFile() doesn't inherit the Reactor instance's JWT — pass it
+// explicitly (omit `jwt` entirely against a local runtime, which is auth-free).
+const blob = await reactor.downloadClipAsFile(clip, "clip.mp4", { jwt: await fetchToken() });
 ```
 
 `requestClip()`/`requestRecording()` are directly on `Reactor` — there's no separate recording
@@ -116,13 +119,15 @@ until ready, remuxes the fragmented chunks into a flat, faststart MP4, and (unle
 `filename: null` is passed) triggers the download; pass `options.onProgress` for progress UI.
 
 For a React preview instead of a download, `ClipPlayer`/`ClipDownloadButton`/`useClipDownload`
-cover playback and download UI directly:
+cover playback and download UI directly. Neither requires a `ReactorProvider`, but each needs a
+JWT source outside local-dev mode — either an explicit `getJwt`, as below, or mount them under a
+`ReactorProvider` and omit `getJwt` to inherit its resolver:
 
 ```tsx
 import { ClipPlayer, ClipDownloadButton } from "@reactor-team/js-sdk";
 
-<ClipPlayer clip={clip} />
-<ClipDownloadButton clip={clip} filename="clip.mp4" />
+<ClipPlayer clip={clip} getJwt={() => fetchToken()} />
+<ClipDownloadButton clip={clip} getJwt={() => fetchToken()} filename="clip.mp4" />
 ```
 
 `ClipPlayer` streams the clip with `hls.js` wherever Media Source Extensions exist (every
