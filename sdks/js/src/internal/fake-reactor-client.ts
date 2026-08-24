@@ -179,8 +179,14 @@ export class FakeReactorClient {
     this.trackReceivedListener?.(name, mid);
   }
 
+  // Overridable so a test can fail a specific publish call, e.g. to
+  // simulate one of two concurrent publishTrack() calls rejecting.
+  publishTrackImpl: ((name: string, track: MediaStreamTrack) => Promise<void>) | undefined;
   publishTrack(name: string, track: MediaStreamTrack): Promise<void> {
     this.publishTrackCalls.push({ name, track });
+    if (this.publishTrackImpl) {
+      return this.publishTrackImpl(name, track);
+    }
     return Promise.resolve();
   }
   unpublishTrack(name: string): Promise<void> {
