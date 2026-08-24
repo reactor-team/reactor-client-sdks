@@ -21,9 +21,10 @@ binding over `reactor-core`.
   body — the returned promise resolved on the next microtask, roughly
   bytes-on-wire time, and the method resolved to `void`. It now awaits
   `reactor-core`'s correlated reply, bounded by `controlRequestTimeoutMs`
-  (not infinite), and resolves with the reply payload. Code that called
-  `sendCommand()` without awaiting it, expecting it to return immediately,
-  will now wait for a round trip.
+  (not infinite), and resolves with the reply payload. Code that awaits
+  `sendCommand()` (or otherwise consumes its promise) now waits for the real
+  round trip instead of resolving almost immediately; a caller that never
+  awaited it in the first place still fires and moves on exactly as before.
 - **`ReactorError` is a typed class hierarchy, not a plain object.** 2.x's
   `ReactorError` was a flat interface (`code`, `message`, `timestamp`,
   `recoverable`, `component: "api" | "gpu"`, `retryAfter`) with a small,
