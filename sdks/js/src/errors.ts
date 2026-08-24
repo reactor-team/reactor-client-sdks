@@ -74,6 +74,10 @@ export class ReactorError extends Error {
   readonly operation: string | undefined;
   /** Backoff hint the platform sent. */
   readonly retry_after_ms: number | undefined;
+  /** When `reactor-core` reported this failure. For a purely local one (no
+   *  payload at all — see {@link ReactorErrorOptions}), this is synthesized
+   *  as the construction time instead, since there's nothing to report —
+   *  not a value read off the wire. */
   readonly timestamp_ms: number;
 
   /** Same value as `retry_after_ms`, under its previous name. Kept for
