@@ -2,12 +2,25 @@ import { createContext, useContext, useEffect, useRef, useState, useSyncExternal
 import { createReactorStore, type ReactorStore, type StoreApi } from './store';
 import type { ConnectOptions, JwtSource, ReactorOptions } from '../types';
 
+/** `connectOptions` for the provider — adds `autoConnect` to the core
+ *  `ConnectOptions`. Live, same as every other `ReactorProviderProps` field —
+ *  see `ReactorProvider`'s doc comment. */
+export interface ReactorConnectOptions extends ConnectOptions {
+  /** Connect automatically once a Reactor is built — initial mount, or any
+   *  later rebuild. Default `false`. */
+  autoConnect?: boolean;
+}
+
 export interface ReactorProviderProps {
   apiUrl?: string | undefined;
   modelName: string;
   local?: boolean | undefined;
-  jwt?: JwtSource | undefined;
-  connectOptions?: ConnectOptions | undefined;
+  /** Static token, or a resolver called before every authenticated request
+   *  — see `JwtSource`. Required for `autoConnect` against a non-local
+   *  runtime; can also be supplied later via an explicit `connect()` call
+   *  instead. */
+  jwtToken?: JwtSource | undefined;
+  connectOptions?: ReactorConnectOptions | undefined;
   children?: ReactNode;
 }
 
@@ -17,17 +30,21 @@ export interface ReactorProviderProps {
  *  instead, which throw outside a provider rather than returning `undefined`. */
 export const ReactorContext = createContext<StoreApi<ReactorStore> | undefined>(undefined);
 
-/** `apiUrl`/`modelName`/`local`/`jwt` build a `Reactor`; there's no way to
- *  change a live instance's model or endpoint, so a change to any of them
- *  means building a new one from scratch — built up field-by-field, not as
- *  one object literal, so an omitted prop stays omitted rather than becoming
- *  an explicit `undefined` (required under `exactOptionalPropertyTypes`). */
-function buildReactorOptions({
-  apiUrl,
-  modelName,
-  local,
-  jwt,
-}: Pick<ReactorProviderProps, 'apiUrl' | 'modelName' | 'local' | 'jwt'>): ReactorOptions {
+type BuildStoreProps = Pick<
+  ReactorProviderProps,
+  'apiUrl' | 'modelName' | 'local' | 'jwtToken' | 'connectOptions'
+>;
+
+/**
+ * Builds a fresh store (and the `Reactor` underneath) from the provider's
+ * props, firing `connect()` immediately when `autoConnect` is set. Used for
+ * both the initial mount and every later rebuild, so both go through the
+ * same auto-connect path rather than only the first one.
+ */
+function buildStore({ apiUrl, modelName, local, jwtToken, connectOptions }: BuildStoreProps): StoreApi<ReactorStore> {
+  // Built up field-by-field, not as one object literal, so an omitted prop
+  // stays omitted rather than becoming an explicit `undefined` — required
+  // under `exactOptionalPropertyTypes`.
   const options: ReactorOptions = { modelName };
 
   if (apiUrl !== undefined) {
@@ -36,27 +53,38 @@ function buildReactorOptions({
   if (local !== undefined) {
     options.local = local;
   }
-  if (jwt !== undefined) {
-    options.jwt = jwt;
+  if (jwtToken !== undefined) {
+    options.jwt = jwtToken;
   }
 
-  return options;
+  // `autoConnect` isn't acted on here — see the effect in `ReactorProvider`
+  // that fires it. `ConnectOptions` (unlike `ReactorConnectOptions`) has no
+  // `autoConnect` field, so it's stripped before this is stored as the
+  // store's `defaultConnectOptions`.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { autoConnect, ...pollingOptions } = connectOptions ?? {};
+
+  return createReactorStore(options, pollingOptions);
 }
 
 /**
  * Owns a `Reactor` instance and exposes it to `useReactor` below.
  *
- * `apiUrl`/`modelName`/`local`/`jwt`/`connectOptions` are live: changing any
- * of them tears down the current `Reactor` (`disconnect()` then
- * `[Symbol.dispose]()`) and builds a fresh one, the same way
- * `useLiveKitRoom` rebuilds its `Room` when its construction `options`
- * change — `Reactor` has no equivalent of LiveKit's `token`/`serverUrl`
- * split (reconnecting the *same* instance with new credentials), since its
- * constructor bundles everything. Pass a stable `jwt` resolver (e.g. via
- * `useCallback`) and a stable `connectOptions` reference if you don't want
- * every parent render to rebuild the connection — object/function props are
- * compared by reference (`connectOptions` via a `JSON.stringify` snapshot,
- * same as `useLiveKitRoom` does for its own `options`).
+ * `apiUrl`/`modelName`/`local`/`jwtToken`/`connectOptions` (including
+ * `autoConnect`) are live: changing any of them tears down the current
+ * `Reactor` (`disconnect()` then `[Symbol.dispose]()`) and builds a fresh
+ * one — the same way `useLiveKitRoom` rebuilds its `Room` when its
+ * construction `options` change. `Reactor` has no equivalent of LiveKit's
+ * `token`/`serverUrl` split (reconnecting the *same* instance with new
+ * credentials) or its live `connect` boolean (toggling the same `Room`'s
+ * connection without rebuilding it) — its constructor bundles everything, so
+ * any change, `autoConnect` included, means a fresh instance rather than
+ * reconnecting/disconnecting the existing one. Pass a stable `jwtToken`
+ * (e.g. via `useCallback` for a resolver) and a stable `connectOptions`
+ * reference if you don't want an unrelated parent render to rebuild the
+ * connection — object/function props are compared by reference
+ * (`connectOptions` via a `JSON.stringify` snapshot, same as
+ * `useLiveKitRoom` does for its own `options`).
  *
  * Unmounting tears down the same way — see `Reactor.disconnect()`/
  * `[Symbol.dispose]()` for what that frees.
@@ -65,13 +93,11 @@ export function ReactorProvider({
   apiUrl,
   modelName,
   local,
-  jwt,
+  jwtToken,
   connectOptions,
   children,
 }: ReactorProviderProps) {
-  const [store, setStore] = useState(() =>
-    createReactorStore(buildReactorOptions({ apiUrl, modelName, local, jwt }), connectOptions),
-  );
+  const [store, setStore] = useState(() => buildStore({ apiUrl, modelName, local, jwtToken, connectOptions }));
   // Skips the rebuild effect's mandatory first run — the initial store was
   // already built synchronously above, so re-running the same construction
   // on mount would just replace it with an equivalent one for nothing.
@@ -83,9 +109,33 @@ export function ReactorProvider({
 
       return;
     }
-    setStore(createReactorStore(buildReactorOptions({ apiUrl, modelName, local, jwt }), connectOptions));
+    setStore(buildStore({ apiUrl, modelName, local, jwtToken, connectOptions }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiUrl, modelName, local, jwt, JSON.stringify(connectOptions)]);
+  }, [apiUrl, modelName, local, jwtToken, JSON.stringify(connectOptions)]);
+
+  // Fires autoConnect for whichever Reactor this provider currently owns —
+  // on initial mount and on every rebuild, since both produce a new `store`.
+  // Deliberately an effect, not part of `buildStore`'s synchronous
+  // construction: `buildStore` runs inside `useState`'s lazy initializer,
+  // and React 18 StrictMode double-invokes that during render to surface
+  // impure side effects — calling connect() from there fires it against two
+  // separate, independently-constructed Reactor instances, and the discarded
+  // one leaks a live connection nothing ever tears down. Matches v2, which
+  // also fires autoConnect from an effect rather than during construction.
+  useEffect(() => {
+    const { autoConnect = false, ...pollingOptions } = connectOptions ?? {};
+
+    if (autoConnect && store.getState().status === 'disconnected') {
+      // A rejection here (auth/network failure, ...) would otherwise escape
+      // as an unhandled promise rejection — connect() throws rather than
+      // reporting failures through the `error` event, and nothing here
+      // awaits this fire-and-forget call.
+      store.getState().connect(jwtToken, pollingOptions).catch((error: unknown) => {
+        console.error('[Reactor.ReactorProvider] autoConnect failed:', error);
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store]);
 
   // Tears down whichever Reactor this provider currently owns — on rebuild
   // (store changes, so this cleanup fires for the one being replaced) and on

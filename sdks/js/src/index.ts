@@ -54,7 +54,7 @@ export type {
   TrackMappingEntry,
 } from './types';
 export { ReactorProvider } from './react/ReactorProvider';
-export type { ReactorProviderProps } from './react/ReactorProvider';
+export type { ReactorConnectOptions, ReactorProviderProps } from './react/ReactorProvider';
 export { useReactor, useReactorMessage, useReactorInternalMessage, useStats } from './react/hooks';
 export type { ReactorActions, ReactorState, ReactorStore } from './react/store';
 export { ReactorView } from './react/ReactorView';
