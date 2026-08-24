@@ -1,0 +1,239 @@
+# Build and release the JS SDK.
+#
+# Triggered by a push to main that changes the version in sdks/js/package.json —
+# the version is the release switch, so shipping is "bump the version and merge",
+# same as release-python.yml.
+#
+# Unlike the Python SDK's five-platform wheel matrix, reactor-wasm is a single
+# WebAssembly artifact plus plain JS/TS — one Ubuntu runner builds everything
+# every job needs, so there's no build/release/publish artifact handoff here:
+# each job that needs the built dist/ rebuilds it itself. That's a few seconds
+# of redundant work in exchange for never publishing something that wasn't
+# built by the exact steps that just ran.
+#
+# Pull requests build and test, releasing nothing. workflow_dispatch does the
+# same on demand, with an optional dry_run to also skip the npm publish step
+# on a push. Only a push to main with a changed version releases.
+name: Release JS SDK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sdks/js/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/release-js.yml"
+
+  pull_request:
+    paths:
+      - "sdks/js/**"
+      - "crates/reactor-wasm/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/release-js.yml"
+
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and test, but do not create a release or publish"
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-js-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  MISE_VERSION: "2026.8.8"
+  MISE_LOCKED: "1"
+  MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
+
+jobs:
+  # ── 0. Is this push a release? ──────────────────────────────────────────────
+  detect-version:
+    name: Detect version bump
+    runs-on: ubuntu-latest
+    outputs:
+      bumped: ${{ steps.diff.outputs.bumped }}
+      version: ${{ steps.diff.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Diff the SDK version against the previous commit on main
+        id: diff
+        run: |
+          set -euo pipefail
+
+          version_at() {
+            git show "$1:sdks/js/package.json" 2>/dev/null | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version' 2>/dev/null || true
+          }
+
+          NEW_VER=$(version_at "${{ github.sha }}")
+          if [ -z "$NEW_VER" ]; then
+            echo "::error::Could not read the version from sdks/js/package.json"
+            exit 1
+          fi
+          echo "version=${NEW_VER}" >> "$GITHUB_OUTPUT"
+
+          # workflow_dispatch's dry_run and anything but a push never release,
+          # regardless of what the version diff below would say.
+          if [ "${{ github.event_name }}" != "push" ] || [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            echo "::notice::${{ github.event_name }} — building ${NEW_VER}, not releasing."
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          BEFORE="${{ github.event.before }}"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "::warning::No previous commit to diff against (new branch or force-push) — not releasing."
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          OLD_VER=$(version_at "$BEFORE")
+          if [ "$OLD_VER" != "$NEW_VER" ]; then
+            echo "::notice::Version bump: ${OLD_VER:-<none>} -> ${NEW_VER}"
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Version unchanged at ${NEW_VER} — building only."
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── 1. Build + test the package every event gets, release or not ──────────
+  build:
+    name: Build + test
+    needs: detect-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1   # reads rust-toolchain.toml,
+        with:                                            # including the wasm32 target
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: mise run build:wasm
+      - run: mise run lint:js
+      - run: mise run build:js
+      - run: mise run test:js
+
+  # ── 2. GitHub release ───────────────────────────────────────────────────────
+  release:
+    name: Publish GitHub release
+    needs: [detect-version, build]
+    if: github.event_name == 'push' && needs.detect-version.outputs.bumped == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Create the release
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect-version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Namespaced, same reasoning as release-python.yml's python-v prefix:
+          # this repo tags more than one binding, so the tag has to say which.
+          TAG="js-v${VERSION}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::Release $TAG already exists — leaving it as is."
+            exit 0
+          fi
+
+          gh release create "$TAG" \
+            --title "JS SDK ${VERSION}" \
+            --notes "$(cat <<EOF
+          \`@reactor-team/js-sdk\` ${VERSION}.
+
+          \`\`\`
+          npm install @reactor-team/js-sdk@${VERSION}
+          \`\`\`
+
+          See \`sdks/js/CHANGELOG.md\` for what changed.
+          EOF
+          )"
+
+  # ── 3. npm ───────────────────────────────────────────────────────────────────
+  #
+  # PUBLISH_TO_NPM is the kill switch, same pattern as release-python.yml's
+  # PUBLISH_TO_PYPI: while it isn't `true`, releases keep going out as GitHub
+  # releases but npm is skipped. Read in a step rather than in the job-level
+  # `if` below for the same reason documented there — a job-level condition is
+  # evaluated before the environment is resolved, so a variable that lives on
+  # the environment would always read empty there.
+  #
+  # No npm token: publishing goes through npm's Trusted Publisher OIDC exchange
+  # (`id-token: write` below, no secret in this repo). That has to be
+  # registered per-package on npmjs.com for this exact repo + workflow +
+  # environment before a publish can succeed at all — see this job's
+  # environment name and this workflow's filename. The existing registration
+  # for `@reactor-team/js-sdk` (if any) points at the legacy `reactor-team/js-sdk`
+  # repo's `publish.yml`, which does not cover this one.
+  publish-npm:
+    name: Publish to npm
+    needs: [detect-version, build, release]
+    if: github.event_name == 'push' && needs.detect-version.outputs.bumped == 'true'
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      id-token: write # OIDC trusted publishing
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      # Only as far as producing the wasm package and installing deps —
+      # `npm publish` below triggers `prepack` (REA-5418's build guard), which
+      # runs the actual `tsup`/copy-wasm build itself. Building it twice here
+      # would just be redundant, not safer: the `build` job above already
+      # proved this exact commit lints, type-checks, and tests clean.
+      - run: mise run build:wasm
+      - run: mise run install:js
+
+      - name: Check the kill switch, and whether this version is already published
+        id: check
+        env:
+          PUBLISH_TO_NPM: ${{ vars.PUBLISH_TO_NPM }}
+          VERSION: ${{ needs.detect-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$PUBLISH_TO_NPM" != "true" ]; then
+            echo "::notice::PUBLISH_TO_NPM is ${PUBLISH_TO_NPM:-unset}, not 'true' — not publishing"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if npm view "@reactor-team/js-sdk@${VERSION}" version >/dev/null 2>&1; then
+            echo "::notice::@reactor-team/js-sdk@${VERSION} is already on npm — skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.check.outputs.skip != 'true'
+        working-directory: sdks/js
+        run: npm publish --access public --provenance
