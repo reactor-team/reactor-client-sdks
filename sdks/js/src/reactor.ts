@@ -434,6 +434,13 @@ export class Reactor implements Disposable {
     return this.client?.sessionId();
   }
 
+  /** The `jwt` this instance was constructed (or last `connect()`ed) with —
+   *  lets a component composed inside a `ReactorProvider` (e.g. `ClipPlayer`)
+   *  authenticate its own requests without the caller repeating the resolver. */
+  getJwtResolver(): JwtSource | undefined {
+    return this.jwt ?? undefined;
+  }
+
   /** The most recent `ReactorError`, from either an `error` event or a
    *  rejected call — whichever landed last. `undefined` until the first
    *  failure. */
