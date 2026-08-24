@@ -1,6 +1,6 @@
 {
   "name": "@reactor-team/js-sdk",
-  "version": "0.1.0",
+  "version": "2.13.0",
   "description": "Connect your JavaScript/TypeScript app to a live Reactor model in the browser.",
   "license": "Apache-2.0",
   "type": "module",
@@ -32,10 +32,19 @@
   "dependencies": {
     "awaitqueue": "^3.3.1"
   },
+  "peerDependencies": {
+    "react": "^18.0.0 || ^19.0.0"
+  },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
     "@stylistic/eslint-plugin": "^5.10.0",
+    "@testing-library/react": "^16.0.0",
+    "@types/react": "^19.0.0",
     "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^5.0.0",
+    "jsdom": "^25.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "tsup": "^8.3.0",
     "typescript": "^5.6.0",
     "typescript-eslint": "^8.67.0",

@@ -30,8 +30,14 @@ let modulePromise: Promise<ReactorWasmModule> | null = null;
  * and would need to keep `dist/wasm/` reachable at the equivalent location
  * relative to their own bundle, or this loader revisited to resolve against
  * `import.meta.url` instead.
+ *
+ * The specifier is inlined directly in the `import()` call below, not
+ * hoisted to a `const` — webpack (and other bundlers using its dynamic-import
+ * analysis) only resolves a literal argument statically; routed through an
+ * intermediate binding, it can't trace it back to a literal and throws
+ * "Critical dependency: the request of a dependency is an expression" at
+ * runtime instead of fetching the module.
  */
-const WASM_MODULE_SPECIFIER = './wasm/reactor_wasm.js';
 
 export function loadReactorWasm(): Promise<ReactorWasmModule> {
   if (!modulePromise) {
@@ -50,9 +56,10 @@ export function loadReactorWasm(): Promise<ReactorWasmModule> {
 }
 
 async function importWasmModule(): Promise<ReactorWasmModule> {
-  const module = (await import(
-    /* @vite-ignore */ WASM_MODULE_SPECIFIER
-  )) as ReactorWasmModule;
+  // @ts-expect-error — no declaration file to resolve at typecheck time; the
+  // module only exists after scripts/copy-wasm.mjs copies it into dist/wasm,
+  // post-build. Cast to ReactorWasmModule below instead.
+  const module = (await import(/* @vite-ignore */ './wasm/reactor_wasm.js')) as ReactorWasmModule;
 
   await module.default();
   return module;

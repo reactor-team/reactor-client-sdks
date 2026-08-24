@@ -4,6 +4,7 @@
     "lib": ["ES2022", "ESNext.Disposable", "DOM"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
     "declaration": true,
     "strict": true,
     "noUncheckedIndexedAccess": true,

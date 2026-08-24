@@ -137,6 +137,55 @@ try {
 `undefined`. Every other call that can fail (`connect`, `publishTrack`,
 `uploadFile`, ...) throws normally.
 
+## React
+
+```tsx
+import { useCallback } from "react";
+import { ReactorProvider, useReactor } from "@reactor-team/js-sdk";
+
+function App() {
+  // Stable across renders — see the note on ReactorProvider below for why
+  // this matters.
+  const jwt = useCallback(() => fetchToken(), []);
+
+  return (
+    <ReactorProvider modelName="my-model" jwt={jwt}>
+      <Status />
+    </ReactorProvider>
+  );
+}
+
+function Status() {
+  const { status, sendCommand } = useReactor((s) => ({
+    status: s.status,
+    sendCommand: s.sendCommand,
+  }));
+
+  return (
+    <div>
+      {status}
+      <button onClick={() => sendCommand("set_image", { url: "..." })}>Send</button>
+    </div>
+  );
+}
+```
+
+`react` is a peer dependency — install it yourself, matching your app's own
+version.
+
+`apiUrl`/`modelName`/`local`/`jwt`/`connectOptions` are live: changing any of
+them tears down the current `Reactor` and builds a fresh one (there's no way
+to reconnect an existing instance with a different model or endpoint). Pass a
+stable `jwt` and `connectOptions` (`useCallback`/`useMemo`, or hoist them
+outside the component) if you don't want an unrelated parent re-render to
+rebuild the connection.
+
+`useReactor(selector)` also carries `sessionId`, `lastError`, `lastMessage`,
+and action bindings for `connect`/`disconnect`/`reconnect`/`publish`/
+`unpublish`/`pauseTrack`/`resumeTrack`. For anything else — tracks, stats,
+the raw event emitter — `useReactor((s) => s.internal.reactor)` gets you the
+underlying `Reactor` instance directly.
+
 ## Development
 
 ```bash
