@@ -15,4 +15,14 @@ project(reactor-package-consumer LANGUAGES CXX)
 find_package(reactor-sdk REQUIRED)
 
 add_executable(consumer main.cpp)
-target_link_libraries(consumer PRIVATE reactor::sdk)
+
+# The audio devices when the package ships them: a second library with a second
+# exported link interface, and a private dependency of a *static* library reaches
+# consumers anyway — one the installed config never looks up is invisible until
+# something links it from outside the build tree, which is what this fixture is.
+# It brings reactor::sdk with it, so linking it exercises both.
+if(TARGET reactor::sdk_audio)
+  target_link_libraries(consumer PRIVATE reactor::sdk_audio)
+else()
+  target_link_libraries(consumer PRIVATE reactor::sdk)
+endif()

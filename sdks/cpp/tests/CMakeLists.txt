@@ -11,8 +11,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Catch2)
 
-add_executable(
-  reactor_sdk_tests
+set(REACTOR_TEST_SOURCES
   command_test.cpp
   errors_test.cpp
   ffi_test.cpp
@@ -21,6 +20,17 @@ add_executable(
   track_test.cpp
   smoke_test.cpp
 )
+
+# The device helpers are an optional target, so their tests come and go with it.
+if(REACTOR_SDK_BUILD_AUDIO)
+  list(APPEND REACTOR_TEST_SOURCES audio_test.cpp)
+endif()
+
+add_executable(reactor_sdk_tests ${REACTOR_TEST_SOURCES})
+
+if(REACTOR_SDK_BUILD_AUDIO)
+  target_link_libraries(reactor_sdk_tests PRIVATE reactor::sdk_audio)
+endif()
 
 # The tests reach past the public headers on purpose: the boundary — string
 # ownership, the symbol table, teardown — is where a binding's bugs live, and

@@ -43,6 +43,13 @@ one with -DREACTOR_FFI_LIB_DIR=…")
   set_target_properties(reactor::ffi PROPERTIES IMPORTED_LOCATION "${REACTOR_FFI_LIBRARY}")
 endif()
 
+# The audio target links Threads privately, which a static library exports anyway
+# — so the consumer needs the same imported target defined before the export names
+# it. Only on the builds that actually linked it.
+if(@REACTOR_SDK_AUDIO_NEEDS_THREADS@)
+  find_dependency(Threads)
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/reactor-sdk-targets.cmake")
 
 # Where the library it linked actually came from, so a consumer pointing at a
