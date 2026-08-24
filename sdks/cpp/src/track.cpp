@@ -479,7 +479,7 @@ void ClientImpl::deliver_audio(const std::string& name, const AudioFrame& frame)
 void ClientImpl::warn_about_unhandled(const std::string& name) {
   {
     // Checked before anything expensive: this runs per frame, and reading the
-    // declared tracks parses JSON.
+    // declared tracks costs a map lookup at best.
     const std::lock_guard<std::mutex> lock(media_mutex_);
     if (!warned_tracks_.insert(name).second) {
       return;
@@ -493,10 +493,10 @@ void ClientImpl::warn_about_unhandled(const std::string& name) {
     return;
   }
   if (declared(name).has_value()) {
-    log_warn("frames are arriving on declared track \"" + name +
-             "\" with no handler registered; they are being dropped. Register one with "
-             "reactor.track(\"" +
-             name + "\").on_frame(...).");
+    // Silent on purpose. A declared track with no handler is not a mistake: a
+    // client may legitimately not care about one of several outputs, and there is
+    // always a gap between connect() resolving and a handler being registered.
+    // Warning here put a line in the output of every correct program.
     return;
   }
   log_warn("frames are arriving on track \"" + name +

@@ -41,6 +41,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # consuming it — a project that pulls this in with FetchContent should not build
 # either. PROJECT_IS_TOP_LEVEL is exactly that distinction.
 option(REACTOR_SDK_BUILD_TESTS "Build the C++ SDK unit tests" ${PROJECT_IS_TOP_LEVEL})
+option(REACTOR_SDK_BUILD_EXAMPLES "Build the C++ SDK examples" ${PROJECT_IS_TOP_LEVEL})
 
 set(REACTOR_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." CACHE PATH
     "Root of the reactor-client-sdks checkout, where crates/ and target/ live")
@@ -200,6 +201,10 @@ set_target_properties(
 if(REACTOR_SDK_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+if(REACTOR_SDK_BUILD_EXAMPLES)
+  add_subdirectory(examples)
 endif()
 
 # ── Install ───────────────────────────────────────────────────────────────────

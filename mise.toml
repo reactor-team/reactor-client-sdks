@@ -202,7 +202,7 @@ description = "[Build] Build libreactor_ffi in release mode (what the C++ SDK li
 run = "cargo build -p reactor-ffi --release"
 
 [tasks."build:cpp"]
-description = "[Build] Configure + build the C++ SDK (needs build:ffi first)"
+description = "[Build] Configure + build the C++ SDK and its examples (needs build:ffi first)"
 run = [
     "cmake -S sdks/cpp -B sdks/cpp/build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
     "cmake --build sdks/cpp/build",
