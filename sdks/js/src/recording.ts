@@ -286,7 +286,7 @@ export interface DownloadClipOptions {
 }
 
 /**
- * Stream the chunks `clip.playlistUrl` references, remux them into a flat
+ * Fetch the chunks `clip.playlistUrl` references, remux them into a flat
  * MP4, and (when `filename` is non-null) trigger a browser `<a download>`.
  * Pass `filename: null` to skip the download trigger and just get the Blob.
  *
@@ -294,6 +294,12 @@ export interface DownloadClipOptions {
  * pass through unchanged — so `start_time=0`, faststart, and
  * `major_brand=isom` come for free with no re-encode. See `maybeRemux()` for
  * the fallback on the rare parse failure.
+ *
+ * Memory-bound: every chunk is held in `parts` for the full duration of the
+ * fetch loop, and `maybeRemux()`'s underlying `mp4box` parser needs the whole
+ * input up front, so there's no streaming path to disk. Fine for a bounded
+ * clip; a full-session `requestRecording()` download can hold the entire
+ * recording in memory at once.
  */
 export async function downloadClipAsFile(
   clip: Clip,
