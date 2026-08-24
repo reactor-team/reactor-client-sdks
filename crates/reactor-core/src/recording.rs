@@ -357,19 +357,26 @@ fn same_origin(a: &str, b: &str) -> bool {
 }
 
 /// Classify a `ClipFailed` message's free-text `reason` into a
-/// [`crate::error::codes`] value — `RECORDER_DISABLED` for the two reasons
-/// the model runtime is known to send when its recorder is disabled or has
-/// crashed, `INTERNAL_ERROR` for anything else.
+/// [`crate::error::codes`] value — `RECORDER_DISABLED` when the runtime's
+/// reason mentions the recorder being disabled or crashed, `INTERNAL_ERROR`
+/// for anything else.
+///
+/// Substring, case-insensitive match rather than exact equality: the runtime
+/// is free to prepend/append context to the reason it sends (a session id, a
+/// timestamp, ...), and an exact match would silently degrade a real
+/// recorder-disabled failure to `INTERNAL_ERROR` the moment the wording
+/// around it changes upstream.
 ///
 /// See `codes::RECORDER_DISABLED`'s doc comment: this is a stopgap
 /// string-match kept only until `ClipFailed` carries a structured reason
 /// (REA-5403).
 pub fn clip_failed_code(reason: &str) -> &'static str {
-    match reason {
-        "recorder disabled" | "recorder disabled or encoder crashed" => {
-            crate::error::codes::RECORDER_DISABLED
-        }
-        _ => crate::error::codes::INTERNAL_ERROR,
+    let lower = reason.to_ascii_lowercase();
+
+    if lower.contains("recorder disabled") || lower.contains("encoder crashed") {
+        crate::error::codes::RECORDER_DISABLED
+    } else {
+        crate::error::codes::INTERNAL_ERROR
     }
 }
 
@@ -884,6 +891,18 @@ mod tests {
         );
         assert_eq!(
             clip_failed_code("recorder disabled or encoder crashed"),
+            crate::error::codes::RECORDER_DISABLED
+        );
+    }
+
+    #[test]
+    fn recognizes_recorder_disabled_reasons_wrapped_in_extra_context() {
+        assert_eq!(
+            clip_failed_code("session abc123: Recorder disabled during startup"),
+            crate::error::codes::RECORDER_DISABLED
+        );
+        assert_eq!(
+            clip_failed_code("ENCODER CRASHED at frame 42"),
             crate::error::codes::RECORDER_DISABLED
         );
     }

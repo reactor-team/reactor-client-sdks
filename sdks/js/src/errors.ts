@@ -175,6 +175,11 @@ export class AbortedError extends ReactorError {
  * a clip failure for the same underlying reason may still arrive as the
  * base `ReactorError` (`code: "INTERNAL_ERROR"`) if the reason text ever
  * changes upstream.
+ *
+ * `recoverable` is `false`: the recorder being disabled or crashed isn't
+ * something retrying the same `requestClip()`/`requestRecording()` call can
+ * fix — it needs an operator to re-enable or restart the recorder on the
+ * model side first.
  */
 export class RecorderDisabledError extends ReactorError {
   static override readonly code = 'RECORDER_DISABLED';
