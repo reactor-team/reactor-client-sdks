@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { extractFileRefs, toPublicFileRef } from './file-ref';
 import type { FileRef as WireFileRef } from './reactor-wasm.types';
-import type { FileRef } from '../types';
+import { FileRef } from '../file-ref';
 
 const wireFileRef: WireFileRef = {
   upload_id: 'up_1',
@@ -44,7 +44,7 @@ describe('extractFileRefs', () => {
   });
 
   it('extracts multiple top-level FileRefs from a mixed payload', () => {
-    const other: FileRef = { ...fileRef, uploadId: 'up_2', name: 'b.png' };
+    const other = new FileRef('up_2', 'b.png', fileRef.mimeType, fileRef.size);
     const result = extractFileRefs({ front: fileRef, back: other, label: 'id card' });
 
     expect(result.uploads).toEqual({
@@ -74,6 +74,14 @@ describe('extractFileRefs', () => {
 
     expect(result.uploads).toBeUndefined();
     expect(result.data).toEqual({ image: almost });
+  });
+
+  it('extracts a full-shape plain object too, not only a real FileRef instance (e.g. a duplicate-package copy)', () => {
+    const lookalike = { uploadId: 'up_1', name: 'photo.jpg', mimeType: 'image/jpeg', size: 1024 };
+    const result = extractFileRefs({ image: lookalike });
+
+    expect(result.uploads).toEqual({ image: wireFileRef });
+    expect(result.data).toEqual({});
   });
 
   it('does not treat the wasm binding\'s own snake_case shape as a public FileRef', () => {
