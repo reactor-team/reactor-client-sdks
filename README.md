@@ -21,7 +21,8 @@ dedicated track.
 
 ## Supported SDKs
 
-- **[Python](sdks/python/README.md)**
+- **[Python](sdks/python/README.md)** — `pip install reactor-sdk`
+- **[C++](sdks/cpp/README.md)** — C++17, over the same native core
 
 ## Documentation
 

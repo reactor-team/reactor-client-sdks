@@ -1,0 +1,365 @@
+# Build and release the C++ SDK's platform archives.
+#
+# Triggered by a push to main that changes the version in
+# sdks/cpp/CMakeLists.txt's project() call — the version is the release switch,
+# so shipping is "bump the version and merge". Everything else on main is a no-op
+# here.
+#
+# An archive is an install tree: headers, the static library, libreactor_ffi
+# beside it, and the CMake package config. That is the whole product, because the
+# package is useless without the native library and building that needs a Rust
+# toolchain plus a libwebrtc download — which is exactly what a consumer of a C++
+# SDK should not have to own.
+#
+# Five platforms, matching what reactor-webrtc ships and what the Python wheels
+# cover.
+#
+# Pull requests that touch packaging or the FFI build the archives and upload them
+# as artifacts, releasing nothing. workflow_dispatch does the same on demand. Only
+# a push to main with a changed version releases.
+name: Release C++ SDK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sdks/cpp/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/release-cpp.yml"
+
+  # Builds the matrix without releasing. The only way to find out whether it works
+  # before it *is* the release path: a workflow only runs from the default branch,
+  # so nothing here can be exercised by merging it and hoping.
+  #
+  # Narrow paths on purpose — five runners, two macOS and one Windows, each doing a
+  # release build of libwebrtc's glue.
+  pull_request:
+    paths:
+      - "sdks/cpp/CMakeLists.txt"
+      - "sdks/cpp/cmake/**"
+      - "crates/reactor-ffi/**"
+      - ".github/workflows/release-cpp.yml"
+
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build the archives but do not create a release"
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-cpp-${{ github.ref }}
+  # Supersede an outdated pull-request build, but never interrupt a release.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  MISE_VERSION: "2026.8.8"
+  MISE_LOCKED: "1"
+  MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
+
+jobs:
+  # ── 0. Is this push a release? ──────────────────────────────────────────────
+  detect-version:
+    name: Detect version bump
+    runs-on: ubuntu-latest
+    outputs:
+      bumped: ${{ steps.diff.outputs.bumped }}
+      version: ${{ steps.diff.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Diff the SDK version across the pushed range
+        id: diff
+        run: |
+          set -euo pipefail
+
+          version_at() {
+            git show "$1:sdks/cpp/CMakeLists.txt" 2>/dev/null \
+              | grep -A4 '^project(' \
+              | grep -m1 'VERSION' \
+              | sed -E 's/.*VERSION[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+).*/\1/'
+          }
+
+          NEW_VER=$(version_at "${{ github.sha }}")
+          if [ -z "$NEW_VER" ]; then
+            echo "::error::could not read the version out of sdks/cpp/CMakeLists.txt"
+            exit 1
+          fi
+          echo "version=$NEW_VER" >> "$GITHUB_OUTPUT"
+
+          # Pull requests and manual runs build but never release; only a push to
+          # main that changes the version does that.
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "::notice::${{ github.event_name }} — building $NEW_VER, not releasing"
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # The whole pushed range, not HEAD^. A push can advance main by several
+          # commits — a merge queue, a stack landing at once — and then HEAD^ is a
+          # commit that already carried the new version, so the release the bump
+          # asked for silently never happens. Same reasoning, same guard, as the
+          # Python release workflow.
+          BEFORE="${{ github.event.before }}"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "::warning::no previous commit to diff against (new branch or force-push) — not releasing"
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          OLD_VER=$(version_at "$BEFORE" || true)
+          if [ "$NEW_VER" != "$OLD_VER" ]; then
+            echo "::notice::version changed: ${OLD_VER:-none} -> $NEW_VER"
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::version unchanged ($NEW_VER) — building, not releasing"
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── 1. One archive per platform ─────────────────────────────────────────────
+  build-archives:
+    name: Archive · ${{ matrix.platform }}
+    needs: detect-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            lib: libreactor_ffi.so
+
+          - platform: linux-arm64
+            # Native arm64 runner, so no qemu.
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            lib: libreactor_ffi.so
+
+          - platform: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            lib: libreactor_ffi.dylib
+
+          - platform: macos-x64
+            os: macos-13
+            target: x86_64-apple-darwin
+            lib: libreactor_ffi.dylib
+
+          - platform: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            lib: reactor_ffi.dll
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+          cache-on-failure: true
+
+      # Linux only, and only because the clang action below needs it. mise.lock
+      # covers the four platforms this repo develops on and Windows is not one of
+      # them, so with MISE_LOCKED=1 there is nothing there for a Windows runner to
+      # install — and nothing it needs: cmake ships on the runner images, and the
+      # Rust toolchain comes from the action above.
+      - uses: jdx/mise-action@v4
+        if: runner.os == 'Linux'
+        with:
+          version: ${{ env.MISE_VERSION }}
+
+      # Only on Linux, and only for the FFI build: the pinned clang is what can
+      # parse libwebrtc's bundled libc++ headers. The SDK itself is built with the
+      # platform toolchain right after — conda's sysroot cannot resolve the symbols
+      # the .so it produces needs from the system glibc.
+      - name: Install clang for the libwebrtc C++ glue
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/setup-libwebrtc-cxx
+
+      - name: Build libreactor_ffi
+        run: cargo build -p reactor-ffi --release --target ${{ matrix.target }}
+
+      - name: Use the platform compiler for the SDK
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -x /usr/bin/clang++ ]; then
+            echo "::error::/usr/bin/clang++ is missing on this runner image."
+            exit 1
+          fi
+          echo "CXX=/usr/bin/clang++" >> "$GITHUB_ENV"
+
+      - name: Configure and install
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S sdks/cpp -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PWD/stage" \
+            -DREACTOR_FFI_LIB_DIR="$PWD/target/${{ matrix.target }}/release" \
+            -DREACTOR_SDK_BUILD_TESTS=OFF \
+            -DREACTOR_SDK_BUILD_EXAMPLES=OFF
+          cmake --build build --config Release
+          cmake --install build --config Release
+
+      # The one thing worth checking before shipping: that the install tree is
+      # consumable *somewhere else*. A missing export or a wrong target name is
+      # invisible in the build and obvious to the first person who tries to link it
+      # — and a path the export baked in still resolves here, on the machine that
+      # produced it, which is exactly why this has to be checked after the move and
+      # with the build output gone.
+      - name: Relocate the install tree, as an archive is relocated
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv stage unpacked
+          # The cargo output the SDK linked against: nowhere on the machine that
+          # unpacks the archive, so nowhere here either.
+          rm -rf "target/${{ matrix.target }}/release"
+
+      - name: Verify a consumer can find_package it
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > consumer_main.cpp <<'EOF'
+          #include <iostream>
+          #include <reactor/reactor.hpp>
+          #include <reactor/version.hpp>
+          int main() {
+            // Enough to prove the headers, the library and the native library all
+            // resolve: a client that never connects still reports its status.
+            reactor::Reactor client{"reactor/helios", reactor::Jwt{"unused"}};
+            std::cout << reactor::to_string(client.status()) << " " << reactor::version() << "\n";
+          }
+          EOF
+          # The repo's own package fixture, so what a release archive is checked
+          # against and what `mise run test:cpp:package` checks are one definition.
+          # Its main.cpp is replaced with the fuller one above: a release is worth
+          # constructing a client for, not only reading a version out of.
+          cp -R sdks/cpp/tests/package consumer
+          cp consumer_main.cpp consumer/main.cpp
+          cmake -S consumer -B consumer/build -DCMAKE_PREFIX_PATH="$PWD/unpacked"
+          cmake --build consumer/build --config Release
+
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME="reactor-sdk-cpp-${{ needs.detect-version.outputs.version }}-${{ matrix.platform }}"
+          # `unpacked`, not `stage`: the verify step above moved it, which is the
+          # point — what ships is the tree that was proven to work after a move.
+          mv unpacked "$NAME"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "$NAME.zip" "$NAME" >/dev/null
+            echo "asset=$NAME.zip" >> "$GITHUB_OUTPUT"
+          else
+            tar czf "$NAME.tar.gz" "$NAME"
+            echo "asset=$NAME.tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+          ls -lh "$NAME".*
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: archive-${{ matrix.platform }}
+          path: ${{ steps.package.outputs.asset }}
+          if-no-files-found: error
+
+  # ── 2. The release ──────────────────────────────────────────────────────────
+  #
+  # PUBLISH_CPP_RELEASE is the kill switch, and it is read in a *step* rather than
+  # in the job's `if`. That is load-bearing: the variable lives on the `cpp-release`
+  # environment, and a job-level condition is evaluated before the environment is
+  # resolved — read there it is always empty, so the switch looks permanently off.
+  # That is how the Python 1.0.0 release built and tagged and never reached PyPI.
+  release:
+    name: Release
+    needs: [detect-version, build-archives]
+    if: github.event_name == 'push' && needs.detect-version.outputs.bumped == 'true'
+    runs-on: ubuntu-latest
+    environment: cpp-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: archive-*
+          merge-multiple: true
+          path: dist/
+
+      - name: Check the kill switch
+        id: switch
+        env:
+          PUBLISH_CPP_RELEASE: ${{ vars.PUBLISH_CPP_RELEASE }}
+        run: |
+          set -euo pipefail
+          if [ "${PUBLISH_CPP_RELEASE:-true}" != "true" ]; then
+            echo "::warning::PUBLISH_CPP_RELEASE is '${PUBLISH_CPP_RELEASE}' — not releasing."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Collect assets
+        if: steps.switch.outputs.go == 'true'
+        id: assets
+        run: |
+          set -euo pipefail
+          cd dist
+          # Namespaced, as the Python tags are: cpp-v1.0.0 says which thing shipped.
+          echo "tag=cpp-v${{ needs.detect-version.outputs.version }}" >> "$GITHUB_OUTPUT"
+          sha256sum ./* | tee SHA256SUMS
+          ls -lh
+
+      - name: Create the release
+        if: steps.switch.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          VERSION: ${{ needs.detect-version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::Release $TAG exists — replacing its assets"
+            gh release upload "$TAG" dist/* --clobber
+            exit 0
+          fi
+
+          gh release create "$TAG" dist/* \
+            --title "C++ SDK ${VERSION}" \
+            --notes "$(cat <<EOF
+          The Reactor C++ SDK ${VERSION} — one archive per platform.
+
+          Each archive is an install tree: the headers, \`libreactor_sdk\`, a CMake
+          package config, and \`libreactor_ffi\` beside them. Extract it and point
+          CMake at it:
+
+          \`\`\`cmake
+          find_package(reactor-sdk REQUIRED)
+          target_link_libraries(app PRIVATE reactor::sdk)
+          \`\`\`
+
+          \`\`\`
+          cmake -S . -B build -DCMAKE_PREFIX_PATH=/path/to/reactor-sdk-cpp-${VERSION}-<platform>
+          \`\`\`
+
+          There is no source archive: the package is useless without the native
+          library, and building that needs a Rust toolchain and a libwebrtc download.
+
+          Linux needs glibc 2.34 or newer (x86_64, aarch64), macOS 11+ on arm64 and
+          13+ on x86_64, and Windows x86_64 — the same five platforms
+          \`reactor-webrtc\` ships. Anything else has to build the library itself; the
+          README has the table and the instructions.
+
+          Checksums are in \`SHA256SUMS\`.
+          EOF
+          )"
