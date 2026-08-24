@@ -8,7 +8,9 @@ description: >
   boundary, callback threading, string ownership, or wheel-style packaging is supposed to
   work for a binding. Also use it when a binding crashes on teardown, receives frames
   that never arrive, or silently sends nothing — those are the failure modes this
-  methodology exists to prevent. Also use it for the seven example scenarios every SDK
+  methodology exists to prevent. Also when a handler that throws takes the process with
+  it, a future never resolves after the client is destroyed, or a callback writes through
+  a pointer teardown already freed. Also use it for the seven example scenarios every SDK
   ships, which are parity requirements rather than documentation.
 ---
 
@@ -89,6 +91,9 @@ must keep the pointers alive anyway** — leak them deliberately. Python keeps a
 list of orphaned trampolines and never empties it: a small permanent leak beats a jump into
 freed memory. See `_ORPHANED_CALLBACKS` in `client.py`.
 
+Two calls are outside that promise entirely — see *Teardown settles what it cannot cancel*
+below, which is where a binding gets this wrong even after reading this invariant.
+
 **3. Know which strings you own.** Three cases, and the header states which for every
 function — read it there rather than inferring from a name:
 
@@ -119,6 +124,121 @@ purpose:
   Blocking there is the backpressure: the FFI keeps only the newest video frame while your
   handler runs. Hand frames to a queue instead and you trade a bounded drop for unbounded
   latency and memory.
+
+---
+
+## Lifetime, teardown, and the threads in between
+
+The five above are what the header tells you. These are what the second binding cost on top
+of it: every one was a review finding on the C++ SDK, and four of them end the process
+rather than fail a call.
+
+They are named in C++ terms because that is where they were found, and the shapes translate
+without much effort. A panic escaping a goroutine ends a Go process as surely as an uncaught
+exception ends a C++ one; a finaliser, a `defer`, a `Symbol.dispose` or a GC callback runs
+on whichever thread dropped the last reference, which is the thread you were not thinking
+about; and every language has something that can only be resolved once, so every language
+can leave a caller holding it forever. Read each one for the shape, not the syntax.
+
+### Teardown settles what it cannot cancel
+
+`reactor_destroy` bounds *most* callbacks — it blocks until none is running, and after a 0
+none will start. Two calls sit outside that promise, and the header says so for both:
+`reactor_fetch_jwt` takes no handle, and `reactor_download_clip` is documented as outliving
+the handle it was given. Their completions can arrive after the client is gone.
+
+An operation of that kind must not live in whatever your teardown *frees*:
+
+- freeing it while a detached task still points at it is a use-after-free. AddressSanitizer
+  named ours on the download's progress callback, reading the freed object through
+  `std::function::operator bool`;
+- but leaving it out of teardown means the caller's future is never resolved, and they wait
+  for the life of the process. That was the same PR's other finding.
+
+One answer covers both halves: the client **owns** the operation as shared state, and the
+FFI is handed a *ticket* carrying nothing but a weak reference to it. Teardown settles the
+caller and drops its reference; a late callback locks the weak reference, finds nothing, and
+returns having touched nothing. The ticket is the callback's own to free, so it is always
+safe to read. Deregister on the way through, so teardown never finds an entry whose payload
+has already moved on.
+
+Say what actually happened in that error. A download whose client was destroyed is still
+downloading — telling the caller the file may yet arrive is worth more than "aborted".
+
+### Your event thread must survive its own handlers
+
+Two ways a handler ends the process. Both have a test that reproduces them.
+
+**A handler may drop the last reference to its client.** "On disconnected, throw the client
+away" is an ordinary thing to write. Dispatched work holds a strong reference while it runs,
+so that release lands the destructor on *your event thread*, mid-callback — and a teardown
+that joins that thread is joining itself, which the standard reports by throwing, out of a
+`noexcept` destructor, which is `std::terminate`. Fix it structurally rather than by
+detecting it late: the queue and its stopped flag live in state the thread holds its own
+reference to, the loop touches no `this` after running work, and stopping from that thread
+detaches instead of joining.
+
+**A handler may throw.** It is host code, and host code has bugs. An exception escaping your
+event loop leaves the thread function with an uncaught exception — `std::terminate` again,
+one typo in one status handler ending a healthy process. Catch at the loop boundary *and*
+per handler: a loop over a snapshot of handlers otherwise aborts on the first throw, so one
+caller's bug silences every other handler listening for that event. Report once per distinct
+message, because a handler that throws on every event throws at the rate the events arrive.
+
+### Decode before you claim the promise
+
+A future settles once. If "settle" marks the operation done and *then* converts the payload,
+a field of the wrong type throws where nothing can be settled any more: the fallback meant
+to fail the call finds it already claimed, and the caller gets a broken promise, a hang, or a
+segfault — never the typed error you documented. Convert and validate first, claim second.
+
+The same rule at the other end. A **successful** completion whose payload will not parse is a
+decode failure, not an empty object: substituting `{}` made `request_schema()` answer with a
+schema declaring nothing, which no caller can tell from a model that declares nothing. An
+*absent* payload — a null pointer, a completion with nothing to report — is a different
+answer and still means `{}`.
+
+### Validate what C cannot
+
+Numbers cross the boundary as whatever the host had. A `double` can be NaN or an infinity,
+and turning one into a duration panics — inside a detached task, which drops the completion
+instead of firing it, which is a binding waiting forever for a callback that can no longer
+come. Check before the spawn and answer through the completion, like any other refusal.
+Decide what the range means while you are there: negative and infinity both mean "no bound",
+a NaN is a caller bug, and a finite value too large for your duration type saturates.
+
+### Synchronise callback state, and do not assume the symmetric fix
+
+State touched from an FFI callback thread and from the caller's thread needs a decision per
+field, not one policy for all of them:
+
+- **Compare and store under the same lock.** Computing "did the token change?" outside the
+  lock that guards it is a race inside the string's own buffer, not merely a stale answer.
+- **A mutex where the callback does not run under it; an atomic where it does.** The C++
+  speaker keeps `running`, its device handle and its format under one mutex — its render
+  callback takes no lock, so holding that mutex across device teardown is safe. The
+  microphone cannot: closing a capture device *waits for the capture callback*, so a callback
+  taking the same mutex would wait for the thread waiting for it. Atomic there, checked so a
+  block captured while stopping is dropped rather than pushed. The symmetric fix deadlocks.
+- **A read that raced an invalidation must not become the cache.** Reading the FFI without
+  the lock is right — a JSON parse is not something to hold a media mutex across — but an
+  event can invalidate while that read is in flight, and storing it afterwards puts the older
+  answer back with nothing left to invalidate it, so a newly declared track stays invisible.
+  Take a generation counter with the read; store only if it has not moved.
+- **In flight is its own state.** A publish asked for and not yet answered is not published:
+  there is no sender behind the slot, so a push in that window is taken by the FFI and
+  dropped. Counting it as published reintroduces exactly the silent failure the *Refuse; do
+  not fail quietly* table below exists to prevent; counting it as nothing tells a caller who
+  just called `publish()` to call `publish()`. Keep the third state, and say "wait for the
+  future" in the refusal.
+
+### Order is part of the contract
+
+`tracks()` is indexed by position, and every SDK promises that position is the order the
+session declared them in. Collecting the declared tracks into a name-keyed map sorts them
+alphabetically and silently renumbers what `tracks()[0]` means for every caller. Keep the
+sequence and look up by scanning it — a session declares a handful of tracks, not a
+dictionary's worth.
 
 ---
 
@@ -291,6 +411,19 @@ frame is in flight.
   wired to it.
 - **Test that a removal actually removed.** When you delete an event or a method, assert
   both that registering raises *and* that nothing fires the old name.
+- **Verify a fix in both directions.** A test that passes with your change and would have
+  passed without it records an intention, not a defect. Every lifetime finding above has a
+  test that fails on the old code — `Subprocess aborted`, a segfault, a two-second wait that
+  never resolves — and that failure is the only evidence the fix is the fix. Stash the
+  change, run the test, put it back.
+- **Run the suite under a sanitizer for anything about lifetime.** A callback writing through
+  a freed pointer is invisible in a passing run: same tests, same assertions, no crash.
+  AddressSanitizer turned ours into one line naming the callback. Worth a scratch build even
+  where CI has none.
+- **Make a race deterministic instead of hoping for it.** The fake is the place: have the
+  library's own read fire the event that invalidates the cache, and take the answer *before*
+  running that hook so what comes back is the stale one. A race you can reproduce on demand
+  is a regression test; one you cannot is an anecdote.
 
 ---
 
@@ -311,7 +444,13 @@ toolchain, and a red C++ build on a Python-only PR teaches the team to ignore re
   result loop, or it is not actually gating anything.
 - **Put the commands in `mise.toml`, not in the workflow.** `lint:<lang>` and `test:<lang>`
   tasks, aggregated into `lint` and `test`, so the workflow calls one thing and a
-  contributor runs exactly what CI runs.
+  contributor runs exactly what CI runs. Anything longer than a line or two belongs in
+  `scripts/*.sh` with a `bash` shebang: a task's `run` is handed to `/bin/sh`, which on a
+  Debian runner is dash and refuses `set -o pipefail`, so a gate written that way passes on
+  a laptop and dies on its first line in CI.
+- **A guard CI does not run is not a guard.** Hang it off the task CI already calls, or add
+  the step — but check which. Ours ran locally for a day while CI never called it, and the
+  reason it was not a step was a token without `workflow` scope, not a decision.
 - **Expect the native library to be the slow part.** CI builds `libreactor_ffi` before the
   binding's tests can load it; cache it keyed on the toolchain lock, since the Rust cache
   holds C++ objects and reusing objects built by a different compiler is an ABI mismatch
@@ -334,6 +473,24 @@ and building that needs a Rust toolchain plus a libwebrtc download.
 - **Resolve the library in a fixed order**, and document it: an env var override
   (`REACTOR_FFI_LIB`), then next to the installed package, then a build in an enclosing
   checkout. That is what makes "run the installed SDK against a local build" possible.
+- **A static library exports its private dependencies whether you meant to or not.** Linking
+  the native library `PRIVATE` still writes it into the exported link interface — as an
+  absolute path to *your* build directory, which exists nowhere for whoever unpacks the
+  archive, while the copy the package ships goes unused. Export a named target the installed
+  config defines relative to the package instead, and give every other private dependency
+  the same treatment: a `Threads::Threads` the config never looks up fails a consumer's
+  configure on an imported target nobody created. This bit us twice, on two different
+  targets.
+- **On macOS the library carries its own load path.** Cargo writes the absolute one from the
+  build machine, so a package can link correctly and still send the loader to a directory
+  that only ever existed on CI. Rewrite the installed copy's id to `@rpath/…` at install
+  time. ELF needs none of this — rustc writes a plain SONAME.
+- **Prove the archive by relocating it.** Install, *move the tree*, delete the native
+  library's build directory, and only then build a consumer against it. Checking an install
+  tree in place cannot see either failure above, because on the machine that produced it
+  every baked-in path still resolves. Link every target the package exports while you are
+  there: ours checked the main library and missed the optional audio one for exactly that
+  reason.
 - **The version is the release switch.** Bumping it in the manifest and merging to main is
   what publishes; everything else on main is a no-op.
 - **Gate publishing on a variable your CI can actually see.** A kill switch read in a
