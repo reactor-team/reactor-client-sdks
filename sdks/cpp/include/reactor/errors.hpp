@@ -200,6 +200,12 @@ std::unique_ptr<ReactorError> make_error(ErrorDetails details);
 /// The same error as something a `std::future` can carry.
 std::exception_ptr as_exception_ptr(ErrorDetails details);
 
+/// Throw what an FFI error payload describes, as its own concrete type.
+///
+/// For the synchronous calls, which report failure by returning the payload
+/// rather than through a completion.
+[[noreturn]] void throw_error_payload(std::string_view json, std::string_view operation = {});
+
 /// Parse the JSON object the FFI reports for a failure.
 ///
 /// Three shapes have to work, because all three happen:

@@ -58,10 +58,25 @@ namespace detail {
 
 void ClientImpl::on_status_trampoline(const char* status, void* userdata) noexcept {
   try {
-    if (const auto impl = from_userdata(userdata)) {
-      // Read here, not kept: the string is valid for this call only.
-      impl->fire_status(status_from_string(status == nullptr ? "" : status));
+    const auto impl = from_userdata(userdata);
+    if (!impl) {
+      return;
     }
+    // Read here, not kept: the string is valid for this call only.
+    const Status now = status_from_string(status == nullptr ? "" : status);
+
+    // Both of these happen *on this thread*, before the event is queued. A push
+    // racing the status change has to see the new answer, not the one the
+    // dispatcher has not got to yet.
+    impl->invalidate_declared();
+    if (now != Status::Ready) {
+      // A reconnect resumes recvonly tracks and nothing else, so a slot published
+      // before one is not published after it. Remembering otherwise would let a
+      // push through onto a slot with no sender behind it.
+      impl->clear_published();
+    }
+
+    impl->fire_status(now);
   } catch (...) {
     // Dropped deliberately. There is no caller to report to — the caller is
     // Rust — and a status this SDK failed to queue is one it will be told again
@@ -102,6 +117,7 @@ void ClientImpl::on_track_trampoline(const char* name, const char* mid_or_null,
         impl->track_mids_.erase(track_name);
       }
     }
+    impl->invalidate_declared();
     // A Track, not a name: a handler that has to go back and ask the client for
     // the track it was just told about is a handler doing the SDK's job.
     Track track{impl->weak_from_this(), track_name};
@@ -112,6 +128,21 @@ void ClientImpl::on_track_trampoline(const char* name, const char* mid_or_null,
     });
   } catch (...) {
     // As with every trampoline: this frame was called from Rust.
+  }
+}
+
+void ClientImpl::on_capabilities_trampoline(const char* caps_json, void* userdata) noexcept {
+  try {
+    const auto impl = from_userdata(userdata);
+    if (!impl) {
+      return;
+    }
+    // The capabilities carry the same track entries `reactor_tracks` reports, so
+    // there is nothing here to parse — what matters is that the answer changed, and
+    // the cached one has to go.
+    (void)caps_json;
+    impl->invalidate_declared();
+  } catch (...) {
   }
 }
 
@@ -387,7 +418,7 @@ void ClientImpl::begin_connect(std::unique_ptr<Pending> op, ConnectOptions optio
   const std::uint32_t connection_value = options.connection_id.value_or(0);
   const std::uint32_t* connection = options.connection_id ? &connection_value : nullptr;
 
-  Pending* raw = track(std::move(op));
+  Pending* raw = track_pending(std::move(op));
   ffi().connect(handle, session, connection, &completion_trampoline, raw);
 }
 

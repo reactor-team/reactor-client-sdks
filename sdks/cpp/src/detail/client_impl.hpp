@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <future>
 #include <map>
 #include <memory>
@@ -54,19 +55,50 @@ class Pending {
   /// report that a callback could not be waited for, in which case a completion
   /// can still arrive afterwards.
   void settle(Json result) {
-    if (claim()) {
-      deliver(std::move(result));
+    if (!claim()) {
+      return;
     }
+    if (on_success) {
+      try {
+        on_success();
+      } catch (...) {  // NOLINT(bugprone-empty-catch)
+        // As for on_failure below: bookkeeping that throws must not replace the
+        // answer the caller is waiting for.
+      }
+    }
+    deliver(std::move(result));
   }
 
   void fail(const std::exception_ptr& error) {
-    if (claim()) {
-      deliver_error(error);
+    if (!claim()) {
+      return;
     }
+    if (on_failure) {
+      try {
+        on_failure();
+      } catch (...) {  // NOLINT(bugprone-empty-catch)
+        // A rollback that throws must not replace the failure the caller is about
+        // to be told about, which is the one that actually explains what happened.
+      }
+    }
+    deliver_error(error);
   }
 
   /// Which call this is, for an error payload that does not name one.
   std::string operation;
+
+  /// Run when this call succeeds, before the caller hears about it.
+  ///
+  /// The publish path needs it: a track counts as published once the request is
+  /// answered, and not before — while it is in flight there is no sender behind the
+  /// slot, so a frame pushed then would be taken by the FFI and dropped.
+  std::function<void()> on_success;
+
+  /// Run when this call fails, before the caller hears about it.
+  ///
+  /// The other half of the same bookkeeping: a publish that was refused leaves the
+  /// track in neither state.
+  std::function<void()> on_failure;
 
   /// The client that is tracking this, so a completion can hand it back.
   std::weak_ptr<ClientImpl> owner;
@@ -221,6 +253,27 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   Subscription add_audio_handler(const std::string& name,
                                  std::function<void(const AudioFrame&)> handler);
 
+  // ── Sending ────────────────────────────────────────────────────────────────
+
+  bool is_published(const std::string& name) const;
+
+  /// Whether a publish for this track has been asked for and not yet answered.
+  bool is_publishing(const std::string& name) const;
+
+  /// Throw unless there is a sender behind this track's slot, saying which of the
+  /// two reasons there is not.
+  void require_published(const std::string& name) const;
+
+  void begin_publish(std::unique_ptr<Pending> op, const std::string& name);
+  void unpublish(const std::string& name);
+  void begin_pause(std::unique_ptr<Pending> op, const std::string& name);
+  void begin_resume(std::unique_ptr<Pending> op, const std::string& name);
+
+  void push_video(const std::string& name, Bytes bgra, std::uint32_t width, std::uint32_t height,
+                  const Track::FrameOptions& options);
+  void push_audio(const std::string& name, Samples pcm, std::uint32_t sample_rate,
+                  std::uint32_t channels);
+
   // ── Session ────────────────────────────────────────────────────────────────
 
   /// Exchange the key for a token if there is one to exchange, then connect.
@@ -245,7 +298,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
                                              {}}));
       return;
     }
-    Pending* raw = track(std::move(op));
+    Pending* raw = track_pending(std::move(op));
     ffi().reconnect(handle, &completion_trampoline, raw);
   }
 
@@ -261,7 +314,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
       op->settle(Json::object());
       return;
     }
-    Pending* raw = track(std::move(op));
+    Pending* raw = track_pending(std::move(op));
     ffi().disconnect(handle, &completion_trampoline, raw);
   }
 
@@ -321,6 +374,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     callbacks.on_status = &on_status_trampoline;
     callbacks.on_error = &on_error_trampoline;
     callbacks.on_track = &on_track_trampoline;
+    callbacks.on_capabilities = &on_capabilities_trampoline;
     callbacks.on_frame = &on_frame_trampoline;
     callbacks.on_audio = &on_audio_trampoline;
     callbacks.userdata = context.get();
@@ -360,7 +414,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   }
 
  private:
-  Pending* track(std::unique_ptr<Pending> op) {
+  Pending* track_pending(std::unique_ptr<Pending> op) {
     op->owner = weak_from_this();
     const std::lock_guard<std::mutex> lock(mutex_);
     const std::uint64_t id = next_pending_id_++;
@@ -447,6 +501,20 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   static void on_error_trampoline(const char* error_json, void* userdata) noexcept;
   static void on_track_trampoline(const char* name, const char* mid_or_null,
                                   void* userdata) noexcept;
+  static void on_capabilities_trampoline(const char* caps_json, void* userdata) noexcept;
+
+  /// Forget what the session declared, so the next read asks again.
+  void invalidate_declared();
+
+  /// Forget which slots were published.
+  ///
+  /// Called the moment the status leaves `Ready`, on the library's own thread —
+  /// not from the dispatcher, because a push racing the status change has to see
+  /// the new answer, not the one the queue has not got to yet.
+  void clear_published();
+
+  /// The handle, or a thrown error naming what a caller has to do first.
+  ReactorHandle* require_ready_handle(const char* action, const std::string& track_name) const;
 
   /// Media, and the reason these are separate from everything above: they run
   /// *inline*, on the thread the library called on, and never go near the
@@ -499,6 +567,43 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   mutable std::mutex media_mutex_;
   std::map<std::string, Handlers<const VideoFrame&>> video_handlers_;
   std::map<std::string, Handlers<const AudioFrame&>> audio_handlers_;
+
+  /// Which sendonly slots are activated.
+  ///
+  /// The session does not record this: `publish_track` is a request and
+  /// `unpublish_track` a notification, and neither leaves anything to query. So it
+  /// is kept here — and **cleared whenever the status leaves `Ready`**, because a
+  /// reconnect resumes recvonly tracks and nothing else. Remembering otherwise
+  /// would let a push through onto a slot with no sender behind it, which is the
+  /// silent failure this SDK exists to refuse.
+  std::set<std::string> published_;
+
+  /// Publishes asked for and not yet answered.
+  ///
+  /// Kept apart from `published_` on purpose: while the request is in flight there
+  /// is no sender behind the slot yet, so a frame pushed now would be taken by the
+  /// FFI and dropped — the silent failure this SDK exists to refuse. Counting it as
+  /// published would make an in-flight publish indistinguishable from a live one;
+  /// counting it as nothing would say "publish() it first" to a caller who just
+  /// did. It is its own state, and the refusal says to await the future.
+  std::set<std::string> publishing_;
+
+  /// What the session declared, cached.
+  ///
+  /// Cached only because `push_frame` validates against it, and a JSON parse per
+  /// frame at 30fps is not a validation, it is a cost. Invalidated on every status
+  /// change, on new capabilities and on a new track — the three things that can
+  /// change the answer — so `[]`-before-accepted still reads as `[]`.
+  mutable std::optional<std::vector<Declared>> declared_cache_;
+
+  /// Bumped by every invalidation, so a read that raced one does not overwrite it.
+  ///
+  /// The FFI read happens without the lock — it has to, a JSON parse is not
+  /// something to hold a media mutex across — so an event can invalidate the cache
+  /// while a read is in flight. Storing that read afterwards would put the *older*
+  /// list back with nothing left to invalidate it, and newly declared tracks would
+  /// stay invisible. The counter is what tells the writer its answer is stale.
+  mutable std::uint64_t declared_generation_ = 0;
 
   /// The SDP media id per track, as tracks arrive. Renegotiated on a reconnect.
   std::map<std::string, std::string> track_mids_;
