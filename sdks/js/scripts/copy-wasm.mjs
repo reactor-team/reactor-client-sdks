@@ -3,7 +3,7 @@
 // the rest of the built package, so `import("../wasm/reactor_wasm.js")` in
 // src/internal/wasm.ts resolves from an npm install with no separate build
 // step on the consumer's side. Run as part of `npm run build`, after tsup.
-import { cpSync, existsSync, statSync } from 'node:fs';
+import { cpSync, existsSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -42,7 +42,18 @@ export function copyWasm(wasmPkgDir, destDir) {
   }
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`;
+// `import.meta.url` is always a `file://...` absolute URL, but
+// `process.argv[1]` can be relative (`node scripts/copy-wasm.mjs`) — compared
+// as strings that never matches, and this script silently no-ops. Resolving
+// both through `realpathSync` before comparing makes it exact regardless of
+// how the script was invoked.
+const isMain = (() => {
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+})();
 
 if (isMain) {
   const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
