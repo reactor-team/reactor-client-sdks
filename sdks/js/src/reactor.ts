@@ -22,6 +22,7 @@ import type {
   ReactorMessage,
   ReactorOptions,
   ReactorStatus,
+  SessionResponse,
   TrackCapability,
   TrackMappingEntry,
 } from './types';
@@ -222,13 +223,15 @@ export class Reactor implements Disposable {
     switch (command) {
       case 'requestSchema':
         try {
-          await this.requestSchema();
+          const client = await this.getOrCreateClient();
+
+          await this.refreshSchema(client);
         } catch (cause) {
-          // requestSchema() already ran this through captureError() before
-          // throwing — emit that same instance directly instead of
-          // re-capturing, so listeners still get the error event
-          // sendCommand's never-rejects contract promises them.
-          this.emitter.emit('error', cause as ReactorError);
+          // refreshSchema() reports failures itself when it has a client to
+          // key the race guard on; getOrCreateClient() failing before that
+          // doesn't, so report it here. Either way, sendCommand's own
+          // contract never rejects.
+          this.emitError(cause);
         }
         return undefined;
       case 'requestCapabilities':
@@ -273,6 +276,14 @@ export class Reactor implements Disposable {
    *  fires. */
   getCapabilities(): Capabilities | undefined {
     return this.capabilities;
+  }
+
+  /** The session resource, as the coordinator reports it — id, state,
+   *  model, cluster, server info, and (once negotiated) `capabilities`.
+   *  A live read straight off the wasm client, not cached — reflects
+   *  whatever's current. `undefined` before a client exists. */
+  getSessionInfo(): SessionResponse | undefined {
+    return this.client?.sessionInfo();
   }
 
   // ── Tracks ──────────────────────────────────────────────────────────────
@@ -627,6 +638,14 @@ export class Reactor implements Disposable {
       }
       this.schema = schema;
       this.emitter.emit('schemaReceived', this.schema);
+      // Also surface as a generic runtime-scope message so consumers that
+      // filter `runtimeMessage` by `type` (rather than the typed event) see
+      // it too — the same reply, two shapes, emitted from the same `schema`
+      // value in the same tick, so they can't disagree here. `schemaReceived`
+      // /`getSchema()` is the authoritative surface; `runtimeMessage` is the
+      // generic fan-out kept for parity with v2 (`core/Reactor.ts`), which
+      // does the same dual emit from the same `requestSchema` reply.
+      this.emitter.emit('runtimeMessage', { type: 'modelSchema', data: this.schema });
     } catch (cause) {
       if (this.client !== client || refreshId !== this.schemaRefreshId) {
         return;
