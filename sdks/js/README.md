@@ -140,11 +140,16 @@ try {
 ## React
 
 ```tsx
+import { useCallback } from "react";
 import { ReactorProvider, useReactor } from "@reactor-team/js-sdk";
 
 function App() {
+  // Stable across renders — see the note on ReactorProvider below for why
+  // this matters.
+  const jwt = useCallback(() => fetchToken(), []);
+
   return (
-    <ReactorProvider modelName="my-model" jwt={() => fetchToken()}>
+    <ReactorProvider modelName="my-model" jwt={jwt}>
       <Status />
     </ReactorProvider>
   );
@@ -167,6 +172,13 @@ function Status() {
 
 `react` is a peer dependency — install it yourself, matching your app's own
 version.
+
+`apiUrl`/`modelName`/`local`/`jwt`/`connectOptions` are live: changing any of
+them tears down the current `Reactor` and builds a fresh one (there's no way
+to reconnect an existing instance with a different model or endpoint). Pass a
+stable `jwt` and `connectOptions` (`useCallback`/`useMemo`, or hoist them
+outside the component) if you don't want an unrelated parent re-render to
+rebuild the connection.
 
 `useReactor(selector)` also carries `sessionId`, `lastError`, `lastMessage`,
 and action bindings for `connect`/`disconnect`/`reconnect`/`publish`/
