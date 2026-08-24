@@ -192,6 +192,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: npm-publish
     permissions:
+      contents: read # actions/checkout below needs this once id-token: write is set
       id-token: write # OIDC trusted publishing
     steps:
       - uses: actions/checkout@v7
