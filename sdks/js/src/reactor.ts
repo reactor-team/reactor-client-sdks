@@ -640,7 +640,11 @@ export class Reactor implements Disposable {
       this.emitter.emit('schemaReceived', this.schema);
       // Also surface as a generic runtime-scope message so consumers that
       // filter `runtimeMessage` by `type` (rather than the typed event) see
-      // it too — the same reply, two shapes.
+      // it too — the same reply, two shapes, emitted from the same `schema`
+      // value in the same tick, so they can't disagree here. `schemaReceived`
+      // /`getSchema()` is the authoritative surface; `runtimeMessage` is the
+      // generic fan-out kept for parity with v2 (`core/Reactor.ts`), which
+      // does the same dual emit from the same `requestSchema` reply.
       this.emitter.emit('runtimeMessage', { type: 'modelSchema', data: this.schema });
     } catch (cause) {
       if (this.client !== client || refreshId !== this.schemaRefreshId) {
