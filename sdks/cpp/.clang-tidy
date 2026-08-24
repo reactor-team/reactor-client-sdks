@@ -1,0 +1,56 @@
+# The checks that catch what a reviewer of a binding actually worries about:
+# lifetime, ownership across the C boundary, and casts.
+#
+# bugprone and cppcoreguidelines carry the lifetime and ownership rules;
+# performance catches the copies a binding makes by accident when it is copying
+# callback data on purpose. The exclusions below are deliberate:
+#
+#   *-magic-numbers                — a BGRA frame is width * height * 4
+#   *-pro-type-reinterpret-cast    — every trampoline recovers its context from a
+#                                    void*, which is what reinterpret_cast is for
+#   *-pro-bounds-pointer-arithmetic — the FFI hands over pointer + length pairs
+#   *-non-private-member-variables-in-classes — plain data types are plain data
+Checks: >
+  -*,
+  bugprone-*,
+  cppcoreguidelines-*,
+  performance-*,
+  modernize-use-nullptr,
+  modernize-use-override,
+  readability-identifier-naming,
+  -bugprone-easily-swappable-parameters,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-non-private-member-variables-in-classes,
+  -cppcoreguidelines-avoid-do-while
+
+WarningsAsErrors: '*'
+HeaderFilterRegex: 'sdks/cpp/(include|src)/.*'
+
+CheckOptions:
+  # snake_case throughout, matching the standard library and the Python SDK; a
+  # binding that spells its methods differently from the SDK it mirrors makes
+  # every code sample a translation exercise.
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: '_'
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE

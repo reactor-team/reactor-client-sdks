@@ -1,0 +1,53 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Header-only and part of the public surface (`reactor::Json` is an alias for
+# nlohmann::json), so a consumer needs it on the include path too. The archives
+# carry a copy; a consumer who already pins their own gets theirs, which is the
+# point of asking rather than vendoring the headers into ours.
+find_dependency(nlohmann_json 3.11)
+
+# The native library `reactor::sdk` links, resolved here rather than exported.
+# `reactor_sdk` is a static archive, so the FFI stays in its link interface and
+# reaches every consumer — and a path baked in at build time would be the build
+# machine's cargo output, which is nowhere on the machine that unpacked this
+# archive. Only this file knows where the package ended up, so only this file can
+# say where the library is.
+#
+# REACTOR_FFI_LIB_DIR is honoured first, which is what makes "the installed SDK,
+# against a local FFI build" work — the same variable the SDK's own build uses.
+if(NOT TARGET reactor::ffi)
+  find_library(
+    REACTOR_FFI_LIBRARY
+    NAMES reactor_ffi
+    HINTS "${REACTOR_FFI_LIB_DIR}" "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@"
+    NO_DEFAULT_PATH
+    DOC "The libreactor_ffi this package links (its own copy unless pointed elsewhere)"
+  )
+  if(NOT REACTOR_FFI_LIBRARY)
+    # Not FATAL_ERROR: find_package(reactor-sdk) reports a package that cannot be
+    # used the way every other failed find_package does, and a consumer with
+    # QUIET/OPTIONAL gets to carry on.
+    set(reactor-sdk_FOUND FALSE)
+    set(reactor-sdk_NOT_FOUND_MESSAGE
+        "@REACTOR_FFI_LIB_NAME@ is missing from ${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@. \
+The archive ships it; an incomplete copy is the usual cause. Point at another \
+one with -DREACTOR_FFI_LIB_DIR=…")
+    return()
+  endif()
+
+  # UNKNOWN because the file is a .dylib, a .so or an import library depending on
+  # the platform, and UNKNOWN is the one kind that takes all three by path.
+  add_library(reactor::ffi UNKNOWN IMPORTED)
+  set_target_properties(reactor::ffi PROPERTIES IMPORTED_LOCATION "${REACTOR_FFI_LIBRARY}")
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/reactor-sdk-targets.cmake")
+
+# Where the library it linked actually came from, so a consumer pointing at a
+# different build can see which one they got.
+get_filename_component(REACTOR_SDK_LIB_DIR "${REACTOR_FFI_LIBRARY}" DIRECTORY)
+set(REACTOR_SDK_VERSION "@PROJECT_VERSION@")
+
+check_required_components(reactor-sdk)

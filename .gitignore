@@ -12,3 +12,6 @@ node_modules/
 .vscode/
 *.swp
 *.swo
+
+# C++ SDK build tree (cmake -B sdks/cpp/build)
+/sdks/cpp/build/
