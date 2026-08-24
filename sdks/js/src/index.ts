@@ -1,4 +1,5 @@
 export { Reactor } from './reactor';
+export { RecordingClient } from './recording-client';
 export {
   ReactorError,
   NetworkError,
