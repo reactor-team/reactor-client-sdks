@@ -458,6 +458,70 @@ void reactor_upload_bytes(
     void                *userdata
 );
 
+/* ── Clip download ────────────────────────────────────────────────────────── */
+
+/* Segments written so far, out of how many the clip has. */
+typedef void (*reactor_progress_fn)(uint32_t done, uint32_t total, void *userdata);
+
+/*
+ * Download a clip's HLS segments into one playable file at `out_path`.
+ *
+ * Reactor does not host clips: the playlist names the fragments and it is on the
+ * caller to fetch and assemble them.  That assembly is here rather than in each
+ * binding because it has three rules that each cost a shipped bug to learn:
+ *
+ *   - The init segment is a comment line.  `#EXT-X-MAP:URI="…"` carries the
+ *     `ftyp`/`moov` every fragment is parsed against, so a parser that skips `#`
+ *     lines writes a file no player opens.  It is fetched first and written first.
+ *   - A segment can be presigned on another host, and a presigned URL *rejects* an
+ *     Authorization header rather than ignoring it.  The token goes same-origin
+ *     only.
+ *   - A 202 is not an error.  It means the chunk holding the end of the window has
+ *     not closed, and it closes because the model keeps generating — so the bound
+ *     on waiting is the session, not a number of seconds.
+ *
+ *   handle                — nullable.  Given one, the wait ends as soon as that
+ *                           session can no longer produce the clip: once it is
+ *                           gone a 202 is a 202 forever.  Only its state is read,
+ *                           and through a clone taken before this returns, so
+ *                           destroying it mid-download is safe.
+ *   playlist_url          — from a clip's result_json.
+ *   jwt                   — nullable; needed for a coordinator-hosted playlist.
+ *   out_path              — file to create.  Opened before the first segment is
+ *                           fetched, so an unwritable path fails early.
+ *   predicted_ready_at_ms — the runtime's own prediction, in Unix milliseconds, as
+ *                           carried by the clip.  The grace below is measured from
+ *                           there, not from this call: a clip expected in ten
+ *                           seconds with five of grace gets fifteen.  0 when the
+ *                           runtime offered none, which runs the grace from now.
+ *   ready_timeout_seconds — grace past that prediction.  Negative waits as long as
+ *                           the session lives, which is the only sane answer for a
+ *                           model generating slower than real time; an infinity
+ *                           asks for the same.  A NaN comes back through
+ *                           `completion` as an error.
+ *   local                 — non-zero to accept a dev coordinator's certificate.
+ *   progress              — nullable.  Called after each segment is written, on
+ *                           the download's own thread; blocking it delays this
+ *                           download and nothing else.
+ *   completion            — result_json is {"path", "bytes", "segments"}.
+ *
+ * As with reactor_fetch_jwt, the completion is *not* bounded by
+ * reactor_destroy(): a download outlives the handle it was given one of.  Keep
+ * its context alive until the completion fires, which it does exactly once.
+ */
+void reactor_download_clip(
+    ReactorHandle        *handle,      /* nullable */
+    const char           *playlist_url,
+    const char           *jwt,         /* nullable */
+    const char           *out_path,
+    double                predicted_ready_at_ms,
+    double                ready_timeout_seconds,
+    int                   local,
+    reactor_progress_fn   progress,    /* nullable */
+    reactor_completion_fn completion,
+    void                 *userdata
+);
+
 /* ── Synchronous operations ───────────────────────────────────────────────── */
 
 /*
