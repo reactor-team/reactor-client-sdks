@@ -284,6 +284,32 @@ describe('Reactor schema', () => {
     expect(client.requestSchemaCalls).toBe(1);
   });
 
+  it('requestSchema() resolves undefined, not a null document, when the model has no schema', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.schemaResult = null;
+
+    const result = await reactor.requestSchema();
+
+    expect(result).toBeUndefined();
+  });
+
+  it('a null auto-request reply on ready leaves the cache undefined and does not emit schemaReceived', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const onSchema = vi.fn();
+
+    client.schemaResult = null;
+    reactor.on('schemaReceived', onSchema);
+
+    client.emitReady();
+    await vi.waitFor(() => expect(client.requestSchemaCalls).toBe(1));
+
+    expect(reactor.getSchema()).toBeUndefined();
+    expect(onSchema).not.toHaveBeenCalled();
+  });
+
   it('emits a schema event once the auto-request on ready lands', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
@@ -361,6 +387,77 @@ describe('Reactor schema', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(reactor.getSchema()).toEqual({ commands: ['second'] });
+  });
+});
+
+describe('Reactor capabilities', () => {
+  it('is undefined before capabilitiesReceived fires', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+
+    await currentClient(reactor);
+
+    expect(reactor.getCapabilities()).toBeUndefined();
+  });
+
+  it('caches the capabilities and translates the wire shape to camelCase once received', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.emitCapabilitiesReceived({
+      protocol_version: '1.0',
+      tracks: [{ name: 'output', kind: 'video', direction: 'recvonly' }],
+      commands: [{ name: 'set_image' }],
+      emission_fps: 30,
+    });
+
+    expect(reactor.getCapabilities()).toEqual({
+      protocolVersion: '1.0',
+      tracks: [{ name: 'output', kind: 'video', direction: 'recvonly' }],
+      commands: [{ name: 'set_image' }],
+      emissionFps: 30,
+    });
+  });
+
+  it('omits optional fields the wire payload left out, rather than passing them through as undefined', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.emitCapabilitiesReceived({ protocol_version: '1.0', tracks: [] });
+
+    expect(reactor.getCapabilities()).toEqual({ protocolVersion: '1.0', tracks: [] });
+  });
+
+  it('emits a capabilitiesReceived event with the translated value', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const onCapabilities = vi.fn();
+
+    reactor.on('capabilitiesReceived', onCapabilities);
+    client.emitCapabilitiesReceived({ protocol_version: '1.0', tracks: [] });
+
+    expect(onCapabilities).toHaveBeenCalledWith({ protocolVersion: '1.0', tracks: [] });
+  });
+
+  it('is cleared on disconnect and on dispose', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.emitCapabilitiesReceived({ protocol_version: '1.0', tracks: [] });
+    expect(reactor.getCapabilities()).not.toBeUndefined();
+
+    await reactor.disconnect();
+    expect(reactor.getCapabilities()).toBeUndefined();
+  });
+
+  it('is cleared on a recoverable disconnect(true) too, not just the default disconnect()', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.emitCapabilitiesReceived({ protocol_version: '1.0', tracks: [] });
+    expect(reactor.getCapabilities()).not.toBeUndefined();
+
+    await reactor.disconnect(true);
+    expect(reactor.getCapabilities()).toBeUndefined();
   });
 });
 
