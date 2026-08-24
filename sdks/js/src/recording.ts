@@ -290,16 +290,7 @@ export interface DownloadClipOptions {
  * MP4, and (when `filename` is non-null) trigger a browser `<a download>`.
  * Pass `filename: null` to skip the download trigger and just get the Blob.
  *
- * The remux rewrites the container only — H.264 NAL units and AAC packets
- * pass through unchanged — so `start_time=0`, faststart, and
- * `major_brand=isom` come for free with no re-encode. See `maybeRemux()` for
- * the fallback on the rare parse failure.
- *
- * Memory-bound: every chunk is held in `parts` for the full duration of the
- * fetch loop, and `maybeRemux()`'s underlying `mp4box` parser needs the whole
- * input up front, so there's no streaming path to disk. Fine for a bounded
- * clip; a full-session `requestRecording()` download can hold the entire
- * recording in memory at once.
+ * See {@link assembleClipBlob} for the remux and memory-bound caveats.
  */
 export async function downloadClipAsFile(
   clip: Clip,
@@ -316,7 +307,51 @@ export async function downloadClipAsFile(
   }
 
   const manifestBody = await fetchPlaylist(clip.playlistUrl, playlistOptions);
-  const { initUrl, segmentUrls } = parsePlaylist(manifestBody, clip.playlistUrl);
+  const blob = await assembleClipBlob(manifestBody, clip.playlistUrl, options);
+
+  if (filename === null) {
+    return blob;
+  }
+  if (typeof document === 'undefined' || typeof URL.createObjectURL !== 'function') {
+    throw new RecordingError(
+      'DOWNLOAD_UNSUPPORTED',
+      'downloadClipAsFile requires a DOM environment; pass filename=null to skip the download trigger',
+    );
+  }
+  triggerBrowserDownload(blob, filename);
+  return blob;
+}
+
+export interface AssembleClipOptions {
+  /** Cancels any in-flight chunk fetches. */
+  signal?: AbortSignal;
+  /** Called after each chunk completes — useful for progress UI. */
+  onProgress?: (info: { fetched: number; total: number; bytes: number }) => void;
+}
+
+/**
+ * Fetch the chunks an already-fetched `manifestBody` references and remux
+ * them into a flat MP4 Blob. Split out of {@link downloadClipAsFile} so
+ * `ClipPlayer`'s MP4 fallback path can reuse it against the manifest it
+ * already has, instead of fetching the playlist a second time.
+ *
+ * The remux rewrites the container only — H.264 NAL units and AAC packets
+ * pass through unchanged — so `start_time=0`, faststart, and
+ * `major_brand=isom` come for free with no re-encode. See `maybeRemux()` for
+ * the fallback on the rare parse failure.
+ *
+ * Memory-bound: every chunk is held in `parts` for the full duration of the
+ * fetch loop, and `maybeRemux()`'s underlying `mp4box` parser needs the whole
+ * input up front, so there's no streaming path to disk. Fine for a bounded
+ * clip; a full-session `requestRecording()` download can hold the entire
+ * recording in memory at once.
+ */
+export async function assembleClipBlob(
+  manifestBody: string,
+  playlistUrl: string,
+  options: AssembleClipOptions = {},
+): Promise<Blob> {
+  const { initUrl, segmentUrls } = parsePlaylist(manifestBody, playlistUrl);
   const orderedUrls = [initUrl, ...segmentUrls];
   const chunkInit: RequestInit = {};
 
@@ -349,19 +384,8 @@ export async function downloadClipAsFile(
   }
 
   const finalBytes = await maybeRemux(parts);
-  const blob = new Blob([finalBytes as BlobPart], { type: 'video/mp4' });
 
-  if (filename === null) {
-    return blob;
-  }
-  if (typeof document === 'undefined' || typeof URL.createObjectURL !== 'function') {
-    throw new RecordingError(
-      'DOWNLOAD_UNSUPPORTED',
-      'downloadClipAsFile requires a DOM environment; pass filename=null to skip the download trigger',
-    );
-  }
-  triggerBrowserDownload(blob, filename);
-  return blob;
+  return new Blob([finalBytes as BlobPart], { type: 'video/mp4' });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

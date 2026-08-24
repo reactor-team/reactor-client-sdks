@@ -2,20 +2,22 @@
 
 import { useContext, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
+import { type ClipPlayback, attachClipPlayback } from '../clip-playback';
 import { resolveJwtSource } from '../internal/jwt-resolver';
-import { RecordingError, createPlayableManifestUrl, fetchPlaylist } from '../recording';
+import { RecordingError, assembleClipBlob, createPlayableManifestUrl, fetchPlaylist } from '../recording';
 import { ReactorContext } from './ReactorProvider';
 import type { Clip } from '../types';
 
 /**
- * Video preview for a captured {@link Clip}. Renders an HLS manifest through
- * the browser's native `<video controls>` element. On Safari/iOS the
- * manifest is attached directly (native HLS support); elsewhere `hls.js` is
- * dynamically imported — an optional peer dependency, so consumers who don't
- * use this component aren't billed for it. If neither is available the
- * player surfaces an inline error overlay; the chunks remain downloadable
- * via {@link useClipDownload}/`ClipDownloadButton`, which don't depend on
- * `hls.js` at all.
+ * Video preview for a captured {@link Clip}. Streams the clip with `hls.js`
+ * wherever Media Source Extensions exist — every current browser, iOS
+ * Safari 17.1 and later included. `hls.js` is dynamically imported, so
+ * bundlers give it a chunk of its own that an app importing this component
+ * fetches on first play, and one that never renders a player drops
+ * entirely. Where Media Source Extensions don't exist — iOS before 17.1 —
+ * the clip is assembled into a single MP4 and played from memory instead.
+ * Failures surface in an inline error overlay; the chunks remain
+ * downloadable via {@link useClipDownload}/`ClipDownloadButton` either way.
  *
  * Preview only — this component doesn't render a download UI. Compose it
  * with `ClipDownloadButton`, or build a custom download surface around
@@ -57,8 +59,8 @@ export interface ClipPlayerProps {
   className?: string;
   style?: CSSProperties;
   /** Fires when the player enters its inline error state. A `RecordingError`
-   *  for manifest-fetch failures, a plain `Error` for hls.js/native playback
-   *  or missing-peer-dep cases. */
+   *  for manifest-fetch failures, a plain `Error` for hls.js/element playback
+   *  failures. */
   onError?: (error: Error) => void;
 }
 
@@ -116,9 +118,9 @@ export function ClipPlayer({
   }, [phase]);
 
   // Playback pipeline: fetch manifest (with optional JWT) → wrap in blob URL
-  // → attach via native HLS (Safari) or hls.js (everyone else). Re-runs only
-  // when `clip` changes by reference. The cleanup closure tears every piece
-  // down deterministically.
+  // → hand to `attachClipPlayback`, which either streams it with hls.js or
+  // assembles the chunks into an MP4. Re-runs only when `clip` changes by
+  // reference. The cleanup closure tears every piece down deterministically.
   useEffect(() => {
     const video = videoRef.current;
 
@@ -128,7 +130,7 @@ export function ClipPlayer({
 
     const abort = new AbortController();
     let cancelled = false;
-    let hlsInstance: { destroy: () => void } | null = null;
+    let playback: ClipPlayback | null = null;
     let manifestBlobUrl: string | null = null;
 
     const fail = (error: Error) => {
@@ -138,78 +140,6 @@ export function ClipPlayer({
       const message = error instanceof RecordingError ? `${error.code}: ${error.reason}` : error.message;
 
       setPhase({ kind: 'error', message, error });
-    };
-
-    const attachPlayer = async (manifestUrl: string) => {
-      const canPlayNative = video.canPlayType('application/vnd.apple.mpegurl') !== '';
-
-      if (canPlayNative) {
-        // Safari/iOS path — attach the blob: URL and let the browser parse
-        // HLS natively.
-        video.src = manifestUrl;
-        if (autoPlayRef.current) {
-          video.play().catch(() => {
-            // Autoplay may be blocked by the browser; native controls still work.
-          });
-        }
-        if (!cancelled) {
-          setPhase({ kind: 'ready' });
-        }
-        return;
-      }
-
-      // Non-Safari path — dynamic import of the optional peer dependency.
-      // Bundlers preserve `import()` so the chunk is only fetched when this
-      // branch executes.
-      let HlsCtor: HlsConstructor;
-
-      try {
-        const mod = (await import('hls.js')) as { default: HlsConstructor };
-
-        HlsCtor = mod.default;
-      } catch {
-        fail(
-          new Error('Unable to load `hls.js`. Make sure it is installed as a peer dependency, or use Download instead.'),
-        );
-        return;
-      }
-      if (cancelled) {
-        return;
-      }
-      if (!HlsCtor.isSupported()) {
-        fail(new Error('This browser cannot play HLS clips. Use Download instead.'));
-        return;
-      }
-      const hls = new HlsCtor();
-
-      hls.loadSource(manifestUrl);
-      hls.attachMedia(video);
-      hls.on(HlsCtor.Events.MANIFEST_PARSED, () => {
-        if (cancelled) {
-          return;
-        }
-        setPhase({ kind: 'ready' });
-        if (autoPlayRef.current) {
-          video.play().catch(() => {
-            // Autoplay may be blocked.
-          });
-        }
-      });
-      hls.on(HlsCtor.Events.ERROR, (_evt: unknown, data: HlsErrorData) => {
-        if (cancelled) {
-          return;
-        }
-        // Non-fatal errors often explain "fetches but nothing renders"
-        // symptoms (e.g. bufferAppendingError, fragParsingError,
-        // levelLoadError) that the user-facing overlay would otherwise hide.
-        // Fatal errors still hard-fail the player.
-        if (data.fatal) {
-          fail(new Error(`Playback error: ${data.details ?? 'unknown'}`));
-          return;
-        }
-        console.warn('[Reactor.ClipPlayer] hls.js non-fatal error', data);
-      });
-      hlsInstance = hls;
     };
 
     const setup = async () => {
@@ -242,7 +172,22 @@ export function ClipPlayer({
         }
         setPhase({ kind: 'loading' });
         manifestBlobUrl = createPlayableManifestUrl(body, clip.playlistUrl);
-        await attachPlayer(manifestBlobUrl);
+        playback = attachClipPlayback(
+          video,
+          {
+            manifestUrl: manifestBlobUrl,
+            assembleMp4: () => assembleClipBlob(body, clip.playlistUrl, { signal: abort.signal }),
+          },
+          {
+            autoPlay: autoPlayRef.current,
+            onReady: () => {
+              if (!cancelled) {
+                setPhase({ kind: 'ready' });
+              }
+            },
+            onError: fail,
+          },
+        );
       } catch (err) {
         if (cancelled) {
           return;
@@ -260,7 +205,7 @@ export function ClipPlayer({
     return () => {
       cancelled = true;
       abort.abort();
-      hlsInstance?.destroy();
+      playback?.destroy();
       video.pause();
       video.removeAttribute('src');
       video.load();
@@ -337,32 +282,4 @@ export function ClipPlayer({
       )}
     </div>
   );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Minimal local typings for the optional `hls.js` peer dep. `import type {
-// Hls } from "hls.js"` can't be used because the dep is optional — that
-// import would fail in environments where it isn't installed. The
-// structural type below covers exactly the surface this component uses.
-// ─────────────────────────────────────────────────────────────────────────────
-
-interface HlsInstance {
-  loadSource: (url: string) => void;
-  attachMedia: (el: HTMLMediaElement) => void;
-  on: (event: string, cb: (evt: unknown, data: HlsErrorData) => void) => void;
-  destroy: () => void;
-}
-
-interface HlsConstructor {
-  new (): HlsInstance;
-  isSupported: () => boolean;
-  readonly Events: {
-    readonly MANIFEST_PARSED: string;
-    readonly ERROR: string;
-  };
-}
-
-interface HlsErrorData {
-  fatal?: boolean;
-  details?: string;
 }
