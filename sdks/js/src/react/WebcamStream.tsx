@@ -16,6 +16,8 @@ export interface WebcamStreamProps {
   audioTrack?: string;
   className?: string;
   style?: CSSProperties;
+  /** Read once, at mount — changing this after mount doesn't re-request
+   *  `getUserMedia`. Matches v2. */
   videoConstraints?: MediaTrackConstraints;
   showWebcam?: boolean;
   videoObjectFit?: NonNullable<VideoHTMLAttributes<HTMLVideoElement>['style']>['objectFit'];
@@ -80,6 +82,10 @@ export function WebcamStream({
   // cleanup would otherwise close over the props/state from the initial
   // render — mirror them here so teardown unpublishes whatever is actually
   // published and stops the right stream even if they changed since mount.
+  //
+  // Same empty-deps effect also means `videoConstraints`/`audio`/`audioTrack`
+  // are only read once, at mount — changing them later doesn't re-request
+  // getUserMedia. Matches v2's WebcamStream, which has the same limitation.
   const latestRef = useRef({ published, unpublish, stream });
 
   latestRef.current = { published, unpublish, stream };
@@ -261,6 +267,11 @@ export function WebcamStream({
     };
   }, [status, stream, published, publish, unpublish, track, audioEnabled, audioTrack]);
 
+  // A rejected publish() is already handled inline in sync() above (awaited,
+  // then routed to onError). This listener is for TRACK_PUBLISH_FAILED
+  // reported out-of-band by the runtime *after* publish() already resolved —
+  // e.g. the track was accepted but later failed to actually flow. Resetting
+  // `published` here makes the sync effect re-run and republish.
   useEffect(() => {
     const handleError = (error: ReactorError) => {
       if (error.code === 'TRACK_PUBLISH_FAILED') {
