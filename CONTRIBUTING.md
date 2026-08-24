@@ -46,7 +46,7 @@ list.
 cargo check --workspace                     # build.rs auto-downloads the matching
                                              # prebuilt libwebrtc for reactor-ffi's target
 mise run lint                               # fmt-check + clippy + ruff + repo lints
-mise run test                               # test:rust (nextest + doctests) + test:python (pytest)
+mise run test                               # every suite: Rust, Python, JS, C++
 mise run ci                                 # lint + test — the exact tasks CI runs
 mise run build:wheel                        # cargo build --release, then a wheel with it bundled
 ```
