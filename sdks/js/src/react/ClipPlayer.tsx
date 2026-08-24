@@ -166,7 +166,9 @@ export function ClipPlayer({
 
         HlsCtor = mod.default;
       } catch {
-        fail(new Error('HLS playback unavailable in this browser. Install `hls.js` as a peer dependency, or use Download.'));
+        fail(
+          new Error('Unable to load `hls.js`. Make sure it is installed as a peer dependency, or use Download instead.'),
+        );
         return;
       }
       if (cancelled) {
