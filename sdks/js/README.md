@@ -1,5 +1,6 @@
 # Reactor JS SDK
 
+[![npm version](https://img.shields.io/npm/v/@reactor-team/js-sdk)](https://www.npmjs.com/package/@reactor-team/js-sdk)
 [![build](https://img.shields.io/github/actions/workflow/status/reactor-team/reactor-client-sdks/ci.yml?branch=main)](https://github.com/reactor-team/reactor-client-sdks/actions)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/reactor-team/reactor-client-sdks/blob/main/LICENSE)
 
@@ -76,7 +77,58 @@ to add them alongside `getStatus()`/`getSessionId()`.
 | `statusChanged` | `ReactorStatus` |
 | `sessionIdChanged` | `string \| undefined` |
 | `error` | `ReactorError` |
+| `message` | `ReactorMessage` — application-scope payload from the model |
+| `runtimeMessage` | `ReactorMessage` — platform-scope payload (moderation, clip/recording lifecycle, ...) |
+| `schemaReceived` | `ModelSchema` — see `getSchema()` below |
+| `capabilitiesReceived` | `Capabilities` — see `getCapabilities()` below |
+| `trackReceived` | `(name, track: MediaStreamTrack, stream: MediaStream, mid: string \| undefined)` |
 | `statsUpdate` | `ConnectionStats` |
+
+## Model schema and capabilities
+
+```ts
+reactor.getSchema();        // ModelSchema | undefined — the model's OpenAPI command/webhook doc
+reactor.getCapabilities();  // Capabilities | undefined — negotiated tracks, command set if exposed
+reactor.on("schemaReceived", (schema) => ...);
+reactor.on("capabilitiesReceived", (capabilities) => ...);
+```
+
+Both are pushed automatically once available after `connect()` — no explicit request needed —
+and both are `undefined` until their first event fires. Neither is mirrored into the React
+store's reactive state; reach them off the `Reactor` instance the same way (`useReactor((s) =>
+s.internal.reactor)` — see [React](#react) below).
+
+`getSessionInfo()` also returns a `capabilities` field, but it's the coordinator's **raw wire
+shape** (snake_case), not this translated one — prefer `getCapabilities()`/
+`capabilitiesReceived` unless you specifically need the untranslated session resource.
+
+## Recording and clips
+
+```ts
+const clip = await reactor.requestClip(10); // last 10 seconds
+// or: const clip = await reactor.requestRecording(); // the whole session so far
+const blob = await reactor.downloadClipAsFile(clip); // triggers a browser download, returns the Blob
+```
+
+`requestClip()`/`requestRecording()` are directly on `Reactor` — there's no separate recording
+client to construct. `downloadClipAsFile(clip, filename?, options?)` polls the clip's manifest
+until ready, remuxes the fragmented chunks into a flat, faststart MP4, and (unless
+`filename: null` is passed) triggers the download; pass `options.onProgress` for progress UI.
+
+For a React preview instead of a download, `ClipPlayer`/`ClipDownloadButton`/`useClipDownload`
+cover playback and download UI directly:
+
+```tsx
+import { ClipPlayer, ClipDownloadButton } from "@reactor-team/js-sdk";
+
+<ClipPlayer clip={clip} />
+<ClipDownloadButton clip={clip} filename="clip.mp4" />
+```
+
+`ClipPlayer` streams the clip with `hls.js` wherever Media Source Extensions exist (every
+current browser, including iOS Safari 17.1+) and assembles a flat MP4 to play from memory on
+the one iOS range that has none. Neither component requires a `ReactorProvider` — both work
+directly off a `Clip` value, including clips loaded from fixtures or logs.
 
 ## Stats and timings
 
@@ -132,10 +184,11 @@ try {
 `getLastError()` returns the most recent `ReactorError`, from either an
 `error` event or a rejected call.
 
-`sendCommand()` never throws — a failure surfaces through
-`getLastError()`/the `error` event instead, and the call resolves
-`undefined`. Every other call that can fail (`connect`, `publishTrack`,
-`uploadFile`, ...) throws normally.
+`sendCommand(command, data?, scope?)` awaits the model's correlated reply and
+resolves with it (`ReactorMessage | undefined`); it never throws — a failure
+surfaces through `getLastError()`/the `error` event instead, and the call
+resolves `undefined`. Every other call that can fail (`connect`,
+`publishTrack`, `uploadFile`, ...) throws normally.
 
 ## React
 
@@ -171,7 +224,10 @@ function Status() {
 ```
 
 `react` is a peer dependency — install it yourself, matching your app's own
-version.
+version. `ReactorView` (renders one or two named tracks into a single
+`<video>`/`<audio>` element) and `WebcamStream` (captures and publishes the
+local camera/mic) cover the common send/receive media UI without hand-rolling
+`getTrackByName()`/`publishTrack()` yourself.
 
 `apiUrl`/`modelName`/`local`/`jwtToken`/`connectOptions` are live (including
 `connectOptions.autoConnect`): changing any of them tears down the current
@@ -182,10 +238,11 @@ component) if you don't want an unrelated parent re-render to rebuild the
 connection.
 
 `useReactor(selector)` also carries `sessionId`, `lastError`, `lastMessage`,
-and action bindings for `connect`/`disconnect`/`reconnect`/`publish`/
-`unpublish`/`pauseTrack`/`resumeTrack`. For anything else — tracks, stats,
-the raw event emitter — `useReactor((s) => s.internal.reactor)` gets you the
-underlying `Reactor` instance directly.
+and action bindings for `connect`/`disconnect`/`reconnect`/`sendCommand`/
+`publish`/`unpublish`/`pauseTrack`/`resumeTrack`/`uploadFile`. For anything
+else — tracks, schema, capabilities, stats, clips/recording, the raw event
+emitter — `useReactor((s) => s.internal.reactor)` gets you the underlying
+`Reactor` instance directly.
 
 ## Development
 
@@ -193,6 +250,7 @@ underlying `Reactor` instance directly.
 mise run install:js   # npm install
 mise run lint:js      # eslint + tsc --noEmit
 mise run build:js     # tsup -> dist/, then copies reactor-wasm's pkg/ into dist/wasm
+mise run test:js      # vitest — pure-JS unit tests against a mocked ReactorClient, no wasm build needed
 ```
 
 `build:js` fails fast with a clear message if `crates/reactor-wasm/pkg`
@@ -204,7 +262,9 @@ See the repo-wide [`CONTRIBUTING.md`](../../CONTRIBUTING.md) for the rest
 ## Documentation
 
 The [full documentation](https://docs.reactor.inc/sdk-reference/using-the-sdk)
-covers platform concepts and the other language SDKs.
+covers platform concepts and the other language SDKs. See
+[`CHANGELOG.md`](./CHANGELOG.md) for what changed release to release,
+including 3.0.0's breaking changes from the legacy 2.x SDK.
 
 ## License
 
