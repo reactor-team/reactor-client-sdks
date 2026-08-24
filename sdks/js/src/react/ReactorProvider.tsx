@@ -57,20 +57,14 @@ function buildStore({ apiUrl, modelName, local, jwtToken, connectOptions }: Buil
     options.jwt = jwtToken;
   }
 
-  const { autoConnect = false, ...pollingOptions } = connectOptions ?? {};
-  const store = createReactorStore(options, pollingOptions);
+  // `autoConnect` isn't acted on here — see the effect in `ReactorProvider`
+  // that fires it. `ConnectOptions` (unlike `ReactorConnectOptions`) has no
+  // `autoConnect` field, so it's stripped before this is stored as the
+  // store's `defaultConnectOptions`.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { autoConnect, ...pollingOptions } = connectOptions ?? {};
 
-  if (autoConnect && store.getState().status === 'disconnected') {
-    // A rejection here (auth/network failure, ...) would otherwise escape as
-    // an unhandled promise rejection — connect() throws rather than
-    // reporting failures through the `error` event, and nothing here awaits
-    // this fire-and-forget call.
-    store.getState().connect(jwtToken, pollingOptions).catch((error: unknown) => {
-      console.error('[Reactor.ReactorProvider] autoConnect failed:', error);
-    });
-  }
-
-  return store;
+  return createReactorStore(options, pollingOptions);
 }
 
 /**
@@ -118,6 +112,30 @@ export function ReactorProvider({
     setStore(buildStore({ apiUrl, modelName, local, jwtToken, connectOptions }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiUrl, modelName, local, jwtToken, JSON.stringify(connectOptions)]);
+
+  // Fires autoConnect for whichever Reactor this provider currently owns —
+  // on initial mount and on every rebuild, since both produce a new `store`.
+  // Deliberately an effect, not part of `buildStore`'s synchronous
+  // construction: `buildStore` runs inside `useState`'s lazy initializer,
+  // and React 18 StrictMode double-invokes that during render to surface
+  // impure side effects — calling connect() from there fires it against two
+  // separate, independently-constructed Reactor instances, and the discarded
+  // one leaks a live connection nothing ever tears down. Matches v2, which
+  // also fires autoConnect from an effect rather than during construction.
+  useEffect(() => {
+    const { autoConnect = false, ...pollingOptions } = connectOptions ?? {};
+
+    if (autoConnect && store.getState().status === 'disconnected') {
+      // A rejection here (auth/network failure, ...) would otherwise escape
+      // as an unhandled promise rejection — connect() throws rather than
+      // reporting failures through the `error` event, and nothing here
+      // awaits this fire-and-forget call.
+      store.getState().connect(jwtToken, pollingOptions).catch((error: unknown) => {
+        console.error('[Reactor.ReactorProvider] autoConnect failed:', error);
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store]);
 
   // Tears down whichever Reactor this provider currently owns — on rebuild
   // (store changes, so this cleanup fires for the one being replaced) and on

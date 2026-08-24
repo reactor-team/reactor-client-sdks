@@ -22,7 +22,10 @@ export interface ReactorState {
   lastMessage: ReactorMessage | undefined;
   /** Media tracks received from the model, keyed by track name. Reset to
    *  `{}` on every "disconnected" status transition — a fresh connection
-   *  invalidates whatever arrived under the previous one. */
+   *  invalidates whatever arrived under the previous one. Append-only within
+   *  a session: a track pausing/unpublishing mid-session doesn't remove its
+   *  entry, so a stale `MediaStreamTrack` can linger until the next
+   *  disconnect. Matches v2's identical behavior (`core/store.ts`). */
   tracks: Record<string, MediaStreamTrack>;
   /** The `jwt` the store was created with — see `createReactorStore`'s
    *  `options.jwt`. Set once at creation, not resynced afterward. */
