@@ -98,9 +98,9 @@ and both are `undefined` until their first event fires. Neither is mirrored into
 store's reactive state; reach them off the `Reactor` instance the same way (`useReactor((s) =>
 s.internal.reactor)` — see [React](#react) below).
 
-`getSessionInfo()` also returns a `capabilities` field, but it's the coordinator's **raw wire
-shape** (snake_case), not this translated one — prefer `getCapabilities()`/
-`capabilitiesReceived` unless you specifically need the untranslated session resource.
+`getSessionInfo()` also returns a `capabilities` field, but it's the **raw wire shape**
+(snake_case), not this translated one — prefer `getCapabilities()`/`capabilitiesReceived` unless
+you specifically need the untranslated session resource.
 
 ## Recording and clips
 
