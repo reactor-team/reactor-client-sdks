@@ -27,6 +27,7 @@
 #include "reactor/errors.hpp"
 #include "reactor/json.hpp"
 #include "reactor/reactor.hpp"
+#include "reactor/recording.hpp"
 #include "reactor/track.hpp"
 
 namespace reactor {
@@ -149,6 +150,55 @@ class PendingOptionalJson final : public Pending {
     }
     promise.set_value(std::move(result));
   }
+  void deliver_error(const std::exception_ptr& error) override { promise.set_exception(error); }
+};
+
+/// A call that answers with a clip.
+class PendingClip final : public Pending {
+ public:
+  std::promise<Clip> promise;
+
+  /// The client the clip should be able to reach, so `download()` can bound its
+  /// wait on the session still being alive.
+  std::weak_ptr<ClientImpl> client;
+
+ private:
+  void deliver(Json result) override;
+  void deliver_error(const std::exception_ptr& error) override { promise.set_exception(error); }
+};
+
+/// A download in flight: the promise, plus the progress callback it has to keep
+/// alive for the length of the transfer.
+class PendingDownload final : public Pending {
+ public:
+  std::promise<void> promise;
+  std::function<void(std::uint32_t, std::uint32_t)> on_progress;
+
+  /// What the FFI is handed for both callbacks, and all it is handed.
+  ///
+  /// A download is documented as outliving the handle it was given: neither the
+  /// progress callback nor the completion is bounded by `reactor_destroy`, because
+  /// the work runs on a task nothing here can cancel. So the pointer that detached
+  /// task holds has to survive this client, and a raw `PendingDownload*` from the
+  /// pending map does not — teardown frees that. The ticket survives; what it
+  /// names may not, and a lock that fails is how a callback finds out.
+  struct Ticket {
+    std::weak_ptr<PendingDownload> download;
+  };
+
+  /// The C progress callback. `userdata` is a `Ticket`, borrowed.
+  static void progress_trampoline(std::uint32_t done, std::uint32_t total, void* userdata) noexcept;
+
+  /// The C completion. `userdata` is a `Ticket`, and this call owns it.
+  ///
+  /// Its own, not the shared `completion_trampoline`: that one reads `userdata` as
+  /// a `Pending*` and reclaims it from the pending map, which is exactly the
+  /// ownership a download cannot have.
+  static void completion_trampoline(int ok, const char* result_json, const char* error_json,
+                                    void* userdata) noexcept;
+
+ private:
+  void deliver(Json /*result*/) override { promise.set_value(); }
   void deliver_error(const std::exception_ptr& error) override { promise.set_exception(error); }
 };
 
@@ -340,6 +390,17 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   void begin_upload_bytes(std::unique_ptr<Pending> op, Bytes data, const std::string& name,
                           const std::string& mime_type);
 
+  // ── Recording ──────────────────────────────────────────────────────────────
+
+  void begin_request_clip(std::unique_ptr<Pending> op, double duration_seconds);
+  void begin_request_recording(std::unique_ptr<Pending> op);
+  void begin_download(std::unique_ptr<Pending> op, const std::string& playlist_url,
+                      const std::string& path, double predicted_ready_at_ms,
+                      std::optional<double> ready_timeout_seconds);
+
+  /// Whether this client still has a session that could produce a clip.
+  bool has_live_session() const;
+
   Subscription add_video_handler(const std::string& name,
                                  std::function<void(const VideoFrame&)> handler);
   Subscription add_audio_handler(const std::string& name,
@@ -507,6 +568,23 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     exchanges_.erase(raw);
   }
 
+  /// Watch a download, for the same reason and with the same shape.
+  ///
+  /// `reactor_download_clip`'s callbacks are not bounded by `reactor_destroy`
+  /// either — the header says so — so the pending map, whose contents teardown
+  /// frees, is the one place this must not live.
+  void watch_download(std::shared_ptr<PendingDownload> download) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    PendingDownload* raw = download.get();
+    downloads_.emplace(raw, std::move(download));
+  }
+
+  /// Stop watching, because the completion arrived and owns it from here.
+  void forget_download(PendingDownload* raw) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    downloads_.erase(raw);
+  }
+
  private:
   Pending* track_pending(std::unique_ptr<Pending> op) {
     op->owner = weak_from_this();
@@ -525,6 +603,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     Context* to_release = nullptr;
     std::vector<std::unique_ptr<Pending>> outstanding;
     std::vector<std::shared_ptr<TokenExchange>> exchanges;
+    std::vector<std::shared_ptr<PendingDownload>> downloads;
     {
       const std::lock_guard<std::mutex> lock(mutex_);
       to_destroy = std::exchange(handle_, nullptr);
@@ -540,6 +619,11 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
         exchanges.push_back(std::move(entry.second));
       }
       exchanges_.clear();
+      downloads.reserve(downloads_.size());
+      for (auto& entry : downloads_) {
+        downloads.push_back(std::move(entry.second));
+      }
+      downloads_.clear();
     }
 
     // 0 means quiescence: no callback is running and none will start, so the
@@ -547,6 +631,22 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     // must stay valid — leaking is correct, freeing is a jump into freed memory.
     // A small permanent leak beats that every time.
     const int quiesced = to_destroy == nullptr ? 0 : ffi().destroy(to_destroy);
+
+    for (auto& download : downloads) {
+      // The transfer itself is not ours to stop and may well finish the file. What
+      // is certain is that nothing is going to resolve this future, so it is
+      // resolved here — and the object stays alive until the completion that still
+      // points at it arrives and finds a weak reference that no longer locks.
+      download->fail(as_exception_ptr(
+          ErrorDetails{std::string{codes::ABORTED},
+                       "the client was destroyed before this download finished. The download "
+                       "itself is not bounded by the client and may still complete.",
+                       false,
+                       {},
+                       "download_clip",
+                       {},
+                       {}}));
+    }
 
     for (auto& exchange : exchanges) {
       // The request is still out there and its completion may still arrive, but it
@@ -725,6 +825,10 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   /// Token exchanges in flight. Apart from `pending_` because their completions
   /// are not bounded by `reactor_destroy` — see `watch_exchange`.
   std::map<TokenExchange*, std::shared_ptr<TokenExchange>> exchanges_;
+  /// Downloads in flight, held for the same reason as `exchanges_`: their
+  /// callbacks outlive the handle, so teardown may settle them but must not free
+  /// what the detached task still points at.
+  std::map<PendingDownload*, std::shared_ptr<PendingDownload>> downloads_;
   std::uint64_t next_pending_id_ = 1;
 };
 
