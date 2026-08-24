@@ -412,6 +412,13 @@ class Track:
             @output.on_frame
             def render(frame, frame_id, timestamp_us, user_data): ...
 
+        ``timestamp_us`` is when the *sender* says it captured the frame: the value
+        it declared, or a reading its transport took on its behalf. It comes off
+        the sender's clock, so differences between stamps from one sender are what
+        it supports — subtracting it from a local reading measures the offset
+        between two clocks as much as anything about the frame. Zero when the
+        frame carried no metadata.
+
         On an **audio** track, as many of ``(frame, sample_rate, num_channels)``,
         `frame` being an int16 array of shape ``(samples, channels)``::
 

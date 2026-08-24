@@ -241,7 +241,9 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
                                 let (frame_id, ts, ud) = f
                                     .metadata
                                     .as_ref()
-                                    .map(|m| (m.frame_id, m.timestamp, m.user_data.as_slice()))
+                                    .map(|m| {
+                                        (m.frame_id, m.capture_time_us, m.user_data.as_slice())
+                                    })
                                     .unwrap_or((0, 0, &[]));
                                 cb(&track_name, f.bgra, f.width, f.height, frame_id, ts, ud);
                             });

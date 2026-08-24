@@ -61,6 +61,35 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
+/* ── ABI version ──────────────────────────────────────────────────────────── */
+
+/*
+ * The version of this ABI, as a monotonic integer.
+ *
+ * Two halves of one check.  REACTOR_ABI_VERSION is what the header you are
+ * compiling against says; reactor_abi_version() is what the library you end up
+ * loading says.  Compare them at startup and refuse to run when they differ,
+ * naming both numbers — nothing else catches this failure.
+ * scripts/check-abi-parity.py compares the hand-written copies of this ABI *by
+ * function name only* — arity and types are not checked and cannot be — so a
+ * function that gained a parameter still links, still resolves, and corrupts the
+ * stack at the call.  It does not fail at load.  It looks like a hang, or like
+ * the operation silently doing nothing.  Twice now the library on disk was simply
+ * older than the crates.
+ *
+ * A macro rather than only prose so a binding can make that comparison without
+ * hard-coding a number of its own, which would be a third copy of it.
+ *
+ * Bump it when an existing declaration below changes: a parameter added or
+ * removed, a type changed, a return value repurposed.  Do NOT bump it when a
+ * function is added — a binding built against the older version calls everything
+ * it knows about exactly as before, and refusing to run would strand it for no
+ * reason.
+ */
+#define REACTOR_ABI_VERSION 1
+
+uint32_t reactor_abi_version(void);
+
 /* ── Opaque client handle ─────────────────────────────────────────────────── */
 
 typedef struct ReactorHandle ReactorHandle;
@@ -102,7 +131,11 @@ typedef void (*reactor_on_frame_fn)(
     const char *track_name,
     const uint8_t *data, uint32_t width, uint32_t height,
     uint64_t frame_id,       /* 0 when no metadata trailer present */
-    uint64_t timestamp_us,   /* wall-clock µs; 0 when no metadata  */
+    /* When the sender says it captured the frame, in µs on the sender's own
+     * clock — its declared capture time, or a reading its transport took for it.
+     * Differences between stamps from one sender are what it supports; it is not
+     * comparable with a local clock.  0 when no metadata. */
+    uint64_t timestamp_us,
     const uint8_t *user_data, uint32_t user_data_len, /* NULL/0 when no metadata */
     void *userdata
 );
@@ -167,6 +200,52 @@ typedef void (*reactor_completion_fn)(
     const char *result_json,
     const char *error_json,
     void       *userdata
+);
+
+/* ── Authentication ───────────────────────────────────────────────────────── */
+
+/*
+ * Exchange an API key for a JWT.
+ *
+ * Takes no handle: everything below wants a token, and a caller holding a key
+ * needs this first.  It is one POST, and it lives here so a binding in a language
+ * with no HTTP client in its standard library does not have to take on a TLS
+ * stack to make it.
+ *
+ *   api_url      — coordinator base URL, e.g. "https://api.reactor.inc"
+ *   api_key      — the key to exchange
+ *   options_json — nullable.  JSON object:
+ *                    {
+ *                      "models":        ["owner/name", …],  // scopes the token
+ *                      "max_sessions":  n,                  // scoped tokens only
+ *                      "expires_after": seconds             // server clamps it
+ *                    }
+ *                  Null (or "{}") mints a token carrying everything the key's
+ *                  roles allow — fine server-to-server, wrong to hand to a client
+ *                  you do not control.  An **unrecognised key in this object is
+ *                  an error**: dropping a misspelt "models" in silence would mint
+ *                  exactly the unscoped token the caller was avoiding.
+ *   local        — non-zero to accept a dev coordinator's self-signed certificate
+ *   completion   — result_json is {"jwt": "…"} on success; on failure the usual
+ *                  error object, so a rejected key reports UNAUTHORIZED and an
+ *                  unreachable coordinator NETWORK_ERROR.
+ *
+ * There is no handle, so reactor_destroy() is not the boundary for the callback
+ * context here: the completion fires exactly once, and the context must stay
+ * valid until it does.  Release it from inside the completion, or after.
+ *
+ * For the same reason a null api_url or api_key *completes with an error*, where
+ * the handle-taking calls below return without completing at all.  There, a null
+ * handle is something the binding already had to check; here there is no handle to
+ * have checked, so the only alternative would be a future nothing ever resolves.
+ */
+void reactor_fetch_jwt(
+    const char           *api_url,
+    const char           *api_key,
+    const char           *options_json,  /* nullable */
+    int                   local,
+    reactor_completion_fn completion,
+    void                 *userdata
 );
 
 /* ── Lifecycle ────────────────────────────────────────────────────────────── */
@@ -377,6 +456,70 @@ void reactor_upload_bytes(
     const char          *mime_type,
     reactor_completion_fn completion,
     void                *userdata
+);
+
+/* ── Clip download ────────────────────────────────────────────────────────── */
+
+/* Segments written so far, out of how many the clip has. */
+typedef void (*reactor_progress_fn)(uint32_t done, uint32_t total, void *userdata);
+
+/*
+ * Download a clip's HLS segments into one playable file at `out_path`.
+ *
+ * Reactor does not host clips: the playlist names the fragments and it is on the
+ * caller to fetch and assemble them.  That assembly is here rather than in each
+ * binding because it has three rules that each cost a shipped bug to learn:
+ *
+ *   - The init segment is a comment line.  `#EXT-X-MAP:URI="…"` carries the
+ *     `ftyp`/`moov` every fragment is parsed against, so a parser that skips `#`
+ *     lines writes a file no player opens.  It is fetched first and written first.
+ *   - A segment can be presigned on another host, and a presigned URL *rejects* an
+ *     Authorization header rather than ignoring it.  The token goes same-origin
+ *     only.
+ *   - A 202 is not an error.  It means the chunk holding the end of the window has
+ *     not closed, and it closes because the model keeps generating — so the bound
+ *     on waiting is the session, not a number of seconds.
+ *
+ *   handle                — nullable.  Given one, the wait ends as soon as that
+ *                           session can no longer produce the clip: once it is
+ *                           gone a 202 is a 202 forever.  Only its state is read,
+ *                           and through a clone taken before this returns, so
+ *                           destroying it mid-download is safe.
+ *   playlist_url          — from a clip's result_json.
+ *   jwt                   — nullable; needed for a coordinator-hosted playlist.
+ *   out_path              — file to create.  Opened before the first segment is
+ *                           fetched, so an unwritable path fails early.
+ *   predicted_ready_at_ms — the runtime's own prediction, in Unix milliseconds, as
+ *                           carried by the clip.  The grace below is measured from
+ *                           there, not from this call: a clip expected in ten
+ *                           seconds with five of grace gets fifteen.  0 when the
+ *                           runtime offered none, which runs the grace from now.
+ *   ready_timeout_seconds — grace past that prediction.  Negative waits as long as
+ *                           the session lives, which is the only sane answer for a
+ *                           model generating slower than real time; an infinity
+ *                           asks for the same.  A NaN comes back through
+ *                           `completion` as an error.
+ *   local                 — non-zero to accept a dev coordinator's certificate.
+ *   progress              — nullable.  Called after each segment is written, on
+ *                           the download's own thread; blocking it delays this
+ *                           download and nothing else.
+ *   completion            — result_json is {"path", "bytes", "segments"}.
+ *
+ * As with reactor_fetch_jwt, the completion is *not* bounded by
+ * reactor_destroy(): a download outlives the handle it was given one of.  Keep
+ * its context alive until the completion fires, which it does exactly once.
+ */
+void reactor_download_clip(
+    ReactorHandle        *handle,      /* nullable */
+    const char           *playlist_url,
+    const char           *jwt,         /* nullable */
+    const char           *out_path,
+    double                predicted_ready_at_ms,
+    double                ready_timeout_seconds,
+    int                   local,
+    reactor_progress_fn   progress,    /* nullable */
+    reactor_completion_fn completion,
+    void                 *userdata
 );
 
 /* ── Synchronous operations ───────────────────────────────────────────────── */

@@ -48,13 +48,17 @@ use std::os::raw::{c_char, c_double, c_int, c_void};
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
+use reactor_core::auth::{fetch_jwt, TokenRequest};
 use reactor_core::error::CoreError;
 use reactor_core::events::ReactorEvent;
-use reactor_core::http::StaticAuth;
+use reactor_core::http::{check_status, StaticAuth};
 use reactor_core::peer::PeerEvent;
 use reactor_core::protocol::upload::FileRef;
 use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions};
+use reactor_core::recording::{clip_segment_requests, Readiness};
 use reactor_core::runtime::TokioPlatform;
+use reactor_core::state::ReactorStatus;
+use reactor_core::{SharedHttp, SharedPlatform};
 use reactor_webrtc::AdmMode;
 
 use self::callbacks::{CallbackGate, HostSender, HostThread, Overflow, Quiescence};
@@ -371,6 +375,377 @@ fn fallback_error_json(message: &str) -> String {
 }
 
 // ── extern "C" API ───────────────────────────────────────────────────────────
+
+/// The version of the C ABI this library exposes, reported by
+/// [`reactor_abi_version`] and stated in prose at the top of `reactor_ffi.h`.
+///
+/// Bump it when an existing declaration changes — a parameter added or removed, a
+/// type changed, a return value repurposed. Do **not** bump it when a function is
+/// added: a binding built against the older version calls every function it knows
+/// about exactly as before, so refusing to run would strand it for no reason.
+pub const ABI_VERSION: u32 = 1;
+
+/// The ABI version, so a binding can refuse a library it was not built for.
+///
+/// [`scripts/check-abi-parity.py`] compares the hand-written copies of this ABI by
+/// function *name*; arity and types are not checked and cannot be. So a function
+/// that gained a parameter still links, still resolves, and corrupts the stack at
+/// the call — a hang, or an operation silently doing nothing, never a version
+/// error. Twice now the library on disk was simply older than the crates. This is
+/// the guard that turns that into a message.
+///
+/// Takes no handle and no lock: it is readable before anything is created.
+///
+/// [`scripts/check-abi-parity.py`]: https://github.com/reactor-team/reactor-client-sdks/blob/main/scripts/check-abi-parity.py
+#[no_mangle]
+pub extern "C" fn reactor_abi_version() -> u32 {
+    ABI_VERSION
+}
+
+/// Fire a completion that belongs to no handle.
+///
+/// Handle-based completions travel over that handle's control thread, which is
+/// what makes blocking inside one tolerable. A handle-less call has no such
+/// thread, so its completion goes to the blocking pool instead of running on the
+/// tokio worker that produced the result: a host that takes its time in one must
+/// delay only itself, never the runtime.
+fn resolve_detached(completion: Completion, result: Result<Option<serde_json::Value>, CoreError>) {
+    runtime().spawn_blocking(move || completion.resolve(result));
+}
+
+/// A completion with no handle to be quiesced against.
+///
+/// [`reactor_destroy`] is the boundary for every callback a handle owns. These
+/// have no handle, so the gate is per call and open for exactly as long as the
+/// call: nothing can retire it early, and the caller keeps its context alive
+/// until the completion fires — which it always does, exactly once.
+fn detached_completion(
+    completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
+    userdata: *mut c_void,
+    operation: &'static str,
+) -> Completion {
+    Completion::new(
+        completion,
+        userdata,
+        Arc::new(CallbackGate::new()),
+        operation,
+    )
+}
+
+/// Exchange an API key for a JWT.
+///
+/// Takes no handle: there is no session yet, and a caller needs the token before
+/// it can create one. `options_json` may be null for a token carrying everything
+/// the key's roles allow; otherwise it is a JSON object of
+/// `{"models": ["owner/name", …], "max_sessions": n, "expires_after": seconds}`,
+/// where `models` makes the token session-scoped. **An unrecognised key in there
+/// is an error**, not a field to ignore: silently dropping a misspelt `models`
+/// would mint the unscoped token the caller was trying to avoid.
+///
+/// On success `result_json` is `{"jwt": "…"}`. On failure it is the usual error
+/// object, so a rejected key reports `UNAUTHORIZED` and an unreachable
+/// coordinator `NETWORK_ERROR`.
+///
+/// # Safety
+///
+/// `api_url` and `api_key` must be NUL-terminated C strings; `options_json` may be
+/// null, otherwise it must be a NUL-terminated C string holding a JSON object. All
+/// are copied before this returns.
+///
+/// `completion` is called exactly once, on a thread this library owns, and must
+/// stay callable until it does. There is no handle here, so [`reactor_destroy`] is
+/// not the boundary for it: whatever the callback context is, release it from
+/// inside the completion or after it has run.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_fetch_jwt(
+    api_url: *const c_char,
+    api_key: *const c_char,
+    options_json: *const c_char,
+    local: c_int,
+    completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
+    userdata: *mut c_void,
+) {
+    let done = detached_completion(completion, userdata, "fetch_jwt");
+
+    if api_url.is_null() || api_key.is_null() {
+        return resolve_detached(
+            done,
+            Err(CoreError::InvalidState(
+                "fetch_jwt requires an api_url and an api_key".into(),
+            )),
+        );
+    }
+
+    let api_url = CStr::from_ptr(api_url).to_string_lossy().into_owned();
+    let api_key = CStr::from_ptr(api_key).to_string_lossy().into_owned();
+
+    let request = if options_json.is_null() {
+        Ok(TokenRequest::default())
+    } else {
+        serde_json::from_str::<TokenRequest>(&CStr::from_ptr(options_json).to_string_lossy())
+            .map_err(|e| CoreError::InvalidState(format!("fetch_jwt options are not valid: {e}")))
+    };
+    let request = match request {
+        Ok(request) => request,
+        Err(e) => return resolve_detached(done, Err(e)),
+    };
+
+    let http: SharedHttp = Arc::new(ReqwestHttpClient::new(local != 0));
+    runtime().spawn(async move {
+        let result = fetch_jwt(&http, &api_url, &api_key, &request)
+            .await
+            .map(|jwt| Some(serde_json::json!({ "jwt": jwt })));
+        resolve_detached(done, result);
+    });
+}
+
+/// Download a clip's HLS segments into one playable file.
+///
+/// Reactor does not host clips: the playlist names the fragments and it is on the
+/// caller to fetch and assemble them. That assembly has rules that took three
+/// shipped bugs to learn — the `#EXT-X-MAP` init segment is a comment line and
+/// has to be written first, a presigned segment on another host *rejects* an
+/// `Authorization` header rather than ignoring it, and a 202 means the chunk
+/// holding the end of the window has not closed yet — so it lives in
+/// [`reactor_core::recording`] and every binding gets the same answer.
+///
+/// `handle` is optional and is what bounds the wait: given one, this stops asking
+/// as soon as that session stops being able to produce the clip. Only the session
+/// state is read, and it is read through a clone taken before this returns, so
+/// destroying the handle mid-download is safe and simply ends the waiting.
+///
+/// `ready_timeout_seconds` is the grace past when the runtime predicted the clip
+/// would be ready, and `predicted_ready_at_ms` is that prediction — the
+/// `predicted_ready_at_ms` a clip carries, in Unix milliseconds. The grace is
+/// measured from there rather than from this call, so a clip expected in ten
+/// seconds with five of grace is given fifteen; pass 0 to have the grace run from
+/// now, which is the only thing left when the runtime offered no prediction.
+///
+/// Negative `ready_timeout_seconds` waits as long as the session lives, which is
+/// the right answer when a handle was given and the only sane one when the model
+/// generates slower than real time. An infinity asks for the same thing. A NaN is
+/// refused through `completion`: it is a caller bug, and interpreting one as a
+/// duration would panic.
+///
+/// # Safety
+///
+/// `playlist_url` and `out_path` must be NUL-terminated C strings; `jwt` may be
+/// null. `handle` may be null; otherwise it must be live at the moment of the
+/// call. `progress` may be null.
+///
+/// `completion` is called exactly once and, like [`reactor_fetch_jwt`]'s, is not
+/// bounded by [`reactor_destroy`] — a download outlives the handle it was given.
+/// Keep its context alive until it fires.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_download_clip(
+    handle: *mut ReactorHandle,
+    playlist_url: *const c_char,
+    jwt: *const c_char,
+    out_path: *const c_char,
+    predicted_ready_at_ms: c_double,
+    ready_timeout_seconds: c_double,
+    local: c_int,
+    progress: Option<unsafe extern "C" fn(u32, u32, *mut c_void)>,
+    completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
+    userdata: *mut c_void,
+) {
+    let done = detached_completion(completion, userdata, "download_clip");
+
+    if playlist_url.is_null() || out_path.is_null() {
+        return resolve_detached(
+            done,
+            Err(CoreError::InvalidState(
+                "download_clip requires a playlist_url and an out_path".into(),
+            )),
+        );
+    }
+
+    let playlist_url = CStr::from_ptr(playlist_url).to_string_lossy().into_owned();
+    let out_path = CStr::from_ptr(out_path).to_string_lossy().into_owned();
+    let jwt = (!jwt.is_null()).then(|| CStr::from_ptr(jwt).to_string_lossy().into_owned());
+
+    // Before the spawn, so a bad number comes back as an error rather than as a
+    // panic in a task the host cannot see.
+    let timeout = match readiness_timeout(ready_timeout_seconds) {
+        Ok(timeout) => timeout,
+        Err(error) => return resolve_detached(done, Err(error)),
+    };
+
+    // A prediction that is not a number is no prediction. Zero is what a caller
+    // with nothing to anchor to passes, and it means the grace runs from now.
+    let predicted_ready_at_ms = if predicted_ready_at_ms.is_finite() {
+        predicted_ready_at_ms
+    } else {
+        0.0
+    };
+
+    // Cloned now, while the handle is known live. An `Arc` keeps the session state
+    // readable for the length of the download even if the host destroys the handle
+    // meanwhile, which a raw pointer captured into the task would not.
+    let session = (!handle.is_null()).then(|| (*handle).reactor.clone());
+
+    let progress = progress.map(|f| ProgressCallback { f, userdata });
+    let http: SharedHttp = Arc::new(ReqwestHttpClient::new(local != 0));
+    let platform: SharedPlatform = Arc::new(TokioPlatform);
+
+    runtime().spawn(async move {
+        let readiness = Readiness {
+            timeout,
+            predicted_ready_at_ms,
+            session_is_live: || match &session {
+                Some(reactor) => reactor.status() != ReactorStatus::Disconnected,
+                // Nothing to ask: the caller's timeout is the only bound there is.
+                None => true,
+            },
+        };
+
+        let result = download_clip_to_file(
+            &http,
+            &platform,
+            &playlist_url,
+            jwt.as_deref(),
+            &out_path,
+            &readiness,
+            progress.as_ref(),
+        )
+        .await;
+
+        resolve_detached(done, result.map(Some));
+    });
+}
+
+/// The wall-clock bound a C `double` asks for, or an error when it asks for
+/// something that is not a bound at all.
+///
+/// A NaN is the case that has to be caught rather than interpreted:
+/// `Duration::from_secs_f64` panics on one, and a panic inside the detached task
+/// would drop the completion instead of firing it — the binding would then wait
+/// for a callback that can no longer come, which is the one outcome every
+/// argument check in this file exists to prevent. Negative asks for no bound at
+/// all, and an infinity asks for the same thing by another spelling. A finite
+/// value too large for a `Duration` saturates: no caller outlives either wait, so
+/// there is nothing to tell them apart by.
+fn readiness_timeout(seconds: c_double) -> Result<Option<std::time::Duration>, CoreError> {
+    if seconds.is_nan() {
+        return Err(CoreError::InvalidState(
+            "download_clip's ready_timeout_seconds is not a number".into(),
+        ));
+    }
+    if seconds < 0.0 || seconds.is_infinite() {
+        return Ok(None);
+    }
+    Ok(Some(
+        std::time::Duration::try_from_secs_f64(seconds).unwrap_or(std::time::Duration::MAX),
+    ))
+}
+
+/// A host progress callback and the context to hand back to it.
+struct ProgressCallback {
+    f: unsafe extern "C" fn(u32, u32, *mut c_void),
+    userdata: *mut c_void,
+}
+
+// SAFETY: as for `Completion` — the host guarantees `userdata` is usable from the
+// threads this library calls back on.
+unsafe impl Send for ProgressCallback {}
+unsafe impl Sync for ProgressCallback {}
+
+impl ProgressCallback {
+    /// Report `done` of `total` segments written.
+    ///
+    /// Inside `block_in_place`, so a host that takes its time here hands the
+    /// worker's other tasks to another thread instead of stalling them — the same
+    /// promise the event callbacks make, kept the way an async task can keep it.
+    fn report(&self, done: u32, total: u32) {
+        tokio::task::block_in_place(|| unsafe { (self.f)(done, total, self.userdata) });
+    }
+}
+
+/// Fetch every segment of a clip and write them, in order, to `out_path`.
+async fn download_clip_to_file<L: Fn() -> bool>(
+    http: &SharedHttp,
+    platform: &SharedPlatform,
+    playlist_url: &str,
+    jwt: Option<&str>,
+    out_path: &str,
+    readiness: &Readiness<L>,
+    progress: Option<&ProgressCallback>,
+) -> Result<serde_json::Value, CoreError> {
+    // Opened before anything is asked of the network: an unwritable path is worth
+    // finding out about before a full-session recording is on the wire, not after.
+    let mut file = tokio::fs::File::create(out_path)
+        .await
+        .map_err(|e| CoreError::Http(format!("cannot write {out_path}: {e}")))?;
+
+    // Anything that fails from here leaves a partial file behind, and a truncated
+    // clip that looks like a clip is worse than no clip: it opens, plays some of
+    // itself, and gives no reason to suspect the download.
+    match write_segments(
+        http,
+        platform,
+        playlist_url,
+        jwt,
+        out_path,
+        readiness,
+        progress,
+        &mut file,
+    )
+    .await
+    {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            drop(file);
+            let _ = tokio::fs::remove_file(out_path).await;
+            Err(error)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn write_segments<L: Fn() -> bool>(
+    http: &SharedHttp,
+    platform: &SharedPlatform,
+    playlist_url: &str,
+    jwt: Option<&str>,
+    out_path: &str,
+    readiness: &Readiness<L>,
+    progress: Option<&ProgressCallback>,
+    file: &mut tokio::fs::File,
+) -> Result<serde_json::Value, CoreError> {
+    use tokio::io::AsyncWriteExt;
+
+    let requests = clip_segment_requests(http, platform, playlist_url, jwt, readiness).await?;
+    let total = requests.len() as u32;
+
+    let mut written = 0_u64;
+    for (index, request) in requests.into_iter().enumerate() {
+        let url = request.url.clone();
+        let response = http.request(request).await?;
+        check_status(&response, &format!("fetch clip segment {url}"))?;
+
+        // Written as each segment arrives rather than accumulated: a full-session
+        // recording has no bound on its size, and there is never a reason to hold
+        // more than one segment of it.
+        file.write_all(&response.body)
+            .await
+            .map_err(|e| CoreError::Http(format!("cannot write {out_path}: {e}")))?;
+        written += response.body.len() as u64;
+
+        if let Some(progress) = progress {
+            progress.report(index as u32 + 1, total);
+        }
+    }
+
+    file.flush()
+        .await
+        .map_err(|e| CoreError::Http(format!("cannot write {out_path}: {e}")))?;
+
+    Ok(serde_json::json!({
+        "path": out_path,
+        "bytes": written,
+        "segments": total,
+    }))
+}
 
 /// Create a client. The returned handle must be released with
 /// [`reactor_destroy`].
@@ -1517,6 +1892,322 @@ mod tests {
         let first = reactor_time_micros();
         assert!(first > 0);
         assert!(reactor_time_micros() >= first);
+    }
+
+    /// What a completion was told, for the calls that take no handle: they answer
+    /// on a thread this library owns, so a test has to wait rather than assume.
+    struct Recorded {
+        calls: Mutex<Vec<(bool, String)>>,
+        fired: std::sync::Condvar,
+    }
+
+    impl Recorded {
+        fn new() -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                fired: std::sync::Condvar::new(),
+            }
+        }
+
+        /// The first completion, or a failed test. A completion that never fires is
+        /// the failure mode worth catching here: a binding awaiting it would hang,
+        /// which is what these calls exist to make impossible.
+        fn wait(&self) -> (bool, String) {
+            let mut calls = self.calls.lock().unwrap();
+            while calls.is_empty() {
+                let (guard, timeout) = self
+                    .fired
+                    .wait_timeout(calls, std::time::Duration::from_secs(5))
+                    .unwrap();
+                calls = guard;
+                assert!(!timeout.timed_out(), "the completion never fired");
+            }
+            calls[0].clone()
+        }
+
+        fn count(&self) -> usize {
+            self.calls.lock().unwrap().len()
+        }
+    }
+
+    unsafe extern "C" fn record_completion(
+        ok: c_int,
+        result: *const c_char,
+        error: *const c_char,
+        userdata: *mut c_void,
+    ) {
+        let recorded = &*(userdata as *const Recorded);
+        let payload = if ok == 1 { result } else { error };
+        let text = if payload.is_null() {
+            String::new()
+        } else {
+            CStr::from_ptr(payload).to_string_lossy().into_owned()
+        };
+        recorded.calls.lock().unwrap().push((ok == 1, text));
+        recorded.fired.notify_all();
+    }
+
+    /// The mirror image of the null-handle rule above, and deliberately so. A call
+    /// with no handle has no earlier guard a binding could have applied, so the only
+    /// alternatives are an error or a future nothing resolves.
+    #[test]
+    fn a_handle_less_call_reports_a_missing_argument_rather_than_going_quiet() {
+        let recorded = Recorded::new();
+        let key = CString::new("key").unwrap();
+
+        unsafe {
+            reactor_fetch_jwt(
+                std::ptr::null(),
+                key.as_ptr(),
+                std::ptr::null(),
+                0,
+                Some(record_completion),
+                &recorded as *const Recorded as *mut c_void,
+            );
+        }
+
+        let (ok, payload) = recorded.wait();
+        assert!(!ok);
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(json["code"], reactor_core::error::codes::INVALID_STATE);
+        assert_eq!(json["operation"], "fetch_jwt");
+        assert_eq!(recorded.count(), 1, "a completion fires exactly once");
+    }
+
+    /// A binding builds this JSON from its own caller's arguments, so a key can be
+    /// wrong — and scoping is the one place where ignoring an unknown key hands back
+    /// a *more* powerful token than was asked for. It has to fail, and it has to
+    /// fail before the key is ever sent anywhere.
+    #[test]
+    fn misspelt_token_options_are_refused_before_any_request_is_made() {
+        let recorded = Recorded::new();
+        let url = CString::new("https://api.reactor.inc").unwrap();
+        let key = CString::new("key").unwrap();
+        let options = CString::new(r#"{"model":["reactor/helios"]}"#).unwrap();
+
+        unsafe {
+            reactor_fetch_jwt(
+                url.as_ptr(),
+                key.as_ptr(),
+                options.as_ptr(),
+                0,
+                Some(record_completion),
+                &recorded as *const Recorded as *mut c_void,
+            );
+        }
+
+        let (ok, payload) = recorded.wait();
+        assert!(!ok);
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(json["code"], reactor_core::error::codes::INVALID_STATE);
+        assert!(
+            json["message"].as_str().unwrap().contains("model"),
+            "the message must name the field that was wrong: {payload}"
+        );
+    }
+
+    /// Same rule as fetch_jwt's: no handle to have been validated first, so a
+    /// missing argument has to arrive as an error rather than as silence.
+    #[test]
+    fn a_download_with_nowhere_to_write_reports_it_rather_than_going_quiet() {
+        let recorded = Recorded::new();
+        let url = CString::new("https://api.reactor.inc/hls/clip.m3u8").unwrap();
+
+        unsafe {
+            reactor_download_clip(
+                std::ptr::null_mut(),
+                url.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0.0,
+                -1.0,
+                0,
+                None,
+                Some(record_completion),
+                &recorded as *const Recorded as *mut c_void,
+            );
+        }
+
+        let (ok, payload) = recorded.wait();
+        assert!(!ok);
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(json["code"], reactor_core::error::codes::INVALID_STATE);
+        assert_eq!(json["operation"], "download_clip");
+        assert_eq!(recorded.count(), 1);
+    }
+
+    /// The output file is opened before anything is asked of the network, so a path
+    /// that cannot be written fails now rather than after a full-session recording
+    /// has been fetched. The unroutable host in the URL is the assertion: reaching
+    /// it would hang, so a prompt failure proves nothing was attempted.
+    #[test]
+    fn an_unwritable_path_fails_before_any_request_is_made() {
+        let recorded = Recorded::new();
+        let url = CString::new("http://127.0.0.1:1/hls/clip.m3u8").unwrap();
+        let out = CString::new("/nonexistent-directory/clip.mp4").unwrap();
+
+        unsafe {
+            reactor_download_clip(
+                std::ptr::null_mut(),
+                url.as_ptr(),
+                std::ptr::null(),
+                out.as_ptr(),
+                0.0,
+                -1.0,
+                0,
+                None,
+                Some(record_completion),
+                &recorded as *const Recorded as *mut c_void,
+            );
+        }
+
+        let (ok, payload) = recorded.wait();
+        assert!(!ok);
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert!(
+            json["message"]
+                .as_str()
+                .unwrap()
+                .contains("/nonexistent-directory/clip.mp4"),
+            "the message must name the path that could not be written: {payload}"
+        );
+    }
+
+    /// A partial clip is worse than none: it opens, plays some of itself, and gives
+    /// no reason to suspect the download. So a failed download leaves nothing.
+    #[test]
+    fn a_failed_download_leaves_no_partial_file_behind() {
+        let recorded = Recorded::new();
+        let out_path =
+            std::env::temp_dir().join(format!("reactor-clip-test-{}.mp4", std::process::id()));
+        let _ = std::fs::remove_file(&out_path);
+
+        // Port 1 on loopback refuses immediately, so the playlist fetch fails after
+        // the file has been created — which is the window this is about.
+        let url = CString::new("http://127.0.0.1:1/hls/clip.m3u8").unwrap();
+        let out = CString::new(out_path.to_str().unwrap()).unwrap();
+
+        unsafe {
+            reactor_download_clip(
+                std::ptr::null_mut(),
+                url.as_ptr(),
+                std::ptr::null(),
+                out.as_ptr(),
+                0.0,
+                0.0,
+                0,
+                None,
+                Some(record_completion),
+                &recorded as *const Recorded as *mut c_void,
+            );
+        }
+
+        let (ok, _payload) = recorded.wait();
+        assert!(!ok, "a refused connection is a failure");
+        assert!(
+            !out_path.exists(),
+            "a failed download must not leave {out_path:?} behind"
+        );
+    }
+
+    /// A C caller has a `double` and no type system to stop them handing over one
+    /// that is not a duration. Interpreting a NaN as one panics, and a panic inside
+    /// the detached task takes the completion with it — the binding waits for a
+    /// callback that can never come, which is exactly the hang these entry points
+    /// promise not to produce.
+    #[test]
+    fn a_timeout_that_is_not_a_number_is_refused_rather_than_left_to_panic() {
+        let recorded = Recorded::new();
+        let url = CString::new("http://127.0.0.1:1/hls/clip.m3u8").unwrap();
+        let out_path =
+            std::env::temp_dir().join(format!("reactor-clip-nan-{}.mp4", std::process::id()));
+        let _ = std::fs::remove_file(&out_path);
+        let out = CString::new(out_path.to_str().unwrap()).unwrap();
+
+        unsafe {
+            reactor_download_clip(
+                std::ptr::null_mut(),
+                url.as_ptr(),
+                std::ptr::null(),
+                out.as_ptr(),
+                0.0,
+                f64::NAN,
+                0,
+                None,
+                Some(record_completion),
+                &recorded as *const Recorded as *mut c_void,
+            );
+        }
+
+        let (ok, payload) = recorded.wait();
+        assert!(!ok);
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(json["code"], reactor_core::error::codes::INVALID_STATE);
+        assert_eq!(json["operation"], "download_clip");
+        assert_eq!(recorded.count(), 1, "a completion fires exactly once");
+        assert!(
+            !out_path.exists(),
+            "a refused argument must not have created {out_path:?}"
+        );
+    }
+
+    /// The rest of the range, which has no error in it: an infinity is how a caller
+    /// spells "no bound" when negative zero is awkward to produce, and a value past
+    /// what a `Duration` holds is a wait nothing outlives either way. Both used to
+    /// reach `Duration::from_secs_f64`, which panics on the first and overflows on
+    /// the second.
+    #[test]
+    fn every_other_timeout_a_double_can_hold_maps_to_a_bound_or_to_none() {
+        assert_eq!(readiness_timeout(-1.0).unwrap(), None);
+        assert_eq!(readiness_timeout(f64::INFINITY).unwrap(), None);
+        assert_eq!(readiness_timeout(f64::NEG_INFINITY).unwrap(), None);
+        assert_eq!(
+            readiness_timeout(5.0).unwrap(),
+            Some(std::time::Duration::from_secs(5))
+        );
+        assert_eq!(
+            readiness_timeout(0.0).unwrap(),
+            Some(std::time::Duration::ZERO)
+        );
+        assert_eq!(
+            readiness_timeout(f64::MAX).unwrap(),
+            Some(std::time::Duration::MAX)
+        );
+        assert!(readiness_timeout(f64::NAN).is_err());
+    }
+
+    /// The version exists twice — here as a constant, and in the header as the
+    /// REACTOR_ABI_VERSION macro a binding compiles against. It has to: the whole
+    /// check is "what the header said" against "what the library says", and one
+    /// number cannot compare against itself. So this is the test that keeps the two
+    /// copies one number, which is the same drift the guard exists to catch.
+    #[test]
+    fn the_headers_macro_matches_the_version_this_library_reports() {
+        const MARKER: &str = "#define REACTOR_ABI_VERSION ";
+        let header = include_str!("../include/reactor_ffi.h");
+
+        let occurrences = header.matches(MARKER).count();
+        assert_eq!(
+            occurrences, 1,
+            "reactor_ffi.h must define REACTOR_ABI_VERSION exactly once — \
+             found {occurrences}"
+        );
+
+        let declared: u32 = header
+            .split(MARKER)
+            .nth(1)
+            .and_then(|rest| rest.lines().next())
+            .expect("unreachable: the marker was just counted")
+            .trim()
+            .parse()
+            .expect("REACTOR_ABI_VERSION must be an integer");
+
+        assert_eq!(
+            declared, ABI_VERSION,
+            "reactor_ffi.h defines REACTOR_ABI_VERSION as {declared}, lib.rs \
+             reports {ABI_VERSION}. Bump both, or neither."
+        );
+        assert_eq!(reactor_abi_version(), ABI_VERSION);
     }
 
     #[test]
