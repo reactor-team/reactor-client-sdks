@@ -1,3 +1,5 @@
+'use client';
+
 import { useEffect, useRef, useState } from 'react';
 import { useReactorStore } from './ReactorProvider';
 import type { ReactorStore } from './store';

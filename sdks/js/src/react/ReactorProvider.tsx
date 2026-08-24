@@ -1,3 +1,5 @@
+'use client';
+
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createReactorStore, type ReactorStore, type StoreApi } from './store';
 import type { ConnectOptions, JwtSource, ReactorOptions } from '../types';
@@ -164,5 +166,13 @@ export function useReactorStore<T>(selector: (state: ReactorStore) => T): T {
     throw new Error('useReactor must be used within a ReactorProvider');
   }
 
-  return useSyncExternalStore(store.subscribe, () => selector(store.getState()));
+  // The same function serves as both snapshots: `createReactorStore()` is
+  // side-effect-free at construction (the wasm client only loads lazily, on
+  // first `connect()`), so the state a server render sees is identical to
+  // what the client sees before hydration — there's no divergence to
+  // reconcile. Omitting `getServerSnapshot` entirely makes React bail out of
+  // SSR for this subtree instead ("Missing getServerSnapshot").
+  const getSnapshot = () => selector(store.getState());
+
+  return useSyncExternalStore(store.subscribe, getSnapshot, getSnapshot);
 }

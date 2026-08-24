@@ -1,3 +1,5 @@
+'use client';
+
 import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { resolveJwtSource } from '../internal/jwt-resolver';
 import { RecordingError, downloadClipAsFile } from '../recording';
