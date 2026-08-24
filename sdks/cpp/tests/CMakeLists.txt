@@ -14,7 +14,18 @@ FetchContent_MakeAvailable(Catch2)
 add_executable(
   reactor_sdk_tests
   errors_test.cpp
+  ffi_test.cpp
   smoke_test.cpp
+)
+
+# The tests reach past the public headers on purpose: the boundary — string
+# ownership, the symbol table, teardown — is where a binding's bugs live, and
+# none of it is reachable through <reactor/…>.
+target_include_directories(
+  reactor_sdk_tests
+  PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+    "${REACTOR_FFI_INCLUDE_DIR}"
 )
 
 target_link_libraries(reactor_sdk_tests PRIVATE reactor::sdk Catch2::Catch2WithMain)

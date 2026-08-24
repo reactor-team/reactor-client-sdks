@@ -36,10 +36,22 @@ hooks {
         check = "mise run fmt:cpp:check"
         exclusive = true
       }
-      // The ABI is declared in three hand-written places; this catches them
-      // drifting. Text-only, so it belongs in the fast hook.
+      // The ABI is declared in more than one hand-written place; this catches
+      // them drifting, and catches a C++ source naming a symbol Rust does not
+      // export. Text-only, so it belongs in the fast hook.
+      //
+      // The Python path here used to read sdks/python/reactor/_ffi.py, which has
+      // never existed — so editing the ctypes declarations never triggered the
+      // one check that covers them.
       ["abi-parity"] {
-        glob = List("crates/reactor-ffi/src/lib.rs", "crates/reactor-ffi/include/*.h", "sdks/python/reactor/_ffi.py")
+        glob = List(
+          "crates/reactor-ffi/src/lib.rs",
+          "crates/reactor-ffi/include/*.h",
+          "sdks/python/reactor_sdk/_ffi.py",
+          "sdks/cpp/**/*.cpp",
+          "sdks/cpp/**/*.hpp",
+          "scripts/check-abi-parity.py"
+        )
         check = "mise run lint:abi"
         exclusive = true
       }
