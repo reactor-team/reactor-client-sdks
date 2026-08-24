@@ -68,117 +68,41 @@ describe('ReactorError', () => {
   });
 });
 
-describe('ReactorError.component (compatibility field, best-effort)', () => {
-  it('defaults to "api" whenever an HTTP status is present, regardless of code', () => {
-    expect(new ReactorError('boom', { code: 'TRANSPORT_ERROR', status: 500 }).component).toBe(
-      'api',
-    );
-    expect(new ReactorError('boom', { code: 'UNAUTHORIZED', status: 401 }).component).toBe('api');
-  });
-
-  it('defaults to "gpu" for data-channel/transport codes with no status', () => {
-    for (const code of [
-      'TRANSPORT_ERROR',
-      'DISCONNECTED',
-      'MESSAGE_TOO_LARGE',
-      'REQUEST_TIMEOUT',
-      'SESSION_TERMINAL',
-      'DECODE_FAILED',
+describe("toReactorError()'s code passthrough", () => {
+  it("reports reactor-core's own canonical code untouched, for every operation", () => {
+    // No operation gets a fixed compatibility code any more — `code` is
+    // always whatever `reactor-core` actually reported.
+    for (const operation of [
+      'connect',
+      'reconnect',
+      'publishTrack',
+      'unpublishTrack',
+      'sendCommand',
+      'pauseTrack',
+      'resumeTrack',
+      'uploadFile',
+      'requestSchema',
+      'setJwt',
     ]) {
-      expect(new ReactorError('boom', { code }).component).toBe('gpu');
-    }
-  });
-
-  it('defaults to "api" for every other code with no status, including an unrecognized one', () => {
-    for (const code of [
-      'NETWORK_ERROR',
-      'UNAUTHORIZED',
-      'NOT_FOUND',
-      'CONFLICT',
-      'RATE_LIMITED',
-      'BAD_REQUEST',
-      'SERVER_ERROR',
-      'VERSION_MISMATCH',
-      'INVALID_STATE',
-      'ABORTED',
-      'SOME_NEW_PLATFORM_CODE',
-    ]) {
-      expect(new ReactorError('boom', { code }).component).toBe('api');
-    }
-  });
-
-  it('defaults to "api" for a failure with no code or status at all', () => {
-    expect(new ReactorError('boom').component).toBe('api');
-  });
-
-  it('an explicit component overrides the status/code-based default', () => {
-    expect(
-      new ReactorError('boom', { code: 'TRANSPORT_ERROR', component: 'api' }).component,
-    ).toBe('api');
-  });
-});
-
-describe("toReactorError()'s code display mapping (compatibility, best-effort)", () => {
-  it('collapses every canonical code for a call-specific operation to the one fixed code that call already had', () => {
-    expect(
-      toReactorError({ operation: 'publishTrack', code: 'TRANSPORT_ERROR' }).code,
-    ).toBe('TRACK_PUBLISH_FAILED');
-    expect(
-      toReactorError({ operation: 'publishTrack', code: 'UNAUTHORIZED' }).code,
-    ).toBe('TRACK_PUBLISH_FAILED');
-    expect(
-      toReactorError({ operation: 'unpublishTrack', code: 'TRANSPORT_ERROR' }).code,
-    ).toBe('TRACK_UNPUBLISH_FAILED');
-    expect(toReactorError({ operation: 'reconnect', code: 'NETWORK_ERROR' }).code).toBe(
-      'RECONNECTION_FAILED',
-    );
-    expect(toReactorError({ operation: 'connect', code: 'UNAUTHORIZED' }).code).toBe(
-      'CONNECTION_FAILED',
-    );
-  });
-
-  it('still picks the precise typed subclass even while code is collapsed to the fixed string', () => {
-    const error = toReactorError({ operation: 'connect', code: 'UNAUTHORIZED' });
-
-    expect(error).toBeInstanceOf(UnauthorizedError);
-    expect(error.code).toBe('CONNECTION_FAILED');
-  });
-
-  it('splits sendCommand by code, matching its two previously-distinct failures', () => {
-    expect(
-      toReactorError({ operation: 'sendCommand', code: 'INVALID_STATE' }).code,
-    ).toBe('NOT_READY');
-    expect(
-      toReactorError({ operation: 'sendCommand', code: 'TRANSPORT_ERROR' }).code,
-    ).toBe('MESSAGE_SEND_FAILED');
-  });
-
-  it('maps an unprompted failure (no operation at all) to the previous unprompted transport error', () => {
-    expect(toReactorError({ code: 'TRANSPORT_ERROR' }).code).toBe('GPU_CONNECTION_ERROR');
-  });
-
-  it('does not mislabel a purely local failure (no operation, no canonical code either) as an unprompted transport drop', () => {
-    // Unlike the case above, nothing here ever reached the binding — no
-    // `code` was reported at all — so this must stay INTERNAL_ERROR rather
-    // than being relabelled GPU_CONNECTION_ERROR just because `operation`
-    // happens to be missing too.
-    expect(toReactorError({}).code).toBe('INTERNAL_ERROR');
-    expect(toReactorError(new Error('wasm import failed')).code).toBe('INTERNAL_ERROR');
-  });
-
-  it("keeps reactor-core's own code for an operation that never had a fixed code of its own", () => {
-    for (const operation of ['pauseTrack', 'resumeTrack', 'uploadFile', 'requestSchema', 'setJwt']) {
       expect(toReactorError({ operation, code: 'UNAUTHORIZED' }).code).toBe('UNAUTHORIZED');
     }
   });
 
-  it("derives component from reactor-core's canonical code, not the collapsed display code", () => {
-    // TRACK_PUBLISH_FAILED isn't in the gpu-code allowlist, but the real
-    // canonical code (TRANSPORT_ERROR) is — component must use the latter.
-    const error = toReactorError({ operation: 'publishTrack', code: 'TRANSPORT_ERROR' });
+  it('picks the typed subclass matching the canonical code, regardless of operation', () => {
+    const error = toReactorError({ operation: 'connect', code: 'UNAUTHORIZED' });
 
-    expect(error.code).toBe('TRACK_PUBLISH_FAILED');
-    expect(error.component).toBe('gpu');
+    expect(error).toBeInstanceOf(UnauthorizedError);
+    expect(error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('passes through the canonical code for an unprompted failure (no operation at all)', () => {
+    expect(toReactorError({ code: 'TRANSPORT_ERROR' }).code).toBe('TRANSPORT_ERROR');
+  });
+
+  it('falls back to INTERNAL_ERROR for a purely local failure with no code or operation', () => {
+    // Nothing here ever reached the binding — no `code` was reported at all.
+    expect(toReactorError({}).code).toBe('INTERNAL_ERROR');
+    expect(toReactorError(new Error('wasm import failed')).code).toBe('INTERNAL_ERROR');
   });
 });
 

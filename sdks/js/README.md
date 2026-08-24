@@ -103,17 +103,16 @@ handshake: `sessionCreationMs`, `transportConnectingMs`, `totalMs`.
 One class, `ReactorError`, for both the `error` event payload and a rejected
 call's error. It carries `code`, `message`, `recoverable`, `status?`,
 `operation?`, `retry_after_ms?`, `timestamp_ms`, and the compatibility
-aliases `timestamp`, `retryAfter`, and `component: "api" | "gpu"`.
+aliases `timestamp`/`retryAfter`.
 
-It's the base of a typed hierarchy keyed by `reactor-core`'s own
+It's the base of a typed hierarchy keyed by `code` — `reactor-core`'s own
 per-failure-kind classification: `NetworkError`, `UnauthorizedError`,
 `NotFoundError`, `ConflictError`, `RateLimitedError`, `BadRequestError`,
 `ServerError`, `VersionMismatchError`, `DecodeError`, `InvalidStateError`,
 `SessionTerminalError`, `MessageTooLargeError`, `TransportError`,
 `DisconnectedError`, `RequestTimeoutError`, `AbortedError`. An unrecognized
-code falls back to the base class. **Prefer `instanceof` over matching
-`error.code`** — a few operations collapse `code` to a fixed compatibility
-string, but the typed subclass always reflects the real reason:
+code falls back to the base class. `instanceof` and matching `error.code`
+are equivalent — pick whichever reads better at the call site:
 
 ```ts
 import { Reactor, ReactorError, UnauthorizedError } from "@reactor-team/js-sdk";

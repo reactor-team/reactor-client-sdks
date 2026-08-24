@@ -1020,11 +1020,9 @@ describe('Reactor error handling', () => {
 
     expect(error).toBeInstanceOf(UnauthorizedError);
     expect(error).toBeInstanceOf(ReactorError);
-    // `code` is the fixed compatibility string this SDK already reported for
-    // any connect() failure — see errors.ts's `codeForDisplay()`. The
-    // canonical UNAUTHORIZED reason still drives the subclass above.
+    // `code` is reactor-core's own canonical code, untouched by `operation`.
     expect(error).toMatchObject({
-      code: 'CONNECTION_FAILED',
+      code: 'UNAUTHORIZED',
       message: 'token expired',
       recoverable: false,
       status: 401,
@@ -1040,9 +1038,6 @@ describe('Reactor error handling', () => {
 
     reactor.on('error', onError);
 
-    // `operation: 'requestSchema'` has no fixed compatibility code of its
-    // own (see errors.ts's `codeForDisplay()`), so `code` passes through
-    // unchanged — keeping this test focused on subclass fallback.
     client.emitError({
       code: 'SOME_NEW_PLATFORM_CODE',
       message: 'model rejected the request',
@@ -1075,13 +1070,13 @@ describe('Reactor error handling', () => {
 
     await expect(reactor.connect()).rejects.toBeInstanceOf(DisconnectedError);
     await expect(reactor.connect()).rejects.toMatchObject({
-      code: 'CONNECTION_FAILED',
+      code: 'DISCONNECTED',
       message: 'the connection dropped',
       recoverable: true,
     });
     // A rejected call updates getLastError() too, not just the error event —
     // see getLastError()'s doc comment.
-    expect(reactor.getLastError()).toMatchObject({ code: 'CONNECTION_FAILED' });
+    expect(reactor.getLastError()).toMatchObject({ code: 'DISCONNECTED' });
   });
 
   it('wraps a rejected publishTrack() the same way as connect()', async () => {
@@ -1125,10 +1120,8 @@ describe('Reactor error handling', () => {
       expect(onError).toHaveBeenCalledTimes(1);
       const error = onError.mock.calls[0]![0];
 
-      expect(error).toBeInstanceOf(ReactorError);
-      // NOT_READY is the fixed compatibility code sendCommand already used
-      // for this exact case (session not ready) — see `codeForDisplay()`.
-      expect(error.code).toBe('NOT_READY');
+      expect(error).toBeInstanceOf(InvalidStateError);
+      expect(error.code).toBe('INVALID_STATE');
       expect(reactor.getLastError()).toBe(error);
     });
 
