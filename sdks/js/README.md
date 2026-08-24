@@ -75,36 +75,67 @@ to add them alongside `getStatus()`/`getSessionId()`.
 | --- | --- |
 | `statusChanged` | `ReactorStatus` |
 | `sessionIdChanged` | `string \| undefined` |
-| `error` | `ReactorError` (`code`, `message`, `recoverable`, `status?`, `operation?`, `retry_after_ms?`, `timestamp_ms`) |
+| `error` | `ReactorError` |
+| `statsUpdate` | `ConnectionStats` |
 
-A rejected call throws the same `ReactorError` shape as an `Error` with
-`name === "ReactorError"` — codes are open-ended (the platform can send its
-own), so match on the ones you can act on rather than trying to enumerate
-them all:
+## Stats and timings
 
 ```ts
+reactor.getStats();             // ConnectionStats | undefined
+reactor.getConnectionTimings();  // ConnectionTimings | undefined
+reactor.on("statsUpdate", (stats) => console.log(stats.rtt, stats.packetLossRatio));
+```
+
+While the session is `"ready"`, `getPeerConnection().getStats()` is polled
+every two seconds and reduced into a `ConnectionStats` — RTT, ICE candidate
+type, incoming/outgoing bitrate (both estimated and real-time), video FPS,
+packet loss ratio, and jitter — emitted as `statsUpdate` and readable
+directly off `getStats()`. Both are `undefined` before the first sample, and
+polling stops (clearing `getStats()`) as soon as the session leaves `"ready"`
+for any reason, not just an explicit `disconnect()`.
+
+`getConnectionTimings()` (also folded into every `ConnectionStats.connectionTimings`)
+is a millisecond breakdown of the most recent `connect()`/`reconnect()`
+handshake: `sessionCreationMs`, `transportConnectingMs`, `totalMs`.
+
+## Errors
+
+One class, `ReactorError`, for both the `error` event payload and a rejected
+call's error. It carries `code`, `message`, `recoverable`, `status?`,
+`operation?`, `retry_after_ms?`, `timestamp_ms`, and the compatibility
+aliases `timestamp`/`retryAfter`.
+
+It's the base of a typed hierarchy keyed by `code` — `reactor-core`'s own
+per-failure-kind classification: `NetworkError`, `UnauthorizedError`,
+`NotFoundError`, `ConflictError`, `RateLimitedError`, `BadRequestError`,
+`ServerError`, `VersionMismatchError`, `DecodeError`, `InvalidStateError`,
+`SessionTerminalError`, `MessageTooLargeError`, `TransportError`,
+`DisconnectedError`, `RequestTimeoutError`, `AbortedError`. An unrecognized
+code falls back to the base class. `instanceof` and matching `error.code`
+are equivalent — pick whichever reads better at the call site:
+
+```ts
+import { Reactor, ReactorError, UnauthorizedError } from "@reactor-team/js-sdk";
+
 try {
   await reactor.connect();
 } catch (error) {
-  if (error instanceof Error && error.name === "ReactorError") {
-    // error as unknown as import("@reactor-team/js-sdk").ReactorError
+  if (error instanceof UnauthorizedError) {
+    await refreshToken();
+  } else if (error instanceof ReactorError && error.recoverable) {
+    await reactor.reconnect();
   }
   throw error;
 }
 ```
 
-## Local demo
+`getLastError()` returns the most recent `ReactorError`, from either an
+`error` event or a rejected call.
 
-```bash
-mise run run:js-sdk-local   # or: make run-js-sdk-local
-```
-
-One command, run from anywhere in the repo — it builds `reactor-wasm`, builds
-this package (which copies the wasm build into `dist/wasm`), then installs
-and opens a minimal, framework-free Vite page — no React — that connects and
-logs status changes to both the console and the page. The demo depends on
-this package via `file:..`, so it always picks up whatever's freshly built
-into this package's own `dist/`.
+`sendCommand()` never throws — a failure surfaces through
+`getLastError()`/the `error` event instead, and the call resolves
+`undefined`. Every other call that can fail (`connect`, `publishTrack`,
+`uploadFile`, ...) throws normally.
 
 ## Development
 
