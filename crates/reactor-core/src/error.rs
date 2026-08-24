@@ -62,6 +62,19 @@ pub mod codes {
     pub const MESSAGE_TOO_LARGE: &str = "MESSAGE_TOO_LARGE";
     /// The operation was abandoned before it finished.
     pub const ABORTED: &str = "ABORTED";
+    /// A clip/recording request failed because the model's recorder is
+    /// disabled or has crashed.
+    ///
+    /// Unlike every other code here, this one is *not* platform-sent — the
+    /// `ClipFailed` wire message carries only a free-text `reason`, and this
+    /// is produced by matching known reason strings in
+    /// [`crate::reactor::Reactor`]'s clip-request handling. That is exactly
+    /// the string-matching fragility this module's codes are meant to avoid
+    /// (see the module doc), kept anyway as a stopgap so recorder-disabled
+    /// clip failures are distinguishable at all. REA-5403 tracks the correct
+    /// fix — a structured field on `ClipFailed` — which should replace this
+    /// once it lands.
+    pub const RECORDER_DISABLED: &str = "RECORDER_DISABLED";
     /// A failure that fits none of the above.
     pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
 }

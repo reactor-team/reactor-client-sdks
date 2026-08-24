@@ -36,7 +36,7 @@ use crate::protocol::wire::v1::platform::{
     FileUploaded, Ping, RequestClip, RequestRecording, RequestSchema,
 };
 use crate::protocol::wire::v1::track::{PauseTrack, PublishTrack, ResumeTrack, UnpublishTrack};
-use crate::recording::{clip_from_ready, Clip};
+use crate::recording::{clip_failed_code, clip_from_ready, Clip};
 use crate::runtime::timeout;
 use crate::signaling::WebRtcSignaling;
 use crate::state::ReactorStatus;
@@ -1093,7 +1093,7 @@ impl Reactor {
                 Ok(clip_from_ready(ready, self.coordinator.api_url()))
             }
             Ok(ServerPayload::ClipFailed(failed)) => Err(CoreError::Recording {
-                code: codes::INTERNAL_ERROR.to_string(),
+                code: clip_failed_code(&failed.reason).to_string(),
                 message: failed.reason,
             }),
             Ok(ServerPayload::Error(e)) => Err(CoreError::Recording {
