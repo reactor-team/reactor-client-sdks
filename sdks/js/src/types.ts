@@ -23,6 +23,15 @@ export type {
 };
 
 /**
+ * Scope tag for `sendCommand()`. This SDK has no generic runtime-scope
+ * channel — see `Reactor`'s private `sendRuntimeScopedCommand()` for what
+ * `"runtime"` actually does here (routes a couple of recognized commands to
+ * their direct equivalents, warns and falls through to a normal send for
+ * anything else).
+ */
+export type MessageScope = 'application' | 'runtime';
+
+/**
  * A reference to a file already uploaded via `uploadFile()`, passed as a
  * top-level value in `sendCommand()`'s `data` — see `extractFileRefs()`.
  *
