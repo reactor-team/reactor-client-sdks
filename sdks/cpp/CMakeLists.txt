@@ -140,8 +140,11 @@ configure_file(
 
 add_library(
   reactor_sdk
+  src/detail/dispatcher.cpp
   src/detail/ffi.cpp
+  src/detail/log.cpp
   src/errors.cpp
+  src/reactor.cpp
   src/version.cpp
 )
 add_library(reactor::sdk ALIAS reactor_sdk)
