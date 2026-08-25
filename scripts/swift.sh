@@ -120,6 +120,86 @@ collect_files() {
     done < <(swift_files)
 }
 
+# Where libreactor_ffi lives, in the order the README documents:
+#
+#   1. REACTOR_FFI_LIB — a path to the library file, the same override the
+#      Python SDK reads, so one variable points every binding at one build;
+#   2. target/release in this checkout, i.e. what `mise run build:ffi` produces.
+#
+# The XCFramework will slot in as the answer for a *consumer* when packaging
+# lands; this is the development loop, where the library is a cargo build.
+#
+# Leaves the resolved library in $FFI_LIB and its directory in $FFI_DIR, and
+# returns 1 when there is none. Both, because they answer different questions:
+# the linker is handed the file, the loader is handed the directory. And set
+# rather than printed, for the same reason as resolve_tool above — a caller
+# writing `dir="$(...)"` would run the `exit 1` below in a subshell, and a
+# REACTOR_FFI_LIB pointing at nothing would read as "no library here" and
+# silently build without it.
+find_ffi_library() {
+    local names=(libreactor_ffi.dylib libreactor_ffi.so) name
+
+    if [ -n "${REACTOR_FFI_LIB:-}" ]; then
+        if [ ! -f "$REACTOR_FFI_LIB" ]; then
+            echo "swift.sh: REACTOR_FFI_LIB is set to '$REACTOR_FFI_LIB', which is not a file." >&2
+            exit 1
+        fi
+        FFI_DIR="$(cd "$(dirname "$REACTOR_FFI_LIB")" && pwd)"
+        FFI_LIB="$FFI_DIR/$(basename "$REACTOR_FFI_LIB")"
+        return 0
+    fi
+
+    for name in "${names[@]}"; do
+        if [ -f "$REPO_ROOT/target/release/$name" ]; then
+            FFI_DIR="$REPO_ROOT/target/release"
+            FFI_LIB="$FFI_DIR/$name"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+# The test binary links libreactor_ffi, so a missing library is a link error
+# rather than a skipped assertion. Same deal as a missing toolchain: skip with
+# the fix in the message, unless CI has said otherwise — and, like resolve_tool,
+# called plainly so that both exits below are this script's.
+resolve_ffi_library() {
+    if find_ffi_library; then
+        return 0
+    fi
+    if [ -n "${REACTOR_REQUIRE_SWIFT:-}" ]; then
+        echo "swift.sh: no libreactor_ffi found, and REACTOR_REQUIRE_SWIFT is set." >&2
+        echo "  Build it with 'mise run build:ffi', or point REACTOR_FFI_LIB at one." >&2
+        exit 1
+    fi
+    echo "swift.sh: skipping - no libreactor_ffi to link against. Run 'mise run build:ffi' first."
+    exit 0
+}
+
+# Link flags for a library that is not installed anywhere the linker looks by
+# default. They are passed on the command line rather than declared in
+# Package.swift on purpose: `unsafeFlags` in a manifest makes the package
+# unusable as anyone's dependency, and this path exists only for the development
+# loop. A consumer gets the library from the XCFramework instead.
+#
+# The library is named by path rather than as `-L$dir -lreactor_ffi`, because
+# REACTOR_FFI_LIB is documented as a path to a *file*: pointed at a renamed or
+# versioned build, `-lreactor_ffi` would either resolve to a different library
+# sitting in the same directory or find nothing at all, and the override would
+# be silently ignored either way. -rpath stays the directory — that is where the
+# loader looks later, and it is a directory by definition.
+ffi_link_flags() {
+    printf '%s\n' -Xlinker "$FFI_LIB" -Xlinker -rpath -Xlinker "$FFI_DIR"
+}
+
+collect_link_flags() {
+    link_flags=()
+    while IFS= read -r flag; do
+        [ -n "$flag" ] && link_flags+=("$flag")
+    done < <(ffi_link_flags)
+}
+
 case "${1:-}" in
     format)
         resolve_tool swift-format
@@ -140,7 +220,14 @@ case "${1:-}" in
     build)
         resolve_tool swift
         swift_bin="$TOOL"
-        "$swift_bin" build --package-path "$REPO_ROOT"
+        # A library target is compiled, not linked, so this stays useful without
+        # a native library — the flags are added only when there is one.
+        if find_ffi_library; then
+            collect_link_flags
+            "$swift_bin" build --package-path "$REPO_ROOT" "${link_flags[@]}"
+        else
+            "$swift_bin" build --package-path "$REPO_ROOT"
+        fi
         ;;
     build-ios)
         resolve_tool swift
@@ -165,7 +252,9 @@ case "${1:-}" in
     test)
         resolve_tool swift
         swift_bin="$TOOL"
-        "$swift_bin" test --package-path "$REPO_ROOT"
+        resolve_ffi_library
+        collect_link_flags
+        "$swift_bin" test --package-path "$REPO_ROOT" "${link_flags[@]}"
         ;;
     *)
         usage
