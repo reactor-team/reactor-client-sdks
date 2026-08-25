@@ -49,6 +49,8 @@ final class FakeLibrary: @unchecked Sendable {
         var reconnectCalls = 0
         var status = "disconnected"
         var sessionID: String?
+        var tracksJSON = "[]"
+        var pausedJSON = "[]"
         var lastCompletion: (fn: reactor_completion_fn, userdata: UnsafeMutableRawPointer)?
         weak var lastUserdataObject: AnyObject?
         var events: [Event] = []
@@ -103,6 +105,86 @@ final class FakeLibrary: @unchecked Sendable {
 
     func setSessionID(_ sessionID: String?) {
         state.withLock { $0.sessionID = sessionID }
+    }
+
+    /// Declare tracks, in the order given — which is the order the SDK must keep.
+    func setTracks(_ tracks: [(name: String, kind: String, direction: String)]) {
+        let entries = tracks.map {
+            #"{"name":"\#($0.name)","kind":"\#($0.kind)","direction":"\#($0.direction)"}"#
+        }
+        state.withLock { $0.tracksJSON = "[" + entries.joined(separator: ",") + "]" }
+    }
+
+    /// Hand back a declaration list the SDK has to cope with rather than parse.
+    func setRawTracksJSON(_ json: String) {
+        state.withLock { $0.tracksJSON = json }
+    }
+
+    func setPausedTracks(_ names: [String]) {
+        let quoted = names.map { "\"\($0)\"" }.joined(separator: ",")
+        state.withLock { $0.pausedJSON = "[" + quoted + "]" }
+    }
+
+    /// Fire `on_track`, the way the library reports a media id arriving.
+    func fireTrack(name: String, mid: String?) {
+        guard let callbacks = state.withLock({ $0.callbacks }), let onTrack = callbacks.on_track
+        else { return }
+        name.withCString { namePointer in
+            withOptionalCString(mid) { midPointer in
+                onTrack(namePointer, midPointer, callbacks.userdata)
+            }
+        }
+    }
+
+    /// Fire `on_frame` on the calling thread, as the library's delivery thread
+    /// would — the SDK must run handlers right here rather than queueing them.
+    func fireFrame(
+        track: String,
+        width: UInt32 = 2,
+        height: UInt32 = 2,
+        frameID: UInt64 = 0,
+        captureTimeUS: UInt64 = 0,
+        userData: [UInt8]? = nil,
+        fill: UInt8 = 0xAB
+    ) {
+        guard let callbacks = state.withLock({ $0.callbacks }), let onFrame = callbacks.on_frame
+        else { return }
+        var pixels = [UInt8](repeating: fill, count: Int(width) * Int(height) * 4)
+        track.withCString { namePointer in
+            pixels.withUnsafeMutableBufferPointer { pixelBuffer in
+                let base = pixelBuffer.baseAddress
+                if var tag = userData {
+                    tag.withUnsafeMutableBufferPointer { tagBuffer in
+                        onFrame(
+                            namePointer, base, width, height, frameID, captureTimeUS,
+                            tagBuffer.baseAddress, UInt32(tagBuffer.count), callbacks.userdata)
+                    }
+                } else {
+                    onFrame(
+                        namePointer, base, width, height, frameID, captureTimeUS, nil, 0,
+                        callbacks.userdata)
+                }
+            }
+        }
+    }
+
+    /// Fire `on_audio` on the calling thread.
+    func fireAudio(
+        track: String,
+        samples: [Int16] = [1, -1, 2, -2],
+        sampleRate: UInt32 = 48000,
+        channels: UInt32 = 1
+    ) {
+        guard let callbacks = state.withLock({ $0.callbacks }), let onAudio = callbacks.on_audio
+        else { return }
+        var buffer = samples
+        track.withCString { namePointer in
+            buffer.withUnsafeMutableBufferPointer { audioBuffer in
+                onAudio(
+                    namePointer, audioBuffer.baseAddress, UInt32(audioBuffer.count), sampleRate,
+                    channels, callbacks.userdata)
+            }
+        }
     }
 
     /// Fire `on_status`, the way the library's control thread would.
@@ -208,7 +290,9 @@ final class FakeLibrary: @unchecked Sendable {
                 // Heap-allocated, for the SDK to free — the free path is only
                 // exercised if the fake really allocates.
                 return strdup(sessionID)
-            }
+            },
+            tracks: { [self] _ in strdup(state.withLock { $0.tracksJSON }) },
+            pausedTracks: { [self] _ in strdup(state.withLock { $0.pausedJSON }) }
         )
     }
 

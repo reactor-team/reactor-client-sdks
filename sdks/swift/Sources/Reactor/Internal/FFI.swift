@@ -95,6 +95,16 @@ struct FFI: Sendable {
     /// `reactor_session_id` — heap-allocated, or null when there is no session.
     /// The caller frees it.
     var sessionID: @Sendable (OpaquePointer?) -> UnsafeMutablePointer<CChar>?
+
+    /// `reactor_tracks` — the declared tracks as a JSON array, in declaration
+    /// order. `"[]"` before the session is accepted and after teardown, which is
+    /// what lets a caller tell "no tracks yet" from an unknown name.
+    /// Heap-allocated; the caller frees it.
+    var tracks: @Sendable (OpaquePointer?) -> UnsafeMutablePointer<CChar>?
+
+    /// `reactor_paused_tracks` — the paused names as a JSON array, sorted.
+    /// Heap-allocated; the caller frees it.
+    var pausedTracks: @Sendable (OpaquePointer?) -> UnsafeMutablePointer<CChar>?
 }
 
 extension FFI {
@@ -123,6 +133,8 @@ extension FFI {
             reactor_reconnect(handle, completion, userdata)
         },
         status: { handle in reactor_status(handle) },
-        sessionID: { handle in reactor_session_id(handle) }
+        sessionID: { handle in reactor_session_id(handle) },
+        tracks: { handle in reactor_tracks(handle) },
+        pausedTracks: { handle in reactor_paused_tracks(handle) }
     )
 }
