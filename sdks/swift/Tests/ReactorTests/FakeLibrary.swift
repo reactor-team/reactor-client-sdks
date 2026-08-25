@@ -61,6 +61,14 @@ final class FakeLibrary: @unchecked Sendable {
         var schemaCalls = 0
         var uploadFileCalls: [String] = []
         var uploadBytesCalls: [UploadBytesCall] = []
+        var clipCalls: [Double] = []
+        var recordingCalls = 0
+        var downloadCalls: [DownloadCall] = []
+        var lastDownload:
+            (
+                progress: reactor_progress_fn?, completion: reactor_completion_fn,
+                userdata: UnsafeMutableRawPointer
+            )?
         var lastCompletion: (fn: reactor_completion_fn, userdata: UnsafeMutableRawPointer)?
         weak var lastUserdataObject: AnyObject?
         var events: [Event] = []
@@ -105,6 +113,16 @@ final class FakeLibrary: @unchecked Sendable {
         var firstByte: UInt8?
         var name: String?
         var mimeType: String?
+    }
+
+    /// What the SDK handed `reactor_download_clip`.
+    struct DownloadCall {
+        var playlistURL: String?
+        var jwt: String?
+        var outPath: String?
+        var predictedReadyAtMS: Double
+        var readyTimeoutSeconds: Double
+        var local: Int32
     }
 
     /// What `reactor_destroy` answers: 0 (quiesced) or -1 (a callback is still
@@ -152,6 +170,42 @@ final class FakeLibrary: @unchecked Sendable {
     var schemaCalls: Int { state.withLock { $0.schemaCalls } }
     var uploadFileCalls: [String] { state.withLock { $0.uploadFileCalls } }
     var uploadBytesCalls: [UploadBytesCall] { state.withLock { $0.uploadBytesCalls } }
+    var clipCalls: [Double] { state.withLock { $0.clipCalls } }
+    var recordingCalls: Int { state.withLock { $0.recordingCalls } }
+    var downloadCalls: [DownloadCall] { state.withLock { $0.downloadCalls } }
+    var hasPendingDownload: Bool { state.withLock { $0.lastDownload != nil } }
+
+    /// Report progress on the download in flight, as the library's own download
+    /// thread would.
+    func reportDownloadProgress(done: UInt32, total: UInt32) {
+        guard let call = state.withLock({ $0.lastDownload }), let progress = call.progress else {
+            return
+        }
+        progress(done, total, call.userdata)
+    }
+
+    /// Answer the download in flight.
+    ///
+    /// Deliberately usable *after* the client is gone: this call is the one the
+    /// header says outlives the handle, and a fake that could not do that could
+    /// not test the shape that matters.
+    func completeDownload(ok: Bool, result: String? = nil, error: String? = nil) {
+        guard
+            let call = state.withLock({
+                state -> (
+                    progress: reactor_progress_fn?, completion: reactor_completion_fn,
+                    userdata: UnsafeMutableRawPointer
+                )? in
+                defer { state.lastDownload = nil }
+                return state.lastDownload
+            })
+        else { return }
+        withOptionalCString(result) { resultPointer in
+            withOptionalCString(error) { errorPointer in
+                call.completion(ok ? 1 : 0, resultPointer, errorPointer, call.userdata)
+            }
+        }
+    }
 
     /// Whether an operation is waiting on a completion the fake has not fired.
     var hasPendingCompletion: Bool { state.withLock { $0.lastCompletion != nil } }
@@ -439,6 +493,32 @@ final class FakeLibrary: @unchecked Sendable {
                             mimeType: String(borrowing: mimeType)))
                 }
                 record(completion, userdata)
+            },
+            requestClip: { [self] _, duration, completion, userdata in
+                state.withLock { $0.clipCalls.append(duration) }
+                record(completion, userdata)
+            },
+            requestRecording: { [self] _, completion, userdata in
+                state.withLock { $0.recordingCalls += 1 }
+                record(completion, userdata)
+            },
+            downloadClip: {
+                [self]
+                _, playlistURL, jwt, outPath, predicted, timeout, local, progress,
+                completion, userdata in
+                state.withLock {
+                    $0.downloadCalls.append(
+                        DownloadCall(
+                            playlistURL: String(borrowing: playlistURL),
+                            jwt: String(borrowing: jwt),
+                            outPath: String(borrowing: outPath),
+                            predictedReadyAtMS: predicted,
+                            readyTimeoutSeconds: timeout,
+                            local: local))
+                    if let completion, let userdata {
+                        $0.lastDownload = (progress, completion, userdata)
+                    }
+                }
             }
         )
     }

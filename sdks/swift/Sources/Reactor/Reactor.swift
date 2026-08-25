@@ -58,6 +58,14 @@ public final class Reactor: @unchecked Sendable {
     /// the other way round.
     private let abiBarrier = NSLock()
 
+    /// The token this client authenticates with, which a clip download needs
+    /// too: the coordinator-hosted playlist is fetched with it.
+    let jwt: String?
+
+    /// Whether this client was created for a local coordinator, whose
+    /// certificate a download has to accept as well.
+    let isLocal: Bool
+
     /// Everything mutable, in one place, behind one lock.
     struct State {
         var handle: OpaquePointer?
@@ -90,6 +98,10 @@ public final class Reactor: @unchecked Sendable {
         /// is about a connection that no longer exists. See
         /// `Reactor+Sending.swift`.
         var publishGeneration: UInt64 = 0
+
+        /// Clip downloads in flight. Unlike `pending`, these are **not** bounded
+        /// by reactor_destroy — see DownloadOperation.
+        var downloads: [ObjectIdentifier: DownloadOperation] = [:]
     }
 
     // MARK: - Lifecycle
@@ -136,6 +148,8 @@ public final class Reactor: @unchecked Sendable {
 
         self.ffi = ffi
         self.dispatcher = eventQueue.map(EventDispatcher.init(queue:)) ?? EventDispatcher()
+        self.jwt = jwt
+        self.isLocal = local
 
         // Mirrors the Python SDK: asking for local dev without naming a URL
         // means the local coordinator, not the production one over plaintext.
@@ -241,6 +255,11 @@ public final class Reactor: @unchecked Sendable {
         }
 
         guard let handle else { return }
+
+        // Downloads first, and separately: reactor_destroy bounds the calls
+        // above, but a download was told to outlive this handle. Its caller has
+        // to be settled by us or by nobody.
+        abandonDownloads()
 
         // Settle first, destroy second. An operation the library will now never
         // answer leaves its caller awaiting for the life of the process, and a
