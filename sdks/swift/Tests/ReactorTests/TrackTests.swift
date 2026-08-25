@@ -448,9 +448,13 @@ struct TrackTests {
         #expect(count.withLock { $0 } == 1)
     }
 
-    @Test("closing stops delivery without reaching into a freed client")
-    func framesAfterCloseAreDropped() throws {
+    @Test("after a destroy that could not quiesce, a late frame finds no handlers")
+    func lateFrameAfterUnquiescedCloseIsDropped() throws {
         let fake = FakeLibrary()
+        // -1 is the one case where a callback can still arrive: it means one was
+        // in flight and could not be waited for, which is why the SDK keeps the
+        // callback context alive forever instead of releasing it.
+        fake.destroyResult = -1
         declaringSession(fake)
         let client = try makeClient(fake: fake)
 
@@ -460,10 +464,17 @@ struct TrackTests {
         defer { subscription.cancel() }
 
         client.close()
-        // reactor_destroy promises no callback starts after it answers 0, but a
-        // fake can be ruder than the library — and the SDK still has to cope.
         fake.fireFrame(track: "main_video")
 
+        // The context is alive, so the trampoline resolves; the handlers are
+        // gone, so the frame is dropped. That is the whole promise of the -1
+        // path: safe, and silent.
         #expect(count.withLock { $0 } == 0)
+
+        // Firing after a destroy that answered *0* is not tested, and cannot be:
+        // the header says no callback starts after that, so the SDK releases the
+        // context the trampoline would read. A fake that fires anyway crashes in
+        // swift_weakLoadStrong — which is what this test used to do, and what the
+        // fake now refuses.
     }
 }

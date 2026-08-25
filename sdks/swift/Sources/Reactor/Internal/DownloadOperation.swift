@@ -89,7 +89,7 @@ final class DownloadOperation: @unchecked Sendable {
 
     private func decode(_ payload: String?) -> Result<DownloadResult, any Error> {
         guard let payload, let data = payload.data(using: .utf8),
-            let object = try? JSONDecoder().decode(JSONValue.self, from: data),
+            let object = try? JSON.decoder().decode(JSONValue.self, from: data),
             let path = object["path"]?.stringValue
         else {
             return .failure(
