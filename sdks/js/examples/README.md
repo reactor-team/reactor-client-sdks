@@ -26,9 +26,14 @@ block says where that's written down: the model's published schema.
 ## Running one
 
 Each example is its own Vite app (`@reactor-team/js-sdk` linked in from the
-SDK's working tree, `file:../..`), not a shared harness:
+SDK's working tree, `file:../..`), not a shared harness. The SDK itself has
+to be built first — `file:` links to the package's `dist/`, which isn't
+checked in and isn't produced by a plain `npm install`:
 
 ```bash
+mise run build:wasm            # from the repo root, once
+mise run build:js              # tsup -> sdks/js/dist/
+
 cd sdks/js/examples/01-connect-and-receive   # or any other example
 export REACTOR_API_KEY=...                   # https://www.reactor.inc/account/api-keys
 npm install

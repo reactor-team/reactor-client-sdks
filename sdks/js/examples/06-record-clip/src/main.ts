@@ -7,17 +7,9 @@ import {
 
 // 06 — Ask for a clip, then download it.
 //
-// `requestClip()` asks for the last N seconds and returns as soon as the
-// platform accepts the request — it does not block until the manifest is
-// actually fetchable. `downloadClipAsFile()` is what waits: it polls past
-// `clip.predictedReadyAtMs` until the manifest is ready, fetches the chunks
-// it references, and remuxes them into one downloadable MP4.
-//
-// Readiness is in *media* time, not wall clock: a snap clip's window ends
-// at "now", so its boundary chunk is always the one still open — and it
-// only closes because the model keeps generating. That's why the wait has
-// no fixed deadline here; `requestRecording()` is the same call for the
-// whole session.
+// `requestClip()` returns as soon as the platform accepts the request, not
+// once the manifest is fetchable — `downloadClipAsFile()` is what waits and
+// remuxes the chunks into one MP4.
 //
 //   export REACTOR_API_KEY=...
 //   npm run dev
@@ -55,9 +47,7 @@ async function fetchToken(): Promise<string> {
 
 const reactor = new Reactor({ modelName: MODEL_NAME, jwt: fetchToken });
 let frameCount = 0;
-// Cancels an in-flight recordButton click's poll/download — otherwise a
-// disconnect while one is waiting leaves it polling a session that will
-// never produce another chunk.
+// Cancels an in-flight download so a disconnect doesn't leave it polling forever.
 let downloadController: AbortController | undefined;
 
 reactor.on('statusChanged', (status) => {
@@ -72,8 +62,6 @@ reactor.on('statusChanged', (status) => {
   log(`status: ${status}`);
 });
 
-// Where a session end announces itself, among the runtime's other traffic —
-// worth having in the log when a clip never becomes ready.
 reactor.on('message', (message) => {
   log(`message: ${JSON.stringify(message)}`);
 });
@@ -84,20 +72,29 @@ reactor.on('trackReceived', (name, track) => {
     return;
   }
   videoEl.srcObject = new MediaStream([track]);
-  if (!('requestVideoFrameCallback' in videoEl)) {
-    return; // Safari/Firefox as of this writing — the recorder still works.
-  }
-  const onFrame = () => {
+
+  // Nothing to cut until a frame has actually been fed to the recorder.
+  const armRecordButton = () => {
     frameCount++;
-    // The recorder has nothing to cut until a frame has actually been fed
-    // to it; asking before that fails with "no media generated yet".
     if (frameCount === 1) {
       recordButton.disabled = false;
     }
-    videoEl.requestVideoFrameCallback(onFrame);
   };
 
-  videoEl.requestVideoFrameCallback(onFrame);
+  const hasFrameCallback = typeof (videoEl as { requestVideoFrameCallback?: unknown }).requestVideoFrameCallback === 'function';
+
+  if (hasFrameCallback) {
+    const onFrame = () => {
+      armRecordButton();
+      videoEl.requestVideoFrameCallback(onFrame);
+    };
+
+    videoEl.requestVideoFrameCallback(onFrame);
+  } else {
+    // Safari/Firefox as of this writing — no per-frame callback, so the
+    // first 'timeupdate' is the readiness signal instead.
+    videoEl.addEventListener('timeupdate', armRecordButton, { once: true });
+  }
 });
 
 reactor.on('error', (error) => {
@@ -131,21 +128,10 @@ recordButton.addEventListener('click', async () => {
       log('warning: the session has less video than the window asked for');
     }
 
-    const deadline = Math.max(clip.predictedReadyAtMs, Date.now()) + DEFAULT_PLAYLIST_POLL_SLACK_MS;
-
-    log(
-      'waiting for the recorder to pass the end of the window... ' +
-        `(runtime predicts ready at ${new Date(clip.predictedReadyAtMs).toLocaleTimeString()}, ` +
-        `giving up at ${new Date(deadline).toLocaleTimeString()} if it isn't)`,
-    );
     const jwt = await fetchToken();
 
     downloadController = new AbortController();
-    // `downloadClipAsFile()` polls its manifest with no bound of its own —
-    // fine for a clip that's genuinely seconds away, but a boundary chunk
-    // that never closes (session dropped, model stopped generating) would
-    // otherwise retry every 200ms–2s forever. Gating on a bounded
-    // `fetchPlaylist()` first turns that into one clear error instead.
+    // Bounded first pass — downloadClipAsFile() itself polls with no limit.
     await fetchPlaylist(clip.playlistUrl, {
       predictedReadyAtMs: clip.predictedReadyAtMs,
       slackMs: DEFAULT_PLAYLIST_POLL_SLACK_MS,
@@ -159,9 +145,7 @@ recordButton.addEventListener('click', async () => {
     });
     log('saved: reactor-clip.mp4');
   } catch (error) {
-    // requestClip()/downloadClipAsFile() throw rather than going through the
-    // `error` event — without this, a rejection here is just an unhandled
-    // promise rejection in devtools, invisible in the on-page log.
+    // These throw rather than going through the 'error' event.
     log(`error: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     downloadController = undefined;
