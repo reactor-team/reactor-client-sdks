@@ -58,7 +58,50 @@ let package = Package(
         .target(
             name: "Reactor",
             dependencies: ["CReactorFFI"],
-            path: "sdks/swift/Sources/Reactor"
+            path: "sdks/swift/Sources/Reactor",
+            // The frameworks libwebrtc needs at final link.
+            //
+            // A **static** library carries none of the link flags its build
+            // emitted: `reactor-webrtc-sys`'s build.rs prints them for a cargo
+            // link, and nothing survives into the archive. So the app that links
+            // this package is where they have to be declared, which is here —
+            // and a missing one is an undefined-symbol failure in the
+            // *consumer's* build, naming a symbol they have never heard of.
+            //
+            // `Network` is on the iOS list and **not** in what build.rs emits:
+            // libwebrtc's RTCNetworkMonitor calls nw_path_monitor_create and
+            // friends, and an iOS link without it fails with nine undefined
+            // `_nw_*` symbols. Found by linking, not by reading the list. The
+            // gap is upstream's; declaring it here is what makes this package
+            // usable in the meantime.
+            //
+            // scripts/build-swift-xcframework.sh links an iOS cdylib against
+            // exactly this list, so a framework going missing is a failed build
+            // here rather than a failed build in someone's app.
+            linkerSettings: [
+                .linkedLibrary("c++"),
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("AudioToolbox"),
+                .linkedFramework("CoreAudio"),
+                .linkedFramework("CoreFoundation"),
+                .linkedFramework("CoreGraphics"),
+                .linkedFramework("CoreMedia"),
+                .linkedFramework("CoreVideo"),
+                .linkedFramework("Foundation"),
+                .linkedFramework("Metal"),
+                .linkedFramework("VideoToolbox"),
+                .linkedFramework("Network", .when(platforms: [.iOS])),
+                .linkedFramework("UIKit", .when(platforms: [.iOS])),
+                .linkedFramework("AppKit", .when(platforms: [.macOS])),
+                .linkedFramework("CoreImage", .when(platforms: [.macOS])),
+                .linkedFramework("IOKit", .when(platforms: [.macOS])),
+                .linkedFramework("IOSurface", .when(platforms: [.macOS])),
+                .linkedFramework("OpenGL", .when(platforms: [.macOS])),
+                .linkedFramework("QuartzCore", .when(platforms: [.macOS])),
+                .linkedFramework("ScreenCaptureKit", .when(platforms: [.macOS])),
+                .linkedFramework("Security", .when(platforms: [.macOS])),
+                .linkedFramework("SystemConfiguration", .when(platforms: [.macOS])),
+            ]
         ),
         .testTarget(
             name: "ReactorTests",
