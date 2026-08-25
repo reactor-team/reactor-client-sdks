@@ -362,24 +362,25 @@ struct ReactorLifetimeTests {
     }
 
     @Test("closing with an operation in flight settles the caller instead of hanging")
-    func closeSettlesPendingOperations() throws {
+    func closeSettlesPendingOperations() async throws {
         let fake = FakeLibrary()
         let client = try makeClient(fake: fake)
 
-        // The awaiting caller is watched through a semaphore rather than by
-        // awaiting it, and that shape is deliberate. **A continuation that is
-        // never resumed ignores cancellation**, so neither `Task.cancel()` nor
+        // The awaiting caller is watched through a flag rather than by awaiting
+        // it, and that shape is deliberate. **A continuation that is never
+        // resumed ignores cancellation**, so neither `Task.cancel()` nor
         // swift-testing's `.timeLimit` can bound this: regressing the fix and
         // awaiting the task hangs the whole run indefinitely — I watched it pass
-        // ten minutes. Waiting on a semaphore instead means the regression *fails*
-        // this test in two seconds, which is what a test is for.
-        let settled = DispatchSemaphore(value: 0)
+        // ten minutes. Watching a flag instead means the regression *fails* this
+        // test in seconds, which is what a test is for.
+        let settled = Locked(false)
         let outcome = Locked<(any Error)?>(nil)
         Task {
             do { try await client.connect() } catch { outcome.withLock { $0 = error } }
-            settled.signal()
+            settled.withLock { $0 = true }
         }
-        #expect(waitForPendingCallSync(fake), "the SDK never called the library")
+
+        #expect(await waitUntil { fake.hasPendingCompletion }, "the SDK never called the library")
 
         // The completion is never fired. Without teardown settling it, this
         // caller waits for the life of the process — the exact failure the C++
@@ -387,7 +388,7 @@ struct ReactorLifetimeTests {
         client.close()
 
         #expect(
-            settled.wait(timeout: .now() + 2) == .success,
+            await waitUntil { settled.withLock { $0 } },
             "close must settle an operation the library will never answer")
         #expect((outcome.withLock { $0 } as? ReactorError)?.code == .aborted)
     }
@@ -405,19 +406,6 @@ struct ReactorLifetimeTests {
             #expect(error.code == .invalidState)
             #expect(fake.connectCalls == 0)
         }
-    }
-
-    /// The synchronous twin, for the one test that must not be `async`:
-    /// `DispatchSemaphore.wait` is unavailable from an async context, and a
-    /// semaphore is the only thing that can bound a wait on a task that may never
-    /// finish.
-    private func waitForPendingCallSync(_ fake: FakeLibrary, timeout: TimeInterval = 2) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !fake.hasPendingCompletion {
-            if Date() > deadline { return false }
-            usleep(2000)
-        }
-        return true
     }
 
     /// Wait until the fake has an operation recorded, so a test can answer it.
