@@ -80,6 +80,43 @@ error. `reactor_abi_version()` turns that into a message — the SDK compares it
 against the header it was compiled with and refuses to run on a mismatch — but
 only if the library on disk is the one you think it is.
 
+## The XCFramework
+
+A release carries `libreactor_ffi` as an XCFramework, which is what a consumer
+links against — there is no source distribution, because building the native
+library needs a Rust toolchain and a libwebrtc download.
+
+```bash
+mise run build:xcframework    # four slices, then create-xcframework
+mise run test:swift:package   # consume it, move the tree, build and run again
+```
+
+| Slice | Architectures | Minimum |
+|---|---|---|
+| macOS | arm64 + x86_64 (one lipo'd slice) | 13.0 — libwebrtc's x86_64 build requires it, and one slice cannot claim two minimums |
+| iOS device | arm64 | 16.0 |
+| iOS simulator | arm64 | 16.0 |
+
+**The Intel-Mac simulator is not supported.** `reactor-webrtc-sys` maps
+`x86_64-apple-ios` to the *arm64* simulator archive, so such a build would link
+the wrong architecture.
+
+**visionOS** is reached through compatibility mode, on the iOS device slice —
+there is no `xros` prebuilt libwebrtc, and a native visionOS target needs one.
+
+### The frameworks a static library cannot carry
+
+`Package.swift` declares the Apple frameworks libwebrtc needs at final link.
+A static library carries none of the flags its own build emitted, so the app
+that links this package is where they have to be declared — and a missing one
+surfaces as undefined symbols in *the consumer's* build.
+
+`Network` is on that list and is **not** among the flags
+`reactor-webrtc-sys`'s `build.rs` emits for iOS: libwebrtc's `RTCNetworkMonitor`
+calls `nw_path_monitor_create` and friends. `build:xcframework` links an iOS
+dylib against exactly the list in the manifest, so a framework going missing
+fails there rather than in someone's app.
+
 ## Layout
 
 | Path | |

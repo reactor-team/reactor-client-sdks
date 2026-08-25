@@ -390,6 +390,22 @@ run = "scripts/swift.sh build-ios"
 description = "[Testing] Swift SDK tests via swift-testing"
 run = "scripts/swift.sh test"
 
+[tasks."build:xcframework"]
+description = "[Build] Build ReactorFFI.xcframework (macOS + iOS device + iOS simulator)"
+# Four target triples, each downloading its own prebuilt libwebrtc — minutes, and
+# about 13 GB of build tree if nothing is pruned. REACTOR_XCFRAMEWORK_PRUNE=1
+# keeps only one triple at a time, which is what CI sets and what a 14 GB runner
+# needs.
+run = "scripts/build-swift-xcframework.sh"
+
+[tasks."test:swift:package"]
+description = "[Testing] Consume the XCFramework from a throwaway package, move it, build again"
+# The relocation proof. Checking an install tree in place cannot see a baked-in
+# absolute path, because on the machine that produced it every such path still
+# resolves — the same reason scripts/cpp-package-check.sh exists.
+depends = ["build:xcframework"]
+run = "scripts/swift-package-check.sh"
+
 # ── Lints ─────────────────────────────────────────────────────────────────────
 
 [tasks."lint:abi"]
