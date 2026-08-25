@@ -78,6 +78,16 @@ public final class Reactor: @unchecked Sendable {
         /// library's delivery thread.
         var videoHandlers: [String: [UUID: VideoSink]] = [:]
         var audioHandlers: [String: [UUID: @Sendable (AudioFrame) -> Void]] = [:]
+
+        /// Which send slots this client believes it has published. The session
+        /// records none of this — see PublishState.
+        var publishStates: [String: PublishState] = [:]
+
+        /// Bumped every time the publish states are dropped wholesale, so a
+        /// publish that was in flight across the drop can tell that its answer
+        /// is about a connection that no longer exists. See
+        /// `Reactor+Sending.swift`.
+        var publishGeneration: UInt64 = 0
     }
 
     // MARK: - Lifecycle
@@ -219,6 +229,8 @@ public final class Reactor: @unchecked Sendable {
             state.videoHandlers = [:]
             state.audioHandlers = [:]
             state.mids = [:]
+            state.publishStates = [:]
+            state.publishGeneration &+= 1
             return (handle, context, pending)
         }
 
@@ -395,9 +407,18 @@ public final class Reactor: @unchecked Sendable {
 
     /// Deliver a status the library reported. Called on an FFI thread.
     func deliver(status text: String) {
+        let status = ReactorStatus(ffiValue: text)
+
+        // Before any handler runs, and whether or not anyone is listening: a
+        // reconnect resumes recvonly tracks and nothing else, so a slot
+        // published before one is not published after it. Remembering otherwise
+        // is a caller pushing at 30fps into a slot with no sender behind it.
+        if status != .ready {
+            clearPublishStates()
+        }
+
         let handlers = state.withLock { Array($0.statusHandlers.values) }
         guard !handlers.isEmpty else { return }
-        let status = ReactorStatus(ffiValue: text)
         dispatcher.post {
             for handler in handlers { handler(status) }
         }
@@ -420,10 +441,21 @@ public final class Reactor: @unchecked Sendable {
         state.withLock { $0.pending[ObjectIdentifier(operation)] = nil }
     }
 
+    /// The live handle, or a refusal naming what the caller tried to do.
+    func requireOpenHandle(method: String, track name: String) throws -> OpaquePointer {
+        guard let handle = state.withLock({ $0.closed ? nil : $0.handle }) else {
+            throw ReactorError(
+                .invalidState,
+                "the client is closed, so \(method) on '\(name)' cannot run.",
+                operation: method)
+        }
+        return handle
+    }
+
     // MARK: - Calling the library
 
     /// Run one async FFI operation and wait for its completion.
-    private func perform(
+    func perform(
         _ operation: String,
         _ call: @escaping (OpaquePointer, reactor_completion_fn, UnsafeMutableRawPointer) -> Void
     ) async throws -> String? {

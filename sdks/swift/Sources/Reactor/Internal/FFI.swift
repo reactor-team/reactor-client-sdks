@@ -105,6 +105,59 @@ struct FFI: Sendable {
     /// `reactor_paused_tracks` — the paused names as a JSON array, sorted.
     /// Heap-allocated; the caller frees it.
     var pausedTracks: @Sendable (OpaquePointer?) -> UnsafeMutablePointer<CChar>?
+
+    /// `reactor_publish_track` — activates the send slot. Attaching media is
+    /// separate, and pushing before this completes drops the frame.
+    var publishTrack:
+        @Sendable (
+            OpaquePointer?, UnsafePointer<CChar>?, reactor_completion_fn?,
+            UnsafeMutableRawPointer?
+        ) -> Void
+
+    /// `reactor_unpublish_track` — synchronous, because it is a local status
+    /// change plus a fire-and-forget notification rather than a round trip.
+    ///
+    /// Null on success. On failure, a heap JSON error object the caller frees.
+    var unpublishTrack:
+        @Sendable (OpaquePointer?, UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
+
+    /// `reactor_pause_track` — deactivates a track's transceiver.
+    var pauseTrack:
+        @Sendable (
+            OpaquePointer?, UnsafePointer<CChar>?, reactor_completion_fn?,
+            UnsafeMutableRawPointer?
+        ) -> Void
+
+    /// `reactor_resume_track` — re-activates it.
+    var resumeTrack:
+        @Sendable (
+            OpaquePointer?, UnsafePointer<CChar>?, reactor_completion_fn?,
+            UnsafeMutableRawPointer?
+        ) -> Void
+
+    /// `reactor_push_video_frame_with_metadata_at` — BGRA pixels, optionally
+    /// tagged, optionally stamped with the caller's own capture time.
+    ///
+    /// The one push the SDK calls: the plain and tagged variants are this one
+    /// with nothing to tag and nothing to stamp, so there is a single path to
+    /// get wrong rather than three.
+    var pushVideoFrame:
+        @Sendable (
+            _ handle: OpaquePointer?, _ track: UnsafePointer<CChar>?,
+            _ pixels: UnsafePointer<UInt8>?, _ width: UInt32, _ height: UInt32,
+            _ userData: UnsafePointer<UInt8>?, _ userDataLen: UInt32,
+            _ captureTimeUs: Int64
+        ) -> Void
+
+    /// `reactor_push_audio_frame` — interleaved i16 PCM.
+    var pushAudioFrame:
+        @Sendable (
+            OpaquePointer?, UnsafePointer<CChar>?, UnsafePointer<Int16>?, UInt32, UInt32, UInt32
+        ) -> Void
+
+    /// `reactor_time_micros` — the engine's monotonic clock, which is the epoch
+    /// a capture time is read in. Not the UNIX epoch, and it takes no handle.
+    var timeMicros: @Sendable () -> Int64
 }
 
 extension FFI {
@@ -135,6 +188,25 @@ extension FFI {
         status: { handle in reactor_status(handle) },
         sessionID: { handle in reactor_session_id(handle) },
         tracks: { handle in reactor_tracks(handle) },
-        pausedTracks: { handle in reactor_paused_tracks(handle) }
+        pausedTracks: { handle in reactor_paused_tracks(handle) },
+        publishTrack: { handle, name, completion, userdata in
+            reactor_publish_track(handle, name, completion, userdata)
+        },
+        unpublishTrack: { handle, name in reactor_unpublish_track(handle, name) },
+        pauseTrack: { handle, name, completion, userdata in
+            reactor_pause_track(handle, name, completion, userdata)
+        },
+        resumeTrack: { handle, name, completion, userdata in
+            reactor_resume_track(handle, name, completion, userdata)
+        },
+        pushVideoFrame: { handle, track, pixels, width, height, userData, userDataLen, captureAt in
+            reactor_push_video_frame_with_metadata_at(
+                handle, track, pixels, width, height, userData, userDataLen, captureAt)
+        },
+        pushAudioFrame: { handle, track, samples, samplesPerChannel, sampleRate, channels in
+            reactor_push_audio_frame(
+                handle, track, samples, samplesPerChannel, sampleRate, channels)
+        },
+        timeMicros: { reactor_time_micros() }
     )
 }

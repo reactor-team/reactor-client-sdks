@@ -51,6 +51,12 @@ final class FakeLibrary: @unchecked Sendable {
         var sessionID: String?
         var tracksJSON = "[]"
         var pausedJSON = "[]"
+        var publishCalls: [String] = []
+        var unpublishCalls: [String] = []
+        var pauseCalls: [String] = []
+        var resumeCalls: [String] = []
+        var pushedFrames: [PushedFrame] = []
+        var pushedAudio: [PushedAudio] = []
         var lastCompletion: (fn: reactor_completion_fn, userdata: UnsafeMutableRawPointer)?
         weak var lastUserdataObject: AnyObject?
         var events: [Event] = []
@@ -62,9 +68,33 @@ final class FakeLibrary: @unchecked Sendable {
     /// A pointer that is unique and dereferenceable but is not a client.
     private let handle = UnsafeMutableRawPointer.allocate(byteCount: 1, alignment: 1)
 
+    /// What the SDK handed `reactor_push_video_frame_with_metadata_at`.
+    struct PushedFrame {
+        var track: String?
+        var width: UInt32
+        var height: UInt32
+        var firstByte: UInt8?
+        var byteCount: Int
+        var userData: String?
+        var captureTimeUs: Int64
+    }
+
+    /// What the SDK handed `reactor_push_audio_frame`.
+    struct PushedAudio {
+        var track: String?
+        var samples: [Int16]
+        var samplesPerChannel: UInt32
+        var sampleRate: UInt32
+        var channels: UInt32
+    }
+
     /// What `reactor_destroy` answers: 0 (quiesced) or -1 (a callback is still
     /// running and the pointers must be kept alive).
     var destroyResult: Int32 = 0
+
+    /// A JSON error object `reactor_unpublish_track` should answer with, or nil
+    /// for success.
+    var unpublishFailure: String?
 
     /// Which ABI version the fake library claims to speak.
     var abiVersion: UInt32 = ABI.compiledAgainst
@@ -93,6 +123,12 @@ final class FakeLibrary: @unchecked Sendable {
     var connectCalls: Int { state.withLock { $0.connectCalls } }
     var disconnectCalls: Int { state.withLock { $0.disconnectCalls } }
     var reconnectCalls: Int { state.withLock { $0.reconnectCalls } }
+    var publishCalls: [String] { state.withLock { $0.publishCalls } }
+    var unpublishCalls: [String] { state.withLock { $0.unpublishCalls } }
+    var pauseCalls: [String] { state.withLock { $0.pauseCalls } }
+    var resumeCalls: [String] { state.withLock { $0.resumeCalls } }
+    var pushedFrames: [PushedFrame] { state.withLock { $0.pushedFrames } }
+    var pushedAudio: [PushedAudio] { state.withLock { $0.pushedAudio } }
 
     /// Whether an operation is waiting on a completion the fake has not fired.
     var hasPendingCompletion: Bool { state.withLock { $0.lastCompletion != nil } }
@@ -292,7 +328,58 @@ final class FakeLibrary: @unchecked Sendable {
                 return strdup(sessionID)
             },
             tracks: { [self] _ in strdup(state.withLock { $0.tracksJSON }) },
-            pausedTracks: { [self] _ in strdup(state.withLock { $0.pausedJSON }) }
+            pausedTracks: { [self] _ in strdup(state.withLock { $0.pausedJSON }) },
+            publishTrack: { [self] _, name, completion, userdata in
+                state.withLock { $0.publishCalls.append(String(borrowing: name) ?? "") }
+                record(completion, userdata)
+            },
+            unpublishTrack: { [self] _, name in
+                state.withLock { $0.unpublishCalls.append(String(borrowing: name) ?? "") }
+                guard let failure = unpublishFailure else { return nil }
+                // Heap-allocated on failure, for the SDK to free.
+                return strdup(failure)
+            },
+            pauseTrack: { [self] _, name, completion, userdata in
+                state.withLock { $0.pauseCalls.append(String(borrowing: name) ?? "") }
+                record(completion, userdata)
+            },
+            resumeTrack: { [self] _, name, completion, userdata in
+                state.withLock { $0.resumeCalls.append(String(borrowing: name) ?? "") }
+                record(completion, userdata)
+            },
+            pushVideoFrame: { [self] _, track, pixels, width, height, userData, userDataLen, at in
+                let byteCount = Int(width) * Int(height) * 4
+                let tag = userData.flatMap { pointer -> String? in
+                    guard userDataLen > 0 else { return nil }
+                    let buffer = UnsafeBufferPointer(start: pointer, count: Int(userDataLen))
+                    return String(decoding: buffer, as: UTF8.self)
+                }
+                state.withLock {
+                    $0.pushedFrames.append(
+                        PushedFrame(
+                            track: String(borrowing: track),
+                            width: width,
+                            height: height,
+                            firstByte: pixels?.pointee,
+                            byteCount: byteCount,
+                            userData: tag,
+                            captureTimeUs: at))
+                }
+            },
+            pushAudioFrame: { [self] _, track, samples, perChannel, sampleRate, channels in
+                let count = Int(perChannel) * Int(channels)
+                let values = samples.map { Array(UnsafeBufferPointer(start: $0, count: count)) }
+                state.withLock {
+                    $0.pushedAudio.append(
+                        PushedAudio(
+                            track: String(borrowing: track),
+                            samples: values ?? [],
+                            samplesPerChannel: perChannel,
+                            sampleRate: sampleRate,
+                            channels: channels))
+                }
+            },
+            timeMicros: { 1_234_000 }
         )
     }
 
