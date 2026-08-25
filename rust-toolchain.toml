@@ -7,4 +7,22 @@ targets = [
     # reactor-wasm (the browser binding). CI installs the toolchain from
     # this file, so listing it here is what makes `clippy:wasm` runnable.
     "wasm32-unknown-unknown",
+    # The Swift SDK's XCFramework slices. reactor-webrtc-sys publishes a
+    # prebuilt libwebrtc for each of these and for no other Apple target.
+    #
+    # x86_64-apple-darwin is Intel-Mac support, and it is supported: the
+    # XCFramework's macOS slice is one archive with both architectures lipo'd
+    # into it, so a Mac of either kind links the same library. It is also what
+    # sets the macOS floor at 13 in Package.swift — libwebrtc's x86_64 build is
+    # made for 13 where its arm64 build goes down to 11.
+    #
+    # x86_64-apple-ios is the one Apple target deliberately absent, and it is
+    # the Intel *simulator* rather than an Intel Mac: prebuilt_platform() maps
+    # it to the *arm64* simulator archive, so such a build would link the wrong
+    # architecture. There is no xros token at all, which is why a native
+    # visionOS target is not here — visionOS runs the iOS build in
+    # compatibility mode instead.
+    "x86_64-apple-darwin",
+    "aarch64-apple-ios",
+    "aarch64-apple-ios-sim",
 ]

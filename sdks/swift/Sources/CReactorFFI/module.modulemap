@@ -1,0 +1,15 @@
+// The C ABI of `reactor-ffi`, as Swift sees it.
+//
+// The header is reached by a relative path into the crate rather than copied
+// here, deliberately: a copy is a second declaration of the same ABI, and the
+// repository already carries three of those (lib.rs, this header, and the
+// Python binding's ctypes module) with a script to keep them honest. Reading
+// the crate's own header means Swift can never be the copy that drifted.
+//
+// No `link` directive yet — nothing calls into the library at this point in the
+// stack, so nothing needs it at link time. The FFI layer adds it along with the
+// symbol table it goes through.
+module CReactorFFI {
+    header "../../../../crates/reactor-ffi/include/reactor_ffi.h"
+    export *
+}
