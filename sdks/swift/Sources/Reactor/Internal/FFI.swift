@@ -46,6 +46,17 @@ struct FFI: Sendable {
     /// is the only place the SDK calls this, so the distinction is made once.
     var freeString: @Sendable (UnsafeMutablePointer<CChar>?) -> Void
 
+    /// `reactor_fetch_jwt` — exchange an API key for a token.
+    ///
+    /// Takes **no handle**, so nothing bounds its completion: the context must
+    /// live until the completion fires and be released from inside it.
+    var fetchJWT:
+        @Sendable (
+            _ apiURL: UnsafePointer<CChar>?, _ apiKey: UnsafePointer<CChar>?,
+            _ optionsJSON: UnsafePointer<CChar>?, _ local: Int32,
+            _ completion: reactor_completion_fn?, _ userdata: UnsafeMutableRawPointer?
+        ) -> Void
+
     /// `reactor_create_with_adm` — a client, with the audio device module named
     /// explicitly.
     ///
@@ -224,6 +235,9 @@ extension FFI {
     static let system = FFI(
         abiVersion: { reactor_abi_version() },
         freeString: { pointer in reactor_free_string(pointer) },
+        fetchJWT: { apiURL, apiKey, optionsJSON, local, completion, userdata in
+            reactor_fetch_jwt(apiURL, apiKey, optionsJSON, local, completion, userdata)
+        },
         createWithADM: { apiURL, model, jwt, local, callbacks, admMode, sdkVersion, sdkType in
             reactor_create_with_adm(
                 apiURL, model, jwt, local, callbacks, admMode, sdkVersion, sdkType)
