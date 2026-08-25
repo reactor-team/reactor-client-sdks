@@ -57,6 +57,10 @@ final class FakeLibrary: @unchecked Sendable {
         var resumeCalls: [String] = []
         var pushedFrames: [PushedFrame] = []
         var pushedAudio: [PushedAudio] = []
+        var commandCalls: [CommandCall] = []
+        var schemaCalls = 0
+        var uploadFileCalls: [String] = []
+        var uploadBytesCalls: [UploadBytesCall] = []
         var lastCompletion: (fn: reactor_completion_fn, userdata: UnsafeMutableRawPointer)?
         weak var lastUserdataObject: AnyObject?
         var events: [Event] = []
@@ -86,6 +90,21 @@ final class FakeLibrary: @unchecked Sendable {
         var samplesPerChannel: UInt32
         var sampleRate: UInt32
         var channels: UInt32
+    }
+
+    /// What the SDK handed `reactor_send_command`.
+    struct CommandCall {
+        var name: String?
+        var argsJSON: String?
+        var uploadsJSON: String?
+    }
+
+    /// What the SDK handed `reactor_upload_bytes`.
+    struct UploadBytesCall {
+        var length: Int
+        var firstByte: UInt8?
+        var name: String?
+        var mimeType: String?
     }
 
     /// What `reactor_destroy` answers: 0 (quiesced) or -1 (a callback is still
@@ -129,6 +148,10 @@ final class FakeLibrary: @unchecked Sendable {
     var resumeCalls: [String] { state.withLock { $0.resumeCalls } }
     var pushedFrames: [PushedFrame] { state.withLock { $0.pushedFrames } }
     var pushedAudio: [PushedAudio] { state.withLock { $0.pushedAudio } }
+    var commandCalls: [CommandCall] { state.withLock { $0.commandCalls } }
+    var schemaCalls: Int { state.withLock { $0.schemaCalls } }
+    var uploadFileCalls: [String] { state.withLock { $0.uploadFileCalls } }
+    var uploadBytesCalls: [UploadBytesCall] { state.withLock { $0.uploadBytesCalls } }
 
     /// Whether an operation is waiting on a completion the fake has not fired.
     var hasPendingCompletion: Bool { state.withLock { $0.lastCompletion != nil } }
@@ -170,6 +193,14 @@ final class FakeLibrary: @unchecked Sendable {
                 onTrack(namePointer, midPointer, callbacks.userdata)
             }
         }
+    }
+
+    /// Fire `on_message`, the way the library reports a model message.
+    func fireMessage(_ payload: String, runtime: Bool = false) {
+        guard let callbacks = state.withLock({ $0.callbacks }) else { return }
+        let handler = runtime ? callbacks.on_runtime_message : callbacks.on_message
+        guard let handler else { return }
+        payload.withCString { handler($0, callbacks.userdata) }
     }
 
     /// Fire `on_frame` on the calling thread, as the library's delivery thread
@@ -379,7 +410,36 @@ final class FakeLibrary: @unchecked Sendable {
                             channels: channels))
                 }
             },
-            timeMicros: { 1_234_000 }
+            timeMicros: { 1_234_000 },
+            sendCommand: { [self] _, name, argsJSON, uploadsJSON, completion, userdata in
+                state.withLock {
+                    $0.commandCalls.append(
+                        CommandCall(
+                            name: String(borrowing: name),
+                            argsJSON: String(borrowing: argsJSON),
+                            uploadsJSON: String(borrowing: uploadsJSON)))
+                }
+                record(completion, userdata)
+            },
+            requestSchema: { [self] _, completion, userdata in
+                state.withLock { $0.schemaCalls += 1 }
+                record(completion, userdata)
+            },
+            uploadFile: { [self] _, path, completion, userdata in
+                state.withLock { $0.uploadFileCalls.append(String(borrowing: path) ?? "") }
+                record(completion, userdata)
+            },
+            uploadBytes: { [self] _, data, length, name, mimeType, completion, userdata in
+                state.withLock {
+                    $0.uploadBytesCalls.append(
+                        UploadBytesCall(
+                            length: length,
+                            firstByte: data?.pointee,
+                            name: String(borrowing: name),
+                            mimeType: String(borrowing: mimeType)))
+                }
+                record(completion, userdata)
+            }
         )
     }
 
