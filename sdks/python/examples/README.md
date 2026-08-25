@@ -126,7 +126,7 @@ A frame count proves something arrived, not that it was the right something.
 `REACTOR_SHOW=1` puts the stream in a window:
 
 ```bash
-pip install pygame
+pip install pygame-ce
 REACTOR_SHOW=1 uv run python examples/01_connect_and_receive.py
 ```
 
