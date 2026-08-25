@@ -24,16 +24,19 @@ const logEl = document.querySelector<HTMLPreElement>('#log')!;
 
 function log(line: string): void {
   const time = new Date().toLocaleTimeString();
+
   logEl.textContent += `[${time}] ${line}\n`;
   logEl.scrollTop = logEl.scrollHeight;
 }
 
 async function fetchToken(): Promise<string> {
   const r = await fetch('/api/token');
+
   if (!r.ok) {
     throw new Error(`token fetch failed: ${r.status}`);
   }
   const { jwt } = (await r.json()) as { jwt: string };
+
   return jwt;
 }
 
@@ -62,6 +65,7 @@ function countFrames(video: HTMLVideoElement): void {
     }
     video.requestVideoFrameCallback(onFrame);
   };
+
   video.requestVideoFrameCallback(onFrame);
 }
 

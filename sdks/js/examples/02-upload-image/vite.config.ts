@@ -56,6 +56,7 @@ export default defineConfig({
           res.setHeader('cache-control', 'no-store');
 
           const now = Math.floor(Date.now() / 1000);
+
           if (cached && cached.expiresAt - CACHE_SKEW_SECONDS > now) {
             res.statusCode = 200;
             res.end(JSON.stringify({ jwt: cached.jwt }));
@@ -91,6 +92,7 @@ export default defineConfig({
             }
 
             const { jwt, expires_at } = (await upstream.json()) as { jwt: string; expires_at: number };
+
             cached = { jwt, expiresAt: expires_at };
 
             res.statusCode = 200;
