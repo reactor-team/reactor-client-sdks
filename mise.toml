@@ -45,6 +45,8 @@ ruff        = "0.15.22"
 shellcheck  = "0.11.0"
 # hk drives git hooks (pre-commit / pre-push / post-checkout).
 hk          = "1.52.0"
+# gitleaks scans the repo for committed secrets (lint:secrets).
+"aqua:gitleaks/gitleaks" = "8.30.1"
 # EXCEPTION: rustup may be "latest" — it is the installer, not the compiler.
 # The toolchain (channel / components / targets) is pinned by rust-toolchain.toml.
 # CI never uses mise's rustup (MISE_DISABLE_TOOLS + actions-rust-lang/setup-rust-toolchain).
@@ -275,6 +277,13 @@ run = "python3 scripts/check-mise-tools-root.py"
 description = "[Quality] Lint shell scripts with shellcheck"
 run = "git ls-files '*.sh' | xargs -r shellcheck --shell=bash"
 
+# Scans tracked files' full git history for committed secrets (API keys,
+# tokens, private keys, ...). Repo-wide rather than per-binding: a leaked
+# credential doesn't care which language it's next to.
+[tasks."lint:secrets"]
+description = "[Quality] Scan git history for committed secrets"
+run = "gitleaks detect --source . --no-banner --redact -v"
+
 [tasks.lint]
 description = "[Quality] Run all linters"
 depends = [
@@ -286,6 +295,7 @@ depends = [
     "lint:cpp",
     "lint:abi",
     "lint:shell",
+    "lint:secrets",
     "lint:mise-tools-root",
     "lint:mise-lock",
 ]

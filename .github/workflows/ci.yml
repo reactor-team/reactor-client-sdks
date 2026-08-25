@@ -87,6 +87,8 @@ jobs:
       - name: ABI parity (lib.rs / reactor_ffi.h / _ffi.py / sdks/cpp)
         run: mise run lint:abi
       - run: mise run lint:shell
+      - name: Secret scan (git history)
+        run: mise run lint:secrets
       - run: mise run lint:mise-tools-root
       - name: mise.lock drift (vs merge-base)
         run: mise run lint:mise-lock
