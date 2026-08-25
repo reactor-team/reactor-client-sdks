@@ -45,6 +45,49 @@ struct FFI: Sendable {
     /// a borrowed callback string is a double free. ``Swift/String/init(takingOwnership:freeing:)``
     /// is the only place the SDK calls this, so the distinction is made once.
     var freeString: @Sendable (UnsafeMutablePointer<CChar>?) -> Void
+
+    /// `reactor_create_with_adm` — a client, with the audio device module named
+    /// explicitly.
+    ///
+    /// Mode 0 is synthetic, and the SDK passes nothing else. `reactor_create`
+    /// takes the mode from an environment variable instead, which is how a model
+    /// declaring a sendonly audio track would end up putting a live microphone on
+    /// the wire without anyone asking.
+    var createWithADM:
+        @Sendable (
+            _ apiURL: UnsafePointer<CChar>?,
+            _ model: UnsafePointer<CChar>?,
+            _ jwt: UnsafePointer<CChar>?,
+            _ local: Int32,
+            _ callbacks: UnsafePointer<ReactorCallbacks>?,
+            _ admMode: Int32
+        ) -> OpaquePointer?
+
+    /// `reactor_destroy` — 0 when no callback is running and none will start,
+    /// `-1` when one could not be waited for.
+    var destroy: @Sendable (OpaquePointer?) -> Int32
+
+    /// `reactor_connect` — creates or adopts a session.
+    var connect:
+        @Sendable (
+            OpaquePointer?, UnsafePointer<CChar>?, UnsafePointer<UInt32>?,
+            reactor_completion_fn?, UnsafeMutableRawPointer?
+        ) -> Void
+
+    /// `reactor_disconnect` — ends the session server-side. Not recoverable.
+    var disconnect:
+        @Sendable (OpaquePointer?, reactor_completion_fn?, UnsafeMutableRawPointer?) -> Void
+
+    /// `reactor_reconnect` — cycles the connection, keeping the session.
+    var reconnect:
+        @Sendable (OpaquePointer?, reactor_completion_fn?, UnsafeMutableRawPointer?) -> Void
+
+    /// `reactor_status` — a **static** string. Never freed.
+    var status: @Sendable (OpaquePointer?) -> UnsafePointer<CChar>?
+
+    /// `reactor_session_id` — heap-allocated, or null when there is no session.
+    /// The caller frees it.
+    var sessionID: @Sendable (OpaquePointer?) -> UnsafeMutablePointer<CChar>?
 }
 
 extension FFI {
@@ -57,6 +100,21 @@ extension FFI {
     /// so the binding pauses a track when asked to publish it.
     static let system = FFI(
         abiVersion: { reactor_abi_version() },
-        freeString: { pointer in reactor_free_string(pointer) }
+        freeString: { pointer in reactor_free_string(pointer) },
+        createWithADM: { apiURL, model, jwt, local, callbacks, admMode in
+            reactor_create_with_adm(apiURL, model, jwt, local, callbacks, admMode)
+        },
+        destroy: { handle in reactor_destroy(handle) },
+        connect: { handle, sessionID, connectionID, completion, userdata in
+            reactor_connect(handle, sessionID, connectionID, completion, userdata)
+        },
+        disconnect: { handle, completion, userdata in
+            reactor_disconnect(handle, completion, userdata)
+        },
+        reconnect: { handle, completion, userdata in
+            reactor_reconnect(handle, completion, userdata)
+        },
+        status: { handle in reactor_status(handle) },
+        sessionID: { handle in reactor_session_id(handle) }
     )
 }

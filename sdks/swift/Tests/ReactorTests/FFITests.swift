@@ -11,9 +11,10 @@ struct FFITests {
 
     @Test("a library speaking this ABI is accepted")
     func matchingVersionPasses() throws {
-        let ffi = FFI(abiVersion: { ABI.compiledAgainst }, freeString: { _ in })
+        let fake = FakeLibrary()
+        fake.abiVersion = ABI.compiledAgainst
 
-        try ABI.check(ffi)
+        try ABI.check(fake.table)
     }
 
     @Test("a library speaking another ABI is refused, naming both numbers")
@@ -22,12 +23,13 @@ struct FFITests {
         // the crates. Nothing else catches it — the parity script compares names
         // only, so a function that gained a parameter still links and then
         // corrupts the stack at the call.
-        let stale = FFI(abiVersion: { ABI.compiledAgainst + 1 }, freeString: { _ in })
+        let fake = FakeLibrary()
+        fake.abiVersion = ABI.compiledAgainst + 1
 
-        #expect(throws: ReactorError.self) { try ABI.check(stale) }
+        #expect(throws: ReactorError.self) { try ABI.check(fake.table) }
 
         do {
-            try ABI.check(stale)
+            try ABI.check(fake.table)
         } catch let error as ReactorError {
             #expect(error.code == .versionMismatch)
             // Both numbers, or the message cannot tell you which side to fix.
