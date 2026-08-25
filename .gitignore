@@ -26,6 +26,11 @@ node_modules/
 # kept separate from build/ so REACTOR_SDK_BUILD_INTEGRATION_TESTS=ON never
 # shares a CMake cache with the default build.
 /sdks/cpp/build-integration-tests/
+# Swift SDK: SwiftPM's build tree and per-user state. The manifest is at the
+# repository root, so these land there too.
+/.build/
+/.swiftpm/
+*.xcframework
 # clangd's index, written wherever it finds a compile_commands.json — which is
 # any directory, hence the leading **.
 **/.cache/clangd/

@@ -1,0 +1,72 @@
+# Reactor Swift SDK
+
+A Swift client for [Reactor](https://reactor.inc), for macOS and iOS, built on
+`libreactor_ffi` — the same Rust core the [Python SDK](../python) and the
+[C++ SDK](../cpp) bind.
+
+> **Status: under construction.** This directory currently holds the package
+> setup and nothing else. The object model arrives over the pull requests
+> grouped by the **Swift SDK** milestone in
+> [Client SDKs based on reactor-webrtc](https://linear.app/reactor-team/project/client-sdks-based-on-reactor-webrtc-c6286c8b64d0);
+> `Reactor`, `Track` and the seven examples are not here yet. The full README —
+> platform table, quickstart, the API — lands with the release.
+
+## Where the manifest lives
+
+`Package.swift` is at the **repository root**, not in this directory. SwiftPM
+has no support for a package in a subdirectory: a git dependency resolves the
+manifest at the root of the repository or not at all. Every target in it points
+back here with an explicit `path:`, so the code lives beside the other SDKs and
+only the manifest sits up top.
+
+```swift
+.package(url: "https://github.com/reactor-team/reactor-client-sdks", from: "1.0.0")
+```
+
+That is also why Swift releases are tagged `v<version>` while Python's are
+tagged `python-v<version>`: SwiftPM recognises `1.0.0` and `v1.0.0` and nothing
+else. The exception is written down in
+[`CONTRIBUTING.md`](../../CONTRIBUTING.md).
+
+## Building it from this repo
+
+```bash
+mise run build:swift       # swift build
+mise run build:swift:ios   # compile the libraries for iOS (arm64 device)
+mise run test:swift        # swift test
+mise run lint:swift        # swift-format lint --strict
+mise run fmt:swift         # swift-format --in-place
+```
+
+`build:swift:ios` is not a nicety. `swift build` and `swift test` run for the
+host, so on a Mac they never compile a single `#if os(iOS)` branch — and the
+audio session, the interruption handling and the capture rotation all live in
+one. It compiles the library targets only and links nothing, so it needs no Rust
+toolchain and no iOS `libreactor_ffi`; it does need the iPhoneOS SDK, so it skips
+with a reason where there is none, exactly as the other tasks do.
+
+Formatting uses the `swift-format` that ships inside the Xcode toolchain, so the
+version a contributor runs is the one the CI runner's Xcode provides rather than
+a separate pin. Off a machine with a Swift toolchain — a Linux contributor
+running `mise run lint` — these tasks skip with a reason instead of failing the
+whole aggregate. CI sets `REACTOR_REQUIRE_SWIFT=1`, which turns that skip back
+into a failure.
+
+**Rebuild the native library after pulling changes under `crates/`.** Nothing
+here links it yet, but once it does: a signature that moved in the FFI but not
+in your build still links and then corrupts the stack at the call, which looks
+like a hang rather than a version error.
+
+## Layout
+
+| Path | |
+|---|---|
+| `Sources/Reactor/` | the SDK; a consumer writes `import Reactor` |
+| `Sources/CReactorFFI/` | the module map over `crates/reactor-ffi/include/reactor_ffi.h` — the C ABI, never a copy of it |
+| `Tests/ReactorTests/` | swift-testing suites, run by `swift test` |
+| `.swift-format` | what `lint:swift` enforces |
+
+## Contributing
+
+See the repo-wide [`CONTRIBUTING.md`](../../CONTRIBUTING.md) for the toolchain,
+DCO and commit conventions.
