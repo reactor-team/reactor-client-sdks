@@ -80,6 +80,32 @@ error. `reactor_abi_version()` turns that into a message — the SDK compares it
 against the header it was compiled with and refuses to run on a mismatch — but
 only if the library on disk is the one you think it is.
 
+## Two products, and why
+
+```swift
+import Reactor        // the client, tracks, commands, recording
+import ReactorMedia   // camera, microphone, speaker, ReactorVideoView
+```
+
+`import Reactor` touches no device. That split is the point: on iOS a camera or
+microphone usage description is a permission prompt for every user and a line in
+App Store review, and an app that only *receives* video should need neither.
+`ReactorMedia` is where AVFoundation lives, and only an app that imports it needs
+`NSCameraUsageDescription` / `NSMicrophoneUsageDescription` in its Info.plist.
+
+The same split exists in Python as `reactor_sdk.audio_devices`.
+
+`ReactorMedia` also carries the one design asymmetry worth knowing about. Closing
+a **capture** device waits for the callback that is running right now, so a lock
+shared with that callback deadlocks — `Camera` and `Microphone` therefore flip a
+flag, release its lock, and only then stop the device. A **render** path pulls
+instead, so `Speaker` may hold a lock across its own teardown. The symmetric fix
+deadlocks, and `CaptureGate` is where that discipline lives so it is testable
+without a camera.
+
+**visionOS in compatibility mode has no camera.** `Camera` says so by name rather
+than reporting a missing permission, because no permission will ever appear.
+
 ## The XCFramework
 
 A release carries `libreactor_ffi` as an XCFramework, which is what a consumer
