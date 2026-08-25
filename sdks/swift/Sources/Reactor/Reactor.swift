@@ -36,9 +36,9 @@ public final class Reactor: @unchecked Sendable {
     /// the coordinator tell Swift traffic from Python's and C++'s.
     static let sdkType = "swift"
 
-    private let ffi: FFI
+    let ffi: FFI
     private let dispatcher: EventDispatcher
-    private let state = Locked(State())
+    let state = Locked(State())
 
     /// Held for the duration of every synchronous call into the library, and by
     /// ``close()`` around `reactor_destroy`.
@@ -59,13 +59,25 @@ public final class Reactor: @unchecked Sendable {
     private let abiBarrier = NSLock()
 
     /// Everything mutable, in one place, behind one lock.
-    private struct State {
+    struct State {
         var handle: OpaquePointer?
         var context: CallbackContext?
         var closed = false
         var statusHandlers: [UUID: @Sendable (ReactorStatus) -> Void] = [:]
         var errorHandlers: [UUID: @Sendable (ReactorError) -> Void] = [:]
         var pending: [ObjectIdentifier: PendingCompletion] = [:]
+
+        /// One `Track` per name, so handlers registered on it stay registered —
+        /// including across a reconnect, which renegotiates everything else.
+        var tracks: [String: Track] = [:]
+
+        /// SDP media ids, as `on_track` reports them.
+        var mids: [String: String] = [:]
+
+        /// Frame handlers, per declared track name. Called inline on the
+        /// library's delivery thread.
+        var videoHandlers: [String: [UUID: VideoSink]] = [:]
+        var audioHandlers: [String: [UUID: @Sendable (AudioFrame) -> Void]] = [:]
     }
 
     // MARK: - Lifecycle
@@ -125,6 +137,11 @@ public final class Reactor: @unchecked Sendable {
         var callbacks = ReactorCallbacks()
         callbacks.on_status = statusTrampoline
         callbacks.on_error = errorTrampoline
+        callbacks.on_track = trackTrampoline
+        // Media, unlike everything above, is delivered inline on the library's
+        // own thread and never through the dispatcher. See Track.onFrame.
+        callbacks.on_frame = frameTrampoline
+        callbacks.on_audio = audioTrampoline
         callbacks.userdata = userdata
 
         // The FFI copies the struct's contents at create time (see create_impl in
@@ -199,6 +216,9 @@ public final class Reactor: @unchecked Sendable {
             state.pending = [:]
             state.statusHandlers = [:]
             state.errorHandlers = [:]
+            state.videoHandlers = [:]
+            state.audioHandlers = [:]
+            state.mids = [:]
             return (handle, context, pending)
         }
 
