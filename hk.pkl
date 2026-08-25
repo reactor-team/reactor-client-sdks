@@ -29,6 +29,11 @@ hooks {
         check = "mise run lint:python"
         exclusive = true
       }
+      ["js"] {
+        glob = List("*.ts", "*.tsx")
+        check = "mise run lint:js"
+        exclusive = true
+      }
       // Formatting only. clang-tidy is a compile and needs libreactor_ffi, so it
       // belongs to CI and to `mise run lint:cpp`, not to a hook meant to be fast.
       ["cpp-format"] {
