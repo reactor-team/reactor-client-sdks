@@ -28,7 +28,7 @@ export REACTOR_SWIFT_DEV=1
 FORMAT_CONFIG="$REPO_ROOT/sdks/swift/.swift-format"
 
 usage() {
-    echo "usage: ${0##*/} <format|lint|build|build-ios|test>" >&2
+    echo "usage: ${0##*/} <format|lint|build|build-ios|test|run <example> [args...]>" >&2
     exit 2
 }
 
@@ -262,6 +262,24 @@ case "${1:-}" in
         resolve_ffi_library
         collect_link_flags
         "$swift_bin" test --package-path "$REPO_ROOT" "${link_flags[@]}"
+        ;;
+    run)
+        # `swift run 01_connect_and_receive` on its own fails with a wall of
+        # undefined `_reactor_*` symbols: an example is an executable, so it
+        # links the native library, and nothing tells the linker where it is.
+        # A consumer never sees this — they get the library from the XCFramework
+        # — so rather than teach every reader a long command line, the examples
+        # are run through here.
+        shift
+        [ "$#" -gt 0 ] || {
+            echo "usage: swift.sh run <example> [args...]" >&2
+            echo "  e.g. swift.sh run 01_connect_and_receive" >&2
+            exit 2
+        }
+        swift_bin="$(require_tool swift)"
+        ffi_dir="$(require_ffi_library)"
+        collect_link_flags "$ffi_dir"
+        "$swift_bin" run --package-path "$REPO_ROOT" "${link_flags[@]}" "$@"
         ;;
     *)
         usage
