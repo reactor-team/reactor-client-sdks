@@ -1,9 +1,7 @@
 # Reactor JS SDK examples
 
 Six minimal examples, one per capability — the same set (minus frame
-metadata, still to come) as the Python and C++ SDKs, so it doubles as a
-conformance grid: a capability missing here is a code path this SDK has
-never run in a browser.
+metadata, still to come) as the Python and C++ SDKs.
 
 ## The set
 
