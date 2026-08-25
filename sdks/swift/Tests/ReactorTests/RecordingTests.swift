@@ -31,10 +31,7 @@ struct RecordingTests {
         _ work: @escaping @Sendable () async throws -> T
     ) async throws -> T {
         let task = Task { try await work() }
-        let deadline = Date().addingTimeInterval(2)
-        while !fake.hasPendingCompletion, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        _ = await waitUntil { fake.hasPendingCompletion }
         fake.completeLastCall(ok: true, result: result)
         return try await task.value
     }
@@ -109,10 +106,7 @@ struct RecordingTests {
 
         let destination = URL(fileURLWithPath: "/tmp/clip.mp4")
         let downloading = Task { try await client.download(clip, to: destination) }
-        let deadline = Date().addingTimeInterval(2)
-        while !fake.hasPendingDownload, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        #expect(await waitUntil { fake.hasPendingDownload }, "the download never started")
 
         let call = try #require(fake.downloadCalls.first)
         #expect(call.playlistURL == clip.playlistURL)
@@ -148,10 +142,7 @@ struct RecordingTests {
             try await client.download(
                 clip, to: URL(fileURLWithPath: "/tmp/c.mp4"), readyTimeout: .seconds(30))
         }
-        let deadline = Date().addingTimeInterval(2)
-        while !fake.hasPendingDownload, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        #expect(await waitUntil { fake.hasPendingDownload }, "the download never started")
 
         let call = try #require(fake.downloadCalls.first)
         #expect(call.readyTimeoutSeconds == 30)
@@ -178,10 +169,7 @@ struct RecordingTests {
                 seen.withLock { $0.append(progress) }
             }
         }
-        let deadline = Date().addingTimeInterval(2)
-        while !fake.hasPendingDownload, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        #expect(await waitUntil { fake.hasPendingDownload }, "the download never started")
 
         fake.reportDownloadProgress(done: 1, total: 4)
         fake.reportDownloadProgress(done: 4, total: 4)
@@ -207,10 +195,7 @@ struct RecordingTests {
         let downloading = Task {
             try await client.download(clip, to: URL(fileURLWithPath: "/tmp/c.mp4"))
         }
-        let deadline = Date().addingTimeInterval(2)
-        while !fake.hasPendingDownload, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        #expect(await waitUntil { fake.hasPendingDownload }, "the download never started")
         fake.completeDownload(
             ok: false, error: #"{"code":"NOT_FOUND","message":"no such clip"}"#)
 
@@ -220,30 +205,29 @@ struct RecordingTests {
     // MARK: - The download that outlives its client
 
     @Test("closing mid-download settles the caller, and says the file may still arrive")
-    func closingMidDownloadSettlesTheCaller() throws {
+    func closingMidDownloadSettlesTheCaller() async throws {
         let fake = FakeLibrary()
         let client = try makeClient(fake: fake)
 
-        // Set up the clip synchronously: this test must not be async, because a
-        // DispatchSemaphore is the only thing that can bound a wait on a caller
-        // that may never be settled at all.
-        let clipTask = Task { try await client.requestClip(.seconds(10)) }
-        #expect(waitFor { fake.hasPendingCompletion })
-        fake.completeLastCall(ok: true, result: clipPayload)
+        let clip = try await answering(fake, result: clipPayload) {
+            try await client.requestClip(.seconds(10))
+        }
 
-        let settled = DispatchSemaphore(value: 0)
+        // Watched through a flag rather than awaited, because the regression this
+        // guards against is a caller that is never settled at all — awaiting it
+        // would hang the suite instead of failing this test.
+        let settled = Locked(false)
         let outcome = Locked<(any Error)?>(nil)
         Task {
             do {
-                let clip = try await clipTask.value
                 _ = try await client.download(clip, to: URL(fileURLWithPath: "/tmp/c.mp4"))
             } catch {
                 outcome.withLock { $0 = error }
             }
-            settled.signal()
+            settled.withLock { $0 = true }
         }
 
-        #expect(waitFor { fake.hasPendingDownload })
+        #expect(await waitUntil { fake.hasPendingDownload }, "the download never started")
 
         // The library was told this download outlives the handle, so its
         // completion may never come. Leaving it out of teardown is a caller
@@ -252,7 +236,7 @@ struct RecordingTests {
         client.close()
 
         #expect(
-            settled.wait(timeout: .now() + 2) == .success,
+            await waitUntil { settled.withLock { $0 } },
             "closing must settle a download the library will not bound")
 
         let error = outcome.withLock { $0 } as? ReactorError
@@ -264,24 +248,23 @@ struct RecordingTests {
     }
 
     @Test("a completion arriving after teardown touches nothing")
-    func lateCompletionIsHarmless() throws {
+    func lateCompletionIsHarmless() async throws {
         let fake = FakeLibrary()
         let client = try makeClient(fake: fake)
 
-        let clipTask = Task { try await client.requestClip(.seconds(10)) }
-        #expect(waitFor { fake.hasPendingCompletion })
-        fake.completeLastCall(ok: true, result: clipPayload)
-
-        let settled = DispatchSemaphore(value: 0)
-        Task {
-            let clip = try await clipTask.value
-            _ = try? await client.download(clip, to: URL(fileURLWithPath: "/tmp/c.mp4"))
-            settled.signal()
+        let clip = try await answering(fake, result: clipPayload) {
+            try await client.requestClip(.seconds(10))
         }
-        #expect(waitFor { fake.hasPendingDownload })
+
+        let settled = Locked(false)
+        Task {
+            _ = try? await client.download(clip, to: URL(fileURLWithPath: "/tmp/c.mp4"))
+            settled.withLock { $0 = true }
+        }
+        #expect(await waitUntil { fake.hasPendingDownload }, "the download never started")
 
         client.close()
-        #expect(settled.wait(timeout: .now() + 2) == .success)
+        #expect(await waitUntil { settled.withLock { $0 } })
 
         // The ticket carries only a weak reference, and it is the callback's own
         // to free — so this is safe, and it is the exact sequence AddressSanitizer
@@ -319,15 +302,5 @@ struct RecordingTests {
         #expect(Duration.milliseconds(1500).seconds == 1.5)
         #expect(Duration(secondsComponent: .max, attosecondsComponent: 0).seconds.isFinite)
         #expect(Duration.zero.seconds == 0)
-    }
-
-    /// Poll `condition` for up to two seconds.
-    private func waitFor(_ condition: () -> Bool) -> Bool {
-        let deadline = Date().addingTimeInterval(2)
-        while !condition() {
-            if Date() > deadline { return false }
-            usleep(2000)
-        }
-        return true
     }
 }
