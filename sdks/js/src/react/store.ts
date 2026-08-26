@@ -1,7 +1,15 @@
 import { Reactor } from '../reactor';
 import type { ReactorError } from '../errors';
 import type { FileRef } from '../file-ref';
-import type { ConnectOptions, JwtSource, MessageScope, ReactorMessage, ReactorOptions, ReactorStatus } from '../types';
+import type {
+  Clip,
+  ConnectOptions,
+  JwtSource,
+  MessageScope,
+  ReactorMessage,
+  ReactorOptions,
+  ReactorStatus,
+} from '../types';
 
 /** State kept reactive for `useReactor` selectors. Stats/schema/capabilities
  *  aren't mirrored here — reach them through the `internal.reactor` escape
@@ -44,6 +52,8 @@ export interface ReactorActions {
   pauseTrack: (name: string) => Promise<void>;
   resumeTrack: (name: string) => Promise<void>;
   uploadFile: (file: File | Blob, options?: { name?: string }) => Promise<FileRef>;
+  requestClip: (durationSeconds: number) => Promise<Clip>;
+  requestRecording: () => Promise<Clip>;
 }
 
 export interface ReactorInternal {
@@ -128,6 +138,8 @@ export function createReactorStore(
       pauseTrack: (name) => get().internal.reactor.pauseTrack(name),
       resumeTrack: (name) => get().internal.reactor.resumeTrack(name),
       uploadFile: (file, options) => get().internal.reactor.uploadFile(file, options),
+      requestClip: (durationSeconds) => get().internal.reactor.requestClip(durationSeconds),
+      requestRecording: () => get().internal.reactor.requestRecording(),
     };
   });
 }

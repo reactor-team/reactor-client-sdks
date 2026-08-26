@@ -34,3 +34,14 @@ binding over `reactor-core`.
   `operation`, `retry_after_ms`, and `timestamp_ms` instead of `retryAfter`
   and `timestamp`. `component` is dropped outright — 2.x populated it
   locally per call site; `reactor-core` never reports it.
+
+### Added
+
+- `ReactorProviderProps` gained `modelTracks`, carried through to the
+  underlying `Reactor` the same way `apiUrl`/`modelName`/`local` already
+  were. This was a 2.x-parity gap: the vanilla `Reactor` constructor never
+  lost the field, only the React provider's plumbing didn't pick it up.
+- `useReactor(selector)`'s action bindings gained `requestClip`/
+  `requestRecording`, matching `uploadFile`'s existing direct-delegation
+  pattern. `downloadClipAsFile` is intentionally not included — reach it via
+  `internal.reactor` or `useClipDownload`.

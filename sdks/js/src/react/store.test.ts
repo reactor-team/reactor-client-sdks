@@ -138,4 +138,18 @@ describe('createReactorStore', () => {
     expect(currentClient().uploadFileCalls).toEqual([{ file, name: 'a.txt' }]);
     expect(result).toEqual({ uploadId: 'up_1', name: 'upload', mimeType: 'application/octet-stream', size: 0 });
   });
+
+  it('binds requestClip/requestRecording to the underlying reactor', async () => {
+    const store = createReactorStore({ modelName: 'test-model' });
+
+    await store.getState().connect();
+
+    const clip = await store.getState().requestClip(10);
+    const recording = await store.getState().requestRecording();
+
+    expect(currentClient().requestClipCalls).toEqual([10]);
+    expect(currentClient().requestRecordingCalls).toBe(1);
+    expect(clip.kind).toBe('snap');
+    expect(recording.kind).toBe('recording');
+  });
 });
