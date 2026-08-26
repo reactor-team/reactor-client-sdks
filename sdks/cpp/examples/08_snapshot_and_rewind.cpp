@@ -42,8 +42,8 @@ int main() {
       [](const reactor::ReactorError& error) { std::cerr << "error: " << error.what() << '\n'; });
   // A broadcast, not a reply — the correlated replies below arrive as each
   // send_command() call's own resolved value instead.
-  auto messages =
-      client.on_message([](const reactor::Json& msg) { std::cout << "message: " << msg.dump() << '\n'; });
+  auto messages = client.on_message(
+      [](const reactor::Json& msg) { std::cout << "message: " << msg.dump() << '\n'; });
 
   try {
     client.connect().get();
