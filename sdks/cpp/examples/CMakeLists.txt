@@ -1,4 +1,4 @@
-# The seven examples. One capability each, numbered as in sdks/python/examples.
+# The eight examples. One capability each, numbered as in sdks/python/examples.
 #
 # Built by default when this project is top-level, so `mise run build:cpp`
 # compiles them — an example that would die on its first line cannot then reach a
@@ -17,6 +17,7 @@ set(REACTOR_EXAMPLES
   05_multi_connection
   06_record_clip
   07_frame_metadata
+  08_snapshot_and_rewind
 )
 
 foreach(example IN LISTS REACTOR_EXAMPLES)
