@@ -1,8 +1,10 @@
 # Reactor Python SDK examples
 
-Seven minimal examples, one per capability. Each teaches exactly one thing, and
-the same seven exist in every Reactor SDK — so the set doubles as a conformance
-grid: an example missing from an SDK is a code path that SDK has never run.
+Eight minimal examples, one per capability. Each teaches exactly one thing, and
+the first seven exist in every Reactor SDK — so that part of the set doubles as
+a conformance grid: an example missing from an SDK is a code path that SDK has
+never run. `08` matches the JS SDK's `07` (numbered differently only because JS
+has no native frame-metadata example).
 
 ## The set
 
@@ -15,6 +17,7 @@ grid: an example missing from an SDK is a code path that SDK has never run.
 | 05 | [`05_multi_connection.py`](05_multi_connection.py) | Two clients on one session: `connect(session_id=…)` | Helios |
 | 06 | [`06_record_clip.py`](06_record_clip.py) | `request_clip` and downloading the result | Helios |
 | 07 | [`07_frame_metadata.py`](07_frame_metadata.py) | The trailer on each incoming frame: id, sender timestamp, `user_data` | Helios |
+| 08 | [`08_snapshot_and_rewind.py`](08_snapshot_and_rewind.py) | `send_command`'s resolved reply, read and used — not fire-and-forgotten | Helios |
 
 Every example shares one spine — connect, wait for ready, give the model the
 minimum it needs, receive frames — and adds one new call on top. The diff

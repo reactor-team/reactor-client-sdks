@@ -1,8 +1,10 @@
 # Reactor C++ SDK examples
 
-Seven examples, one capability each. The same seven exist in every Reactor SDK,
-so the set doubles as a conformance grid: **an example missing from an SDK is a
-code path that SDK has never run.**
+Eight examples, one capability each. The first seven exist in every Reactor
+SDK, so that part of the set doubles as a conformance grid: **an example
+missing from an SDK is a code path that SDK has never run.** `08` matches the
+JS SDK's `07` (numbered differently only because JS has no native
+frame-metadata example).
 
 ## The set
 
@@ -15,6 +17,7 @@ code path that SDK has never run.**
 | 05 | [`05_multi_connection.cpp`](05_multi_connection.cpp) | Two clients on one session: `connect({.session_id = …})` | `reactor/helios` |
 | 06 | [`06_record_clip.cpp`](06_record_clip.cpp) | `request_clip` and downloading the result | `reactor/helios` |
 | 07 | [`07_frame_metadata.cpp`](07_frame_metadata.cpp) | The trailer on each incoming frame: id, capture time, `user_data` | `reactor/helios` |
+| 08 | [`08_snapshot_and_rewind.cpp`](08_snapshot_and_rewind.cpp) | `send_command()`'s resolved reply, read and used — not fire-and-forgotten | `reactor/helios` |
 
 Every example shares one spine — connect, wait for ready, give the model the
 minimum it needs, receive frames — and adds one call on top. **The diff against
