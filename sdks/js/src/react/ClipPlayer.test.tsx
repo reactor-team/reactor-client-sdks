@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { render, waitFor, within } from '@testing-library/react';
+import { cleanup, render, waitFor, within } from '@testing-library/react';
 import { createElement } from 'react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -99,6 +99,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup();
   delete scope.MediaSource;
 });
 

@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { act, render, renderHook } from '@testing-library/react';
+import { act, cleanup, render, renderHook } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FakeReactorClient } from '../internal/fake-reactor-client';
@@ -28,6 +28,10 @@ function currentClient(): FakeReactorClient {
 function Provider({ children }: { children: ReactNode }) {
   return <ReactorProvider modelName="test-model">{children}</ReactorProvider>;
 }
+
+afterEach(() => {
+  cleanup();
+});
 
 describe('useReactor', () => {
   it('throws outside a ReactorProvider', () => {

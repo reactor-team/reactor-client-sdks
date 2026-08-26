@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
-import { act, render, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { act, cleanup, render, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FakeReactorClient } from '../internal/fake-reactor-client';
 import type { Reactor } from '../reactor';
 
@@ -36,6 +36,10 @@ function StatusProbe() {
 
   return <div data-testid="status">{status}</div>;
 }
+
+afterEach(() => {
+  cleanup();
+});
 
 describe('ReactorProvider', () => {
   it('keeps the same Reactor across a re-render with unchanged props', () => {
