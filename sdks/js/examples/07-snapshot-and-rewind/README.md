@@ -21,13 +21,6 @@ This runs against **production**, the same way as [example 01](../01-connect-and
 `REACTOR_API_KEY` never reaches the browser; `vite.config.ts` mints a
 short-lived JWT for it server-side.
 
-**As of this writing**, `save_snapshot`/`list_snapshots`/`rewind` don't yet
-return their data through `sendCommand()`'s correlated reply on production
-Helios — only a bodyless ack (`reply` logs as `undefined`, and the snapshot
-list stays empty). A model-side fix for that is in flight; once it ships,
-this example needs no changes — it's already written for the reply carrying
-the data.
-
 ## What it teaches
 
 - `sendCommand()` resolves with the model's correlated reply — a
