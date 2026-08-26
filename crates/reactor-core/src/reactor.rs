@@ -154,6 +154,14 @@ struct State {
     ice_ready: bool,
     paused_tracks: HashSet<String>,
     closing: bool,
+    /// The error that triggered the teardown currently in progress, when it
+    /// was `on_peer_connection_state` reacting to a `Failed`/`Disconnected`/
+    /// `Closed` transport — as opposed to a caller-initiated `disconnect()`,
+    /// which has no such cause. Reset alongside `closing` at the start of
+    /// every `connect()`/`reconnect()`, so `finish_transport` never attributes
+    /// a *previous* attempt's failure to the current one merely because
+    /// `closing` is set again.
+    teardown_cause: Option<ReactorError>,
     /// Incremented on every `connect()` / `reconnect()`.  Each `run_heartbeat`
     /// instance captures the epoch at spawn time and exits when it changes.
     heartbeat_epoch: u64,
@@ -289,6 +297,7 @@ impl Reactor {
             // Atomically guard + update: both happen in the same lock acquisition
             // so that two concurrent connect() calls cannot both pass the check.
             state.closing = false;
+            state.teardown_cause = None;
             state.status = ReactorStatus::Connecting;
             state.heartbeat_epoch = state.heartbeat_epoch.wrapping_add(1);
             if let Some(auto_resume) = connect_options.auto_resume_tracks {
@@ -432,6 +441,7 @@ impl Reactor {
             }
             // Reset transport state and bump epoch atomically with the guard check.
             state.closing = false;
+            state.teardown_cause = None;
             state.peer_connected = false;
             state.data_open = false;
             state.control_open = false;
@@ -695,11 +705,12 @@ impl Reactor {
                     !state.closing && state.status != ReactorStatus::Disconnected
                 };
                 if should_report {
-                    self.emit_error(ErrorDetails::new(
+                    let error = self.emit_error(ErrorDetails::new(
                         codes::DISCONNECTED,
                         format!("peer connection state: {connection_state:?}"),
                         true,
                     ));
+                    self.state.lock().unwrap().teardown_cause = Some(error);
                     self.teardown(true, true).await;
                 }
             }
@@ -1300,14 +1311,17 @@ impl Reactor {
     }
 
     /// The error to return when `finish_transport` finds `state.closing` already
-    /// set before a call into the peer transport — a concurrent teardown (most
-    /// often `on_peer_connection_state` reacting to `Failed`/`Disconnected`/
-    /// `Closed`) beat it there. `last_error` already holds the real reason in
-    /// that case, since `on_peer_connection_state` calls `emit_error` before
-    /// `teardown`; reuse it instead of letting the call below fail with the
-    /// wasm transport's generic "not prepared" once its state is wiped.
+    /// set before a call into the peer transport — a concurrent teardown beat
+    /// it there. Uses `teardown_cause` rather than `last_error`: `last_error`
+    /// persists across attempts, so a caller-initiated `disconnect()` racing in
+    /// (which sets `closing` with no error of its own) could otherwise surface
+    /// a stale, unrelated failure from an earlier connect/reconnect as if it
+    /// were the cause of this one. `teardown_cause` is reset alongside
+    /// `closing` at the start of every `connect()`/`reconnect()` and is only
+    /// ever set by `on_peer_connection_state`'s own teardown, so it is either
+    /// this negotiation's real cause or nothing.
     fn closing_error(state: &State) -> CoreError {
-        match &state.last_error {
+        match &state.teardown_cause {
             Some(error) => CoreError::Peer(error.details.message.clone()),
             None => CoreError::Peer("connection closed during negotiation".into()),
         }
@@ -1320,13 +1334,18 @@ impl Reactor {
     /// `CoreError` pass `error.details(Some(operation))`; the two that do not —
     /// a transport that dropped on its own, and a code the platform sent
     /// unprompted — build theirs with `ErrorDetails::new`.
-    fn emit_error(&self, details: ErrorDetails) {
+    ///
+    /// Returns the `ReactorError` it published, so a caller that also needs to
+    /// stash it elsewhere (`on_peer_connection_state` → `teardown_cause`)
+    /// doesn't have to rebuild it and risk the two falling out of sync.
+    fn emit_error(&self, details: ErrorDetails) -> ReactorError {
         let error = ReactorError {
             details,
             timestamp_ms: self.platform.now_ms(),
         };
         self.state.lock().unwrap().last_error = Some(error.clone());
-        self.dispatcher.dispatch(ReactorEvent::Error(error));
+        self.dispatcher.dispatch(ReactorEvent::Error(error.clone()));
+        error
     }
 }
 
@@ -2126,20 +2145,29 @@ mod tests {
         }
     }
 
-    /// Mocks the connection-registration + SDP round trip `finish_transport`
-    /// drives. Its `GET .../sdp_params` handler (`poll_sdp_answer`) calls the
-    /// reactor's `on_peer_connection_state(Failed)` — the same event a broken
-    /// TURN relay produces — synchronously, before returning the answer. That
-    /// reproduces REA-5659's race deterministically without real concurrency:
-    /// the teardown it triggers has already run by the time `finish_transport`
-    /// gets the answer back and reaches its `state.closing` guard.
+    /// What `RaceHttp`'s `GET .../sdp_params` handler (`poll_sdp_answer`) does
+    /// before returning the answer, to reproduce a teardown racing ahead of
+    /// `finish_transport` deterministically — no real concurrency needed, since
+    /// the teardown has already run by the time `finish_transport` gets the
+    /// answer back and reaches its `state.closing` guard.
+    enum RaceAction {
+        /// The same event a broken TURN relay produces.
+        ConnectionFailed,
+        /// A caller-initiated `disconnect()` racing in — sets `closing` but,
+        /// unlike `ConnectionFailed`, records no cause of its own.
+        Disconnect,
+    }
+
+    /// Mocks the connection-registration + SDP round trip `finish_transport` drives.
     struct RaceHttp {
+        action: RaceAction,
         reactor: std::sync::OnceLock<std::sync::Weak<Reactor>>,
     }
 
     impl RaceHttp {
-        fn new() -> Arc<Self> {
+        fn new(action: RaceAction) -> Arc<Self> {
             Arc::new(Self {
+                action,
                 reactor: std::sync::OnceLock::new(),
             })
         }
@@ -2167,9 +2195,16 @@ mod tests {
             }
             if req.method == Method::Get && req.url.ends_with("/sdp_params") {
                 if let Some(reactor) = self.reactor.get().and_then(std::sync::Weak::upgrade) {
-                    reactor
-                        .on_peer_connection_state(PeerConnectionState::Failed)
-                        .await;
+                    match self.action {
+                        RaceAction::ConnectionFailed => {
+                            reactor
+                                .on_peer_connection_state(PeerConnectionState::Failed)
+                                .await;
+                        }
+                        RaceAction::Disconnect => {
+                            let _ = reactor.disconnect(true).await;
+                        }
+                    }
                 }
                 return json(r#"{"sdp_answer": "answer"}"#.to_string());
             }
@@ -2186,12 +2221,12 @@ mod tests {
     /// prepared")` — the teardown wiped its state first — instead of the real
     /// reason the connection died. `finish_transport` now checks `state.closing`
     /// right after the SDP answer comes back and, if a teardown beat it there,
-    /// returns the reason already recorded in `last_error` instead of calling
-    /// into a transport it knows is gone.
+    /// returns the reason already recorded in `teardown_cause` instead of
+    /// calling into a transport it knows is gone.
     #[tokio::test]
     async fn finish_transport_surfaces_the_real_reason_when_a_teardown_races_ahead_of_set_remote_description(
     ) {
-        let http = RaceHttp::new();
+        let http = RaceHttp::new(RaceAction::ConnectionFailed);
         let peer = Arc::new(RacePeer::default());
         let opts = ReactorOptions::new("http://localhost", "test-model");
         let reactor = Arc::new(Reactor::new(
@@ -2240,6 +2275,65 @@ mod tests {
                 .load(std::sync::atomic::Ordering::SeqCst),
             "a torn-down transport must not be called into"
         );
+    }
+
+    /// REA-5659 follow-up (flagged in code review): `last_error` persists
+    /// across connect attempts, so using it directly for `closing_error` risked
+    /// attributing a stale, unrelated earlier failure to the current
+    /// negotiation whenever `closing` was set by something other than
+    /// `on_peer_connection_state` — a plain `disconnect()` racing in during SDP
+    /// polling sets `closing` but records no cause of its own. This must fall
+    /// back to the generic message, not the leftover `last_error`.
+    #[tokio::test]
+    async fn finish_transport_does_not_attribute_a_stale_last_error_to_an_unrelated_disconnect() {
+        let http = RaceHttp::new(RaceAction::Disconnect);
+        let peer = Arc::new(RacePeer::default());
+        let opts = ReactorOptions::new("http://localhost", "test-model");
+        let reactor = Arc::new(Reactor::new(
+            ReactorDeps {
+                http: http.clone() as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: peer.clone() as SharedPeer,
+            },
+            opts,
+        ));
+        http.bind(&reactor);
+        reactor.state.lock().unwrap().status = ReactorStatus::Waiting;
+        // Simulate a failure left over from an earlier, unrelated attempt —
+        // `last_error` is not reset just because a new `finish_transport` is
+        // in flight (only `connect()`/`reconnect()` reset it, at the top of a
+        // fresh attempt).
+        reactor.emit_error(ErrorDetails::new(
+            codes::DISCONNECTED,
+            "unrelated previous failure".to_string(),
+            true,
+        ));
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            reactor.finish_transport(
+                "sess_1",
+                false,
+                None,
+                PreparedOffer {
+                    sdp_offer: "offer".into(),
+                    track_mapping: vec![],
+                },
+            ),
+        )
+        .await
+        .expect("should fail fast, not hang");
+
+        match result {
+            Err(CoreError::Peer(message)) => {
+                assert_eq!(
+                    message, "connection closed during negotiation",
+                    "must not surface the stale last_error from an unrelated earlier attempt"
+                );
+            }
+            other => panic!("expected CoreError::Peer, got: {other:?}"),
+        }
     }
 
     fn output_track(name: &str) -> TrackCapability {
