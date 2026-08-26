@@ -1,7 +1,8 @@
 # Reactor JS SDK examples
 
-Six minimal examples, one per capability — the same set (minus frame
-metadata, still to come) as the Python and C++ SDKs.
+Minimal examples, one per capability — the same set (minus frame metadata,
+still to come) as the Python and C++ SDKs, plus one JS-only addition (07)
+on the request/reply side of messaging.
 
 ## The set
 
@@ -13,6 +14,7 @@ metadata, still to come) as the Python and C++ SDKs.
 | 04 | [`04-publish-track`](04-publish-track) | `publishTrack()` with a real `MediaStreamTrack`, watching it get edited | X2 (`xmax/x2`) |
 | 05 | [`05-multi-connection`](05-multi-connection) | Two clients on one session: `connect(jwt, { sessionId })` | Helios |
 | 06 | [`06-record-clip`](06-record-clip) | `requestClip()` and `downloadClipAsFile()` | Helios |
+| 07 | [`07-snapshot-and-rewind`](07-snapshot-and-rewind) | `sendCommand()`'s resolved reply, read and used — not fire-and-forgotten | Helios |
 
 Every example shares one spine — connect, wait for `"ready"`, give the model
 the minimum it needs, receive frames — and adds one new call on top. The

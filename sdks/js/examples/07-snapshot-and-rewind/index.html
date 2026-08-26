@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>02 — Upload an Image · Reactor JS SDK</title>
+    <title>07 — Snapshot and Rewind · Reactor JS SDK</title>
     <style>
       :root {
         --bg: #09090b;
@@ -73,6 +73,23 @@
         width: 280px;
       }
 
+      .hint {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 11px;
+        line-height: 1.4;
+        color: var(--text-muted);
+      }
+
+      .hint strong {
+        color: var(--text-bright);
+        font-weight: 500;
+      }
+
       .main-column {
         display: flex;
         flex-direction: column;
@@ -98,10 +115,55 @@
         gap: 12px;
       }
 
-      input[type='file'] {
+      #label {
+        flex: 1;
+        min-width: 0;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        color: var(--text);
+        padding: 2px 6px;
+        font-family: ui-monospace, monospace;
+        font-size: 12px;
+      }
+
+      #snapshots {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        max-height: 160px;
+        overflow-y: auto;
+      }
+
+      #snapshots:empty::before {
+        content: 'none yet';
+        color: var(--text-faint);
         font-size: 11px;
+      }
+
+      .snapshot {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        padding: 6px 8px;
+        font-size: 11px;
+      }
+
+      .snapshot dl {
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
         color: var(--text-muted);
-        max-width: 100%;
+        min-width: 0;
+      }
+
+      .snapshot dl strong {
+        color: var(--text-bright);
+        font-weight: 500;
       }
 
       #log {
@@ -179,21 +241,40 @@
         opacity: 0.4;
         cursor: default;
       }
+
+      .snapshot button {
+        flex-shrink: 0;
+        padding: 2px 8px;
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--text);
+      }
     </style>
   </head>
   <body>
     <header>
-      <h1>02 — Upload an Image</h1>
+      <h1>07 — Snapshot and Rewind</h1>
       <span>Powered by Reactor</span>
     </header>
     <main>
       <div class="sidebar">
+        <ol class="hint">
+          <li><strong>1.</strong> Connect</li>
+          <li><strong>2.</strong> Save a snapshot once the video starts</li>
+          <li><strong>3.</strong> Each save appears below as a row with its own Rewind button</li>
+        </ol>
         <div class="panel">
-          <p id="status">disconnected</p>
-          <input id="file" type="file" accept="image/*" />
           <div class="panel-row">
-            <button id="go" disabled>Connect &amp; Send</button>
+            <p id="status">disconnected</p>
+            <button id="connect">Connect</button>
           </div>
+        </div>
+        <div class="panel">
+          <div class="panel-row">
+            <input id="label" type="text" placeholder="snapshot label (optional)" />
+            <button id="save" disabled>Save</button>
+          </div>
+          <div id="snapshots"></div>
         </div>
       </div>
       <div class="main-column">

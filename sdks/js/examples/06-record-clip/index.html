@@ -73,6 +73,14 @@
         width: 280px;
       }
 
+      .main-column {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        flex: 1;
+        min-width: 280px;
+      }
+
       .panel {
         display: flex;
         flex-direction: column;
@@ -103,7 +111,7 @@
 
       #log {
         margin: 0;
-        height: 200px;
+        height: 260px;
         overflow-y: auto;
         border-radius: 8px;
         border: 1px solid var(--border);
@@ -154,9 +162,8 @@
       }
 
       video {
-        flex: 1;
-        min-width: 280px;
-        aspect-ratio: 16 / 9;
+        width: 100%;
+        aspect-ratio: 3 / 1;
         background: #000;
         border-radius: 8px;
         border: 1px solid var(--border);
@@ -197,9 +204,11 @@
           </div>
           <button id="record" disabled>Record &amp; download</button>
         </div>
+      </div>
+      <div class="main-column">
+        <video autoplay playsinline></video>
         <pre id="log"></pre>
       </div>
-      <video autoplay playsinline></video>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

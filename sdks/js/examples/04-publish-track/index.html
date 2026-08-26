@@ -84,9 +84,17 @@
         padding: 12px;
       }
 
+      .main-column {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        flex: 1;
+        min-width: 280px;
+      }
+
       #log {
         margin: 0;
-        height: 200px;
+        height: 260px;
         overflow-y: auto;
         border-radius: 8px;
         border: 1px solid var(--border);
@@ -138,9 +146,7 @@
 
       .tiles {
         display: flex;
-        flex: 1;
         gap: 16px;
-        min-width: 280px;
       }
 
       .tile {
@@ -159,7 +165,7 @@
 
       .tile video {
         width: 100%;
-        aspect-ratio: 16 / 9;
+        aspect-ratio: 2 / 1;
         background: #000;
         border-radius: 8px;
         border: 1px solid var(--border);
@@ -193,17 +199,19 @@
           <p id="status">disconnected</p>
           <button id="go">Connect &amp; Publish</button>
         </div>
-        <pre id="log"></pre>
       </div>
-      <div class="tiles">
-        <div class="tile">
-          <span>Sent — webcam (source)</span>
-          <video id="local" autoplay playsinline muted></video>
+      <div class="main-column">
+        <div class="tiles">
+          <div class="tile">
+            <span>Sent — webcam (source)</span>
+            <video id="local" autoplay playsinline muted></video>
+          </div>
+          <div class="tile">
+            <span>Received — main_video</span>
+            <video id="remote" autoplay playsinline></video>
+          </div>
         </div>
-        <div class="tile">
-          <span>Received — main_video</span>
-          <video id="remote" autoplay playsinline></video>
-        </div>
+        <pre id="log"></pre>
       </div>
     </main>
     <script type="module" src="/src/main.ts"></script>
