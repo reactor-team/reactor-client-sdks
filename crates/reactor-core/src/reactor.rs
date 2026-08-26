@@ -541,6 +541,12 @@ impl Reactor {
         if let Some(reassigned) = answer.connection_id {
             self.state.lock().unwrap().connection_id = Some(reassigned);
         }
+        {
+            let state = self.state.lock().unwrap();
+            if state.closing {
+                return Err(Self::closing_error(&state));
+            }
+        }
         self.peer.set_remote_description(&answer.sdp_answer).await?;
 
         match timeout(
@@ -1290,6 +1296,20 @@ impl Reactor {
         if changed {
             self.dispatcher
                 .dispatch(ReactorEvent::StatusChanged(status));
+        }
+    }
+
+    /// The error to return when `finish_transport` finds `state.closing` already
+    /// set before a call into the peer transport — a concurrent teardown (most
+    /// often `on_peer_connection_state` reacting to `Failed`/`Disconnected`/
+    /// `Closed`) beat it there. `last_error` already holds the real reason in
+    /// that case, since `on_peer_connection_state` calls `emit_error` before
+    /// `teardown`; reuse it instead of letting the call below fail with the
+    /// wasm transport's generic "not prepared" once its state is wiped.
+    fn closing_error(state: &State) -> CoreError {
+        match &state.last_error {
+            Some(error) => CoreError::Peer(error.details.message.clone()),
+            None => CoreError::Peer("connection closed during negotiation".into()),
         }
     }
 
@@ -2064,6 +2084,162 @@ mod tests {
             self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
+    }
+
+    /// Peer transport for the REA-5659 regression test below: tracks whether
+    /// `set_remote_description` was ever reached.
+    #[derive(Default)]
+    struct RacePeer {
+        set_remote_description_called: std::sync::atomic::AtomicBool,
+        closed: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl PeerTransport for RacePeer {
+        async fn prepare(
+            &self,
+            _: &[IceServer],
+            _: &[TrackCapability],
+        ) -> Result<PreparedOffer, CoreError> {
+            Ok(PreparedOffer {
+                sdp_offer: "offer".into(),
+                track_mapping: vec![],
+            })
+        }
+        async fn set_remote_description(&self, _: &str) -> Result<(), CoreError> {
+            self.set_remote_description_called
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        fn send_data(&self, _: &[u8], _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn send_control(&self, _: &[u8]) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn set_track_direction(&self, _: &str, _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn close(&self) -> Result<(), CoreError> {
+            self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// Mocks the connection-registration + SDP round trip `finish_transport`
+    /// drives. Its `GET .../sdp_params` handler (`poll_sdp_answer`) calls the
+    /// reactor's `on_peer_connection_state(Failed)` — the same event a broken
+    /// TURN relay produces — synchronously, before returning the answer. That
+    /// reproduces REA-5659's race deterministically without real concurrency:
+    /// the teardown it triggers has already run by the time `finish_transport`
+    /// gets the answer back and reaches its `state.closing` guard.
+    struct RaceHttp {
+        reactor: std::sync::OnceLock<std::sync::Weak<Reactor>>,
+    }
+
+    impl RaceHttp {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                reactor: std::sync::OnceLock::new(),
+            })
+        }
+
+        fn bind(&self, reactor: &Arc<Reactor>) {
+            let _ = self.reactor.set(Arc::downgrade(reactor));
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HttpClient for RaceHttp {
+        async fn request(&self, req: HttpRequest) -> Result<HttpResponse, CoreError> {
+            let json = |body: String| {
+                Ok(HttpResponse {
+                    status: 200,
+                    headers: vec![],
+                    body: body.into_bytes(),
+                })
+            };
+            if req.method == Method::Post && req.url.ends_with("/connections") {
+                return json(r#"{"connection_id": 1}"#.to_string());
+            }
+            if req.method == Method::Post && req.url.ends_with("/sdp_params") {
+                return json("{}".to_string());
+            }
+            if req.method == Method::Get && req.url.ends_with("/sdp_params") {
+                if let Some(reactor) = self.reactor.get().and_then(std::sync::Weak::upgrade) {
+                    reactor
+                        .on_peer_connection_state(PeerConnectionState::Failed)
+                        .await;
+                }
+                return json(r#"{"sdp_answer": "answer"}"#.to_string());
+            }
+            Err(CoreError::Http(format!(
+                "RaceHttp: no route for {:?} {}",
+                req.method, req.url
+            )))
+        }
+    }
+
+    /// REA-5659: a connection-state-driven teardown racing ahead of
+    /// `finish_transport`'s own `set_remote_description` call used to surface
+    /// the wasm transport's generic `InvalidState("peer transport not
+    /// prepared")` — the teardown wiped its state first — instead of the real
+    /// reason the connection died. `finish_transport` now checks `state.closing`
+    /// right after the SDP answer comes back and, if a teardown beat it there,
+    /// returns the reason already recorded in `last_error` instead of calling
+    /// into a transport it knows is gone.
+    #[tokio::test]
+    async fn finish_transport_surfaces_the_real_reason_when_a_teardown_races_ahead_of_set_remote_description(
+    ) {
+        let http = RaceHttp::new();
+        let peer = Arc::new(RacePeer::default());
+        let opts = ReactorOptions::new("http://localhost", "test-model");
+        let reactor = Arc::new(Reactor::new(
+            ReactorDeps {
+                http: http.clone() as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: peer.clone() as SharedPeer,
+            },
+            opts,
+        ));
+        http.bind(&reactor);
+        // Matches real `connect_inner`'s status by the time it reaches
+        // `establish_transport`/`finish_transport` — `on_peer_connection_state`
+        // treats a `Disconnected` reactor as already torn down and skips
+        // reporting/teardown, which would defeat this test's premise.
+        reactor.state.lock().unwrap().status = ReactorStatus::Waiting;
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            reactor.finish_transport(
+                "sess_1",
+                false,
+                None,
+                PreparedOffer {
+                    sdp_offer: "offer".into(),
+                    track_mapping: vec![],
+                },
+            ),
+        )
+        .await
+        .expect("should fail fast, not hang");
+
+        match result {
+            Err(CoreError::Peer(message)) => {
+                assert!(
+                    message.contains("Failed"),
+                    "expected the real connection-state reason, got: {message}"
+                );
+            }
+            other => panic!("expected CoreError::Peer with the real reason, got: {other:?}"),
+        }
+        assert!(
+            !peer
+                .set_remote_description_called
+                .load(std::sync::atomic::Ordering::SeqCst),
+            "a torn-down transport must not be called into"
+        );
     }
 
     fn output_track(name: &str) -> TrackCapability {
