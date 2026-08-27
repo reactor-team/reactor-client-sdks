@@ -6,6 +6,7 @@ import type {
   ConnectOptions,
   JwtSource,
   MessageScope,
+  NotFunction,
   ReactorMessage,
   ReactorOptions,
   ReactorStatus,
@@ -42,9 +43,9 @@ export interface ReactorActions {
   connect: (jwt?: JwtSource, options?: ConnectOptions) => Promise<void>;
   disconnect: (recoverable?: boolean) => Promise<void>;
   reconnect: (options?: ConnectOptions) => Promise<void>;
-  sendCommand: (
+  sendCommand: <T extends object = Record<string, unknown>>(
     command: string,
-    data?: Record<string, unknown>,
+    data?: NotFunction<T>,
     scope?: MessageScope,
   ) => Promise<ReactorMessage | undefined>;
   publish: (name: string, track: MediaStreamTrack) => Promise<void>;

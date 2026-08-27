@@ -36,6 +36,9 @@ export type SessionResponse = SessionInfo;
  */
 export type MessageScope = 'application' | 'runtime';
 
+/** Any object, except a function. */
+export type NotFunction<T> = T extends (...args: never[]) => unknown ? never : T;
+
 /** One command the model declares in its capabilities. */
 export interface CommandCapability {
   name: string;

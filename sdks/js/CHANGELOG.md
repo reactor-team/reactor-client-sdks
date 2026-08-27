@@ -45,3 +45,12 @@ binding over `reactor-core`.
   `requestRecording`, matching `uploadFile`'s existing direct-delegation
   pattern. `downloadClipAsFile` is intentionally not included — reach it via
   `internal.reactor` or `useClipDownload`.
+
+### Changed
+
+- **`sendCommand()`'s `data` parameter now accepts any object except a
+  function** (on both `Reactor` and the React store's `sendCommand`
+  action), instead of requiring `Record<string, unknown>`. A codegen'd or
+  hand-written params `interface` never gets an implicit index signature
+  from TypeScript, so passing one directly used to fail to compile —
+  every such call site needed an `as Record<string, unknown>` cast.
