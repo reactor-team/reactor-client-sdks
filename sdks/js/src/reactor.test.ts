@@ -87,6 +87,22 @@ describe('Reactor.sendCommand', () => {
     ]);
   });
 
+  it('accepts a params interface with no index signature, not just Record<string, unknown>', async () => {
+    interface SetCaptionParams {
+      text: string;
+    }
+
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const params: SetCaptionParams = { text: 'hi' };
+
+    await reactor.sendCommand('set_caption', params);
+
+    expect(client.sendCommandCalls).toEqual([
+      { command: 'set_caption', data: { text: 'hi' }, uploads: undefined },
+    ]);
+  });
+
   it('extracts FileRef values into uploads, translated to the wire shape, before calling the binding', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
