@@ -113,9 +113,10 @@ const clip = await reactor.requestClip(10); // last 10 seconds
 const blob = await reactor.downloadClipAsFile(clip, "clip.mp4", { jwt: await fetchToken() });
 ```
 
-`requestClip()`/`requestRecording()` are directly on `Reactor` — there's no separate recording
-client to construct. Both are also bound on the React store (`useReactor((s) => s.requestClip)`);
-`downloadClipAsFile` isn't — reach for it off `internal.reactor`, or use `useClipDownload` below.
+`requestClip()`/`requestRecording()`/`downloadClipAsFile()` are directly on `Reactor` — there's
+no separate recording client to construct. All three are also bound on the React store
+(`useReactor((s) => s.requestClip)`, etc.) for the common case; `useClipDownload` below wraps
+`downloadClipAsFile` in a progress/error state machine for a custom UI.
 `downloadClipAsFile(clip, filename?, options?)` polls the clip's manifest
 until ready, remuxes the fragmented chunks into a flat, faststart MP4, and (unless
 `filename: null` is passed) triggers the download; pass `options.onProgress` for progress UI.
@@ -247,8 +248,8 @@ want an unrelated parent re-render to rebuild the connection.
 `useReactor(selector)` also carries `sessionId`, `lastError`, `lastMessage`,
 and action bindings for `connect`/`disconnect`/`reconnect`/`sendCommand`/
 `publish`/`unpublish`/`pauseTrack`/`resumeTrack`/`uploadFile`/`requestClip`/
-`requestRecording`. For anything else — tracks, schema, capabilities, stats,
-`downloadClipAsFile`, the raw event emitter — `useReactor((s) =>
+`requestRecording`/`downloadClipAsFile`. For anything else — tracks, schema,
+capabilities, stats, the raw event emitter — `useReactor((s) =>
 s.internal.reactor)` gets you the underlying `Reactor` instance directly.
 
 ## Development

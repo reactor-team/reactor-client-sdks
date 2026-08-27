@@ -42,9 +42,9 @@ binding over `reactor-core`.
   were. This was a 2.x-parity gap: the vanilla `Reactor` constructor never
   lost the field, only the React provider's plumbing didn't pick it up.
 - `useReactor(selector)`'s action bindings gained `requestClip`/
-  `requestRecording`, matching `uploadFile`'s existing direct-delegation
-  pattern. `downloadClipAsFile` is intentionally not included — reach it via
-  `internal.reactor` or `useClipDownload`.
+  `requestRecording`/`downloadClipAsFile`, matching `uploadFile`'s existing
+  direct-delegation pattern. All three were store actions in 2.x too — this
+  was a parity gap, not new API surface.
 
 ### Changed
 

@@ -1,6 +1,7 @@
 import { Reactor } from '../reactor';
 import type { ReactorError } from '../errors';
 import type { FileRef } from '../file-ref';
+import type { DownloadClipOptions } from '../recording';
 import type {
   Clip,
   ConnectOptions,
@@ -55,6 +56,7 @@ export interface ReactorActions {
   uploadFile: (file: File | Blob, options?: { name?: string }) => Promise<FileRef>;
   requestClip: (durationSeconds: number) => Promise<Clip>;
   requestRecording: () => Promise<Clip>;
+  downloadClipAsFile: (clip: Clip, filename?: string | null, options?: DownloadClipOptions) => Promise<Blob>;
 }
 
 export interface ReactorInternal {
@@ -141,6 +143,8 @@ export function createReactorStore(
       uploadFile: (file, options) => get().internal.reactor.uploadFile(file, options),
       requestClip: (durationSeconds) => get().internal.reactor.requestClip(durationSeconds),
       requestRecording: () => get().internal.reactor.requestRecording(),
+      downloadClipAsFile: (clip, filename, options) =>
+        get().internal.reactor.downloadClipAsFile(clip, filename, options),
     };
   });
 }
