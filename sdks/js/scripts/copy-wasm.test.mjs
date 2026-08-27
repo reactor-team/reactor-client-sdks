@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -26,6 +26,15 @@ describe('copyWasm', () => {
     copyWasm(srcDir, destDir);
 
     expect(() => copyWasm(srcDir, destDir)).not.toThrow();
+  });
+
+  it('strips the .gitignore that wasm-pack writes into the pkg dir, so it does not poison npm-packlist', () => {
+    writeFileSync(join(srcDir, 'reactor_wasm_bg.wasm'), 'not-really-wasm');
+    writeFileSync(join(srcDir, '.gitignore'), '*\n');
+
+    copyWasm(srcDir, destDir);
+
+    expect(existsSync(join(destDir, '.gitignore'))).toBe(false);
   });
 
   it('throws when the source pkg directory does not exist', () => {
