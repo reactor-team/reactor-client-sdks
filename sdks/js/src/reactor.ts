@@ -1,5 +1,6 @@
 import { AwaitQueue } from 'awaitqueue';
 import { toPublicCapabilities } from './internal/capabilities';
+import { debugLog } from './internal/debug-log';
 import { toReactorError, type ReactorError } from './errors';
 import { Emitter } from './internal/emitter';
 import { extractFileRefs, toPublicFileRef } from './internal/file-ref';
@@ -588,9 +589,15 @@ export class Reactor implements Disposable {
     client.onSessionIdChanged((sessionId) => this.emitter.emit('sessionIdChanged', sessionId));
     client.onError((error) => this.emitError(error));
     // DATA channel — the model's own application traffic.
-    client.onMessage((message) => this.emitter.emit('message', message));
+    client.onMessage((message) => {
+      debugLog('[Reactor] message:', message);
+      this.emitter.emit('message', message);
+    });
     // CONTROL channel — platform traffic (moderation, clip/recording lifecycle).
-    client.onRuntimeMessage((message) => this.emitter.emit('runtimeMessage', message));
+    client.onRuntimeMessage((message) => {
+      debugLog('[Reactor] runtimeMessage:', message);
+      this.emitter.emit('runtimeMessage', message);
+    });
     client.onCapabilitiesReceived((capabilities) => {
       this.capabilities = toPublicCapabilities(capabilities);
       this.emitter.emit('capabilitiesReceived', this.capabilities);

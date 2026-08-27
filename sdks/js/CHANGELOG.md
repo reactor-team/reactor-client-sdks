@@ -7,6 +7,17 @@ build-out against `reactor-wasm`) predate this file and aren't backfilled.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Incoming data-channel (`message`) and control-channel (`runtimeMessage`)
+  traffic is now logged via `console.debug` in development builds (detected
+  from `process.env.NODE_ENV === 'development'`, as inlined by most
+  bundlers — webpack, Next.js, Vite). Silent otherwise, including in
+  production. This restores console visibility into wire traffic that was
+  present, unconditionally, in the 2.x line.
+
 ## [3.0.0]
 
 A major bump, not a 2.x-compatible minor: two behavior changes from the
