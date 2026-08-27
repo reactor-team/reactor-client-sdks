@@ -3,7 +3,7 @@
 // the rest of the built package, so `import("../wasm/reactor_wasm.js")` in
 // src/internal/wasm.ts resolves from an npm install with no separate build
 // step on the consumer's side. Run as part of `npm run build`, after tsup.
-import { cpSync, existsSync, realpathSync, statSync } from 'node:fs';
+import { cpSync, existsSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -31,6 +31,16 @@ export function copyWasm(wasmPkgDir, destDir) {
   }
 
   cpSync(wasmPkgDir, destDir, { recursive: true });
+
+  // `wasm-pack build` writes a `.gitignore` containing `*` into its pkg/
+  // output (it's build output, so that's correct for git). Copied verbatim
+  // into dist/wasm, that `.gitignore` poisons npm-packlist — nested ignore
+  // files apply even inside a directory included via package.json's `files`
+  // array — so `npm pack` (and pnpm's `file:` install, which packs the same
+  // way) silently drops every wasm artifact from the tarball while leaving
+  // them present on disk, which is exactly what the post-copy check below
+  // can't catch.
+  rmSync(join(destDir, '.gitignore'), { force: true });
 
   // `npm publish` runs `prepack` (which runs this), and a silently empty/missing
   // dist/wasm here means the published tarball is missing the binary — the

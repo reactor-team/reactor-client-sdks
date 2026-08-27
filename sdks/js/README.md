@@ -113,8 +113,11 @@ const clip = await reactor.requestClip(10); // last 10 seconds
 const blob = await reactor.downloadClipAsFile(clip, "clip.mp4", { jwt: await fetchToken() });
 ```
 
-`requestClip()`/`requestRecording()` are directly on `Reactor` — there's no separate recording
-client to construct. `downloadClipAsFile(clip, filename?, options?)` polls the clip's manifest
+`requestClip()`/`requestRecording()`/`downloadClipAsFile()` are directly on `Reactor` — there's
+no separate recording client to construct. All three are also bound on the React store
+(`useReactor((s) => s.requestClip)`, etc.) for the common case; `useClipDownload` below wraps
+`downloadClipAsFile` in a progress/error state machine for a custom UI.
+`downloadClipAsFile(clip, filename?, options?)` polls the clip's manifest
 until ready, remuxes the fragmented chunks into a flat, faststart MP4, and (unless
 `filename: null` is passed) triggers the download; pass `options.onProgress` for progress UI.
 
@@ -234,20 +237,20 @@ version. `ReactorView` (renders one or two named tracks into a single
 local camera/mic) cover the common send/receive media UI without hand-rolling
 `getTrackByName()`/`publishTrack()` yourself.
 
-`apiUrl`/`modelName`/`local`/`jwtToken`/`connectOptions` are live (including
-`connectOptions.autoConnect`): changing any of them tears down the current
-`Reactor` and builds a fresh one (there's no way to reconnect an existing
-instance with a different model or endpoint). Pass a stable `jwtToken` and
-`connectOptions` (`useCallback`/`useMemo`, or hoist them outside the
-component) if you don't want an unrelated parent re-render to rebuild the
-connection.
+`apiUrl`/`modelName`/`local`/`modelTracks`/`jwtToken`/`connectOptions` are live
+(including `connectOptions.autoConnect`): changing any of them tears down the
+current `Reactor` and builds a fresh one (there's no way to reconnect an
+existing instance with a different model or endpoint). Pass a stable
+`jwtToken` and stable `modelTracks`/`connectOptions` references
+(`useCallback`/`useMemo`, or hoist them outside the component) if you don't
+want an unrelated parent re-render to rebuild the connection.
 
 `useReactor(selector)` also carries `sessionId`, `lastError`, `lastMessage`,
 and action bindings for `connect`/`disconnect`/`reconnect`/`sendCommand`/
-`publish`/`unpublish`/`pauseTrack`/`resumeTrack`/`uploadFile`. For anything
-else — tracks, schema, capabilities, stats, clips/recording, the raw event
-emitter — `useReactor((s) => s.internal.reactor)` gets you the underlying
-`Reactor` instance directly.
+`publish`/`unpublish`/`pauseTrack`/`resumeTrack`/`uploadFile`/`requestClip`/
+`requestRecording`/`downloadClipAsFile`. For anything else — tracks, schema,
+capabilities, stats, the raw event emitter — `useReactor((s) =>
+s.internal.reactor)` gets you the underlying `Reactor` instance directly.
 
 ## Development
 

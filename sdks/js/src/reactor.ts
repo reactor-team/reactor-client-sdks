@@ -18,6 +18,7 @@ import type {
   JwtSource,
   MessageScope,
   ModelSchema,
+  NotFunction,
   ReactorEventMap,
   ReactorMessage,
   ReactorOptions,
@@ -178,10 +179,12 @@ export class Reactor implements Disposable {
    *
    * `scope` is forwarded to `sendRuntimeScopedCommand()` — see there for
    * what `"runtime"` actually does.
+   *
+   * `data` accepts any object, except a function.
    */
-  async sendCommand(
+  async sendCommand<T extends object = Record<string, unknown>>(
     command: string,
-    data?: Record<string, unknown>,
+    data?: NotFunction<T>,
     scope?: MessageScope,
   ): Promise<ReactorMessage | undefined> {
     if (scope === 'runtime') {
@@ -190,7 +193,7 @@ export class Reactor implements Disposable {
     try {
       this.assertNotDisposed();
       const client = await this.getOrCreateClient();
-      const extracted = extractFileRefs(data);
+      const extracted = extractFileRefs(data as Record<string, unknown> | undefined);
       const reply = await client.sendCommand(command, extracted.data, extracted.uploads);
 
       return reply ?? undefined;
@@ -218,7 +221,7 @@ export class Reactor implements Disposable {
    */
   private async sendRuntimeScopedCommand(
     command: string,
-    data?: Record<string, unknown>,
+    data?: object,
   ): Promise<ReactorMessage | undefined> {
     switch (command) {
       case 'requestSchema':

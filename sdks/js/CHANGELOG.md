@@ -34,3 +34,23 @@ binding over `reactor-core`.
   `operation`, `retry_after_ms`, and `timestamp_ms` instead of `retryAfter`
   and `timestamp`. `component` is dropped outright — 2.x populated it
   locally per call site; `reactor-core` never reports it.
+
+### Added
+
+- `ReactorProviderProps` gained `modelTracks`, carried through to the
+  underlying `Reactor` the same way `apiUrl`/`modelName`/`local` already
+  were. This was a 2.x-parity gap: the vanilla `Reactor` constructor never
+  lost the field, only the React provider's plumbing didn't pick it up.
+- `useReactor(selector)`'s action bindings gained `requestClip`/
+  `requestRecording`/`downloadClipAsFile`, matching `uploadFile`'s existing
+  direct-delegation pattern. All three were store actions in 2.x too — this
+  was a parity gap, not new API surface.
+
+### Changed
+
+- **`sendCommand()`'s `data` parameter now accepts any object except a
+  function** (on both `Reactor` and the React store's `sendCommand`
+  action), instead of requiring `Record<string, unknown>`. A codegen'd or
+  hand-written params `interface` never gets an implicit index signature
+  from TypeScript, so passing one directly used to fail to compile —
+  every such call site needed an `as Record<string, unknown>` cast.

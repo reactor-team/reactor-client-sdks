@@ -1,7 +1,17 @@
 import { Reactor } from '../reactor';
 import type { ReactorError } from '../errors';
 import type { FileRef } from '../file-ref';
-import type { ConnectOptions, JwtSource, MessageScope, ReactorMessage, ReactorOptions, ReactorStatus } from '../types';
+import type { DownloadClipOptions } from '../recording';
+import type {
+  Clip,
+  ConnectOptions,
+  JwtSource,
+  MessageScope,
+  NotFunction,
+  ReactorMessage,
+  ReactorOptions,
+  ReactorStatus,
+} from '../types';
 
 /** State kept reactive for `useReactor` selectors. Stats/schema/capabilities
  *  aren't mirrored here — reach them through the `internal.reactor` escape
@@ -34,9 +44,9 @@ export interface ReactorActions {
   connect: (jwt?: JwtSource, options?: ConnectOptions) => Promise<void>;
   disconnect: (recoverable?: boolean) => Promise<void>;
   reconnect: (options?: ConnectOptions) => Promise<void>;
-  sendCommand: (
+  sendCommand: <T extends object = Record<string, unknown>>(
     command: string,
-    data?: Record<string, unknown>,
+    data?: NotFunction<T>,
     scope?: MessageScope,
   ) => Promise<ReactorMessage | undefined>;
   publish: (name: string, track: MediaStreamTrack) => Promise<void>;
@@ -44,6 +54,9 @@ export interface ReactorActions {
   pauseTrack: (name: string) => Promise<void>;
   resumeTrack: (name: string) => Promise<void>;
   uploadFile: (file: File | Blob, options?: { name?: string }) => Promise<FileRef>;
+  requestClip: (durationSeconds: number) => Promise<Clip>;
+  requestRecording: () => Promise<Clip>;
+  downloadClipAsFile: (clip: Clip, filename?: string | null, options?: DownloadClipOptions) => Promise<Blob>;
 }
 
 export interface ReactorInternal {
@@ -128,6 +141,10 @@ export function createReactorStore(
       pauseTrack: (name) => get().internal.reactor.pauseTrack(name),
       resumeTrack: (name) => get().internal.reactor.resumeTrack(name),
       uploadFile: (file, options) => get().internal.reactor.uploadFile(file, options),
+      requestClip: (durationSeconds) => get().internal.reactor.requestClip(durationSeconds),
+      requestRecording: () => get().internal.reactor.requestRecording(),
+      downloadClipAsFile: (clip, filename, options) =>
+        get().internal.reactor.downloadClipAsFile(clip, filename, options),
     };
   });
 }

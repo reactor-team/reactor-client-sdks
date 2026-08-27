@@ -138,4 +138,40 @@ describe('createReactorStore', () => {
     expect(currentClient().uploadFileCalls).toEqual([{ file, name: 'a.txt' }]);
     expect(result).toEqual({ uploadId: 'up_1', name: 'upload', mimeType: 'application/octet-stream', size: 0 });
   });
+
+  it('binds requestClip/requestRecording to the underlying reactor', async () => {
+    const store = createReactorStore({ modelName: 'test-model' });
+
+    await store.getState().connect();
+
+    const clip = await store.getState().requestClip(10);
+    const recording = await store.getState().requestRecording();
+
+    expect(currentClient().requestClipCalls).toEqual([10]);
+    expect(currentClient().requestRecordingCalls).toBe(1);
+    expect(clip.kind).toBe('snap');
+    expect(recording.kind).toBe('recording');
+  });
+
+  it('binds downloadClipAsFile to the underlying reactor', async () => {
+    const store = createReactorStore({ modelName: 'test-model' });
+    const blob = new Blob(['clip']);
+    const spy = vi
+      .spyOn(store.getState().internal.reactor, 'downloadClipAsFile')
+      .mockResolvedValue(blob);
+    const clip = {
+      sessionId: 'sess_1',
+      kind: 'snap' as const,
+      startMarker: 0,
+      endMarker: 10,
+      nowMarker: 10,
+      predictedReadyAtMs: 0,
+      playlistUrl: 'https://api.reactor.test/clips?session_id=sess_1',
+    };
+
+    const result = await store.getState().downloadClipAsFile(clip, 'out.mp4');
+
+    expect(spy).toHaveBeenCalledWith(clip, 'out.mp4', undefined);
+    expect(result).toBe(blob);
+  });
 });

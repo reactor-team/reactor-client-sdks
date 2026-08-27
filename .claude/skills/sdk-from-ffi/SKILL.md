@@ -289,6 +289,7 @@ Every one of these must raise in your binding, with the fix in the message:
 | `push_frame` on a recvonly track | nothing | raise, naming the direction |
 | `on_frame` on a sendonly track | never fires | raise |
 | `push_frame` before `publish()` | drops the frame | raise `InvalidStateError` |
+| Raw frame bytes whose length ≠ `width * height * 4` | reads out of bounds | raise, naming both numbers |
 | Handler registered on a removed event | never fires | raise at registration |
 | Frame arriving with no matching track | — | drop, and log it |
 

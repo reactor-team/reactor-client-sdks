@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createReactorStore, type ReactorStore, type StoreApi } from './store';
-import type { ConnectOptions, JwtSource, ReactorOptions } from '../types';
+import type { ConnectOptions, JwtSource, ReactorOptions, TrackCapability } from '../types';
 
 /** `connectOptions` for the provider — adds `autoConnect` to the core
  *  `ConnectOptions`. Live, same as every other `ReactorProviderProps` field —
@@ -17,6 +17,10 @@ export interface ReactorProviderProps {
   apiUrl?: string | undefined;
   modelName: string;
   local?: boolean | undefined;
+  /** Media tracks to declare up front, so the transport can prepare the SDP
+   *  offer in parallel with session polling instead of waiting to discover
+   *  them from the model's schema. */
+  modelTracks?: TrackCapability[] | undefined;
   /** Static token, or a resolver called before every authenticated request
    *  — see `JwtSource`. Required for `autoConnect` against a non-local
    *  runtime; can also be supplied later via an explicit `connect()` call
@@ -34,7 +38,7 @@ export const ReactorContext = createContext<StoreApi<ReactorStore> | undefined>(
 
 type BuildStoreProps = Pick<
   ReactorProviderProps,
-  'apiUrl' | 'modelName' | 'local' | 'jwtToken' | 'connectOptions'
+  'apiUrl' | 'modelName' | 'local' | 'modelTracks' | 'jwtToken' | 'connectOptions'
 >;
 
 /**
@@ -43,7 +47,14 @@ type BuildStoreProps = Pick<
  * both the initial mount and every later rebuild, so both go through the
  * same auto-connect path rather than only the first one.
  */
-function buildStore({ apiUrl, modelName, local, jwtToken, connectOptions }: BuildStoreProps): StoreApi<ReactorStore> {
+function buildStore({
+  apiUrl,
+  modelName,
+  local,
+  modelTracks,
+  jwtToken,
+  connectOptions,
+}: BuildStoreProps): StoreApi<ReactorStore> {
   // Built up field-by-field, not as one object literal, so an omitted prop
   // stays omitted rather than becoming an explicit `undefined` — required
   // under `exactOptionalPropertyTypes`.
@@ -54,6 +65,9 @@ function buildStore({ apiUrl, modelName, local, jwtToken, connectOptions }: Buil
   }
   if (local !== undefined) {
     options.local = local;
+  }
+  if (modelTracks !== undefined) {
+    options.modelTracks = modelTracks;
   }
   if (jwtToken !== undefined) {
     options.jwt = jwtToken;
@@ -72,20 +86,20 @@ function buildStore({ apiUrl, modelName, local, jwtToken, connectOptions }: Buil
 /**
  * Owns a `Reactor` instance and exposes it to `useReactor` below.
  *
- * `apiUrl`/`modelName`/`local`/`jwtToken`/`connectOptions` (including
- * `autoConnect`) are live: changing any of them tears down the current
- * `Reactor` (`disconnect()` then `[Symbol.dispose]()`) and builds a fresh
- * one — the same way `useLiveKitRoom` rebuilds its `Room` when its
+ * `apiUrl`/`modelName`/`local`/`modelTracks`/`jwtToken`/`connectOptions`
+ * (including `autoConnect`) are live: changing any of them tears down the
+ * current `Reactor` (`disconnect()` then `[Symbol.dispose]()`) and builds a
+ * fresh one — the same way `useLiveKitRoom` rebuilds its `Room` when its
  * construction `options` change. `Reactor` has no equivalent of LiveKit's
  * `token`/`serverUrl` split (reconnecting the *same* instance with new
  * credentials) or its live `connect` boolean (toggling the same `Room`'s
  * connection without rebuilding it) — its constructor bundles everything, so
  * any change, `autoConnect` included, means a fresh instance rather than
  * reconnecting/disconnecting the existing one. Pass a stable `jwtToken`
- * (e.g. via `useCallback` for a resolver) and a stable `connectOptions`
- * reference if you don't want an unrelated parent render to rebuild the
- * connection — object/function props are compared by reference
- * (`connectOptions` via a `JSON.stringify` snapshot, same as
+ * (e.g. via `useCallback` for a resolver) and stable `modelTracks`/
+ * `connectOptions` references if you don't want an unrelated parent render to
+ * rebuild the connection — object/array props are compared by reference
+ * (`modelTracks`/`connectOptions` via a `JSON.stringify` snapshot, same as
  * `useLiveKitRoom` does for its own `options`).
  *
  * Unmounting tears down the same way — see `Reactor.disconnect()`/
@@ -95,11 +109,14 @@ export function ReactorProvider({
   apiUrl,
   modelName,
   local,
+  modelTracks,
   jwtToken,
   connectOptions,
   children,
 }: ReactorProviderProps) {
-  const [store, setStore] = useState(() => buildStore({ apiUrl, modelName, local, jwtToken, connectOptions }));
+  const [store, setStore] = useState(() =>
+    buildStore({ apiUrl, modelName, local, modelTracks, jwtToken, connectOptions }),
+  );
   // Skips the rebuild effect's mandatory first run — the initial store was
   // already built synchronously above, so re-running the same construction
   // on mount would just replace it with an equivalent one for nothing.
@@ -111,9 +128,9 @@ export function ReactorProvider({
 
       return;
     }
-    setStore(buildStore({ apiUrl, modelName, local, jwtToken, connectOptions }));
+    setStore(buildStore({ apiUrl, modelName, local, modelTracks, jwtToken, connectOptions }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiUrl, modelName, local, jwtToken, JSON.stringify(connectOptions)]);
+  }, [apiUrl, modelName, local, JSON.stringify(modelTracks), jwtToken, JSON.stringify(connectOptions)]);
 
   // Fires autoConnect for whichever Reactor this provider currently owns —
   // on initial mount and on every rebuild, since both produce a new `store`.

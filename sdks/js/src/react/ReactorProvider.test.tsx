@@ -204,6 +204,20 @@ describe('ReactorProvider jwtToken', () => {
   });
 });
 
+describe('ReactorProvider modelTracks', () => {
+  it('passes modelTracks through to the underlying Reactor', async () => {
+    const modelTracks = [{ name: 'main_video', kind: 'video', direction: 'recvonly' }] as const;
+
+    render(
+      <ReactorProvider modelName="test-model" modelTracks={[...modelTracks]} connectOptions={{ autoConnect: true }}>
+        <StatusProbe />
+      </ReactorProvider>,
+    );
+
+    await waitFor(() => expect(currentClient().options).toMatchObject({ modelTracks }));
+  });
+});
+
 describe('ReactorProvider unmount', () => {
   it('disconnects on unmount', async () => {
     const { unmount } = render(
