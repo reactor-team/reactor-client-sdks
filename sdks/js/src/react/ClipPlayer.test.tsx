@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { render, waitFor, within } from '@testing-library/react';
+import { cleanup, render, waitFor, within } from '@testing-library/react';
 import { createElement } from 'react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -99,6 +99,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup();
   delete scope.MediaSource;
 });
 
@@ -160,8 +161,13 @@ describe('ClipPlayer', () => {
 
     const { container } = render(<ClipPlayer clip={CLIP} getJwt={() => 'x'} onError={onError} />);
 
-    await waitFor(() => expect(within(container).getByText('CLIP_GONE: chunks aged out')).toBeTruthy());
-    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ code: 'CLIP_GONE' }));
+    // `onError` fires from a passive effect keyed on the `error` phase, which
+    // commits *after* the DOM already shows the error text — so waiting on the
+    // text first and reading `onError` synchronously races the effect. Wait on
+    // `onError` (as the sibling hls.js-error case above does) and only then
+    // read the DOM, which by then is guaranteed to already reflect it.
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.objectContaining({ code: 'CLIP_GONE' })));
+    expect(within(container).getByText('CLIP_GONE: chunks aged out')).toBeTruthy();
   });
 
   it("passes an explicit getJwt's resolved token to fetchPlaylist", async () => {

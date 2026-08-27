@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
-import { act, fireEvent, render } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeReactorClient } from '../internal/fake-reactor-client';
 import { downloadClipAsFile } from '../recording';
 import type * as RecordingModule from '../recording';
@@ -38,6 +38,10 @@ function button(container: HTMLElement): HTMLButtonElement {
 
 beforeEach(() => {
   vi.mocked(downloadClipAsFile).mockReset();
+});
+
+afterEach(() => {
+  cleanup();
 });
 
 describe('ClipDownloadButton', () => {

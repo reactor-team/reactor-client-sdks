@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
-import { act, render } from '@testing-library/react';
+import { act, cleanup, render } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FakeReactorClient } from '../internal/fake-reactor-client';
 import type { Reactor } from '../reactor';
 
@@ -47,6 +47,10 @@ function Provider({ children }: { children: ReactNode }) {
 function fakeVideoTrack(): MediaStreamTrack {
   return { kind: 'video', addEventListener: vi.fn(), removeEventListener: vi.fn() } as unknown as MediaStreamTrack;
 }
+
+afterEach(() => {
+  cleanup();
+});
 
 describe('ReactorView', () => {
   it('renders with the video element hidden before any track arrives', async () => {

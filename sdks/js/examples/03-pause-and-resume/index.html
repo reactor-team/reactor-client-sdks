@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>03 — Pause and Resume · Reactor JS SDK</title>
+    <style>
+      :root {
+        --bg: #09090b;
+        --panel: rgba(24, 24, 27, 0.4);
+        --border: #27272a;
+        --text: #e4e4e7;
+        --text-bright: #f4f4f5;
+        --text-muted: #71717a;
+        --text-faint: #52525b;
+        --brand: #fdf5c6;
+        --brand-fg: #000000;
+        --active: #dcffc7;
+        --warn: #fbbf24;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        background: var(--bg);
+        color: var(--text);
+        font-family: system-ui, -apple-system, sans-serif;
+      }
+
+      header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        border-bottom: 1px solid var(--border);
+        background: var(--panel);
+        padding: 12px 24px;
+      }
+
+      header h1 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text-bright);
+      }
+
+      header span {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--text-muted);
+      }
+
+      main {
+        display: flex;
+        flex: 1;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        gap: 24px;
+        padding: 24px;
+      }
+
+      .sidebar {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        width: 280px;
+      }
+
+      .main-column {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        flex: 1;
+        min-width: 280px;
+      }
+
+      .panel {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        padding: 12px;
+      }
+
+      .panel-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .button-row {
+        display: flex;
+        gap: 8px;
+      }
+
+      .button-row button {
+        flex: 1;
+      }
+
+      #fps {
+        margin: 0;
+        font-family: ui-monospace, monospace;
+        font-size: 20px;
+        font-weight: 600;
+        color: var(--text-bright);
+      }
+
+      #log {
+        margin: 0;
+        height: 260px;
+        overflow-y: auto;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        padding: 8px 12px;
+        font-family: ui-monospace, monospace;
+        font-size: 11px;
+        line-height: 1.6;
+        color: var(--text-muted);
+        white-space: pre-wrap;
+      }
+
+      #status {
+        margin: 0;
+        font-family: ui-monospace, monospace;
+        font-size: 13px;
+        color: var(--text-muted);
+      }
+
+      #status::before {
+        content: '';
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        margin-right: 8px;
+        border-radius: 50%;
+        background: var(--text-faint);
+      }
+
+      #status[data-status='ready']::before {
+        background: var(--active);
+      }
+
+      #status[data-status='connecting']::before,
+      #status[data-status='waiting']::before {
+        background: var(--warn);
+        animation: pulse 1.4s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.4;
+        }
+      }
+
+      video {
+        width: 100%;
+        aspect-ratio: 3 / 1;
+        background: #000;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+      }
+
+      button {
+        border: none;
+        border-radius: 6px;
+        background: var(--brand);
+        color: var(--brand-fg);
+        padding: 4px 12px;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>03 — Pause and Resume</h1>
+      <span>Powered by Reactor</span>
+    </header>
+    <main>
+      <div class="sidebar">
+        <div class="panel">
+          <p id="status">disconnected</p>
+          <button id="connect">Connect</button>
+        </div>
+        <div class="panel">
+          <div class="panel-row">
+            <span>Frame rate</span>
+            <p id="fps">—</p>
+          </div>
+          <div class="button-row">
+            <button id="pause" disabled>Pause</button>
+            <button id="resume" disabled>Resume</button>
+          </div>
+        </div>
+      </div>
+      <div class="main-column">
+        <video autoplay playsinline></video>
+        <pre id="log"></pre>
+      </div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
