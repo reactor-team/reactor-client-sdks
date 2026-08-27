@@ -14,7 +14,7 @@ on the request/reply side of messaging.
 | 04 | [`04-publish-track`](04-publish-track) | `publishTrack()` with a real `MediaStreamTrack`, watching it get edited | X2 (`xmax/x2`) |
 | 05 | [`05-multi-connection`](05-multi-connection) | Two clients on one session: `connect(jwt, { sessionId })` | Helios |
 | 06 | [`06-record-clip`](06-record-clip) | `requestClip()` and `downloadClipAsFile()` | Helios |
-| 07 | [`07-snapshot-and-rewind`](07-snapshot-and-rewind) | `sendCommand()`'s resolved reply, read and used — not fire-and-forgotten | Helios |
+| 07 | [`07-command-replies`](07-command-replies) | `sendCommand()`'s resolved reply, read and used — not fire-and-forgotten | Helios |
 
 Every example shares one spine — connect, wait for `"ready"`, give the model
 the minimum it needs, receive frames — and adds one new call on top. The
@@ -47,13 +47,37 @@ Open the printed local URL. Every example runs against **production** —
 (`GET /api/token`) the same way a real app's own backend would, so the key
 itself never reaches the browser.
 
+## Auth
+
+The `/api/token` route is deliberate, not incidental complexity. It's the
+same "Server-side proxy" shape [Authentication](https://docs.reactor.inc/authentication)
+documents for real apps, and what the Python and C++ examples get for free
+by taking `api_key` directly (server/native-side, never a browser). The key
+authorizes the whole account — create/delete models, billing, key
+management — while the JWT it mints is scoped to one model and expires in
+an hour; putting the key behind a route instead of a plain input on the page
+is what keeps that account-wide credential off the browser entirely.
+
+Each `main.ts` calls `fetchToken()` once per `connect()` and hands the
+result to it as a plain string, not as `fetchToken` itself. Passed as a
+resolver, the SDK would call it again on later hops (session create, the
+poll-until-ready GET, ...) and mint a *different* token each time — reading
+a session back requires the *same* token that created it, so a second,
+independently minted token with identical scope 403s. A plain string
+sidesteps that: it's the same value on every call by construction, no cache
+needed. [`05-multi-connection`](05-multi-connection) is the one place this
+spans two clients instead of just two hops — see its own comment.
+
 ## What's shared, and what isn't
 
-Nothing is imported between examples — each `src/main.ts` is the whole
-lesson, self-contained. The `vite.config.ts` token-minting middleware is
-duplicated across all of them on purpose, same as 01: it's dev-server
-plumbing, not SDK usage, and a shared helper would be one more file to read
-to understand any single example.
+`log()` and `fetchToken()` live in `shared/` — pure boilerplate, byte-identical
+across all seven, and reading them teaches nothing about the SDK. Everything
+else stays local: each `src/main.ts` is still the whole lesson, and the
+`vite.config.ts` token-minting middleware is duplicated across all of them on
+purpose — it's dev-server plumbing keyed to that example's own model scope
+(`authorization_details.resources.models.match`), not SDK usage, and folding
+it into a shared helper would hide a real per-example difference behind one
+more file to read.
 
 Tracks are asked for by name — `reactor.on('trackReceived', (name, track) => ...)`
 filtered on `name === 'main_video'` — the way an app that knows its model

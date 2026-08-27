@@ -1,4 +1,6 @@
 import { Reactor } from '@reactor-team/js-sdk';
+import { log } from '../../shared/log';
+import { fetchToken } from '../../shared/fetch-token';
 
 // 04 — Publish an input track, and see it edited.
 //
@@ -27,27 +29,8 @@ const statusEl = document.querySelector<HTMLParagraphElement>('#status')!;
 const localVideoEl = document.querySelector<HTMLVideoElement>('#local')!;
 const remoteVideoEl = document.querySelector<HTMLVideoElement>('#remote')!;
 const button = document.querySelector<HTMLButtonElement>('#go')!;
-const logEl = document.querySelector<HTMLPreElement>('#log')!;
 
-function log(line: string): void {
-  const time = new Date().toLocaleTimeString();
-
-  logEl.textContent += `[${time}] ${line}\n`;
-  logEl.scrollTop = logEl.scrollHeight;
-}
-
-async function fetchToken(): Promise<string> {
-  const r = await fetch('/api/token');
-
-  if (!r.ok) {
-    throw new Error(`token fetch failed: ${r.status}`);
-  }
-  const { jwt } = (await r.json()) as { jwt: string };
-
-  return jwt;
-}
-
-const reactor = new Reactor({ modelName: MODEL_NAME, jwt: fetchToken });
+const reactor = new Reactor({ modelName: MODEL_NAME });
 let localStream: MediaStream | undefined;
 
 reactor.on('statusChanged', (status) => {
@@ -84,7 +67,7 @@ button.addEventListener('click', async () => {
   }
 
   log(`connecting to ${MODEL_NAME}...`);
-  await reactor.connect();
+  await reactor.connect(await fetchToken());
   log(`session ${reactor.getSessionId() ?? '?'} is ready`);
 
   log('requesting the webcam...');

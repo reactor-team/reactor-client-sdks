@@ -1,9 +1,13 @@
 import { Reactor } from '@reactor-team/js-sdk';
+import { log } from '../../shared/log';
+import { fetchToken } from '../../shared/fetch-token';
 
-// 07 — Save a snapshot, list them, rewind to one. `sendCommand()`'s return
-// value is the point here: every other example either fire-and-forgets it
-// or reads only its bare `type`. `save_snapshot`/`list_snapshots`/`rewind`
-// each reply with a `data` payload worth actually looking at.
+// 07 — Read a command's reply, not just send it. `sendCommand()` resolves
+// with the model's correlated reply — every other example either
+// fire-and-forgets the call or reads only its bare `type`. Helios's
+// `save_snapshot`/`list_snapshots`/`rewind` are just this example's vehicle
+// for it: each replies with a `data` payload worth actually looking at, and
+// the same pattern applies to any command, on any model.
 //
 //   export REACTOR_API_KEY=...
 //   npm run dev
@@ -28,27 +32,8 @@ const connectButton = document.querySelector<HTMLButtonElement>('#connect')!;
 const labelInput = document.querySelector<HTMLInputElement>('#label')!;
 const saveButton = document.querySelector<HTMLButtonElement>('#save')!;
 const snapshotsEl = document.querySelector<HTMLDivElement>('#snapshots')!;
-const logEl = document.querySelector<HTMLPreElement>('#log')!;
 
-function log(line: string): void {
-  const time = new Date().toLocaleTimeString();
-
-  logEl.textContent += `[${time}] ${line}\n`;
-  logEl.scrollTop = logEl.scrollHeight;
-}
-
-async function fetchToken(): Promise<string> {
-  const r = await fetch('/api/token');
-
-  if (!r.ok) {
-    throw new Error(`token fetch failed: ${r.status}`);
-  }
-  const { jwt } = (await r.json()) as { jwt: string };
-
-  return jwt;
-}
-
-const reactor = new Reactor({ modelName: MODEL_NAME, jwt: fetchToken });
+const reactor = new Reactor({ modelName: MODEL_NAME });
 
 function renderSnapshots(snapshots: Snapshot[]): void {
   snapshotsEl.replaceChildren(
@@ -158,7 +143,7 @@ connectButton.addEventListener('click', async () => {
   }
 
   log(`connecting to ${MODEL_NAME}...`);
-  await reactor.connect();
+  await reactor.connect(await fetchToken());
   log(`session ${reactor.getSessionId() ?? '?'} is ready`);
   await reactor.sendCommand('set_prompt', { prompt: PROMPT });
   await reactor.sendCommand('start');

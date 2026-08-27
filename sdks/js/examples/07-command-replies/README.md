@@ -1,12 +1,19 @@
-# 07 — Snapshot and Rewind
+# 07 — Command Replies
 
-Save a snapshot, list them, rewind to one — and look at what
-`sendCommand()` actually hands back each time. All of it is in
+`sendCommand()` resolves with the model's correlated reply — a `{ type,
+data }` message, not just an ack. Helios's `save_snapshot`/`list_snapshots`/
+`rewind` are just this example's vehicle for it: the reply-reading pattern
+applies to any command, on any model. All of it is in
 [`src/main.ts`](src/main.ts) — one file, no framework.
 
 ## Running it
 
 ```bash
+# from the repo root, once:
+mise run build:wasm
+mise run build:js            # tsup -> sdks/js/dist/
+
+# from this directory:
 export REACTOR_API_KEY=...   # https://www.reactor.inc/account/api-keys
 npm install
 npm run dev

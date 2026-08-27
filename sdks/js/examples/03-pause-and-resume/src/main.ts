@@ -1,4 +1,6 @@
 import { Reactor } from '@reactor-team/js-sdk';
+import { log } from '../../shared/log';
+import { fetchToken } from '../../shared/fetch-token';
 
 // 03 — Pause a track, then resume it.
 //
@@ -23,27 +25,8 @@ const connectButton = document.querySelector<HTMLButtonElement>('#connect')!;
 const pauseButton = document.querySelector<HTMLButtonElement>('#pause')!;
 const resumeButton = document.querySelector<HTMLButtonElement>('#resume')!;
 const fpsEl = document.querySelector<HTMLParagraphElement>('#fps')!;
-const logEl = document.querySelector<HTMLPreElement>('#log')!;
 
-function log(line: string): void {
-  const time = new Date().toLocaleTimeString();
-
-  logEl.textContent += `[${time}] ${line}\n`;
-  logEl.scrollTop = logEl.scrollHeight;
-}
-
-async function fetchToken(): Promise<string> {
-  const r = await fetch('/api/token');
-
-  if (!r.ok) {
-    throw new Error(`token fetch failed: ${r.status}`);
-  }
-  const { jwt } = (await r.json()) as { jwt: string };
-
-  return jwt;
-}
-
-const reactor = new Reactor({ modelName: MODEL_NAME, jwt: fetchToken });
+const reactor = new Reactor({ modelName: MODEL_NAME });
 
 let framesThisSecond = 0;
 let fpsTimer: ReturnType<typeof setInterval> | undefined;
@@ -106,7 +89,7 @@ connectButton.addEventListener('click', async () => {
   }
 
   log(`connecting to ${MODEL_NAME}...`);
-  await reactor.connect();
+  await reactor.connect(await fetchToken());
   log(`session ${reactor.getSessionId() ?? '?'} is ready`);
   await reactor.sendCommand('set_prompt', { prompt: PROMPT });
   await reactor.sendCommand('start');

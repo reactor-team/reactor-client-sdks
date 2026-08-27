@@ -1,4 +1,6 @@
 import { Reactor } from '@reactor-team/js-sdk';
+import { log } from '../../shared/log';
+import { fetchToken } from '../../shared/fetch-token';
 
 // 05 — Two clients, one session.
 //
@@ -25,28 +27,9 @@ const statusEl = document.querySelector<HTMLParagraphElement>('#status')!;
 const creatorVideoEl = document.querySelector<HTMLVideoElement>('#creator')!;
 const joinerVideoEl = document.querySelector<HTMLVideoElement>('#joiner')!;
 const button = document.querySelector<HTMLButtonElement>('#go')!;
-const logEl = document.querySelector<HTMLPreElement>('#log')!;
-
-function log(line: string): void {
-  const time = new Date().toLocaleTimeString();
-
-  logEl.textContent += `[${time}] ${line}\n`;
-  logEl.scrollTop = logEl.scrollHeight;
-}
-
-async function fetchToken(): Promise<string> {
-  const r = await fetch('/api/token');
-
-  if (!r.ok) {
-    throw new Error(`token fetch failed: ${r.status}`);
-  }
-  const { jwt } = (await r.json()) as { jwt: string };
-
-  return jwt;
-}
 
 function client(label: string, video: HTMLVideoElement): Reactor {
-  const reactor = new Reactor({ modelName: MODEL_NAME, jwt: fetchToken });
+  const reactor = new Reactor({ modelName: MODEL_NAME });
 
   reactor.on('statusChanged', (status) => log(`[${label}] status: ${status}`));
   reactor.on('error', (error) => log(`[${label}] error: ${error.message}`));
@@ -81,8 +64,13 @@ button.addEventListener('click', async () => {
     return;
   }
 
+  // Both clients connect with this same token: reading a session back
+  // requires the *same* token that created it, so the joiner can't mint its
+  // own — see https://docs.reactor.inc/concepts/sessions#adopting-an-existing-session.
+  const token = await fetchToken();
+
   log(`connecting creator to ${MODEL_NAME}...`);
-  await creator.connect();
+  await creator.connect(token);
   const sessionId = creator.getSessionId();
 
   statusEl.textContent = `session: ${sessionId ?? '?'}`;
@@ -93,7 +81,7 @@ button.addEventListener('click', async () => {
 
   log('joiner adopting the same session...');
   // The id is the whole handoff — no second session, no coordination.
-  await joiner.connect(undefined, { sessionId });
+  await joiner.connect(token, { sessionId });
   log('joiner is ready');
 
   connected = true;

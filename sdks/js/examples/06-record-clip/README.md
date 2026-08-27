@@ -6,6 +6,11 @@ Capture what just happened, and download it. All of it is in
 ## Running it
 
 ```bash
+# from the repo root, once:
+mise run build:wasm
+mise run build:js            # tsup -> sdks/js/dist/
+
+# from this directory:
 export REACTOR_API_KEY=...   # https://www.reactor.inc/account/api-keys
 npm install
 npm run dev
