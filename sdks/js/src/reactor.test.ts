@@ -6,6 +6,7 @@ import {
   RequestTimeoutError,
   UnauthorizedError,
 } from './errors';
+import { debugLog } from './internal/debug-log';
 import { FakeReactorClient } from './internal/fake-reactor-client';
 import { toPublicFileRef } from './internal/file-ref';
 import { FileRef } from './file-ref';
@@ -17,6 +18,8 @@ import type { ConnectOptions, ReactorMessage } from './internal/reactor-wasm.typ
 vi.mock('./internal/wasm', () => ({
   loadReactorWasm: () => Promise.resolve({ ReactorClient: FakeReactorClient }),
 }));
+
+vi.mock('./internal/debug-log', () => ({ debugLog: vi.fn() }));
 
 // Only `Reactor.downloadClipAsFile()`'s delegation is under test here — the
 // standalone helper's own behavior (HLS parsing, mp4box remux, …) is covered
@@ -1035,6 +1038,7 @@ describe('Reactor messaging events', () => {
     client.emitMessage(payload);
 
     expect(onMessage).toHaveBeenCalledWith(payload);
+    expect(debugLog).toHaveBeenCalledWith('[Reactor] message:', payload);
   });
 
   it('re-emits platform messages via the runtimeMessage event', async () => {
@@ -1049,6 +1053,7 @@ describe('Reactor messaging events', () => {
     client.emitRuntimeMessage(payload);
 
     expect(onRuntimeMessage).toHaveBeenCalledWith(payload);
+    expect(debugLog).toHaveBeenCalledWith('[Reactor] runtimeMessage:', payload);
   });
 });
 
