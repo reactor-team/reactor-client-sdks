@@ -48,6 +48,11 @@ pub struct TokenRequest {
     /// How many sessions a scoped token may ever create. Ignored by the server for
     /// an unscoped one, so setting it without `models` buys nothing.
     pub max_sessions: Option<u32>,
+    /// Force-terminates every session the token creates after this many seconds,
+    /// independent of the token's own expiry. 1–86400 (24h); the server rejects
+    /// anything outside that range at mint rather than clamping it, and ignores it
+    /// for an unscoped token the same way it ignores `max_sessions`.
+    pub max_session_duration_seconds: Option<u32>,
     /// Lifetime in seconds. The server clamps it to its own ceiling, so asking for
     /// a year gets whatever the ceiling is rather than an error.
     pub expires_after: Option<u64>,
@@ -74,8 +79,18 @@ impl TokenRequest {
                 "type": "session",
                 "resources": { "models": { "match": models } },
             });
+            let mut constraints = serde_json::Map::new();
             if let Some(max_sessions) = self.max_sessions {
-                detail["constraints"] = serde_json::json!({ "max_sessions": max_sessions });
+                constraints.insert("max_sessions".into(), max_sessions.into());
+            }
+            if let Some(max_session_duration_seconds) = self.max_session_duration_seconds {
+                constraints.insert(
+                    "max_session_duration_seconds".into(),
+                    max_session_duration_seconds.into(),
+                );
+            }
+            if !constraints.is_empty() {
+                detail["constraints"] = serde_json::Value::Object(constraints);
             }
             body.insert(
                 "authorization_details".into(),
@@ -285,6 +300,59 @@ mod tests {
             "key",
             &TokenRequest {
                 max_sessions: Some(3),
+                ..TokenRequest::default()
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(http.body_json(), serde_json::Value::Null);
+    }
+
+    /// Same shape as `max_sessions`: only meaningful on a scoped token, and both
+    /// constraints can be set together in the same `constraints` object.
+    #[test]
+    fn a_scoped_request_carries_the_session_duration_cap_alongside_max_sessions() {
+        let http = FakeHttp::returning(200, r#"{"jwt":"token"}"#);
+
+        block_on(fetch_jwt(
+            &(http.clone() as SharedHttp),
+            "https://api.reactor.inc",
+            "key",
+            &TokenRequest {
+                max_sessions: Some(3),
+                max_session_duration_seconds: Some(1800),
+                ..TokenRequest::scoped(["reactor/helios"])
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(
+            http.body_json(),
+            serde_json::json!({
+                "authorization_details": [{
+                    "type": "session",
+                    "resources": { "models": { "match": ["reactor/helios"] } },
+                    "constraints": {
+                        "max_sessions": 3,
+                        "max_session_duration_seconds": 1800,
+                    },
+                }],
+            })
+        );
+    }
+
+    /// Like the `max_sessions`-only case: meaningless without `models`, so it must
+    /// not smuggle an `authorization_details` into an otherwise unscoped request.
+    #[test]
+    fn a_session_duration_cap_without_models_constrains_nothing() {
+        let http = FakeHttp::returning(200, r#"{"jwt":"token"}"#);
+
+        block_on(fetch_jwt(
+            &(http.clone() as SharedHttp),
+            "https://api.reactor.inc",
+            "key",
+            &TokenRequest {
+                max_session_duration_seconds: Some(1800),
                 ..TokenRequest::default()
             },
         ))

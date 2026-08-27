@@ -398,6 +398,30 @@ class TestFetchJwt:
         detail = json.loads(urlopen.call_args[0][0].data)["authorization_details"][0]
         assert detail["constraints"] == {"max_sessions": 3}
 
+    def test_max_session_duration_seconds_is_a_constraint_on_a_scoped_token(self) -> None:
+        with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
+            urlopen.return_value = self._response({"jwt": "tok"})
+            fetch_jwt(
+                "s",
+                "https://x.invalid",
+                models=["m"],
+                max_sessions=3,
+                max_session_duration_seconds=1800,
+            )
+
+        detail = json.loads(urlopen.call_args[0][0].data)["authorization_details"][0]
+        assert detail["constraints"] == {
+            "max_sessions": 3,
+            "max_session_duration_seconds": 1800,
+        }
+
+    def test_max_session_duration_seconds_without_models_constrains_nothing(self) -> None:
+        with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
+            urlopen.return_value = self._response({"jwt": "tok"})
+            fetch_jwt("s", "https://x.invalid", max_session_duration_seconds=1800)
+
+        assert json.loads(urlopen.call_args[0][0].data) is None
+
     def test_a_response_without_a_token_is_an_error(self) -> None:
         with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
             urlopen.return_value = self._response({"nope": True})
@@ -441,6 +465,20 @@ class TestTokenResolution:
 
         assert reactor._jwt == "given"
         fetch.assert_not_called()
+
+    async def test_max_session_duration_seconds_reaches_the_implicit_mint(self) -> None:
+        reactor = Reactor(model_name="hy-world", api_key="k", max_session_duration_seconds=1800)
+        with mock.patch("reactor_sdk.client.fetch_jwt", return_value="tok") as fetch:
+            await reactor._resolve_token(session_id=None)
+
+        assert fetch.call_args.kwargs["max_session_duration_seconds"] == 1800
+
+    async def test_max_session_duration_seconds_defaults_to_unset(self) -> None:
+        reactor = Reactor(model_name="hy-world", api_key="k")
+        with mock.patch("reactor_sdk.client.fetch_jwt", return_value="tok") as fetch:
+            await reactor._resolve_token(session_id=None)
+
+        assert fetch.call_args.kwargs["max_session_duration_seconds"] is None
 
     async def test_a_token_of_the_right_scope_is_reused(self) -> None:
         reactor = Reactor(model_name="m", api_key="k")

@@ -216,9 +216,10 @@ typedef void (*reactor_completion_fn)(
  *   api_key      — the key to exchange
  *   options_json — nullable.  JSON object:
  *                    {
- *                      "models":        ["owner/name", …],  // scopes the token
- *                      "max_sessions":  n,                  // scoped tokens only
- *                      "expires_after": seconds             // server clamps it
+ *                      "models":                        ["owner/name", …],  // scopes the token
+ *                      "max_sessions":                  n,   // scoped tokens only
+ *                      "max_session_duration_seconds":  n,   // scoped tokens only; 1-86400
+ *                      "expires_after":                 seconds             // server clamps it
  *                    }
  *                  Null (or "{}") mints a token carrying everything the key's
  *                  roles allow — fine server-to-server, wrong to hand to a client

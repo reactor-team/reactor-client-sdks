@@ -41,6 +41,7 @@ def fetch_jwt(
     *,
     models: list[str] | None = None,
     max_sessions: int | None = None,
+    max_session_duration_seconds: int | None = None,
     expires_after: int | None = None,
 ) -> str:
     """Exchange `api_key` for a JWT, and return the token.
@@ -55,8 +56,11 @@ def fetch_jwt(
     client you do not control.
 
     ``max_sessions`` caps how many sessions a scoped token may ever create, and is
-    ignored for unscoped ones. ``expires_after`` is a lifetime in seconds, which the
-    server clamps to its own ceiling.
+    ignored for unscoped ones. ``max_session_duration_seconds`` force-terminates every
+    session the token creates after that long (1-86400, i.e. up to 24h), independent of
+    the token's own expiry, and is likewise ignored for unscoped ones; the server
+    rejects an out-of-range value at mint rather than clamping it. ``expires_after`` is
+    a lifetime in seconds, which the server clamps to its own ceiling.
 
     Raises:
         AuthError: if the exchange fails for any reason, including a response that
@@ -70,8 +74,13 @@ def fetch_jwt(
             "type": "session",
             "resources": {"models": {"match": list(models)}},
         }
+        constraints: dict[str, Any] = {}
         if max_sessions is not None:
-            detail["constraints"] = {"max_sessions": max_sessions}
+            constraints["max_sessions"] = max_sessions
+        if max_session_duration_seconds is not None:
+            constraints["max_session_duration_seconds"] = max_session_duration_seconds
+        if constraints:
+            detail["constraints"] = constraints
         body["authorization_details"] = [detail]
     if expires_after is not None:
         body["expires_after"] = expires_after
