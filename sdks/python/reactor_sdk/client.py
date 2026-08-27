@@ -189,6 +189,7 @@ class Reactor:
         jwt: str | None = None,
         api_url: str = DEFAULT_API_URL,
         local: bool = False,
+        max_session_duration_seconds: int | None = None,
     ) -> None:
         """
         Args:
@@ -198,6 +199,13 @@ class Reactor:
             jwt: A token to authenticate with.
             api_url: Coordinator base URL. Defaults to production.
             local: Local-dev mode — relaxes TLS verification and skips auth.
+            max_session_duration_seconds: Force-terminates every session a token this
+                client mints creates after this many seconds (1-86400), independent of
+                the token's own expiry. Only takes effect on the model-scoped token
+                minted to create a session — the unscoped one minted to adopt an
+                existing session ignores it, the same as the server does. Has no effect
+                when `jwt` is given: that token is already minted, and this client never
+                re-mints one it did not create itself.
 
         No audio device is ever opened — see `_SYNTHETIC_ADM`.
         """
@@ -215,6 +223,7 @@ class Reactor:
         self._jwt = jwt
         self._api_key = api_key
         self._local = local
+        self._max_session_duration_seconds = max_session_duration_seconds
 
         # A token the caller handed us is theirs: never replaced. One we minted from an
         # API key is ours, and `_minted_for` records the scope it was minted with, so a
@@ -875,7 +884,13 @@ class Reactor:
         if self._jwt is not None and self._minted_for == wanted:
             return False
 
-        self._jwt = await asyncio.to_thread(fetch_jwt, self._api_key, self._api_url, models=wanted)
+        self._jwt = await asyncio.to_thread(
+            fetch_jwt,
+            self._api_key,
+            self._api_url,
+            models=wanted,
+            max_session_duration_seconds=self._max_session_duration_seconds,
+        )
         self._minted_for = wanted
         return True
 
