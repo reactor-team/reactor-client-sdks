@@ -437,7 +437,7 @@ fn detached_completion(
 /// Takes no handle: there is no session yet, and a caller needs the token before
 /// it can create one. `options_json` may be null for a token carrying everything
 /// the key's roles allow; otherwise it is a JSON object of
-/// `{"models": ["owner/name", …], "max_sessions": n, "expires_after": seconds}`,
+/// `{"models": ["owner/name", …], "max_sessions": n, "max_session_duration_seconds": n, "expires_after": seconds}`,
 /// where `models` makes the token session-scoped. **An unrecognised key in there
 /// is an error**, not a field to ignore: silently dropping a misspelt `models`
 /// would mint the unscoped token the caller was trying to avoid.
