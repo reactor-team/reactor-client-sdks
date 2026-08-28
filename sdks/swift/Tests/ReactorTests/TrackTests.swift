@@ -279,7 +279,7 @@ struct TrackTests {
         defer { subscription.cancel() }
 
         fake.fireFrame(
-            track: "main_video", width: 2, height: 2, frameID: 77, captureTimeUS: 1_234_567,
+            track: "main_video", width: 2, height: 2, frameID: 77, captureTimeUs: 1_234_567,
             userData: Array("tag".utf8), fill: 0x10)
 
         let frame = seen.withLock { $0 }
@@ -290,7 +290,7 @@ struct TrackTests {
         #expect(frame?.pixels.count == 16)
         #expect(frame?.pixels.allSatisfy { $0 == 0x10 } == true)
         #expect(frame?.frameID == 77)
-        #expect(frame?.captureTimeUS == 1_234_567)
+        #expect(frame?.captureTimeUs == 1_234_567)
         #expect(frame.flatMap { $0.userData.map { String(decoding: $0, as: UTF8.self) } } == "tag")
     }
 
@@ -312,7 +312,7 @@ struct TrackTests {
         // every example actually sees: zeros, and nothing to read.
         let frame = seen.withLock { $0 }
         #expect(frame?.frameID == 0)
-        #expect(frame?.captureTimeUS == 0)
+        #expect(frame?.captureTimeUs == 0)
         #expect(frame?.userData == nil)
     }
 

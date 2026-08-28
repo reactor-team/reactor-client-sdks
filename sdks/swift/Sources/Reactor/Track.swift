@@ -115,7 +115,7 @@ public final class Track: @unchecked Sendable {
                     width: raw.width,
                     height: raw.height,
                     frameID: raw.frameID,
-                    captureTimeUS: raw.captureTimeUS,
+                    captureTimeUs: raw.captureTimeUs,
                     userData: raw.userData.map { Data($0) }))
         }
     }

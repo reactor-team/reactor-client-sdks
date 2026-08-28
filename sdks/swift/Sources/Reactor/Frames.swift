@@ -32,7 +32,7 @@ public struct VideoFrame: Sendable {
     ///
     /// Differences between stamps from one sender are what this supports; it is
     /// not comparable with a local clock. 0 when the frame carried no trailer.
-    public let captureTimeUS: UInt64
+    public let captureTimeUs: UInt64
 
     /// The bytes the sender tagged this frame with, if any.
     ///
@@ -68,7 +68,7 @@ public struct RawVideoFrame: ~Copyable {
 
     /// The sender's capture time in microseconds, on its own clock. 0 without a
     /// trailer.
-    public let captureTimeUS: UInt64
+    public let captureTimeUs: UInt64
 
     /// The sender's tag, valid until this handler returns. `nil` when absent.
     public let userData: UnsafeRawBufferPointer?
