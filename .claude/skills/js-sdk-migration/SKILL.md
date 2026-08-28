@@ -170,6 +170,33 @@ ported code:
   `console.debug`, so you can watch replies and broadcasts arrive while
   migrating.
 
+Where this behavior lives, when a migration needs proof rather than this
+skill's word — both halves are open source:
+
+- **Runtime (model side),
+  [`reactor-team/reactor-runtime`](https://github.com/reactor-team/reactor-runtime):**
+  `src/reactor_runtime/runner/runner.py` (`_send_addressed`) routes a
+  handler's return — a returned `ModelMessage` goes to the calling
+  connection correlated to the request, `None` becomes the bodyless
+  acknowledgement (`encode_command_ack` in
+  `src/reactor_runtime/protocol/base.py`), a raised error becomes a
+  correlated error frame; `self.send(...)` inside a handler is what
+  broadcasts to every connection. The schema's `responses` are rendered
+  from the handler's return annotation by `_command_responses` in
+  `src/reactor_runtime/interface/model/schema.py` — `200` + `$ref` for a
+  message-returning handler, bare `202` for a `None`-returning one. So a
+  model's handler signatures are the ground truth for what its commands
+  resolve with, and a schema/deployment mismatch (see the `undefined`
+  bullet above) can be confirmed by reading the deployed release's handler
+  code.
+- **This repo (client side):** `crates/reactor-core/src/data.rs` is the
+  data-channel correlator — a bodyless ack resolves the pending command as
+  `None` rather than being dropped (pinned by its
+  `resolves_a_bodyless_ack_as_none` test), which is what surfaces in JS as
+  `undefined` with no recorded error. `sdks/js/src/reactor.ts`
+  (`sendCommand`) is where "never rejects, failures land on
+  `getLastError()`" is implemented.
+
 ### JWT resolvers: the token must stay stable for a session's whole life
 
 3.0.0 invokes a `JwtSource` resolver on **every authenticated request** (by
