@@ -43,6 +43,8 @@ class _FakeLib:
         self.freed: list[int] = []
         self.unpublish_error: dict | None = None
         self.unpublished: list[str] = []
+        self.bitrate_calls: list[tuple[int, int, int]] = []
+        self.track_bitrate_calls: list[tuple[str, int, int]] = []
 
     def _string(self, payload: object) -> int:
         buffer = ctypes.create_string_buffer(json.dumps(payload).encode())
@@ -61,6 +63,37 @@ class _FakeLib:
 
     def reactor_free_string(self, ptr: object) -> None:
         self.freed.append(getattr(ptr, "value", ptr))
+
+    # The two bitrate exports. Both record what crossed the boundary and then fire
+    # the completion trampoline they were handed, so the test exercises the real
+    # `_async_op` bridge rather than a stand-in for it.
+    def reactor_set_bitrate(
+        self,
+        _handle: object,
+        min_bps: object,
+        start_bps: object,
+        max_bps: object,
+        completion: object,
+        _ud: object,
+    ) -> None:
+        self.bitrate_calls.append(
+            (min_bps.value, start_bps.value, max_bps.value)  # type: ignore[union-attr]
+        )
+        completion(1, b"{}", None, None)  # type: ignore[operator]
+
+    def reactor_set_track_bitrate(
+        self,
+        _handle: object,
+        name: bytes,
+        min_bps: object,
+        max_bps: object,
+        completion: object,
+        _ud: object,
+    ) -> None:
+        self.track_bitrate_calls.append(
+            (name.decode(), min_bps.value, max_bps.value)  # type: ignore[union-attr]
+        )
+        completion(1, b"{}", None, None)  # type: ignore[operator]
 
     # Enough for `_create_handle` to run, so a test can drive the real status
     # callback rather than a hand-rolled stand-in for it.
@@ -1044,3 +1077,64 @@ class TestPublishIsRequired:
             assert camera.published is True
         finally:
             reactor.close()
+
+
+class TestBitrate:
+    """The two bitrate ceilings, and which one a caller reaches through.
+
+    `Reactor.set_bitrate` bounds the connection; `Track.set_bitrate` bounds one
+    sender, and is the one that lifts WebRTC's 2.5 Mbps video default. Both cross
+    a C ABI with no optional integer, so what these mostly pin is the -1 encoding
+    — a bound that silently became 0, or a `None` that became 0, would cap a
+    stream at nothing while looking like it had been left alone.
+    """
+
+    @pytest.mark.asyncio
+    async def test_connection_bounds_reach_the_ffi(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reactor, lib = _connected(monkeypatch)
+        await reactor.set_bitrate(min_bps=200_000, start_bps=4_000_000, max_bps=12_000_000)
+        assert lib.bitrate_calls == [(200_000, 4_000_000, 12_000_000)]
+
+    @pytest.mark.asyncio
+    async def test_an_omitted_bound_crosses_as_minus_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`None` is "leave it at the default", which the ABI spells -1.
+
+        Encoding it as 0 instead would ask for a hard cap of zero — the one value
+        that looks like a number and behaves like a mute.
+        """
+        reactor, lib = _connected(monkeypatch)
+        await reactor.set_bitrate(max_bps=8_000_000)
+        assert lib.bitrate_calls == [(-1, -1, 8_000_000)]
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_zero_is_not_folded_into_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reactor, lib = _connected(monkeypatch)
+        await reactor.set_bitrate(min_bps=0, max_bps=8_000_000)
+        assert lib.bitrate_calls == [(0, -1, 8_000_000)]
+
+    @pytest.mark.asyncio
+    async def test_track_bounds_carry_the_track_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reactor, lib = _connected(monkeypatch)
+        await reactor.track("camera").set_bitrate(max_bps=8_000_000)
+        assert lib.track_bitrate_calls == [("camera", -1, 8_000_000)]
+
+    @pytest.mark.asyncio
+    async def test_a_recvonly_track_refuses(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The sender behind an incoming track is the far end's, and nothing here
+        can bound it. Accepting the call would report success for an operation
+        that had nowhere to land."""
+        reactor, lib = _connected(monkeypatch)
+        with pytest.raises(ValueError, match="set_bitrate"):
+            await reactor.track("output").set_bitrate(max_bps=8_000_000)
+        assert lib.track_bitrate_calls == []
+
+    @pytest.mark.asyncio
+    async def test_an_undeclared_track_refuses(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reactor, lib = _connected(monkeypatch)
+        with pytest.raises(ValueError, match="no track named"):
+            await reactor.track("nope").set_bitrate(max_bps=8_000_000)
+        assert lib.track_bitrate_calls == []

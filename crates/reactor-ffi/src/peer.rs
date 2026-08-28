@@ -20,9 +20,10 @@ use reactor_core::protocol::session::{TrackCapability, TrackDirection, TrackKind
 use reactor_core::protocol::webrtc::{IceCandidate, IceServer, TrackMappingEntry};
 
 use reactor_webrtc::{
-    AdmMode, ContinualGatheringPolicy, DataChannel, IceGatheringState, IceServer as RwIceServer,
-    MediaKind, PeerConnection, PeerConnectionFactory, PeerConnectionObserver, PeerConnectionState,
-    RtcConfiguration, SdpType, SessionDescription, Track, Transceiver, TransceiverDirection,
+    AdmMode, AudioTrack, ContinualGatheringPolicy, DataChannel, IceGatheringState,
+    IceServer as RwIceServer, MediaKind, PeerConnection, PeerConnectionFactory,
+    PeerConnectionObserver, PeerConnectionState, RemoteTrack, RtcConfiguration, SdpType,
+    SessionDescription, Track, Transceiver, TransceiverDirection, VideoFrame, VideoTrack,
 };
 
 fn peer_err(e: impl std::fmt::Display) -> CoreError {
@@ -93,6 +94,47 @@ type FrameCallback = Arc<dyn Fn(&str, &[u8], u32, u32, u64, u64, &[u8]) + Send +
 /// i16 PCM, sample rate in Hz, channel count.
 type AudioCallback = Arc<dyn Fn(&str, &[i16], u32, u32) + Send + Sync + 'static>;
 
+/// A local sendonly track, media-typed.
+///
+/// 0.13 split `Track` into `VideoTrack`/`AudioTrack`, and the push helpers live
+/// on the typed halves — so the map keeps the variant rather than flattening
+/// back to `Track` and losing the ability to push. Mirrors `RemoteTrack`, which
+/// the receive side already gets handed.
+enum LocalTrack {
+    Video(VideoTrack),
+    Audio(AudioTrack),
+}
+
+impl LocalTrack {
+    /// The untyped handle, for `set_transceiver_track` and anything else that
+    /// does not care which kind it has.
+    fn as_track(&self) -> &Track {
+        match self {
+            Self::Video(t) => t,
+            Self::Audio(t) => t,
+        }
+    }
+
+    /// The video half, or `None` for an audio track — a video push aimed at an
+    /// audio slot is a caller mistake, and silently doing nothing is what the
+    /// warning below exists to avoid.
+    fn video(&self) -> Option<&VideoTrack> {
+        match self {
+            Self::Video(t) => Some(t),
+            Self::Audio(_) => None,
+        }
+    }
+}
+
+/// Bitrate bounds a caller asked for, in bits per second. `None` means "leave
+/// this bound at the libwebrtc default".
+#[derive(Default, Clone, Copy)]
+struct BitrateBounds {
+    min_bps: Option<i32>,
+    start_bps: Option<i32>,
+    max_bps: Option<i32>,
+}
+
 #[derive(Default)]
 struct PeerState {
     pc: Option<Arc<PeerConnection>>,
@@ -100,15 +142,65 @@ struct PeerState {
     control_channel: Option<DataChannel>,
     track_names: Vec<String>,
     track_directions: Vec<TrackDirection>,
-    transceivers: Vec<Transceiver>,
-    local_tracks: HashMap<String, Track>,
-    recv_tracks: Arc<Mutex<Vec<Track>>>,
+    transceivers: Vec<Arc<Transceiver>>,
+    local_tracks: HashMap<String, LocalTrack>,
+    recv_tracks: Arc<Mutex<Vec<RemoteTrack>>>,
+}
+
+/// Bitrate bounds outlive the peer connection they were applied to.
+///
+/// `prepare` runs again on every reconnect and builds a fresh peer connection
+/// and a fresh set of transceivers, which come up on libwebrtc's defaults. A
+/// caller who raised a ceiling before connecting — the only point at which
+/// `start_bps` can still do its job — means it for the session, not for the
+/// first attempt at it, so these live outside `PeerState`, which `close` takes
+/// wholesale.
+#[derive(Default)]
+struct BitrateConfig {
+    connection: Mutex<BitrateBounds>,
+    per_track: Mutex<HashMap<String, BitrateBounds>>,
+}
+
+impl BitrateConfig {
+    /// Apply the bounds, and remember them only if that succeeded.
+    ///
+    /// The order is the whole point, and it is why this is a function rather than
+    /// two statements: libwebrtc is the only thing that can say whether a
+    /// combination is valid, so committing first leaves a rejected pair saved. The
+    /// call returns an error, the caller believes nothing happened, and the next
+    /// reconnect replays the bad values over bounds that were working — reported
+    /// only as a log line, since `prepare` cannot fail a connect over a ceiling.
+    fn commit_connection(
+        &self,
+        bounds: BitrateBounds,
+        apply: impl FnOnce() -> Result<(), CoreError>,
+    ) -> Result<(), CoreError> {
+        apply()?;
+        *self.connection.lock().unwrap() = bounds;
+        Ok(())
+    }
+
+    /// As [`BitrateConfig::commit_connection`], for one track's sender.
+    fn commit_track(
+        &self,
+        track_name: &str,
+        bounds: BitrateBounds,
+        apply: impl FnOnce() -> Result<(), CoreError>,
+    ) -> Result<(), CoreError> {
+        apply()?;
+        self.per_track
+            .lock()
+            .unwrap()
+            .insert(track_name.to_string(), bounds);
+        Ok(())
+    }
 }
 
 pub struct ReactorWebRtcPeerTransport {
     event_tx: UnboundedSender<PeerEvent>,
     factory: PeerConnectionFactory,
     state: Arc<Mutex<PeerState>>,
+    bitrate: BitrateConfig,
     frame_cb: Option<FrameCallback>,
     audio_cb: Option<AudioCallback>,
 }
@@ -120,11 +212,15 @@ impl ReactorWebRtcPeerTransport {
 
     pub fn with_adm_mode(event_tx: UnboundedSender<PeerEvent>, mode: AdmMode) -> Self {
         info!("[peer] audio device module: {mode:?}");
-        let factory = PeerConnectionFactory::with_adm(mode).expect("create PeerConnectionFactory");
+        let factory = PeerConnectionFactory::builder()
+            .with_adm(mode)
+            .build()
+            .expect("create PeerConnectionFactory");
         Self {
             event_tx,
             factory,
             state: Arc::new(Mutex::new(PeerState::default())),
+            bitrate: BitrateConfig::default(),
             frame_cb: None,
             audio_cb: None,
         }
@@ -144,6 +240,44 @@ impl ReactorWebRtcPeerTransport {
     ) -> Self {
         self.audio_cb = Some(Arc::new(cb));
         self
+    }
+
+    /// Apply the remembered bounds to a freshly built peer connection and its
+    /// transceivers, before `prepare` publishes them as the live state.
+    ///
+    /// Best-effort by design: this runs inside connection setup, and a rejected
+    /// ceiling is a quality problem, not a reason to fail the connect. Each
+    /// failure is logged rather than swallowed, so a bound that did not take is
+    /// visible without being fatal. A caller who wants the error handled calls
+    /// `set_bitrate`/`set_track_bitrate` on a live connection, which returns it.
+    fn apply_bitrate(
+        &self,
+        pc: &PeerConnection,
+        names: &[String],
+        transceivers: &[Arc<Transceiver>],
+    ) {
+        let bounds = *self.bitrate.connection.lock().unwrap();
+        if bounds
+            .min_bps
+            .or(bounds.start_bps)
+            .or(bounds.max_bps)
+            .is_some()
+        {
+            if let Err(e) = pc.set_bitrate(bounds.min_bps, bounds.start_bps, bounds.max_bps) {
+                warn!("[peer] connection bitrate bounds rejected: {e}");
+            }
+        }
+
+        let per_track = self.bitrate.per_track.lock().unwrap();
+        for (name, b) in per_track.iter() {
+            let Some(i) = names.iter().position(|n| n == name) else {
+                warn!("[peer] bitrate bounds set for unknown track '{name}' — ignored");
+                continue;
+            };
+            if let Err(e) = transceivers[i].set_send_bitrate(b.min_bps, b.max_bps) {
+                warn!("[peer] bitrate bounds for track '{name}' rejected: {e}");
+            }
+        }
     }
 }
 
@@ -175,7 +309,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             ..Default::default()
         };
 
-        let recv_tracks: Arc<Mutex<Vec<Track>>> = Arc::new(Mutex::new(Vec::new()));
+        let recv_tracks: Arc<Mutex<Vec<RemoteTrack>>> = Arc::new(Mutex::new(Vec::new()));
         let recv_name_mids: Arc<Mutex<Vec<(String, Option<String>)>>> =
             Arc::new(Mutex::new(Vec::new()));
         let recv_track_idx = Arc::new(AtomicUsize::new(0));
@@ -212,7 +346,8 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             let recv = recv_tracks.clone();
             let name_mids = recv_name_mids.clone();
             let track_idx = recv_track_idx.clone();
-            obs = obs.on_track(move |kind, track| {
+            obs = obs.on_track(move |track| {
+                let kind = track.kind();
                 let idx = track_idx.fetch_add(1, Ordering::SeqCst);
                 let (name, mid) = name_mids
                     .lock()
@@ -230,14 +365,17 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
                 // unattributable frame beats a dropped one — and the host sees a
                 // track name it will not match to any declared track.
                 let track_name = name.unwrap_or_default();
-                match kind {
-                    MediaKind::Video => {
+                // Matching on the track itself rather than on a kind read off it:
+                // the variant is what carries the typed handle, so there is no
+                // arm where the sink and the kind can disagree.
+                match &track {
+                    RemoteTrack::Video(video) => {
                         if let Some(cb) = frame_cb.clone() {
                             // No transform to attach: reactor-webrtc negotiates
                             // frame-metadata support in the SDP and installs the strip
                             // step itself, so VideoFrame::metadata is populated whenever
                             // the sender included a trailer and the peer agreed.
-                            track.on_video_frame(move |f| {
+                            video.on_frame(move |f| {
                                 let (frame_id, ts, ud) = f
                                     .metadata
                                     .as_ref()
@@ -249,14 +387,13 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
                             });
                         }
                     }
-                    MediaKind::Audio => {
+                    RemoteTrack::Audio(audio) => {
                         if let Some(cb) = audio_cb.clone() {
-                            track.on_audio_frame(move |f| {
+                            audio.on_frame(move |f| {
                                 cb(&track_name, f.pcm, f.sample_rate, f.channels)
                             });
                         }
                     }
-                    MediaKind::Unknown => {}
                 }
                 recv.lock().unwrap().push(track);
             });
@@ -268,10 +405,10 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             .create_peer_connection(&config, observer)
             .map_err(peer_err)?;
 
-        let mut transceivers: Vec<Transceiver> = Vec::with_capacity(tracks.len());
+        let mut transceivers: Vec<Arc<Transceiver>> = Vec::with_capacity(tracks.len());
         let mut track_names: Vec<String> = Vec::with_capacity(tracks.len());
         let mut track_directions: Vec<TrackDirection> = Vec::with_capacity(tracks.len());
-        let mut local_tracks: HashMap<String, Track> = HashMap::new();
+        let mut local_tracks: HashMap<String, LocalTrack> = HashMap::new();
 
         for track in tracks {
             let kind = match track.kind {
@@ -286,11 +423,18 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
 
             if track.direction == TrackDirection::Sendonly {
                 let local = match track.kind {
-                    TrackKind::Video => self.factory.create_video_track(&track.name),
-                    TrackKind::Audio => self.factory.create_audio_track(&track.name),
-                }
-                .map_err(peer_err)?;
-                tc.set_track(&local).map_err(peer_err)?;
+                    TrackKind::Video => LocalTrack::Video(
+                        self.factory
+                            .create_video_track(&track.name)
+                            .map_err(peer_err)?,
+                    ),
+                    TrackKind::Audio => LocalTrack::Audio(
+                        self.factory
+                            .create_audio_track(&track.name)
+                            .map_err(peer_err)?,
+                    ),
+                };
+                tc.set_track(local.as_track()).map_err(peer_err)?;
                 info!(
                     "[peer] attached sendonly {:?} track '{}'",
                     track.kind, track.name
@@ -298,7 +442,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
                 local_tracks.insert(track.name.clone(), local);
             }
 
-            transceivers.push(tc);
+            transceivers.push(Arc::new(tc));
             track_names.push(track.name.clone());
             track_directions.push(track.direction);
         }
@@ -358,6 +502,8 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
                 table.push((entry.name.clone(), Some(entry.mid.clone())));
             }
         }
+
+        self.apply_bitrate(&pc, &track_names, &transceivers);
 
         {
             let mut s = self.state.lock().unwrap();
@@ -420,6 +566,65 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         Ok(())
     }
 
+    async fn set_bitrate(
+        &self,
+        min_bps: Option<i32>,
+        start_bps: Option<i32>,
+        max_bps: Option<i32>,
+    ) -> Result<(), CoreError> {
+        // Nothing to apply to before the first prepare is not an error: there is
+        // no peer yet to validate against, and prepare picks the bounds up. Once
+        // remembered they survive reconnects, which rebuild the peer connection on
+        // libwebrtc's defaults.
+        let pc = self.state.lock().unwrap().pc.clone();
+        let bounds = BitrateBounds {
+            min_bps,
+            start_bps,
+            max_bps,
+        };
+        self.bitrate.commit_connection(bounds, || match pc {
+            Some(pc) => pc
+                .set_bitrate(min_bps, start_bps, max_bps)
+                .map_err(peer_err),
+            None => Ok(()),
+        })
+    }
+
+    async fn set_track_bitrate(
+        &self,
+        track_name: &str,
+        min_bps: Option<i32>,
+        max_bps: Option<i32>,
+    ) -> Result<(), CoreError> {
+        // The transceiver comes out from under the lock before the call:
+        // SetParameters dispatches onto a libwebrtc thread and waits for it, and
+        // that thread can be in a frame sink whose handler wants this same mutex
+        // — the shape close() documents at length. Hence the Arc.
+        let tc = {
+            let s = self.state.lock().unwrap();
+            match s.track_names.iter().position(|n| n == track_name) {
+                Some(i) => Some(Arc::clone(&s.transceivers[i])),
+                // Before the first prepare there are no transceivers to look the
+                // name up in, so an unknown name cannot be told from an early one.
+                // The core already refuses a name the session did not declare once
+                // the declaration has arrived; prepare warns about the rest.
+                None if s.track_names.is_empty() => None,
+                None => {
+                    return Err(CoreError::Peer(format!("unknown track: {track_name}")));
+                }
+            }
+        };
+        let bounds = BitrateBounds {
+            min_bps,
+            start_bps: None,
+            max_bps,
+        };
+        self.bitrate.commit_track(track_name, bounds, || match tc {
+            Some(tc) => tc.set_send_bitrate(min_bps, max_bps).map_err(peer_err),
+            None => Ok(()),
+        })
+    }
+
     async fn close(&self) -> Result<(), CoreError> {
         // Everything comes out from under the lock, and is dropped after the guard
         // is released. Never the other way around.
@@ -467,11 +672,11 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
     // holder that waited on libwebrtc while holding this mutex.
     fn push_video_frame(&self, track_name: &str, data: &[u8], width: u32, height: u32) {
         let s = self.state.lock().unwrap();
-        let Some(track) = s.local_tracks.get(track_name) else {
+        let Some(track) = s.local_tracks.get(track_name).and_then(LocalTrack::video) else {
             warn!("[peer] push_video_frame: no video source for track '{track_name}'");
             return;
         };
-        track.push_video_frame(data, width, height);
+        let _ = track.push_frame(VideoFrame::new(data, width, height));
     }
 
     fn push_video_frame_with_metadata(
@@ -483,7 +688,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         user_data: &[u8],
     ) {
         let s = self.state.lock().unwrap();
-        let Some(track) = s.local_tracks.get(track_name) else {
+        let Some(track) = s.local_tracks.get(track_name).and_then(LocalTrack::video) else {
             warn!(
                 "[peer] push_video_frame_with_metadata: no video source for track '{track_name}'"
             );
@@ -491,7 +696,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         };
         // Dropped by reactor-webrtc unless the peer declared that it strips the
         // trailer, so tagging a frame is safe whatever the far end supports.
-        track.push_video_frame_with_metadata(data, width, height, user_data);
+        let _ = track.push_frame_with_metadata(VideoFrame::new(data, width, height), user_data);
     }
 
     fn push_video_frame_with_metadata_at(
@@ -504,7 +709,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         capture_time_us: i64,
     ) {
         let s = self.state.lock().unwrap();
-        let Some(track) = s.local_tracks.get(track_name) else {
+        let Some(track) = s.local_tracks.get(track_name).and_then(LocalTrack::video) else {
             warn!(
                 "[peer] push_video_frame_with_metadata_at: no video source for track \
                  '{track_name}'"
@@ -514,7 +719,11 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         // reactor-webrtc keys the trailer by capture millisecond, per track — so
         // the same capture time across several tracks is exactly the intended use
         // (one tick, several views), not a collision.
-        track.push_video_frame_with_metadata_at(data, width, height, user_data, capture_time_us);
+        let _ = track.push_frame_with_metadata_at(
+            VideoFrame::new(data, width, height),
+            user_data,
+            capture_time_us,
+        );
     }
 }
 
@@ -547,6 +756,61 @@ mod tests {
     fn the_value_is_case_and_whitespace_insensitive() {
         assert_eq!(adm_mode_from_env(Some("  PLATFORM \n")), AdmMode::Platform);
         assert_eq!(adm_mode_from_env(Some("Synthetic")), AdmMode::Synthetic);
+    }
+
+    /// Bounds the engine rejected must not be remembered.
+    ///
+    /// Committing first is the tempting order, and it is wrong in a way that only
+    /// shows up later: the call reports the error, so the caller believes nothing
+    /// happened, and then the next reconnect replays the rejected pair over bounds
+    /// that were working — reported as a log line, since `prepare` will not fail a
+    /// connect over a ceiling.
+    #[test]
+    fn a_rejected_bound_leaves_the_remembered_one_alone() {
+        let config = BitrateConfig::default();
+        let good = BitrateBounds {
+            max_bps: Some(8_000_000),
+            ..Default::default()
+        };
+        config.commit_connection(good, || Ok(())).expect("accepted");
+        config
+            .commit_track("cam", good, || Ok(()))
+            .expect("accepted");
+
+        let bad = BitrateBounds {
+            min_bps: Some(9_000_000),
+            max_bps: Some(1),
+            ..Default::default()
+        };
+        let refuse = || Err(CoreError::Peer("min exceeds max".into()));
+        assert!(config.commit_connection(bad, refuse).is_err());
+        assert!(config.commit_track("cam", bad, refuse).is_err());
+
+        assert_eq!(
+            config.connection.lock().unwrap().max_bps,
+            Some(8_000_000),
+            "a refused connection bound overwrote the working one",
+        );
+        assert_eq!(
+            config.per_track.lock().unwrap()["cam"].max_bps,
+            Some(8_000_000),
+            "a refused track bound overwrote the working one",
+        );
+    }
+
+    /// Nothing to apply to is not a failure: before the first `prepare` there is no
+    /// peer to validate against, and the bounds are what `prepare` will pick up.
+    #[test]
+    fn bounds_set_before_there_is_a_peer_are_still_remembered() {
+        let config = BitrateConfig::default();
+        let bounds = BitrateBounds {
+            start_bps: Some(4_000_000),
+            ..Default::default()
+        };
+        config
+            .commit_connection(bounds, || Ok(()))
+            .expect("no peer yet is not an error");
+        assert_eq!(config.connection.lock().unwrap().start_bps, Some(4_000_000));
     }
 
     /// A typo must not silently open the microphone: the safe direction is the default,

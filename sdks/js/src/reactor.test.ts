@@ -636,6 +636,22 @@ describe('Reactor.requestClip / requestRecording / downloadClipAsFile', () => {
 });
 
 describe('Reactor tracks', () => {
+  it('setTrackBitrate forwards both bounds, and an omitted one stays undefined', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    await reactor.setTrackBitrate('camera', { maxBps: 8_000_000 });
+    await reactor.setTrackBitrate('camera', { minBps: 1_000_000, maxBps: 8_000_000 });
+
+    // An omitted bound must stay undefined rather than becoming 0: a maxBitrate
+    // of 0 is a real request to cap the sender at nothing, which looks like a
+    // number and behaves like a mute.
+    expect(client.setTrackBitrateCalls).toEqual([
+      { name: 'camera', minBps: undefined, maxBps: 8_000_000 },
+      { name: 'camera', minBps: 1_000_000, maxBps: 8_000_000 },
+    ]);
+  });
+
   it('delegates publishTrack/unpublishTrack/pauseTrack/resumeTrack to the binding', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);

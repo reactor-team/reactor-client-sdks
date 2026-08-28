@@ -151,6 +151,11 @@ export declare class ReactorClient {
   unpublishTrack(name: string): Promise<void>;
   pauseTrack(name: string): Promise<void>;
   resumeTrack(name: string): Promise<void>;
+  setTrackBitrate(
+    name: string,
+    minBps: number | undefined,
+    maxBps: number | undefined,
+  ): Promise<void>;
   tracks(): TrackCapability[];
   trackMapping(): TrackMappingEntry[];
   pausedTracks(): string[];

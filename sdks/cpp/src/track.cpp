@@ -138,6 +138,14 @@ std::future<void> Track::resume() {
   return future;
 }
 
+std::future<void> Track::set_bitrate(Bitrate bounds) {
+  auto op = std::make_unique<detail::PendingVoid>();
+  op->operation = "set_track_bitrate";
+  auto future = op->promise.get_future();
+  client("set the bitrate of")->begin_set_track_bitrate(std::move(op), name_, bounds);
+  return future;
+}
+
 void Track::push_frame(Bytes bgra, std::uint32_t width, std::uint32_t height,
                        const FrameOptions& options) {
   client("push a frame")->push_video(name_, bgra, width, height, options);
@@ -694,6 +702,49 @@ void ClientImpl::begin_resume(std::unique_ptr<Pending> op, const std::string& na
     ReactorHandle* handle = require_ready_handle("resume", name);
     auto* raw = track_pending(std::move(op));
     ffi().resume_track(handle, name.c_str(), &completion_trampoline, raw);
+  } catch (...) {
+    op->fail(std::current_exception());
+  }
+}
+
+namespace {
+
+/// Encode an optional bound for a C ABI that has no optional integer.
+///
+/// Unset becomes -1, the ABI's "leave this at the WebRTC default". Zero is
+/// passed through rather than folded into unset: a caller who wrote 0 meant
+/// something, and the engine's refusal says more than a silent reinterpretation
+/// here would.
+std::int32_t bitrate_bound(const std::optional<std::int32_t>& value) { return value.value_or(-1); }
+
+}  // namespace
+
+void ClientImpl::begin_set_bitrate(std::unique_ptr<Pending> op, const Reactor::Bitrate& bounds) {
+  try {
+    ReactorHandle* handle = require_ready_handle("set the bitrate of", model_);
+    auto* raw = track_pending(std::move(op));
+    ffi().set_bitrate(handle, bitrate_bound(bounds.min_bps), bitrate_bound(bounds.start_bps),
+                      bitrate_bound(bounds.max_bps), &completion_trampoline, raw);
+  } catch (...) {
+    op->fail(std::current_exception());
+  }
+}
+
+void ClientImpl::begin_set_track_bitrate(std::unique_ptr<Pending> op, const std::string& name,
+                                         const Track::Bitrate& bounds) {
+  try {
+    // Undeclared, and recvonly, both refused here — a recvonly track's sender is
+    // the far end's, so accepting would report success for an operation with
+    // nowhere to land. Same guard `push_video` uses, for the same reason.
+    const auto tracks = declared_tracks();
+    const Declared* found = find_declared(tracks, name);
+    require_sendable(name, found == nullptr ? std::nullopt : std::optional<Declared>{*found},
+                     names_of(tracks), "set the bitrate of");
+
+    ReactorHandle* handle = require_ready_handle("set the bitrate of", name);
+    auto* raw = track_pending(std::move(op));
+    ffi().set_track_bitrate(handle, name.c_str(), bitrate_bound(bounds.min_bps),
+                            bitrate_bound(bounds.max_bps), &completion_trampoline, raw);
   } catch (...) {
     op->fail(std::current_exception());
   }

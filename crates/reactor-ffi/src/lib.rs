@@ -1265,6 +1265,110 @@ pub unsafe extern "C" fn reactor_resume_track(
     );
 }
 
+/// Read a bitrate bound off the ABI, where C has no optional integer.
+///
+/// `-1`, and only `-1`, means "leave this bound at the WebRTC default". Treating
+/// every negative that way would make a typo — or an arithmetic slip like
+/// `budget - overhead` going below zero — indistinguishable from the sentinel,
+/// and it would resolve the wrong way: quietly removing a cap somebody set, and
+/// reporting success for it.
+///
+/// Zero is a value like any other and goes through. A caller who wrote 0 asked
+/// for something, and the engine's own answer says more than a reinterpretation
+/// here would.
+fn bitrate_bound(label: &str, v: i32) -> Result<Option<i32>, CoreError> {
+    match v {
+        -1 => Ok(None),
+        v if v < 0 => Err(CoreError::InvalidState(format!(
+            "{label} must be >= 0, or -1 to leave it at the WebRTC default (got {v})"
+        ))),
+        v => Ok(Some(v)),
+    }
+}
+
+/// Aggregate congestion-control bitrate bounds for the connection, in bits per
+/// second. Pass `-1` for any bound that should keep the WebRTC default.
+///
+/// This bounds what the *connection* may allocate. It does not lift the
+/// per-stream video ceiling — see [`reactor_set_track_bitrate`], which does, and
+/// which most callers asking for higher-quality video actually want. The two are
+/// conjunctive: the lower one wins.
+///
+/// Callable as soon as the handle exists — including before [`reactor_connect`],
+/// which is where `start_bps` has to land to do its job: the ramp it exists to
+/// skip happens during connection setup. The bounds are remembered and applied
+/// to the peer connection as soon as it exists, and again on every reconnect.
+///
+/// They belong to the handle, not to the session, so a binding that destroys and
+/// recreates its handle — Python does, on a re-minted token — starts over.
+///
+/// # Safety
+///
+/// `handle` must be null or a live handle. `completion` as [`reactor_connect`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_set_bitrate(
+    handle: *mut ReactorHandle,
+    min_bps: i32,
+    start_bps: i32,
+    max_bps: i32,
+    completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
+    userdata: *mut c_void,
+) {
+    async_op!(
+        "set_bitrate",
+        handle,
+        completion,
+        userdata,
+        move |r: Arc<Reactor>, _tasks: TaskSet| async move {
+            let min = bitrate_bound("min_bps", min_bps)?;
+            let start = bitrate_bound("start_bps", start_bps)?;
+            let max = bitrate_bound("max_bps", max_bps)?;
+            r.set_bitrate(min, start, max).await.map(|_| None)
+        }
+    );
+}
+
+/// Per-sender bitrate bounds for one track, in bits per second. Pass `-1` for
+/// any bound that should keep the WebRTC default.
+///
+/// Raising `max_bps` here is the only way past WebRTC's resolution-keyed video
+/// ceiling: with nothing set, a sender's maximum comes from the frame size alone
+/// and is 2500 kbps for anything above 960x540 — so 720p, 1080p and 4K all cap
+/// at 2.5 Mbps however much headroom [`reactor_set_bitrate`] granted the
+/// connection.
+///
+/// Callable as soon as the handle exists, like [`reactor_set_bitrate`], and with
+/// the same handle-scoped lifetime. Once the session has declared its tracks, a
+/// name it did not declare fails the operation rather than being remembered for
+/// a track that will never exist.
+///
+/// # Safety
+///
+/// `handle` must be null or a live handle. `name` must be a NUL-terminated C
+/// string. `completion` as [`reactor_connect`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_set_track_bitrate(
+    handle: *mut ReactorHandle,
+    name: *const c_char,
+    min_bps: i32,
+    max_bps: i32,
+    completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
+    userdata: *mut c_void,
+) {
+    let name = CStr::from_ptr(name).to_string_lossy().into_owned();
+    async_op!(
+        "set_track_bitrate",
+        handle,
+        completion,
+        userdata,
+        move |r: Arc<Reactor>, _tasks: TaskSet| async move {
+            let min = bitrate_bound("min_bps", min_bps)?;
+            let max = bitrate_bound("max_bps", max_bps)?;
+            r.set_track_bitrate(&name, min, max).await.map(|_| None)
+        }
+    );
+}
+
 /// Request a clip covering the last `duration_seconds` of the session. On success
 /// `result_json` is a clip object.
 ///
@@ -2391,6 +2495,43 @@ mod tests {
     /// `slice::from_raw_parts` requires a non-null pointer even at length 0 — a
     /// null `data` (a caller's spelling of "no bytes") must short-circuit before
     /// ever reaching it.
+    /// The ABI has no optional integer, so -1 carries "leave this at the WebRTC
+    /// default". Everything here is about keeping that sentinel from swallowing
+    /// values that are not it.
+    #[test]
+    fn only_minus_one_reads_as_an_unset_bitrate_bound() {
+        assert_eq!(bitrate_bound("max_bps", -1).unwrap(), None);
+
+        // Zero is a value, not a second spelling of "unset".
+        assert_eq!(bitrate_bound("max_bps", 0).unwrap(), Some(0));
+        assert_eq!(
+            bitrate_bound("max_bps", 8_000_000).unwrap(),
+            Some(8_000_000)
+        );
+    }
+
+    /// The failure this exists to prevent is silent: read as the sentinel, a
+    /// typo'd negative removes a cap the caller had set and the call reports
+    /// success. So the refusal is the point, and it has to name the parameter —
+    /// three bounds cross this boundary and "invalid bitrate" would not say
+    /// which.
+    #[test]
+    fn a_negative_bitrate_bound_is_refused_by_name() {
+        let err = bitrate_bound("max_bps", -8_000_000).expect_err("must be refused");
+        let message = err.to_string();
+        assert!(
+            message.contains("max_bps"),
+            "message lost the name: {message}"
+        );
+        assert!(
+            message.contains("-8000000"),
+            "message lost the value: {message}"
+        );
+
+        assert!(bitrate_bound("min_bps", -2).is_err());
+        assert!(bitrate_bound("start_bps", i32::MIN).is_err());
+    }
+
     #[test]
     fn copy_bytes_of_a_null_pointer_at_zero_length_is_empty() {
         unsafe {

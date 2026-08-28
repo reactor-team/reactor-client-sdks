@@ -464,6 +464,9 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   void unpublish(const std::string& name);
   void begin_pause(std::unique_ptr<Pending> op, const std::string& name);
   void begin_resume(std::unique_ptr<Pending> op, const std::string& name);
+  void begin_set_bitrate(std::unique_ptr<Pending> op, const Reactor::Bitrate& bounds);
+  void begin_set_track_bitrate(std::unique_ptr<Pending> op, const std::string& name,
+                               const Track::Bitrate& bounds);
 
   void push_video(const std::string& name, Bytes bgra, std::uint32_t width, std::uint32_t height,
                   const Track::FrameOptions& options);

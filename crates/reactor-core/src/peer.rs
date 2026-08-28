@@ -91,6 +91,49 @@ pub trait PeerTransport {
         active: bool,
     ) -> Result<(), crate::error::CoreError>;
 
+    /// Aggregate congestion-control bitrate bounds for the whole connection,
+    /// in bits per second. `None` leaves a bound at the engine's default.
+    ///
+    /// This is the *connection's* budget — how much bandwidth the congestion
+    /// controller may believe it has. It is not what caps any one track: see
+    /// [`PeerTransport::set_track_bitrate`], which bounds a single sender and
+    /// is the one that lifts WebRTC's resolution-keyed video ceiling. The two
+    /// are conjunctive, so a stream runs fast only when both allow it.
+    ///
+    /// Defaults to refusing: a transport that silently ignored this would leave
+    /// a caller believing they had raised a limit they had not.
+    async fn set_bitrate(
+        &self,
+        _min_bps: Option<i32>,
+        _start_bps: Option<i32>,
+        _max_bps: Option<i32>,
+    ) -> Result<(), crate::error::CoreError> {
+        Err(crate::error::CoreError::Peer(
+            "this transport does not support connection bitrate limits".into(),
+        ))
+    }
+
+    /// Per-sender bitrate bounds for one track's transceiver, in bits per
+    /// second. `None` leaves a bound at the engine's default.
+    ///
+    /// Without this, a video sender's ceiling is WebRTC's default for the frame
+    /// size — 2500 kbps for anything above 960x540, so 720p, 1080p and 4K all
+    /// cap at 2.5 Mbps regardless of how much headroom
+    /// [`PeerTransport::set_bitrate`] granted the connection. Raising `max_bps`
+    /// here is the only way past it.
+    ///
+    /// Defaults to refusing, for the same reason as above.
+    async fn set_track_bitrate(
+        &self,
+        _track_name: &str,
+        _min_bps: Option<i32>,
+        _max_bps: Option<i32>,
+    ) -> Result<(), crate::error::CoreError> {
+        Err(crate::error::CoreError::Peer(
+            "this transport does not support per-track bitrate limits".into(),
+        ))
+    }
+
     /// Tear down the peer connection and channels.
     async fn close(&self) -> Result<(), crate::error::CoreError>;
 

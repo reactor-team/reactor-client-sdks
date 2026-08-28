@@ -383,6 +383,56 @@ void reactor_resume_track(
 );
 
 /*
+ * Bitrate bounds, in bits per second. Pass -1 for any bound that should keep
+ * the WebRTC default. -1 is the only value that means that: any other negative
+ * fails the operation rather than clearing the bound, since reading a typo as
+ * "remove the cap" would be the opposite of what was asked, and would report
+ * success for it. Zero is a value like any other and reaches the engine.
+ *
+ * There are two ceilings and they are conjunctive — the lower one wins:
+ *
+ *   reactor_set_bitrate       bounds what the whole CONNECTION may allocate.
+ *   reactor_set_track_bitrate bounds ONE SENDER's share of that allocation.
+ *
+ * Raising the connection's ceiling alone will not make a video track exceed
+ * 2.5 Mbps. With no per-sender maximum set, WebRTC derives one from the frame
+ * size, and that is 2500 kbps for anything above 960x540 — so 720p, 1080p and
+ * 4K all cap there. reactor_set_track_bitrate is the one that lifts it.
+ *
+ * Both are callable before reactor_connect. The bounds are remembered and
+ * applied as soon as the peer connection exists, and again on every reconnect,
+ * which is the only way start_bps can skip the ramp it exists to skip.
+ *
+ * result_json is "{}" on success.
+ */
+void reactor_set_bitrate(
+    ReactorHandle       *handle,
+    int32_t              min_bps,
+    int32_t              start_bps,
+    int32_t              max_bps,
+    reactor_completion_fn completion,
+    void                *userdata
+);
+
+/*
+ * Per-sender bitrate bounds for one track. See reactor_set_bitrate above for
+ * how the two ceilings relate; this is the one that lifts the 2.5 Mbps video
+ * default.
+ *
+ * Once the session has declared its tracks, a name it did not declare fails
+ * the operation rather than being remembered for a track that will never
+ * exist.
+ */
+void reactor_set_track_bitrate(
+    ReactorHandle       *handle,
+    const char          *name,
+    int32_t              min_bps,
+    int32_t              max_bps,
+    reactor_completion_fn completion,
+    void                *userdata
+);
+
+/*
  * Request a clip of `duration_seconds` length.
  * result_json: { playlist_url, session_id, kind, … }
  */

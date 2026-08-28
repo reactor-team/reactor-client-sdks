@@ -50,6 +50,8 @@ namespace reactor::detail {
   X(unpublish_track, reactor_unpublish_track)                                       \
   X(pause_track, reactor_pause_track)                                               \
   X(resume_track, reactor_resume_track)                                             \
+  X(set_bitrate, reactor_set_bitrate)                                               \
+  X(set_track_bitrate, reactor_set_track_bitrate)                                   \
   /* Commands, messages, uploads */                                                 \
   X(send_command, reactor_send_command)                                             \
   X(request_schema, reactor_request_schema)                                         \

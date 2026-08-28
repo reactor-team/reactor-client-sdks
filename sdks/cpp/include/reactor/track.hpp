@@ -200,6 +200,40 @@ class Track {
   /// the track then stays published, so a retry is possible.
   void unpublish();
 
+  /// Bounds for one sender's bitrate, in bits per second. A field left unset
+  /// keeps the WebRTC default for that bound.
+  struct Bitrate {
+    /// A floor for this sender.
+    std::optional<std::int32_t> min_bps;
+    /// A ceiling for this sender. This is the field that matters — see
+    /// `set_bitrate`.
+    std::optional<std::int32_t> max_bps;
+  };
+
+  /// Bound what this sender may spend.
+  ///
+  /// This is the ceiling that actually caps a video encoder, and it is easy to
+  /// hit without knowing it exists: with nothing set, WebRTC derives a sender's
+  /// maximum from the frame size alone, and that maximum is 2500 kbps for
+  /// anything above 960x540. 720p, 1080p and 4K all cap at 2.5 Mbps.
+  ///
+  /// ```cpp
+  /// reactor::Track::Bitrate cap;
+  /// cap.max_bps = 8'000'000;
+  /// camera.set_bitrate(cap).get();
+  /// ```
+  ///
+  /// `Reactor::set_bitrate` is the other ceiling — the whole connection's
+  /// budget. The two are conjunctive, so raising only one changes nothing.
+  ///
+  /// A ceiling is permission, not a target: the encoder still spends only what
+  /// the congestion controller allocated and what the picture needs. What
+  /// raising it buys is headroom for the moments that would otherwise clip.
+  ///
+  /// Throws on a recvonly track — the sender behind an incoming track is the far
+  /// end's, and nothing here can bound it — and on a session that is not `Ready`.
+  std::future<void> set_bitrate(Bitrate bounds);
+
   /// Stop this track. Nothing is generated while paused, which on a video track
   /// is visible only as a frozen frame.
   std::future<void> pause();
