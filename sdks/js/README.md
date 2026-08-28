@@ -78,19 +78,6 @@ const { jwt } = await result.json();
 See [Authentication](https://docs.reactor.inc/authentication) for the full request shape,
 including `max_session_duration_seconds` and other constraints.
 
-## Disconnecting
-
-`disconnect()` ends the session; the `Reactor` instance stays usable for a later
-`connect()`/`reconnect()`. Pass `true` to keep the connection warm for a faster
-reconnect instead of reinitializing from scratch.
-
-## Status and session id
-
-```ts
-reactor.getStatus();     // ReactorStatus: "disconnected" | "connecting" | "waiting" | "ready"
-reactor.getSessionId();  // string | undefined
-```
-
 ## Events
 
 `on(event, handler)` / `off(event, handler)` / `once(event, handler)`. The ones you'll reach
