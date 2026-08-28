@@ -132,7 +132,8 @@ matching `schemaReceived`/`capabilitiesReceived` events. See
 
 ```ts
 const clip = await reactor.requestClip(10); // last 10 seconds
-await reactor.downloadClipAsFile(clip, "clip.mp4");
+// downloadClipAsFile() doesn't inherit the Reactor instance's JWT — pass it explicitly.
+await reactor.downloadClipAsFile(clip, "clip.mp4", { jwt: await fetchToken() });
 ```
 
 `requestClip()`/`requestRecording()`/`downloadClipAsFile()` live directly on `Reactor`, and the
@@ -220,10 +221,11 @@ function Status() {
 down the current connection and builds a fresh one. Pass a stable `jwtToken` (`useCallback`, or
 hoist it outside the component) so an unrelated re-render doesn't reconnect you.
 
-`useReactor(selector)` exposes the same surface as `Reactor` itself — status, errors, messages,
-and every method as a bound action — so most components never need to touch the instance
-directly. When one does, `useReactor((s) => s.internal.reactor)` gets it. Full field list:
-[React hooks](https://docs.reactor.inc/sdk-reference/react-hooks).
+`useReactor(selector)` binds connection state (`status`, `lastError`, `lastMessage`, `tracks`, ...)
+and the common actions (`connect`, `sendCommand`, `publish`, `requestClip`, ...) — enough for most
+components. For anything else — schema, capabilities, stats, track lookups, the raw event
+emitter — `useReactor((s) => s.internal.reactor)` gets you the underlying `Reactor` instance.
+Full field list: [React hooks](https://docs.reactor.inc/sdk-reference/react-hooks).
 
 ## Typed model SDKs
 
