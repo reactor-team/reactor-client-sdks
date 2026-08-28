@@ -207,7 +207,7 @@ let frameTrampoline: reactor_on_frame_fn = {
         width: width,
         height: height,
         frameID: frameID,
-        captureTimeUS: timestampUS,
+        captureTimeUs: timestampUS,
         userData: tag)
 
     client.deliver(frame: frame)

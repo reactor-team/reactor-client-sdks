@@ -143,7 +143,7 @@ final class FakeLibrary: @unchecked Sendable {
         width: UInt32 = 2,
         height: UInt32 = 2,
         frameID: UInt64 = 0,
-        captureTimeUS: UInt64 = 0,
+        captureTimeUs: UInt64 = 0,
         userData: [UInt8]? = nil,
         fill: UInt8 = 0xAB
     ) {
@@ -156,12 +156,12 @@ final class FakeLibrary: @unchecked Sendable {
                 if var tag = userData {
                     tag.withUnsafeMutableBufferPointer { tagBuffer in
                         onFrame(
-                            namePointer, base, width, height, frameID, captureTimeUS,
+                            namePointer, base, width, height, frameID, captureTimeUs,
                             tagBuffer.baseAddress, UInt32(tagBuffer.count), callbacks.userdata)
                     }
                 } else {
                     onFrame(
-                        namePointer, base, width, height, frameID, captureTimeUS, nil, 0,
+                        namePointer, base, width, height, frameID, captureTimeUs, nil, 0,
                         callbacks.userdata)
                 }
             }
