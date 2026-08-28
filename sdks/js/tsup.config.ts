@@ -24,4 +24,13 @@ export default defineConfig({
   // errors on neither that nor bundling it, and is left as the literal
   // consuming bundlers (webpack, Rollup, ...) need to statically recognize it.
   external: ['./wasm/reactor_wasm.js'],
+  // debug-log.ts references `import.meta.env` as one half of an `||` whose
+  // other half (`process.env.NODE_ENV`) already covers every real consumer
+  // of the CJS build (Node, webpack, Next.js) — Vite, the only thing that
+  // reads `import.meta.env`, always consumes the ESM build instead. esbuild
+  // still flags the reference as empty under the "cjs" format on every
+  // build; silenced since it's expected, not a sign the check is broken.
+  esbuildOptions(options) {
+    options.logOverride = { ...options.logOverride, 'empty-import-meta': 'silent' };
+  },
 });
