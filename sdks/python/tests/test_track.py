@@ -68,8 +68,13 @@ class _FakeLib:
     # the completion trampoline they were handed, so the test exercises the real
     # `_async_op` bridge rather than a stand-in for it.
     def reactor_set_bitrate(
-        self, _handle: object, min_bps: object, start_bps: object, max_bps: object,
-        completion: object, _ud: object,
+        self,
+        _handle: object,
+        min_bps: object,
+        start_bps: object,
+        max_bps: object,
+        completion: object,
+        _ud: object,
     ) -> None:
         self.bitrate_calls.append(
             (min_bps.value, start_bps.value, max_bps.value)  # type: ignore[union-attr]
@@ -77,8 +82,13 @@ class _FakeLib:
         completion(1, b"{}", None, None)  # type: ignore[operator]
 
     def reactor_set_track_bitrate(
-        self, _handle: object, name: bytes, min_bps: object, max_bps: object,
-        completion: object, _ud: object,
+        self,
+        _handle: object,
+        name: bytes,
+        min_bps: object,
+        max_bps: object,
+        completion: object,
+        _ud: object,
     ) -> None:
         self.track_bitrate_calls.append(
             (name.decode(), min_bps.value, max_bps.value)  # type: ignore[union-attr]
@@ -1080,9 +1090,7 @@ class TestBitrate:
     """
 
     @pytest.mark.asyncio
-    async def test_connection_bounds_reach_the_ffi(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_connection_bounds_reach_the_ffi(self, monkeypatch: pytest.MonkeyPatch) -> None:
         reactor, lib = _connected(monkeypatch)
         await reactor.set_bitrate(min_bps=200_000, start_bps=4_000_000, max_bps=12_000_000)
         assert lib.bitrate_calls == [(200_000, 4_000_000, 12_000_000)]
@@ -1109,9 +1117,7 @@ class TestBitrate:
         assert lib.bitrate_calls == [(0, -1, 8_000_000)]
 
     @pytest.mark.asyncio
-    async def test_track_bounds_carry_the_track_name(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_track_bounds_carry_the_track_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
         reactor, lib = _connected(monkeypatch)
         await reactor.track("camera").set_bitrate(max_bps=8_000_000)
         assert lib.track_bitrate_calls == [("camera", -1, 8_000_000)]

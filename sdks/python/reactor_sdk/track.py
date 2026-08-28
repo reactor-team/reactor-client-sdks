@@ -559,9 +559,7 @@ class Track:
     # Bitrate
     # ------------------------------------------------------------------
 
-    async def set_bitrate(
-        self, *, min_bps: int | None = None, max_bps: int | None = None
-    ) -> None:
+    async def set_bitrate(self, *, min_bps: int | None = None, max_bps: int | None = None) -> None:
         """Bound what this sender may spend, in bits per second.
 
         This is the ceiling that actually caps a video encoder, and it is the one

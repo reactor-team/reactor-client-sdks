@@ -1202,9 +1202,7 @@ class Reactor:
             lambda fn: lib.reactor_resume_track(ctypes.c_void_p(handle), name_b, fn, None)
         )
 
-    async def _set_track_bitrate(
-        self, name: str, min_bps: int | None, max_bps: int | None
-    ) -> None:
+    async def _set_track_bitrate(self, name: str, min_bps: int | None, max_bps: int | None) -> None:
         """Bound one sender's bitrate. Reached through `Track.set_bitrate`."""
         self._require_handle()
         handle = self._handle
