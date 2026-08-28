@@ -99,6 +99,9 @@ jobs:
             if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
               echo "::notice::workflow_dispatch dry run — building ${NEW_VER}, not releasing."
               echo "bumped=false" >> "$GITHUB_OUTPUT"
+            elif [ "${{ github.ref }}" != "refs/heads/main" ]; then
+              echo "::error::Manual releases are only allowed from main (this run is on ${{ github.ref }}) — refusing to release ${NEW_VER}."
+              exit 1
             else
               echo "::notice::workflow_dispatch release — releasing ${NEW_VER}."
               echo "bumped=true" >> "$GITHUB_OUTPUT"
