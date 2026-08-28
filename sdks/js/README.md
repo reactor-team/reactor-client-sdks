@@ -78,21 +78,11 @@ const { jwt } = await result.json();
 See [Authentication](https://docs.reactor.inc/authentication) for the full request shape,
 including `max_session_duration_seconds` and other constraints.
 
-## `disconnect()` and disposal
+## Disconnecting
 
-`disconnect(recoverable = false)`:
-
-- **`disconnect()`** (the default) ends the session server-side and releases
-  the connection's underlying resources in one step. The `Reactor` instance
-  itself is still usable: a later `connect()`/`reconnect()` sets up a fresh
-  connection automatically.
-- **`disconnect(true)`** ends the session but keeps those resources warm, so
-  a later `connect()`/`reconnect()` reconnects faster instead of
-  reinitializing from scratch.
-- **`using reactor = new Reactor(...)`** (or calling `reactor[Symbol.dispose]()`
-  directly) tears the instance down for good — same resource release as a
-  plain `disconnect()`, plus dropping every registered event handler. Do this
-  when you're done with the object entirely, not on every disconnect.
+`disconnect()` ends the session; the `Reactor` instance stays usable for a later
+`connect()`/`reconnect()`. Pass `true` to keep the connection warm for a faster
+reconnect instead of reinitializing from scratch.
 
 ## Status and session id
 
