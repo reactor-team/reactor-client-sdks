@@ -109,7 +109,6 @@ matching `schemaReceived`/`capabilitiesReceived` events. See
 
 ```ts
 const clip = await reactor.requestClip(10); // last 10 seconds
-// downloadClipAsFile() doesn't inherit the Reactor instance's JWT — pass it explicitly.
 await reactor.downloadClipAsFile(clip, "clip.mp4", { jwt: await fetchToken() });
 ```
 
@@ -240,8 +239,7 @@ See the repo-wide [`CONTRIBUTING.md`](../../CONTRIBUTING.md) for the rest
 
 The [full documentation](https://docs.reactor.inc/sdk-reference/using-the-sdk)
 covers platform concepts and the other language SDKs. See
-[`CHANGELOG.md`](./CHANGELOG.md) for what changed release to release,
-including 3.0.0's breaking changes.
+[`CHANGELOG.md`](./CHANGELOG.md) for what changed release to release.
 
 ## License
 
