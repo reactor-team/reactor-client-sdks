@@ -218,7 +218,7 @@ jobs:
     needs: [detect-version, build, release]
     if: needs.detect-version.outputs.bumped == 'true'
     runs-on: ubuntu-latest
-    environment: npm-publish
+    environment: npm
     permissions:
       contents: read # actions/checkout below needs this once id-token: write is set
       id-token: write # OIDC trusted publishing
