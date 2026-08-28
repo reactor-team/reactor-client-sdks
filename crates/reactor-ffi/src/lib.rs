@@ -1267,12 +1267,23 @@ pub unsafe extern "C" fn reactor_resume_track(
 
 /// Read a bitrate bound off the ABI, where C has no optional integer.
 ///
-/// Any negative value means "leave this bound at the WebRTC default", so `-1` is
-/// the documented spelling but any negative works. Zero is passed through: a
-/// caller who genuinely means "cap this at nothing" gets the refusal from the
-/// engine rather than a silent reinterpretation here.
-fn bitrate_bound(v: i32) -> Option<i32> {
-    (v >= 0).then_some(v)
+/// `-1`, and only `-1`, means "leave this bound at the WebRTC default". Treating
+/// every negative that way would make a typo — or an arithmetic slip like
+/// `budget - overhead` going below zero — indistinguishable from the sentinel,
+/// and it would resolve the wrong way: quietly removing a cap somebody set, and
+/// reporting success for it.
+///
+/// Zero is a value like any other and goes through. A caller who wrote 0 asked
+/// for something, and the engine's own answer says more than a reinterpretation
+/// here would.
+fn bitrate_bound(label: &str, v: i32) -> Result<Option<i32>, CoreError> {
+    match v {
+        -1 => Ok(None),
+        v if v < 0 => Err(CoreError::InvalidState(format!(
+            "{label} must be >= 0, or -1 to leave it at the WebRTC default (got {v})"
+        ))),
+        v => Ok(Some(v)),
+    }
 }
 
 /// Aggregate congestion-control bitrate bounds for the connection, in bits per
@@ -1303,17 +1314,15 @@ pub unsafe extern "C" fn reactor_set_bitrate(
     completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
     userdata: *mut c_void,
 ) {
-    let (min, start, max) = (
-        bitrate_bound(min_bps),
-        bitrate_bound(start_bps),
-        bitrate_bound(max_bps),
-    );
     async_op!(
         "set_bitrate",
         handle,
         completion,
         userdata,
         move |r: Arc<Reactor>, _tasks: TaskSet| async move {
+            let min = bitrate_bound("min_bps", min_bps)?;
+            let start = bitrate_bound("start_bps", start_bps)?;
+            let max = bitrate_bound("max_bps", max_bps)?;
             r.set_bitrate(min, start, max).await.map(|_| None)
         }
     );
@@ -1347,13 +1356,14 @@ pub unsafe extern "C" fn reactor_set_track_bitrate(
     userdata: *mut c_void,
 ) {
     let name = CStr::from_ptr(name).to_string_lossy().into_owned();
-    let (min, max) = (bitrate_bound(min_bps), bitrate_bound(max_bps));
     async_op!(
         "set_track_bitrate",
         handle,
         completion,
         userdata,
         move |r: Arc<Reactor>, _tasks: TaskSet| async move {
+            let min = bitrate_bound("min_bps", min_bps)?;
+            let max = bitrate_bound("max_bps", max_bps)?;
             r.set_track_bitrate(&name, min, max).await.map(|_| None)
         }
     );
@@ -2485,6 +2495,43 @@ mod tests {
     /// `slice::from_raw_parts` requires a non-null pointer even at length 0 — a
     /// null `data` (a caller's spelling of "no bytes") must short-circuit before
     /// ever reaching it.
+    /// The ABI has no optional integer, so -1 carries "leave this at the WebRTC
+    /// default". Everything here is about keeping that sentinel from swallowing
+    /// values that are not it.
+    #[test]
+    fn only_minus_one_reads_as_an_unset_bitrate_bound() {
+        assert_eq!(bitrate_bound("max_bps", -1).unwrap(), None);
+
+        // Zero is a value, not a second spelling of "unset".
+        assert_eq!(bitrate_bound("max_bps", 0).unwrap(), Some(0));
+        assert_eq!(
+            bitrate_bound("max_bps", 8_000_000).unwrap(),
+            Some(8_000_000)
+        );
+    }
+
+    /// The failure this exists to prevent is silent: read as the sentinel, a
+    /// typo'd negative removes a cap the caller had set and the call reports
+    /// success. So the refusal is the point, and it has to name the parameter —
+    /// three bounds cross this boundary and "invalid bitrate" would not say
+    /// which.
+    #[test]
+    fn a_negative_bitrate_bound_is_refused_by_name() {
+        let err = bitrate_bound("max_bps", -8_000_000).expect_err("must be refused");
+        let message = err.to_string();
+        assert!(
+            message.contains("max_bps"),
+            "message lost the name: {message}"
+        );
+        assert!(
+            message.contains("-8000000"),
+            "message lost the value: {message}"
+        );
+
+        assert!(bitrate_bound("min_bps", -2).is_err());
+        assert!(bitrate_bound("start_bps", i32::MIN).is_err());
+    }
+
     #[test]
     fn copy_bytes_of_a_null_pointer_at_zero_length_is_empty() {
         unsafe {

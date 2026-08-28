@@ -138,10 +138,11 @@ _HandlerResult = Coroutine[Any, Any, None] | None
 def _bitrate_arg(v: int | None) -> ctypes.c_int32:
     """Encode an optional bitrate bound for the C ABI, which has no optional int.
 
-    `None` becomes -1, the ABI's "leave this at the WebRTC default". Zero is
-    passed through rather than folded into `None`: a caller who wrote 0 meant
-    something, and the engine's refusal says more than a silent reinterpretation
-    here would.
+    `None` becomes -1, the ABI's "leave this at the WebRTC default", and -1 is
+    the only value that means that. A negative is passed through to be refused
+    on the other side rather than quietly clearing the bound: reading a typo as
+    "remove the cap" would be the opposite of what was asked. Zero is a value
+    like any other and reaches the engine.
     """
     return ctypes.c_int32(-1 if v is None else v)
 

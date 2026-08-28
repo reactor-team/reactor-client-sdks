@@ -384,7 +384,10 @@ void reactor_resume_track(
 
 /*
  * Bitrate bounds, in bits per second. Pass -1 for any bound that should keep
- * the WebRTC default; any negative value reads as unset.
+ * the WebRTC default. -1 is the only value that means that: any other negative
+ * fails the operation rather than clearing the bound, since reading a typo as
+ * "remove the cap" would be the opposite of what was asked, and would report
+ * success for it. Zero is a value like any other and reaches the engine.
  *
  * There are two ceilings and they are conjunctive — the lower one wins:
  *
