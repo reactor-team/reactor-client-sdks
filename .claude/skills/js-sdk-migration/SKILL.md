@@ -152,16 +152,26 @@ ported code:
   bytes left the browser. Ported code that sleeps after a command "to give
   the backend time" (`setTimeout` after a reset before sending new inputs)
   can delete the sleep: the resolved await *is* the confirmation.
-- **`undefined` has exactly two meanings, and `getLastError()` tells them
-  apart.** `sendCommand()` never rejects. It resolves `undefined` when the
-  send failed (timeout included — the error lands on `getLastError()` / the
-  `error` event) *and* when the handler completed but returned nothing.
-  After an unexpected `undefined` from a reply-declaring command: an error
-  recorded means it failed; no error means the model acked with no body —
-  which, when the schema promises a reply, usually means the session landed
-  on a replica still serving an **older model release** whose handlers
-  predate returning messages (a fleet mid-rollout serves both). Check which
-  release the session's pod runs before debugging the client.
+- **`undefined` has exactly two meanings; telling them apart takes a
+  snapshot, not a bare `getLastError()` read.** `sendCommand()` never
+  rejects. It resolves `undefined` when the send failed (timeout included —
+  the error lands on `getLastError()` / the `error` event) *and* when the
+  handler completed but returned nothing. `getLastError()` is a persistent
+  record of the most recent failure — success never clears it (nothing in
+  `reactor.ts` ever resets `_lastError`) — so reading it after an
+  `undefined` misclassifies a legitimate bodyless ack as a failure whenever
+  *any* earlier error occurred. Discriminate by snapshot instead: capture
+  `getLastError()` before the call and compare identity after —
+  `const before = r.getLastError(); const reply = await r.sendCommand(…);
+  if (reply === undefined && r.getLastError() !== before) { /* failed */ }`
+  (or equivalently, subscribe to the `error` event for the call's
+  duration). A concurrent unrelated error during the await can still
+  false-positive; for one-at-a-time UI commands the snapshot is reliable.
+  A no-error `undefined` from a reply-declaring command usually means the
+  session landed on a replica still serving an **older model release**
+  whose handlers predate returning messages (a fleet mid-rollout serves
+  both). Check which release the session's pod runs before debugging the
+  client.
 - Working vanilla reference: [`sdks/js/examples/07-command-replies`](../../../sdks/js/examples/07-command-replies)
   — reads `save_snapshot`/`list_snapshots`/`rewind` replies off the await
   and shows the `message` event carrying only unprompted traffic.
