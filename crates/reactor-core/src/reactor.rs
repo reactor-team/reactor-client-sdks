@@ -994,6 +994,60 @@ impl Reactor {
         Ok(())
     }
 
+    /// Aggregate congestion-control bitrate bounds for the connection, in bits
+    /// per second. `None` leaves a bound at the engine's default.
+    ///
+    /// The bounds are remembered by the transport and reapplied on every
+    /// reconnect, so they outlive the peer connection they were set on.
+    ///
+    /// They do *not* outlive the handle. `start_bps` exists to skip the
+    /// ~300 kbps ramp a fresh connection starts from, so it is only worth
+    /// setting where it can land before that ramp — which the FFI bindings
+    /// cannot currently offer, since they create the handle inside `connect`.
+    /// See REA-5730.
+    ///
+    /// This bounds the connection's budget, not any one track's share of it —
+    /// see [`Reactor::set_track_bitrate`].
+    pub async fn set_bitrate(
+        &self,
+        min_bps: Option<i32>,
+        start_bps: Option<i32>,
+        max_bps: Option<i32>,
+    ) -> Result<(), CoreError> {
+        self.peer.set_bitrate(min_bps, start_bps, max_bps).await
+    }
+
+    /// Per-sender bitrate bounds for one track, in bits per second. `None`
+    /// leaves a bound at the engine's default.
+    ///
+    /// Raising `max_bps` is the only way past WebRTC's resolution-keyed video
+    /// ceiling — 2500 kbps for anything above 960x540, which is where 720p,
+    /// 1080p and 4K all land by default no matter what
+    /// [`Reactor::set_bitrate`] granted the connection.
+    ///
+    /// Remembered and reapplied on every reconnect, like
+    /// [`Reactor::set_bitrate`]. The track name is checked against the session's
+    /// declared tracks once those are known; before then it is taken on trust,
+    /// since there is nothing to check against yet.
+    pub async fn set_track_bitrate(
+        &self,
+        track_name: &str,
+        min_bps: Option<i32>,
+        max_bps: Option<i32>,
+    ) -> Result<(), CoreError> {
+        let declared = self.tracks();
+        if !declared.is_empty() && !declared.iter().any(|t| t.name == track_name) {
+            let names: Vec<&str> = declared.iter().map(|t| t.name.as_str()).collect();
+            return Err(CoreError::InvalidState(format!(
+                "unknown track {track_name:?}; this session declares: {}",
+                names.join(", ")
+            )));
+        }
+        self.peer
+            .set_track_bitrate(track_name, min_bps, max_bps)
+            .await
+    }
+
     pub fn paused_tracks(&self) -> HashSet<String> {
         self.state.lock().unwrap().paused_tracks.clone()
     }

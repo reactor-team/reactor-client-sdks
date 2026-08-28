@@ -114,6 +114,26 @@ def _load() -> ctypes.CDLL:
         ctypes.c_void_p,
     ]
 
+    lib.reactor_set_bitrate.restype = None
+    lib.reactor_set_bitrate.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int32,
+        ctypes.c_int32,
+        ctypes.c_int32,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+
+    lib.reactor_set_track_bitrate.restype = None
+    lib.reactor_set_track_bitrate.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+        ctypes.c_int32,
+        ctypes.c_int32,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+
     lib.reactor_request_clip.restype = None
     lib.reactor_request_clip.argtypes = [
         ctypes.c_void_p,

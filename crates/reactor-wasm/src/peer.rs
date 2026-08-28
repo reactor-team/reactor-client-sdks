@@ -383,6 +383,76 @@ impl PeerTransport for WasmPeerTransport {
         Ok(())
     }
 
+    async fn set_track_bitrate(
+        &self,
+        track_name: &str,
+        min_bps: Option<i32>,
+        max_bps: Option<i32>,
+    ) -> Result<(), CoreError> {
+        // `RTCRtpSender.setParameters` is the browser's only bitrate control, and
+        // it is the per-sender one — there is no browser equivalent of
+        // `PeerConnection::SetBitrate`, so `set_bitrate` keeps the trait's
+        // refusal rather than pretending to a knob that does not exist here.
+        //
+        // It is still the ceiling that matters: a Chromium-based browser is
+        // libwebrtc, so the same resolution-keyed default applies and a 1080p
+        // sender caps at 2500 kbps until something raises it.
+        let sender = {
+            let state = self.state.borrow();
+            let state = state.as_ref().ok_or_else(not_prepared)?;
+            state
+                .transceivers
+                .get(track_name)
+                .ok_or_else(|| no_transceiver(track_name))?
+                .sender()
+        };
+
+        // getParameters() must be the immediate source of what goes back into
+        // setParameters(): the browser stamps it with a transaction id and rejects
+        // anything stale or synthesized.
+        let params = sender.get_parameters();
+        let encodings = js_sys::Reflect::get(&params, &JsValue::from_str("encodings"))
+            .ok()
+            .and_then(|v| v.dyn_into::<js_sys::Array>().ok())
+            .ok_or_else(|| CoreError::Peer("sender exposes no encodings".into()))?;
+        if encodings.length() == 0 {
+            return Err(CoreError::Peer("sender has no encodings".into()));
+        }
+        let first = encodings.get(0);
+
+        // Deleting the key, rather than writing a null or a zero, is what restores
+        // the browser default: a present `maxBitrate` of 0 is a real request to cap
+        // this sender at nothing.
+        //
+        // `minBitrate` is non-standard — Chromium honours it, others ignore the key
+        // — so setting it is best-effort by nature. Setting it cannot fail on its
+        // own account, and an engine that does not know it simply drops it.
+        for (key, value) in [("maxBitrate", max_bps), ("minBitrate", min_bps)] {
+            let key = JsValue::from_str(key);
+            let result = match value {
+                Some(v) => js_sys::Reflect::set(&first, &key, &JsValue::from_f64(f64::from(v))),
+                None => js_sys::Reflect::delete_property(
+                    first
+                        .dyn_ref::<js_sys::Object>()
+                        .ok_or_else(|| CoreError::Peer("encoding is not an object".into()))?,
+                    &key,
+                ),
+            };
+            result
+                .map_err(|_| CoreError::Peer(format!("could not set {key:?} on the encoding")))?;
+        }
+
+        JsFuture::from(sender.set_parameters_with_parameters(&params))
+            .await
+            .map(|_| ())
+            .map_err(|e| {
+                CoreError::Peer(format!(
+                    "setParameters rejected the bitrate bounds: {}",
+                    describe(&e)
+                ))
+            })
+    }
+
     async fn close(&self) -> Result<(), CoreError> {
         // Take the state out first: `RTCPeerConnection.close()` fires no further
         // events, but dropping the closures while still borrowed would not be

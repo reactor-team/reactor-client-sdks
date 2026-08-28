@@ -679,6 +679,14 @@ Track Reactor::track(const std::string& name) { return impl_->track(name); }
 
 TrackList Reactor::tracks() { return impl_->tracks(); }
 
+std::future<void> Reactor::set_bitrate(Bitrate bounds) {
+  auto op = std::make_unique<detail::PendingVoid>();
+  op->operation = "set_bitrate";
+  auto future = op->promise.get_future();
+  impl_->begin_set_bitrate(std::move(op), bounds);
+  return future;
+}
+
 Subscription Reactor::on_track(std::function<void(Track)> handler) {
   const std::uint64_t id = impl_->track_handlers().add(std::move(handler));
   return Subscription{[weak = std::weak_ptr<detail::ClientImpl>{impl_}, id] {

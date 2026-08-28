@@ -71,6 +71,11 @@ export class FakeReactorClient {
   publishTrackCalls: Array<{ name: string; track: MediaStreamTrack }> = [];
   unpublishTrackCalls: string[] = [];
   pauseTrackCalls: string[] = [];
+  setTrackBitrateCalls: Array<{
+    name: string;
+    minBps: number | undefined;
+    maxBps: number | undefined;
+  }> = [];
   resumeTrackCalls: string[] = [];
   tracksResult: TrackCapability[] = [];
   trackMappingResult: TrackMappingEntry[] = [];
@@ -244,6 +249,11 @@ export class FakeReactorClient {
     this.unpublishTrackCalls.push(name);
     return Promise.resolve();
   }
+  setTrackBitrate(name: string, minBps?: number, maxBps?: number): Promise<void> {
+    this.setTrackBitrateCalls.push({ name, minBps, maxBps });
+    return Promise.resolve();
+  }
+
   pauseTrack(name: string): Promise<void> {
     this.pauseTrackCalls.push(name);
     return Promise.resolve();

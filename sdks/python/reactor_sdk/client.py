@@ -135,6 +135,17 @@ _SYNTHETIC_ADM = 0
 _HandlerResult = Coroutine[Any, Any, None] | None
 
 
+def _bitrate_arg(v: int | None) -> ctypes.c_int32:
+    """Encode an optional bitrate bound for the C ABI, which has no optional int.
+
+    `None` becomes -1, the ABI's "leave this at the WebRTC default". Zero is
+    passed through rather than folded into `None`: a caller who wrote 0 meant
+    something, and the engine's refusal says more than a silent reinterpretation
+    here would.
+    """
+    return ctypes.c_int32(-1 if v is None else v)
+
+
 def _settle_from_foreign_thread(
     loop: asyncio.AbstractEventLoop,
     future: asyncio.Future,
@@ -1119,6 +1130,51 @@ class Reactor:
         if track is not None:
             track._published = False
 
+    async def set_bitrate(
+        self,
+        *,
+        min_bps: int | None = None,
+        start_bps: int | None = None,
+        max_bps: int | None = None,
+    ) -> None:
+        """Bound what this *connection* may allocate, in bits per second.
+
+        There are two bitrate ceilings and they are conjunctive — the lower one
+        wins. This is the connection-wide one, which bounds the congestion
+        controller's whole budget. `Track.set_bitrate` bounds one sender's share
+        of it, and that is the one that lifts WebRTC's 2.5 Mbps video default::
+
+            await reactor.set_bitrate(start_bps=4_000_000, max_bps=12_000_000)
+            await reactor.track("camera").set_bitrate(max_bps=8_000_000)
+
+        Raising `max_bps` alone will not make a video track exceed 2.5 Mbps.
+
+        - `min_bps` — a floor for the congestion controller; it will not drop
+          below this even on a poor estimate. A floor above what the link can
+          sustain trades graceful degradation for a fixed send rate, so choose
+          it deliberately.
+        - `start_bps` — the initial encoder target. WebRTC starts at ~300 kbps
+          and ramps, which is visible as a few seconds of soft video. Set this
+          near your expected steady state to skip the ramp.
+        - `max_bps` — a ceiling on the whole connection.
+
+        Needs a connected client, and the bounds are remembered from there on:
+        they survive a reconnect, though not the handle being rebuilt on a
+        re-minted token. `None` leaves a bound at the WebRTC default.
+
+        The catch is `start_bps`, which exists to skip a ramp that happens during
+        connection setup — by the time `connect()` resolves, the ramp is over.
+        Reaching it needs the handle to exist before `connect()`, which this
+        binding does not currently offer. See REA-5730.
+        """
+        self._require_handle()
+        handle = self._handle
+        lib = get_lib()
+        args = (_bitrate_arg(min_bps), _bitrate_arg(start_bps), _bitrate_arg(max_bps))
+        await self._async_op(
+            lambda fn: lib.reactor_set_bitrate(ctypes.c_void_p(handle), *args, fn, None)
+        )
+
     # Pausing and frame push are reached through `Track` — `reactor.track(name)`,
     # or `reactor.tracks`. They stay here as the plumbing the track methods call,
     # private because a name-based copy of each was a second way to say the same
@@ -1143,6 +1199,21 @@ class Reactor:
         name_b = name.encode()
         await self._async_op(
             lambda fn: lib.reactor_resume_track(ctypes.c_void_p(handle), name_b, fn, None)
+        )
+
+    async def _set_track_bitrate(
+        self, name: str, min_bps: int | None, max_bps: int | None
+    ) -> None:
+        """Bound one sender's bitrate. Reached through `Track.set_bitrate`."""
+        self._require_handle()
+        handle = self._handle
+        lib = get_lib()
+        name_b = name.encode()
+        args = (_bitrate_arg(min_bps), _bitrate_arg(max_bps))
+        await self._async_op(
+            lambda fn: lib.reactor_set_track_bitrate(
+                ctypes.c_void_p(handle), name_b, *args, fn, None
+            )
         )
 
     # ------------------------------------------------------------------

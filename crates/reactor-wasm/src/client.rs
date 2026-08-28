@@ -479,6 +479,33 @@ impl ReactorClient {
             .map_err(|e| error_value(&e.details(Some("resumeTrack"))))
     }
 
+    /// Bound what one sender may spend, in bits per second. `undefined` or a
+    /// negative value leaves a bound at the browser default.
+    ///
+    /// This is the ceiling that actually caps a video encoder. With nothing set,
+    /// a Chromium-based browser derives a maximum from the frame size alone, and
+    /// that maximum is 2500 kbps for anything above 960x540 — so 720p and 1080p
+    /// senders cap at 2.5 Mbps until this raises them.
+    ///
+    /// `minBps` is non-standard: Chromium honours it, other engines ignore it.
+    ///
+    /// There is deliberately no connection-wide counterpart. The browser exposes
+    /// no equivalent of libwebrtc's `PeerConnection::SetBitrate`, and a method
+    /// that quietly did nothing would be worse than its absence.
+    #[wasm_bindgen(js_name = setTrackBitrate)]
+    pub async fn set_track_bitrate(
+        &self,
+        name: String,
+        min_bps: Option<i32>,
+        max_bps: Option<i32>,
+    ) -> Result<(), JsValue> {
+        let bound = |v: Option<i32>| v.filter(|n| *n >= 0);
+        self.reactor
+            .set_track_bitrate(&name, bound(min_bps), bound(max_bps))
+            .await
+            .map_err(|e| error_value(&e.details(Some("setTrackBitrate"))))
+    }
+
     /// The tracks the runtime declared for this session:
     /// `[{ name, kind, direction }]`. Empty until capabilities arrive.
     pub fn tracks(&self) -> Result<TracksOutput, JsValue> {

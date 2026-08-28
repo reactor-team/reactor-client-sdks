@@ -242,6 +242,43 @@ class Reactor {
   /// either order, and `.one()` insists there is exactly one.
   TrackList tracks();
 
+  /// Bounds for the connection's bitrate, in bits per second. A field left
+  /// unset keeps the WebRTC default for that bound.
+  struct Bitrate {
+    /// A floor for the congestion controller; it will not drop below this even
+    /// on a poor estimate. A floor above what the link can sustain trades
+    /// graceful degradation for a fixed send rate, so choose it deliberately.
+    std::optional<std::int32_t> min_bps;
+    /// The initial encoder target. WebRTC starts at ~300 kbps and ramps, which
+    /// is visible as a few seconds of soft video.
+    std::optional<std::int32_t> start_bps;
+    /// A ceiling on the whole connection.
+    std::optional<std::int32_t> max_bps;
+  };
+
+  /// Bound what this connection may allocate.
+  ///
+  /// There are two bitrate ceilings and they are conjunctive — the lower one
+  /// wins. This is the connection-wide one, which bounds the congestion
+  /// controller's whole budget. `Track::set_bitrate` bounds one sender's share
+  /// of it, and that is the one that lifts WebRTC's 2.5 Mbps video default:
+  ///
+  /// ```cpp
+  /// reactor::Reactor::Bitrate budget;
+  /// budget.start_bps = 4'000'000;
+  /// budget.max_bps = 12'000'000;
+  /// reactor.set_bitrate(budget).get();
+  ///
+  /// reactor::Track::Bitrate cap;
+  /// cap.max_bps = 8'000'000;
+  /// reactor.track("camera").set_bitrate(cap).get();
+  /// ```
+  ///
+  /// Raising `max_bps` alone will not make a video track exceed 2.5 Mbps.
+  ///
+  /// Throws on a session that is not `Ready`. The bounds outlive a reconnect.
+  std::future<void> set_bitrate(Bitrate bounds);
+
   /// Called as each incoming track is received, with the track itself.
   Subscription on_track(std::function<void(Track)> handler);
 

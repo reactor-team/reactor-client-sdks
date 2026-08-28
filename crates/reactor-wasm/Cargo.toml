@@ -43,7 +43,7 @@ features = [
   "RtcSessionDescriptionInit", "RtcSdpType", "RtcSessionDescription",
   "RtcPeerConnectionIceEvent", "RtcIceCandidate", "RtcIceCandidateInit",
   "RtcTrackEvent", "RtcRtpTransceiver", "RtcRtpTransceiverDirection",
-  "RtcRtpTransceiverInit", "RtcRtpSender",
+  "RtcRtpTransceiverInit", "RtcRtpSender", "RtcRtpParameters",
   "RtcPeerConnectionState", "RtcIceGatheringState",
   # Media + messaging
   "MediaStream", "MediaStreamTrack", "MessageEvent",

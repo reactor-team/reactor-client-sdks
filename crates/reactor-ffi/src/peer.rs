@@ -126,6 +126,15 @@ impl LocalTrack {
     }
 }
 
+/// Bitrate bounds a caller asked for, in bits per second. `None` means "leave
+/// this bound at the libwebrtc default".
+#[derive(Default, Clone, Copy)]
+struct BitrateBounds {
+    min_bps: Option<i32>,
+    start_bps: Option<i32>,
+    max_bps: Option<i32>,
+}
+
 #[derive(Default)]
 struct PeerState {
     pc: Option<Arc<PeerConnection>>,
@@ -133,15 +142,30 @@ struct PeerState {
     control_channel: Option<DataChannel>,
     track_names: Vec<String>,
     track_directions: Vec<TrackDirection>,
-    transceivers: Vec<Transceiver>,
+    transceivers: Vec<Arc<Transceiver>>,
     local_tracks: HashMap<String, LocalTrack>,
     recv_tracks: Arc<Mutex<Vec<RemoteTrack>>>,
+}
+
+/// Bitrate bounds outlive the peer connection they were applied to.
+///
+/// `prepare` runs again on every reconnect and builds a fresh peer connection
+/// and a fresh set of transceivers, which come up on libwebrtc's defaults. A
+/// caller who raised a ceiling before connecting — the only point at which
+/// `start_bps` can still do its job — means it for the session, not for the
+/// first attempt at it, so these live outside `PeerState`, which `close` takes
+/// wholesale.
+#[derive(Default)]
+struct BitrateConfig {
+    connection: Mutex<BitrateBounds>,
+    per_track: Mutex<HashMap<String, BitrateBounds>>,
 }
 
 pub struct ReactorWebRtcPeerTransport {
     event_tx: UnboundedSender<PeerEvent>,
     factory: PeerConnectionFactory,
     state: Arc<Mutex<PeerState>>,
+    bitrate: BitrateConfig,
     frame_cb: Option<FrameCallback>,
     audio_cb: Option<AudioCallback>,
 }
@@ -161,6 +185,7 @@ impl ReactorWebRtcPeerTransport {
             event_tx,
             factory,
             state: Arc::new(Mutex::new(PeerState::default())),
+            bitrate: BitrateConfig::default(),
             frame_cb: None,
             audio_cb: None,
         }
@@ -180,6 +205,44 @@ impl ReactorWebRtcPeerTransport {
     ) -> Self {
         self.audio_cb = Some(Arc::new(cb));
         self
+    }
+
+    /// Apply the remembered bounds to a freshly built peer connection and its
+    /// transceivers, before `prepare` publishes them as the live state.
+    ///
+    /// Best-effort by design: this runs inside connection setup, and a rejected
+    /// ceiling is a quality problem, not a reason to fail the connect. Each
+    /// failure is logged rather than swallowed, so a bound that did not take is
+    /// visible without being fatal. A caller who wants the error handled calls
+    /// `set_bitrate`/`set_track_bitrate` on a live connection, which returns it.
+    fn apply_bitrate(
+        &self,
+        pc: &PeerConnection,
+        names: &[String],
+        transceivers: &[Arc<Transceiver>],
+    ) {
+        let bounds = *self.bitrate.connection.lock().unwrap();
+        if bounds
+            .min_bps
+            .or(bounds.start_bps)
+            .or(bounds.max_bps)
+            .is_some()
+        {
+            if let Err(e) = pc.set_bitrate(bounds.min_bps, bounds.start_bps, bounds.max_bps) {
+                warn!("[peer] connection bitrate bounds rejected: {e}");
+            }
+        }
+
+        let per_track = self.bitrate.per_track.lock().unwrap();
+        for (name, b) in per_track.iter() {
+            let Some(i) = names.iter().position(|n| n == name) else {
+                warn!("[peer] bitrate bounds set for unknown track '{name}' — ignored");
+                continue;
+            };
+            if let Err(e) = transceivers[i].set_send_bitrate(b.min_bps, b.max_bps) {
+                warn!("[peer] bitrate bounds for track '{name}' rejected: {e}");
+            }
+        }
     }
 }
 
@@ -307,7 +370,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             .create_peer_connection(&config, observer)
             .map_err(peer_err)?;
 
-        let mut transceivers: Vec<Transceiver> = Vec::with_capacity(tracks.len());
+        let mut transceivers: Vec<Arc<Transceiver>> = Vec::with_capacity(tracks.len());
         let mut track_names: Vec<String> = Vec::with_capacity(tracks.len());
         let mut track_directions: Vec<TrackDirection> = Vec::with_capacity(tracks.len());
         let mut local_tracks: HashMap<String, LocalTrack> = HashMap::new();
@@ -344,7 +407,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
                 local_tracks.insert(track.name.clone(), local);
             }
 
-            transceivers.push(tc);
+            transceivers.push(Arc::new(tc));
             track_names.push(track.name.clone());
             track_directions.push(track.direction);
         }
@@ -405,6 +468,8 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             }
         }
 
+        self.apply_bitrate(&pc, &track_names, &transceivers);
+
         {
             let mut s = self.state.lock().unwrap();
             s.pc = Some(Arc::new(pc));
@@ -464,6 +529,71 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             return Err(CoreError::Peer(format!("unknown track: {track_name}")));
         }
         Ok(())
+    }
+
+    async fn set_bitrate(
+        &self,
+        min_bps: Option<i32>,
+        start_bps: Option<i32>,
+        max_bps: Option<i32>,
+    ) -> Result<(), CoreError> {
+        // Remembered first, so a later reconnect's fresh peer connection comes up
+        // with these bounds rather than libwebrtc's defaults — and so a caller who
+        // sets them before connecting has somewhere to put them.
+        *self.bitrate.connection.lock().unwrap() = BitrateBounds {
+            min_bps,
+            start_bps,
+            max_bps,
+        };
+
+        // Applied now only if there is something to apply it to. Nothing to do
+        // before the first prepare is not an error: prepare will pick it up.
+        let pc = self.state.lock().unwrap().pc.clone();
+        match pc {
+            Some(pc) => pc
+                .set_bitrate(min_bps, start_bps, max_bps)
+                .map_err(peer_err),
+            None => Ok(()),
+        }
+    }
+
+    async fn set_track_bitrate(
+        &self,
+        track_name: &str,
+        min_bps: Option<i32>,
+        max_bps: Option<i32>,
+    ) -> Result<(), CoreError> {
+        self.bitrate.per_track.lock().unwrap().insert(
+            track_name.to_string(),
+            BitrateBounds {
+                min_bps,
+                start_bps: None,
+                max_bps,
+            },
+        );
+
+        // The transceiver comes out from under the lock before the call:
+        // SetParameters dispatches onto a libwebrtc thread and waits for it, and
+        // that thread can be in a frame sink whose handler wants this same mutex
+        // — the shape close() documents at length. Hence the Arc.
+        let tc = {
+            let s = self.state.lock().unwrap();
+            match s.track_names.iter().position(|n| n == track_name) {
+                Some(i) => Some(Arc::clone(&s.transceivers[i])),
+                // Before the first prepare there are no transceivers to look the
+                // name up in, so an unknown name cannot be told from an early one.
+                // The core already refuses a name the session did not declare once
+                // the declaration has arrived; prepare warns about the rest.
+                None if s.track_names.is_empty() => None,
+                None => {
+                    return Err(CoreError::Peer(format!("unknown track: {track_name}")));
+                }
+            }
+        };
+        match tc {
+            Some(tc) => tc.set_send_bitrate(min_bps, max_bps).map_err(peer_err),
+            None => Ok(()),
+        }
     }
 
     async fn close(&self) -> Result<(), CoreError> {

@@ -351,6 +351,50 @@ export class Reactor implements Disposable {
     }
   }
 
+  /**
+   * Bounds what one sender may spend, in bits per second.
+   *
+   * This is the ceiling that actually caps a video encoder, and it is easy to
+   * hit without knowing it exists: with nothing set, a Chromium-based browser
+   * derives a sender's maximum from the frame size alone, and that maximum is
+   * 2500 kbps for anything above 960x540. A 720p or 1080p publish caps at
+   * 2.5 Mbps until this raises it, however good the connection is.
+   *
+   * ```ts
+   * await reactor.publishTrack('camera', cameraTrack);
+   * await reactor.setTrackBitrate('camera', { maxBps: 8_000_000 });
+   * ```
+   *
+   * A ceiling is permission, not a target: the encoder still spends only what
+   * the congestion controller allocated and what the picture needs. What
+   * raising it buys is headroom for the moments that would otherwise clip.
+   *
+   * Needs a connected client, and a published track — there is no sender to
+   * bound before `publishTrack()`.
+   *
+   * Omit a bound to leave it at the browser default. `minBps` is non-standard —
+   * Chromium honours it, other engines ignore it.
+   *
+   * There is no connection-wide counterpart: browsers expose no equivalent of
+   * the native SDKs' `setBitrate`, and a method that quietly did nothing would
+   * be worse than its absence.
+   */
+  async setTrackBitrate(
+    name: string,
+    bounds: { minBps?: number; maxBps?: number } = {},
+  ): Promise<void> {
+    this.assertNotDisposed();
+    try {
+      await this.queue.push(async () => {
+        const client = await this.getOrCreateClient();
+
+        await client.setTrackBitrate(name, bounds.minBps, bounds.maxBps);
+      }, 'setTrackBitrate');
+    } catch (cause) {
+      throw this.captureError(cause);
+    }
+  }
+
   /** Resumes a track previously stopped with `pauseTrack()`. */
   async resumeTrack(name: string): Promise<void> {
     this.assertNotDisposed();

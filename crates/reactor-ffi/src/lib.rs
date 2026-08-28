@@ -1265,6 +1265,100 @@ pub unsafe extern "C" fn reactor_resume_track(
     );
 }
 
+/// Read a bitrate bound off the ABI, where C has no optional integer.
+///
+/// Any negative value means "leave this bound at the WebRTC default", so `-1` is
+/// the documented spelling but any negative works. Zero is passed through: a
+/// caller who genuinely means "cap this at nothing" gets the refusal from the
+/// engine rather than a silent reinterpretation here.
+fn bitrate_bound(v: i32) -> Option<i32> {
+    (v >= 0).then_some(v)
+}
+
+/// Aggregate congestion-control bitrate bounds for the connection, in bits per
+/// second. Pass `-1` for any bound that should keep the WebRTC default.
+///
+/// This bounds what the *connection* may allocate. It does not lift the
+/// per-stream video ceiling — see [`reactor_set_track_bitrate`], which does, and
+/// which most callers asking for higher-quality video actually want. The two are
+/// conjunctive: the lower one wins.
+///
+/// Callable as soon as the handle exists — including before [`reactor_connect`],
+/// which is where `start_bps` has to land to do its job: the ramp it exists to
+/// skip happens during connection setup. The bounds are remembered and applied
+/// to the peer connection as soon as it exists, and again on every reconnect.
+///
+/// They belong to the handle, not to the session, so a binding that destroys and
+/// recreates its handle — Python does, on a re-minted token — starts over.
+///
+/// # Safety
+///
+/// `handle` must be null or a live handle. `completion` as [`reactor_connect`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_set_bitrate(
+    handle: *mut ReactorHandle,
+    min_bps: i32,
+    start_bps: i32,
+    max_bps: i32,
+    completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
+    userdata: *mut c_void,
+) {
+    let (min, start, max) = (
+        bitrate_bound(min_bps),
+        bitrate_bound(start_bps),
+        bitrate_bound(max_bps),
+    );
+    async_op!(
+        "set_bitrate",
+        handle,
+        completion,
+        userdata,
+        move |r: Arc<Reactor>, _tasks: TaskSet| async move {
+            r.set_bitrate(min, start, max).await.map(|_| None)
+        }
+    );
+}
+
+/// Per-sender bitrate bounds for one track, in bits per second. Pass `-1` for
+/// any bound that should keep the WebRTC default.
+///
+/// Raising `max_bps` here is the only way past WebRTC's resolution-keyed video
+/// ceiling: with nothing set, a sender's maximum comes from the frame size alone
+/// and is 2500 kbps for anything above 960x540 — so 720p, 1080p and 4K all cap
+/// at 2.5 Mbps however much headroom [`reactor_set_bitrate`] granted the
+/// connection.
+///
+/// Callable as soon as the handle exists, like [`reactor_set_bitrate`], and with
+/// the same handle-scoped lifetime. Once the session has declared its tracks, a
+/// name it did not declare fails the operation rather than being remembered for
+/// a track that will never exist.
+///
+/// # Safety
+///
+/// `handle` must be null or a live handle. `name` must be a NUL-terminated C
+/// string. `completion` as [`reactor_connect`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_set_track_bitrate(
+    handle: *mut ReactorHandle,
+    name: *const c_char,
+    min_bps: i32,
+    max_bps: i32,
+    completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
+    userdata: *mut c_void,
+) {
+    let name = CStr::from_ptr(name).to_string_lossy().into_owned();
+    let (min, max) = (bitrate_bound(min_bps), bitrate_bound(max_bps));
+    async_op!(
+        "set_track_bitrate",
+        handle,
+        completion,
+        userdata,
+        move |r: Arc<Reactor>, _tasks: TaskSet| async move {
+            r.set_track_bitrate(&name, min, max).await.map(|_| None)
+        }
+    );
+}
+
 /// Request a clip covering the last `duration_seconds` of the session. On success
 /// `result_json` is a clip object.
 ///

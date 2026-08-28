@@ -55,6 +55,8 @@ class FakeSession {
     filled.unpublish_track = &unpublish_track;
     filled.pause_track = &pause_track;
     filled.resume_track = &resume_track;
+    filled.set_bitrate = &set_bitrate;
+    filled.set_track_bitrate = &set_track_bitrate;
     filled.push_video_frame = &push_video_frame;
     filled.push_video_frame_with_metadata = &push_video_frame_with_metadata;
     filled.push_video_frame_with_metadata_at = &push_video_frame_with_metadata_at;
@@ -118,6 +120,16 @@ class FakeSession {
                               R"({"name":"second_video","kind":"video","direction":"recvonly"}])";
 
   std::string paused_json = "[]";
+
+  /// What the SDK handed the two bitrate exports. Kept as the raw ABI ints, so a
+  /// bound that arrived as 0 instead of -1 is visible.
+  struct BitrateCall {
+    std::string track;  ///< empty for the connection-wide call
+    std::int32_t min_bps = 0;
+    std::int32_t start_bps = 0;
+    std::int32_t max_bps = 0;
+  };
+  std::vector<BitrateCall> bitrate_calls;
 
   /// Whether `publish_track` answers at all. False leaves the publish in flight,
   /// which is the window where there is no sender behind the slot yet.
@@ -331,6 +343,25 @@ class FakeSession {
                            reactor_completion_fn completion, void* userdata) {
     auto& self = current();
     self.resumed_calls.emplace_back(name == nullptr ? "" : name);
+    if (completion != nullptr) {
+      self.spawn([completion, userdata] { completion(1, "{}", nullptr, userdata); });
+    }
+  }
+
+  static void set_bitrate(ReactorHandle* /*handle*/, std::int32_t min_bps, std::int32_t start_bps,
+                          std::int32_t max_bps, reactor_completion_fn completion, void* userdata) {
+    auto& self = current();
+    self.bitrate_calls.push_back(BitrateCall{"", min_bps, start_bps, max_bps});
+    if (completion != nullptr) {
+      self.spawn([completion, userdata] { completion(1, "{}", nullptr, userdata); });
+    }
+  }
+
+  static void set_track_bitrate(ReactorHandle* /*handle*/, const char* name, std::int32_t min_bps,
+                                std::int32_t max_bps, reactor_completion_fn completion,
+                                void* userdata) {
+    auto& self = current();
+    self.bitrate_calls.push_back(BitrateCall{name == nullptr ? "" : name, min_bps, -1, max_bps});
     if (completion != nullptr) {
       self.spawn([completion, userdata] { completion(1, "{}", nullptr, userdata); });
     }
@@ -816,6 +847,60 @@ TEST_CASE("paused reads from the session rather than from a cache") {
   // go on claiming otherwise.
   fixture.session.paused_json = "[]";
   CHECK_FALSE(fixture.client.track("main_video").paused());
+}
+
+// The two bitrate ceilings. What these mostly pin is the -1 encoding: both cross a
+// C ABI with no optional integer, and a bound that silently became 0 would cap a
+// stream at nothing while looking like it had been left alone.
+TEST_CASE("bitrate bounds reach their own calls, and an unset bound crosses as -1") {
+  Connected fixture;
+
+  reactor::Reactor::Bitrate budget;
+  budget.start_bps = 4000000;
+  fixture.client.set_bitrate(budget).get();
+
+  reactor::Track::Bitrate cap;
+  cap.max_bps = 8000000;
+  fixture.client.track("input_video").set_bitrate(cap).get();
+
+  REQUIRE(fixture.session.bitrate_calls.size() == 2);
+
+  const auto& connection = fixture.session.bitrate_calls[0];
+  CHECK(connection.track.empty());
+  CHECK(connection.min_bps == -1);
+  CHECK(connection.start_bps == 4000000);
+  CHECK(connection.max_bps == -1);
+
+  const auto& sender = fixture.session.bitrate_calls[1];
+  CHECK(sender.track == "input_video");
+  CHECK(sender.min_bps == -1);
+  CHECK(sender.max_bps == 8000000);
+}
+
+TEST_CASE("an explicit zero bitrate bound is not folded into the default") {
+  Connected fixture;
+
+  reactor::Reactor::Bitrate budget;
+  budget.min_bps = 0;
+  budget.max_bps = 8000000;
+  fixture.client.set_bitrate(budget).get();
+
+  REQUIRE(fixture.session.bitrate_calls.size() == 1);
+  CHECK(fixture.session.bitrate_calls[0].min_bps == 0);
+  CHECK(fixture.session.bitrate_calls[0].max_bps == 8000000);
+}
+
+// The sender behind an incoming track is the far end's, so there is nothing here
+// to bound. Accepting would report success for an operation with nowhere to land.
+TEST_CASE("setting the bitrate of a recvonly track is refused") {
+  Connected fixture;
+
+  reactor::Track::Bitrate cap;
+  cap.max_bps = 8000000;
+  auto setting = fixture.client.track("main_video").set_bitrate(cap);
+
+  REQUIRE_THROWS_AS(setting.get(), reactor::InvalidStateError);
+  CHECK(fixture.session.bitrate_calls.empty());
 }
 
 // A publish in flight is not a publish. Until the request is answered there is no

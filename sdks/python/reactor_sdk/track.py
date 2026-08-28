@@ -556,6 +556,40 @@ class Track:
         await self._reactor()._resume_track(self._name)
 
     # ------------------------------------------------------------------
+    # Bitrate
+    # ------------------------------------------------------------------
+
+    async def set_bitrate(
+        self, *, min_bps: int | None = None, max_bps: int | None = None
+    ) -> None:
+        """Bound what this sender may spend, in bits per second.
+
+        This is the ceiling that actually caps a video encoder, and it is the one
+        worth knowing about: with nothing set, WebRTC derives a maximum from the
+        frame size alone, and that maximum is 2500 kbps for anything above
+        960x540. 720p, 1080p and 4K all cap at 2.5 Mbps by default::
+
+            await reactor.track("camera").set_bitrate(max_bps=8_000_000)
+
+        :meth:`Reactor.set_bitrate` is the other ceiling — the whole connection's
+        budget. The two are conjunctive, so raising only one changes nothing; a
+        sender runs fast when both allow it.
+
+        A ceiling is permission, not a target: the encoder still spends only what
+        the congestion controller allocated and what the picture needs. What
+        raising it buys is headroom for the moments that would otherwise clip.
+
+        Needs a connected client. The bounds are remembered from there on and
+        reapplied after a reconnect. `None` leaves a bound at the WebRTC
+        default.
+
+        Raises if this track is recvonly: the sender for an incoming track is the
+        far end's, and nothing here can bound it.
+        """
+        self._require_direction(TrackDirection.SENDONLY, "set_bitrate()")
+        await self._reactor()._set_track_bitrate(self._name, min_bps, max_bps)
+
+    # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
 
