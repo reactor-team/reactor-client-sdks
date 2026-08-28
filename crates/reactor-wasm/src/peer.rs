@@ -43,6 +43,14 @@ pub struct ReceivedTrack {
 type ReceivedTracks = Rc<RefCell<HashMap<String, ReceivedTrack>>>;
 
 /// Live connection state, replaced wholesale by every `prepare()`.
+/// Per-sender bitrate bounds a caller asked for, in bits per second. `None`
+/// leaves that bound at the browser default.
+#[derive(Clone, Copy)]
+struct SenderBitrate {
+    min_bps: Option<i32>,
+    max_bps: Option<i32>,
+}
+
 struct PeerState {
     pc: RtcPeerConnection,
     data_channel: RtcDataChannel,
@@ -58,6 +66,14 @@ struct PeerState {
 pub struct WasmPeerTransport {
     state: RefCell<Option<PeerState>>,
     event_tx: UnboundedSender<PeerEvent>,
+    /// track name → the per-sender bounds a caller asked for, in bits per second.
+    ///
+    /// Deliberately outside [`PeerState`]: `close` takes that wholesale and
+    /// `prepare` runs again on every reconnect, building fresh transceivers whose
+    /// senders come up on browser defaults. Bounds kept inside would survive only
+    /// the first attempt at a session, which is not what
+    /// `Reactor::set_track_bitrate` promises.
+    track_bitrates: RefCell<HashMap<String, SenderBitrate>>,
     /// mid → remote track. Behind `Rc` so the `ontrack` closure shares the map
     /// rather than a copy of it.
     received_tracks: ReceivedTracks,
@@ -65,11 +81,68 @@ pub struct WasmPeerTransport {
     max_message_bytes: Cell<usize>,
 }
 
+/// Write per-sender bitrate bounds onto one transceiver's sender.
+///
+/// Shared by `set_track_bitrate` and by `prepare`, which reapplies the
+/// remembered bounds to every sender it has just built.
+async fn apply_sender_bitrate(
+    transceiver: &RtcRtpTransceiver,
+    min_bps: Option<i32>,
+    max_bps: Option<i32>,
+) -> Result<(), CoreError> {
+    let sender = transceiver.sender();
+
+    // getParameters() must be the immediate source of what goes back into
+    // setParameters(): the browser stamps it with a transaction id and rejects
+    // anything stale or synthesized.
+    let params = sender.get_parameters();
+    let encodings = js_sys::Reflect::get(&params, &JsValue::from_str("encodings"))
+        .ok()
+        .and_then(|v| v.dyn_into::<js_sys::Array>().ok())
+        .ok_or_else(|| CoreError::Peer("sender exposes no encodings".into()))?;
+    if encodings.length() == 0 {
+        return Err(CoreError::Peer("sender has no encodings".into()));
+    }
+    let first = encodings.get(0);
+
+    // Deleting the key, rather than writing a null or a zero, is what restores
+    // the browser default: a present `maxBitrate` of 0 is a real request to cap
+    // this sender at nothing.
+    //
+    // `minBitrate` is non-standard — Chromium honours it, others ignore the key
+    // — so setting it is best-effort by nature. Setting it cannot fail on its
+    // own account, and an engine that does not know it simply drops it.
+    for (key, value) in [("maxBitrate", max_bps), ("minBitrate", min_bps)] {
+        let key = JsValue::from_str(key);
+        let result = match value {
+            Some(v) => js_sys::Reflect::set(&first, &key, &JsValue::from_f64(f64::from(v))),
+            None => js_sys::Reflect::delete_property(
+                first
+                    .dyn_ref::<js_sys::Object>()
+                    .ok_or_else(|| CoreError::Peer("encoding is not an object".into()))?,
+                &key,
+            ),
+        };
+        result.map_err(|_| CoreError::Peer(format!("could not set {key:?} on the encoding")))?;
+    }
+
+    JsFuture::from(sender.set_parameters_with_parameters(&params))
+        .await
+        .map(|_| ())
+        .map_err(|e| {
+            CoreError::Peer(format!(
+                "setParameters rejected the bitrate bounds: {}",
+                describe(&e)
+            ))
+        })
+}
+
 impl WasmPeerTransport {
     pub fn new(event_tx: UnboundedSender<PeerEvent>) -> Self {
         Self {
             state: RefCell::new(None),
             event_tx,
+            track_bitrates: RefCell::new(HashMap::new()),
             received_tracks: Rc::new(RefCell::new(HashMap::new())),
             max_message_bytes: Cell::new(DEFAULT_MAX_MESSAGE_BYTES),
         }
@@ -319,6 +392,31 @@ impl PeerTransport for WasmPeerTransport {
             })
             .collect();
 
+        // Every prepare builds fresh transceivers whose senders come up on browser
+        // defaults, so remembered bounds are reapplied here rather than assumed to
+        // have survived. Best-effort by design: this runs inside connection setup,
+        // and a rejected ceiling is a quality problem, not a reason to fail the
+        // connect. Each failure is logged so a bound that did not take is visible
+        // without being fatal — a caller who wants the error handled calls
+        // `set_track_bitrate` on a live connection, which returns it.
+        let remembered: Vec<(String, SenderBitrate)> = self
+            .track_bitrates
+            .borrow()
+            .iter()
+            .map(|(name, bounds)| (name.clone(), *bounds))
+            .collect();
+        for (name, SenderBitrate { min_bps, max_bps }) in remembered {
+            let Some(transceiver) = transceivers.get(&name) else {
+                log::warn!(
+                    "[reactor-wasm] bitrate bounds set for unknown track '{name}' — ignored"
+                );
+                continue;
+            };
+            if let Err(e) = apply_sender_bitrate(transceiver, min_bps, max_bps).await {
+                log::warn!("[reactor-wasm] bitrate bounds for track '{name}' rejected: {e}");
+            }
+        }
+
         *self.state.borrow_mut() = Some(PeerState {
             pc,
             data_channel,
@@ -397,60 +495,26 @@ impl PeerTransport for WasmPeerTransport {
         // It is still the ceiling that matters: a Chromium-based browser is
         // libwebrtc, so the same resolution-keyed default applies and a 1080p
         // sender caps at 2500 kbps until something raises it.
-        let sender = {
+        let transceiver = {
             let state = self.state.borrow();
             let state = state.as_ref().ok_or_else(not_prepared)?;
             state
                 .transceivers
                 .get(track_name)
                 .ok_or_else(|| no_transceiver(track_name))?
-                .sender()
+                .clone()
         };
 
-        // getParameters() must be the immediate source of what goes back into
-        // setParameters(): the browser stamps it with a transaction id and rejects
-        // anything stale or synthesized.
-        let params = sender.get_parameters();
-        let encodings = js_sys::Reflect::get(&params, &JsValue::from_str("encodings"))
-            .ok()
-            .and_then(|v| v.dyn_into::<js_sys::Array>().ok())
-            .ok_or_else(|| CoreError::Peer("sender exposes no encodings".into()))?;
-        if encodings.length() == 0 {
-            return Err(CoreError::Peer("sender has no encodings".into()));
-        }
-        let first = encodings.get(0);
+        // Applied before it is remembered: the browser is the only thing that can
+        // say whether a combination is valid, and a rejected pair that had been
+        // committed would be replayed on the next reconnect over bounds that were
+        // working.
+        apply_sender_bitrate(&transceiver, min_bps, max_bps).await?;
 
-        // Deleting the key, rather than writing a null or a zero, is what restores
-        // the browser default: a present `maxBitrate` of 0 is a real request to cap
-        // this sender at nothing.
-        //
-        // `minBitrate` is non-standard — Chromium honours it, others ignore the key
-        // — so setting it is best-effort by nature. Setting it cannot fail on its
-        // own account, and an engine that does not know it simply drops it.
-        for (key, value) in [("maxBitrate", max_bps), ("minBitrate", min_bps)] {
-            let key = JsValue::from_str(key);
-            let result = match value {
-                Some(v) => js_sys::Reflect::set(&first, &key, &JsValue::from_f64(f64::from(v))),
-                None => js_sys::Reflect::delete_property(
-                    first
-                        .dyn_ref::<js_sys::Object>()
-                        .ok_or_else(|| CoreError::Peer("encoding is not an object".into()))?,
-                    &key,
-                ),
-            };
-            result
-                .map_err(|_| CoreError::Peer(format!("could not set {key:?} on the encoding")))?;
-        }
-
-        JsFuture::from(sender.set_parameters_with_parameters(&params))
-            .await
-            .map(|_| ())
-            .map_err(|e| {
-                CoreError::Peer(format!(
-                    "setParameters rejected the bitrate bounds: {}",
-                    describe(&e)
-                ))
-            })
+        self.track_bitrates
+            .borrow_mut()
+            .insert(track_name.to_string(), SenderBitrate { min_bps, max_bps });
+        Ok(())
     }
 
     async fn close(&self) -> Result<(), CoreError> {

@@ -161,6 +161,41 @@ struct BitrateConfig {
     per_track: Mutex<HashMap<String, BitrateBounds>>,
 }
 
+impl BitrateConfig {
+    /// Apply the bounds, and remember them only if that succeeded.
+    ///
+    /// The order is the whole point, and it is why this is a function rather than
+    /// two statements: libwebrtc is the only thing that can say whether a
+    /// combination is valid, so committing first leaves a rejected pair saved. The
+    /// call returns an error, the caller believes nothing happened, and the next
+    /// reconnect replays the bad values over bounds that were working — reported
+    /// only as a log line, since `prepare` cannot fail a connect over a ceiling.
+    fn commit_connection(
+        &self,
+        bounds: BitrateBounds,
+        apply: impl FnOnce() -> Result<(), CoreError>,
+    ) -> Result<(), CoreError> {
+        apply()?;
+        *self.connection.lock().unwrap() = bounds;
+        Ok(())
+    }
+
+    /// As [`BitrateConfig::commit_connection`], for one track's sender.
+    fn commit_track(
+        &self,
+        track_name: &str,
+        bounds: BitrateBounds,
+        apply: impl FnOnce() -> Result<(), CoreError>,
+    ) -> Result<(), CoreError> {
+        apply()?;
+        self.per_track
+            .lock()
+            .unwrap()
+            .insert(track_name.to_string(), bounds);
+        Ok(())
+    }
+}
+
 pub struct ReactorWebRtcPeerTransport {
     event_tx: UnboundedSender<PeerEvent>,
     factory: PeerConnectionFactory,
@@ -537,24 +572,22 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         start_bps: Option<i32>,
         max_bps: Option<i32>,
     ) -> Result<(), CoreError> {
-        // Remembered first, so a later reconnect's fresh peer connection comes up
-        // with these bounds rather than libwebrtc's defaults — and so a caller who
-        // sets them before connecting has somewhere to put them.
-        *self.bitrate.connection.lock().unwrap() = BitrateBounds {
+        // Nothing to apply to before the first prepare is not an error: there is
+        // no peer yet to validate against, and prepare picks the bounds up. Once
+        // remembered they survive reconnects, which rebuild the peer connection on
+        // libwebrtc's defaults.
+        let pc = self.state.lock().unwrap().pc.clone();
+        let bounds = BitrateBounds {
             min_bps,
             start_bps,
             max_bps,
         };
-
-        // Applied now only if there is something to apply it to. Nothing to do
-        // before the first prepare is not an error: prepare will pick it up.
-        let pc = self.state.lock().unwrap().pc.clone();
-        match pc {
+        self.bitrate.commit_connection(bounds, || match pc {
             Some(pc) => pc
                 .set_bitrate(min_bps, start_bps, max_bps)
                 .map_err(peer_err),
             None => Ok(()),
-        }
+        })
     }
 
     async fn set_track_bitrate(
@@ -563,15 +596,6 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         min_bps: Option<i32>,
         max_bps: Option<i32>,
     ) -> Result<(), CoreError> {
-        self.bitrate.per_track.lock().unwrap().insert(
-            track_name.to_string(),
-            BitrateBounds {
-                min_bps,
-                start_bps: None,
-                max_bps,
-            },
-        );
-
         // The transceiver comes out from under the lock before the call:
         // SetParameters dispatches onto a libwebrtc thread and waits for it, and
         // that thread can be in a frame sink whose handler wants this same mutex
@@ -590,10 +614,15 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
                 }
             }
         };
-        match tc {
+        let bounds = BitrateBounds {
+            min_bps,
+            start_bps: None,
+            max_bps,
+        };
+        self.bitrate.commit_track(track_name, bounds, || match tc {
             Some(tc) => tc.set_send_bitrate(min_bps, max_bps).map_err(peer_err),
             None => Ok(()),
-        }
+        })
     }
 
     async fn close(&self) -> Result<(), CoreError> {
@@ -727,6 +756,61 @@ mod tests {
     fn the_value_is_case_and_whitespace_insensitive() {
         assert_eq!(adm_mode_from_env(Some("  PLATFORM \n")), AdmMode::Platform);
         assert_eq!(adm_mode_from_env(Some("Synthetic")), AdmMode::Synthetic);
+    }
+
+    /// Bounds the engine rejected must not be remembered.
+    ///
+    /// Committing first is the tempting order, and it is wrong in a way that only
+    /// shows up later: the call reports the error, so the caller believes nothing
+    /// happened, and then the next reconnect replays the rejected pair over bounds
+    /// that were working — reported as a log line, since `prepare` will not fail a
+    /// connect over a ceiling.
+    #[test]
+    fn a_rejected_bound_leaves_the_remembered_one_alone() {
+        let config = BitrateConfig::default();
+        let good = BitrateBounds {
+            max_bps: Some(8_000_000),
+            ..Default::default()
+        };
+        config.commit_connection(good, || Ok(())).expect("accepted");
+        config
+            .commit_track("cam", good, || Ok(()))
+            .expect("accepted");
+
+        let bad = BitrateBounds {
+            min_bps: Some(9_000_000),
+            max_bps: Some(1),
+            ..Default::default()
+        };
+        let refuse = || Err(CoreError::Peer("min exceeds max".into()));
+        assert!(config.commit_connection(bad, refuse).is_err());
+        assert!(config.commit_track("cam", bad, refuse).is_err());
+
+        assert_eq!(
+            config.connection.lock().unwrap().max_bps,
+            Some(8_000_000),
+            "a refused connection bound overwrote the working one",
+        );
+        assert_eq!(
+            config.per_track.lock().unwrap()["cam"].max_bps,
+            Some(8_000_000),
+            "a refused track bound overwrote the working one",
+        );
+    }
+
+    /// Nothing to apply to is not a failure: before the first `prepare` there is no
+    /// peer to validate against, and the bounds are what `prepare` will pick up.
+    #[test]
+    fn bounds_set_before_there_is_a_peer_are_still_remembered() {
+        let config = BitrateConfig::default();
+        let bounds = BitrateBounds {
+            start_bps: Some(4_000_000),
+            ..Default::default()
+        };
+        config
+            .commit_connection(bounds, || Ok(()))
+            .expect("no peer yet is not an error");
+        assert_eq!(config.connection.lock().unwrap().start_bps, Some(4_000_000));
     }
 
     /// A typo must not silently open the microphone: the safe direction is the default,
