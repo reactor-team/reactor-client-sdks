@@ -235,7 +235,7 @@ manifests, ICE refreshes — must present the *same* JWT that created it.
 
 | 2.x | 3.0.0 |
 |---|---|
-| `new Reactor(...)` auto-instantiates `reactor.recording`, a `RecordingClient` wired to the same instance — `reactor.recording.requestClip(...)`, `.requestRecording()`, `.downloadClipAsFile()` all worked out of the box. | **No `.recording` property, and no `RecordingClient` class at all** — `requestClip()`/`requestRecording()`/`downloadClipAsFile()` are directly on `Reactor`; call them there instead. Matches the Python SDK's own precedent in this repo, which never kept an equivalent wrapper either. An early 3.0.0 build briefly re-added `RecordingClient` as a delegate-only compatibility class before removing it again — if a checkout somewhere between there and here still has it, it does nothing `Reactor` itself doesn't. |
+| `new Reactor(...)` auto-instantiates `reactor.recording`, a `RecordingClient` wired to the same instance — `reactor.recording.requestClip(...)`, `.requestRecording()`, `.downloadClipAsFile()` all worked out of the box. | **No `.recording` property, and no `RecordingClient` class at all** — `requestClip()`/`requestRecording()`/`downloadClipAsFile()` are directly on `Reactor`; call them there instead. Matches the Python SDK's own precedent in this repo, which never kept an equivalent wrapper either. |
 
 ### `FileRef` — unchanged, plus one new helper
 
