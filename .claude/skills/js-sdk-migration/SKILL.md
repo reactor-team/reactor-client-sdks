@@ -8,8 +8,10 @@ description: >
   the old Reactor JS client", mentions a `sendCommand` return-type mismatch, `getState`/
   `getSessionInfo`/`.recording`/`sessionExpirationChanged` not existing, a `Capabilities` shape
   mismatch, or references breaking changes around `ReactorError`, `pauseTrack`/`resumeTrack`, or
-  `RecordingClient`. Also use it to review a PR that touches `@reactor-team/js-sdk` usage for
-  compatibility with the 3.0.0 API.
+  `RecordingClient`. Also use it when ported code fires a command and waits for an
+  acknowledgement message that never arrives (the fire-then-listen pattern), when uploads or
+  clips start failing with a 403 naming `sessions.bind`, or to review a PR that touches
+  `@reactor-team/js-sdk` usage for compatibility with the 3.0.0 API.
 ---
 
 # JS SDK migration (2.x → 3.0.0)
@@ -120,6 +122,78 @@ without being correct:**
 | `pauseTrack(name): void` / `resumeTrack(name): void` — synchronous. | `pauseTrack(name): Promise<void>` / `resumeTrack(name): Promise<void>` — **asynchronous**, queued behind the same control round-trip as other track operations. This is the one real change in this section: a ported call site that didn't `await` these (there was nothing to await in 2.x) will now race the actual pause/resume against whatever runs next — add the `await`. |
 | `trackReceived` fires `(name: string, track: MediaStreamTrack, stream: MediaStream)`. | Fires `(name, track, stream, mid)` — one extra trailing argument. Additive; a 2.x-shaped 3-parameter handler still works unchanged. |
 
+### Commands reply now — migrate the fire-then-listen pattern
+
+**This is the largest behavioral migration in app code, and nothing about it
+is a compile error.** Verified end-to-end by porting a real 2.x app
+(`js-sdk/examples/lingbot-world-2`) against production.
+
+Models on reactor-runtime 3.2+ return their success acknowledgements as the
+command's **correlated reply, delivered to the calling connection only** —
+the value `sendCommand()` (and every typed-SDK wrapper over it) resolves
+with. The model's OpenAPI schema declares this per command: a `200` whose
+body `$ref`s a message component means the awaited call resolves with that
+message; a bare `202` means the handler returns nothing. Consequences for
+ported code:
+
+- **Acknowledgement messages stop arriving as broadcasts.** 2.x app code
+  that fires a command and then waits for e.g. a `prompt_accepted` /
+  `image_accepted` / `generation_paused` handler on the `message` event
+  keeps compiling and keeps listening — the handler just never fires again,
+  because those messages now resolve the awaited call instead. Migrate the
+  state updates to the call site (`const reply = await model.setPrompt(...)`)
+  and shrink the message listener to what the model still broadcasts to
+  every connection (shared state snapshots, per-chunk progress, error
+  reports). The schema is the authority on which is which: check each
+  command's `responses` for `200`-with-`$ref` vs bare `202`.
+- **Awaiting a no-reply command is a completion barrier.** The runtime acks
+  every correlated command once its handler has run, so a bare-`202`
+  command's `await` resolving means the handler finished — not just that
+  bytes left the browser. Ported code that sleeps after a command "to give
+  the backend time" (`setTimeout` after a reset before sending new inputs)
+  can delete the sleep: the resolved await *is* the confirmation.
+- **`undefined` has exactly two meanings, and `getLastError()` tells them
+  apart.** `sendCommand()` never rejects. It resolves `undefined` when the
+  send failed (timeout included — the error lands on `getLastError()` / the
+  `error` event) *and* when the handler completed but returned nothing.
+  After an unexpected `undefined` from a reply-declaring command: an error
+  recorded means it failed; no error means the model acked with no body —
+  which, when the schema promises a reply, usually means the session landed
+  on a replica still serving an **older model release** whose handlers
+  predate returning messages (a fleet mid-rollout serves both). Check which
+  release the session's pod runs before debugging the client.
+- Working vanilla reference: [`sdks/js/examples/07-command-replies`](../../../sdks/js/examples/07-command-replies)
+  — reads `save_snapshot`/`list_snapshots`/`rewind` replies off the await
+  and shows the `message` event carrying only unprompted traffic.
+- Debugging aid: development builds (`NODE_ENV === "development"`, or
+  Vite's `import.meta.env.DEV`) log every data/control channel message via
+  `console.debug`, so you can watch replies and broadcasts arrive while
+  migrating.
+
+### JWT resolvers: the token must stay stable for a session's whole life
+
+3.0.0 invokes a `JwtSource` resolver on **every authenticated request** (by
+design — short-lived tokens refresh without reconnecting). That interacts
+with session-scoped tokens (`POST /tokens` with `authorization_details`) in
+a way 2.x-era token plumbing gets wrong: a scoped token can only operate
+sessions **it created**, so every hop of a session — uploads, clip
+manifests, ICE refreshes — must present the *same* JWT that created it.
+
+- A resolver that mints (or can mint) a fresh token per call breaks with
+  `403 … this token is session-scoped and is not authorized for this
+  resource; mint it again with authorization_details.resources.sessions.bind …`
+  on the first upload or clip call that gets a different token than the
+  session-creating one.
+- **Memoize the token inside the resolver until shortly before its real
+  expiry** (have the token endpoint return `expires_at` alongside the JWT),
+  and fetch it with `cache: "no-store"`. Do not rely on the browser HTTP
+  cache to keep the token stable — a `Cache-Control: max-age` scheme breaks
+  under DevTools "Disable cache", cache eviction, and sessions created near
+  the cached entry's expiry.
+- Residual edge to know about: a session created just before the memoized
+  token expires is orphaned at the re-mint. Covering it requires re-minting
+  with `resources.sessions.bind` naming the live session.
+
 ### Recording: no `.recording`, no `RecordingClient`
 
 | 2.x | 3.0.0 |
@@ -165,9 +239,16 @@ handler, it's dead code on the 2.x side too — delete it, don't look for a repl
 
 ### React layer (`ReactorProvider`, `useReactor`, `ReactorView`, `WebcamStream`, `ClipPlayer`, ...)
 
-Verified at parity, not a migration concern: `ReactorProviderProps` (`apiUrl`, `modelName`,
-`local`, `jwtToken`, `connectOptions` including `autoConnect`), `ReactorView`, `WebcamStream`,
-and the hooks all carry the same names and shapes 2.x had. `ClipPlayer` fixed a real 2.x/early-3.0
+Mostly at parity: `ReactorProviderProps` (`apiUrl`, `modelName`, `local`, `jwtToken`,
+`connectOptions` including `autoConnect`), `ReactorView`, `WebcamStream`, and the hooks carry
+the same names and shapes 2.x had — with one rename:
+
+- **2.x's `getJwt` provider prop is gone.** 2.x took a static token as `jwtToken` and a
+  resolver as a separate `getJwt` prop. 3.0.0's `jwtToken` is a `JwtSource` — a string *or* a
+  resolver — so `<Provider getJwt={fetchToken}>` becomes `<Provider jwtToken={fetchToken}>`.
+  TypeScript catches it (`Property 'getJwt' does not exist`); the fix is the rename, nothing
+  else changes about the resolver contract (but read the JWT-resolver section above for what
+  the resolver must now guarantee). `ClipPlayer` fixed a real 2.x/early-3.0
 bug along the way (it used to pick native browser HLS over `hls.js` via `canPlayType()`, which
 answers `"maybe"` in Chrome/Safari and then fails to actually play) — nothing for a migrating
 consumer to change, but if 2.x app code ever special-cased "the preview doesn't work in Chrome,
@@ -200,6 +281,17 @@ tell people to download instead," that workaround is no longer needed.
   same declarations privately. If a migration guide (including an earlier draft of this one)
   frames this as "the shape of `tracks` changed," that's overstating it for the common React
   case; check which layer the code in question actually reads from before assuming a change.
+- **A message listener that waits for a command's acknowledgement dies silently.** On
+  runtime-3.2+ models the success acks are correlated replies, not broadcasts — the ported
+  listener compiles, subscribes, and never fires. No compile error, no runtime error; the UI
+  just stops updating on those paths. Sweep every `message`-event handler (and typed
+  per-message hooks) against the schema's `responses` and move `200`-declared messages to the
+  awaited call sites. See "Commands reply now" above.
+- **Token plumbing that re-mints per call compiles and then 403s mid-session.** The resolver
+  runs on every authenticated request; with session-scoped tokens the same JWT must serve the
+  session's whole life. The failure signature is a 403 naming
+  `authorization_details.resources.sessions.bind` on uploads/clips. See the JWT-resolver
+  section above.
 
 ---
 
@@ -216,12 +308,19 @@ tell people to download instead," that workaround is no longer needed.
 4. Search for `catch`/`instanceof` blocks against `ConflictError` specifically, and re-verify what
    condition each is meant to catch against 3.0.0's actual typed hierarchy.
 5. Add `await` to every `pauseTrack()`/`resumeTrack()` call site.
-6. Run the target codebase's own type-check (`tsc --noEmit`) and test suite. If there's no test
+6. Sweep every `message`-event handler against the model's schema: messages a command's `200`
+   response declares move to the awaited call site; only genuinely broadcast messages stay in
+   listeners. While there, delete post-command settle sleeps — the resolved await already means
+   the handler ran ("Commands reply now" above).
+7. Audit the JWT resolver: it must return the same token for a session's whole life. Memoize
+   until expiry inside the resolver; don't rely on the browser HTTP cache (JWT-resolver section
+   above).
+8. Run the target codebase's own type-check (`tsc --noEmit`) and test suite. If there's no test
    suite, at minimum exercise connect → send a command → publish/receive a track → request a clip
    → disconnect once against `local: true` or a real key. `tsc --noEmit` alone catches most of
    this skill's items automatically — the ones that don't produce a type error are called out
    explicitly above and need a manual grep pass instead.
-7. Pin `@reactor-team/js-sdk@^3.0.0` explicitly in the migrated project's `package.json` — a loose
+9. Pin `@reactor-team/js-sdk@^3.0.0` explicitly in the migrated project's `package.json` — a loose
    pre-3.0 range can otherwise resolve back to a 2.x release.
 
 ## Reference
@@ -231,6 +330,12 @@ tell people to download instead," that workaround is no longer needed.
   [`recording-client.ts`](../../../sdks/js/src/recording-client.ts).
 - [`sdks/js/CHANGELOG.md`](../../../sdks/js/CHANGELOG.md) for the two changes 3.0.0 itself calls
   out as breaking.
+- The "Commands reply now", JWT-resolver, and `getJwt` → `jwtToken` sections were verified
+  2026-08-28 by porting a real 2.x app (`js-sdk/examples/lingbot-world-2`) to 3.0.0 and running
+  it against production: the silent death of ack listeners, the settle-sleep deletions, the
+  `undefined`-vs-`getLastError()` discrimination (including a session landing on a replica
+  serving an older model release), and the session-scoped-token 403 were each hit and fixed in
+  that port, not derived from reading source.
 - The tables above were verified by reading `reactor-team/js-sdk`'s actual source (local clone,
   not the published package) against this repo's `sdks/js` as of 2026-08-24 — `sendCommand()`'s
   await behavior, the full `ReactorError` hierarchy and `ConflictError`/`AbortedError` naming,
