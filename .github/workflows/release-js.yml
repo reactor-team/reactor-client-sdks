@@ -11,9 +11,12 @@
 # of redundant work in exchange for never publishing something that wasn't
 # built by the exact steps that just ran.
 #
-# Pull requests build and test, releasing nothing. workflow_dispatch does the
-# same on demand, with an optional dry_run to also skip the npm publish step
-# on a push. Only a push to main with a changed version releases.
+# Pull requests build and test, releasing nothing. A push to main with a
+# changed version always releases to the `latest` npm dist-tag. A manual
+# workflow_dispatch run with dry_run=false also releases — for cases like
+# promoting an already-merged version bump that no push will re-detect — and
+# lets you pick the npm dist-tag (default `latest`, or `next` to stage the
+# release under a non-default tag before manually promoting it).
 name: Release JS SDK
 
 on:
@@ -40,6 +43,13 @@ on:
         description: "Build and test, but do not create a release or publish"
         type: boolean
         default: true
+      npm_tag:
+        description: "npm dist-tag to publish under (ignored when dry_run is true)"
+        type: choice
+        options:
+          - latest
+          - next
+        default: latest
 
 concurrency:
   group: release-js-${{ github.ref }}
@@ -79,9 +89,27 @@ jobs:
           fi
           echo "version=${NEW_VER}" >> "$GITHUB_OUTPUT"
 
-          # workflow_dispatch's dry_run and anything but a push never release,
-          # regardless of what the version diff below would say.
-          if [ "${{ github.event_name }}" != "push" ] || [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+          # A manual dispatch with dry_run=false is an explicit "release the
+          # current commit now" request — release it outright, without
+          # diffing against the previous commit. That diff only makes sense
+          # for a push, and there may be no fresh bump to detect at all (e.g.
+          # promoting a version bump that already landed on main via an
+          # earlier push that couldn't release).
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+              echo "::notice::workflow_dispatch dry run — building ${NEW_VER}, not releasing."
+              echo "bumped=false" >> "$GITHUB_OUTPUT"
+            elif [ "${{ github.ref }}" != "refs/heads/main" ]; then
+              echo "::error::Manual releases are only allowed from main (this run is on ${{ github.ref }}) — refusing to release ${NEW_VER}."
+              exit 1
+            else
+              echo "::notice::workflow_dispatch release — releasing ${NEW_VER}."
+              echo "bumped=true" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+
+          if [ "${{ github.event_name }}" != "push" ]; then
             echo "::notice::${{ github.event_name }} — building ${NEW_VER}, not releasing."
             echo "bumped=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -129,7 +157,7 @@ jobs:
   release:
     name: Publish GitHub release
     needs: [detect-version, build]
-    if: github.event_name == 'push' && needs.detect-version.outputs.bumped == 'true'
+    if: needs.detect-version.outputs.bumped == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -188,9 +216,9 @@ jobs:
   publish-npm:
     name: Publish to npm
     needs: [detect-version, build, release]
-    if: github.event_name == 'push' && needs.detect-version.outputs.bumped == 'true'
+    if: needs.detect-version.outputs.bumped == 'true'
     runs-on: ubuntu-latest
-    environment: npm-publish
+    environment: npm
     permissions:
       contents: read # actions/checkout below needs this once id-token: write is set
       id-token: write # OIDC trusted publishing
@@ -237,4 +265,9 @@ jobs:
       - name: Publish
         if: steps.check.outputs.skip != 'true'
         working-directory: sdks/js
-        run: npm publish --access public --provenance
+        env:
+          # `latest` on every automatic push release; a manual dispatch picks
+          # its own tag (e.g. `next`, to stage a release before promoting it
+          # with `npm dist-tag add` — see this workflow's top comment).
+          NPM_TAG: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.npm_tag) || 'latest' }}
+        run: npm publish --access public --provenance --tag "$NPM_TAG"
