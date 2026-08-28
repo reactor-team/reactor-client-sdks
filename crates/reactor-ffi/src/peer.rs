@@ -20,9 +20,10 @@ use reactor_core::protocol::session::{TrackCapability, TrackDirection, TrackKind
 use reactor_core::protocol::webrtc::{IceCandidate, IceServer, TrackMappingEntry};
 
 use reactor_webrtc::{
-    AdmMode, ContinualGatheringPolicy, DataChannel, IceGatheringState, IceServer as RwIceServer,
-    MediaKind, PeerConnection, PeerConnectionFactory, PeerConnectionObserver, PeerConnectionState,
-    RtcConfiguration, SdpType, SessionDescription, Track, Transceiver, TransceiverDirection,
+    AdmMode, AudioTrack, ContinualGatheringPolicy, DataChannel, IceGatheringState,
+    IceServer as RwIceServer, MediaKind, PeerConnection, PeerConnectionFactory,
+    PeerConnectionObserver, PeerConnectionState, RemoteTrack, RtcConfiguration, SdpType,
+    SessionDescription, Track, Transceiver, TransceiverDirection, VideoFrame, VideoTrack,
 };
 
 fn peer_err(e: impl std::fmt::Display) -> CoreError {
@@ -93,6 +94,38 @@ type FrameCallback = Arc<dyn Fn(&str, &[u8], u32, u32, u64, u64, &[u8]) + Send +
 /// i16 PCM, sample rate in Hz, channel count.
 type AudioCallback = Arc<dyn Fn(&str, &[i16], u32, u32) + Send + Sync + 'static>;
 
+/// A local sendonly track, media-typed.
+///
+/// 0.13 split `Track` into `VideoTrack`/`AudioTrack`, and the push helpers live
+/// on the typed halves — so the map keeps the variant rather than flattening
+/// back to `Track` and losing the ability to push. Mirrors `RemoteTrack`, which
+/// the receive side already gets handed.
+enum LocalTrack {
+    Video(VideoTrack),
+    Audio(AudioTrack),
+}
+
+impl LocalTrack {
+    /// The untyped handle, for `set_transceiver_track` and anything else that
+    /// does not care which kind it has.
+    fn as_track(&self) -> &Track {
+        match self {
+            Self::Video(t) => t,
+            Self::Audio(t) => t,
+        }
+    }
+
+    /// The video half, or `None` for an audio track — a video push aimed at an
+    /// audio slot is a caller mistake, and silently doing nothing is what the
+    /// warning below exists to avoid.
+    fn video(&self) -> Option<&VideoTrack> {
+        match self {
+            Self::Video(t) => Some(t),
+            Self::Audio(_) => None,
+        }
+    }
+}
+
 #[derive(Default)]
 struct PeerState {
     pc: Option<Arc<PeerConnection>>,
@@ -101,8 +134,8 @@ struct PeerState {
     track_names: Vec<String>,
     track_directions: Vec<TrackDirection>,
     transceivers: Vec<Transceiver>,
-    local_tracks: HashMap<String, Track>,
-    recv_tracks: Arc<Mutex<Vec<Track>>>,
+    local_tracks: HashMap<String, LocalTrack>,
+    recv_tracks: Arc<Mutex<Vec<RemoteTrack>>>,
 }
 
 pub struct ReactorWebRtcPeerTransport {
@@ -120,7 +153,10 @@ impl ReactorWebRtcPeerTransport {
 
     pub fn with_adm_mode(event_tx: UnboundedSender<PeerEvent>, mode: AdmMode) -> Self {
         info!("[peer] audio device module: {mode:?}");
-        let factory = PeerConnectionFactory::with_adm(mode).expect("create PeerConnectionFactory");
+        let factory = PeerConnectionFactory::builder()
+            .with_adm(mode)
+            .build()
+            .expect("create PeerConnectionFactory");
         Self {
             event_tx,
             factory,
@@ -175,7 +211,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             ..Default::default()
         };
 
-        let recv_tracks: Arc<Mutex<Vec<Track>>> = Arc::new(Mutex::new(Vec::new()));
+        let recv_tracks: Arc<Mutex<Vec<RemoteTrack>>> = Arc::new(Mutex::new(Vec::new()));
         let recv_name_mids: Arc<Mutex<Vec<(String, Option<String>)>>> =
             Arc::new(Mutex::new(Vec::new()));
         let recv_track_idx = Arc::new(AtomicUsize::new(0));
@@ -212,7 +248,8 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             let recv = recv_tracks.clone();
             let name_mids = recv_name_mids.clone();
             let track_idx = recv_track_idx.clone();
-            obs = obs.on_track(move |kind, track| {
+            obs = obs.on_track(move |track| {
+                let kind = track.kind();
                 let idx = track_idx.fetch_add(1, Ordering::SeqCst);
                 let (name, mid) = name_mids
                     .lock()
@@ -230,14 +267,17 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
                 // unattributable frame beats a dropped one — and the host sees a
                 // track name it will not match to any declared track.
                 let track_name = name.unwrap_or_default();
-                match kind {
-                    MediaKind::Video => {
+                // Matching on the track itself rather than on a kind read off it:
+                // the variant is what carries the typed handle, so there is no
+                // arm where the sink and the kind can disagree.
+                match &track {
+                    RemoteTrack::Video(video) => {
                         if let Some(cb) = frame_cb.clone() {
                             // No transform to attach: reactor-webrtc negotiates
                             // frame-metadata support in the SDP and installs the strip
                             // step itself, so VideoFrame::metadata is populated whenever
                             // the sender included a trailer and the peer agreed.
-                            track.on_video_frame(move |f| {
+                            video.on_frame(move |f| {
                                 let (frame_id, ts, ud) = f
                                     .metadata
                                     .as_ref()
@@ -249,14 +289,13 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
                             });
                         }
                     }
-                    MediaKind::Audio => {
+                    RemoteTrack::Audio(audio) => {
                         if let Some(cb) = audio_cb.clone() {
-                            track.on_audio_frame(move |f| {
+                            audio.on_frame(move |f| {
                                 cb(&track_name, f.pcm, f.sample_rate, f.channels)
                             });
                         }
                     }
-                    MediaKind::Unknown => {}
                 }
                 recv.lock().unwrap().push(track);
             });
@@ -271,7 +310,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         let mut transceivers: Vec<Transceiver> = Vec::with_capacity(tracks.len());
         let mut track_names: Vec<String> = Vec::with_capacity(tracks.len());
         let mut track_directions: Vec<TrackDirection> = Vec::with_capacity(tracks.len());
-        let mut local_tracks: HashMap<String, Track> = HashMap::new();
+        let mut local_tracks: HashMap<String, LocalTrack> = HashMap::new();
 
         for track in tracks {
             let kind = match track.kind {
@@ -286,11 +325,18 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
 
             if track.direction == TrackDirection::Sendonly {
                 let local = match track.kind {
-                    TrackKind::Video => self.factory.create_video_track(&track.name),
-                    TrackKind::Audio => self.factory.create_audio_track(&track.name),
-                }
-                .map_err(peer_err)?;
-                tc.set_track(&local).map_err(peer_err)?;
+                    TrackKind::Video => LocalTrack::Video(
+                        self.factory
+                            .create_video_track(&track.name)
+                            .map_err(peer_err)?,
+                    ),
+                    TrackKind::Audio => LocalTrack::Audio(
+                        self.factory
+                            .create_audio_track(&track.name)
+                            .map_err(peer_err)?,
+                    ),
+                };
+                tc.set_track(local.as_track()).map_err(peer_err)?;
                 info!(
                     "[peer] attached sendonly {:?} track '{}'",
                     track.kind, track.name
@@ -467,11 +513,11 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
     // holder that waited on libwebrtc while holding this mutex.
     fn push_video_frame(&self, track_name: &str, data: &[u8], width: u32, height: u32) {
         let s = self.state.lock().unwrap();
-        let Some(track) = s.local_tracks.get(track_name) else {
+        let Some(track) = s.local_tracks.get(track_name).and_then(LocalTrack::video) else {
             warn!("[peer] push_video_frame: no video source for track '{track_name}'");
             return;
         };
-        track.push_video_frame(data, width, height);
+        let _ = track.push_frame(VideoFrame::new(data, width, height));
     }
 
     fn push_video_frame_with_metadata(
@@ -483,7 +529,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         user_data: &[u8],
     ) {
         let s = self.state.lock().unwrap();
-        let Some(track) = s.local_tracks.get(track_name) else {
+        let Some(track) = s.local_tracks.get(track_name).and_then(LocalTrack::video) else {
             warn!(
                 "[peer] push_video_frame_with_metadata: no video source for track '{track_name}'"
             );
@@ -491,7 +537,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         };
         // Dropped by reactor-webrtc unless the peer declared that it strips the
         // trailer, so tagging a frame is safe whatever the far end supports.
-        track.push_video_frame_with_metadata(data, width, height, user_data);
+        let _ = track.push_frame_with_metadata(VideoFrame::new(data, width, height), user_data);
     }
 
     fn push_video_frame_with_metadata_at(
@@ -504,7 +550,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         capture_time_us: i64,
     ) {
         let s = self.state.lock().unwrap();
-        let Some(track) = s.local_tracks.get(track_name) else {
+        let Some(track) = s.local_tracks.get(track_name).and_then(LocalTrack::video) else {
             warn!(
                 "[peer] push_video_frame_with_metadata_at: no video source for track \
                  '{track_name}'"
@@ -514,7 +560,11 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         // reactor-webrtc keys the trailer by capture millisecond, per track — so
         // the same capture time across several tracks is exactly the intended use
         // (one tick, several views), not a collision.
-        track.push_video_frame_with_metadata_at(data, width, height, user_data, capture_time_us);
+        let _ = track.push_frame_with_metadata_at(
+            VideoFrame::new(data, width, height),
+            user_data,
+            capture_time_us,
+        );
     }
 }
 

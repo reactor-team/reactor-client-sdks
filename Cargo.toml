@@ -21,7 +21,7 @@ reactor-wasm     = { path = "crates/reactor-wasm" }
 # instant the engine pushed the frame, and the field is named `capture_time_us`
 # for it (reactor-webrtc #64). 0.10 brought the outbound push that accepts a
 # capture time in the first place (#53); 0.11 is additive.
-reactor-webrtc   = "0.12"
+reactor-webrtc   = "0.14"
 
 serde       = { version = "1",   features = ["derive"] }
 serde_json  = "1"
