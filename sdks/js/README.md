@@ -4,17 +4,24 @@
 [![build](https://img.shields.io/github/actions/workflow/status/reactor-team/reactor-client-sdks/ci.yml?branch=main)](https://github.com/reactor-team/reactor-client-sdks/actions)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/reactor-team/reactor-client-sdks/blob/main/LICENSE)
 
-Connect a browser app to a live [Reactor](https://reactor.inc) model.
+The JavaScript/TypeScript SDK for [Reactor](https://reactor.inc), the developer platform
+for real-time world models.
+
+In a few lines of code you can connect a browser app to a Reactor session over WebRTC,
+render live model video at 30–60 FPS, send typed commands to steer what generates, and
+receive structured messages back.
+
+The SDK ships a React API (`ReactorProvider`,
+`ReactorView`, `useReactor`, …) for browser apps, and an imperative `Reactor` class for
+everything else running in a browser context — Electron, a game engine's webview, and so on.
+
+Full reference and guides live at **[docs.reactor.inc](https://docs.reactor.inc)**.
 
 ## Install
 
 ```bash
 npm install @reactor-team/js-sdk
 ```
-
-`dist/` ships plain CJS and ESM builds plus `.d.ts` types — a bundler-free,
-non-TypeScript app can `require()` or `import` this package directly, no
-build step of its own required.
 
 ## Quickstart
 
@@ -26,32 +33,62 @@ const reactor = new Reactor({
   jwt: () => fetchToken(), // or a plain string; omit for an unauthenticated local runtime
 });
 
-reactor.on("statusChanged", (status) => console.log("status:", status));
+reactor.on("statusChanged", (status) => {
+  if (status === "ready") {
+    // commands and media are live
+  }
+});
 reactor.on("error", (error) => console.error(error.code, error.message));
 
 await reactor.connect();
-// ... reactor.getStatus() === "ready" once the session is up ...
-await reactor.disconnect(); // ends the session AND frees the wasm client
+await reactor.disconnect();
 ```
 
 The token can also be passed directly to `connect(jwt, options?)` instead of
 the constructor.
 
-Construction never touches WebAssembly — `reactor-wasm` is fetched and
-instantiated lazily on the first `connect()`/`reconnect()` call, and cached
-after that, so building a `Reactor` you never connect costs nothing.
+## Authentication
+
+`fetchToken()` above is your own function — mint the JWT server-side so your API key never
+reaches the browser. The `authorization_details` block scopes the token: it can create a
+bounded number of sessions for one model and act only on the sessions it created, so a
+leaked token exposes nothing else on the account:
+
+```ts
+// e.g. a Next.js route handler
+const result = await fetch("https://api.reactor.inc/tokens", {
+  method: "POST",
+  headers: {
+    "Reactor-API-Key": process.env.REACTOR_API_KEY!,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    authorization_details: [
+      {
+        type: "session",
+        resources: { models: { match: ["my-model"] } },
+        constraints: { max_sessions: 5 },
+      },
+    ],
+  }),
+});
+const { jwt } = await result.json();
+```
+
+See [Authentication](https://docs.reactor.inc/authentication) for the full request shape,
+including `max_session_duration_seconds` and other constraints.
 
 ## `disconnect()` and disposal
 
 `disconnect(recoverable = false)`:
 
-- **`disconnect()`** (the default) ends the session server-side and frees the
-  underlying wasm resource graph — the pump, dispatcher and heartbeat tasks —
-  in one step. The `Reactor` instance itself is still usable: a later
-  `connect()`/`reconnect()` lazily builds a fresh wasm client.
-- **`disconnect(true)`** ends the session but keeps the wasm client alive, so
-  a later `connect()`/`reconnect()` doesn't have to reload wasm and
-  reconstruct it from scratch.
+- **`disconnect()`** (the default) ends the session server-side and releases
+  the connection's underlying resources in one step. The `Reactor` instance
+  itself is still usable: a later `connect()`/`reconnect()` sets up a fresh
+  connection automatically.
+- **`disconnect(true)`** ends the session but keeps those resources warm, so
+  a later `connect()`/`reconnect()` reconnects faster instead of
+  reinitializing from scratch.
 - **`using reactor = new Reactor(...)`** (or calling `reactor[Symbol.dispose]()`
   directly) tears the instance down for good — same resource release as a
   plain `disconnect()`, plus dropping every registered event handler. Do this
@@ -64,67 +101,43 @@ reactor.getStatus();     // ReactorStatus: "disconnected" | "connecting" | "wait
 reactor.getSessionId();  // string | undefined
 ```
 
-`reactor-wasm`'s own binding uses the terser `status()`/`sessionId()`
-internally — not exposed here yet, kept simple until there's a real reason
-to add them alongside `getStatus()`/`getSessionId()`.
-
 ## Events
 
-`on(event, handler)` / `off(event, handler)` / `once(event, handler)`, over:
+`on(event, handler)` / `off(event, handler)` / `once(event, handler)`. The ones you'll reach
+for most:
 
 | Event | Payload |
 | --- | --- |
 | `statusChanged` | `ReactorStatus` |
-| `sessionIdChanged` | `string \| undefined` |
 | `error` | `ReactorError` |
-| `message` | `ReactorMessage` — application-scope payload from the model |
-| `runtimeMessage` | `ReactorMessage` — platform-scope payload (moderation, clip/recording lifecycle, ...) |
-| `schemaReceived` | `ModelSchema` — see `getSchema()` below |
-| `capabilitiesReceived` | `Capabilities` — see `getCapabilities()` below |
-| `trackReceived` | `(name, track: MediaStreamTrack, stream: MediaStream, mid: string \| undefined)` |
-| `statsUpdate` | `ConnectionStats` |
+| `message` | `ReactorMessage` from the model |
+| `trackReceived` | a new media track from the model |
+
+Full list — including `schemaReceived`, `capabilitiesReceived`, and `statsUpdate` — in
+[Events](https://docs.reactor.inc/sdk-reference/events).
 
 ## Model schema and capabilities
 
 ```ts
-reactor.getSchema();        // ModelSchema | undefined — the model's OpenAPI command/webhook doc
-reactor.getCapabilities();  // Capabilities | undefined — negotiated tracks, command set if exposed
-reactor.on("schemaReceived", (schema) => ...);
-reactor.on("capabilitiesReceived", (capabilities) => ...);
+reactor.getSchema();        // the model's command/webhook schema
+reactor.getCapabilities();  // negotiated tracks and command set
 ```
 
-Both are pushed automatically once available after `connect()` — no explicit request needed —
-and both are `undefined` until their first event fires. Neither is mirrored into the React
-store's reactive state; reach them off the `Reactor` instance the same way (`useReactor((s) =>
-s.internal.reactor)` — see [React](#react) below).
-
-`getSessionInfo()` also returns a `capabilities` field, but it's the **raw wire shape**
-(snake_case), not this translated one — prefer `getCapabilities()`/`capabilitiesReceived` unless
-you specifically need the untranslated session resource.
+Both arrive automatically after `connect()` — no request needed — via the getters above or the
+matching `schemaReceived`/`capabilitiesReceived` events. See
+[`getSchema()`](https://docs.reactor.inc/sdk-reference/reactor-class#getschema) and
+[`Capabilities`](https://docs.reactor.inc/sdk-reference/types#capabilities) for the full shape.
 
 ## Recording and clips
 
 ```ts
 const clip = await reactor.requestClip(10); // last 10 seconds
-// or: const clip = await reactor.requestRecording(); // the whole session so far
-
-// downloadClipAsFile() doesn't inherit the Reactor instance's JWT — pass it
-// explicitly (omit `jwt` entirely against a local runtime, which is auth-free).
-const blob = await reactor.downloadClipAsFile(clip, "clip.mp4", { jwt: await fetchToken() });
+await reactor.downloadClipAsFile(clip, "clip.mp4");
 ```
 
-`requestClip()`/`requestRecording()`/`downloadClipAsFile()` are directly on `Reactor` — there's
-no separate recording client to construct. All three are also bound on the React store
-(`useReactor((s) => s.requestClip)`, etc.) for the common case; `useClipDownload` below wraps
-`downloadClipAsFile` in a progress/error state machine for a custom UI.
-`downloadClipAsFile(clip, filename?, options?)` polls the clip's manifest
-until ready, remuxes the fragmented chunks into a flat, faststart MP4, and (unless
-`filename: null` is passed) triggers the download; pass `options.onProgress` for progress UI.
-
-For a React preview instead of a download, `ClipPlayer`/`ClipDownloadButton`/`useClipDownload`
-cover playback and download UI directly. Neither requires a `ReactorProvider`, but each needs a
-JWT source outside local-dev mode — either an explicit `getJwt`, as below, or mount them under a
-`ReactorProvider` and omit `getJwt` to inherit its resolver:
+`requestClip()`/`requestRecording()`/`downloadClipAsFile()` live directly on `Reactor`, and the
+same three are bound on the React store. For a preview or download button instead, drop in
+`<ClipPlayer>`/`<ClipDownloadButton>`:
 
 ```tsx
 import { ClipPlayer, ClipDownloadButton } from "@reactor-team/js-sdk";
@@ -133,49 +146,27 @@ import { ClipPlayer, ClipDownloadButton } from "@reactor-team/js-sdk";
 <ClipDownloadButton clip={clip} getJwt={() => fetchToken()} filename="clip.mp4" />
 ```
 
-`ClipPlayer` streams the clip with `hls.js` wherever Media Source Extensions exist (every
-current browser, including iOS Safari 17.1+) and assembles a flat MP4 to play from memory on
-the one iOS range that has none. Neither component requires a `ReactorProvider` — both work
-directly off a `Clip` value, including clips loaded from fixtures or logs.
+Full API, playback details, and the `useClipDownload` hook: [Recordings](https://docs.reactor.inc/concepts/recordings).
 
 ## Stats and timings
 
 ```ts
-reactor.getStats();             // ConnectionStats | undefined
-reactor.getConnectionTimings();  // ConnectionTimings | undefined
 reactor.on("statsUpdate", (stats) => console.log(stats.rtt, stats.packetLossRatio));
 ```
 
-While the session is `"ready"`, `getPeerConnection().getStats()` is polled
-every two seconds and reduced into a `ConnectionStats` — RTT, ICE candidate
-type, incoming/outgoing bitrate (both estimated and real-time), video FPS,
-packet loss ratio, and jitter — emitted as `statsUpdate` and readable
-directly off `getStats()`. Both are `undefined` before the first sample, and
-polling stops (clearing `getStats()`) as soon as the session leaves `"ready"`
-for any reason, not just an explicit `disconnect()`.
-
-`getConnectionTimings()` (also folded into every `ConnectionStats.connectionTimings`)
-is a millisecond breakdown of the most recent `connect()`/`reconnect()`
-handshake: `sessionCreationMs`, `transportConnectingMs`, `totalMs`.
+`getStats()`/`getConnectionTimings()` give you the same data on demand. Field list (RTT,
+bitrate, jitter, handshake timing, ...) in [Types](https://docs.reactor.inc/sdk-reference/types#connectionstats).
 
 ## Errors
 
-One class, `ReactorError`, for both the `error` event payload and a rejected
-call's error. It carries `code`, `message`, `recoverable`, `status?`,
-`operation?`, `retry_after_ms?`, `timestamp_ms`, and the compatibility
-aliases `timestamp`/`retryAfter`.
-
-It's the base of a typed hierarchy keyed by `code` — `reactor-core`'s own
-per-failure-kind classification: `NetworkError`, `UnauthorizedError`,
-`NotFoundError`, `ConflictError`, `RateLimitedError`, `BadRequestError`,
-`ServerError`, `VersionMismatchError`, `DecodeError`, `InvalidStateError`,
-`SessionTerminalError`, `MessageTooLargeError`, `TransportError`,
-`DisconnectedError`, `RequestTimeoutError`, `AbortedError`. An unrecognized
-code falls back to the base class. `instanceof` and matching `error.code`
-are equivalent — pick whichever reads better at the call site:
+One class, `ReactorError`, for both the `error` event payload and a rejected call's error —
+carries `code`, `message`, and `recoverable`. It's the base of a typed hierarchy, one subclass
+per failure kind (`UnauthorizedError`, `RateLimitedError`, `NetworkError`, ...) — full list in
+[Types](https://docs.reactor.inc/sdk-reference/types#reactorerror). `instanceof` and matching
+`error.code` are equivalent:
 
 ```ts
-import { Reactor, ReactorError, UnauthorizedError } from "@reactor-team/js-sdk";
+import { ReactorError, UnauthorizedError } from "@reactor-team/js-sdk";
 
 try {
   await reactor.connect();
@@ -189,20 +180,11 @@ try {
 }
 ```
 
-`getLastError()` returns the most recent `ReactorError`, from either an
-`error` event or a rejected call.
-
-`sendCommand(command, data?, scope?)` awaits the model's correlated reply and
-resolves with it (`ReactorMessage | undefined`); it never throws — a failure
-surfaces through `getLastError()`/the `error` event instead, and the call
-resolves `undefined`. Every other call that can fail (`connect`,
-`publishTrack`, `uploadFile`, ...) throws normally.
-
 ## React
 
 ```tsx
 import { useCallback } from "react";
-import { ReactorProvider, useReactor } from "@reactor-team/js-sdk";
+import { ReactorProvider, ReactorView, useReactor } from "@reactor-team/js-sdk";
 
 function App() {
   // Stable across renders — see the note on ReactorProvider below for why
@@ -224,6 +206,7 @@ function Status() {
 
   return (
     <div>
+      <ReactorView className="w-full aspect-video" videoObjectFit="cover" />
       {status}
       <button onClick={() => sendCommand("set_image", { url: "..." })}>Send</button>
     </div>
@@ -231,26 +214,33 @@ function Status() {
 }
 ```
 
-`react` is a peer dependency — install it yourself, matching your app's own
-version. `ReactorView` (renders one or two named tracks into a single
-`<video>`/`<audio>` element) and `WebcamStream` (captures and publishes the
-local camera/mic) cover the common send/receive media UI without hand-rolling
-`getTrackByName()`/`publishTrack()` yourself.
+`react` is a peer dependency — install it yourself, matching your app's own version.
 
-`apiUrl`/`modelName`/`local`/`modelTracks`/`jwtToken`/`connectOptions` are live
-(including `connectOptions.autoConnect`): changing any of them tears down the
-current `Reactor` and builds a fresh one (there's no way to reconnect an
-existing instance with a different model or endpoint). Pass a stable
-`jwtToken` and stable `modelTracks`/`connectOptions` references
-(`useCallback`/`useMemo`, or hoist them outside the component) if you don't
-want an unrelated parent re-render to rebuild the connection.
+`ReactorProvider`'s props are live: changing `jwtToken`, `modelName`, or `connectOptions` tears
+down the current connection and builds a fresh one. Pass a stable `jwtToken` (`useCallback`, or
+hoist it outside the component) so an unrelated re-render doesn't reconnect you.
 
-`useReactor(selector)` also carries `sessionId`, `lastError`, `lastMessage`,
-and action bindings for `connect`/`disconnect`/`reconnect`/`sendCommand`/
-`publish`/`unpublish`/`pauseTrack`/`resumeTrack`/`uploadFile`/`requestClip`/
-`requestRecording`/`downloadClipAsFile`. For anything else — tracks, schema,
-capabilities, stats, the raw event emitter — `useReactor((s) =>
-s.internal.reactor)` gets you the underlying `Reactor` instance directly.
+`useReactor(selector)` exposes the same surface as `Reactor` itself — status, errors, messages,
+and every method as a bound action — so most components never need to touch the instance
+directly. When one does, `useReactor((s) => s.internal.reactor)` gets it. Full field list:
+[React hooks](https://docs.reactor.inc/sdk-reference/react-hooks).
+
+## Typed model SDKs
+
+For models with a published typed SDK, prefer [`@reactor-models/<name>`](https://www.npmjs.com/org/reactor-models).
+It re-exports everything here and adds typed commands, messages, and hooks for one
+specific model. Use this base SDK when the model doesn't have a typed package yet, or when
+you want to stay model-agnostic. See [Typed model SDKs](https://docs.reactor.inc/sdk-reference/typed-model-sdk).
+
+## API surface
+
+| Surface | Where it lives |
+| --- | --- |
+| `Reactor` | [Reactor class](https://docs.reactor.inc/sdk-reference/reactor-class) |
+| `<ReactorProvider>`, `<ReactorView>`, `<WebcamStream>` | [React components](https://docs.reactor.inc/sdk-reference/react-components) |
+| `useReactor`, `useReactorMessage`, `useReactorInternalMessage`, `useStats` | [React hooks](https://docs.reactor.inc/sdk-reference/react-hooks) |
+| `<ClipPlayer>`, `<ClipDownloadButton>`, `useClipDownload` | [Recordings](https://docs.reactor.inc/concepts/recordings) |
+| `ReactorError` and its subclasses, `Clip`, `Capabilities`, `ConnectionStats`, ... | [Types](https://docs.reactor.inc/sdk-reference/types) |
 
 ## Development
 
@@ -272,7 +262,7 @@ See the repo-wide [`CONTRIBUTING.md`](../../CONTRIBUTING.md) for the rest
 The [full documentation](https://docs.reactor.inc/sdk-reference/using-the-sdk)
 covers platform concepts and the other language SDKs. See
 [`CHANGELOG.md`](./CHANGELOG.md) for what changed release to release,
-including 3.0.0's breaking changes from the legacy 2.x SDK.
+including 3.0.0's breaking changes.
 
 ## License
 
