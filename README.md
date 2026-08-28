@@ -7,6 +7,7 @@
 [🌐 Reactor](https://reactor.inc) · [📚 Docs](https://docs.reactor.inc) · [⚙️ Runtime](https://github.com/reactor-team/reactor-runtime) · [🎥 WebRTC](https://github.com/reactor-team/reactor-webrtc) · [📖 Cookbook](https://github.com/reactor-team/reactor-cookbook)
 
 [![CI](https://github.com/reactor-team/reactor-client-sdks/actions/workflows/ci.yml/badge.svg)](https://github.com/reactor-team/reactor-client-sdks/actions/workflows/ci.yml)
+[![npm: js-sdk](https://img.shields.io/npm/v/@reactor-team/js-sdk.svg?label=js-sdk)](https://www.npmjs.com/package/@reactor-team/js-sdk)
 [![PyPI: reactor-sdk](https://img.shields.io/pypi/v/reactor-sdk.svg?label=reactor-sdk)](https://pypi.org/project/reactor-sdk/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
@@ -21,6 +22,7 @@ dedicated track.
 
 ## Supported SDKs
 
+- **[JavaScript](sdks/js/README.md)** — `npm install @reactor-team/js-sdk`
 - **[Python](sdks/python/README.md)** — `pip install reactor-sdk`
 - **[C++](sdks/cpp/README.md)** — C++17, over the same native core
 
