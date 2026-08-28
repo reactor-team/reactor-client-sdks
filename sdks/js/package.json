@@ -3,6 +3,11 @@
   "version": "3.0.0",
   "description": "Connect your JavaScript/TypeScript app to a live Reactor model in the browser.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/reactor-team/reactor-client-sdks.git",
+    "directory": "sdks/js"
+  },
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.cjs",
