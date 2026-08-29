@@ -136,16 +136,34 @@ body `$ref`s a message component means the awaited call resolves with that
 message; a bare `202` means the handler returns nothing. Consequences for
 ported code:
 
-- **Acknowledgement messages stop arriving as broadcasts.** 2.x app code
-  that fires a command and then waits for e.g. a `prompt_accepted` /
-  `image_accepted` / `generation_paused` handler on the `message` event
-  keeps compiling and keeps listening — the handler just never fires again,
-  because those messages now resolve the awaited call instead. Migrate the
-  state updates to the call site (`const reply = await model.setPrompt(...)`)
-  and shrink the message listener to what the model still broadcasts to
-  every connection (shared state snapshots, per-chunk progress, error
-  reports). The schema is the authority on which is which: check each
-  command's `responses` for `200`-with-`$ref` vs bare `202`.
+- **Acknowledgements become addressed, not silent.** An answer is sent to
+  the connection whose command earned it, correlated by request id. On that
+  connection it arrives *twice*: it resolves the awaited call, and the same
+  frame is also dispatched as a `message` event
+  (`Reactor::on_data_message` dispatches every `Payload::Message`
+  unconditionally; only a correlated **error** is withheld, to avoid
+  double-reporting a failure the caller already has). So a 2.x
+  fire-then-listen handler for `prompt_accepted` / `image_accepted` /
+  `generation_paused` keeps compiling **and keeps firing** — do not delete it
+  expecting it to be dead.
+
+  Migrate it anyway, for two reasons the listener cannot solve. It fires for
+  *any* call of that command on this connection, so with two commands in
+  flight it cannot say which one it answers — that ambiguity is what the
+  awaited value removes. And it never fires on a **second** connection in the
+  session, so any shared state built on it silently stops working the moment
+  a session has more than one client. Move the state update to the call site
+  (`const reply = await model.setPrompt(...)`) and keep the message listener
+  for what the model genuinely broadcasts to every connection: shared state
+  snapshots, per-chunk progress, error reports. The schema is the authority
+  on which commands answer: check each command's `responses` for
+  `200`-with-`$ref` vs bare `202`.
+
+  Note that a message type is not intrinsically an answer or a broadcast —
+  the send path decides. A model that returns `X` from one handler and
+  `self.send(X)`s from another produces both, so the same hook can be live
+  for one command and sender-only for another. Read the model's handlers,
+  not just the message list.
 - **Awaiting a no-reply command is a completion barrier.** The runtime acks
   every correlated command once its handler has run, so a bare-`202`
   command's `await` resolving means the handler finished — not just that
@@ -173,8 +191,9 @@ ported code:
   both). Check which release the session's pod runs before debugging the
   client.
 - Working vanilla reference: [`sdks/js/examples/07-command-replies`](../../../sdks/js/examples/07-command-replies)
-  — reads `save_snapshot`/`list_snapshots`/`rewind` replies off the await
-  and shows the `message` event carrying only unprompted traffic.
+  — reads `save_snapshot`/`list_snapshots`/`rewind` replies off the await,
+  and logs the `message` event beside them so you can watch a reply arrive
+  on both surfaces.
 - Debugging aid: development builds (`NODE_ENV === "development"`, or
   Vite's `import.meta.env.DEV`) log every data/control channel message via
   `console.debug`, so you can watch replies and broadcasts arrive while
@@ -203,7 +222,12 @@ skill's word — both halves are open source:
   data-channel correlator — a bodyless ack resolves the pending command as
   `None` rather than being dropped (pinned by its
   `resolves_a_bodyless_ack_as_none` test), which is what surfaces in JS as
-  `undefined` with no recorded error. `sdks/js/src/reactor.ts`
+  `undefined` with no recorded error. `crates/reactor-core/src/reactor.rs`
+  (`on_data_message`) is where a reply's two surfaces are decided: every
+  `Payload::Message` is dispatched as a `message` event whether or not it
+  correlated, while a correlated `Payload::Error` is withheld because the
+  awaiting caller already has it. Pinned by
+  `a_correlated_reply_also_dispatches_a_message_event`. `sdks/js/src/reactor.ts`
   (`sendCommand`) is where "never rejects, failures land on
   `getLastError()`" is implemented.
 
@@ -318,12 +342,17 @@ tell people to download instead," that workaround is no longer needed.
   same declarations privately. If a migration guide (including an earlier draft of this one)
   frames this as "the shape of `tracks` changed," that's overstating it for the common React
   case; check which layer the code in question actually reads from before assuming a change.
-- **A message listener that waits for a command's acknowledgement dies silently.** On
-  runtime-3.2+ models the success acks are correlated replies, not broadcasts — the ported
-  listener compiles, subscribes, and never fires. No compile error, no runtime error; the UI
-  just stops updating on those paths. Sweep every `message`-event handler (and typed
-  per-message hooks) against the schema's `responses` and move `200`-declared messages to the
-  awaited call sites. See "Commands reply now" above.
+- **A message listener that waits for a command's acknowledgement still fires — and is
+  still wrong.** On runtime-3.2+ models the success acks are correlated replies, which are
+  *also* dispatched on the `message` event of the connection that sent the command. So the
+  ported listener works in single-client testing and fails two ways later: it cannot tell
+  which of several in-flight calls it answers, and it never fires for a second connection in
+  the session. Sweep every `message`-event handler (and typed per-message hook) against the
+  schema's `responses` and move `200`-declared messages to the awaited call sites; keep
+  listeners for what the model broadcasts. See "Commands reply now" above. (An earlier
+  revision of this skill claimed such a listener never fires at all — it does; the routing is
+  in `Reactor::on_data_message`, pinned by
+  `a_correlated_reply_also_dispatches_a_message_event`.)
 - **Token plumbing that re-mints per call compiles and then 403s mid-session.** The resolver
   runs on every authenticated request; with session-scoped tokens the same JWT must serve the
   session's whole life. The failure signature is a 403 naming
@@ -369,7 +398,7 @@ tell people to download instead," that workaround is no longer needed.
   out as breaking.
 - The "Commands reply now", JWT-resolver, and `getJwt` → `jwtToken` sections were verified
   2026-08-28 by porting a real 2.x app (`js-sdk/examples/lingbot-world-2`) to 3.0.0 and running
-  it against production: the silent death of ack listeners, the settle-sleep deletions, the
+  it against production: the ack-listener migration, the settle-sleep deletions, the
   `undefined`-vs-`getLastError()` discrimination (including a session landing on a replica
   serving an older model release), and the session-scoped-token 403 were each hit and fixed in
   that port, not derived from reading source.

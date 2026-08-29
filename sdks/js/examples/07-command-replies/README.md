@@ -37,12 +37,16 @@ short-lived JWT for it server-side.
   full array, `rewind` with where it landed. **Save** triggers `list_snapshots`
   itself right after saving, so the row list is always current without a
   separate button for it.
-- The `message` event is a different thing — it's the model's *unprompted*
-  traffic, not the reply to anything this example sent. Helios fires `state`
-  and `chunk_complete` continuously (a snapshot after every command and every
-  chunk), which carry nothing this example cares about — they're filtered out
-  of the log entirely so they don't drown out the replies above, which are
-  the actual point.
+- The `message` event carries both. A reply is *addressed* to the connection
+  that sent the command, and on that connection it lands on the `message`
+  event too — so `snapshot_saved` shows up in the log below as well as on the
+  await. What only ever arrives on the event is the model's **unprompted**
+  traffic: Helios fires `state` and `chunk_complete` continuously (a snapshot
+  after every command and every chunk), which carry nothing this example
+  cares about and are filtered out of the log so they don't drown out the
+  replies. Prefer the await regardless: it is tied to one call, so it says
+  *which* command was answered — and it is the only surface a second client
+  on the same session would not silently miss.
 - `schemaReceived` fires automatically on every `"ready"` transition; this
   logs its `paths` on connect so the commands below are checked against
   what the connected model actually publishes, not assumed from a doc page.
