@@ -86,7 +86,7 @@ extern "C" {
  * it knows about exactly as before, and refusing to run would strand it for no
  * reason.
  */
-#define REACTOR_ABI_VERSION 1
+#define REACTOR_ABI_VERSION 2
 
 uint32_t reactor_abi_version(void);
 

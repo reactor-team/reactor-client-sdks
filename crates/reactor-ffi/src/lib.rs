@@ -383,7 +383,7 @@ fn fallback_error_json(message: &str) -> String {
 /// type changed, a return value repurposed. Do **not** bump it when a function is
 /// added: a binding built against the older version calls every function it knows
 /// about exactly as before, so refusing to run would strand it for no reason.
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 /// The ABI version, so a binding can refuse a library it was not built for.
 ///
