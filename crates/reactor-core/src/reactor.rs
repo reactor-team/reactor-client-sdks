@@ -1807,6 +1807,53 @@ mod tests {
         assert_eq!(result, None);
     }
 
+    /// A correlated reply carrying a message resolves the awaiting call *and*
+    /// is dispatched as a `message` event, so a listener sees it alongside the
+    /// resolved call. Only a correlated *error* is withheld from the event
+    /// surface (see `send_command_surfaces_a_correlated_error`). Downstream
+    /// guidance turns on this, so it is pinned rather than left implicit.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_correlated_reply_also_dispatches_a_message_event() {
+        let reactor = make_reactor();
+        reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+        let mut events = reactor.subscribe();
+
+        let r = reactor.clone();
+        let call = tokio::spawn(async move { r.send_command("set_prompt", json!({}), None).await });
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        let bytes = encode_data_response(
+            "data_1",
+            data_server_message::Payload::Message(crate::protocol::wire::v1::model::ModelMessage {
+                r#type: "prompt_accepted".into(),
+                data: None,
+            }),
+        );
+        reactor.on_data_message(&bytes);
+
+        let resolved = tokio::time::timeout(Duration::from_millis(300), call)
+            .await
+            .expect("send_command should resolve")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            resolved.as_ref().and_then(|v| v["type"].as_str()),
+            Some("prompt_accepted"),
+            "the awaiting call receives the reply"
+        );
+
+        let event = tokio::time::timeout(Duration::from_millis(100), events.next())
+            .await
+            .expect("a message event should be dispatched for a correlated reply")
+            .expect("event stream stayed open");
+        match event {
+            ReactorEvent::Message(value) => {
+                assert_eq!(value["type"].as_str(), Some("prompt_accepted"));
+            }
+            other => panic!("expected a Message event, got {other:?}"),
+        }
+    }
+
     /// A correlated `Error` reply surfaces as `CoreError::CommandRequest`,
     /// not just a generic error event.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

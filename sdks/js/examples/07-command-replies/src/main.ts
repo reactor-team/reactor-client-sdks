@@ -83,12 +83,13 @@ reactor.on('statusChanged', (status) => {
   log(`status: ${status}`);
 });
 
-// A broadcast, not a reply — the correlated replies below arrive as each
-// sendCommand() call's own resolved value instead. `state` and
-// `chunk_complete` fire continuously (a full state snapshot after every
-// command *and* every chunk, plus one chunk_complete per chunk) and carry
-// nothing this example cares about — logged as just their `type` would
-// still bury the replies below in noise, so they're skipped entirely.
+// This surface carries both: an addressed reply lands here as well as on its
+// own sendCommand() call, so the replies below show up twice over. `state` and
+// `chunk_complete` are the genuinely unprompted traffic — they fire
+// continuously (a full state snapshot after every command *and* every chunk,
+// plus one chunk_complete per chunk) and carry nothing this example cares
+// about, so even logging just their `type` would bury everything else. They're
+// skipped entirely.
 const NOISY_MESSAGE_TYPES = new Set(['state', 'chunk_complete']);
 
 reactor.on('message', (message) => {

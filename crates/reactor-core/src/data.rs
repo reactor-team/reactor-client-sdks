@@ -8,7 +8,13 @@
 //! resolves the correlation, as `None` rather than being dropped. An inbound
 //! message with an empty `request_id` (`kind: Notification`) is an
 //! unprompted broadcast rather than a reply to any request — it matches
-//! nothing and is still dispatched as a `message` event. Timeouts are
+//! nothing and is dispatched as a `message` event.
+//!
+//! Correlation decides who gets an *awaited* value, not who gets an event:
+//! a correlated reply carrying a message is dispatched as a `message` event
+//! as well, so a listener sees it alongside the resolved call. Only a
+//! correlated *error* is withheld from the event surface, because the
+//! awaiting caller already received it. Timeouts are
 //! enforced by the caller (see [`crate::reactor::Reactor`]) racing the
 //! receiver against a platform sleep, then calling [`DataCorrelator::cancel`].
 
@@ -41,8 +47,13 @@ pub struct PendingData {
 pub struct HandledMessage {
     pub payload: Option<data_server_message::Payload>,
     /// `true` when this reply's `request_id` matched (and resolved) a
-    /// pending `send_command()` call — the caller already has it
-    /// via the awaited `Result` and must not also raise it globally.
+    /// pending `send_command()` call.
+    ///
+    /// This gates **error** reporting only: a correlated failure already
+    /// reached the caller as `CoreError::CommandRequest`, so raising it on
+    /// the `error` event too would double-report it. A correlated *message*
+    /// is still dispatched as a `message` event — see
+    /// [`DataCorrelator::handle_message`].
     pub correlated: bool,
 }
 
