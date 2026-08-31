@@ -23,6 +23,7 @@ from reactor_sdk import (
     RateLimitedError,
     Reactor,
     ReactorError,
+    RecorderDisabledError,
     RequestTimeoutError,
     ServerError,
     UnauthorizedError,
@@ -51,6 +52,7 @@ class TestCodeToClass:
             ("REQUEST_TIMEOUT", RequestTimeoutError),
             ("INVALID_STATE", InvalidStateError),
             ("MESSAGE_TOO_LARGE", MessageTooLargeError),
+            ("RECORDER_DISABLED", RecorderDisabledError),
         ],
     )
     def test_a_known_code_raises_its_own_class(self, code: str, expected: type) -> None:

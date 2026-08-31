@@ -270,6 +270,10 @@ run = "ctest --test-dir sdks/cpp/build --output-on-failure"
 description = "[Quality] Verify lib.rs, reactor_ffi.h and _ffi.py declare the same ABI"
 run = "python3 scripts/check-abi-parity.py"
 
+[tasks."lint:error-codes"]
+description = "[Quality] Verify every SDK declares a class for every error.rs code"
+run = "python3 scripts/check-error-codes-parity.py"
+
 [tasks."lint:mise-lock"]
 description = "[Quality] Verify mise.lock covers every declared tool + lockfile platform"
 run = "python3 scripts/check-mise-lock.py"
@@ -299,6 +303,7 @@ depends = [
     "lint:js",
     "lint:cpp",
     "lint:abi",
+    "lint:error-codes",
     "lint:shell",
     "lint:secrets",
     "lint:mise-tools-root",

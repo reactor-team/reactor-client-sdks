@@ -69,6 +69,7 @@ inline constexpr std::string_view DECODE_FAILED = "DECODE_FAILED";
 inline constexpr std::string_view SESSION_TERMINAL = "SESSION_TERMINAL";
 inline constexpr std::string_view MESSAGE_TOO_LARGE = "MESSAGE_TOO_LARGE";
 inline constexpr std::string_view ABORTED = "ABORTED";
+inline constexpr std::string_view RECORDER_DISABLED = "RECORDER_DISABLED";
 inline constexpr std::string_view INTERNAL_ERROR = "INTERNAL_ERROR";
 
 }  // namespace codes
@@ -133,26 +134,27 @@ class ReactorError : public std::runtime_error {
 
 /// Declare a subclass.
 ///
-/// Sixteen of these differ only in name and code, so they are generated from one
-/// list: a hand-written set is sixteen chances to paste the wrong code in, or to
+/// Seventeen of these differ only in name and code, so they are generated from one
+/// list: a hand-written set is seventeen chances to paste the wrong code in, or to
 /// forget the `rethrow` override that keeps the type from being sliced away.
-#define REACTOR_ERROR_CLASSES(X)                                                      \
-  X(NetworkError, NETWORK_ERROR)             /* the request never got a reply */      \
-  X(UnauthorizedError, UNAUTHORIZED)         /* 401/403: token missing or unscoped */ \
-  X(NotFoundError, NOT_FOUND)                /* no such model, session or track */    \
-  X(DisconnectedError, DISCONNECTED)         /* the connection went away */           \
-  X(ConflictError, CONFLICT)                 /* 409, usually an orphaned session */   \
-  X(RateLimitedError, RATE_LIMITED)          /* 429 */                                \
-  X(BadRequestError, BAD_REQUEST)            /* the request itself was wrong */       \
-  X(ServerError, SERVER_ERROR)               /* 5xx; may work later */                \
-  X(VersionMismatchError, VERSION_MISMATCH)  /* client and platform disagree */       \
-  X(DecodeError, DECODE_FAILED)              /* a reply arrived, unintelligible */    \
-  X(InvalidStateError, INVALID_STATE)        /* not possible in this state */         \
-  X(SessionTerminalError, SESSION_TERMINAL)  /* start a new session */                \
-  X(MessageTooLargeError, MESSAGE_TOO_LARGE) /* over what the channel accepts */      \
-  X(TransportError, TRANSPORT_ERROR)         /* the media transport failed */         \
-  X(RequestTimeoutError, REQUEST_TIMEOUT)    /* sent, nothing came back in time */    \
-  X(AbortedError, ABORTED)                   /* abandoned before it finished */
+#define REACTOR_ERROR_CLASSES(X)                                                       \
+  X(NetworkError, NETWORK_ERROR)              /* the request never got a reply */      \
+  X(UnauthorizedError, UNAUTHORIZED)          /* 401/403: token missing or unscoped */ \
+  X(NotFoundError, NOT_FOUND)                 /* no such model, session or track */    \
+  X(DisconnectedError, DISCONNECTED)          /* the connection went away */           \
+  X(ConflictError, CONFLICT)                  /* 409, usually an orphaned session */   \
+  X(RateLimitedError, RATE_LIMITED)           /* 429 */                                \
+  X(BadRequestError, BAD_REQUEST)             /* the request itself was wrong */       \
+  X(ServerError, SERVER_ERROR)                /* 5xx; may work later */                \
+  X(VersionMismatchError, VERSION_MISMATCH)   /* client and platform disagree */       \
+  X(DecodeError, DECODE_FAILED)               /* a reply arrived, unintelligible */    \
+  X(InvalidStateError, INVALID_STATE)         /* not possible in this state */         \
+  X(SessionTerminalError, SESSION_TERMINAL)   /* start a new session */                \
+  X(MessageTooLargeError, MESSAGE_TOO_LARGE)  /* over what the channel accepts */      \
+  X(TransportError, TRANSPORT_ERROR)          /* the media transport failed */         \
+  X(RequestTimeoutError, REQUEST_TIMEOUT)     /* sent, nothing came back in time */    \
+  X(AbortedError, ABORTED)                    /* abandoned before it finished */       \
+  X(RecorderDisabledError, RECORDER_DISABLED) /* clip/recording: recorder disabled or crashed */
 
 namespace detail {
 

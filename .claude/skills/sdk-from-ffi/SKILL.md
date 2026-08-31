@@ -69,6 +69,10 @@ This has bitten twice. Both times the library on disk was older than the crates.
 
 - **Add your language's declarations to the parity script** when you add an SDK, so the
   same guard covers you.
+- **Do the same for `scripts/check-error-codes-parity.py`.** It's the sibling guard for
+  the error-code hierarchy (below): every code in `crates/reactor-core/src/error.rs`
+  needs a declared class in your binding too, and the script only knows to check a file
+  once you add it to its `SDKS` table — one line, same shape as the existing entries.
 - **Rebuild the native library after pulling changes under `crates/`.** Put it in your
   SDK's README under Development, because whoever hits it will not guess.
 - **Prefer failing loudly at load.** If your language can check a version symbol or an
@@ -259,10 +263,12 @@ are the same operations. It carries `push_frame`, `on_frame`, `on_raw_frame`, `p
 hardcoding a name.
 
 **Errors** — one flat list of codes shared with the core (`crates/reactor-core/src/error.rs`),
-16 typed classes over it, each carrying `code`, `message`, `recoverable`, `status`,
-`operation`, `retry_after_ms`. Recoverability is **derived from the code**, never stored
-per-site, so two SDKs cannot disagree about whether a timeout is worth retrying. The same
-object is what an `on_error` event delivers and what a failed call raises.
+one typed class per code (`scripts/check-error-codes-parity.py` reports the current count
+and enforces it in CI, so take it from there rather than from a number written down
+somewhere), each carrying `code`, `message`, `recoverable`, `status`, `operation`,
+`retry_after_ms`. Recoverability is **derived from the code**, never stored per-site, so
+two SDKs cannot disagree about whether a timeout is worth retrying. The same object is
+what an `on_error` event delivers and what a failed call raises.
 
 Three things Python removed after shipping them, so do not add them:
 
@@ -557,6 +563,7 @@ rest of the stack never lands. A rough order, each of these a PR:
 ## Before opening the PR
 
 - [ ] `check-abi-parity.py` knows about your binding's declarations.
+- [ ] `check-error-codes-parity.py` knows about your binding's error file.
 - [ ] `client_info.sdk_version` the coordinator sees for this binding matches its own published
       package version — not `reactor-core`'s `CORE_VERSION` default. See *Packaging and
       release* above; today's FFI boundary doesn't expose a way to set this, so if your PR
