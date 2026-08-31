@@ -494,6 +494,21 @@ and building that needs a Rust toolchain plus a libwebrtc download.
   reason.
 - **The version is the release switch.** Bumping it in the manifest and merging to main is
   what publishes; everything else on main is a no-op.
+- **`client_info.sdk_version` must be your binding's published version, not `reactor-core`'s.**
+  `ReactorOptions::new()` defaults `sdk_version` to `CORE_VERSION` (`reactor-core`'s own crate
+  version, i.e. the workspace version) — a Rust-internal number the coordinator has no reason
+  to see. `reactor-ffi`'s `create_impl` (`crates/reactor-ffi/src/lib.rs`) never overrides it, and
+  `reactor_create`/`reactor_create_with_adm` don't even take a `sdk_version` argument at the C
+  ABI, so **every FFI-based binding today reports the workspace version, not its own package
+  version** (confirmed for Python and C++; the same gap hits any new binding built from this
+  skill until the FFI boundary grows a parameter for it). `sdk_type` has the same flattening —
+  `create_impl` hardcodes it to `"ffi"` for every language, so the coordinator can't even tell
+  Python and C++ apart. Fixing this means threading a version (and ideally a language-specific
+  `sdk_type`) through the FFI call, not something a single binding can patch on its own — flag
+  it rather than silently shipping another binding into the same gap. (This is exactly the bug
+  `sdks/js` had on its own wasm-bindgen path: it defaulted the same way, fixed by having the JS
+  package hand its own `package.json` version to the binding — see that PR for the shape of the
+  fix, though the FFI boundary needs a wire change the wasm one didn't.)
 - **Gate publishing on a variable your CI can actually see.** A kill switch read in a
   job-level `if` cannot see an environment-scoped variable — the environment is resolved
   after the condition decides whether the job runs — and that silently skipped a release
@@ -542,6 +557,10 @@ rest of the stack never lands. A rough order, each of these a PR:
 ## Before opening the PR
 
 - [ ] `check-abi-parity.py` knows about your binding's declarations.
+- [ ] `client_info.sdk_version` the coordinator sees for this binding matches its own published
+      package version — not `reactor-core`'s `CORE_VERSION` default. See *Packaging and
+      release* above; today's FFI boundary doesn't expose a way to set this, so if your PR
+      doesn't add one, say so explicitly rather than let it pass silently.
 - [ ] Every heap string from the FFI is freed; the static one is not.
 - [ ] Callback context outlives `reactor_destroy`, including the `-1` path.
 - [ ] Control events reach the host loop; media stays inline.
