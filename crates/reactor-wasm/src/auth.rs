@@ -2,9 +2,10 @@
 //!
 //! The JS SDK accepts either a fixed JWT or a resolver function called before
 //! every authenticated request, because the tokens apps hand us are typically
-//! short-lived (Clerk sessions, a backend `/token` endpoint). A provider that
-//! only took a string would force the SDK to reconnect to refresh a token, so
-//! this one calls back into JS per request and awaits a promise if it gets one.
+//! short-lived — a session token from the app's own identity layer, or a JWT a
+//! backend mints per visit. A provider that only took a string would force the
+//! SDK to reconnect to refresh a token, so this one calls back into JS per
+//! request and awaits a promise if it gets one.
 
 use std::cell::RefCell;
 
