@@ -755,7 +755,8 @@ async fn write_segments<L: Fn() -> bool>(
 /// `api_url` and `model_name` must be NUL-terminated C strings. `jwt` may be null
 /// (unauthenticated local dev). `callbacks` may be null (no events); when
 /// non-null it must point to a readable [`ReactorCallbacks`], which is copied
-/// during the call.
+/// during the call. `sdk_version` and `sdk_type` may be null; see
+/// [`create_impl`] for what null defaults to.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_create(
     api_url: *const c_char,
@@ -763,8 +764,12 @@ pub unsafe extern "C" fn reactor_create(
     jwt: *const c_char,
     local: c_int,
     callbacks: *const ReactorCallbacks,
+    sdk_version: *const c_char,
+    sdk_type: *const c_char,
 ) -> *mut ReactorHandle {
-    create_impl(api_url, model_name, jwt, local, callbacks, None)
+    create_impl(
+        api_url, model_name, jwt, local, callbacks, None, sdk_version, sdk_type,
+    )
 }
 
 /// Like [`reactor_create`], but selects the audio device module explicitly:
@@ -785,15 +790,26 @@ pub unsafe extern "C" fn reactor_create_with_adm(
     local: c_int,
     callbacks: *const ReactorCallbacks,
     adm_mode: c_int,
+    sdk_version: *const c_char,
+    sdk_type: *const c_char,
 ) -> *mut ReactorHandle {
     let adm = match adm_mode {
         0 => Some(AdmMode::Synthetic),
         1 => Some(AdmMode::Platform),
         _ => None,
     };
-    create_impl(api_url, model_name, jwt, local, callbacks, adm)
+    create_impl(
+        api_url, model_name, jwt, local, callbacks, adm, sdk_version, sdk_type,
+    )
 }
 
+/// `sdk_version` and `sdk_type` are nullable: null keeps the workspace-version /
+/// `"ffi"` defaults [`ReactorOptions::new`](reactor_core::ReactorOptions::new)
+/// already sets, which is what every binding got before these parameters
+/// existed. A binding should pass its own published package version and a
+/// language tag (`"python"`, `"cpp"`, …) so the coordinator sees what actually
+/// shipped instead of `reactor-core`'s internal crate version and a `sdk_type`
+/// that cannot tell one language from another.
 #[allow(clippy::too_many_arguments)]
 unsafe fn create_impl(
     api_url: *const c_char,
@@ -802,6 +818,8 @@ unsafe fn create_impl(
     local: c_int,
     callbacks: *const ReactorCallbacks,
     adm: Option<AdmMode>,
+    sdk_version: *const c_char,
+    sdk_type: *const c_char,
 ) -> *mut ReactorHandle {
     let api_url = CStr::from_ptr(api_url).to_string_lossy().into_owned();
     let model_name = CStr::from_ptr(model_name).to_string_lossy().into_owned();
@@ -809,6 +827,16 @@ unsafe fn create_impl(
         None
     } else {
         Some(CStr::from_ptr(jwt).to_string_lossy().into_owned())
+    };
+    let sdk_version = if sdk_version.is_null() {
+        None
+    } else {
+        Some(CStr::from_ptr(sdk_version).to_string_lossy().into_owned())
+    };
+    let sdk_type = if sdk_type.is_null() {
+        None
+    } else {
+        Some(CStr::from_ptr(sdk_type).to_string_lossy().into_owned())
     };
 
     // Guards every host pointer below, including the media callbacks and the
@@ -927,7 +955,10 @@ unsafe fn create_impl(
     let peer_transport = Arc::new(peer_transport);
 
     let mut options = ReactorOptions::new(&api_url, &model_name);
-    options.sdk_type = "ffi".to_string();
+    options.sdk_type = sdk_type.unwrap_or_else(|| "ffi".to_string());
+    if let Some(version) = sdk_version {
+        options.sdk_version = version;
+    }
     options.local = local != 0;
 
     let deps = ReactorDeps {
