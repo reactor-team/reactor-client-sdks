@@ -28,8 +28,8 @@
 #include "reactor/json.hpp"
 #include "reactor/reactor.hpp"
 #include "reactor/recording.hpp"
-#include "reactor/version.hpp"
 #include "reactor/track.hpp"
+#include "reactor/version.hpp"
 
 namespace reactor {
 
@@ -588,10 +588,9 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     constexpr int SYNTHETIC_ADM = 0;
     // REACTOR_SDK_VERSION is a string literal (see version.hpp.in), so it needs
     // no lifetime management here unlike the other c_str()s above.
-    handle_ =
-        ffi().create_with_adm(api_url_.c_str(), model_.c_str(), jwt_ ? jwt_->c_str() : nullptr,
-                              local_ ? 1 : 0, &callbacks, SYNTHETIC_ADM,
-                              REACTOR_SDK_VERSION, "cpp");
+    handle_ = ffi().create_with_adm(api_url_.c_str(), model_.c_str(),
+                                    jwt_ ? jwt_->c_str() : nullptr, local_ ? 1 : 0, &callbacks,
+                                    SYNTHETIC_ADM, REACTOR_SDK_VERSION, "cpp");
     if (handle_ == nullptr) {
       throw ReactorError{"libreactor_ffi could not create a client (allocation failed)"};
     }

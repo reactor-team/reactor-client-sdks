@@ -14,7 +14,6 @@
 // both ends can.
 
 #include "reactor/reactor.hpp"
-#include "reactor/version.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -29,6 +28,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "detail/ffi.hpp"
+#include "reactor/version.hpp"
 
 namespace {
 

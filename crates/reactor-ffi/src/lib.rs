@@ -768,7 +768,14 @@ pub unsafe extern "C" fn reactor_create(
     sdk_type: *const c_char,
 ) -> *mut ReactorHandle {
     create_impl(
-        api_url, model_name, jwt, local, callbacks, None, sdk_version, sdk_type,
+        api_url,
+        model_name,
+        jwt,
+        local,
+        callbacks,
+        None,
+        sdk_version,
+        sdk_type,
     )
 }
 
@@ -799,7 +806,14 @@ pub unsafe extern "C" fn reactor_create_with_adm(
         _ => None,
     };
     create_impl(
-        api_url, model_name, jwt, local, callbacks, adm, sdk_version, sdk_type,
+        api_url,
+        model_name,
+        jwt,
+        local,
+        callbacks,
+        adm,
+        sdk_version,
+        sdk_type,
     )
 }
 
