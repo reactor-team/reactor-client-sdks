@@ -187,6 +187,11 @@ dir = "sdks/js"
 depends = ["install:js"]
 run = "npm run build"
 
+[tasks."build:js:examples"]
+description = "[Build] Smoke-build every JS SDK example against dist/"
+depends = ["build:js"]
+run = "scripts/build-js-examples.sh"
+
 # ── C++ SDK ───────────────────────────────────────────────────────────────────
 # Needs a release build of libreactor_ffi to link against; `build:cpp` makes one.
 # Rebuild it after pulling changes under crates/ — reactor_abi_version() turns a
