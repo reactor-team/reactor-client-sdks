@@ -12,6 +12,7 @@ import { toPublicFileRef } from './internal/file-ref';
 import { FileRef } from './file-ref';
 import { toPublicClip } from './internal/recording';
 import { STATS_INTERVAL_MS } from './internal/stats';
+import packageJson from '../package.json';
 import type * as RecordingModule from './recording';
 import type { ConnectOptions, ReactorMessage } from './internal/reactor-wasm.types';
 
@@ -324,6 +325,21 @@ describe('Reactor connect/construction options', () => {
       modelName: 'test-model',
       local: true,
       apiUrl: 'http://example.test',
+      sdkVersion: packageJson.version,
+    });
+  });
+
+  it('defaults sdkVersion to this package’s own version, overridable via options', async () => {
+    const defaulted = new Reactor({ modelName: 'test-model' });
+
+    expect((await currentClient(defaulted)).options).toMatchObject({
+      sdkVersion: packageJson.version,
+    });
+
+    const overridden = new Reactor({ modelName: 'test-model', sdkVersion: '9.9.9' });
+
+    expect((await currentClient(overridden)).options).toMatchObject({
+      sdkVersion: '9.9.9',
     });
   });
 });
