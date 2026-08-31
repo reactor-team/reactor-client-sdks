@@ -59,6 +59,8 @@ def _load() -> ctypes.CDLL:
         ctypes.c_char_p,  # jwt (nullable)
         ctypes.c_int,  # local
         ctypes.c_void_p,  # callbacks (nullable)
+        ctypes.c_char_p,  # sdk_version (nullable)
+        ctypes.c_char_p,  # sdk_type (nullable)
     ]
 
     lib.reactor_create_with_adm.restype = ctypes.c_void_p
@@ -69,6 +71,8 @@ def _load() -> ctypes.CDLL:
         ctypes.c_int,
         ctypes.c_void_p,
         ctypes.c_int,  # adm_mode
+        ctypes.c_char_p,  # sdk_version (nullable)
+        ctypes.c_char_p,  # sdk_type (nullable)
     ]
 
     # 0 = quiesced, -1 = a callback is still running (see reactor_ffi.h).

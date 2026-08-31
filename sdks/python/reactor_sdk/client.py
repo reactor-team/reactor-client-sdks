@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, BinaryIO, ClassVar, overload
 
+from . import __version__
 from ._auth import DEFAULT_API_URL, fetch_jwt
 from ._ffi import (
     COMPLETION_FN,
@@ -129,6 +130,11 @@ atexit.register(_close_live_clients)
 #: the microphone streamed in its place, which is what `examples/push_audio.py`
 #: was silently doing.
 _SYNTHETIC_ADM = 0
+
+#: Reported to the coordinator as client_info.sdk_type, so it can tell this
+#: binding apart from the C++ one — both go through the same FFI entry point,
+#: which otherwise reports "ffi" for every language.
+_SDK_TYPE = b"python"
 
 #: What a registered handler returns: `None` from a plain function, or a coroutine from
 #: an `async def` one — `_fire` inspects this to decide whether to schedule it.
@@ -680,6 +686,8 @@ class Reactor:
             local_int,
             ctypes.byref(cbs),
             ctypes.c_int(_SYNTHETIC_ADM),
+            __version__.encode(),
+            _SDK_TYPE,
         )
 
         self._handle = handle

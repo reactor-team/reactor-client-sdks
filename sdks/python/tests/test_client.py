@@ -606,7 +606,7 @@ class TestNoAudioDeviceIsOpened:
         captured: dict = {}
         fake_lib = mock.Mock()
 
-        def create_with_adm(api_url, model, jwt, local, callbacks, adm_mode):
+        def create_with_adm(api_url, model, jwt, local, callbacks, adm_mode, sdk_version, sdk_type):
             captured["adm_mode"] = adm_mode
             return 1234
 
