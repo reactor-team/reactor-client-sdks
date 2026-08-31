@@ -73,6 +73,15 @@ This has bitten twice. Both times the library on disk was older than the crates.
   the error-code hierarchy (below): every code in `crates/reactor-core/src/error.rs`
   needs a declared class in your binding too, and the script only knows to check a file
   once you add it to its `SDKS` table — one line, same shape as the existing entries.
+- **If your binding gets its own page in the `docs` repo's `sdk-reference/`**, its error-code
+  table is generated too (REA-5844) — `.github/scripts/sdk-docs-sync/render_error_codes.py`
+  over there reads this repo's `error.rs` and `sdks/js/src/errors.ts` and needs nothing from
+  you for the base table. It does need two things on the docs side: your own
+  `sdk-docs-sync` instantiation (see that repo's `AGENTS.md`, "SDK Docs Sync" — a new `.conf`
+  plus a thin workflow copying the existing shape), and, only if one of the handful of codes
+  in `ACTION_HINTS` has a fix worth naming for your language (e.g. "call `reconnect()`" —
+  something that names an actual method or package, so it can't live in `error.rs` itself),
+  an entry under your language's key in that same dict. Nothing else changes there.
 - **Rebuild the native library after pulling changes under `crates/`.** Put it in your
   SDK's README under Development, because whoever hits it will not guess.
 - **Prefer failing loudly at load.** If your language can check a version symbol or an
@@ -564,6 +573,8 @@ rest of the stack never lands. A rough order, each of these a PR:
 
 - [ ] `check-abi-parity.py` knows about your binding's declarations.
 - [ ] `check-error-codes-parity.py` knows about your binding's error file.
+- [ ] If your binding gets its own `docs` reference page, that repo's `sdk-docs-sync` and
+      `render_error_codes.py`'s `ACTION_HINTS` (if applicable) know about your language too.
 - [ ] `client_info.sdk_version` the coordinator sees for this binding matches its own published
       package version — not `reactor-core`'s `CORE_VERSION` default. See *Packaging and
       release* above; today's FFI boundary doesn't expose a way to set this, so if your PR
