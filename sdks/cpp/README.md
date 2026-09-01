@@ -42,6 +42,10 @@ Anything outside that table — musl distributions, glibc older than 2.34, 32-bi
 Windows on ARM — has no archive, and has to build `libreactor_ffi` from this
 repository. See [Development](#development).
 
+Every row is checked rather than promised. The Linux archives are built against
+AlmaLinux 9's glibc, and the release refuses one that asks for anything newer
+than 2.34 or that was built for a later macOS than its row here says.
+
 Extract an archive and point CMake at it:
 
 ```bash
@@ -55,8 +59,32 @@ target_link_libraries(app PRIVATE reactor::sdk)
 ```
 
 One target carries everything: the include directories, the C++17 requirement,
-`nlohmann_json`, and `libreactor_ffi` — with an rpath already pointing beside the
-binary, so nothing has to be set at run time.
+`nlohmann_json`, and `libreactor_ffi`. Nothing has to be set to run from your
+build tree — CMake points the binary at the archive it linked against.
+
+### Shipping your application
+
+The SDK is two files and they are not the same kind. `libreactor_sdk.a` is a
+static library and disappears into your binary. `libreactor_ffi` is a *shared*
+library — it carries libwebrtc and the Rust core, exports 29 symbols and hides
+everything else — so it stays a separate file, and it has to travel with what
+you ship.
+
+The rpath CMake gives your binary in the build tree is an absolute path on the
+machine that built it. For an installed application, say it relatively and put
+the library where it points:
+
+```cmake
+set_target_properties(app PROPERTIES
+  INSTALL_RPATH "$<IF:$<PLATFORM_ID:Darwin>,@loader_path,$ORIGIN>")
+
+install(TARGETS app RUNTIME DESTINATION bin)
+install(FILES "$<TARGET_FILE:reactor::ffi>" DESTINATION bin)
+```
+
+`$<TARGET_FILE:reactor::ffi>` is the `.so`, the `.dylib` or the `.dll` — the
+file that runs, on every platform. Windows needs no rpath; the DLL beside the
+executable is how the loader finds it.
 
 ## The shape of the API
 
@@ -167,6 +195,15 @@ speaker.start();
 `Speaker` reports `dropped_ms()` (the device is slower than the stream) and
 `under_runs()` (the stream is slower than the device) — two different problems
 that a single "glitches" counter would hide.
+
+This is the one part of the SDK with a dependency the archive does not carry,
+and only on Linux: the backend is loaded at run time from whichever of
+`libasound.so.2` (ALSA), `libpulse.so.0` or `libjack.so.0` is present. A slim
+container image usually has none, and `start()` then throws rather than
+playing silence — `apt install libasound2` / `dnf install alsa-lib` is the fix.
+Nothing else in the archive needs it: `libreactor_ffi.so` loads `libc`, `libm`,
+`libgcc_s` and the dynamic loader, and that is the whole list. macOS and Windows
+use the system frameworks and need nothing installed.
 
 ## What the SDK refuses
 

@@ -37,10 +37,37 @@ one with -DREACTOR_FFI_LIB_DIR=…")
     return()
   endif()
 
-  # UNKNOWN because the file is a .dylib, a .so or an import library depending on
-  # the platform, and UNKNOWN is the one kind that takes all three by path.
-  add_library(reactor::ffi UNKNOWN IMPORTED)
-  set_target_properties(reactor::ffi PROPERTIES IMPORTED_LOCATION "${REACTOR_FFI_LIBRARY}")
+  # On Windows the file found above is the import library, and the DLL is a
+  # second file — in bin/, where the package puts it. Both are needed and they
+  # are not interchangeable: the linker reads one, the loader the other.
+  if(WIN32)
+    find_file(
+      REACTOR_FFI_RUNTIME
+      NAMES reactor_ffi.dll
+      HINTS "${REACTOR_FFI_LIB_DIR}" "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_BINDIR@"
+      NO_DEFAULT_PATH
+      DOC "reactor_ffi.dll — the half of the native library that runs"
+    )
+    if(NOT REACTOR_FFI_RUNTIME)
+      set(reactor-sdk_FOUND FALSE)
+      set(reactor-sdk_NOT_FOUND_MESSAGE
+          "reactor_ffi.dll is missing from ${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_BINDIR@. \
+Linking would succeed and the application would fail to start.")
+      return()
+    endif()
+  else()
+    set(REACTOR_FFI_RUNTIME "${REACTOR_FFI_LIBRARY}")
+  endif()
+
+  # SHARED with both halves named rather than UNKNOWN with one, so that
+  # `$<TARGET_FILE:reactor::ffi>` is the file to ship on every platform — see
+  # "Shipping your application" in the README, which is one line only because
+  # this is.
+  add_library(reactor::ffi SHARED IMPORTED)
+  set_target_properties(reactor::ffi PROPERTIES IMPORTED_LOCATION "${REACTOR_FFI_RUNTIME}")
+  if(WIN32)
+    set_target_properties(reactor::ffi PROPERTIES IMPORTED_IMPLIB "${REACTOR_FFI_LIBRARY}")
+  endif()
 endif()
 
 # The audio target links Threads privately, which a static library exports anyway
