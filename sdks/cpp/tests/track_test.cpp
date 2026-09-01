@@ -237,7 +237,8 @@ class FakeSession {
 
   static ReactorHandle* create_with_adm(const char* /*api_url*/, const char* /*model*/,
                                         const char* /*jwt*/, int /*local*/,
-                                        const ReactorCallbacks* callbacks, int /*adm_mode*/) {
+                                        const ReactorCallbacks* callbacks, int /*adm_mode*/,
+                                        const char* /*sdk_version*/, const char* /*sdk_type*/) {
     auto& self = current();
     if (callbacks != nullptr) {
       self.callbacks_ = *callbacks;

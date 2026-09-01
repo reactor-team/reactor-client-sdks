@@ -28,6 +28,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "detail/ffi.hpp"
+#include "reactor/version.hpp"
 
 namespace {
 
@@ -77,6 +78,8 @@ class FakeLibrary {
   std::string created_with_jwt;
   std::string created_with_model;
   std::string created_with_api_url;
+  std::string created_with_sdk_version;
+  std::string created_with_sdk_type;
   std::string fetch_jwt_options;
   int connects = 0;
   std::string connect_session_id;
@@ -162,13 +165,16 @@ class FakeLibrary {
 
   static ReactorHandle* create_with_adm(const char* api_url, const char* model, const char* jwt,
                                         int /*local*/, const ReactorCallbacks* callbacks,
-                                        int adm_mode) {
+                                        int adm_mode, const char* sdk_version,
+                                        const char* sdk_type) {
     auto& self = current();
     ++self.creates;
     self.adm_mode = adm_mode;
     self.created_with_api_url = api_url == nullptr ? "" : api_url;
     self.created_with_model = model == nullptr ? "" : model;
     self.created_with_jwt = jwt == nullptr ? "" : jwt;
+    self.created_with_sdk_version = sdk_version == nullptr ? "" : sdk_version;
+    self.created_with_sdk_type = sdk_type == nullptr ? "" : sdk_type;
     if (callbacks != nullptr) {
       self.callbacks_ = *callbacks;
     }
@@ -356,6 +362,8 @@ TEST_CASE("connect passes the model, the coordinator and the token through") {
   CHECK(fixture.library.created_with_model == "xmax/x2");
   CHECK(fixture.library.created_with_api_url == "https://api.example.test");
   CHECK(fixture.library.created_with_jwt == "a-token");
+  CHECK(fixture.library.created_with_sdk_version == REACTOR_SDK_VERSION);
+  CHECK(fixture.library.created_with_sdk_type == "cpp");
   CHECK(fixture.library.connects == 1);
 }
 
