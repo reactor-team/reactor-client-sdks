@@ -287,6 +287,19 @@ jobs:
           cmake -S consumer -B consumer/build -DCMAKE_PREFIX_PATH="$PWD/unpacked"
           cmake --build consumer/build --config Release
 
+          # And run it. Linking is the half that works when the archive is
+          # missing the file that runs: the Windows archive shipped
+          # reactor_ffi.dll.lib and no reactor_ffi.dll for as long as this step
+          # stopped at `--build`, because the import library is all the linker
+          # ever wanted. Multi-config generators put the binary a directory
+          # deeper, so it is found rather than assumed.
+          exe=$(find consumer/build -maxdepth 2 -type f \( -name consumer -o -name consumer.exe \) | head -1)
+          if [ -z "$exe" ]; then
+            echo "::error::the consumer built but produced no binary to run"
+            exit 1
+          fi
+          "$exe"
+
       # The macOS half of the promise the platform table makes, checked the way the
       # container checks the glibc half. A static library carries the deployment
       # target of whatever built it, and an app targeting macOS 11 cannot link an

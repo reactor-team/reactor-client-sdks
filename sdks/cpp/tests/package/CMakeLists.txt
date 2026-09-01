@@ -26,3 +26,16 @@ if(TARGET reactor::sdk_audio)
 else()
   target_link_libraries(consumer PRIVATE reactor::sdk)
 endif()
+
+# Windows has no rpath: the loader looks beside the executable, so the DLL has to
+# be there before this can run. That is the same copy a consumer makes when they
+# ship — the README's install rule — done here at build time, and it is the step
+# whose absence let an archive with no DLL in it look fine.
+if(WIN32)
+  add_custom_command(
+    TARGET consumer POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "$<TARGET_FILE:reactor::ffi>" "$<TARGET_FILE_DIR:consumer>"
+    VERBATIM
+  )
+endif()

@@ -59,8 +59,32 @@ target_link_libraries(app PRIVATE reactor::sdk)
 ```
 
 One target carries everything: the include directories, the C++17 requirement,
-`nlohmann_json`, and `libreactor_ffi` — with an rpath already pointing beside the
-binary, so nothing has to be set at run time.
+`nlohmann_json`, and `libreactor_ffi`. Nothing has to be set to run from your
+build tree — CMake points the binary at the archive it linked against.
+
+### Shipping your application
+
+The SDK is two files and they are not the same kind. `libreactor_sdk.a` is a
+static library and disappears into your binary. `libreactor_ffi` is a *shared*
+library — it carries libwebrtc and the Rust core, exports 29 symbols and hides
+everything else — so it stays a separate file, and it has to travel with what
+you ship.
+
+The rpath CMake gives your binary in the build tree is an absolute path on the
+machine that built it. For an installed application, say it relatively and put
+the library where it points:
+
+```cmake
+set_target_properties(app PROPERTIES
+  INSTALL_RPATH "$<IF:$<PLATFORM_ID:Darwin>,@loader_path,$ORIGIN>")
+
+install(TARGETS app RUNTIME DESTINATION bin)
+install(FILES "$<TARGET_FILE:reactor::ffi>" DESTINATION bin)
+```
+
+`$<TARGET_FILE:reactor::ffi>` is the `.so`, the `.dylib` or the `.dll` — the
+file that runs, on every platform. Windows needs no rpath; the DLL beside the
+executable is how the loader finds it.
 
 ## The shape of the API
 

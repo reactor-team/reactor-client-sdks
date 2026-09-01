@@ -85,6 +85,34 @@ if(NOT REACTOR_FFI_LIBRARY)
     "or point this at an existing copy with -DREACTOR_FFI_LIB_DIR=…")
 endif()
 
+# On Windows what find_library returned is the *import* library: the thing you
+# link, and not the thing that runs. reactor_ffi.dll is a separate file, and it
+# is the one that has to travel with the application — find_library never
+# returns it, so it is looked up by name.
+#
+# Without this the Windows archive shipped reactor_ffi.dll.lib and no DLL at
+# all: a package that links cleanly and then fails at process start with
+# "reactor_ffi.dll was not found". The consumer check in the release workflow
+# could not see it, because linking is exactly the half that works.
+if(WIN32)
+  find_file(
+    REACTOR_FFI_RUNTIME
+    NAMES reactor_ffi.dll
+    HINTS "${REACTOR_FFI_LIB_DIR}"
+    NO_DEFAULT_PATH
+    DOC "reactor_ffi.dll — the half of the native library that runs"
+  )
+  if(NOT REACTOR_FFI_RUNTIME)
+    message(FATAL_ERROR
+      "reactor_ffi.dll not found under ${REACTOR_FFI_LIB_DIR}, next to the import "
+      "library ${REACTOR_FFI_LIBRARY}. cargo writes both; a package built without "
+      "the DLL links and then cannot start.")
+  endif()
+else()
+  # One file, which both links and runs.
+  set(REACTOR_FFI_RUNTIME "${REACTOR_FFI_LIBRARY}")
+endif()
+
 # Named rather than linked by path, and this is not cosmetic. `reactor_sdk` is a
 # static archive, so it links nothing itself: the FFI stays in its *interface*
 # and is written into the exported reactor-sdk-targets.cmake. As a bare path that
@@ -94,11 +122,16 @@ endif()
 # defines it: here, the cargo build; in the installed config, the package's own
 # lib/.
 #
-# UNKNOWN rather than SHARED because the file is a .dylib, a .so or an import
-# library depending on the platform, and UNKNOWN is the one kind that takes all
-# three by path.
-add_library(reactor::ffi UNKNOWN IMPORTED)
-set_target_properties(reactor::ffi PROPERTIES IMPORTED_LOCATION "${REACTOR_FFI_LIBRARY}")
+# SHARED with both halves named, rather than UNKNOWN with one, so that
+# `$<TARGET_FILE:reactor::ffi>` is the file to ship on every platform — the .so,
+# the .dylib, the .dll. That is what the README's install snippet copies beside
+# the consumer's binary, and it can only be one line if the three platforms
+# answer the same question the same way.
+add_library(reactor::ffi SHARED IMPORTED)
+set_target_properties(reactor::ffi PROPERTIES IMPORTED_LOCATION "${REACTOR_FFI_RUNTIME}")
+if(WIN32)
+  set_target_properties(reactor::ffi PROPERTIES IMPORTED_IMPLIB "${REACTOR_FFI_LIBRARY}")
+endif()
 
 if(NOT EXISTS "${REACTOR_FFI_INCLUDE_DIR}/reactor_ffi.h")
   message(FATAL_ERROR
@@ -196,10 +229,17 @@ set_target_properties(
   # the repo says `reactor::sdk`.
   EXPORT_NAME sdk
   POSITION_INDEPENDENT_CODE ON
-  # So an executable finds the bundled libreactor_ffi sitting beside it without
-  # the consumer setting anything at run time.
-  BUILD_RPATH "${REACTOR_FFI_LIB_DIR}"
-  INSTALL_RPATH "$<IF:$<PLATFORM_ID:Darwin>,@loader_path,$ORIGIN>"
+  # No rpath properties here. reactor_sdk is a static archive: it is never
+  # linked, so BUILD_RPATH and INSTALL_RPATH on it do nothing, and they are not
+  # interface properties either — nothing reaches a consumer through them. They
+  # used to be set, with a comment claiming an executable would find the FFI
+  # beside it as a result, which was never true.
+  #
+  # What actually happens: an executable linking reactor::sdk links the imported
+  # FFI by path, so CMake gives it a build rpath to wherever that file is. That
+  # is right for the build tree and wrong for a shipped application, because the
+  # path is this machine's. Shipping is the consumer's install step, and the
+  # README's "Shipping your application" spells out the two lines.
 )
 
 # ── Audio devices (optional) ──────────────────────────────────────────────────
@@ -324,6 +364,13 @@ install(
 # building libreactor_ffi needs a Rust toolchain and a libwebrtc download, which
 # is exactly what a consumer of a C++ SDK should not have to own.
 install(FILES "${REACTOR_FFI_LIBRARY}" DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+
+# And on Windows the DLL as well, in bin/ where the platform looks for it. Two
+# files there, and both are needed: lib/reactor_ffi.dll.lib is what the linker
+# reads, bin/reactor_ffi.dll is what the loader reads.
+if(WIN32)
+  install(FILES "${REACTOR_FFI_RUNTIME}" DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()
 
 # Under its own name, because that is what the installed config looks for and the
 # suffix differs per platform.
