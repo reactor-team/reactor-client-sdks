@@ -172,6 +172,15 @@ speaker.start();
 `under_runs()` (the stream is slower than the device) — two different problems
 that a single "glitches" counter would hide.
 
+This is the one part of the SDK with a dependency the archive does not carry,
+and only on Linux: the backend is loaded at run time from whichever of
+`libasound.so.2` (ALSA), `libpulse.so.0` or `libjack.so.0` is present. A slim
+container image usually has none, and `start()` then throws rather than
+playing silence — `apt install libasound2` / `dnf install alsa-lib` is the fix.
+Nothing else in the archive needs it: `libreactor_ffi.so` loads `libc`, `libm`,
+`libgcc_s` and the dynamic loader, and that is the whole list. macOS and Windows
+use the system frameworks and need nothing installed.
+
 ## What the SDK refuses
 
 The native layer is permissive: pushing into a track that does not exist, or that
