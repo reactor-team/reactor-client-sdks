@@ -9,14 +9,17 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
+## [3.0.1]
 
-- Incoming data-channel (`message`) and control-channel (`runtimeMessage`)
-  traffic is now logged via `console.debug` in development builds (detected
-  from `process.env.NODE_ENV === 'development'`, as inlined by most
-  bundlers — webpack, Next.js, Vite). Silent otherwise, including in
-  production. This restores console visibility into wire traffic that was
-  present, unconditionally, in the 2.x line.
+### Fixed
+
+- `client_info.sdk_version`, sent to the coordinator on every session and
+  signaling request, now defaults to this package's own published version
+  instead of `reactor-wasm`'s underlying Rust crate version. Every prior
+  release (3.0.0 included) reported the wasm build's internal crate version
+  instead of its actual npm version — purely a coordinator-side
+  observability gap, not a behavior change for callers. Still overridable
+  via the constructor's `sdkVersion` option.
 
 ## [3.0.0]
 
@@ -56,6 +59,12 @@ binding over `reactor-core`.
   `requestRecording`/`downloadClipAsFile`, matching `uploadFile`'s existing
   direct-delegation pattern. All three were store actions in 2.x too — this
   was a parity gap, not new API surface.
+- Incoming data-channel (`message`) and control-channel (`runtimeMessage`)
+  traffic is now logged via `console.debug` in development builds (detected
+  from `process.env.NODE_ENV === 'development'`, as inlined by most
+  bundlers — webpack, Next.js, Vite). Silent otherwise, including in
+  production. This restores console visibility into wire traffic that was
+  present, unconditionally, in the 2.x line.
 
 ### Changed
 

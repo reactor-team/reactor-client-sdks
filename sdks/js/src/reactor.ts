@@ -8,6 +8,7 @@ import { toPublicClip } from './internal/recording';
 import type { ReactorClient } from './internal/reactor-wasm.types';
 import { createRTCStatsExtractor, STATS_INTERVAL_MS } from './internal/stats';
 import { loadReactorWasm } from './internal/wasm';
+import packageJson from '../package.json';
 import type { FileRef } from './file-ref';
 import { downloadClipAsFile as downloadClipAsFileFn, type DownloadClipOptions } from './recording';
 import type {
@@ -70,7 +71,11 @@ export class Reactor implements Disposable {
   constructor(options: ReactorOptions) {
     const { jwt, ...clientOptions } = options;
 
-    this.clientOptions = clientOptions;
+    // The wasm binding's own default (`reactor-core`'s crate version) tracks
+    // the Rust workspace, not this package — without this, `client_info`
+    // reports the wrong version to the coordinator. Still overridable via
+    // `options.sdkVersion`.
+    this.clientOptions = { sdkVersion: packageJson.version, ...clientOptions };
     this.jwt = jwt ?? null;
   }
 
