@@ -28,6 +28,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/release-cpp.yml"
+      - "scripts/build-manylinux-cpp.sh"
 
   # Builds the matrix without releasing. The only way to find out whether it works
   # before it *is* the release path: a workflow only runs from the default branch,
@@ -41,6 +42,7 @@ on:
       - "sdks/cpp/cmake/**"
       - "crates/reactor-ffi/**"
       - ".github/workflows/release-cpp.yml"
+      - "scripts/build-manylinux-cpp.sh"
 
   workflow_dispatch:
     inputs:
@@ -53,11 +55,6 @@ concurrency:
   group: release-cpp-${{ github.ref }}
   # Supersede an outdated pull-request build, but never interrupt a release.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-env:
-  MISE_VERSION: "2026.8.8"
-  MISE_LOCKED: "1"
-  MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
 
 jobs:
   # ── 0. Is this push a release? ──────────────────────────────────────────────
@@ -128,83 +125,122 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux builds inside a manylinux container, exactly as the Python
+          # wheels do — see scripts/build-manylinux-cpp.sh, which owns that whole
+          # build and therefore needs no target/lib entry here.
+          #
+          # manylinux_2_34 is AlmaLinux 9, whose glibc 2.34 is the floor the
+          # README's platform table promises and what reactor-webrtc publishes
+          # against. Built on the runner's own Ubuntu instead, the archive would
+          # require glibc 2.39 and fail to load on every distribution that table
+          # names.
           - platform: linux-x64
             os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            lib: libreactor_ffi.so
+            container_image: quay.io/pypa/manylinux_2_34_x86_64
 
           - platform: linux-arm64
             # Native arm64 runner, so no qemu.
             os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            lib: libreactor_ffi.so
+            container_image: quay.io/pypa/manylinux_2_34_aarch64
 
           - platform: macos-arm64
             os: macos-latest
             target: aarch64-apple-darwin
-            lib: libreactor_ffi.dylib
+            # Rust's default floor for this target, and the README's promise. Left
+            # unset, clang targets the runner's own macOS: the 1.0.0 rehearsal
+            # produced a libreactor_sdk.a whose objects declared minos 26.0, in an
+            # archive whose table says 11+.
+            macos_deployment_target: "11.0"
 
           - platform: macos-x64
-            os: macos-13
+            # macos-13 is retired. The job sat unscheduled for 24 hours and was
+            # cancelled, and `release` needs every archive — so one dead runner
+            # label is what has been holding the whole release. macos-15-intel is
+            # the x86_64 runner now, and what the Python wheels build on.
+            os: macos-15-intel
             target: x86_64-apple-darwin
-            lib: libreactor_ffi.dylib
+            # libwebrtc's x86_64 build requires 13.0, and the archive has to say
+            # so: understating it ships a library that fails to load.
+            macos_deployment_target: "13.0"
 
           - platform: windows-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            lib: reactor_ffi.dll
+            # libwebrtc.lib is built /MT, so Rust must match — as it does for the
+            # Python wheel. Without this the link still succeeds, with LNK4098,
+            # and the DLL carries two C runtimes.
+            rustflags: "-C target-feature=+crt-static"
 
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
 
+      # ── Linux: everything happens in the container ──────────────────────────
+      #
+      # Mounting the checkout and running one script keeps the whole Linux build —
+      # toolchain, native library, SDK, install tree — against AlmaLinux 9's glibc,
+      # which is what makes the platform table's 2.34 true rather than asserted.
+      # The host contributes nothing but the mount, so none of the runner setup
+      # below applies; it picks the tree back up at `stage` and packages it.
+      #
+      # It also does away with the two-compiler dance the other Linux builds need:
+      # the container's clang is the platform compiler, so it can build both the
+      # libwebrtc glue and the SDK, and neither the mise pin nor
+      # setup-libwebrtc-cxx has anything to do here.
+      - name: Build in ${{ matrix.container_image }}
+        if: matrix.container_image != ''
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD":/io -w /io \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            "${{ matrix.container_image }}" \
+            bash /io/scripts/build-manylinux-cpp.sh
+
+      # ── macOS and Windows: build on the runner ──────────────────────────────
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+        if: matrix.container_image == ''
         with:
           target: ${{ matrix.target }}
           cache-on-failure: true
 
-      # Linux only, and only because the clang action below needs it. mise.lock
-      # covers the four platforms this repo develops on and Windows is not one of
-      # them, so with MISE_LOCKED=1 there is nothing there for a Windows runner to
-      # install — and nothing it needs: cmake ships on the runner images, and the
-      # Rust toolchain comes from the action above.
-      - uses: jdx/mise-action@v4
-        if: runner.os == 'Linux'
-        with:
-          version: ${{ env.MISE_VERSION }}
-
-      # Only on Linux, and only for the FFI build: the pinned clang is what can
-      # parse libwebrtc's bundled libc++ headers. The SDK itself is built with the
-      # platform toolchain right after — conda's sysroot cannot resolve the symbols
-      # the .so it produces needs from the system glibc.
-      - name: Install clang for the libwebrtc C++ glue
-        if: runner.os == 'Linux'
-        uses: ./.github/actions/setup-libwebrtc-cxx
+      # Read by cargo for the native library and passed to CMake for the SDK
+      # below. Both halves of the archive have to agree, and neither of them
+      # defaults to the floor the README promises: cargo picks the target's own
+      # (11.0 on arm64, 10.12 on x86_64) and clang picks the runner's macOS.
+      - name: Set the macOS deployment target
+        if: matrix.macos_deployment_target != ''
+        run: echo "MACOSX_DEPLOYMENT_TARGET=${{ matrix.macos_deployment_target }}" >> "$GITHUB_ENV"
 
       - name: Build libreactor_ffi
+        if: matrix.container_image == ''
+        shell: bash
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
         run: cargo build -p reactor-ffi --release --target ${{ matrix.target }}
 
-      - name: Use the platform compiler for the SDK
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -x /usr/bin/clang++ ]; then
-            echo "::error::/usr/bin/clang++ is missing on this runner image."
-            exit 1
-          fi
-          echo "CXX=/usr/bin/clang++" >> "$GITHUB_ENV"
-
       - name: Configure and install
+        if: matrix.container_image == ''
         shell: bash
         run: |
           set -euo pipefail
+
+          # Only on macOS, and spelled out rather than left to the environment:
+          # CMake would infer it from MACOSX_DEPLOYMENT_TARGET, and an inference
+          # is not what the platform table should rest on.
+          extra=()
+          if [ -n "${{ matrix.macos_deployment_target }}" ]; then
+            extra+=(-DCMAKE_OSX_DEPLOYMENT_TARGET=${{ matrix.macos_deployment_target }})
+          fi
+
           cmake -S sdks/cpp -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$PWD/stage" \
             -DREACTOR_FFI_LIB_DIR="$PWD/target/${{ matrix.target }}/release" \
             -DREACTOR_SDK_BUILD_TESTS=OFF \
-            -DREACTOR_SDK_BUILD_EXAMPLES=OFF
+            -DREACTOR_SDK_BUILD_EXAMPLES=OFF \
+            "${extra[@]}"
           cmake --build build --config Release
           cmake --install build --config Release
 
@@ -220,8 +256,12 @@ jobs:
           set -euo pipefail
           mv stage unpacked
           # The cargo output the SDK linked against: nowhere on the machine that
-          # unpacks the archive, so nowhere here either.
-          rm -rf "target/${{ matrix.target }}/release"
+          # unpacks the archive, so nowhere here either. The container script has
+          # already done this for the Linux builds, from inside the mount, where
+          # the files it wrote as root can still be removed.
+          if [ -z "${{ matrix.container_image }}" ]; then
+            rm -rf "target/${{ matrix.target }}/release"
+          fi
 
       - name: Verify a consumer can find_package it
         shell: bash
@@ -246,6 +286,33 @@ jobs:
           cp consumer_main.cpp consumer/main.cpp
           cmake -S consumer -B consumer/build -DCMAKE_PREFIX_PATH="$PWD/unpacked"
           cmake --build consumer/build --config Release
+
+      # The macOS half of the promise the platform table makes, checked the way the
+      # container checks the glibc half. A static library carries the deployment
+      # target of whatever built it, and an app targeting macOS 11 cannot link an
+      # archive built for 26 — which is what shipped in the 1.0.0 rehearsal, where
+      # every .a in lib/ declared minos 26.0 while the table said 11+.
+      - name: Verify the archive's deployment target
+        if: matrix.macos_deployment_target != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          floor="${{ matrix.macos_deployment_target }}"
+          newest="0.0"
+          for macho in unpacked/lib/*.a unpacked/lib/*.dylib; do
+            [ -e "$macho" ] || continue
+            for v in $(otool -l "$macho" | awk '/^ *minos /{print $2}' | sort -Vu); do
+              echo "$(basename "$macho"): minos $v"
+              if [ "$(printf '%s\n%s\n' "$newest" "$v" | sort -V | tail -1)" = "$v" ]; then
+                newest="$v"
+              fi
+            done
+          done
+          if [ "$(printf '%s\n%s\n' "$floor" "$newest" | sort -V | tail -1)" != "$floor" ]; then
+            echo "::error::the archive is built for macOS $newest, above the $floor the README promises"
+            exit 1
+          fi
+          echo "Highest deployment target $newest, at or below the $floor floor"
 
       - name: Package
         id: package

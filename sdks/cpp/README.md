@@ -42,6 +42,10 @@ Anything outside that table — musl distributions, glibc older than 2.34, 32-bi
 Windows on ARM — has no archive, and has to build `libreactor_ffi` from this
 repository. See [Development](#development).
 
+Every row is checked rather than promised. The Linux archives are built against
+AlmaLinux 9's glibc, and the release refuses one that asks for anything newer
+than 2.34 or that was built for a later macOS than its row here says.
+
 Extract an archive and point CMake at it:
 
 ```bash
