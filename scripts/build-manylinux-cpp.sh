@@ -81,9 +81,17 @@ echo "::endgroup::"
 
 # ── The SDK, and the install tree that becomes the archive ───────────────────
 echo "::group::Build and install the SDK"
+# CMAKE_INSTALL_LIBDIR, pinned. GNUInstallDirs reads the distribution it is
+# running on, and on a 64-bit Red Hat family one that means lib64 — so the
+# archive built here would lay itself out differently from the other four, and a
+# consumer on a Debian-family machine would not find the package at all:
+# find_package looks under <prefix>/lib there, and the config would be in
+# <prefix>/lib64. The archive's layout is the SDK's, not the build container's,
+# and the README documents lib/.
 cmake -S /io/sdks/cpp -B /io/build-manylinux \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/io/stage \
+    -DCMAKE_INSTALL_LIBDIR=lib \
     -DREACTOR_FFI_LIB_DIR=/io/target/release \
     -DREACTOR_SDK_BUILD_TESTS=OFF \
     -DREACTOR_SDK_BUILD_EXAMPLES=OFF
@@ -98,14 +106,29 @@ echo "::endgroup::"
 # is a load failure on exactly the distributions the README's table promises.
 echo "::group::glibc floor"
 newest="0.0"
+examined=0
 for elf in /io/stage/lib/*.so; do
     [ -e "${elf}" ] || continue
+    examined=$((examined + 1))
+    # What it will load from the system, printed rather than only checked: an
+    # entry here that is not part of a base install is a dependency the archive
+    # expects a consumer to already have, and the README owes them the name.
+    echo "$(basename "${elf}") needs:"
+    objdump -p "${elf}" | awk '/NEEDED/ {print "  " $2}'
     required=$(objdump -T "${elf}" | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sed 's/GLIBC_//' | sort -V | tail -1)
     echo "$(basename "${elf}"): requires glibc ${required:-none}"
     if [ -n "${required}" ] && [ "$(printf '%s\n%s\n' "${newest}" "${required}" | sort -V | tail -1)" = "${required}" ]; then
         newest="${required}"
     fi
 done
+
+# A floor nothing was measured against passes every time. The first run of this
+# script proved that: the install tree had landed in lib64, the glob matched
+# nothing, and it reported "highest requirement 0.0" over an empty set.
+if [ "${examined}" -eq 0 ]; then
+    echo "::error::no shared library under /io/stage/lib to check — the floor below would be vacuous"
+    exit 1
+fi
 
 if [ "$(printf '%s\n%s\n' "${GLIBC_FLOOR}" "${newest}" | sort -V | tail -1)" != "${GLIBC_FLOOR}" ]; then
     echo "::error::the archive requires glibc ${newest}, above the ${GLIBC_FLOOR} the README promises"
