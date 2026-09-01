@@ -47,6 +47,7 @@ TEST_CASE("each documented code parses into its own class") {
   CHECK(parses_as<reactor::TransportError>(payload_for("TRANSPORT_ERROR")));
   CHECK(parses_as<reactor::RequestTimeoutError>(payload_for("REQUEST_TIMEOUT")));
   CHECK(parses_as<reactor::AbortedError>(payload_for("ABORTED")));
+  CHECK(parses_as<reactor::RecorderDisabledError>(payload_for("RECORDER_DISABLED")));
 }
 
 TEST_CASE("catching the base class catches every one of them") {

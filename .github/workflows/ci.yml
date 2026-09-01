@@ -86,6 +86,8 @@ jobs:
       - run: hk validate
       - name: ABI parity (lib.rs / reactor_ffi.h / _ffi.py / sdks/cpp)
         run: mise run lint:abi
+      - name: Error-code parity (error.rs / errors.ts / errors.py / errors.hpp)
+        run: mise run lint:error-codes
       - run: mise run lint:shell
       - name: Secret scan (git history)
         run: mise run lint:secrets

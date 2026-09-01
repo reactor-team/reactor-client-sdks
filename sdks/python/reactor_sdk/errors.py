@@ -226,6 +226,25 @@ class AbortedError(ReactorError):
     code = "ABORTED"
 
 
+class RecorderDisabledError(ReactorError):
+    """A `request_clip`/`request_recording` call failed because the model's recorder is
+    disabled or has crashed.
+
+    Unlike every other code here, `RECORDER_DISABLED` isn't platform-sent —
+    `reactor-core` produces it by matching known reason strings on an otherwise
+    free-text `ClipFailed` message, as a stopgap until that message carries a
+    structured reason. Treat it as best-effort: a clip failure for the same
+    underlying reason may still arrive as the base `ReactorError` (`code:
+    "INTERNAL_ERROR"`) if the reason text ever changes upstream.
+
+    `recoverable` is `False`: the recorder being disabled or crashed isn't
+    something retrying the same call can fix — it needs an operator to
+    re-enable or restart the recorder on the model side first.
+    """
+
+    code = "RECORDER_DISABLED"
+
+
 #: Every code this package has a class for. Anything else — a platform code for a
 #: rejected request — falls back to `ReactorError` with `code` set to it.
 ERROR_CLASSES: tuple[type[ReactorError], ...] = (
@@ -245,6 +264,7 @@ ERROR_CLASSES: tuple[type[ReactorError], ...] = (
     DisconnectedError,
     RequestTimeoutError,
     AbortedError,
+    RecorderDisabledError,
 )
 
 _BY_CODE: dict[str, type[ReactorError]] = {cls.code: cls for cls in ERROR_CLASSES}
