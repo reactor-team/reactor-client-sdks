@@ -7,11 +7,18 @@ __pycache__/
 dist/
 *.egg-info/
 node_modules/
+.env
+.env.local
+.env.*.local
 .DS_Store
 .idea/
 .vscode/
 *.swp
 *.swo
+
+# Playwright's own output (sdks/js/integration)
+/sdks/js/integration/test-results/
+/sdks/js/integration/playwright-report/
 
 # C++ SDK build tree (cmake -B sdks/cpp/build)
 /sdks/cpp/build/

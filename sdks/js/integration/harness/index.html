@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reactor JS SDK — integration harness</title>
+  </head>
+  <body>
+    <!--
+      Not a demo: nothing here is meant to be read by a person. Playwright
+      drives the SDK directly through `window.__harness` (see src/main.ts)
+      and inspects state through it, rather than through UI controls — the
+      point is exercising the SDK's public API surface, not a UI built on
+      top of it.
+    -->
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

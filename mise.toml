@@ -192,6 +192,25 @@ description = "[Build] Smoke-build every JS SDK example against dist/"
 depends = ["build:js"]
 run = "scripts/build-js-examples.sh"
 
+[tasks."install:js:integration"]
+description = "[Setup] npm install the JS SDK integration test harness"
+dir = "sdks/js/integration"
+run = "npm install"
+
+[tasks."test:js:integration"]
+description = "[Testing] JS SDK integration tests — real browser, real WebRTC, against a live model (needs REACTOR_API_KEY)"
+dir = "sdks/js/integration"
+depends = ["build:js", "install:js:integration"]
+# Deliberately not a dependency of `test` / `test:js`: unlike the unit
+# suite's mocked client, this connects to a real model in production
+# (reactor/echo by default — see harness/vite.config.ts) over a real
+# WebRTC connection, so it needs REACTOR_API_KEY, costs real session time,
+# and runs on the order of minutes rather than seconds.
+run = [
+    "npx playwright install --with-deps chromium",
+    "npx playwright test",
+]
+
 # ── C++ SDK ───────────────────────────────────────────────────────────────────
 # Needs a release build of libreactor_ffi to link against; `build:cpp` makes one.
 # Rebuild it after pulling changes under crates/ — reactor_abi_version() turns a

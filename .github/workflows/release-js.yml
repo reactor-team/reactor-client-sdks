@@ -152,6 +152,16 @@ jobs:
       - run: mise run lint:js
       - run: mise run build:js
       - run: mise run test:js
+      # Real browser, real wasm, real WebRTC, against a live model in
+      # production — the unit suite above mocks the client, so this is the
+      # only check here that actually runs the SDK end to end. Same
+      # redundancy as every other step in this job re-running what ci.yml
+      # already checked on the PR: never publish something that wasn't
+      # proven by the exact steps that just ran on this exact commit.
+      - name: Integration tests (Playwright, real browser + real model)
+        env:
+          REACTOR_API_KEY: ${{ secrets.REACTOR_API_KEY }}
+        run: mise run test:js:integration
 
   # ── 2. GitHub release ───────────────────────────────────────────────────────
   release:
