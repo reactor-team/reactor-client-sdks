@@ -182,6 +182,33 @@ jobs:
       # No REACTOR_API_KEY: this only bundles, it never connects.
       - run: mise run build:js:examples
 
+  js-integration:
+    name: JS SDK integration tests (real browser, real model)
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.js == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      # Rebuilds wasm + dist/ itself rather than reusing the `js` job's —
+      # same reasoning as release-js.yml's build job: never test something
+      # that wasn't built by the exact steps that just ran.
+      - run: mise run build:wasm
+      - run: mise run build:js
+      - name: Integration tests (Playwright, real browser + real model)
+        env:
+          REACTOR_API_KEY: ${{ secrets.REACTOR_API_KEY }}
+        run: mise run test:js:integration
+
   cpp:
     name: C++ SDK
     needs: changes
@@ -231,7 +258,7 @@ jobs:
 
   ci-complete:
     name: CI Complete
-    needs: [changes, repo, rust, python, js, cpp]
+    needs: [changes, repo, rust, python, js, js-integration, cpp]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -245,6 +272,7 @@ jobs:
                    "${{ needs.rust.result }}" \
                    "${{ needs.python.result }}" \
                    "${{ needs.js.result }}" \
+                   "${{ needs.js-integration.result }}" \
                    "${{ needs.cpp.result }}"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::a required job failed ($r)"; exit 1
