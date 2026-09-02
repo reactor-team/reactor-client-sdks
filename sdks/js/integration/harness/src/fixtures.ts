@@ -65,14 +65,9 @@ export async function samplePixel(
   document.body.appendChild(video);
   await video.play();
 
-  await new Promise<void>((resolve) => {
-    if ('requestVideoFrameCallback' in video) {
-      (video as HTMLVideoElement & { requestVideoFrameCallback: (cb: () => void) => void })
-        .requestVideoFrameCallback(() => resolve());
-    } else {
-      video.addEventListener('timeupdate', () => resolve(), { once: true });
-    }
-  });
+  // Playwright's bundled Chromium always has this — no fallback needed for
+  // a browser this suite doesn't target.
+  await new Promise<void>((resolve) => video.requestVideoFrameCallback(() => resolve()));
 
   const canvas = document.createElement('canvas');
 

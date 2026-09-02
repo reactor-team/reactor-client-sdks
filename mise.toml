@@ -198,15 +198,19 @@ dir = "sdks/js/integration"
 run = "npm install"
 
 [tasks."test:js:integration"]
-description = "[Testing] JS SDK integration tests — real browser, real WebRTC, against a live model (needs REACTOR_API_KEY)"
+description = "[Testing] JS SDK integration tests — real browser, real WebRTC, against a live model (needs INTEGRATION_TESTS_REACTOR_API_KEY)"
 dir = "sdks/js/integration"
 depends = ["build:js", "install:js:integration"]
 # Deliberately not a dependency of `test` / `test:js`: unlike the unit
 # suite's mocked client, this connects to a real model in production
 # (reactor/echo by default — see harness/vite.config.ts) over a real
-# WebRTC connection, so it needs REACTOR_API_KEY, costs real session time,
-# and runs on the order of minutes rather than seconds.
+# WebRTC connection, so it needs INTEGRATION_TESTS_REACTOR_API_KEY, costs
+# real session time, and runs on the order of minutes rather than seconds.
 run = [
+    # This package's tsconfig.json is otherwise never run by anything —
+    # Vite/Playwright only transpile, they don't type-check — so a type
+    # error here would accumulate silently forever without this.
+    "npx tsc --noEmit",
     "npx playwright install --with-deps chromium",
     "npx playwright test",
 ]
