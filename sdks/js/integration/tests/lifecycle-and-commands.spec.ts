@@ -201,6 +201,12 @@ test("reconnect() refuses cleanly when there's no session to resume", async ({ p
 });
 
 test('connect() with a garbage token is refused with a clear error, not a hang', async ({ page }) => {
+  // REACTOR_LOCAL=true (see README's "Pointing this at a local runtime")
+  // is unauthenticated — a local runtime never validates the JWT at all,
+  // so connect() succeeds instead of throwing. This is this suite's one
+  // documented permanent gap in local mode; not testable there.
+  test.skip(process.env.REACTOR_LOCAL === 'true', 'auth-error paths need a real (production) coordinator');
+
   await page.goto('/');
   const error = await page.evaluate(async (name) => {
     window.__harness.create(name);
