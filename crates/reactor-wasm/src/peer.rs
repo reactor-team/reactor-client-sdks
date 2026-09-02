@@ -18,9 +18,9 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
     MediaStream, MediaStreamTrack, MessageEvent, RtcConfiguration, RtcDataChannel,
-    RtcDataChannelType, RtcPeerConnection, RtcPeerConnectionIceEvent, RtcPeerConnectionState,
-    RtcRtpTransceiver, RtcRtpTransceiverDirection, RtcRtpTransceiverInit, RtcSdpType,
-    RtcSessionDescriptionInit, RtcTrackEvent,
+    RtcDataChannelState, RtcDataChannelType, RtcPeerConnection, RtcPeerConnectionIceEvent,
+    RtcPeerConnectionState, RtcRtpTransceiver, RtcRtpTransceiverDirection, RtcRtpTransceiverInit,
+    RtcSdpType, RtcSessionDescriptionInit, RtcTrackEvent,
 };
 
 use reactor_core::error::CoreError;
@@ -619,7 +619,19 @@ fn message_bytes(data: &JsValue) -> Option<Vec<u8>> {
 }
 
 /// Send on a channel, as a binary or text frame.
+///
+/// Checks `readyState` first rather than letting the browser throw: a caller
+/// racing a concurrent teardown (e.g. the heartbeat) hits this constantly, and
+/// on a single-threaded JS event loop nothing can flip the channel's state
+/// between this check and the synchronous `send` call below, so the check is
+/// race-free.
 fn send(channel: &RtcDataChannel, payload: &[u8], binary: bool) -> Result<(), CoreError> {
+    if channel.ready_state() != RtcDataChannelState::Open {
+        return Err(CoreError::InvalidState(format!(
+            "data channel not open (state: {:?})",
+            channel.ready_state()
+        )));
+    }
     if !binary {
         let text = std::str::from_utf8(payload)
             .map_err(|_| CoreError::Decode("non-utf8 payload sent as a text frame".into()))?;

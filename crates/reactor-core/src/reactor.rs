@@ -1258,10 +1258,18 @@ impl Reactor {
             }
             // Ping immediately on each pass, before sleeping — a runtime's
             // liveness timeout (e.g. 20s) can be shorter than `interval`
-            // (default 30s), so waiting a full interval before the first
+            // (default 10s), so waiting a full interval before the first
             // ping risks the runtime closing the connection first.
             if let Err(e) = self.ping() {
-                log::warn!("[reactor] heartbeat ping failed: {e}");
+                // A transport that isn't open is the expected outcome of
+                // racing a concurrent disconnect/teardown, not a genuine
+                // failure — don't scare a console watcher with a `warn`.
+                match e {
+                    CoreError::InvalidState(_) => {
+                        log::debug!("[reactor] heartbeat ping skipped: {e}")
+                    }
+                    _ => log::warn!("[reactor] heartbeat ping failed: {e}"),
+                }
             }
             self.platform.sleep(interval).await;
         }
