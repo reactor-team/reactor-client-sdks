@@ -149,7 +149,15 @@ jobs:
 
   python-integration-tests:
     name: Python SDK integration tests (real FFI, real model)
-    needs: changes
+    # Depends on js-integration-tests finishing, not just `changes`: both
+    # suites hit the same real reactor/echo model, whose session-creation
+    # quota (sessions_per_minute) is shared and far too small for both to
+    # run at once — running in parallel 429ed nearly every test in both
+    # jobs. A custom `if:` below (no success()/failure()/always() in it)
+    # already overrides the implicit "needs must succeed" gate, so this
+    # only serializes the two — it does not make one depend on the other's
+    # result.
+    needs: [changes, js-integration-tests]
     # Same fork-PR reasoning as js-integration-tests below: GitHub withholds
     # repo secrets from a fork's pull_request runs, so
     # INTEGRATION_TESTS_REACTOR_API_KEY would never be populated there —
