@@ -111,7 +111,16 @@ async function destroy(name: string): Promise<void> {
  *  afterEach cleanup every spec runs so a failed or forgetful test never
  *  leaves a production session connected past the test that opened it. */
 async function destroyAll(): Promise<void> {
-  await Promise.all([...instances.keys()].map((name) => destroy(name)));
+  // Sequential, in reverse creation order — not Promise.all. A test like
+  // the multi-connection one creates a "creator" the "joiner" then depends
+  // on, and disconnecting the creator first ends the shared session before
+  // the joiner (only watching it) gets a chance to leave cleanly, orphaning
+  // it server-side. `instances` is a Map, so insertion order is creation
+  // order; last-created-first-destroyed undoes dependencies in the order
+  // they were built, the same way any stack-shaped teardown does.
+  for (const name of [...instances.keys()].reverse()) {
+    await destroy(name);
+  }
 }
 
 async function samplePixelFor(name: string, trackName: string): Promise<{ r: number; g: number; b: number }> {
