@@ -28,14 +28,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 
-from conftest import (
-    LOCAL,
-    MODEL_NAME,
-    assert_dominant_color,
-    mint_jwt,
-    solid_rgb_frame,
-    wait_until,
-)
+from conftest import LOCAL, MODEL_NAME, mint_jwt, solid_rgb_frame, wait_until
 
 from reactor_sdk import Reactor, ReactorStatus
 
@@ -94,13 +87,17 @@ async def test_joiner_observes_state_the_creator_set(reactor_factory) -> None:
         # own view of main_video is what proves this is the same session
         # rather than a second one that happens to share an id.
         #
-        # Also susceptible to REA-5931 (see README.md) the same way
-        # test_tracks_and_frames.py's own effect assertion is — a failure
-        # here with an unrelated colour is that, not this test.
+        # Pixel assertion disabled — REA-5931 (see README.md): a shared prod
+        # worker can already be carrying a *different* session's leaked
+        # effect/overlay, so a fresh session's own main_video may show that
+        # stale colour regardless of what either client here set. Same call
+        # test_tracks_and_frames.py's own effect assertion and
+        # sdks/js/integration-tests/tests/tracks-and-upload.spec.ts already
+        # made. What's left to check honestly is that frames actually
+        # arrive on the joiner's own view at all.
         received: list = []
         joiner.track("main_video").on_frame(lambda f: received.append(f))
         await wait_until(lambda: len(received) >= 3, timeout=10.0)
-        assert_dominant_color(received[-1], tuple(255 - c for c in color))
     finally:
         pump.cancel()
         webcam.unpublish()
