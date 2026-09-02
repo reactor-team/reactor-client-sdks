@@ -198,9 +198,15 @@ export class Reactor implements Disposable {
     }
     try {
       this.assertNotDisposed();
-      const client = await this.getOrCreateClient();
       const extracted = extractFileRefs(data as Record<string, unknown> | undefined);
-      const reply = await client.sendCommand(command, extracted.data, extracted.uploads);
+      // Queued behind connect()/disconnect()/reconnect(), same as the track
+      // ops — a concurrent disconnect() can otherwise free the wasm client
+      // while this call into it is still in flight (see `queue`'s docs).
+      const reply = await this.queue.push(async () => {
+        const client = await this.getOrCreateClient();
+
+        return client.sendCommand(command, extracted.data, extracted.uploads);
+      }, 'sendCommand');
 
       return reply ?? undefined;
     } catch (cause) {
@@ -232,9 +238,13 @@ export class Reactor implements Disposable {
     switch (command) {
       case 'requestSchema':
         try {
-          const client = await this.getOrCreateClient();
+          // Same race as `sendCommand()` above — queue it behind
+          // connect()/disconnect()/reconnect().
+          await this.queue.push(async () => {
+            const client = await this.getOrCreateClient();
 
-          await this.refreshSchema(client);
+            await this.refreshSchema(client);
+          }, 'requestSchema');
         } catch (cause) {
           // refreshSchema() reports failures itself when it has a client to
           // key the race guard on; getOrCreateClient() failing before that
@@ -264,9 +274,12 @@ export class Reactor implements Disposable {
   async requestSchema(): Promise<ModelSchema | undefined> {
     this.assertNotDisposed();
     try {
-      const client = await this.getOrCreateClient();
+      // Queued behind connect()/disconnect()/reconnect() — see `queue`'s docs.
+      return await this.queue.push(async () => {
+        const client = await this.getOrCreateClient();
 
-      return this.normalizeSchema(await client.requestSchema());
+        return this.normalizeSchema(await client.requestSchema());
+      }, 'requestSchema');
     } catch (cause) {
       throw this.captureError(cause);
     }
@@ -425,9 +438,12 @@ export class Reactor implements Disposable {
   async requestClip(durationSeconds: number): Promise<Clip> {
     this.assertNotDisposed();
     try {
-      const client = await this.getOrCreateClient();
+      // Queued behind connect()/disconnect()/reconnect() — see `queue`'s docs.
+      return await this.queue.push(async () => {
+        const client = await this.getOrCreateClient();
 
-      return toPublicClip(await client.requestClip(durationSeconds));
+        return toPublicClip(await client.requestClip(durationSeconds));
+      }, 'requestClip');
     } catch (cause) {
       throw this.captureError(cause);
     }
@@ -437,9 +453,12 @@ export class Reactor implements Disposable {
   async requestRecording(): Promise<Clip> {
     this.assertNotDisposed();
     try {
-      const client = await this.getOrCreateClient();
+      // Queued behind connect()/disconnect()/reconnect() — see `queue`'s docs.
+      return await this.queue.push(async () => {
+        const client = await this.getOrCreateClient();
 
-      return toPublicClip(await client.requestRecording());
+        return toPublicClip(await client.requestRecording());
+      }, 'requestRecording');
     } catch (cause) {
       throw this.captureError(cause);
     }

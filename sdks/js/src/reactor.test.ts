@@ -250,6 +250,71 @@ describe('Reactor.sendCommand runtime-scope compatibility shim', () => {
   });
 });
 
+// `queue`'s own docstring (reactor.ts) says calling into the client
+// concurrently with connect()/disconnect()/reconnect() "races its internal
+// state and can throw ... or corrupt it outright". These pin down that
+// sendCommand()/requestSchema() — which, unlike the track ops, don't share a
+// call site with connect()/disconnect() — are actually serialized behind a
+// concurrent disconnect() rather than reaching into the client while
+// disconnect() is freeing it, same shape as the in-flight-connect() case
+// above.
+describe('Reactor concurrency: sendCommand()/requestSchema() vs. a concurrent disconnect()', () => {
+  it("disconnect() doesn't free the client while sendCommand() is still awaiting its reply", async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const gate = createDeferred<ReactorMessage | undefined>();
+    const realSendCommand = client.sendCommand.bind(client);
+
+    client.sendCommand = vi.fn(
+      (command: string, data: Record<string, unknown> | undefined, uploads: Record<string, unknown> | undefined) => {
+        void realSendCommand(command, data, uploads);
+        return gate.promise;
+      },
+    );
+
+    const sendPromise = reactor.sendCommand('set_effect', { effect: 'invert' });
+    const disconnectPromise = reactor.disconnect();
+
+    // Let every pending microtask run: disconnect() should still be blocked
+    // behind the in-flight sendCommand() and must not have touched the
+    // client yet.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(client.disconnectCalls).toBe(0);
+    expect(client.freeCalls).toBe(0);
+
+    gate.resolve({ type: 'ack', data: null });
+    await Promise.all([sendPromise, disconnectPromise]);
+
+    expect(client.disconnectCalls).toBe(1);
+    expect(client.freeCalls).toBe(1);
+  });
+
+  it("disconnect() doesn't free the client while requestSchema() is still in flight", async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const gate = createDeferred<unknown>();
+
+    client.requestSchemaImpl = () => gate.promise;
+
+    const requestPromise = reactor.requestSchema();
+    const disconnectPromise = reactor.disconnect();
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(client.disconnectCalls).toBe(0);
+    expect(client.freeCalls).toBe(0);
+
+    gate.resolve({ commands: ['set_image'] });
+    await Promise.all([requestPromise, disconnectPromise]);
+
+    expect(client.disconnectCalls).toBe(1);
+    expect(client.freeCalls).toBe(1);
+  });
+});
+
 describe('Reactor connect/construction options', () => {
   it("forwards sessionId, connectionId, autoResumeTracks, and maxAttempts to the binding's connect()", async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
