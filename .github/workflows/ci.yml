@@ -203,11 +203,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      # Rebuilds wasm + dist/ itself rather than reusing the `js` job's —
-      # same reasoning as release-js.yml's build job: never test something
-      # that wasn't built by the exact steps that just ran.
-      - run: mise run build:wasm
-      - run: mise run build:js
+      # test:js:integration builds wasm + dist/ itself (mise.toml) rather
+      # than reusing the `js` job's — same reasoning as release-js.yml's
+      # build job: never test something that wasn't built by the exact
+      # steps that just ran.
       - name: Integration tests (Playwright, real browser + real model)
         env:
           # A dedicated secret, not the general REACTOR_API_KEY examples use —
