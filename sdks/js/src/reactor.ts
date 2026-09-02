@@ -120,7 +120,14 @@ export class Reactor implements Disposable {
    * itself, only against `activeReads`.
    */
   private async withWriterAccess<T>(fn: () => Promise<T>): Promise<T> {
-    await Promise.all(this.activeReads);
+    // Skip the await entirely when nothing is in flight — `await
+    // Promise.all([])` still costs a microtask tick, which the common
+    // (uncontended) case shouldn't pay: connect()/disconnect()/reconnect()
+    // calling into the client promptly is a property callers (React's
+    // effect-cleanup unmount included) rely on.
+    if (this.activeReads.size > 0) {
+      await Promise.all(this.activeReads);
+    }
     this.writerActive = true;
     try {
       return await fn();
