@@ -313,6 +313,74 @@ describe('Reactor concurrency: sendCommand()/requestSchema() vs. a concurrent di
     expect(client.disconnectCalls).toBe(1);
     expect(client.freeCalls).toBe(1);
   });
+
+  it('two concurrent sendCommand() calls run alongside each other, not serialized behind one another', async () => {
+    // [codex-review] on the earlier version of this fix: putting reads on
+    // the same `queue` writes use serializes every read behind every other
+    // one too, not just behind a lifecycle op — a slow command would then
+    // head-of-line block an unrelated one for no reason, since the binding
+    // already correlates replies independently.
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const gates = [createDeferred<ReactorMessage | undefined>(), createDeferred<ReactorMessage | undefined>()];
+    const started: number[] = [];
+    let calls = 0;
+
+    client.sendCommand = vi.fn(() => {
+      const i = calls++;
+
+      started.push(i);
+      return gates[i]!.promise;
+    });
+
+    const p1 = reactor.sendCommand('a', {});
+    const p2 = reactor.sendCommand('b', {});
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    // Both must have started already — serialized behind each other (the old
+    // behavior), the second wouldn't have until the first's gate resolved.
+    expect(started).toEqual([0, 1]);
+
+    gates[1]!.resolve({ type: 'ack', data: null });
+    gates[0]!.resolve({ type: 'ack', data: null });
+    await Promise.all([p1, p2]);
+  });
+
+  it('a sendCommand() that arrives while disconnect() is running waits for it, rather than racing in underneath', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const disconnectGate = createDeferred<void>();
+    const realDisconnect = client.disconnect.bind(client);
+
+    client.disconnect = vi.fn(() => {
+      void realDisconnect();
+      return disconnectGate.promise;
+    });
+
+    const disconnectPromise = reactor.disconnect();
+
+    await Promise.resolve();
+    await Promise.resolve();
+    // disconnect() is now mid-flight (writerActive), before a second
+    // sendCommand() is even attempted.
+    const sendPromise = reactor.sendCommand('set_effect', { effect: 'invert' });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    // sendCommand() must not have reached the client while disconnect() is
+    // still running — it never got the chance to free it out from under a
+    // call that raced in during the writer's exclusive window.
+    expect(client.sendCommandCalls).toEqual([]);
+
+    disconnectGate.resolve();
+    await disconnectPromise;
+    await sendPromise;
+
+    expect(client.freeCalls).toBe(1);
+  });
 });
 
 describe('Reactor connect/construction options', () => {
