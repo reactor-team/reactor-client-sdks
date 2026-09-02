@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from conftest import wait_until
+from conftest import paced_connect, wait_until
 
 from reactor_sdk import DisconnectedError, Reactor, ReactorStatus
 
@@ -24,7 +24,7 @@ async def test_connect_walks_disconnected_to_ready_and_getters_agree(reactor_fac
     assert r.status == ReactorStatus.DISCONNECTED
     assert r.session_id is None
 
-    await r.connect()
+    await paced_connect(r)
 
     assert r.status == ReactorStatus.READY
     assert r.session_id
@@ -132,7 +132,7 @@ async def test_two_clients_do_not_cross_talk(reactor_factory) -> None:
     # don't leak into the other's session.
     a = reactor_factory()
     b = reactor_factory()
-    await asyncio.gather(a.connect(), b.connect())
+    await asyncio.gather(paced_connect(a), paced_connect(b))
     assert a.session_id != b.session_id
 
     await a.send_command("set_effect", {"effect": "grayscale"})

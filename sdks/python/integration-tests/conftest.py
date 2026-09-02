@@ -21,6 +21,7 @@ import time
 import zlib
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from typing import Any
 
 # The root pyproject.toml's `--import-mode=importlib` (so `import reactor_sdk`
 # resolves to the installed package rather than a sibling directory — see its
@@ -75,6 +76,38 @@ def new_reactor(*, model_name: str = MODEL_NAME, jwt: str | None = None) -> Reac
     return Reactor(model_name=model_name, api_key=API_KEY, api_url=API_URL, local=LOCAL)
 
 
+# ── session-creation pacing ──────────────────────────────────────────────────
+#
+# reactor/echo's session-creation quota (sessions_per_minute) is enforced per
+# API key across the whole suite, not per test — confirmed against prod: this
+# suite alone, run in isolation, still tripped it (a burst of a few tests'
+# worth of connects lands within the same window). Reacting after a 429
+# (mise.toml's --reruns) is a safety net, not sufficient on its own when the
+# suite's average pace is already close to the limit. Pacing every session
+# creation through one process-wide gate keeps it under, deterministically.
+_SESSION_CREATE_INTERVAL = 8.0  # seconds; ~7.5/min, under the 10/min quota
+_session_create_lock = asyncio.Lock()
+_last_session_create_at = 0.0
+
+
+async def paced_connect(client: Reactor, /, **kwargs: Any) -> None:
+    """`await client.connect(**kwargs)`, paced against every other call to
+    this function in the process — not just other calls on `client` itself.
+
+    `reconnect()` deliberately isn't routed through here: it reuses the
+    existing session rather than creating a new one (see its own docstring),
+    so it isn't what the quota this paces against is even counted against.
+    """
+    global _last_session_create_at
+    async with _session_create_lock:
+        now = asyncio.get_running_loop().time()
+        wait = _last_session_create_at + _SESSION_CREATE_INTERVAL - now
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _last_session_create_at = asyncio.get_running_loop().time()
+    await client.connect(**kwargs)
+
+
 @pytest.fixture
 async def reactor_factory() -> AsyncIterator[Callable[..., Reactor]]:
     """Creates `Reactor` clients and disconnects every one of them afterward.
@@ -113,7 +146,7 @@ async def reactor(reactor_factory: Callable[..., Reactor]) -> AsyncIterator[Reac
     """One connected client — the common case every spec that isn't testing
     connection setup itself starts from."""
     r = reactor_factory()
-    await r.connect()
+    await paced_connect(r)
     yield r
 
 

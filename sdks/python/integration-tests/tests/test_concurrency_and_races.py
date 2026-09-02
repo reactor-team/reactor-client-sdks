@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from conftest import paced_connect
 
 from reactor_sdk import Reactor, ReactorStatus
 
@@ -90,14 +91,14 @@ async def test_rapid_connect_disconnect_connect_ends_up_ready_on_a_new_session(
     reactor_factory,
 ) -> None:
     r: Reactor = reactor_factory()
-    await r.connect()
+    await paced_connect(r)
     first_session = r.session_id
     assert first_session
 
     await r.disconnect()
     assert r.status == ReactorStatus.DISCONNECTED
 
-    await r.connect()
+    await paced_connect(r)
     assert r.status == ReactorStatus.READY
     assert r.session_id
     assert r.session_id != first_session
@@ -105,7 +106,7 @@ async def test_rapid_connect_disconnect_connect_ends_up_ready_on_a_new_session(
 
 async def test_close_while_a_command_is_in_flight_does_not_hang(reactor_factory) -> None:
     r: Reactor = reactor_factory()
-    await r.connect()
+    await paced_connect(r)
 
     command = asyncio.ensure_future(r.send_command("set_effect", {"effect": "blur"}))
     await asyncio.sleep(0)

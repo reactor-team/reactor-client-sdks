@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 
-from conftest import LOCAL, MODEL_NAME, mint_jwt, solid_rgb_frame, wait_until
+from conftest import LOCAL, MODEL_NAME, mint_jwt, paced_connect, solid_rgb_frame, wait_until
 
 from reactor_sdk import Reactor, ReactorStatus
 
@@ -47,11 +47,11 @@ async def _shared_pair(
     """
     jwt = None if LOCAL else await mint_jwt(model_name=MODEL_NAME)
     creator: Reactor = reactor_factory(jwt=jwt)
-    await creator.connect()
+    await paced_connect(creator)
 
     async def join() -> Reactor:
         joiner: Reactor = reactor_factory(jwt=jwt)
-        await joiner.connect(session_id=creator.session_id)
+        await paced_connect(joiner, session_id=creator.session_id)
         return joiner
 
     return creator, join
