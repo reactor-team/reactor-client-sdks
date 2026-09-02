@@ -13,12 +13,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <reactor/reactor.hpp>
 #include <thread>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
-
-#include <reactor/reactor.hpp>
 
 #include "support.hpp"
 

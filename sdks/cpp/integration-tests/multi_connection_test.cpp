@@ -22,11 +22,10 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <reactor/reactor.hpp>
 #include <thread>
 
 #include <catch2/catch_test_macros.hpp>
-
-#include <reactor/reactor.hpp>
 
 #include "support.hpp"
 
@@ -49,18 +48,18 @@ SharedPair make_shared_pair(integration::ReactorFactory& factory) {
   // handling of LOCAL.
   const std::optional<reactor::Jwt> jwt =
       integration::LOCAL ? std::nullopt
-                          : std::optional<reactor::Jwt>{reactor::Jwt{integration::mint_jwt()}};
+                         : std::optional<reactor::Jwt>{reactor::Jwt{integration::mint_jwt()}};
 
   auto& creator = factory.create(jwt);
   integration::paced_connect(creator);
 
   return SharedPair{creator, [&factory, jwt, &creator]() -> reactor::Reactor& {
-                       auto& joiner = factory.create(jwt);
-                       reactor::ConnectOptions adopt;
-                       adopt.session_id = creator.session_id();
-                       integration::paced_connect(joiner, adopt);
-                       return joiner;
-                     }};
+                      auto& joiner = factory.create(jwt);
+                      reactor::ConnectOptions adopt;
+                      adopt.session_id = creator.session_id();
+                      integration::paced_connect(joiner, adopt);
+                      return joiner;
+                    }};
 }
 
 }  // namespace

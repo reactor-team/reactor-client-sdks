@@ -12,13 +12,12 @@
 #include <chrono>
 #include <cstdint>
 #include <future>
+#include <reactor/errors.hpp>
+#include <reactor/reactor.hpp>
 #include <string>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
-
-#include <reactor/errors.hpp>
-#include <reactor/reactor.hpp>
 
 #include "support.hpp"
 

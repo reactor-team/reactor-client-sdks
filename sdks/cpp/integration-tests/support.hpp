@@ -19,11 +19,10 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <reactor/reactor.hpp>
 #include <string>
 #include <thread>
 #include <vector>
-
-#include <reactor/reactor.hpp>
 
 namespace integration {
 
@@ -47,7 +46,7 @@ extern const std::string API_KEY;  // empty when LOCAL, required otherwise
 /// *created* a session for a second connection to adopt it by id, not a fresh
 /// one minted per client.
 reactor::Reactor new_reactor(std::optional<reactor::Jwt> jwt = std::nullopt,
-                              std::string model_name = MODEL_NAME);
+                             std::string model_name = MODEL_NAME);
 
 /// Mint one token from `API_KEY`, for callers that need to hand the *same*
 /// token to more than one `Reactor`. Calls `reactor_fetch_jwt` directly —
@@ -92,7 +91,7 @@ class ReactorFactory {
 
   /// A new, not-yet-connected client, tracked for teardown.
   reactor::Reactor& create(std::optional<reactor::Jwt> jwt = std::nullopt,
-                            std::string model_name = MODEL_NAME);
+                           std::string model_name = MODEL_NAME);
 
  private:
   std::vector<std::unique_ptr<reactor::Reactor>> created_;
@@ -127,7 +126,7 @@ void wait_until(const std::function<bool()>& predicate, double timeout_s = 10.0,
 /// A BGRA frame of one solid colour — `width * height * 4` bytes, exactly what
 /// `Track::push_frame` accepts.
 std::vector<std::uint8_t> solid_bgra_frame(std::uint32_t width, std::uint32_t height,
-                                            std::uint8_t r, std::uint8_t g, std::uint8_t b);
+                                           std::uint8_t r, std::uint8_t g, std::uint8_t b);
 
 /// Pushes one solid-colour BGRA frame into a track at ~30fps on its own
 /// thread, until destroyed. Mirrors the Python suite's `_pump` coroutine —
@@ -183,7 +182,7 @@ class FramePump {
 /// `solid_rgb_png` — the SDK itself has no image-decoding dependency, and this
 /// suite's only reason to encode one is to exercise `upload_file`/`upload_bytes`
 /// with something a model can actually decode.
-std::vector<std::uint8_t> solid_rgb_png(std::uint32_t width, std::uint32_t height,
-                                        std::uint8_t r, std::uint8_t g, std::uint8_t b);
+std::vector<std::uint8_t> solid_rgb_png(std::uint32_t width, std::uint32_t height, std::uint8_t r,
+                                        std::uint8_t g, std::uint8_t b);
 
 }  // namespace integration

@@ -11,13 +11,12 @@
 #include <chrono>
 #include <cstdint>
 #include <mutex>
+#include <reactor/errors.hpp>
+#include <reactor/reactor.hpp>
 #include <thread>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
-
-#include <reactor/errors.hpp>
-#include <reactor/reactor.hpp>
 
 #include "support.hpp"
 
@@ -58,9 +57,8 @@ TEST_CASE("pushing a frame before publish() raises InvalidStateError") {
   integration::ConnectedReactor reactor;
   auto webcam = reactor->track("webcam");
   const auto bgra = integration::solid_bgra_frame(WIDTH, HEIGHT, 1, 2, 3);
-  REQUIRE_THROWS_AS(
-      webcam.push_frame(reactor::Bytes{bgra.data(), bgra.size()}, WIDTH, HEIGHT),
-      reactor::InvalidStateError);
+  REQUIRE_THROWS_AS(webcam.push_frame(reactor::Bytes{bgra.data(), bgra.size()}, WIDTH, HEIGHT),
+                    reactor::InvalidStateError);
 }
 
 TEST_CASE("set_effect(invert) round-trips (visual check disabled — REA-5931)") {

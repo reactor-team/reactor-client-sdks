@@ -14,11 +14,10 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <reactor/reactor.hpp>
 #include <thread>
 
 #include <catch2/catch_test_macros.hpp>
-
-#include <reactor/reactor.hpp>
 
 #include "support.hpp"
 
@@ -45,8 +44,7 @@ TEST_CASE("upload_file (from disk) returns a useable FileRef") {
   integration::ConnectedReactor reactor;
   const auto png = integration::solid_rgb_png(8, 8, 90, 200, 30);
 
-  const auto path =
-      std::filesystem::temp_directory_path() / "reactor-cpp-integration-overlay.png";
+  const auto path = std::filesystem::temp_directory_path() / "reactor-cpp-integration-overlay.png";
   {
     std::ofstream out(path, std::ios::binary);
     REQUIRE(out.good());
@@ -86,8 +84,7 @@ TEST_CASE("set_overlay_image round-trips (visual check disabled — REA-5931)") 
   // Set the overlay only once frames are already flowing, mirroring a caller
   // conditioning a live session rather than one that hasn't started yet.
   std::this_thread::sleep_for(std::chrono::milliseconds(500));
-  reactor
-      ->send_command("set_overlay_image", {{"overlay_strength", 1.0}}, {{"overlay_image", ref}})
+  reactor->send_command("set_overlay_image", {{"overlay_strength", 1.0}}, {{"overlay_image", ref}})
       .get();
 
   std::atomic<int> frames{0};

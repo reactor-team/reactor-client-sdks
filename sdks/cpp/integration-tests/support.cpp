@@ -6,11 +6,10 @@
 #include <cstdlib>
 #include <future>
 #include <mutex>
-#include <stdexcept>
-#include <thread>
-
 #include <reactor/errors.hpp>
 #include <reactor/json.hpp>
+#include <stdexcept>
+#include <thread>
 
 namespace integration {
 
@@ -158,13 +157,13 @@ ReactorFactory::~ReactorFactory() {
 }
 
 reactor::Reactor& ReactorFactory::create(std::optional<reactor::Jwt> jwt, std::string model_name) {
-  created_.push_back(std::make_unique<reactor::Reactor>(new_reactor(std::move(jwt), std::move(model_name))));
+  created_.push_back(
+      std::make_unique<reactor::Reactor>(new_reactor(std::move(jwt), std::move(model_name))));
   return *created_.back();
 }
 
 void wait_until(const std::function<bool()>& predicate, double timeout_s, double interval_s) {
-  const auto deadline =
-      std::chrono::steady_clock::now() + std::chrono::duration<double>(timeout_s);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(timeout_s);
   while (!predicate()) {
     if (std::chrono::steady_clock::now() >= deadline) {
       throw std::runtime_error("condition not met within " + std::to_string(timeout_s) + "s");
@@ -174,7 +173,7 @@ void wait_until(const std::function<bool()>& predicate, double timeout_s, double
 }
 
 FramePump::FramePump(reactor::Track track, std::vector<std::uint8_t> bgra, std::uint32_t width,
-                      std::uint32_t height)
+                     std::uint32_t height)
     : track_(std::move(track)),
       bgra_(std::move(bgra)),
       width_(width),
@@ -212,7 +211,7 @@ void FramePump::check() const {
 }
 
 std::vector<std::uint8_t> solid_bgra_frame(std::uint32_t width, std::uint32_t height,
-                                            std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+                                           std::uint8_t r, std::uint8_t g, std::uint8_t b) {
   std::vector<std::uint8_t> bgra(static_cast<std::size_t>(width) * height * 4U);
   for (std::size_t i = 0; i < bgra.size(); i += 4) {
     bgra[i + 0] = b;
@@ -298,8 +297,8 @@ void append_chunk(std::vector<std::uint8_t>& out, const char* tag,
 
 }  // namespace
 
-std::vector<std::uint8_t> solid_rgb_png(std::uint32_t width, std::uint32_t height,
-                                        std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+std::vector<std::uint8_t> solid_rgb_png(std::uint32_t width, std::uint32_t height, std::uint8_t r,
+                                        std::uint8_t g, std::uint8_t b) {
   std::vector<std::uint8_t> raw;
   raw.reserve(static_cast<std::size_t>(height) * (1 + static_cast<std::size_t>(width) * 3));
   for (std::uint32_t y = 0; y < height; ++y) {
