@@ -179,7 +179,7 @@ jobs:
       # Smoke-builds every sdks/js/examples/* app against dist/ — catches an
       # export renamed or removed out from under an example, which the unit
       # tests (mocked client) and lint (no cross-package resolution) miss.
-      # No REACTOR_API_KEY: this only bundles, it never connects.
+      # No INTEGRATION_TESTS_REACTOR_API_KEY: this only bundles, it never connects.
       - run: mise run build:js:examples
 
   js-integration:
@@ -206,7 +206,9 @@ jobs:
       - run: mise run build:js
       - name: Integration tests (Playwright, real browser + real model)
         env:
-          REACTOR_API_KEY: ${{ secrets.REACTOR_API_KEY }}
+          # A dedicated secret, not the general REACTOR_API_KEY examples use —
+          # this key exists only to run this suite.
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
         run: mise run test:js:integration
 
   cpp:

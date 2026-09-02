@@ -160,7 +160,9 @@ jobs:
       # proven by the exact steps that just ran on this exact commit.
       - name: Integration tests (Playwright, real browser + real model)
         env:
-          REACTOR_API_KEY: ${{ secrets.REACTOR_API_KEY }}
+          # A dedicated secret, not the general REACTOR_API_KEY examples use —
+          # this key exists only to run this suite.
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
         run: mise run test:js:integration
 
   # ── 2. GitHub release ───────────────────────────────────────────────────────

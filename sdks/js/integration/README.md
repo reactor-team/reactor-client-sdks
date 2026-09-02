@@ -11,7 +11,7 @@ fixtures agree with by construction.
 ## Running it
 
 ```sh
-export REACTOR_API_KEY=...          # never pass this on a command line — export it
+export INTEGRATION_TESTS_REACTOR_API_KEY=...   # never pass this on a command line — export it
 mise run test:js:integration
 ```
 
@@ -23,9 +23,10 @@ npx playwright install --with-deps chromium
 npx playwright test
 ```
 
-`harness/vite.config.ts` mints a session-scoped JWT from `REACTOR_API_KEY` the same
-way `sdks/js/examples/*/vite.config.ts` do — the key itself never reaches the
-browser.
+A dedicated key, not the `REACTOR_API_KEY` the examples use — this one exists only
+to run this suite, in CI and locally alike. `harness/vite.config.ts` mints a
+session-scoped JWT from it the same way `sdks/js/examples/*/vite.config.ts` do from
+theirs — the key itself never reaches the browser.
 
 ## What it tests, and how
 
