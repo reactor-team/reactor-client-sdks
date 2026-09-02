@@ -178,12 +178,15 @@ jobs:
     # This workflow's own top-level `concurrency:` is keyed on the ref, so it
     # does nothing across a concurrent ci.yml run on the same push — which is
     # exactly the 429 collision this job hit in practice per the comment
-    # above. Same fixed group name as every other job in this repo that
+    # above. Same per-commit group as every other job in this repo that
     # creates reactor/echo sessions (ci.yml, release-python.yml,
-    # release-cpp.yml), so any two of them queue behind each other instead of
-    # racing the shared quota.
+    # release-cpp.yml) — see ci.yml's own comment for why it's scoped to
+    # github.sha rather than one name shared by every PR (a GitHub Actions
+    # concurrency group only holds one running and one pending job; a fixed
+    # name shared repo-wide would let a third arrival cancel a required check
+    # outright instead of queueing it).
     concurrency:
-      group: reactor-echo-live-session-quota
+      group: reactor-echo-live-session-quota-${{ github.sha }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
