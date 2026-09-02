@@ -26,49 +26,6 @@ namespace {
 constexpr std::uint32_t WIDTH = 64;
 constexpr std::uint32_t HEIGHT = 64;
 
-/// Pushes one solid-colour BGRA frame into `track` at ~30fps on its own thread,
-/// until destroyed. Mirrors the Python suite's `_pump` coroutine — there is no
-/// event loop here to interleave with, so a background thread is what keeps
-/// frames flowing while the test thread does something else (sends a command,
-/// waits on a condition).
-class FramePump {
- public:
-  FramePump(reactor::Track track, std::vector<std::uint8_t> bgra, std::uint32_t width,
-            std::uint32_t height)
-      : track_(std::move(track)),
-        bgra_(std::move(bgra)),
-        width_(width),
-        height_(height),
-        thread_([this] { run(); }) {}
-
-  ~FramePump() {
-    stop_.store(true);
-    if (thread_.joinable()) {
-      thread_.join();
-    }
-  }
-
-  FramePump(const FramePump&) = delete;
-  FramePump& operator=(const FramePump&) = delete;
-  FramePump(FramePump&&) = delete;
-  FramePump& operator=(FramePump&&) = delete;
-
- private:
-  void run() {
-    while (!stop_.load()) {
-      track_.push_frame(reactor::Bytes{bgra_.data(), bgra_.size()}, width_, height_);
-      std::this_thread::sleep_for(std::chrono::milliseconds(33));  // ~30fps
-    }
-  }
-
-  reactor::Track track_;
-  std::vector<std::uint8_t> bgra_;
-  std::uint32_t width_;
-  std::uint32_t height_;
-  std::atomic<bool> stop_{false};
-  std::thread thread_;
-};
-
 }  // namespace
 
 TEST_CASE("publish() puts a sender behind the slot, and push_frame reaches main_video") {
@@ -89,7 +46,7 @@ TEST_CASE("publish() puts a sender behind the slot, and push_frame reaches main_
   });
 
   const auto bgra = integration::solid_bgra_frame(WIDTH, HEIGHT, 10, 20, 30);
-  FramePump pump{webcam, bgra, WIDTH, HEIGHT};
+  integration::FramePump pump{webcam, bgra, WIDTH, HEIGHT};
   integration::wait_until([&] { return received.load() > 0; }, 5.0);
 
   REQUIRE(last_width.load() == WIDTH);
@@ -125,7 +82,7 @@ TEST_CASE("set_effect(invert) round-trips (visual check disabled — REA-5931)")
   auto main_video = reactor->track("main_video");
 
   const auto bgra = integration::solid_bgra_frame(WIDTH, HEIGHT, 40, 90, 180);
-  FramePump pump{webcam, bgra, WIDTH, HEIGHT};
+  integration::FramePump pump{webcam, bgra, WIDTH, HEIGHT};
 
   std::atomic<int> baseline{0};
   {
@@ -150,7 +107,7 @@ TEST_CASE("pause stops delivery and resume restarts it") {
   auto main_video = reactor->track("main_video");
 
   const auto bgra = integration::solid_bgra_frame(WIDTH, HEIGHT, 5, 5, 5);
-  FramePump pump{webcam, bgra, WIDTH, HEIGHT};
+  integration::FramePump pump{webcam, bgra, WIDTH, HEIGHT};
 
   std::atomic<int> count{0};
   auto subscription = main_video.on_frame([&](const reactor::VideoFrame&) { ++count; });
@@ -192,7 +149,7 @@ TEST_CASE("frame trailer arrives with the documented shape") {
   auto main_video = reactor->track("main_video");
 
   const auto bgra = integration::solid_bgra_frame(WIDTH, HEIGHT, 7, 8, 9);
-  FramePump pump{webcam, bgra, WIDTH, HEIGHT};
+  integration::FramePump pump{webcam, bgra, WIDTH, HEIGHT};
 
   std::mutex mutex;
   int trailers_seen = 0;

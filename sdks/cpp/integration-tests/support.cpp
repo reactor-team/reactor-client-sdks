@@ -173,6 +173,44 @@ void wait_until(const std::function<bool()>& predicate, double timeout_s, double
   }
 }
 
+FramePump::FramePump(reactor::Track track, std::vector<std::uint8_t> bgra, std::uint32_t width,
+                      std::uint32_t height)
+    : track_(std::move(track)),
+      bgra_(std::move(bgra)),
+      width_(width),
+      height_(height),
+      thread_([this] { run(); }) {}
+
+FramePump::~FramePump() {
+  stop_.store(true);
+  if (thread_.joinable()) {
+    thread_.join();
+  }
+}
+
+void FramePump::run() {
+  try {
+    while (!stop_.load()) {
+      track_.push_frame(reactor::Bytes{bgra_.data(), bgra_.size()}, width_, height_);
+      std::this_thread::sleep_for(std::chrono::milliseconds(33));  // ~30fps
+    }
+  } catch (...) {
+    // Stored, not swallowed: an exception escaping this function directly
+    // (there is no caller frame to unwind into — this runs as the thread's
+    // entry point) calls std::terminate, whether or not the destructor later
+    // joins it. check() lets a caller surface this as a test failure instead.
+    const std::lock_guard<std::mutex> lock(error_mutex_);
+    error_ = std::current_exception();
+  }
+}
+
+void FramePump::check() const {
+  const std::lock_guard<std::mutex> lock(error_mutex_);
+  if (error_) {
+    std::rethrow_exception(error_);
+  }
+}
+
 std::vector<std::uint8_t> solid_bgra_frame(std::uint32_t width, std::uint32_t height,
                                             std::uint8_t r, std::uint8_t g, std::uint8_t b) {
   std::vector<std::uint8_t> bgra(static_cast<std::size_t>(width) * height * 4U);

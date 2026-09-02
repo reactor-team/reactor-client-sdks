@@ -81,13 +81,7 @@ TEST_CASE("set_overlay_image round-trips (visual check disabled — REA-5931)") 
   webcam.publish().get();
 
   const auto bgra = integration::solid_bgra_frame(WIDTH, HEIGHT, 10, 10, 10);
-  std::atomic<bool> stop{false};
-  std::thread pump([&] {
-    while (!stop.load()) {
-      webcam.push_frame(reactor::Bytes{bgra.data(), bgra.size()}, WIDTH, HEIGHT);
-      std::this_thread::sleep_for(std::chrono::milliseconds(33));
-    }
-  });
+  integration::FramePump pump{webcam, bgra, WIDTH, HEIGHT};
 
   // Set the overlay only once frames are already flowing, mirroring a caller
   // conditioning a live session rather than one that hasn't started yet.
@@ -101,7 +95,6 @@ TEST_CASE("set_overlay_image round-trips (visual check disabled — REA-5931)") 
   auto subscription = main_video.on_frame([&](const reactor::VideoFrame&) { ++frames; });
   integration::wait_until([&] { return frames.load() >= 3; }, 6.0);
 
-  stop.store(true);
-  pump.join();
+  pump.check();  // surface a background push_frame failure, if any, here
   webcam.unpublish();
 }

@@ -81,13 +81,7 @@ TEST_CASE("a joiner observes state the creator already set") {
   webcam.publish().get();
 
   const auto bgra = integration::solid_bgra_frame(WIDTH, HEIGHT, 60, 150, 20);
-  std::atomic<bool> stop{false};
-  std::thread pump([&] {
-    while (!stop.load()) {
-      webcam.push_frame(reactor::Bytes{bgra.data(), bgra.size()}, WIDTH, HEIGHT);
-      std::this_thread::sleep_for(std::chrono::milliseconds(33));
-    }
-  });
+  integration::FramePump pump{webcam, bgra, WIDTH, HEIGHT};
 
   pair.creator.send_command("set_effect", {{"effect", "invert"}}).get();
   pair.creator.send_command("set_intensity", {{"intensity", 1.0}}).get();
@@ -103,8 +97,7 @@ TEST_CASE("a joiner observes state the creator already set") {
       joiner.track("main_video").on_frame([&](const reactor::VideoFrame&) { ++received; });
   integration::wait_until([&] { return received.load() >= 3; }, 10.0);
 
-  stop.store(true);
-  pump.join();
+  pump.check();  // surface a background push_frame failure, if any, here
   webcam.unpublish();
 }
 

@@ -9,7 +9,6 @@
 // requested, not just up to it — a "snap" clip's boundary chunk always ends at
 // *now*, so it never closes once nothing is left to read.
 
-#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -37,16 +36,10 @@ TEST_CASE("request_clip + download produces a playable file") {
   webcam.publish().get();
 
   const auto bgra = integration::solid_bgra_frame(WIDTH, HEIGHT, 80, 40, 200);
-  std::atomic<bool> stop{false};
-  std::thread pump([&] {
-    while (!stop.load()) {
-      webcam.push_frame(reactor::Bytes{bgra.data(), bgra.size()}, WIDTH, HEIGHT);
-      std::this_thread::sleep_for(std::chrono::milliseconds(33));
-    }
-  });
+  integration::FramePump pump{webcam, bgra, WIDTH, HEIGHT};
 
   // Generate past the window this test will ask for before asking, so the
-  // window itself is already fully generated — but keep pumping (the thread
+  // window itself is already fully generated — but keep pumping (the pump
   // above stays alive through download() below) so the boundary chunk still
   // has something to close.
   std::this_thread::sleep_for(std::chrono::duration<double>(CLIP_SECONDS + 2.0));
@@ -60,8 +53,7 @@ TEST_CASE("request_clip + download produces a playable file") {
   // the only thing that can make this clip ready.
   clip.download(path.string()).get();
 
-  stop.store(true);
-  pump.join();
+  pump.check();  // surface a background push_frame failure, if any, here
   webcam.unpublish();
 
   const auto size = std::filesystem::file_size(path);
@@ -83,13 +75,7 @@ TEST_CASE("request_recording covers the whole session") {
   webcam.publish().get();
 
   const auto bgra = integration::solid_bgra_frame(WIDTH, HEIGHT, 80, 40, 200);
-  std::atomic<bool> stop{false};
-  std::thread pump([&] {
-    while (!stop.load()) {
-      webcam.push_frame(reactor::Bytes{bgra.data(), bgra.size()}, WIDTH, HEIGHT);
-      std::this_thread::sleep_for(std::chrono::milliseconds(33));
-    }
-  });
+  integration::FramePump pump{webcam, bgra, WIDTH, HEIGHT};
 
   std::this_thread::sleep_for(std::chrono::duration<double>(CLIP_SECONDS));
 
@@ -101,8 +87,7 @@ TEST_CASE("request_recording covers the whole session") {
       std::filesystem::temp_directory_path() / "reactor-cpp-integration-recording.mp4";
   clip.download(path.string()).get();
 
-  stop.store(true);
-  pump.join();
+  pump.check();  // surface a background push_frame failure, if any, here
   webcam.unpublish();
 
   const auto size = std::filesystem::file_size(path);

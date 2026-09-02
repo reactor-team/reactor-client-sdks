@@ -12,11 +12,15 @@
 // REA-5931 pixel-assertion convention both carry over unchanged.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <reactor/reactor.hpp>
@@ -124,6 +128,53 @@ void wait_until(const std::function<bool()>& predicate, double timeout_s = 10.0,
 /// `Track::push_frame` accepts.
 std::vector<std::uint8_t> solid_bgra_frame(std::uint32_t width, std::uint32_t height,
                                             std::uint8_t r, std::uint8_t g, std::uint8_t b);
+
+/// Pushes one solid-colour BGRA frame into a track at ~30fps on its own
+/// thread, until destroyed. Mirrors the Python suite's `_pump` coroutine —
+/// there is no event loop here to interleave with, so a background thread is
+/// what keeps frames flowing while the test thread does something else (sends
+/// a command, waits on a condition, downloads a clip).
+///
+/// The destructor always stops and joins the thread — safe to call even mid-
+/// exception, unlike a raw `std::thread` a test forgot to join before an
+/// assertion above it throws. `push_frame`'s own exceptions (thrown if the
+/// track is unpublished or the session leaves Ready while a pump is still
+/// running — a real race, not hypothetical) are caught inside the loop rather
+/// than left to escape the thread's entry function: an exception escaping a
+/// `std::thread`'s function calls `std::terminate` regardless of whether
+/// anything later joins it, aborting the whole test binary instead of failing
+/// the one test. `check()` re-throws it, for a caller that wants a pump
+/// failure to surface as a test failure rather than just stop silently.
+class FramePump {
+ public:
+  FramePump(reactor::Track track, std::vector<std::uint8_t> bgra, std::uint32_t width,
+            std::uint32_t height);
+  ~FramePump();
+
+  FramePump(const FramePump&) = delete;
+  FramePump& operator=(const FramePump&) = delete;
+  FramePump(FramePump&&) = delete;
+  FramePump& operator=(FramePump&&) = delete;
+
+  /// Re-throws whatever exception stopped the pump's loop early, if any. A
+  /// no-op otherwise. Safe to call at any time, including while the pump is
+  /// still running — `error_` is written from the pump's own thread inside
+  /// `run()`'s catch block, so a caller reading it without the same lock
+  /// would be a data race, not just a stale answer.
+  void check() const;
+
+ private:
+  void run();
+
+  reactor::Track track_;
+  std::vector<std::uint8_t> bgra_;
+  std::uint32_t width_;
+  std::uint32_t height_;
+  std::atomic<bool> stop_{false};
+  mutable std::mutex error_mutex_;
+  std::exception_ptr error_;
+  std::thread thread_;
+};
 
 /// A minimal, valid solid-colour PNG (8-bit depth, RGB, no interlace).
 ///
