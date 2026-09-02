@@ -397,6 +397,8 @@ jobs:
           pip resolves to an older release instead of failing — pin
           \`reactor-sdk>=1.0\` to turn that into an error. The README has the table.
 
+          See \`sdks/python/CHANGELOG.md\` for what changed.
+
           The same wheels are attached here. To install one directly:
 
           \`\`\`
