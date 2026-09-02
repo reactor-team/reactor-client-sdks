@@ -185,7 +185,11 @@ jobs:
   js-integration:
     name: JS SDK integration tests (real browser, real model)
     needs: changes
-    if: github.event_name == 'push' || needs.changes.outputs.js == 'true'
+    # GitHub withholds repo secrets from a fork's pull_request runs, so a
+    # fork PR could never populate INTEGRATION_TESTS_REACTOR_API_KEY —
+    # skipped there rather than failing every external contribution. Still
+    # runs for every same-repo PR and on push, same as before.
+    if: github.event_name == 'push' || (needs.changes.outputs.js == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

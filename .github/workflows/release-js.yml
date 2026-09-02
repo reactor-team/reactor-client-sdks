@@ -159,6 +159,11 @@ jobs:
       # already checked on the PR: never publish something that wasn't
       # proven by the exact steps that just ran on this exact commit.
       - name: Integration tests (Playwright, real browser + real model)
+        # GitHub withholds repo secrets from a fork's pull_request runs, so a
+        # fork PR could never populate INTEGRATION_TESTS_REACTOR_API_KEY —
+        # skipped there rather than failing the whole job (which also builds
+        # and unit-tests, still useful signal for an external contribution).
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         env:
           # A dedicated secret, not the general REACTOR_API_KEY examples use —
           # this key exists only to run this suite.
