@@ -22,6 +22,10 @@ node_modules/
 
 # C++ SDK build tree (cmake -B sdks/cpp/build)
 /sdks/cpp/build/
+# The integration suite's own build tree (mise run test:cpp:integration-tests),
+# kept separate from build/ so REACTOR_SDK_BUILD_INTEGRATION_TESTS=ON never
+# shares a CMake cache with the default build.
+/sdks/cpp/build-integration-tests/
 # clangd's index, written wherever it finds a compile_commands.json — which is
 # any directory, hence the leading **.
 **/.cache/clangd/

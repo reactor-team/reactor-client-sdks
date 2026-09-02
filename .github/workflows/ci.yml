@@ -297,9 +297,69 @@ jobs:
       - run: mise run lint:cpp
       - run: mise run test:cpp
 
+  cpp-integration-tests:
+    name: C++ SDK integration tests (real FFI, real model)
+    # Depends on python-integration-tests finishing, not just `changes`: all
+    # three integration suites hit the same real reactor/echo model, whose
+    # session-creation quota (sessions_per_minute) is shared and far too small
+    # for more than one to run at once — js-integration-tests and
+    # python-integration-tests already learned this the hard way (see that
+    # job's own comment). A custom `if:` below (no success()/failure()/
+    # always() in it) already overrides the implicit "needs must succeed"
+    # gate, so this only serializes the chain js -> python -> cpp; it doesn't
+    # make this job depend on either of the others' results.
+    needs: [changes, python-integration-tests]
+    # Same fork-PR reasoning as the other two integration jobs: GitHub
+    # withholds repo secrets from a fork's pull_request runs, so
+    # INTEGRATION_TESTS_REACTOR_API_KEY would never be populated there —
+    # skipped rather than failing every external contribution. Still runs for
+    # every same-repo PR and on push.
+    if: github.event_name == 'push' || (needs.changes.outputs.cpp == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Install clang for the libwebrtc C++ glue
+        uses: ./.github/actions/setup-libwebrtc-cxx
+      # Same two-compiler split as the `cpp` job above: the conda clang++ this
+      # action puts on PATH builds libreactor_ffi's libwebrtc glue, but the SDK
+      # itself (and this suite) must link against the runner's own glibc.
+      - name: Use the platform clang for the SDK itself
+        run: |
+          set -euo pipefail
+          if [ ! -x /usr/bin/clang++ ]; then
+            echo "::error::/usr/bin/clang++ is missing on this runner image."
+            exit 1
+          fi
+          echo "CXX=/usr/bin/clang++" >> "$GITHUB_ENV"
+      - name: Integration tests (real FFI client, real model)
+        env:
+          # A dedicated secret, not the general REACTOR_API_KEY examples use —
+          # this key exists only to run this suite (shared with
+          # js-integration-tests/python-integration-tests).
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+        run: mise run test:cpp:integration-tests
+
   ci-complete:
     name: CI Complete
-    needs: [changes, repo, rust, python, python-integration-tests, js, js-integration-tests, cpp]
+    needs:
+      [
+        changes,
+        repo,
+        rust,
+        python,
+        python-integration-tests,
+        js,
+        js-integration-tests,
+        cpp,
+        cpp-integration-tests,
+      ]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -315,7 +375,8 @@ jobs:
                    "${{ needs.python-integration-tests.result }}" \
                    "${{ needs.js.result }}" \
                    "${{ needs.js-integration-tests.result }}" \
-                   "${{ needs.cpp.result }}"; do
+                   "${{ needs.cpp.result }}" \
+                   "${{ needs.cpp-integration-tests.result }}"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::a required job failed ($r)"; exit 1
             fi
