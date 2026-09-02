@@ -154,16 +154,19 @@ jobs:
       - run: mise run test:js
       # Real browser, real wasm, real WebRTC, against a live model in
       # production — the unit suite above mocks the client, so this is the
-      # only check here that actually runs the SDK end to end. Same
-      # redundancy as every other step in this job re-running what ci.yml
-      # already checked on the PR: never publish something that wasn't
-      # proven by the exact steps that just ran on this exact commit.
+      # only check here that actually runs the SDK end to end.
       - name: Integration tests (Playwright, real browser + real model)
-        # GitHub withholds repo secrets from a fork's pull_request runs, so a
-        # fork PR could never populate INTEGRATION_TESTS_REACTOR_API_KEY —
-        # skipped there rather than failing the whole job (which also builds
-        # and unit-tests, still useful signal for an external contribution).
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        # Skipped on pull_request: ci.yml's js-integration job already runs
+        # this same suite against the same commit, required via ci-complete,
+        # and reactor/echo's 10-sessions-per-minute quota doesn't have room
+        # for both workflows racing it at once — confirmed in practice (this
+        # job hitting repeated 429s while ci.yml's own run passed). No
+        # redundancy is lost: nothing publishes off a pull_request event
+        # (see `release`'s `needs.detect-version.outputs.bumped` gate below,
+        # true only for push/workflow_dispatch), so this step's "never
+        # publish something unproven" reasoning doesn't apply here — it only
+        # needs to run before an actual release, on push or workflow_dispatch.
+        if: github.event_name != 'pull_request'
         env:
           # A dedicated secret, not the general REACTOR_API_KEY examples use —
           # this key exists only to run this suite.
