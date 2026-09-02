@@ -20,14 +20,38 @@ use reactor_core::protocol::session::{TrackCapability, TrackDirection, TrackKind
 use reactor_core::protocol::webrtc::{IceCandidate, IceServer, TrackMappingEntry};
 
 use reactor_webrtc::{
-    AdmMode, AudioTrack, ContinualGatheringPolicy, DataChannel, IceGatheringState,
-    IceServer as RwIceServer, MediaKind, PeerConnection, PeerConnectionFactory,
+    AdmMode, AudioTrack, ContinualGatheringPolicy, DataChannel, DataChannelState,
+    IceGatheringState, IceServer as RwIceServer, MediaKind, PeerConnection, PeerConnectionFactory,
     PeerConnectionObserver, PeerConnectionState, RemoteTrack, RtcConfiguration, SdpType,
     SessionDescription, Track, Transceiver, TransceiverDirection, VideoFrame, VideoTrack,
 };
 
 fn peer_err(e: impl std::fmt::Display) -> CoreError {
     CoreError::Peer(e.to_string())
+}
+
+/// Send on a channel, checking `state()` first rather than letting a closed
+/// channel's `send()` come back as `DataChannel::send()`'s own generic
+/// "data channel send failed" — indistinguishable from a real transport
+/// failure. A caller racing a concurrent teardown (e.g. the heartbeat) hits
+/// this constantly, and reporting it as `CoreError::InvalidState` (rather
+/// than `CoreError::Peer`) is what lets `run_heartbeat()` recognize it as
+/// the expected outcome of that race instead of a genuine failure.
+///
+/// Unlike the wasm binding's equivalent check, this isn't race-free —
+/// `DataChannel` is `Send + Sync` and can close on another thread between
+/// this check and `send()` below. That residual window isn't a regression:
+/// it just falls back to the same generic `CoreError::Peer` `send()` already
+/// returned before this existed, so the check can only narrow the race, not
+/// widen it.
+fn send_on_channel(channel: &DataChannel, payload: &[u8], binary: bool) -> Result<(), CoreError> {
+    if channel.state() != DataChannelState::Open {
+        return Err(CoreError::InvalidState(format!(
+            "data channel not open (state: {:?})",
+            channel.state()
+        )));
+    }
+    channel.send(payload, binary).map_err(peer_err)
 }
 
 /// Which audio device module to use when the host does not say.
@@ -545,7 +569,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             .data_channel
             .as_ref()
             .ok_or_else(|| CoreError::Peer("data channel not ready".into()))?;
-        dc.send(payload, binary).map_err(peer_err)
+        send_on_channel(dc, payload, binary)
     }
 
     fn send_control(&self, payload: &[u8]) -> Result<(), CoreError> {
@@ -555,7 +579,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             .control_channel
             .as_ref()
             .ok_or_else(|| CoreError::Peer("control channel not ready".into()))?;
-        dc.send(payload, true).map_err(peer_err)
+        send_on_channel(dc, payload, true)
     }
 
     async fn set_track_direction(&self, track_name: &str, _active: bool) -> Result<(), CoreError> {
