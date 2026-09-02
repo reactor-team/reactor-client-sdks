@@ -531,6 +531,38 @@ and building that needs a Rust toolchain plus a libwebrtc download.
 
 ---
 
+## Two more release gates: CHANGELOG.md and a real integration-tests suite
+
+Both are things a version bump can sail past silently if nothing checks for them — add
+both when you wire up the new binding's `release-<lang>.yml`, not after the first release
+ships without one.
+
+- **CHANGELOG.md, and CI fails the release without it.** Start the file empty, in [Keep a
+  Changelog](https://keepachangelog.com/en/1.0.0/) format, with a bare `## [Unreleased]`
+  heading, from the SDK's very first commit — before there is anything to release, so the
+  habit exists before the pressure to skip it does. In `release-<lang>.yml`'s
+  `detect-version` job, right after the version-diff step, add a step that runs only when
+  a bump was detected and fails unless the CHANGELOG has a `## [<version>]` heading
+  matching the bumped version — `grep -qF "## [${VERSION}]" sdks/<lang>/CHANGELOG.md`, see
+  `release-js.yml`/`release-python.yml`/`release-cpp.yml` for the exact shape. It writes
+  nothing itself: the entry still has to be added by hand, in the same PR as the bump. Then
+  point your release notes at it ("See `sdks/<lang>/CHANGELOG.md` for what changed"), same
+  as the other three.
+- **A real integration-tests suite, against a live model, gating both CI and release.**
+  Unit tests and the seven scenarios above don't reach the wire — this is the one thing
+  that actually drives the real client against a real `reactor/echo` session end to end.
+  `sdks/js/integration/` (Playwright) and Python's suite are the template. Wire it in
+  twice: as a required job in `ci.yml` (added to `ci-complete`'s `needs`, so it gates every
+  PR) and again inside `release-<lang>.yml`, ahead of the `release` job, so a version bump
+  can't ship without this exact commit having passed it. Skip it there on `pull_request`
+  events specifically — `ci.yml`'s own run already covers the same commit, and echo's
+  session-per-minute quota doesn't have room for both workflows racing it at once; that
+  collision happened in practice (see `release-js.yml`'s and `release-python.yml`'s own
+  notes on the step). Nothing publishes off a `pull_request` event anyway, so skipping it
+  there loses no coverage.
+
+---
+
 ## Ship it as a stack, not as one SDK-shaped PR
 
 A binding is thousands of lines and a review of thousands of lines is not a review. The
@@ -554,7 +586,10 @@ rest of the stack never lands. A rough order, each of these a PR:
 8. **Audio devices**, if the language has a story for them — optional, off the mandatory
    import path.
 9. **The seven examples**, once there is enough SDK to run them.
-10. **The version bump**, alone, because it is the release switch.
+10. **The integration-tests suite**, wired into `ci.yml` and `release-<lang>.yml` as
+    described above — its own PR, once there is enough SDK to run it against a live model.
+11. **The version bump**, alone, because it is the release switch — and because
+    `CHANGELOG.md` needs its own entry, this is also the PR CI checks that entry exists.
 
 - **Each PR carries its own Linear ticket and its own tests.** A PR that adds a code path
   without the test that pins it is a PR that lands untested — the stack is not a promise
@@ -596,6 +631,12 @@ rest of the stack never lands. A rough order, each of these a PR:
       on its own, and `main` still works if nothing after it lands.
 - [ ] All seven examples exist, numbered as in `sdks/python/examples/`, and each has been
       run against a published model in production. A local runtime does not discharge this.
+- [ ] A real integration-tests suite exists (`sdks/js/integration/`-style, against a live
+      model), required in `ci-complete`, and run again inside `release-<lang>.yml` ahead of
+      the release job — skipped there only on `pull_request`.
+- [ ] `sdks/<lang>/CHANGELOG.md` exists from the first commit (empty, `## [Unreleased]`),
+      and `release-<lang>.yml` fails a version-bumped release that has no matching
+      `## [<version>]` heading in it.
 
 Repo conventions — Linear ticket, branch naming, DCO, commit messages — are in
 [`CONTRIBUTING.md`](../../../CONTRIBUTING.md). Driving a stack to merge is the
