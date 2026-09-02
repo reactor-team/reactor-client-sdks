@@ -8,6 +8,14 @@ import { test, expect } from '@playwright/test';
 
 const NAME = 'lifecycle';
 
+// Guarantees every session this file opens (whatever name it used) ends up
+// disconnected server-side even when a test fails partway through — a page
+// close alone drops the transport without sending the SDK's own
+// disconnect(), leaving the session to consume model capacity until timeout.
+test.afterEach(async ({ page }) => {
+  await page.evaluate(() => window.__harness.destroyAll());
+});
+
 test('connect walks disconnected -> connecting -> waiting -> ready, and getters agree', async ({ page }) => {
   await page.goto('/');
 
@@ -132,8 +140,6 @@ test('sendCommand() round-trips a reply, and the model broadcasts the matching e
 
     expect(reply).toBeUndefined();
   });
-
-  await page.evaluate((name) => window.__harness.destroy(name), NAME);
 });
 
 // Genuinely testing "reconnect() resumes a session the transport dropped
@@ -185,8 +191,6 @@ test("reconnect() refuses cleanly when there's no session to resume", async ({ p
     expect(reply).toBeUndefined();
     expect(lastError).toBeTruthy();
   });
-
-  await page.evaluate((name) => window.__harness.destroy(name), NAME);
 });
 
 test('connect() with a garbage token is refused with a clear error, not a hang', async ({ page }) => {

@@ -15,6 +15,14 @@ import { test, expect } from '@playwright/test';
 
 const NAME = 'tracks';
 
+// Guarantees every session this file opens ends up disconnected server-side
+// even when a test fails partway through — a page close alone drops the
+// transport without sending the SDK's own disconnect(), leaving the session
+// to consume model capacity until timeout.
+test.afterEach(async ({ page }) => {
+  await page.evaluate(() => window.__harness.destroyAll());
+});
+
 test('publishTrack() puts a sender behind the slot; pause/resume/unpublish all reflect in state', async ({
   page,
 }) => {
@@ -126,8 +134,6 @@ test('publishTrack() puts a sender behind the slot; pause/resume/unpublish all r
     expect(mapping.length).toBeGreaterThan(0);
     for (const entry of mapping) {expect(entry.mid).toBeTruthy();}
   });
-
-  await page.evaluate((name) => window.__harness.destroy(name), NAME);
 });
 
 test('uploadFile() + a file-taking command actually changes what the model renders', async ({ page }) => {
@@ -174,6 +180,4 @@ test('uploadFile() + a file-taking command actually changes what the model rende
     // before this command even runs, so this session's own pre-overlay
     // frame isn't a reliable baseline to diff against.
   });
-
-  await page.evaluate((name) => window.__harness.destroy(name), NAME);
 });

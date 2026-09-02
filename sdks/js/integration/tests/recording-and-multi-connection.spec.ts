@@ -1,5 +1,12 @@
 import { test, expect } from '@playwright/test';
 
+// Safety net for a test that fails before reaching its own explicit
+// destroy() calls below — destroy() is idempotent, so this is a no-op on
+// the happy path where cleanup already ran in the right order.
+test.afterEach(async ({ page }) => {
+  await page.evaluate(() => window.__harness.destroyAll());
+});
+
 test('requestClip() + downloadClip() produce a real, non-empty file', async ({ page }) => {
   const name = 'clip';
 

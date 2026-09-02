@@ -107,6 +107,13 @@ async function destroy(name: string): Promise<void> {
   delete receivedTracks[name];
 }
 
+/** Destroys every instance a test created, regardless of name — the
+ *  afterEach cleanup every spec runs so a failed or forgetful test never
+ *  leaves a production session connected past the test that opened it. */
+async function destroyAll(): Promise<void> {
+  await Promise.all([...instances.keys()].map((name) => destroy(name)));
+}
+
 async function samplePixelFor(name: string, trackName: string): Promise<{ r: number; g: number; b: number }> {
   const track = receivedTracks[name]?.[trackName];
 
@@ -136,6 +143,7 @@ declare global {
       create: typeof create;
       get: typeof get;
       destroy: typeof destroy;
+      destroyAll: typeof destroyAll;
       fetchToken: typeof fetchToken;
       makeVideoTrack: typeof makeVideoTrack;
       makeAudioTrack: typeof makeAudioTrack;
@@ -153,6 +161,7 @@ window.__harness = {
   create,
   get,
   destroy,
+  destroyAll,
   fetchToken,
   makeVideoTrack,
   makeAudioTrack,
