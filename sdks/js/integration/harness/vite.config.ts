@@ -44,10 +44,12 @@ export default defineConfig(({ mode }) => {
       {
         name: 'reactor-token',
         configureServer(server) {
-          // GET /api/token — mints a JWT from REACTOR_API_KEY so the key
-          // itself never reaches the browser, same shape as the examples'
-          // own dev-only middleware. A local runtime takes no JWT at all
-          // (see harness/src/config.ts), so this never runs in that mode.
+          // GET /api/token — mints a JWT from INTEGRATION_TESTS_REACTOR_API_KEY
+          // so the key itself never reaches the browser, same shape as the
+          // examples' own dev-only middleware (which uses their own
+          // REACTOR_API_KEY — this suite gets a dedicated key so it's never
+          // confused with theirs). A local runtime takes no JWT at all (see
+          // harness/src/config.ts), so this never runs in that mode.
           server.middlewares.use('/api/token', async (_req, res) => {
             if (local) {
               res.statusCode = 400;
@@ -55,12 +57,12 @@ export default defineConfig(({ mode }) => {
               return;
             }
 
-            const apiKey = process.env.REACTOR_API_KEY;
+            const apiKey = process.env.INTEGRATION_TESTS_REACTOR_API_KEY;
             if (!apiKey) {
               res.statusCode = 500;
               res.end(
                 JSON.stringify({
-                  error: 'REACTOR_API_KEY is not set — see README.md',
+                  error: 'INTEGRATION_TESTS_REACTOR_API_KEY is not set — see README.md',
                 }),
               );
               return;
