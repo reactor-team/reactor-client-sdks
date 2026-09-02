@@ -33,7 +33,12 @@ from ._ffi import (
 # `on_frame` is gone — `Track` uses them — but the import path stays.
 from ._media import _bgra_to_rgb_array, _positional_arity  # noqa: F401  (re-export)
 from ._recording import download_clip
-from .errors import ReactorError, error_for_code, error_from_payload  # noqa: F401  (re-export)
+from .errors import (  # noqa: F401  (ReactorError/error_for_code/error_from_payload re-export)
+    AbortedError,
+    ReactorError,
+    error_for_code,
+    error_from_payload,
+)
 from .track import Track, TrackDirection, TrackKind, TrackList
 
 # ---------------------------------------------------------------------------
@@ -268,10 +273,12 @@ class Reactor:
         self._callbacks_struct: ReactorCallbacks | None = None
         self._cb_refs: list[Any] = []
 
-        # Completion trampolines for operations in flight, keyed by id(). Owned here
-        # rather than by the awaiting frame, so cancelling an await cannot free one
-        # the library still holds a pointer to.
-        self._pending_completions: dict[int, Any] = {}
+        # (trampoline, future) for operations in flight, keyed by id(trampoline).
+        # Owned here rather than by the awaiting frame, so cancelling an await
+        # cannot free a trampoline the library still holds a pointer to — and so
+        # `_destroy_handle()` can settle the future if the trampoline itself never
+        # fires (see there).
+        self._pending_completions: dict[int, tuple[Any, asyncio.Future]] = {}
 
         # The loop that created the handle. Control events are marshalled onto it.
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -711,13 +718,31 @@ class Reactor:
 
         # Completions for operations still in flight count too: the same guarantee
         # covers them, and an abandoned await can have left entries behind.
-        trampolines = self._cb_refs + list(self._pending_completions.values())
+        pending = list(self._pending_completions.values())
+        trampolines = self._cb_refs + [fn for fn, _ in pending]
         self._callbacks_struct = None
         self._cb_refs = []
         self._pending_completions = {}
         # Renegotiated with the next connection; the Track objects and their
         # handlers deliberately outlive the handle, but the mids do not.
         self._track_mids.clear()
+
+        # `reactor_destroy` bounds the trampolines above, but says nothing about
+        # the coroutines waiting on them: a trampoline whose completion never
+        # fires (the operation was still in flight when destroy ran) leaves its
+        # future pending forever otherwise — the caller's await hangs for the
+        # life of the process rather than raising. Settle each one here instead,
+        # the same way the C++ SDK's own `destroy_handle()` does
+        # (`client_impl.hpp`) for the identical reason.
+        loop = self._loop
+        if loop is not None:
+            for _, future in pending:
+                _settle_from_foreign_thread(
+                    loop,
+                    future,
+                    None,
+                    AbortedError("the client was destroyed before this call completed"),
+                )
 
         if quiesced:
             return
@@ -750,6 +775,10 @@ class Reactor:
         await leaves the entry in place, which is a bounded leak until the call fires
         — the previous arrangement kept it in a local and left the library holding a
         pointer to freed memory instead.
+
+        `future` is kept alongside the trampoline in `_pending_completions`, not
+        just the trampoline itself, so `_destroy_handle()` can settle it directly
+        if the trampoline's own completion never arrives — see there.
         """
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
@@ -774,7 +803,7 @@ class Reactor:
 
         fn = COMPLETION_FN(_cb)
         holder.append(fn)
-        pending[id(fn)] = fn
+        pending[id(fn)] = (fn, future)
 
         dispatcher(fn)
         return await future

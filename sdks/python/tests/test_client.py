@@ -19,7 +19,7 @@ from unittest import mock
 
 import pytest
 
-from reactor_sdk import Clip, FileRef, Reactor, ReactorError
+from reactor_sdk import AbortedError, Clip, FileRef, Reactor, ReactorError
 
 
 class TestLazyLoading:
@@ -545,6 +545,66 @@ class TestSettleFromForeignThread:
 
         # Must not raise; there is nobody left to wake.
         _settle_from_foreign_thread(loop, future, {"late": True}, None)
+
+
+class TestCloseSettlesInFlightOperations:
+    """`_destroy_handle()` must settle a still-pending `_async_op` future, not
+    just drop the trampoline that was going to resolve it.
+
+    `reactor_destroy` bounds the *trampolines* — 0 means none is running and
+    none will start, so it's safe to free them. It says nothing about the
+    coroutines awaiting them: an operation genuinely in flight when `close()`
+    runs (the fake `reactor_send_command` below never calls its completion,
+    exactly modelling that) has no trampoline left to resolve its future once
+    `_pending_completions` is cleared — before this fix, that await hung
+    forever. The C++ SDK's `destroy_handle()` already gets this right
+    (`client_impl.hpp`'s `op->fail(...)` loop); this is the same fix, ported.
+
+    Confirmed against a live model too, in `sdks/python/integration/tests/
+    test_concurrency_and_races.py` — this is the fast, deterministic unit-test
+    version the `sdk-from-ffi` skill's "Testing" section calls for
+    ("teardown in its awkward shapes ... destroy while [an operation] is in
+    flight"), which doesn't need a real session to prove the point.
+    """
+
+    def _connected_reactor(self, monkeypatch: pytest.MonkeyPatch) -> Reactor:
+        fake_lib = mock.Mock()
+        fake_lib.reactor_create_with_adm = lambda *a: 1234
+        fake_lib.reactor_connect = lambda handle, session_id, connection_id, completion, userdata: (
+            completion(1, b"{}", None, None)
+        )
+        fake_lib.reactor_destroy = lambda handle: 0  # quiesced: nothing running
+        # Deliberately never calls `completion` — this is what "still in
+        # flight when close() runs" looks like from the trampoline's side.
+        fake_lib.reactor_send_command = (
+            lambda handle, command, args_json, uploads_json, completion, userdata: None
+        )
+        monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: fake_lib)
+        return Reactor("m", jwt="fake")
+
+    async def test_a_pending_send_command_raises_instead_of_hanging(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reactor = self._connected_reactor(monkeypatch)
+        await reactor.connect()
+
+        command = asyncio.ensure_future(reactor.send_command("noop", {}))
+        await asyncio.sleep(0)  # let send_command register its trampoline
+
+        reactor.close()
+
+        with pytest.raises(AbortedError, match="destroyed before this call completed"):
+            await asyncio.wait_for(command, timeout=1)
+
+    async def test_a_settled_operation_is_unaffected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The fix must not disturb the ordinary case: an operation whose
+        completion already fired before close() runs keeps its real result."""
+        reactor = self._connected_reactor(monkeypatch)
+        await reactor.connect()  # connect()'s own completion fires synchronously
+
+        reactor.close()
+
+        assert reactor.status.value == "disconnected"
 
 
 class TestExitHook:
