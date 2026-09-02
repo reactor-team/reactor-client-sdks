@@ -16,9 +16,9 @@ node_modules/
 *.swp
 *.swo
 
-# Playwright's own output (sdks/js/integration)
-/sdks/js/integration/test-results/
-/sdks/js/integration/playwright-report/
+# Playwright's own output (sdks/js/integration-tests)
+/sdks/js/integration-tests/test-results/
+/sdks/js/integration-tests/playwright-report/
 
 # C++ SDK build tree (cmake -B sdks/cpp/build)
 /sdks/cpp/build/

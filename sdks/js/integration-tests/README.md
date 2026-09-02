@@ -12,11 +12,11 @@ fixtures agree with by construction.
 
 ```sh
 export INTEGRATION_TESTS_REACTOR_API_KEY=...   # never pass this on a command line — export it
-mise run test:js:integration
+mise run test:js:integration-tests
 ```
 
 Or directly — useful for iterating on one test without paying `mise run
-test:js:integration`'s full sequence each time. `@reactor-team/js-sdk` is a
+test:js:integration-tests`'s full sequence each time. `@reactor-team/js-sdk` is a
 `file:..` dependency resolving to `sdks/js/dist/`, so the SDK has to actually
 be built first, from the repo root:
 

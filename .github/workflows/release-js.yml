@@ -156,7 +156,7 @@ jobs:
       # production — the unit suite above mocks the client, so this is the
       # only check here that actually runs the SDK end to end.
       - name: Integration tests (Playwright, real browser + real model)
-        # Skipped on pull_request: ci.yml's js-integration job already runs
+        # Skipped on pull_request: ci.yml's js-integration-tests job already runs
         # this same suite against the same commit, required via ci-complete,
         # and reactor/echo's 10-sessions-per-minute quota doesn't have room
         # for both workflows racing it at once — confirmed in practice (this
@@ -171,7 +171,7 @@ jobs:
           # A dedicated secret, not the general REACTOR_API_KEY examples use —
           # this key exists only to run this suite.
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
-        run: mise run test:js:integration
+        run: mise run test:js:integration-tests
 
   # ── 2. GitHub release ───────────────────────────────────────────────────────
   release:

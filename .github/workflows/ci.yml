@@ -182,7 +182,7 @@ jobs:
       # No INTEGRATION_TESTS_REACTOR_API_KEY: this only bundles, it never connects.
       - run: mise run build:js:examples
 
-  js-integration:
+  js-integration-tests:
     name: JS SDK integration tests (real browser, real model)
     needs: changes
     # GitHub withholds repo secrets from a fork's pull_request runs, so a
@@ -203,16 +203,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      # test:js:integration builds wasm + dist/ itself (mise.toml) rather
-      # than reusing the `js` job's — same reasoning as release-js.yml's
-      # build job: never test something that wasn't built by the exact
-      # steps that just ran.
+      # test:js:integration-tests builds wasm + dist/ itself (mise.toml)
+      # rather than reusing the `js` job's — same reasoning as
+      # release-js.yml's build job: never test something that wasn't built
+      # by the exact steps that just ran.
       - name: Integration tests (Playwright, real browser + real model)
         env:
           # A dedicated secret, not the general REACTOR_API_KEY examples use —
           # this key exists only to run this suite.
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
-        run: mise run test:js:integration
+        run: mise run test:js:integration-tests
 
   cpp:
     name: C++ SDK
@@ -263,7 +263,7 @@ jobs:
 
   ci-complete:
     name: CI Complete
-    needs: [changes, repo, rust, python, js, js-integration, cpp]
+    needs: [changes, repo, rust, python, js, js-integration-tests, cpp]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -277,7 +277,7 @@ jobs:
                    "${{ needs.rust.result }}" \
                    "${{ needs.python.result }}" \
                    "${{ needs.js.result }}" \
-                   "${{ needs.js-integration.result }}" \
+                   "${{ needs.js-integration-tests.result }}" \
                    "${{ needs.cpp.result }}"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::a required job failed ($r)"; exit 1

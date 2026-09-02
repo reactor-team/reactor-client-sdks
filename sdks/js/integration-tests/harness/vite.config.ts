@@ -9,7 +9,7 @@ import { defineConfig, loadEnv, searchForWorkspaceRoot } from 'vite';
 const harnessRoot = fileURLToPath(new URL('.', import.meta.url));
 
 // `@reactor-team/js-sdk` (`sdks/js`) is two directories up from here
-// (`harness/` -> `integration/` -> `js/`). Vite only serves files under the
+// (`harness/` -> `integration-tests/` -> `js/`). Vite only serves files under the
 // workspace root by default, so its `dist/wasm` needs to be allowed
 // explicitly, or the wasm fetch 403s.
 const sdkRoot = fileURLToPath(new URL('../..', import.meta.url));
