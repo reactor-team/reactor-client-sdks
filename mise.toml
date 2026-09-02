@@ -150,21 +150,21 @@ dir = "sdks/python"
 # Tests needing the compiled dylib skip themselves when it is absent.
 run = "uv run --group dev --locked pytest"
 
-[tasks."test:python:integration"]
+[tasks."test:python:integration-tests"]
 description = "[Testing] Python SDK integration tests — real FFI client, real WebRTC, against a live model (needs INTEGRATION_TESTS_REACTOR_API_KEY)"
 dir = "sdks/python"
 # Deliberately not a dependency of `test` / `test:python`: unlike the unit
 # suite's faked `get_lib()`, this connects to a real model in production
-# (reactor/echo by default — see integration/conftest.py) over a real WebRTC
-# connection, so it needs INTEGRATION_TESTS_REACTOR_API_KEY, costs real
-# session time, and runs on the order of minutes rather than seconds.
+# (reactor/echo by default — see integration-tests/conftest.py) over a real
+# WebRTC connection, so it needs INTEGRATION_TESTS_REACTOR_API_KEY, costs
+# real session time, and runs on the order of minutes rather than seconds.
 run = [
     # The unit suite's dylib is optional (tests needing it skip without one);
     # this suite is nothing but live-session calls, so it needs a real build
     # rather than skipping quietly. Same command build:wheel uses, and same
-    # reasoning as test:js:integration's explicit sequential steps below.
+    # reasoning as test:js:integration-tests's explicit sequential steps below.
     "cargo build -p reactor-ffi --release",
-    "uv run --group dev --locked pytest integration/tests -v",
+    "uv run --group dev --locked pytest integration-tests/tests -v",
 ]
 
 [tasks.test]

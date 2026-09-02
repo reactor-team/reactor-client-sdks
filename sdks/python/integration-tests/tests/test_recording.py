@@ -57,7 +57,7 @@ async def test_request_clip_and_download_produces_a_playable_file(reactor: React
     assert isinstance(data, bytes)
     assert len(data) > 0
     # Fragmented MP4: the init segment (ftyp/moov) goes in first — see
-    # sdks/js/integration/README.md's "playlist is fragmented MP4" note,
+    # sdks/js/integration-tests/README.md's "playlist is fragmented MP4" note,
     # equally true here since it's the same coordinator-served format.
     assert b"ftyp" in data[:256], "downloaded clip does not start with an MP4 init segment"
 

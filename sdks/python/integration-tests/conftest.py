@@ -6,8 +6,9 @@ point. See README.md.
 
 Lives outside `tests/`'s `testpaths`, so it never runs as part of `mise run
 test:python`'s mocked-`get_lib()` unit suite — only `mise run
-test:python:integration` (`pytest integration/tests`) picks this up, the same
-separation `sdks/js/integration/` keeps from `sdks/js`'s own vitest suite.
+test:python:integration-tests` (`pytest integration-tests/tests`) picks this
+up, the same separation `sdks/js/integration-tests/` keeps from `sdks/js`'s
+own vitest suite.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ from reactor_sdk import DEFAULT_API_URL, Reactor, fetch_jwt
 
 # ── configuration ────────────────────────────────────────────────────────────
 #
-# Same env var names as sdks/js/integration/harness/src/config.ts, so pointing
+# Same env var names as sdks/js/integration-tests/harness/src/config.ts, so pointing
 # one suite at a local runtime instead of production reads the same way as
 # pointing the other.
 
@@ -49,7 +50,7 @@ API_KEY = os.environ.get("INTEGRATION_TESTS_REACTOR_API_KEY")
 if not LOCAL and not API_KEY:
     pytest.exit(
         "INTEGRATION_TESTS_REACTOR_API_KEY is required unless REACTOR_LOCAL=true "
-        "— see sdks/python/integration/README.md.",
+        "— see sdks/python/integration-tests/README.md.",
         returncode=1,
     )
 
@@ -151,7 +152,7 @@ async def wait_until(
 # Deterministic, synthetic frames — not a webcam/mic — so pixel assertions
 # against reactor/echo's effects are exact rather than dependent on whatever a
 # fake device happens to generate. Same reasoning as the JS suite's synthetic
-# canvas/audio-tone fixtures (see sdks/js/integration/harness/).
+# canvas/audio-tone fixtures (see sdks/js/integration-tests/harness/).
 
 
 def solid_rgb_frame(width: int, height: int, color: tuple[int, int, int]) -> np.ndarray:

@@ -147,13 +147,14 @@ jobs:
         run: mise run build:ffi
       - run: mise run test:python
 
-  python-integration:
+  python-integration-tests:
     name: Python SDK integration tests (real FFI, real model)
     needs: changes
-    # Same fork-PR reasoning as js-integration below: GitHub withholds repo
-    # secrets from a fork's pull_request runs, so INTEGRATION_TESTS_REACTOR_API_KEY
-    # would never be populated there — skipped rather than failing every
-    # external contribution. Still runs for every same-repo PR and on push.
+    # Same fork-PR reasoning as js-integration-tests below: GitHub withholds
+    # repo secrets from a fork's pull_request runs, so
+    # INTEGRATION_TESTS_REACTOR_API_KEY would never be populated there —
+    # skipped rather than failing every external contribution. Still runs
+    # for every same-repo PR and on push.
     if: github.event_name == 'push' || (needs.changes.outputs.python == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:
@@ -170,9 +171,9 @@ jobs:
       - name: Integration tests (real FFI client, real model)
         env:
           # A dedicated secret, not the general REACTOR_API_KEY examples use —
-          # this key exists only to run this suite (shared with js-integration).
+          # this key exists only to run this suite (shared with js-integration-tests).
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
-        run: mise run test:python:integration
+        run: mise run test:python:integration-tests
 
   js:
     name: JS SDK + browser binding
@@ -290,7 +291,7 @@ jobs:
 
   ci-complete:
     name: CI Complete
-    needs: [changes, repo, rust, python, python-integration, js, js-integration-tests, cpp]
+    needs: [changes, repo, rust, python, python-integration-tests, js, js-integration-tests, cpp]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -303,7 +304,7 @@ jobs:
                    "${{ needs.repo.result }}" \
                    "${{ needs.rust.result }}" \
                    "${{ needs.python.result }}" \
-                   "${{ needs.python-integration.result }}" \
+                   "${{ needs.python-integration-tests.result }}" \
                    "${{ needs.js.result }}" \
                    "${{ needs.js-integration-tests.result }}" \
                    "${{ needs.cpp.result }}"; do

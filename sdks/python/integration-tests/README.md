@@ -7,14 +7,14 @@ chain is mocked; that's the point. Unlike `sdks/python`'s unit tests
 "Testing" section), this is the one place the whole path — SDK, FFI, WebRTC,
 coordinator, model — actually runs end to end, so it's what catches a
 regression the unit suite's fixtures agree with by construction. Mirrors
-`sdks/js/integration/`; see that suite's own README for the fuller design
-rationale, most of which applies unchanged here.
+`sdks/js/integration-tests/`; see that suite's own README for the fuller
+design rationale, most of which applies unchanged here.
 
 ## Running it
 
 ```sh
 export INTEGRATION_TESTS_REACTOR_API_KEY=...   # never pass this on a command line — export it
-mise run test:python:integration
+mise run test:python:integration-tests
 ```
 
 Or directly — useful for iterating on one test without paying the full task's
@@ -28,7 +28,7 @@ cargo build -p reactor-ffi --release
 Then, from `sdks/python`:
 
 ```sh
-uv run --group dev pytest integration/tests -v
+uv run --group dev pytest integration-tests/tests -v
 ```
 
 A dedicated key, the same `INTEGRATION_TESTS_REACTOR_API_KEY` the JS suite uses —
@@ -60,7 +60,7 @@ gets a `MediaStreamTrack` with no per-frame hook) and `send_command`'s typed
 data replies (example 08's territory, not yet a browser-side equivalent).
 
 `test_concurrency_and_races.py` is not parity with anything in `sdks/js/
-integration/` — it exists because the JS SDK needed `AwaitQueue` (PR #137) to
+integration-tests/` — it exists because the JS SDK needed `AwaitQueue` (PR #137) to
 survive connect/disconnect racing in-flight calls, and PR #136 fixed the
 equivalent race one layer down, in `reactor-core`/`reactor-wasm`/`reactor-ffi`,
 which is the layer Python's `Reactor` calls into directly. It did find one gap
@@ -70,11 +70,11 @@ in #139, see "Known, currently-failing issue" below for what's still open.
 ## Pointing this at a local runtime instead of production
 
 Every knob is an env var, read by `conftest.py` — the same names
-`sdks/js/integration/harness/src/config.ts` uses:
+`sdks/js/integration-tests/harness/src/config.ts` uses:
 
 ```sh
 REACTOR_LOCAL=true REACTOR_API_URL=http://localhost:8080 REACTOR_MODEL_NAME=my-model \
-  uv run --group dev pytest integration/tests -v
+  uv run --group dev pytest integration-tests/tests -v
 ```
 
 `REACTOR_LOCAL=true` skips auth entirely (`Reactor(local=True)`'s own docs:
@@ -94,7 +94,7 @@ stays visible until it's fixed upstream — matching the JS suite's own
 convention.
 
 **`reactor/echo` session-state leak (external, not this repo).** See
-`sdks/js/integration/README.md`'s own section on this — production has
+`sdks/js/integration-tests/README.md`'s own section on this — production has
 carried per-session model state across sessions that should be isolated. If a
 shared prod worker is in that state, `test_tracks_and_frames.py`'s and
 `test_upload_and_conditioning.py`'s effect/overlay assertions can fail

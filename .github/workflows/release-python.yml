@@ -343,17 +343,17 @@ jobs:
   # platform, so unlike build-wheels this needs no matrix — one Linux run is
   # what proves the SDK itself works end to end against a real model, the
   # same reasoning release-js.yml's own integration step uses.
-  python-integration:
+  python-integration-tests:
     name: Python SDK integration tests (real FFI, real model)
     needs: detect-version
-    # Skipped on pull_request: ci.yml's python-integration job already runs
-    # this same suite against the same commit, required via ci-complete, and
-    # reactor/echo's session quota doesn't have room for both workflows
-    # racing it at once — the exact collision js-integration hit in practice
-    # (see release-js.yml's own note). No redundancy is lost: nothing
-    # publishes off a pull_request event (the `release`/`publish-pypi` gates
-    # below), so this only needs to run before an actual release, on push or
-    # workflow_dispatch.
+    # Skipped on pull_request: ci.yml's python-integration-tests job already
+    # runs this same suite against the same commit, required via
+    # ci-complete, and reactor/echo's session quota doesn't have room for
+    # both workflows racing it at once — the exact collision
+    # js-integration-tests hit in practice (see release-js.yml's own note).
+    # No redundancy is lost: nothing publishes off a pull_request event (the
+    # `release`/`publish-pypi` gates below), so this only needs to run
+    # before an actual release, on push or workflow_dispatch.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -369,19 +369,20 @@ jobs:
       - name: Integration tests (real FFI client, real model)
         env:
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
-        run: mise run test:python:integration
+        run: mise run test:python:integration-tests
 
   # ── 2. GitHub release ───────────────────────────────────────────────────────
   release:
     name: Publish GitHub release
-    needs: [detect-version, build-wheels, python-integration]
+    needs: [detect-version, build-wheels, python-integration-tests]
     # An explicit `if` replaces the implicit "every `needs` entry succeeded"
-    # gate rather than adding to it, so python-integration's own success is
-    # spelled out here too — it always runs (never skipped) whenever this
-    # condition can be true, since both gate on the same push event.
+    # gate rather than adding to it, so python-integration-tests's own
+    # success is spelled out here too — it always runs (never skipped)
+    # whenever this condition can be true, since both gate on the same push
+    # event.
     if: >-
       github.event_name == 'push' && needs.detect-version.outputs.bumped == 'true' &&
-      needs.python-integration.result == 'success'
+      needs.python-integration-tests.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -473,7 +474,7 @@ jobs:
   # reaching PyPI. Steps run after the environment is in place, so they see it.
   publish-pypi:
     name: Publish to PyPI
-    needs: [detect-version, build-wheels, python-integration, release]
+    needs: [detect-version, build-wheels, python-integration-tests, release]
     if: >-
       github.event_name == 'push' &&
       needs.detect-version.outputs.bumped == 'true'

@@ -10,7 +10,7 @@ checks, not just that adoption connects.
 with a standalone script: constructing each `Reactor` the convenient way
 (`api_key=...`, letting `_resolve_token` mint a token per instance) 403s the
 joiner every time — `UnauthorizedError: ... "this token is session-scoped and
-is not authorized for this resource"`. `sdks/js/integration/`'s own
+is not authorized for this resource"`. `sdks/js/integration-tests/`'s own
 multi-connection spec hit this first and documents the fix inline: "reading a
 session back requires the token that created it, so the joiner can't mint its
 own." Minting once via `fetch_jwt`/`conftest.py`'s `mint_jwt` and handing that

@@ -560,7 +560,7 @@ class TestCloseSettlesInFlightOperations:
     forever. The C++ SDK's `destroy_handle()` already gets this right
     (`client_impl.hpp`'s `op->fail(...)` loop); this is the same fix, ported.
 
-    Confirmed against a live model too, in `sdks/python/integration/tests/
+    Confirmed against a live model too, in `sdks/python/integration-tests/tests/
     test_concurrency_and_races.py` — this is the fast, deterministic unit-test
     version the `sdk-from-ffi` skill's "Testing" section calls for
     ("teardown in its awkward shapes ... destroy while [an operation] is in
