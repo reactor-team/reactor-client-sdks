@@ -61,6 +61,9 @@ concurrency:
   # Supersede an outdated pull-request build, but never interrupt a release.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  MISE_VERSION: "2026.8.8"    # pinned; same version ci.yml and release-js.yml use
+
 jobs:
   # ── 0. Is this push a release? ──────────────────────────────────────────────
   detect-version:
@@ -334,11 +337,51 @@ jobs:
           # release build is already preserved as a release asset.
           retention-days: ${{ github.event_name == 'pull_request' && 14 || 30 }}
 
+  # ── 1b. Integration tests ────────────────────────────────────────────────────
+  #
+  # `reactor_sdk` talks to `libreactor_ffi` through ctypes regardless of
+  # platform, so unlike build-wheels this needs no matrix — one Linux run is
+  # what proves the SDK itself works end to end against a real model, the
+  # same reasoning release-js.yml's own integration step uses.
+  python-integration:
+    name: Python SDK integration tests (real FFI, real model)
+    needs: detect-version
+    # Skipped on pull_request: ci.yml's python-integration job already runs
+    # this same suite against the same commit, required via ci-complete, and
+    # reactor/echo's session quota doesn't have room for both workflows
+    # racing it at once — the exact collision js-integration hit in practice
+    # (see release-js.yml's own note). No redundancy is lost: nothing
+    # publishes off a pull_request event (the `release`/`publish-pypi` gates
+    # below), so this only needs to run before an actual release, on push or
+    # workflow_dispatch.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Install clang for the libwebrtc C++ glue
+        uses: ./.github/actions/setup-libwebrtc-cxx
+      - name: Integration tests (real FFI client, real model)
+        env:
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+        run: mise run test:python:integration
+
   # ── 2. GitHub release ───────────────────────────────────────────────────────
   release:
     name: Publish GitHub release
-    needs: [detect-version, build-wheels]
-    if: github.event_name == 'push' && needs.detect-version.outputs.bumped == 'true'
+    needs: [detect-version, build-wheels, python-integration]
+    # An explicit `if` replaces the implicit "every `needs` entry succeeded"
+    # gate rather than adding to it, so python-integration's own success is
+    # spelled out here too — it always runs (never skipped) whenever this
+    # condition can be true, since both gate on the same push event.
+    if: >-
+      github.event_name == 'push' && needs.detect-version.outputs.bumped == 'true' &&
+      needs.python-integration.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -430,7 +473,7 @@ jobs:
   # reaching PyPI. Steps run after the environment is in place, so they see it.
   publish-pypi:
     name: Publish to PyPI
-    needs: [detect-version, build-wheels, release]
+    needs: [detect-version, build-wheels, python-integration, release]
     if: >-
       github.event_name == 'push' &&
       needs.detect-version.outputs.bumped == 'true'
