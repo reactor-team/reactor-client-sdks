@@ -64,8 +64,8 @@ integration/` — it exists because the JS SDK needed `AwaitQueue` (PR #137) to
 survive connect/disconnect racing in-flight calls, and PR #136 fixed the
 equivalent race one layer down, in `reactor-core`/`reactor-wasm`/`reactor-ffi`,
 which is the layer Python's `Reactor` calls into directly. It did find one gap
-of its own, in `close()`'s teardown rather than in connect/disconnect — see
-"Known, currently-failing issues" below.
+of its own, in `close()`'s teardown rather than in connect/disconnect — fixed
+in #139, see "Known, currently-failing issue" below for what's still open.
 
 ## Pointing this at a local runtime instead of production
 
@@ -82,11 +82,16 @@ REACTOR_LOCAL=true REACTOR_API_URL=http://localhost:8080 REACTOR_MODEL_NAME=my-m
 suite documents: nothing here can exercise the API-key-to-JWT exchange or an
 auth-failure error path (`UnauthorizedError`, ...) against a local runtime.
 
-## Known, currently-failing issues
+## Known, currently-failing issue
 
-Found by running this suite against prod for real. Each is left as a real,
-failing assertion rather than skipped, so it stays visible until fixed —
-matching the JS suite's own convention for its one external issue below.
+Found by running this suite against prod for real. Two other issues this
+suite found along the way are already fixed, not just documented — session
+adoption needing a shared token (see `test_multi_connection.py`'s module
+docstring) and `Reactor.close()` abandoning in-flight operations (fixed in
+#139; see `test_concurrency_and_races.py`'s module docstring). This one is
+external and left as a real, failing assertion rather than skipped, so it
+stays visible until it's fixed upstream — matching the JS suite's own
+convention.
 
 **`reactor/echo` session-state leak (external, not this repo).** See
 `sdks/js/integration/README.md`'s own section on this — production has
@@ -95,22 +100,3 @@ shared prod worker is in that state, `test_tracks_and_frames.py`'s and
 `test_upload_and_conditioning.py`'s effect/overlay assertions can fail
 regardless of what this suite itself did. A flaky-looking failure there may
 be this, not a new regression, until proven otherwise.
-
-**`Reactor.close()` abandons in-flight operations (this repo, confirmed).**
-`test_concurrency_and_races.py::test_close_while_a_command_is_in_flight_does_not_hang`
-fails reliably: `close()`'s `_destroy_handle()` clears
-`self._pending_completions` without ever settling the `asyncio.Future` each
-pending `_async_op` call is awaiting, so a `send_command()` (or `connect()`,
-etc.) racing `close()` can hang forever instead of raising. `disconnect()`
-doesn't have this problem. See that test's module docstring for the full
-trace, including the `sdk-from-ffi` skill section ("Teardown settles what it
-cannot cancel") this matches.
-
-**Session adoption (`connect(session_id=...)`) 403s (needs a call — key or
-SDK).** Every test in `test_multi_connection.py` fails with the coordinator
-rejecting the joiner's token as "session-scoped" and suggesting
-`authorization_details.resources.sessions.bind`, which
-`reactor_sdk._auth.fetch_jwt` has no parameter for. See that file's module
-docstring — this may be `INTEGRATION_TESTS_REACTOR_API_KEY` needing a
-broader role rather than an SDK bug; needs someone with coordinator-side
-context to say which.

@@ -15,24 +15,18 @@ Every test is wrapped in a bounded wait: a hang here is exactly the failure
 mode being probed for, and an unbounded await would just make the suite hang
 too instead of reporting it.
 
-One of these tests did find something:
-`test_close_while_a_command_is_in_flight_does_not_hang` fails against prod,
-confirmed, not flaky. `close()`'s `_destroy_handle()` (`client.py`) clears
-`self._pending_completions` but never settles the `asyncio.Future` each
-`_async_op` call is awaiting — it only keeps the ctypes trampoline objects
-alive long enough to avoid a use-after-free (the `trampolines = self._cb_refs
-+ list(self._pending_completions.values())` line and what follows it). If
-the FFI's own completion callback for an in-flight op hasn't already fired by
-the time `close()` runs, nothing ever fires it, and the caller's await hangs
-for the life of the process. `disconnect()` doesn't have this problem — an
-in-flight `send_command()` racing it settles, one way or another (see
-`test_disconnect_while_a_command_is_in_flight_settles_it`). This is exactly
-the failure mode the `sdk-from-ffi` skill's "Teardown settles what it cannot
-cancel" section describes and prescribes a fix for (a weak-reference ticket
-the client owns and teardown settles on the way through) — `close()` doesn't
-follow that pattern for ordinary in-flight ops today. Left failing on
-purpose rather than skipped, same convention as the JS suite's known
-`reactor/echo` session-leak assertions.
+One of these tests did find something, and it's fixed now:
+`test_close_while_a_command_is_in_flight_does_not_hang` used to fail against
+prod, confirmed, not flaky — `close()`'s `_destroy_handle()` cleared
+`self._pending_completions` without ever settling the `asyncio.Future` each
+`_async_op` call was awaiting, so an operation still in flight when `close()`
+ran left its caller hung for the life of the process. Fixed in #139 by
+settling each pending future with `AbortedError` on the way through,
+mirroring the pattern the C++ SDK's `destroy_handle()` already had
+(`client_impl.hpp`) — the same fix the `sdk-from-ffi` skill's "Teardown
+settles what it cannot cancel" section describes. `disconnect()` never had
+this problem — an in-flight `send_command()` racing it settles on its own
+(see `test_disconnect_while_a_command_is_in_flight_settles_it`).
 """
 
 from __future__ import annotations
