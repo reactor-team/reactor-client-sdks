@@ -120,6 +120,23 @@ jobs:
             echo "bumped=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # A version bump with no matching changelog entry is a release that
+      # ships undocumented — CHANGELOG.md is what release's own notes point
+      # users at ("See sdks/python/CHANGELOG.md for what changed" below), so
+      # this fails the release rather than let that link go stale. Doesn't
+      # write anything: the entry still has to be added by hand, in the same
+      # PR as the version bump, same as every prior release.
+      - name: Verify CHANGELOG.md documents this version
+        if: steps.diff.outputs.bumped == 'true'
+        env:
+          VERSION: ${{ steps.diff.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! grep -qF "## [${VERSION}]" sdks/python/CHANGELOG.md; then
+            echo "::error::sdks/python/CHANGELOG.md has no '## [${VERSION}]' section — move the [Unreleased] entries under one (Keep a Changelog format) before releasing."
+            exit 1
+          fi
+
   # ── 1. One wheel per platform ───────────────────────────────────────────────
   #
   # Each wheel is py3-none-<platform>: ctypes links no libpython, so one wheel per
