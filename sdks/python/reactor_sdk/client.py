@@ -824,6 +824,17 @@ class Reactor:
         this session — the connection-level analogue of `session_id` adopting
         an existing session. Leave it `None` to register a new one, which is
         what every single-connection client wants.
+
+        Resolving here only guarantees `status` itself already reads `"ready"`
+        (a synchronous read off the native handle) — not that every
+        `on_status` listener has already been called with it. The two are
+        dispatched independently: this coroutine's own completion and the
+        `"status_changed"` event both arrive from native callbacks marshalled
+        onto the loop separately (`_fire_on_loop`), with no ordering promise
+        between them, so an `on_status` handler for `"ready"` can still be
+        pending when `connect()` returns. A caller that needs to observe the
+        transition itself, not just the resulting status, should await that
+        event rather than assuming it already ran.
         """
         # Checked first, before anything here has a side effect: ctypes.c_uint32
         # does not raise for a value outside its range, it wraps modulo 2**32,

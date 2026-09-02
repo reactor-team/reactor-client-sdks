@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from conftest import wait_until
 
 from reactor_sdk import DisconnectedError, Reactor, ReactorStatus
 
@@ -27,6 +28,14 @@ async def test_connect_walks_disconnected_to_ready_and_getters_agree(reactor_fac
 
     assert r.status == ReactorStatus.READY
     assert r.session_id
+
+    # connect()'s own completion and the "status_changed" event it triggers
+    # are dispatched from native code independently (client.py's connect()
+    # docstring), with no ordering promise between them — connect() can
+    # return before the "ready" on_status callback has actually run. Poll
+    # briefly for it to catch up rather than asserting on statuses[-1] the
+    # instant connect() resolves.
+    await wait_until(lambda: statuses[-1:] == ["ready"], timeout=2.0)
 
     # "connecting" and "waiting" may repeat under retry, but the sequence must
     # never go backwards and must end on "ready" — checked by rank, not just
