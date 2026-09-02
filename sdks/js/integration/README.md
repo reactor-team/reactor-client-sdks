@@ -15,10 +15,21 @@ export INTEGRATION_TESTS_REACTOR_API_KEY=...   # never pass this on a command li
 mise run test:js:integration
 ```
 
-Or directly:
+Or directly — useful for iterating on one test without paying `mise run
+test:js:integration`'s full sequence each time. `@reactor-team/js-sdk` is a
+`file:..` dependency resolving to `sdks/js/dist/`, so the SDK has to actually
+be built first, from the repo root:
+
+```sh
+mise run build:wasm
+mise run build:js
+```
+
+Then, from this directory:
 
 ```sh
 npm install
+npx tsc --noEmit          # optional, but this is what CI runs
 npx playwright install --with-deps chromium
 npx playwright test
 ```
