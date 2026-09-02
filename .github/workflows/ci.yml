@@ -164,6 +164,11 @@ jobs:
     # skipped rather than failing every external contribution. Still runs
     # for every same-repo PR and on push.
     if: github.event_name == 'push' || (needs.changes.outputs.python == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    # See js-integration-tests's own comment on this group above — same
+    # reasoning, same fixed name, shared with the release-*.yml workflows too.
+    concurrency:
+      group: reactor-echo-live-session-quota
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -226,6 +231,24 @@ jobs:
     # skipped there rather than failing every external contribution. Still
     # runs for every same-repo PR and on push, same as before.
     if: github.event_name == 'push' || (needs.changes.outputs.js == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    # This workflow's own top-level `concurrency:` is keyed on the branch/ref,
+    # so it does nothing across two different pull requests, or across this
+    # workflow and release-js.yml/release-python.yml/release-cpp.yml's own
+    # equivalents landing on the same push to main — and both of those have
+    # actually happened: js/python-integration-tests 429ed each other before
+    # `needs:` serialized them within one run, and release-js.yml's own
+    # comment records it hitting the same quota against a concurrent ci.yml
+    # run on the same commit. This group name is intentionally identical
+    # across every job in this file and in the three release-*.yml workflows
+    # that also create reactor/echo sessions, so any two of them — same PR,
+    # different PRs, or a push racing a PR's own check — queue behind each
+    # other instead of all hitting the shared sessions_per_minute quota at
+    # once. Never cancelled: a queued run's session is real backend state,
+    # and cancelling one mid-test would orphan it server-side rather than let
+    # it disconnect cleanly.
+    concurrency:
+      group: reactor-echo-live-session-quota
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -315,6 +338,11 @@ jobs:
     # skipped rather than failing every external contribution. Still runs for
     # every same-repo PR and on push.
     if: github.event_name == 'push' || (needs.changes.outputs.cpp == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    # See js-integration-tests's own comment on this group above — same
+    # reasoning, same fixed name, shared with the release-*.yml workflows too.
+    concurrency:
+      group: reactor-echo-live-session-quota
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -327,9 +355,14 @@ jobs:
           version: ${{ env.MISE_VERSION }}
       - name: Install clang for the libwebrtc C++ glue
         uses: ./.github/actions/setup-libwebrtc-cxx
-      # Same two-compiler split as the `cpp` job above: the conda clang++ this
-      # action puts on PATH builds libreactor_ffi's libwebrtc glue, but the SDK
-      # itself (and this suite) must link against the runner's own glibc.
+      - name: Build libreactor_ffi (the library the SDK links)
+        run: mise run build:ffi
+      # Same two-compiler split as the `cpp` job above: the conda clang++ just
+      # built libreactor_ffi's libwebrtc glue, but the SDK itself (and this
+      # suite) must link against the runner's own glibc — switching before
+      # `build:ffi` above, instead of after, reproduced the exact ABI mismatch
+      # `mise run build:ffi` exists to avoid, since test:cpp:integration-tests
+      # does not build the FFI itself for that same reason.
       - name: Use the platform clang for the SDK itself
         run: |
           set -euo pipefail
