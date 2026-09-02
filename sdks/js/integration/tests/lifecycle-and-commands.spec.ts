@@ -46,10 +46,17 @@ test('connect walks disconnected -> connecting -> waiting -> ready, and getters 
     );
 
     // "connecting" and "waiting" are allowed to repeat under retry, but the
-    // sequence must never go backwards and must end on "ready".
+    // sequence must never go backwards and must end on "ready" — checked
+    // below by rank, not just by first/last value, so a status silently
+    // skipped or a step going backward still fails this.
+    const rank: Record<string, number> = { disconnected: 0, connecting: 1, waiting: 2, ready: 3 };
+
     expect(statuses[0]).toBe('connecting');
     expect(statuses.at(-1)).toBe('ready');
-    expect(statuses).not.toContain('disconnected');
+    expect(statuses).toContain('waiting');
+    for (let i = 1; i < statuses.length; i++) {
+      expect(rank[statuses[i] as string]).toBeGreaterThanOrEqual(rank[statuses[i - 1] as string]);
+    }
   });
 
   await test.step('getSessionId() is a non-empty string once ready', async () => {
