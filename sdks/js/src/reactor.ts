@@ -120,6 +120,12 @@ export class Reactor implements Disposable {
    * itself, only against `activeReads`.
    */
   private async withWriterAccess<T>(fn: () => Promise<T>): Promise<T> {
+    // Mark the writer active *before* awaiting the current reads, not after:
+    // withReaderAccess()'s gate check is what keeps a new read from entering
+    // during that wait, and it only works once this flag is already true.
+    // Setting it first can't race a second writer — writers only ever run
+    // from inside a `queue`-serialized task, so at most one is ever here.
+    this.writerActive = true;
     // Skip the await entirely when nothing is in flight — `await
     // Promise.all([])` still costs a microtask tick, which the common
     // (uncontended) case shouldn't pay: connect()/disconnect()/reconnect()
@@ -128,7 +134,6 @@ export class Reactor implements Disposable {
     if (this.activeReads.size > 0) {
       await Promise.all(this.activeReads);
     }
-    this.writerActive = true;
     try {
       return await fn();
     } finally {

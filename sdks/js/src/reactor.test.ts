@@ -381,6 +381,50 @@ describe('Reactor concurrency: sendCommand()/requestSchema() vs. a concurrent di
 
     expect(client.freeCalls).toBe(1);
   });
+
+  it("a sendCommand() that arrives while disconnect() is still waiting for an *earlier* read to drain doesn't slip in underneath it", async () => {
+    // [codex-review]: withWriterAccess() used to set writerActive only
+    // *after* awaiting the activeReads snapshot — so a read starting during
+    // that await (while writerActive was still false) could register itself
+    // and reach the client before the writer got there, same class of race
+    // as the one being fixed. Distinct from the test above: that one starts
+    // with activeReads empty, so the vulnerable await never actually ran.
+    // This one seeds one read first, so disconnect() has something to wait
+    // for and the gap is real.
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const gateA = createDeferred<ReactorMessage | undefined>();
+    const realSendCommand = client.sendCommand.bind(client);
+
+    client.sendCommand = vi.fn(
+      (command: string, data: Record<string, unknown> | undefined, uploads: Record<string, unknown> | undefined) => {
+        void realSendCommand(command, data, uploads);
+        return gateA.promise;
+      },
+    );
+
+    const readerAPromise = reactor.sendCommand('a', {});
+
+    // No await here on purpose: disconnect() must register as excluding new
+    // reads *before* it starts awaiting readerA, not after — this is the
+    // exact window the bug lived in.
+    const disconnectPromise = reactor.disconnect();
+    const readerBPromise = reactor.sendCommand('b', {});
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    // Only readerA (seeded before disconnect()) should have reached the
+    // client — readerB, arriving during disconnect()'s drain wait, must
+    // still be parked in withReaderAccess()'s wait loop.
+    expect(client.sendCommandCalls).toEqual([{ command: 'a', data: {}, uploads: undefined }]);
+    expect(client.freeCalls).toBe(0);
+
+    gateA.resolve({ type: 'ack', data: null });
+    await Promise.all([readerAPromise, disconnectPromise, readerBPromise]);
+
+    expect(client.freeCalls).toBe(1);
+  });
 });
 
 describe('Reactor connect/construction options', () => {
