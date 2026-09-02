@@ -15,16 +15,19 @@ test('connect walks disconnected -> connecting -> waiting -> ready, and getters 
 
   await test.step('status starts disconnected', async () => {
     const status = await page.evaluate((name) => window.__harness.get(name).getStatus(), NAME);
+
     expect(status).toBe('disconnected');
   });
 
   await test.step('connect() resolves once ready', async () => {
     await page.evaluate(async (name) => {
       const jwt = await window.__harness.fetchToken();
+
       await window.__harness.get(name).connect(jwt);
     }, NAME);
 
     const status = await page.evaluate((name) => window.__harness.get(name).getStatus(), NAME);
+
     expect(status).toBe('ready');
   });
 
@@ -33,6 +36,7 @@ test('connect walks disconnected -> connecting -> waiting -> ready, and getters 
       (name) => window.__harness.events[name]!.filter((e) => e.type === 'statusChanged').map((e) => e.detail),
       NAME,
     );
+
     // "connecting" and "waiting" are allowed to repeat under retry, but the
     // sequence must never go backwards and must end on "ready".
     expect(statuses[0]).toBe('connecting');
@@ -42,11 +46,13 @@ test('connect walks disconnected -> connecting -> waiting -> ready, and getters 
 
   await test.step('getSessionId() is a non-empty string once ready', async () => {
     const sessionId = await page.evaluate((name) => window.__harness.get(name).getSessionId(), NAME);
+
     expect(sessionId).toBeTruthy();
   });
 
   await test.step('getCapabilities() reports the tracks this model declares', async () => {
     const capabilities = await page.evaluate((name) => window.__harness.get(name).getCapabilities(), NAME);
+
     expect(capabilities?.tracks.map((t) => t.name).sort()).toEqual(
       ['main_audio', 'main_video', 'mic', 'webcam'].sort(),
     );
@@ -60,15 +66,18 @@ test('connect walks disconnected -> connecting -> waiting -> ready, and getters 
     const [requested, cached] = await page.evaluate(async (name) => {
       const reactor = window.__harness.get(name);
       const requested = await reactor.requestSchema();
+
       return [requested, reactor.getSchema()];
     }, NAME);
     const names = (s: typeof cached) => Object.keys(s?.paths ?? {}).sort();
+
     expect(names(requested)).toEqual(['/events/set_effect', '/events/set_intensity', '/events/set_overlay_image']);
     expect(names(cached)).toEqual(names(requested));
   });
 
   await test.step('getConnectionTimings() is populated once, with a positive total', async () => {
     const timings = await page.evaluate((name) => window.__harness.get(name).getConnectionTimings(), NAME);
+
     expect(timings?.totalMs).toBeGreaterThan(0);
   });
 });
@@ -89,8 +98,10 @@ test('sendCommand() round-trips a reply, and the model broadcasts the matching e
 
       const last = await page.evaluate((name) => {
         const messages = window.__harness.events[name]!.filter((e) => e.type === 'message');
+
         return messages.at(-1)?.detail;
       }, NAME);
+
       expect((last as { type?: string; data?: { effect?: string } })?.type).toBe('effect_changed');
       expect((last as { data?: { effect?: string } }).data?.effect).toBe(effect);
     });
@@ -100,8 +111,10 @@ test('sendCommand() round-trips a reply, and the model broadcasts the matching e
     await page.evaluate((name) => window.__harness.get(name).sendCommand('set_intensity', { intensity: 0 }), NAME);
     const last = await page.evaluate((name) => {
       const messages = window.__harness.events[name]!.filter((e) => e.type === 'message');
+
       return messages.at(-1)?.detail as { data?: { intensity?: number } };
     }, NAME);
+
     expect(last?.data?.intensity).toBe(0);
   });
 
@@ -116,6 +129,7 @@ test('sendCommand() round-trips a reply, and the model broadcasts the matching e
       (name) => window.__harness.get(name).sendCommand('this_command_does_not_exist', {}),
       NAME,
     );
+
     expect(reply).toBeUndefined();
   });
 
@@ -155,6 +169,7 @@ test("reconnect() refuses cleanly when there's no session to resume", async ({ p
         return err instanceof Error ? err.message : String(err);
       }
     }, NAME);
+
     expect(error).toBeTruthy();
   });
 
@@ -163,8 +178,10 @@ test("reconnect() refuses cleanly when there's no session to resume", async ({ p
     const [reply, lastError] = await page.evaluate(async (name) => {
       const reactor = window.__harness.get(name);
       const reply = await reactor.sendCommand('set_effect', { effect: 'none' });
+
       return [reply, reactor.getLastError()?.message];
     }, NAME);
+
     expect(reply).toBeUndefined();
     expect(lastError).toBeTruthy();
   });
@@ -183,5 +200,6 @@ test('connect() with a garbage token is refused with a clear error, not a hang',
       return err instanceof Error ? err.message : String(err);
     }
   }, 'bad-token');
+
   expect(error).toBeTruthy();
 });

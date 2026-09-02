@@ -27,6 +27,7 @@ test('publishTrack() puts a sender behind the slot; pause/resume/unpublish all r
   await test.step('publishTrack(webcam) + publishTrack(mic) succeed', async () => {
     await page.evaluate(async (name) => {
       const reactor = window.__harness.get(name);
+
       await reactor.publishTrack('webcam', window.__harness.makeVideoTrack('#ff2222'));
       await reactor.publishTrack('mic', window.__harness.makeAudioTrack());
     }, NAME);
@@ -40,6 +41,7 @@ test('publishTrack() puts a sender behind the slot; pause/resume/unpublish all r
             const names = window.__harness.events[name]!.filter((e) => e.type === 'trackReceived').map(
               (e) => (e.detail as { name: string }).name,
             );
+
             return names.sort();
           }, NAME),
         { timeout: 20_000 },
@@ -69,6 +71,7 @@ test('publishTrack() puts a sender behind the slot; pause/resume/unpublish all r
     // not the sendonly track this test just published.
     await page.evaluate((name) => window.__harness.get(name).pauseTrack('main_video'), NAME);
     let paused = await page.evaluate((name) => window.__harness.get(name).pausedTracks(), NAME);
+
     expect(paused).toContain('main_video');
 
     await page.evaluate((name) => window.__harness.get(name).resumeTrack('main_video'), NAME);
@@ -97,18 +100,21 @@ test('publishTrack() puts a sender behind the slot; pause/resume/unpublish all r
       await reactor.unpublishTrack('webcam');
       return reactor.getLastError();
     }, NAME);
+
     expect(second).toBeUndefined();
   });
 
   await test.step('getTrackByName() / getStreamByName() resolve the tracks the model declared', async () => {
     const found = await page.evaluate((name) => {
       const reactor = window.__harness.get(name);
+
       return {
         track: Boolean(reactor.getTrackByName('main_video')),
         stream: Boolean(reactor.getStreamByName('main_video')),
         missing: reactor.getTrackByName('not_a_real_track'),
       };
     }, NAME);
+
     expect(found.track).toBe(true);
     expect(found.stream).toBe(true);
     expect(found.missing).toBeUndefined();
@@ -116,8 +122,9 @@ test('publishTrack() puts a sender behind the slot; pause/resume/unpublish all r
 
   await test.step('trackMapping() lists every negotiated track with a mid', async () => {
     const mapping = await page.evaluate((name) => window.__harness.get(name).trackMapping(), NAME);
+
     expect(mapping.length).toBeGreaterThan(0);
-    for (const entry of mapping) expect(entry.mid).toBeTruthy();
+    for (const entry of mapping) {expect(entry.mid).toBeTruthy();}
   });
 
   await page.evaluate((name) => window.__harness.destroy(name), NAME);
@@ -128,6 +135,7 @@ test('uploadFile() + a file-taking command actually changes what the model rende
   await page.evaluate(async (name) => {
     window.__harness.create(name);
     const reactor = window.__harness.get(name);
+
     await reactor.connect(await window.__harness.fetchToken());
     await reactor.publishTrack('webcam', window.__harness.makeVideoTrack('#22ff22'));
   }, NAME);
@@ -145,15 +153,18 @@ test('uploadFile() + a file-taking command actually changes what the model rende
     const isRef = await page.evaluate(async (name) => {
       const reactor = window.__harness.get(name);
       const ref = await reactor.uploadFile(window.__harness.makeTestImageFile());
+
       (window as unknown as { __lastRef: unknown }).__lastRef = ref;
       return window.__harness.isFileRef(ref);
     }, NAME);
+
     expect(isRef).toBe(true);
   });
 
   await test.step('set_overlay_image with that FileRef is accepted', async () => {
     await page.evaluate((name) => {
       const ref = (window as unknown as { __lastRef: unknown }).__lastRef;
+
       return window.__harness
         .get(name)
         .sendCommand('set_overlay_image', { overlay_image: ref, overlay_strength: 1 });

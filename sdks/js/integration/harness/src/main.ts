@@ -17,10 +17,12 @@ import { makeAudioTrack, makeTestImageFile, makeVideoTrack, samplePixel } from '
 // than a hand-rolled stand-in for it.
 
 export async function fetchToken(): Promise<string> {
-  if (REACTOR_LOCAL) return '';
+  if (REACTOR_LOCAL) {return '';}
   const r = await fetch('/api/token');
-  if (!r.ok) throw new Error(`token fetch failed: ${r.status}`);
+
+  if (!r.ok) {throw new Error(`token fetch failed: ${r.status}`);}
   const { jwt } = (await r.json()) as { jwt: string };
+
   return jwt;
 }
 
@@ -51,7 +53,7 @@ function record(name: string, type: ReactorEventName, detail: unknown): void {
 }
 
 function create(name: string, extraOptions: Partial<ReactorOptions> = {}): void {
-  if (instances.has(name)) throw new Error(`harness instance "${name}" already exists`);
+  if (instances.has(name)) {throw new Error(`harness instance "${name}" already exists`);}
 
   const reactor = new Reactor({
     modelName: REACTOR_MODEL_NAME,
@@ -67,12 +69,14 @@ function create(name: string, extraOptions: Partial<ReactorOptions> = {}): void 
     reactor.on(type, ((...args: unknown[]) => {
       if (type === 'trackReceived') {
         const [trackName, track] = args as [string, MediaStreamTrack];
+
         receivedTracks[name]![trackName] = track;
         record(name, type, { name: trackName });
         return;
       }
       if (type === 'error') {
         const [err] = args as [Error & { code?: string; recoverable?: boolean }];
+
         record(name, type, { message: err.message, code: err.code, recoverable: err.recoverable });
         return;
       }
@@ -85,13 +89,15 @@ function create(name: string, extraOptions: Partial<ReactorOptions> = {}): void 
 
 function get(name: string): Reactor {
   const reactor = instances.get(name);
-  if (!reactor) throw new Error(`no harness instance named "${name}" — call create() first`);
+
+  if (!reactor) {throw new Error(`no harness instance named "${name}" — call create() first`);}
   return reactor;
 }
 
 async function destroy(name: string): Promise<void> {
   const reactor = instances.get(name);
-  if (!reactor) return;
+
+  if (!reactor) {return;}
   if (reactor.getStatus() !== 'disconnected') {
     await reactor.disconnect();
   }
@@ -103,7 +109,8 @@ async function destroy(name: string): Promise<void> {
 
 async function samplePixelFor(name: string, trackName: string): Promise<{ r: number; g: number; b: number }> {
   const track = receivedTracks[name]?.[trackName];
-  if (!track) throw new Error(`instance "${name}" never received a track named "${trackName}"`);
+
+  if (!track) {throw new Error(`instance "${name}" never received a track named "${trackName}"`);}
   return samplePixel(track);
 }
 
@@ -118,6 +125,7 @@ async function downloadClip(clip: Clip, filename: string, jwt: string): Promise<
     jwt,
   });
   const blob = await downloadClipAsFile(clip, filename, { jwt });
+
   return { byteLength: blob.size };
 }
 

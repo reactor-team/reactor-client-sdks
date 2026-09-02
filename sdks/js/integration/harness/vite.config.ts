@@ -58,6 +58,7 @@ export default defineConfig(({ mode }) => {
             }
 
             const apiKey = process.env.INTEGRATION_TESTS_REACTOR_API_KEY;
+
             if (!apiKey) {
               res.statusCode = 500;
               res.end(
@@ -92,6 +93,7 @@ export default defineConfig(({ mode }) => {
               }
 
               const { jwt } = (await upstream.json()) as { jwt: string };
+
               res.statusCode = 200;
               res.end(JSON.stringify({ jwt }));
             } catch (error) {
