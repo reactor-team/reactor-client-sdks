@@ -250,6 +250,183 @@ describe('Reactor.sendCommand runtime-scope compatibility shim', () => {
   });
 });
 
+// `queue`'s own docstring (reactor.ts) says calling into the client
+// concurrently with connect()/disconnect()/reconnect() "races its internal
+// state and can throw ... or corrupt it outright". These pin down that
+// sendCommand()/requestSchema() — which, unlike the track ops, don't share a
+// call site with connect()/disconnect() — are actually serialized behind a
+// concurrent disconnect() rather than reaching into the client while
+// disconnect() is freeing it, same shape as the in-flight-connect() case
+// above.
+describe('Reactor concurrency: sendCommand()/requestSchema() vs. a concurrent disconnect()', () => {
+  it("disconnect() doesn't free the client while sendCommand() is still awaiting its reply", async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const gate = createDeferred<ReactorMessage | undefined>();
+    const realSendCommand = client.sendCommand.bind(client);
+
+    client.sendCommand = vi.fn(
+      (command: string, data: Record<string, unknown> | undefined, uploads: Record<string, unknown> | undefined) => {
+        void realSendCommand(command, data, uploads);
+        return gate.promise;
+      },
+    );
+
+    const sendPromise = reactor.sendCommand('set_effect', { effect: 'invert' });
+    const disconnectPromise = reactor.disconnect();
+
+    // Let every pending microtask run: disconnect() should still be blocked
+    // behind the in-flight sendCommand() and must not have touched the
+    // client yet.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(client.disconnectCalls).toBe(0);
+    expect(client.freeCalls).toBe(0);
+
+    gate.resolve({ type: 'ack', data: null });
+    await Promise.all([sendPromise, disconnectPromise]);
+
+    expect(client.disconnectCalls).toBe(1);
+    expect(client.freeCalls).toBe(1);
+  });
+
+  it("disconnect() doesn't free the client while requestSchema() is still in flight", async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const gate = createDeferred<unknown>();
+
+    client.requestSchemaImpl = () => gate.promise;
+
+    const requestPromise = reactor.requestSchema();
+    const disconnectPromise = reactor.disconnect();
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(client.disconnectCalls).toBe(0);
+    expect(client.freeCalls).toBe(0);
+
+    gate.resolve({ commands: ['set_image'] });
+    await Promise.all([requestPromise, disconnectPromise]);
+
+    expect(client.disconnectCalls).toBe(1);
+    expect(client.freeCalls).toBe(1);
+  });
+
+  it('two concurrent sendCommand() calls run alongside each other, not serialized behind one another', async () => {
+    // [codex-review] on the earlier version of this fix: putting reads on
+    // the same `queue` writes use serializes every read behind every other
+    // one too, not just behind a lifecycle op — a slow command would then
+    // head-of-line block an unrelated one for no reason, since the binding
+    // already correlates replies independently.
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const gates = [createDeferred<ReactorMessage | undefined>(), createDeferred<ReactorMessage | undefined>()];
+    const started: number[] = [];
+    let calls = 0;
+
+    client.sendCommand = vi.fn(() => {
+      const i = calls++;
+
+      started.push(i);
+      return gates[i]!.promise;
+    });
+
+    const p1 = reactor.sendCommand('a', {});
+    const p2 = reactor.sendCommand('b', {});
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    // Both must have started already — serialized behind each other (the old
+    // behavior), the second wouldn't have until the first's gate resolved.
+    expect(started).toEqual([0, 1]);
+
+    gates[1]!.resolve({ type: 'ack', data: null });
+    gates[0]!.resolve({ type: 'ack', data: null });
+    await Promise.all([p1, p2]);
+  });
+
+  it('a sendCommand() that arrives while disconnect() is running waits for it, rather than racing in underneath', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const disconnectGate = createDeferred<void>();
+    const realDisconnect = client.disconnect.bind(client);
+
+    client.disconnect = vi.fn(() => {
+      void realDisconnect();
+      return disconnectGate.promise;
+    });
+
+    const disconnectPromise = reactor.disconnect();
+
+    await Promise.resolve();
+    await Promise.resolve();
+    // disconnect() is now mid-flight (writerActive), before a second
+    // sendCommand() is even attempted.
+    const sendPromise = reactor.sendCommand('set_effect', { effect: 'invert' });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    // sendCommand() must not have reached the client while disconnect() is
+    // still running — it never got the chance to free it out from under a
+    // call that raced in during the writer's exclusive window.
+    expect(client.sendCommandCalls).toEqual([]);
+
+    disconnectGate.resolve();
+    await disconnectPromise;
+    await sendPromise;
+
+    expect(client.freeCalls).toBe(1);
+  });
+
+  it("a sendCommand() that arrives while disconnect() is still waiting for an *earlier* read to drain doesn't slip in underneath it", async () => {
+    // [codex-review]: withWriterAccess() used to set writerActive only
+    // *after* awaiting the activeReads snapshot — so a read starting during
+    // that await (while writerActive was still false) could register itself
+    // and reach the client before the writer got there, same class of race
+    // as the one being fixed. Distinct from the test above: that one starts
+    // with activeReads empty, so the vulnerable await never actually ran.
+    // This one seeds one read first, so disconnect() has something to wait
+    // for and the gap is real.
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const gateA = createDeferred<ReactorMessage | undefined>();
+    const realSendCommand = client.sendCommand.bind(client);
+
+    client.sendCommand = vi.fn(
+      (command: string, data: Record<string, unknown> | undefined, uploads: Record<string, unknown> | undefined) => {
+        void realSendCommand(command, data, uploads);
+        return gateA.promise;
+      },
+    );
+
+    const readerAPromise = reactor.sendCommand('a', {});
+
+    // No await here on purpose: disconnect() must register as excluding new
+    // reads *before* it starts awaiting readerA, not after — this is the
+    // exact window the bug lived in.
+    const disconnectPromise = reactor.disconnect();
+    const readerBPromise = reactor.sendCommand('b', {});
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    // Only readerA (seeded before disconnect()) should have reached the
+    // client — readerB, arriving during disconnect()'s drain wait, must
+    // still be parked in withReaderAccess()'s wait loop.
+    expect(client.sendCommandCalls).toEqual([{ command: 'a', data: {}, uploads: undefined }]);
+    expect(client.freeCalls).toBe(0);
+
+    gateA.resolve({ type: 'ack', data: null });
+    await Promise.all([readerAPromise, disconnectPromise, readerBPromise]);
+
+    expect(client.freeCalls).toBe(1);
+  });
+});
+
 describe('Reactor connect/construction options', () => {
   it("forwards sessionId, connectionId, autoResumeTracks, and maxAttempts to the binding's connect()", async () => {
     const reactor = new Reactor({ modelName: 'test-model' });

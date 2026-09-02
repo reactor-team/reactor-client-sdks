@@ -68,6 +68,83 @@ export class Reactor implements Disposable {
    *  outright. */
   private readonly queue = new AwaitQueue();
 
+  /** In-flight calls to `withReaderAccess()` — a "reply" `.catch(() => {})`
+   *  copy of each, never the caller's own promise, so one rejecting can't
+   *  make `Promise.all()` in `withWriterAccess()` reject and skip waiting
+   *  for the rest. See `withReaderAccess()`/`withWriterAccess()`. */
+  private readonly activeReads = new Set<Promise<unknown>>();
+  /** True for the span of a `withWriterAccess()` call — after it has waited
+   *  out every read active when it started, before it releases the ones
+   *  that arrived while it ran. */
+  private writerActive = false;
+  /** Readers parked in `withReaderAccess()`'s wait loop, woken once
+   *  `withWriterAccess()` finishes; each re-checks `writerActive` rather
+   *  than assuming its turn, since another writer already queued behind the
+   *  first one may have claimed it first. */
+  private writerIdleWaiters: Array<() => void> = [];
+
+  /**
+   * Runs a read — sendCommand()/requestSchema()/requestClip()/
+   * requestRecording() — excluded from a lifecycle op (`withWriterAccess()`)
+   * but not from other reads: unlike `queue`, concurrent reads run
+   * concurrently. Queuing them the same way `queue` serializes writes would
+   * head-of-line block an unrelated command, or even disconnect() itself,
+   * behind one slow reply (the binding correlates replies independently, so
+   * nothing requires this to be serial).
+   *
+   * Race-free the same way the wasm binding's own `readyState` check is: the
+   * `writerActive` check and this call's registration in `activeReads` both
+   * happen before the first `await` inside *fn*, so nothing can run between
+   * them on a single-threaded JS event loop.
+   */
+  private async withReaderAccess<T>(fn: () => Promise<T>): Promise<T> {
+    while (this.writerActive) {
+      await new Promise<void>((resolve) => this.writerIdleWaiters.push(resolve));
+    }
+    const result = fn();
+    const tracked = result.catch(() => undefined);
+
+    this.activeReads.add(tracked);
+    try {
+      return await result;
+    } finally {
+      this.activeReads.delete(tracked);
+    }
+  }
+
+  /**
+   * Runs a lifecycle op's client-touching body exclusively: waits out every
+   * read already in flight, then blocks new ones (`writerActive`) until it
+   * finishes. Only ever called from inside a `queue`-serialized task, so at
+   * most one writer runs this at a time — it doesn't serialize against
+   * itself, only against `activeReads`.
+   */
+  private async withWriterAccess<T>(fn: () => Promise<T>): Promise<T> {
+    // Mark the writer active *before* awaiting the current reads, not after:
+    // withReaderAccess()'s gate check is what keeps a new read from entering
+    // during that wait, and it only works once this flag is already true.
+    // Setting it first can't race a second writer — writers only ever run
+    // from inside a `queue`-serialized task, so at most one is ever here.
+    this.writerActive = true;
+    // Skip the await entirely when nothing is in flight — `await
+    // Promise.all([])` still costs a microtask tick, which the common
+    // (uncontended) case shouldn't pay: connect()/disconnect()/reconnect()
+    // calling into the client promptly is a property callers (React's
+    // effect-cleanup unmount included) rely on.
+    if (this.activeReads.size > 0) {
+      await Promise.all(this.activeReads);
+    }
+    try {
+      return await fn();
+    } finally {
+      this.writerActive = false;
+      const waiters = this.writerIdleWaiters;
+
+      this.writerIdleWaiters = [];
+      for (const wake of waiters) {wake();}
+    }
+  }
+
   constructor(options: ReactorOptions) {
     const { jwt, ...clientOptions } = options;
 
@@ -98,11 +175,15 @@ export class Reactor implements Disposable {
         this.jwt = jwt;
         this.client?.setJwt(jwt);
       }
-      await this.queue.push(async () => {
-        const client = await this.getOrCreateClient();
+      await this.queue.push(
+        () =>
+          this.withWriterAccess(async () => {
+            const client = await this.getOrCreateClient();
 
-        await client.connect(options);
-      }, 'connect');
+            await client.connect(options);
+          }),
+        'connect',
+      );
     } catch (cause) {
       throw this.captureError(cause);
     }
@@ -126,15 +207,19 @@ export class Reactor implements Disposable {
   async disconnect(recoverable = false): Promise<void> {
     this.assertNotDisposed();
     try {
-      await this.queue.push(async () => {
-        if (this.client) {
-          await this.client.disconnect();
-        }
-        this.resetConnectionState();
-        if (!recoverable) {
-          this.freeClient();
-        }
-      }, 'disconnect');
+      await this.queue.push(
+        () =>
+          this.withWriterAccess(async () => {
+            if (this.client) {
+              await this.client.disconnect();
+            }
+            this.resetConnectionState();
+            if (!recoverable) {
+              this.freeClient();
+            }
+          }),
+        'disconnect',
+      );
     } catch (cause) {
       throw this.captureError(cause);
     }
@@ -149,11 +234,15 @@ export class Reactor implements Disposable {
   async reconnect(options?: ConnectOptions): Promise<void> {
     this.assertNotDisposed();
     try {
-      await this.queue.push(async () => {
-        const client = await this.getOrCreateClient();
+      await this.queue.push(
+        () =>
+          this.withWriterAccess(async () => {
+            const client = await this.getOrCreateClient();
 
-        await client.reconnect(options);
-      }, 'reconnect');
+            await client.reconnect(options);
+          }),
+        'reconnect',
+      );
     } catch (cause) {
       throw this.captureError(cause);
     }
@@ -198,9 +287,18 @@ export class Reactor implements Disposable {
     }
     try {
       this.assertNotDisposed();
-      const client = await this.getOrCreateClient();
       const extracted = extractFileRefs(data as Record<string, unknown> | undefined);
-      const reply = await client.sendCommand(command, extracted.data, extracted.uploads);
+      // Excluded from connect()/disconnect()/reconnect() — a concurrent
+      // disconnect() can otherwise free the wasm client while this call into
+      // it is still in flight (see `withReaderAccess()`'s docs) — but not
+      // from other reads, unlike the track ops on `queue`: two sendCommand()
+      // calls (or a slow one and a disconnect()) shouldn't head-of-line
+      // block each other when the binding correlates replies independently.
+      const reply = await this.withReaderAccess(async () => {
+        const client = await this.getOrCreateClient();
+
+        return client.sendCommand(command, extracted.data, extracted.uploads);
+      });
 
       return reply ?? undefined;
     } catch (cause) {
@@ -232,9 +330,12 @@ export class Reactor implements Disposable {
     switch (command) {
       case 'requestSchema':
         try {
-          const client = await this.getOrCreateClient();
+          // Same exclusion as `sendCommand()` above.
+          await this.withReaderAccess(async () => {
+            const client = await this.getOrCreateClient();
 
-          await this.refreshSchema(client);
+            await this.refreshSchema(client);
+          });
         } catch (cause) {
           // refreshSchema() reports failures itself when it has a client to
           // key the race guard on; getOrCreateClient() failing before that
@@ -264,9 +365,13 @@ export class Reactor implements Disposable {
   async requestSchema(): Promise<ModelSchema | undefined> {
     this.assertNotDisposed();
     try {
-      const client = await this.getOrCreateClient();
+      // Excluded from connect()/disconnect()/reconnect() — see
+      // `withReaderAccess()`'s docs.
+      return await this.withReaderAccess(async () => {
+        const client = await this.getOrCreateClient();
 
-      return this.normalizeSchema(await client.requestSchema());
+        return this.normalizeSchema(await client.requestSchema());
+      });
     } catch (cause) {
       throw this.captureError(cause);
     }
@@ -425,9 +530,13 @@ export class Reactor implements Disposable {
   async requestClip(durationSeconds: number): Promise<Clip> {
     this.assertNotDisposed();
     try {
-      const client = await this.getOrCreateClient();
+      // Excluded from connect()/disconnect()/reconnect() — see
+      // `withReaderAccess()`'s docs.
+      return await this.withReaderAccess(async () => {
+        const client = await this.getOrCreateClient();
 
-      return toPublicClip(await client.requestClip(durationSeconds));
+        return toPublicClip(await client.requestClip(durationSeconds));
+      });
     } catch (cause) {
       throw this.captureError(cause);
     }
@@ -437,9 +546,13 @@ export class Reactor implements Disposable {
   async requestRecording(): Promise<Clip> {
     this.assertNotDisposed();
     try {
-      const client = await this.getOrCreateClient();
+      // Excluded from connect()/disconnect()/reconnect() — see
+      // `withReaderAccess()`'s docs.
+      return await this.withReaderAccess(async () => {
+        const client = await this.getOrCreateClient();
 
-      return toPublicClip(await client.requestRecording());
+        return toPublicClip(await client.requestRecording());
+      });
     } catch (cause) {
       throw this.captureError(cause);
     }
@@ -548,8 +661,11 @@ export class Reactor implements Disposable {
     if (client) {
       // Queued behind any in-flight connect()/reconnect()/disconnect(), same
       // as freeClient() — this can't await that itself, since [Symbol.dispose]
-      // is synchronous per the `using` contract.
-      void this.queue.push(() => client.free(), 'dispose').catch(() => {});
+      // is synchronous per the `using` contract. Also excluded from any read
+      // still in flight, same as freeClient() — see `withWriterAccess()`.
+      void this.queue
+        .push(() => this.withWriterAccess(() => Promise.resolve(client.free())), 'dispose')
+        .catch(() => {});
     }
   }
 
