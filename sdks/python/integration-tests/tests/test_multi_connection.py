@@ -28,7 +28,14 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 
-from conftest import MODEL_NAME, assert_dominant_color, mint_jwt, solid_rgb_frame, wait_until
+from conftest import (
+    LOCAL,
+    MODEL_NAME,
+    assert_dominant_color,
+    mint_jwt,
+    solid_rgb_frame,
+    wait_until,
+)
 
 from reactor_sdk import Reactor, ReactorStatus
 
@@ -39,9 +46,13 @@ async def _shared_pair(
     """A connected creator, and a callable that connects a joiner to it.
 
     Both are built from one token minted up front — the whole point of this
-    file's module docstring finding.
+    file's module docstring finding. In local mode there's no coordinator
+    auth to satisfy in the first place (`Reactor(local=True)` skips it — see
+    `client.py`'s `_resolve_token`), and no `API_KEY` is guaranteed to exist
+    to mint from (`conftest.py` only requires one when not local) — so both
+    clients are built with no token at all and rely on `local=True` alone.
     """
-    jwt = await mint_jwt(model_name=MODEL_NAME)
+    jwt = None if LOCAL else await mint_jwt(model_name=MODEL_NAME)
     creator: Reactor = reactor_factory(jwt=jwt)
     await creator.connect()
 
