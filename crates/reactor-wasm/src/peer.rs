@@ -19,8 +19,8 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{
     MediaStream, MediaStreamTrack, MessageEvent, RtcConfiguration, RtcDataChannel,
     RtcDataChannelState, RtcDataChannelType, RtcPeerConnection, RtcPeerConnectionIceEvent,
-    RtcPeerConnectionState, RtcRtpTransceiver, RtcRtpTransceiverDirection,
-    RtcRtpTransceiverInit, RtcSdpType, RtcSessionDescriptionInit, RtcTrackEvent,
+    RtcPeerConnectionState, RtcRtpTransceiver, RtcRtpTransceiverDirection, RtcRtpTransceiverInit,
+    RtcSdpType, RtcSessionDescriptionInit, RtcTrackEvent,
 };
 
 use reactor_core::error::CoreError;
