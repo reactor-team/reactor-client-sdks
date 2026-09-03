@@ -240,8 +240,7 @@ AudioPump::~AudioPump() {
 
 void AudioPump::run() {
   try {
-    const std::size_t frames_per_chunk =
-        (static_cast<std::size_t>(sample_rate_) * CHUNK_MS) / 1000;
+    const std::size_t frames_per_chunk = (static_cast<std::size_t>(sample_rate_) * CHUNK_MS) / 1000;
     std::vector<std::int16_t> chunk(frames_per_chunk * channels_);
     double phase = 0.0;
     const double phase_step = 2.0 * PI * TONE_HZ / static_cast<double>(sample_rate_);

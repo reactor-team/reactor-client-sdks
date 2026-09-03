@@ -182,7 +182,7 @@ class FramePump {
 class AudioPump {
  public:
   explicit AudioPump(reactor::Track track, std::uint32_t sample_rate = 48'000,
-                      std::uint32_t channels = 1);
+                     std::uint32_t channels = 1);
   ~AudioPump();
 
   AudioPump(const AudioPump&) = delete;
