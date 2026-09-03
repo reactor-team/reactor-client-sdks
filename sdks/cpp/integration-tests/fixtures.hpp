@@ -176,6 +176,36 @@ class FramePump {
   std::thread thread_;
 };
 
+/// Pushes a synthetic tone as interleaved 16-bit PCM into a track at a
+/// realistic chunk rate (20ms), on its own thread, until destroyed. Same
+/// exception-safety shape as `FramePump` — see its own docs.
+class AudioPump {
+ public:
+  explicit AudioPump(reactor::Track track, std::uint32_t sample_rate = 48'000,
+                      std::uint32_t channels = 1);
+  ~AudioPump();
+
+  AudioPump(const AudioPump&) = delete;
+  AudioPump& operator=(const AudioPump&) = delete;
+  AudioPump(AudioPump&&) = delete;
+  AudioPump& operator=(AudioPump&&) = delete;
+
+  /// Re-throws whatever exception stopped the pump's loop early, if any. See
+  /// FramePump::check for the thread-safety note — same shape here.
+  void check() const;
+
+ private:
+  void run();
+
+  reactor::Track track_;
+  std::uint32_t sample_rate_;
+  std::uint32_t channels_;
+  std::atomic<bool> stop_{false};
+  mutable std::mutex error_mutex_;
+  std::exception_ptr error_;
+  std::thread thread_;
+};
+
 /// A minimal, valid solid-colour PNG (8-bit depth, RGB, no interlace).
 ///
 /// Hand-rolled rather than pulled from a fixtures directory or an imaging

@@ -30,7 +30,7 @@ paying the full sequence each time:
 cargo build -p reactor-ffi --release
 cmake -S sdks/cpp -B sdks/cpp/build-integration-tests -G Ninja \
   -DREACTOR_SDK_BUILD_TESTS=OFF -DREACTOR_SDK_BUILD_EXAMPLES=OFF \
-  -DREACTOR_SDK_BUILD_INTEGRATION_TESTS=ON
+  -DREACTOR_SDK_BUILD_INTEGRATION_TESTS=ON -DREACTOR_SDK_BUILD_AUDIO=OFF
 cmake --build sdks/cpp/build-integration-tests
 sdks/cpp/build-integration-tests/integration-tests/reactor_sdk_integration_tests "[a Catch2 test-name filter]"
 ```
@@ -44,7 +44,8 @@ of `test:python`/`test:js`.
 
 ## What it tests, and how
 
-Six files, one per concern, each named after the Python/JS file it mirrors:
+Seven files, one per concern; six named after the Python/JS file they mirror,
+one new:
 
 | File | Mirrors | Covers |
 |---|---|---|
@@ -55,6 +56,25 @@ Six files, one per concern, each named after the Python/JS file it mirrors:
 | `recording_test.cpp` | `test_recording.py` | `request_clip`/`request_recording`, `Clip::download` |
 | `concurrency_and_races_test.cpp` | `test_concurrency_and_races.py` | concurrent commands, abandoned futures, teardown while a call is in flight |
 | `refusals_and_edge_cases_test.cpp` | *(none — new)* | the "Refuse; do not fail quietly" table and a few state-invariant races, probed directly against the real backend rather than the unit suite's fake FFI |
+| `audio_test.cpp` | *(none — new; a gap in the Python/JS suites too)* | `Track::push_audio`/`on_audio` — the data plane, not `reactor::sdk_audio`'s device I/O, which this suite's build disables entirely (see below) |
+
+### Audio
+
+`reactor::sdk_audio` (`Speaker`/`Microphone`, real device I/O via miniaudio)
+is out of scope here — the core is pinned to the synthetic ADM (the
+`sdk-from-ffi` skill's "Audio devices" section), so real hardware can never
+reach the wire regardless of what this suite does, and building it would only
+fetch and compile miniaudio for nothing that links it. `mise run
+test:cpp:integration-tests` configures with `-DREACTOR_SDK_BUILD_AUDIO=OFF`
+for exactly that reason.
+
+`Track::push_audio`/`on_audio` — synthetic PCM in, synthetic PCM out, no
+hardware involved — is a different story and is tested in `audio_test.cpp`.
+`reactor/echo` declares `mic` (sendonly) and `main_audio` (recvonly) and
+passes audio through unchanged, but its tick loop only advances on a `webcam`
+read (see `echo_model.py`'s `run()`) — `main_audio` never emits unless
+`webcam` is also being pumped, regardless of what `mic` has queued, so every
+audio test here publishes and pumps both.
 
 `fixtures.hpp`/`fixtures.cpp` (mirroring `conftest.py`/`harness/`) provide:
 
