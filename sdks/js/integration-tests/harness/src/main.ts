@@ -47,6 +47,7 @@ const EVENT_NAMES: ReactorEventName[] = [
 const instances = new Map<string, Reactor>();
 const events: Record<string, HarnessEvent[]> = {};
 const receivedTracks: Record<string, Record<string, MediaStreamTrack>> = {};
+const audioAnalysers: Record<string, Record<string, AnalyserNode>> = {};
 
 function record(name: string, type: ReactorEventName, detail: unknown): void {
   events[name]!.push({ t: performance.now(), type, detail });
@@ -64,6 +65,7 @@ function create(name: string, extraOptions: Partial<ReactorOptions> = {}): void 
 
   events[name] = [];
   receivedTracks[name] = {};
+  audioAnalysers[name] = {};
 
   for (const type of EVENT_NAMES) {
     reactor.on(type, ((...args: unknown[]) => {
@@ -71,6 +73,44 @@ function create(name: string, extraOptions: Partial<ReactorOptions> = {}): void 
         const [trackName, track] = args as [string, MediaStreamTrack];
 
         receivedTracks[name]![trackName] = track;
+        if (track.kind === 'audio') {
+          // getStats()'s inbound-rtp audioLevel/totalSamplesReceived stay at
+          // 0 until something actually plays the track out — confirmed
+          // empirically, the same headless-Chromium rendering gap
+          // makeAudioTrack's own silent tap works around on the sending
+          // side (see fixtures.ts). volume 0, not muted: muting can skip
+          // decode/playout entirely in some browsers, which would reproduce
+          // the same gap this exists to avoid.
+          const sink = document.createElement('audio');
+
+          sink.srcObject = new MediaStream([track]);
+          sink.volume = 0;
+          sink.autoplay = true;
+          document.body.appendChild(sink);
+          void sink.play().catch(() => {});
+
+          // getStats()'s inbound-rtp audioLevel/totalAudioEnergy stayed at 0
+          // even with the <audio> sink above proving real playout
+          // (jitterBufferEmittedCount/totalSamplesReceived > 0) — confirmed
+          // empirically those two specific fields just don't populate here,
+          // for reasons unrelated to whether real audio arrived. Measuring
+          // the decoded PCM directly with an AnalyserNode sidesteps that
+          // entirely. The analyser must sit *in* the path to destination,
+          // not as a dead-end side branch — Web Audio only pulls (processes)
+          // nodes that are part of an active destination-reaching chain;
+          // an analyser with nowhere downstream reads all-zero forever,
+          // the same gap the sending side's silent tap works around.
+          const audioCtx = new AudioContext();
+          const source = audioCtx.createMediaStreamSource(new MediaStream([track]));
+          const analyser = audioCtx.createAnalyser();
+          const silentTap = audioCtx.createGain();
+
+          silentTap.gain.value = 0;
+          source.connect(analyser);
+          analyser.connect(silentTap);
+          silentTap.connect(audioCtx.destination);
+          audioAnalysers[name]![trackName] = analyser;
+        }
         record(name, type, { name: trackName });
         return;
       }
@@ -130,6 +170,29 @@ async function samplePixelFor(name: string, trackName: string): Promise<{ r: num
   return samplePixel(track);
 }
 
+/** The RMS level (0-1ish) of the decoded audio actually arriving on
+ *  `trackName` — the audio counterpart of `samplePixelFor`.
+ *
+ * Reads an `AnalyserNode` wired into the track's own destination-reaching
+ * chain (see the `trackReceived` handler above), not `getStats()`'s
+ * inbound-rtp `audioLevel`/`totalAudioEnergy`: confirmed empirically those
+ * two fields read 0 in this environment even once real playout is proven
+ * (`jitterBufferEmittedCount`/`totalSamplesReceived` > 0) — for reasons
+ * unrelated to whether real audio arrived. Measuring the decoded PCM
+ * directly sidesteps whatever that gap is. */
+async function sampleAudioLevelFor(name: string, trackName: string): Promise<number> {
+  const analyser = audioAnalysers[name]?.[trackName];
+
+  if (!analyser) {throw new Error(`instance "${name}" never received an audio track named "${trackName}"`);}
+  const data = new Float32Array(analyser.fftSize);
+
+  analyser.getFloatTimeDomainData(data);
+  let sumSquares = 0;
+
+  for (const sample of data) {sumSquares += sample * sample;}
+  return Math.sqrt(sumSquares / data.length);
+}
+
 // Takes the *same* jwt that created the session, not a freshly minted one —
 // reading a session back requires the token that created it (see the
 // examples' own fetch-token.ts), and a fresh mint of the same scope is a
@@ -158,6 +221,7 @@ declare global {
       makeAudioTrack: typeof makeAudioTrack;
       makeTestImageFile: typeof makeTestImageFile;
       samplePixelFor: typeof samplePixelFor;
+      sampleAudioLevelFor: typeof sampleAudioLevelFor;
       downloadClip: typeof downloadClip;
       isFileRef: typeof isFileRef;
       events: typeof events;
@@ -176,6 +240,7 @@ window.__harness = {
   makeAudioTrack,
   makeTestImageFile,
   samplePixelFor,
+  sampleAudioLevelFor,
   downloadClip,
   isFileRef,
   events,

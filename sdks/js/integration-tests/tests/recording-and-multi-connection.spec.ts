@@ -18,7 +18,7 @@ test('requestClip() + downloadClip() produce a real, non-empty file', async ({ p
 
     await reactor.connect(jwt);
     await reactor.publishTrack('webcam', window.__harness.makeVideoTrack('#ffcc00'));
-    await reactor.publishTrack('mic', window.__harness.makeAudioTrack());
+    await reactor.publishTrack('mic', await window.__harness.makeAudioTrack());
     return jwt;
   }, name);
 
