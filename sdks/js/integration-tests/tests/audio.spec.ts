@@ -9,25 +9,22 @@ import { test, expect } from '@playwright/test';
 // audio through unchanged (see `echo_model.py`'s `EchoOutput`), so a genuine
 // round trip is exactly this suite's own tone, echoed back.
 //
-// KNOWN BUG, found by this test, not yet filed as its own ticket: publishing
-// an audio track never actually sends any RTP. Confirmed three ways —
-//   1. `getStats()` on the outbound-rtp audio report shows `packetsSent: 0`
-//      / `bytesSent: 0` for the whole session, while the sibling video
-//      outbound-rtp report shows real frames encoded and sent.
-//   2. The track handed to `publishTrack('mic', ...)` is independently
-//      verified to carry real audio — recording it directly with
-//      `MediaRecorder`, bypassing this SDK and WebRTC entirely, captures a
-//      non-trivial blob (thousands of bytes over 500ms) from the same
-//      `makeAudioTrack()` call.
-//   3. The AudioContext driving `makeAudioTrack()`'s oscillator is
-//      genuinely running (`state: "running"`, `currentTime` advancing) —
-//      not a suspended-context artifact.
-// So the track is real, and reaches `Reactor.publishTrack()` — which calls
-// straight into the wasm-bound `client.publishTrack()` (`reactor.ts`). The
-// bug is somewhere from there down: `crates/reactor-wasm`, or `reactor-core`
-// underneath it. That is Rust, not TypeScript, and out of scope for this
-// suite to fix — flagged here rather than guessed at.
-test.fail(true, 'publishTrack() sends no RTP for an audio track — see this file\'s own header comment');
+// NOT an SDK bug (corrected after initially being filed as one): this test
+// briefly appeared to prove `publishTrack()` never sends RTP for an audio
+// track — `getStats()`'s outbound-rtp audio report read `packetsSent: 0`
+// while the sibling video report showed real frames, and a same-track
+// `MediaRecorder` independently captured real audio, seeming to point at
+// `client.publishTrack()` (`reactor.ts`) or lower (`crates/reactor-wasm`,
+// `reactor-core`). Root-caused instead to `makeAudioTrack()`'s fixture: in
+// headless Chromium (no real audio output device), a
+// `MediaStreamAudioDestinationNode`'s graph is never actually pulled/rendered
+// in real time unless something in it also reaches `ctx.destination` —
+// `MediaRecorder` pulls independently of that, which is why it alone saw real
+// samples. Fixed by fanning the oscillator out to `ctx.destination` through a
+// zero-gain node (see `fixtures.ts`'s own comment) — confirmed via
+// `getStats()` both with that fix and, independently, by swapping in a real
+// `getUserMedia()`-sourced track (Chromium's fake device): both send real
+// RTP through the exact same `Reactor.publishTrack()` path this test drives.
 
 const NAME = 'audio';
 

@@ -45,7 +45,18 @@ export function makeVideoTrack(color = '#ff2222', width = 320, height = 240): Me
  * existed to check went uncaught, since a suspended context's oscillator
  * still yields a connectable `MediaStreamTrack` that negotiates and
  * "arrives" over WebRTC identically to a real one; it just carries silence.
- * `resume()` is what actually starts the graph rendering samples. */
+ * `resume()` is what actually starts the graph rendering samples.
+ *
+ * The oscillator also fans out to `ctx.destination` through a zero-gain
+ * node — inaudible, but load-bearing: confirmed empirically that in headless
+ * Chromium (no real audio output device), a `MediaStreamAudioDestinationNode`
+ * never actually gets pulled/rendered in real time unless something in the
+ * graph also reaches `ctx.destination`. Without this, `state: "running"` and
+ * `currentTime` advancing are both true — the context's clock runs regardless
+ * — but the oscillator's samples are never rendered, so `dest`'s track goes
+ * out over WebRTC as genuine silence (RTCPeerConnection's own outbound-rtp
+ * reports zero bytes/packets) even though a same-track `MediaRecorder`, which
+ * pulls independently of `ctx.destination`, captures real audio from it. */
 export async function makeAudioTrack(frequencyHz = 440): Promise<MediaStreamTrack> {
   const ctx = new AudioContext();
 
@@ -54,8 +65,12 @@ export async function makeAudioTrack(frequencyHz = 440): Promise<MediaStreamTrac
 
   osc.frequency.value = frequencyHz;
   const dest = ctx.createMediaStreamDestination();
+  const silentTap = ctx.createGain();
 
+  silentTap.gain.value = 0;
   osc.connect(dest);
+  osc.connect(silentTap);
+  silentTap.connect(ctx.destination);
   osc.start();
   return dest.stream.getAudioTracks()[0];
 }
