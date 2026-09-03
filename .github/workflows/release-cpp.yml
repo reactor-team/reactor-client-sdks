@@ -56,6 +56,12 @@ concurrency:
   # Supersede an outdated pull-request build, but never interrupt a release.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # Only cpp-integration-tests below uses mise (build-archives shells out to
+  # cargo/cmake directly, on every platform, and needs no task runner for it) —
+  # same pinned version ci.yml and release-python.yml use.
+  MISE_VERSION: "2026.8.8"
+
 jobs:
   # ── 0. Is this push a release? ──────────────────────────────────────────────
   detect-version:
@@ -351,6 +357,65 @@ jobs:
           path: ${{ steps.package.outputs.asset }}
           if-no-files-found: error
 
+  # ── 1b. Integration tests ────────────────────────────────────────────────────
+  #
+  # `reactor::Reactor` talks to `libreactor_ffi` directly regardless of
+  # platform, so unlike build-archives this needs no matrix — one Linux run is
+  # what proves the SDK itself works end to end against a real model, the same
+  # reasoning release-python.yml's own integration step uses.
+  cpp-integration-tests:
+    name: C++ SDK integration tests (real FFI, real model)
+    needs: detect-version
+    # Skipped on pull_request: ci.yml's cpp-integration-tests job already runs
+    # this same suite against the same commit, required via ci-complete, and
+    # reactor/echo's session quota doesn't have room for both workflows racing
+    # it at once — the exact collision js-integration-tests hit in practice
+    # (see release-js.yml's own note, and ci.yml's cpp-integration-tests job).
+    # No redundancy is lost: nothing publishes off a pull_request event (the
+    # release/publish gate below), so this only needs to run before an actual
+    # release, on push or workflow_dispatch.
+    if: github.event_name != 'pull_request'
+    # See ci.yml's js-integration-tests job for the full reasoning: this
+    # workflow's own top-level `concurrency:` is keyed on the ref, so it does
+    # nothing across a concurrent ci.yml run on the same push — which is
+    # exactly the collision release-js.yml's build job already hit in
+    # practice. Same per-commit group as every other job here that creates
+    # reactor/echo sessions — see ci.yml's own comment for why it's scoped to
+    # github.sha rather than one name shared by every PR.
+    concurrency:
+      group: reactor-echo-live-session-quota-${{ github.sha }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Install clang for the libwebrtc C++ glue
+        uses: ./.github/actions/setup-libwebrtc-cxx
+      - name: Build libreactor_ffi (the library the SDK links)
+        run: mise run build:ffi
+      # Same two-compiler split as ci.yml's `cpp` and `cpp-integration-tests`
+      # jobs: switching before build:ffi above, instead of after, reproduces
+      # the exact ABI mismatch that task exists to avoid, since
+      # test:cpp:integration-tests does not build the FFI itself for that
+      # same reason.
+      - name: Use the platform clang for the SDK itself
+        run: |
+          set -euo pipefail
+          if [ ! -x /usr/bin/clang++ ]; then
+            echo "::error::/usr/bin/clang++ is missing on this runner image."
+            exit 1
+          fi
+          echo "CXX=/usr/bin/clang++" >> "$GITHUB_ENV"
+      - name: Integration tests (real FFI client, real model)
+        env:
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+        run: mise run test:cpp:integration-tests
+
   # ── 2. The release ──────────────────────────────────────────────────────────
   #
   # PUBLISH_CPP_RELEASE is the kill switch, and it is read in a *step* rather than
@@ -360,8 +425,14 @@ jobs:
   # That is how the Python 1.0.0 release built and tagged and never reached PyPI.
   release:
     name: Release
-    needs: [detect-version, build-archives]
-    if: github.event_name == 'push' && needs.detect-version.outputs.bumped == 'true'
+    needs: [detect-version, build-archives, cpp-integration-tests]
+    # An explicit `if` replaces the implicit "every `needs` entry succeeded"
+    # gate rather than adding to it, so cpp-integration-tests's own success is
+    # spelled out here too — it always runs (never skipped) whenever this
+    # condition can be true, since both gate on the same push event.
+    if: >-
+      github.event_name == 'push' && needs.detect-version.outputs.bumped == 'true' &&
+      needs.cpp-integration-tests.result == 'success'
     runs-on: ubuntu-latest
     environment: cpp-release
     permissions:

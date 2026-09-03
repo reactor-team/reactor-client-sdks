@@ -164,6 +164,11 @@ jobs:
     # skipped rather than failing every external contribution. Still runs
     # for every same-repo PR and on push.
     if: github.event_name == 'push' || (needs.changes.outputs.python == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    # See js-integration-tests's own comment on this group above — same
+    # reasoning, same per-commit scoping, shared with the release-*.yml workflows too.
+    concurrency:
+      group: reactor-echo-live-session-quota-${{ github.sha }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -226,6 +231,27 @@ jobs:
     # skipped there rather than failing every external contribution. Still
     # runs for every same-repo PR and on push, same as before.
     if: github.event_name == 'push' || (needs.changes.outputs.js == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    # This workflow's own top-level `concurrency:` is keyed on the branch/ref,
+    # so it does nothing across this workflow and release-js.yml/
+    # release-python.yml/release-cpp.yml's own equivalents landing on the same
+    # push to main — which has actually happened: release-js.yml's own
+    # comment records it hitting reactor/echo's quota against a concurrent
+    # ci.yml run on the same commit. Scoped to `github.sha`, not a single
+    # fixed name: a GitHub Actions concurrency group holds only one running
+    # and one pending job, and a third arrival *cancels* the pending one
+    # (even with cancel-in-progress: false) rather than queueing behind it —
+    # so one name shared across every PR and every push would occasionally
+    # cancel a required check outright instead of just waiting for it, worse
+    # than the 429 this exists to prevent. Scoping by commit keeps a group's
+    # membership to whatever is testing *that one commit* — this job plus at
+    # most one release-*.yml equivalent, in practice — which stays inside
+    # that one-running-one-pending limit. It deliberately does not serialize
+    # two different commits (two PRs, or a PR against a concurrent push)
+    # against each other; paced_connect()'s own retry-on-429 is what covers
+    # that residual, cross-commit case, same as before this existed.
+    concurrency:
+      group: reactor-echo-live-session-quota-${{ github.sha }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -297,9 +323,79 @@ jobs:
       - run: mise run lint:cpp
       - run: mise run test:cpp
 
+  cpp-integration-tests:
+    name: C++ SDK integration tests (real FFI, real model)
+    # Depends on python-integration-tests finishing, not just `changes`: all
+    # three integration suites hit the same real reactor/echo model, whose
+    # session-creation quota (sessions_per_minute) is shared and far too small
+    # for more than one to run at once — js-integration-tests and
+    # python-integration-tests already learned this the hard way (see that
+    # job's own comment). A custom `if:` below (no success()/failure()/
+    # always() in it) already overrides the implicit "needs must succeed"
+    # gate, so this only serializes the chain js -> python -> cpp; it doesn't
+    # make this job depend on either of the others' results.
+    needs: [changes, python-integration-tests]
+    # Same fork-PR reasoning as the other two integration jobs: GitHub
+    # withholds repo secrets from a fork's pull_request runs, so
+    # INTEGRATION_TESTS_REACTOR_API_KEY would never be populated there —
+    # skipped rather than failing every external contribution. Still runs for
+    # every same-repo PR and on push.
+    if: github.event_name == 'push' || (needs.changes.outputs.cpp == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    # See js-integration-tests's own comment on this group above — same
+    # reasoning, same per-commit scoping, shared with the release-*.yml workflows too.
+    concurrency:
+      group: reactor-echo-live-session-quota-${{ github.sha }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Install clang for the libwebrtc C++ glue
+        uses: ./.github/actions/setup-libwebrtc-cxx
+      - name: Build libreactor_ffi (the library the SDK links)
+        run: mise run build:ffi
+      # Same two-compiler split as the `cpp` job above: the conda clang++ just
+      # built libreactor_ffi's libwebrtc glue, but the SDK itself (and this
+      # suite) must link against the runner's own glibc — switching before
+      # `build:ffi` above, instead of after, reproduced the exact ABI mismatch
+      # `mise run build:ffi` exists to avoid, since test:cpp:integration-tests
+      # does not build the FFI itself for that same reason.
+      - name: Use the platform clang for the SDK itself
+        run: |
+          set -euo pipefail
+          if [ ! -x /usr/bin/clang++ ]; then
+            echo "::error::/usr/bin/clang++ is missing on this runner image."
+            exit 1
+          fi
+          echo "CXX=/usr/bin/clang++" >> "$GITHUB_ENV"
+      - name: Integration tests (real FFI client, real model)
+        env:
+          # A dedicated secret, not the general REACTOR_API_KEY examples use —
+          # this key exists only to run this suite (shared with
+          # js-integration-tests/python-integration-tests).
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+        run: mise run test:cpp:integration-tests
+
   ci-complete:
     name: CI Complete
-    needs: [changes, repo, rust, python, python-integration-tests, js, js-integration-tests, cpp]
+    needs:
+      [
+        changes,
+        repo,
+        rust,
+        python,
+        python-integration-tests,
+        js,
+        js-integration-tests,
+        cpp,
+        cpp-integration-tests,
+      ]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -315,7 +411,8 @@ jobs:
                    "${{ needs.python-integration-tests.result }}" \
                    "${{ needs.js.result }}" \
                    "${{ needs.js-integration-tests.result }}" \
-                   "${{ needs.cpp.result }}"; do
+                   "${{ needs.cpp.result }}" \
+                   "${{ needs.cpp-integration-tests.result }}"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::a required job failed ($r)"; exit 1
             fi

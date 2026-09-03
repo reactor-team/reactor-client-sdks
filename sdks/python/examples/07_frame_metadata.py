@@ -6,8 +6,12 @@ timestamp, and arbitrary bytes. A frame without one arrives as zeros and empty
 bytes. The timestamps are the sender's clock, so they measure the model's pacing
 rather than the network's.
 
-`user_data` is empty unless the model mirrors it back, and no published model does
-today; example 04 shows the sending side.
+`user_data` is empty unless the model mirrors it back. `reactor/echo` does, as of
+version 1.7.5 — it reads a client's own webcam frames, so there is something of
+the client's to mirror. Helios, this example's target, is purely generative: it
+has no input frames at all, so `user_data` can never carry anything here by
+construction, not just because nothing publishes one yet. Example 04 shows the
+sending side.
 
 Native-only: a browser gets a MediaStreamTrack with no per-frame hook.
 

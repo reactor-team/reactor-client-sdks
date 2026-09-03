@@ -16,7 +16,7 @@ has no native frame-metadata example).
 | 04 | [`04_publish_track.py`](04_publish_track.py) | Publishing an input track and pushing tagged frames into it | X2 (`xmax/x2`) |
 | 05 | [`05_multi_connection.py`](05_multi_connection.py) | Two clients on one session: `connect(session_id=…)` | Helios |
 | 06 | [`06_record_clip.py`](06_record_clip.py) | `request_clip` and downloading the result | Helios |
-| 07 | [`07_frame_metadata.py`](07_frame_metadata.py) | The trailer on each incoming frame: id, sender timestamp, `user_data` | Helios |
+| 07 | [`07_frame_metadata.py`](07_frame_metadata.py) | The trailer on each incoming frame: id, sender timestamp, `user_data` (reads zero against Helios — see its own header) | Helios |
 | 08 | [`08_snapshot_and_rewind.py`](08_snapshot_and_rewind.py) | `send_command`'s resolved reply, read and used — not fire-and-forgotten | Helios |
 
 Every example shares one spine — connect, wait for ready, give the model the

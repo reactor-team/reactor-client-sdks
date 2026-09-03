@@ -78,11 +78,14 @@ media exists — the example prints both numbers. It is the same reason a downlo
 waits on the session being alive rather than on a timer: readiness is in media
 time.
 
-**Example 07 prints zeros.** No published model attaches a per-frame trailer
-today, so `frame_id=false timestamp=false user_data=false` is the current state of
-the world rather than a broken setup. The example exists for the reading side, so
-a client is written to handle a trailer when a model starts sending one; example
-04 shows the sending side, which works now.
+**Example 07 prints zeros against Helios.** Its target model is purely
+generative — no input frames at all, so there's nothing of the client's for it
+to mirror back, and `frame_id=false timestamp=false user_data=false` is the
+current state of the world rather than a broken setup. `reactor/echo` is
+different: as of version 1.7.5 it reads a client's own webcam frames and
+mirrors whatever `user_data` was attached, straight onto `main_video`. The
+example exists for the reading side either way; example 04 shows the sending
+side.
 
 ## Docs
 

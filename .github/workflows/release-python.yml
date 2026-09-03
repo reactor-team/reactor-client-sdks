@@ -355,6 +355,16 @@ jobs:
     # `release`/`publish-pypi` gates below), so this only needs to run
     # before an actual release, on push or workflow_dispatch.
     if: github.event_name != 'pull_request'
+    # See ci.yml's js-integration-tests job for the full reasoning: this
+    # workflow's own top-level `concurrency:` is keyed on the ref, so it does
+    # nothing across a concurrent ci.yml run on the same push — which is
+    # exactly the collision release-js.yml's build job already hit in
+    # practice. Same per-commit group as every other job here that creates
+    # reactor/echo sessions — see ci.yml's own comment for why it's scoped to
+    # github.sha rather than one name shared by every PR.
+    concurrency:
+      group: reactor-echo-live-session-quota-${{ github.sha }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

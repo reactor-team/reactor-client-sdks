@@ -43,6 +43,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(REACTOR_SDK_BUILD_TESTS "Build the C++ SDK unit tests" ${PROJECT_IS_TOP_LEVEL})
 option(REACTOR_SDK_BUILD_EXAMPLES "Build the C++ SDK examples" ${PROJECT_IS_TOP_LEVEL})
 
+# Off by default, unlike the two above: this suite needs a real API key and a
+# real model in production (INTEGRATION_TESTS_REACTOR_API_KEY), costs real
+# session time, and runs on the order of minutes — not something
+# `mise run build:cpp` should pull in for every contributor. `mise run
+# test:cpp:integration-tests` is the one thing that turns it on.
+option(REACTOR_SDK_BUILD_INTEGRATION_TESTS "Build the C++ SDK integration tests (real FFI, real model)" OFF)
+
 # The device helpers, in a target of their own. On by default so they are built
 # and tested, and separate so that linking `reactor::sdk` brings in no audio
 # library at all — which is what keeps the mandatory path unable to open a
@@ -324,6 +331,10 @@ endif()
 
 if(REACTOR_SDK_BUILD_EXAMPLES)
   add_subdirectory(examples)
+endif()
+
+if(REACTOR_SDK_BUILD_INTEGRATION_TESTS)
+  add_subdirectory(integration-tests)
 endif()
 
 # ── Install ───────────────────────────────────────────────────────────────────

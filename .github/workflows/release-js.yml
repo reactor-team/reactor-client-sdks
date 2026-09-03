@@ -152,21 +152,59 @@ jobs:
       - run: mise run lint:js
       - run: mise run build:js
       - run: mise run test:js
+
+  # ── 1b. Integration tests ────────────────────────────────────────────────────
+  #
+  # Its own job, not a step of `build`: test:js:integration-tests builds wasm +
+  # dist/ itself (mise.toml) rather than reusing anything `build` produced, so
+  # splitting it out costs nothing to rebuild and is what lets it carry its own
+  # concurrency group below without queuing every pull request's lint/unit-test
+  # run behind some other workflow's live-session quota — the same reasoning
+  # release-python.yml's and release-cpp.yml's own integration jobs already
+  # follow.
+  js-integration-tests:
+    name: JS SDK integration tests (real browser, real model)
+    needs: detect-version
+    # Skipped on pull_request: ci.yml's js-integration-tests job already runs
+    # this same suite against the same commit, required via ci-complete, and
+    # reactor/echo's session quota doesn't have room for both workflows racing
+    # it at once — confirmed in practice (this job hitting repeated 429s while
+    # ci.yml's own run passed, before this workflow skipped it on
+    # pull_request). No redundancy is lost: nothing publishes off a
+    # pull_request event (see `release`'s `bumped` gate below, true only for
+    # push/workflow_dispatch), so this only needs to run before an actual
+    # release.
+    if: github.event_name != 'pull_request'
+    # This workflow's own top-level `concurrency:` is keyed on the ref, so it
+    # does nothing across a concurrent ci.yml run on the same push — which is
+    # exactly the 429 collision this job hit in practice per the comment
+    # above. Same per-commit group as every other job in this repo that
+    # creates reactor/echo sessions (ci.yml, release-python.yml,
+    # release-cpp.yml) — see ci.yml's own comment for why it's scoped to
+    # github.sha rather than one name shared by every PR (a GitHub Actions
+    # concurrency group only holds one running and one pending job; a fixed
+    # name shared repo-wide would let a third arrival cancel a required check
+    # outright instead of queueing it).
+    concurrency:
+      group: reactor-echo-live-session-quota-${{ github.sha }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
       # Real browser, real wasm, real WebRTC, against a live model in
-      # production — the unit suite above mocks the client, so this is the
+      # production — `build`'s unit suite mocks the client, so this is the
       # only check here that actually runs the SDK end to end.
       - name: Integration tests (Playwright, real browser + real model)
-        # Skipped on pull_request: ci.yml's js-integration-tests job already runs
-        # this same suite against the same commit, required via ci-complete,
-        # and reactor/echo's 10-sessions-per-minute quota doesn't have room
-        # for both workflows racing it at once — confirmed in practice (this
-        # job hitting repeated 429s while ci.yml's own run passed). No
-        # redundancy is lost: nothing publishes off a pull_request event
-        # (see `release`'s `needs.detect-version.outputs.bumped` gate below,
-        # true only for push/workflow_dispatch), so this step's "never
-        # publish something unproven" reasoning doesn't apply here — it only
-        # needs to run before an actual release, on push or workflow_dispatch.
-        if: github.event_name != 'pull_request'
         env:
           # A dedicated secret, not the general REACTOR_API_KEY examples use —
           # this key exists only to run this suite.
@@ -176,8 +214,16 @@ jobs:
   # ── 2. GitHub release ───────────────────────────────────────────────────────
   release:
     name: Publish GitHub release
-    needs: [detect-version, build]
-    if: needs.detect-version.outputs.bumped == 'true'
+    needs: [detect-version, build, js-integration-tests]
+    # An explicit `if` replaces the implicit "every `needs` entry succeeded"
+    # gate rather than adding to it, so build's and js-integration-tests's own
+    # success are spelled out here too — matching release-python.yml's and
+    # release-cpp.yml's own release gates. js-integration-tests always runs
+    # (never skipped) whenever bumped can be true, since both gate on the
+    # same push/workflow_dispatch event.
+    if: >-
+      needs.detect-version.outputs.bumped == 'true' &&
+      needs.build.result == 'success' && needs.js-integration-tests.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write

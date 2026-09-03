@@ -4,11 +4,14 @@
 // the sender's capture time, and whatever bytes the sender tagged it with. All
 // three are optional, and a frame without them arrives as zeros and no bytes.
 //
-// **Expect zeros.** No published model attaches a trailer today, so a clean run of
-// this example prints `frame_id=false timestamp=false user_data=false` — that is
-// the current state of the world, not a broken setup. What the example is for is
-// the *reading* side, so that a client is written to handle a trailer when a model
-// starts sending one. Example 04 shows the sending side, which works now.
+// **Expect zeros against Helios.** This example's target model is purely
+// generative — it has no input frames at all, so there is nothing of the
+// client's for it to mirror back, and a trailer here reads
+// `frame_id=false timestamp=false user_data=false` by construction, not
+// because no model bothers. `reactor/echo` is different: as of version 1.7.5
+// it reads a client's own webcam frames and mirrors whatever `user_data` was
+// attached to them straight onto `main_video`. What this example is for
+// either way is the *reading* side. Example 04 shows the sending side.
 //
 // The capture time is in the *engine's* clock, the one `reactor::time_micros()`
 // reads. It is not a UNIX timestamp and comparing it to one is meaningless; what
@@ -96,8 +99,8 @@ int main() {
     std::cout << "trailer present: frame_id=" << std::boolalpha << has_ids
               << " timestamp=" << has_times << " user_data=" << has_tags << '\n';
     if (!has_ids && !has_times && !has_tags) {
-      std::cout << "  (all zero, which is what every published model sends today — see the "
-                   "note at the top)\n";
+      std::cout << "  (all zero — expected against Helios, which has no input frames "
+                   "to mirror; see the note at the top)\n";
     }
 
     for (std::size_t index = 0; index < std::min<std::size_t>(seen.size(), 5); ++index) {

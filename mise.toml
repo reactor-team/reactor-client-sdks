@@ -320,6 +320,34 @@ description = "[Testing] C++ SDK unit tests via ctest, and the installed package
 depends = ["build:cpp", "test:cpp:package"]
 run = "ctest --test-dir sdks/cpp/build --output-on-failure"
 
+[tasks."test:cpp:integration-tests"]
+description = "[Testing] C++ SDK integration tests — real FFI client, real WebRTC, against a live model (needs INTEGRATION_TESTS_REACTOR_API_KEY)"
+# Deliberately not a dependency of `test` / `test:cpp`: unlike the unit
+# suite's fake Ffi table, this connects to a real model in production
+# (reactor/echo by default — see integration-tests/support.cpp) over a real
+# WebRTC connection, so it needs INTEGRATION_TESTS_REACTOR_API_KEY, costs real
+# session time, and runs on the order of minutes rather than seconds.
+#
+# A separate build directory (build-integration-tests, not build/), so this
+# never shares a CMake cache with the REACTOR_SDK_BUILD_INTEGRATION_TESTS=OFF
+# configuration `build:cpp`/`test:cpp` use — reconfiguring build/ with the flag
+# flipped on would otherwise silently fold this suite into `ctest --test-dir
+# sdks/cpp/build`, the same way test:python:integration-tests deliberately
+# stays out of pytest's own default testpaths.
+#
+# Deliberately does NOT build libreactor_ffi itself — same as `build:cpp`/
+# `test:cpp`, and unlike test:python:integration-tests's self-contained
+# `cargo build`. On Linux CI, building the FFI (its libwebrtc glue) and
+# building this suite need two different compilers — the pinned conda clang++
+# and the platform's own, respectively, exactly as ci.yml's `cpp` job's own
+# comments explain — so whoever calls this (a CI job, or a contributor
+# locally) runs `mise run build:ffi` first, same as the README says.
+run = [
+    "cmake -S sdks/cpp -B sdks/cpp/build-integration-tests -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DREACTOR_SDK_BUILD_TESTS=OFF -DREACTOR_SDK_BUILD_EXAMPLES=OFF -DREACTOR_SDK_BUILD_INTEGRATION_TESTS=ON",
+    "cmake --build sdks/cpp/build-integration-tests",
+    "sdks/cpp/build-integration-tests/integration-tests/reactor_sdk_integration_tests",
+]
+
 # ── Lints ─────────────────────────────────────────────────────────────────────
 
 [tasks."lint:abi"]
