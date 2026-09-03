@@ -20,7 +20,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "support.hpp"
+#include "fixtures.hpp"
 
 namespace {
 constexpr std::uint32_t WIDTH = 64;

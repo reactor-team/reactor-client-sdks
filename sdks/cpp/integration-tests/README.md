@@ -56,7 +56,7 @@ Six files, one per concern, each named after the Python/JS file it mirrors:
 | `concurrency_and_races_test.cpp` | `test_concurrency_and_races.py` | concurrent commands, abandoned futures, teardown while a call is in flight |
 | `refusals_and_edge_cases_test.cpp` | *(none — new)* | the "Refuse; do not fail quietly" table and a few state-invariant races, probed directly against the real backend rather than the unit suite's fake FFI |
 
-`support.hpp`/`support.cpp` (mirroring `conftest.py`/`harness/`) provide:
+`fixtures.hpp`/`fixtures.cpp` (mirroring `conftest.py`/`harness/`) provide:
 
 - **Session-creation pacing.** `reactor/echo`'s `sessions_per_minute` quota is
   enforced per API key across whatever suite is running against it, not per

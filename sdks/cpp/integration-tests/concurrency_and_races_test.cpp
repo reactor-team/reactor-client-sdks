@@ -23,7 +23,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "support.hpp"
+#include "fixtures.hpp"
 
 TEST_CASE("many concurrent send_commands all resolve without cross-talk") {
   integration::ConnectedReactor reactor;

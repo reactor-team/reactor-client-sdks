@@ -4,7 +4,7 @@
 # only, the same as `examples/` is left out) — kept here anyway so an editor
 # running clang-tidy live against this directory sees the same relaxations
 # `sdks/cpp/tests/.clang-tidy` grants the unit suite, for the same reason:
-# `support.cpp` reaches past the public header to mint a shared token
+# `fixtures.cpp` reaches past the public header to mint a shared token
 # (`reactor_fetch_jwt`) and hands its own promise across that boundary as a raw
 # pointer, exactly the shape the checks below exist to flag everywhere else.
 InheritParentConfig: true

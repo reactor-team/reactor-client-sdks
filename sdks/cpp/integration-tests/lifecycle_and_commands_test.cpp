@@ -16,7 +16,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "support.hpp"
+#include "fixtures.hpp"
 
 TEST_CASE("connect walks disconnected to ready, and the getters agree") {
   integration::ReactorFactory factory;

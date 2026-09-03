@@ -20,7 +20,7 @@ FetchContent_MakeAvailable(Catch2)
 
 add_executable(
   reactor_sdk_integration_tests
-  support.cpp
+  fixtures.cpp
   lifecycle_and_commands_test.cpp
   tracks_and_frames_test.cpp
   upload_and_conditioning_test.cpp
@@ -31,7 +31,7 @@ add_executable(
 )
 
 # Reaches past the public headers on purpose, same as tests/CMakeLists.txt:
-# support.cpp's mint_jwt() calls reactor_fetch_jwt() directly, because session
+# fixtures.cpp's mint_jwt() calls reactor_fetch_jwt() directly, because session
 # adoption needs the token itself and the public API never hands one back.
 target_include_directories(
   reactor_sdk_integration_tests

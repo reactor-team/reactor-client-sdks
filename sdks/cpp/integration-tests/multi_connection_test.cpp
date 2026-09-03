@@ -11,7 +11,7 @@
 // test_multi_connection.py, which this file mirrors: constructing each client
 // the convenient way (an API key, letting each `Reactor` mint its own token)
 // 403s the joiner — the coordinator only accepts the token that *created* a
-// session for a second connection to adopt it by id. `support::mint_jwt` mints
+// session for a second connection to adopt it by id. `integration::mint_jwt` mints
 // one token up front and hands it to both clients via `reactor::Jwt`, the same
 // fix `sdks/cpp/examples/05_multi_connection.cpp` should double check it still
 // needs — it currently constructs both clients with an API key each, the
@@ -28,7 +28,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "support.hpp"
+#include "fixtures.hpp"
 
 namespace {
 
@@ -45,7 +45,7 @@ struct SharedPair {
 
 SharedPair make_shared_pair(integration::ReactorFactory& factory) {
   // In local mode there's no coordinator auth to satisfy, and no API key is
-  // guaranteed to exist to mint from — mirrors support::new_reactor's own
+  // guaranteed to exist to mint from — mirrors integration::new_reactor's own
   // handling of LOCAL.
   const std::optional<reactor::Jwt> jwt =
       integration::LOCAL ? std::nullopt
