@@ -1,0 +1,75 @@
+# JS SDK integration tests
+
+Playwright driving `@reactor-team/js-sdk`'s actual public API — a real browser, the
+real compiled wasm binding, a real WebRTC connection, against a real model in
+production (`reactor/echo` by default). Nothing in this chain is mocked; that's the
+point. Unlike `sdks/js`'s unit tests (`mise run test:js`, mocked `ReactorClient`),
+this is the one place the whole path — SDK, wasm, WebRTC, coordinator, model —
+actually runs end to end, so it's what catches a regression the unit suite's
+fixtures agree with by construction.
+
+## Running it
+
+```sh
+export INTEGRATION_TESTS_REACTOR_API_KEY=...   # never pass this on a command line — export it
+mise run test:js:integration-tests
+```
+
+Or directly — useful for iterating on one test without paying `mise run
+test:js:integration-tests`'s full sequence each time. `@reactor-team/js-sdk` is a
+`file:..` dependency resolving to `sdks/js/dist/`, so the SDK has to actually
+be built first, from the repo root:
+
+```sh
+mise run build:wasm
+mise run build:js
+```
+
+Then, from this directory:
+
+```sh
+npm install
+npx tsc --noEmit          # optional, but this is what CI runs
+npx playwright install --with-deps chromium
+npx playwright test
+```
+
+A dedicated key, not the `REACTOR_API_KEY` the examples use — this one exists only
+to run this suite, in CI and locally alike. `harness/vite.config.ts` mints a
+session-scoped JWT from it the same way `sdks/js/examples/*/vite.config.ts` do from
+theirs — the key itself never reaches the browser.
+
+## What it tests, and how
+
+`harness/` is not a demo — nothing in it is meant to be read by a person. It's a
+small Vite app that constructs one or more `Reactor` instances and exposes them
+(and a few deterministic media fixtures — solid-color canvas/audio tracks, so
+pixel assertions don't depend on Chromium's fake-device pattern) on
+`window.__harness`. The specs under `tests/` drive that surface directly through
+`page.evaluate()` — connect, sendCommand, publish/pause/resume/unpublish a track,
+upload a file, request a clip — and assert on real return values, real events, and
+real pixels sampled back out of the received video track. This exercises the SDK's
+public methods themselves, not a UI built on top of them.
+
+`reactor/echo`'s own command surface (`set_effect`, `set_intensity`,
+`set_overlay_image`) is what most of the assertions ride on — see
+`~/dev/reactor-runtime/examples/echo/echo.py` for what it actually does with each.
+
+## Pointing this at a local runtime instead of production
+
+Every knob is an env var, read by both `harness/vite.config.ts` (server-side token
+minting) and the harness itself (`harness/src/config.ts`):
+
+```sh
+REACTOR_LOCAL=true REACTOR_API_URL=http://localhost:8080 REACTOR_MODEL_NAME=my-model \
+  npx playwright test
+```
+
+`REACTOR_LOCAL=true` skips token minting entirely (`ReactorOptions.jwt`'s own docs:
+"omit for an unauthenticated local runtime") — which is also this suite's one
+permanent gap in local mode: `local: true` takes a different, unauthenticated code
+path, so nothing here can exercise JWT minting, `connect(jwt)`, or auth-failure
+error paths (`UnauthorizedError`, ...) against a local runtime. If this suite ever
+moves its bulk (effects, tracks, commands, clips) to a local runtime for
+per-PR speed, keep a small auth-specific slice pointed at production — there's no
+other way to reach that code path.

@@ -179,8 +179,40 @@ jobs:
       # Smoke-builds every sdks/js/examples/* app against dist/ — catches an
       # export renamed or removed out from under an example, which the unit
       # tests (mocked client) and lint (no cross-package resolution) miss.
-      # No REACTOR_API_KEY: this only bundles, it never connects.
+      # No INTEGRATION_TESTS_REACTOR_API_KEY: this only bundles, it never connects.
       - run: mise run build:js:examples
+
+  js-integration-tests:
+    name: JS SDK integration tests (real browser, real model)
+    needs: changes
+    # GitHub withholds repo secrets from a fork's pull_request runs, so a
+    # fork PR could never populate INTEGRATION_TESTS_REACTOR_API_KEY —
+    # skipped there rather than failing every external contribution. Still
+    # runs for every same-repo PR and on push, same as before.
+    if: github.event_name == 'push' || (needs.changes.outputs.js == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      # test:js:integration-tests builds wasm + dist/ itself (mise.toml)
+      # rather than reusing the `js` job's — same reasoning as
+      # release-js.yml's build job: never test something that wasn't built
+      # by the exact steps that just ran.
+      - name: Integration tests (Playwright, real browser + real model)
+        env:
+          # A dedicated secret, not the general REACTOR_API_KEY examples use —
+          # this key exists only to run this suite.
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+        run: mise run test:js:integration-tests
 
   cpp:
     name: C++ SDK
@@ -231,7 +263,7 @@ jobs:
 
   ci-complete:
     name: CI Complete
-    needs: [changes, repo, rust, python, js, cpp]
+    needs: [changes, repo, rust, python, js, js-integration-tests, cpp]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -245,6 +277,7 @@ jobs:
                    "${{ needs.rust.result }}" \
                    "${{ needs.python.result }}" \
                    "${{ needs.js.result }}" \
+                   "${{ needs.js-integration-tests.result }}" \
                    "${{ needs.cpp.result }}"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::a required job failed ($r)"; exit 1

@@ -192,6 +192,40 @@ description = "[Build] Smoke-build every JS SDK example against dist/"
 depends = ["build:js"]
 run = "scripts/build-js-examples.sh"
 
+[tasks."install:js:integration-tests"]
+description = "[Setup] npm install the JS SDK integration test harness"
+dir = "sdks/js/integration-tests"
+run = "npm install"
+
+[tasks."test:js:integration-tests"]
+description = "[Testing] JS SDK integration tests — real browser, real WebRTC, against a live model (needs INTEGRATION_TESTS_REACTOR_API_KEY)"
+dir = "sdks/js/integration-tests"
+depends = ["install:js:integration-tests"]
+# Deliberately not a dependency of `test` / `test:js`: unlike the unit
+# suite's mocked client, this connects to a real model in production
+# (reactor/echo by default — see harness/vite.config.ts) over a real
+# WebRTC connection, so it needs INTEGRATION_TESTS_REACTOR_API_KEY, costs
+# real session time, and runs on the order of minutes rather than seconds.
+run = [
+    # `depends` runs its entries in parallel when they don't depend on each
+    # other, and build:js's own copy-wasm step needs build:wasm's
+    # crates/reactor-wasm/pkg output to already exist (its description says
+    # so, but doesn't declare it as a real dependency) — a race, not a fix,
+    # if these two were listed in `depends` instead. Explicit sequential
+    # `mise run` steps here, same as every caller in ci.yml/release-js.yml
+    # already does by hand, is what actually guarantees the order for the
+    # documented local entry point (this task, run on its own from a clean
+    # checkout).
+    "mise run build:wasm",
+    "mise run build:js",
+    # This package's tsconfig.json is otherwise never run by anything —
+    # Vite/Playwright only transpile, they don't type-check — so a type
+    # error here would accumulate silently forever without this.
+    "npx tsc --noEmit",
+    "npx playwright install --with-deps chromium",
+    "npx playwright test",
+]
+
 # ── C++ SDK ───────────────────────────────────────────────────────────────────
 # Needs a release build of libreactor_ffi to link against; `build:cpp` makes one.
 # Rebuild it after pulling changes under crates/ — reactor_abi_version() turns a
