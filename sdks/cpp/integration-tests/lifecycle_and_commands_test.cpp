@@ -102,6 +102,27 @@ TEST_CASE("send_command round-trips, and the model's own message arrives separat
   REQUIRE(last.at("data").at("intensity") == 1.0);
 }
 
+TEST_CASE("get_status returns correlated data (REA-5973)") {
+  // echo 1.8.0+: the first echo command whose reply actually carries data,
+  // rather than a bodyless ack — every other command (set_effect,
+  // set_intensity, set_overlay_image) returns nothing.
+  integration::ConnectedReactor reactor;
+
+  const auto result = reactor->send_command("get_status").get();
+  REQUIRE(result.has_value());
+  REQUIRE(result->at("type") == "status");
+  REQUIRE(result->at("data").at("effect") == "none");
+  REQUIRE(result->at("data").at("intensity") == 1.0);
+
+  reactor->send_command("set_effect", {{"effect", "invert"}}).get();
+  reactor->send_command("set_intensity", {{"intensity", 0.42}}).get();
+
+  const auto updated = reactor->send_command("get_status").get();
+  REQUIRE(updated.has_value());
+  REQUIRE(updated->at("data").at("effect") == "invert");
+  REQUIRE(updated->at("data").at("intensity") == 0.42);
+}
+
 TEST_CASE("the model itself rejects an out-of-range argument") {
   integration::ConnectedReactor reactor;
 
@@ -117,7 +138,8 @@ TEST_CASE("request_schema describes echo's own commands") {
 
   const auto schema = reactor->request_schema().get();
   const std::string text = schema.dump();
-  for (const std::string& command : {"set_effect", "set_intensity", "set_overlay_image"}) {
+  for (const std::string& command :
+       {"set_effect", "set_intensity", "set_overlay_image", "get_status"}) {
     INFO("looking for " << command << " in " << text);
     REQUIRE(text.find(command) != std::string::npos);
   }
