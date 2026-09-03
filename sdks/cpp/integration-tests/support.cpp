@@ -11,6 +11,8 @@
 #include <stdexcept>
 #include <thread>
 
+#include <catch2/catch_test_macros.hpp>
+
 namespace integration {
 
 namespace {
@@ -330,6 +332,35 @@ std::vector<std::uint8_t> solid_rgb_png(std::uint32_t width, std::uint32_t heigh
   append_chunk(png, "IDAT", zlib_store(raw));
   append_chunk(png, "IEND", {});
   return png;
+}
+
+std::array<double, 3> mean_rgb(const reactor::VideoFrame& frame) {
+  const std::size_t pixels = static_cast<std::size_t>(frame.width) * frame.height;
+  if (pixels == 0) {
+    return {0.0, 0.0, 0.0};
+  }
+
+  double r_sum = 0.0;
+  double g_sum = 0.0;
+  double b_sum = 0.0;
+  for (std::size_t i = 0; i < pixels; ++i) {
+    b_sum += frame.bgra[(i * 4) + 0];
+    g_sum += frame.bgra[(i * 4) + 1];
+    r_sum += frame.bgra[(i * 4) + 2];
+  }
+
+  return {r_sum / static_cast<double>(pixels), g_sum / static_cast<double>(pixels),
+          b_sum / static_cast<double>(pixels)};
+}
+
+void assert_dominant_color(const std::array<double, 3>& mean, std::array<int, 3> expected,
+                           double tolerance) {
+  for (std::size_t channel = 0; channel < 3; ++channel) {
+    const double mean_value = mean.at(channel);
+    const int expected_value = expected.at(channel);
+    INFO("channel " << channel << ": mean=" << mean_value << " expected=" << expected_value);
+    REQUIRE(std::abs(mean_value - static_cast<double>(expected_value)) <= tolerance);
+  }
 }
 
 }  // namespace integration

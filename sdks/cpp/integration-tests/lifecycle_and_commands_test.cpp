@@ -82,10 +82,9 @@ TEST_CASE("send_command round-trips, and the model's own message arrives separat
   const auto result = reactor->send_command("set_effect", {{"effect", "invert"}}).get();
   REQUIRE_FALSE(result.has_value());
 
-  // intensity isn't set by this test, and a fresh session's own default
-  // can't be relied on here — REA-5931's session-state leak (see README.md)
-  // leaks intensity too, not just effect/overlay. Setting it explicitly
-  // keeps this test about the message round trip, not about REA-5931.
+  // intensity isn't otherwise touched by this test; set it explicitly so the
+  // assertion below is about the message round trip, not about whatever a
+  // fresh session's own default happens to be.
   reactor->send_command("set_intensity", {{"intensity", 1.0}}).get();
 
   integration::wait_until(

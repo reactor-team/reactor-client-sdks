@@ -8,10 +8,11 @@
 // `sdks/js/integration-tests/harness/`, adapted to a synchronous, future-based
 // client: there is no event loop to fix up after the fact (see
 // lifecycle_and_commands_test.cpp's note on the connect()/on_status ordering
-// this suite still has to account for), but session-creation pacing and the
-// REA-5931 pixel-assertion convention both carry over unchanged.
+// this suite still has to account for), but session-creation pacing carries
+// over unchanged.
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <exception>
@@ -184,5 +185,20 @@ class FramePump {
 /// with something a model can actually decode.
 std::vector<std::uint8_t> solid_rgb_png(std::uint32_t width, std::uint32_t height, std::uint8_t r,
                                         std::uint8_t g, std::uint8_t b);
+
+/// A frame's mean colour, as (r, g, b) — computed from the borrowed
+/// `frame.bgra`, so call this only from inside the `on_frame` callback that
+/// owns it. The three doubles it returns are fine to carry out past the
+/// callback, unlike the frame itself.
+std::array<double, 3> mean_rgb(const reactor::VideoFrame& frame);
+
+/// Assert a `mean_rgb` result is within `tolerance` per channel of `expected`
+/// (r, g, b). Mirrors sdks/python/integration-tests/conftest.py's
+/// assert_dominant_color — WebRTC's own encode/decode round trip does not
+/// reproduce a solid fill exactly, especially at the edges, so the mean over
+/// the whole frame is what a solid-colour input actually guarantees survives
+/// that.
+void assert_dominant_color(const std::array<double, 3>& mean, std::array<int, 3> expected,
+                           double tolerance = 30.0);
 
 }  // namespace integration

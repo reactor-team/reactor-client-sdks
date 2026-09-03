@@ -7,6 +7,7 @@
 // (`reactor/helios`, what the SDK's own examples use). Mirrors
 // sdks/python/integration-tests/tests/test_tracks_and_frames.py.
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -61,19 +62,7 @@ TEST_CASE("pushing a frame before publish() raises InvalidStateError") {
                     reactor::InvalidStateError);
 }
 
-TEST_CASE("set_effect(invert) round-trips (visual check disabled — REA-5931)") {
-  // Baseline: effect defaults to "none" for a fresh session. This is the
-  // assertion REA-5931 (the reactor/echo session-state leak — see README.md)
-  // breaks first: a shared prod worker can already be carrying a *different*
-  // session's leaked effect/intensity, so a fresh session's own main_video may
-  // show a stale colour regardless of what this session sets. The pixel check
-  // is disabled here (not deleted) until that's fixed upstream — left
-  // failing, it would flakily block every PR touching sdks/cpp on a bug this
-  // repo can't fix, the same call sdks/js/integration-tests/tests/
-  // tracks-and-upload.spec.ts and sdks/python/integration-tests/tests/
-  // test_tracks_and_frames.py already made. The commands still go out below,
-  // keeping coverage that the SDK's own send path works; only the model-side
-  // visual verification is off.
+TEST_CASE("set_effect(invert) round-trips and is visible on main_video") {
   integration::ConnectedReactor reactor;
   auto webcam = reactor->track("webcam");
   webcam.publish().get();
@@ -82,18 +71,43 @@ TEST_CASE("set_effect(invert) round-trips (visual check disabled — REA-5931)")
   const auto bgra = integration::solid_bgra_frame(WIDTH, HEIGHT, 40, 90, 180);
   integration::FramePump pump{webcam, bgra, WIDTH, HEIGHT};
 
-  std::atomic<int> baseline{0};
+  // Baseline: effect defaults to "none" for a fresh session.
+  std::mutex baseline_mutex;
+  int baseline_count = 0;
+  std::array<double, 3> baseline_mean{};
   {
-    auto baseline_sub = main_video.on_frame([&](const reactor::VideoFrame&) { ++baseline; });
-    integration::wait_until([&] { return baseline.load() >= 3; }, 5.0);
+    auto baseline_sub = main_video.on_frame([&](const reactor::VideoFrame& frame) {
+      const std::lock_guard<std::mutex> lock(baseline_mutex);
+      baseline_mean = integration::mean_rgb(frame);
+      ++baseline_count;
+    });
+    integration::wait_until(
+        [&] {
+          const std::lock_guard<std::mutex> lock(baseline_mutex);
+          return baseline_count >= 3;
+        },
+        5.0);
   }  // subscription removed here — RAII, no off_frame() to call
+  integration::assert_dominant_color(baseline_mean, {40, 90, 180});
 
   reactor->send_command("set_effect", {{"effect", "invert"}}).get();
   reactor->send_command("set_intensity", {{"intensity", 1.0}}).get();
 
-  std::atomic<int> inverted{0};
-  auto inverted_sub = main_video.on_frame([&](const reactor::VideoFrame&) { ++inverted; });
-  integration::wait_until([&] { return inverted.load() >= 3; }, 5.0);
+  std::mutex inverted_mutex;
+  int inverted_count = 0;
+  std::array<double, 3> inverted_mean{};
+  auto inverted_sub = main_video.on_frame([&](const reactor::VideoFrame& frame) {
+    const std::lock_guard<std::mutex> lock(inverted_mutex);
+    inverted_mean = integration::mean_rgb(frame);
+    ++inverted_count;
+  });
+  integration::wait_until(
+      [&] {
+        const std::lock_guard<std::mutex> lock(inverted_mutex);
+        return inverted_count >= 3;
+      },
+      5.0);
+  integration::assert_dominant_color(inverted_mean, {255 - 40, 255 - 90, 255 - 180});
 
   webcam.unpublish();
 }

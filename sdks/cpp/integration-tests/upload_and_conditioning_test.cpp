@@ -9,11 +9,12 @@
 // single overloaded `upload_file` collapses — `upload_file(path)` and
 // `upload_bytes(data, name, mime_type)` are separate methods here.
 
-#include <atomic>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <reactor/reactor.hpp>
 #include <thread>
 
@@ -59,16 +60,7 @@ TEST_CASE("upload_file (from disk) returns a useable FileRef") {
   REQUIRE(ref.size == png.size());
 }
 
-TEST_CASE("set_overlay_image round-trips (visual check disabled — REA-5931)") {
-  // Pixel assertion disabled — REA-5931 (see README.md): a shared prod worker
-  // can already be carrying a *different* session's leaked overlay before
-  // this command even runs, so this session's own output isn't a reliable
-  // thing to diff against. Same call sdks/js/integration-tests/tests/
-  // tracks-and-upload.spec.ts and sdks/python/integration-tests/tests/
-  // test_upload_and_conditioning.py already made for their own
-  // set_overlay_image step. The command still goes out below, keeping
-  // coverage that the SDK's own upload + send path works; only the
-  // model-side visual verification is off.
+TEST_CASE("set_overlay_image at full strength dominates main_video") {
   integration::ConnectedReactor reactor;
   const auto png = integration::solid_rgb_png(16, 16, 220, 60, 15);
   const auto ref =
@@ -87,10 +79,27 @@ TEST_CASE("set_overlay_image round-trips (visual check disabled — REA-5931)") 
   reactor->send_command("set_overlay_image", {{"overlay_strength", 1.0}}, {{"overlay_image", ref}})
       .get();
 
-  std::atomic<int> frames{0};
+  std::mutex mutex;
+  int frames = 0;
+  std::array<double, 3> mean{};
   auto main_video = reactor->track("main_video");
-  auto subscription = main_video.on_frame([&](const reactor::VideoFrame&) { ++frames; });
-  integration::wait_until([&] { return frames.load() >= 3; }, 6.0);
+  auto subscription = main_video.on_frame([&](const reactor::VideoFrame& frame) {
+    const std::lock_guard<std::mutex> lock(mutex);
+    mean = integration::mean_rgb(frame);
+    ++frames;
+  });
+  integration::wait_until(
+      [&] {
+        const std::lock_guard<std::mutex> lock(mutex);
+        return frames >= 3;
+      },
+      6.0);
+
+  // overlay_strength=1.0 replaces the frame with the (resized) overlay
+  // outright (echo_model.py's _overlay_image: addWeighted(frame, 0, resized,
+  // 1, 0) == resized) — the webcam's own colour should not show through at
+  // all.
+  integration::assert_dominant_color(mean, {220, 60, 15}, 35.0);
 
   pump.check();  // surface a background push_frame failure, if any, here
   webcam.unpublish();

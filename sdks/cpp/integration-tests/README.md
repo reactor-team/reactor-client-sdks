@@ -95,15 +95,3 @@ REACTOR_LOCAL=true REACTOR_API_URL=http://localhost:8080 REACTOR_MODEL_NAME=my-m
 suite's one permanent gap in local mode: local mode takes a different,
 unauthenticated code path, so nothing here can exercise JWT minting or
 auth-failure error paths (`UnauthorizedError`, ...) against a local runtime.
-
-## Known, currently-failing issue (external, not this repo)
-
-`reactor/echo` in production carries per-session model state (`effect`,
-`intensity`, `_overlay`) across sessions that should be isolated — see
-`sdks/js/integration-tests/tests/tracks-and-upload.spec.ts`'s header comment
-and REA-5931 for the full trace. The pixel assertions this breaks are
-disabled in `tracks_and_frames_test.cpp` and `upload_and_conditioning_test.cpp`
-(not deleted) until it's fixed upstream — left failing, they would flakily
-block every PR touching `sdks/cpp` on a bug this repo can't fix. The commands
-still go out in every case, keeping coverage that the SDK's own send path
-works; only the model-side visual verification is off.

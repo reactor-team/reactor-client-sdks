@@ -17,10 +17,11 @@
 // needs — it currently constructs both clients with an API key each, the
 // same bit-rotted shape the Python example was found carrying.
 
-#include <atomic>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <reactor/reactor.hpp>
 #include <thread>
@@ -87,14 +88,25 @@ TEST_CASE("a joiner observes state the creator already set") {
 
   auto& joiner = pair.join();
 
-  // Pixel assertion disabled — REA-5931 (see README.md), same call as
-  // tracks_and_frames_test.cpp's own effect coverage. What's left to check
-  // honestly is that frames actually arrive on the joiner's own view of the
-  // session at all.
-  std::atomic<int> received{0};
-  auto subscription =
-      joiner.track("main_video").on_frame([&](const reactor::VideoFrame&) { ++received; });
-  integration::wait_until([&] { return received.load() >= 3; }, 10.0);
+  // The effect is session (model-instance) state, set before the joiner even
+  // connected — a fresh session would default to "none", so seeing "invert"
+  // on the joiner's own view of main_video is what proves this is the same
+  // session rather than a second one that happens to share an id.
+  std::mutex mutex;
+  int received = 0;
+  std::array<double, 3> mean{};
+  auto subscription = joiner.track("main_video").on_frame([&](const reactor::VideoFrame& frame) {
+    const std::lock_guard<std::mutex> lock(mutex);
+    mean = integration::mean_rgb(frame);
+    ++received;
+  });
+  integration::wait_until(
+      [&] {
+        const std::lock_guard<std::mutex> lock(mutex);
+        return received >= 3;
+      },
+      10.0);
+  integration::assert_dominant_color(mean, {255 - 60, 255 - 150, 255 - 20});
 
   pump.check();  // surface a background push_frame failure, if any, here
   webcam.unpublish();
