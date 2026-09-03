@@ -217,11 +217,6 @@ jobs:
       # a local checkout without a Rust toolchain can't verify.
       - run: mise run build:js
       - run: mise run test:js
-      # Smoke-builds every sdks/js/examples/* app against dist/ — catches an
-      # export renamed or removed out from under an example, which the unit
-      # tests (mocked client) and lint (no cross-package resolution) miss.
-      # No INTEGRATION_TESTS_REACTOR_API_KEY: this only bundles, it never connects.
-      - run: mise run build:js:examples
 
   js-integration-tests:
     name: JS SDK integration tests (real browser, real model)

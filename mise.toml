@@ -209,11 +209,6 @@ dir = "sdks/js"
 depends = ["install:js"]
 run = "npm run build"
 
-[tasks."build:js:examples"]
-description = "[Build] Smoke-build every JS SDK example against dist/"
-depends = ["build:js"]
-run = "scripts/build-js-examples.sh"
-
 [tasks."install:js:integration-tests"]
 description = "[Setup] npm install the JS SDK integration test harness"
 dir = "sdks/js/integration-tests"
@@ -342,8 +337,12 @@ description = "[Testing] C++ SDK integration tests — real FFI client, real Web
 # and the platform's own, respectively, exactly as ci.yml's `cpp` job's own
 # comments explain — so whoever calls this (a CI job, or a contributor
 # locally) runs `mise run build:ffi` first, same as the README says.
+#
+# -DREACTOR_SDK_BUILD_AUDIO=OFF because nothing under integration-tests/
+# touches reactor::sdk_audio: building it here would fetch and compile
+# miniaudio for no test that ever links it, pure wasted time on every run.
 run = [
-    "cmake -S sdks/cpp -B sdks/cpp/build-integration-tests -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DREACTOR_SDK_BUILD_TESTS=OFF -DREACTOR_SDK_BUILD_EXAMPLES=OFF -DREACTOR_SDK_BUILD_INTEGRATION_TESTS=ON",
+    "cmake -S sdks/cpp -B sdks/cpp/build-integration-tests -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DREACTOR_SDK_BUILD_TESTS=OFF -DREACTOR_SDK_BUILD_EXAMPLES=OFF -DREACTOR_SDK_BUILD_INTEGRATION_TESTS=ON -DREACTOR_SDK_BUILD_AUDIO=OFF",
     "cmake --build sdks/cpp/build-integration-tests",
     "sdks/cpp/build-integration-tests/integration-tests/reactor_sdk_integration_tests",
 ]

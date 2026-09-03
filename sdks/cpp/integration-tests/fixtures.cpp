@@ -3,6 +3,7 @@
 #include <reactor_ffi.h>
 
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <future>
 #include <mutex>
@@ -209,6 +210,60 @@ void FramePump::run() {
 }
 
 void FramePump::check() const {
+  const std::lock_guard<std::mutex> lock(error_mutex_);
+  if (error_) {
+    std::rethrow_exception(error_);
+  }
+}
+
+namespace {
+// A4, comfortably audible and easy to reason about — not chosen for any
+// property echo does anything with, since it passes audio through unchanged.
+constexpr double TONE_HZ = 440.0;
+constexpr double PI = 3.14159265358979323846;
+constexpr int CHUNK_MS = 20;
+constexpr std::int16_t AMPLITUDE = 8000;  // headroom under INT16_MAX
+}  // namespace
+
+AudioPump::AudioPump(reactor::Track track, std::uint32_t sample_rate, std::uint32_t channels)
+    : track_(std::move(track)),
+      sample_rate_(sample_rate),
+      channels_(channels),
+      thread_([this] { run(); }) {}
+
+AudioPump::~AudioPump() {
+  stop_.store(true);
+  if (thread_.joinable()) {
+    thread_.join();
+  }
+}
+
+void AudioPump::run() {
+  try {
+    const std::size_t frames_per_chunk = (static_cast<std::size_t>(sample_rate_) * CHUNK_MS) / 1000;
+    std::vector<std::int16_t> chunk(frames_per_chunk * channels_);
+    double phase = 0.0;
+    const double phase_step = 2.0 * PI * TONE_HZ / static_cast<double>(sample_rate_);
+
+    while (!stop_.load()) {
+      for (std::size_t frame = 0; frame < frames_per_chunk; ++frame) {
+        const auto sample =
+            static_cast<std::int16_t>(std::sin(phase) * static_cast<double>(AMPLITUDE));
+        phase += phase_step;
+        for (std::uint32_t channel = 0; channel < channels_; ++channel) {
+          chunk[(frame * channels_) + channel] = sample;
+        }
+      }
+      track_.push_audio(reactor::Samples{chunk.data(), chunk.size()}, sample_rate_, channels_);
+      std::this_thread::sleep_for(std::chrono::milliseconds(CHUNK_MS));
+    }
+  } catch (...) {
+    const std::lock_guard<std::mutex> lock(error_mutex_);
+    error_ = std::current_exception();
+  }
+}
+
+void AudioPump::check() const {
   const std::lock_guard<std::mutex> lock(error_mutex_);
   if (error_) {
     std::rethrow_exception(error_);

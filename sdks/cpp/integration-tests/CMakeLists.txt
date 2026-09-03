@@ -28,6 +28,7 @@ add_executable(
   recording_test.cpp
   concurrency_and_races_test.cpp
   refusals_and_edge_cases_test.cpp
+  audio_test.cpp
 )
 
 # Reaches past the public headers on purpose, same as tests/CMakeLists.txt:
