@@ -38,9 +38,18 @@ export function makeVideoTrack(color = '#ff2222', width = 320, height = 240): Me
   return track;
 }
 
-/** A steady tone via `AudioContext`, as a `MediaStreamTrack`. */
-export function makeAudioTrack(frequencyHz = 440): MediaStreamTrack {
+/** A steady tone via `AudioContext`, as a `MediaStreamTrack`.
+ *
+ * Async because a fresh `AudioContext` starts `suspended` under Chromium's
+ * autoplay policy until resumed — every caller before `sampleAudioLevel`
+ * existed to check went uncaught, since a suspended context's oscillator
+ * still yields a connectable `MediaStreamTrack` that negotiates and
+ * "arrives" over WebRTC identically to a real one; it just carries silence.
+ * `resume()` is what actually starts the graph rendering samples. */
+export async function makeAudioTrack(frequencyHz = 440): Promise<MediaStreamTrack> {
   const ctx = new AudioContext();
+
+  await ctx.resume();
   const osc = ctx.createOscillator();
 
   osc.frequency.value = frequencyHz;

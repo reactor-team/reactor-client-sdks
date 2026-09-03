@@ -130,6 +130,38 @@ async function samplePixelFor(name: string, trackName: string): Promise<{ r: num
   return samplePixel(track);
 }
 
+/** The `audioLevel` (0-1) the browser's own RTP decoder reports for the
+ *  inbound-rtp stats entry matching `trackName` — the audio counterpart of
+ *  `samplePixelFor`. Read from `getStats()` rather than by tapping the track
+ *  with a Web Audio graph: a headless Chromium's `AudioContext` render clock
+ *  is not reliably driven without a real audio output device, so an
+ *  `AnalyserNode` reads all-zero forever regardless of what the track
+ *  actually carries — the browser's own decoder already computed the level
+ *  as part of decoding the RTP itself, with nothing extra to render. */
+async function sampleAudioLevelFor(name: string, trackName: string): Promise<number> {
+  if (!receivedTracks[name]?.[trackName]) {
+    throw new Error(`instance "${name}" never received a track named "${trackName}"`);
+  }
+  const pc = get(name).getPeerConnection();
+
+  if (!pc) {throw new Error(`instance "${name}" has no active peer connection`);}
+  // Unscoped, not `getStats(track)`: the track object this harness stores
+  // from `ontrack` fails the browser's own sender/receiver identity check
+  // for the selector overload ("There is no sender or receiver for the
+  // track"), even though it is live and unmuted — filtering the full report
+  // by kind sidesteps whatever that mismatch is. Fine for this suite, which
+  // never receives more than one audio track per session.
+  const stats = await pc.getStats();
+  let level = 0;
+
+  stats.forEach((report) => {
+    if (report.type === 'inbound-rtp' && report.kind === 'audio' && typeof report.audioLevel === 'number') {
+      level = report.audioLevel as number;
+    }
+  });
+  return level;
+}
+
 // Takes the *same* jwt that created the session, not a freshly minted one —
 // reading a session back requires the token that created it (see the
 // examples' own fetch-token.ts), and a fresh mint of the same scope is a
@@ -158,6 +190,7 @@ declare global {
       makeAudioTrack: typeof makeAudioTrack;
       makeTestImageFile: typeof makeTestImageFile;
       samplePixelFor: typeof samplePixelFor;
+      sampleAudioLevelFor: typeof sampleAudioLevelFor;
       downloadClip: typeof downloadClip;
       isFileRef: typeof isFileRef;
       events: typeof events;
@@ -176,6 +209,7 @@ window.__harness = {
   makeAudioTrack,
   makeTestImageFile,
   samplePixelFor,
+  sampleAudioLevelFor,
   downloadClip,
   isFileRef,
   events,

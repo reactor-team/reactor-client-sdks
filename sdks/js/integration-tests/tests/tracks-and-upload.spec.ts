@@ -24,7 +24,7 @@ test('publishTrack() puts a sender behind the slot; pause/resume/unpublish all r
       const reactor = window.__harness.get(name);
 
       await reactor.publishTrack('webcam', window.__harness.makeVideoTrack('#ff2222'));
-      await reactor.publishTrack('mic', window.__harness.makeAudioTrack());
+      await reactor.publishTrack('mic', await window.__harness.makeAudioTrack());
     }, NAME);
   });
 
