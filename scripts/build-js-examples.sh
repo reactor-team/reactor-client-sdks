@@ -9,14 +9,39 @@
 # ReactorClient) and eslint (per-file, no cross-package resolution) stay
 # green. No REACTOR_API_KEY needed - this never connects, it only builds.
 
-set -euo pipefail
+set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 examples_dir="$repo_root/sdks/js/examples"
 
+# Each example is an independent Vite app, so install+build runs for all of
+# them concurrently instead of one at a time — output is buffered per example
+# and printed in order once its job finishes, to stay readable.
+names=()
+pids=()
+logs=()
+
 for example in "$examples_dir"/*/; do
   [ -f "$example/package.json" ] || continue
   name="$(basename "$example")"
-  echo "== $name =="
-  (cd "$example" && npm install && npm run build)
+  log="$(mktemp)"
+  (cd "$example" && npm install && npm run build) >"$log" 2>&1 &
+  names+=("$name")
+  pids+=("$!")
+  logs+=("$log")
 done
+
+status=0
+for i in "${!pids[@]}"; do
+  echo "== ${names[$i]} =="
+  if wait "${pids[$i]}"; then
+    cat "${logs[$i]}"
+  else
+    cat "${logs[$i]}"
+    echo "== ${names[$i]}: FAILED =="
+    status=1
+  fi
+  rm -f "${logs[$i]}"
+done
+
+exit "$status"

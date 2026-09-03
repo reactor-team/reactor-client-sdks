@@ -205,6 +205,12 @@ jobs:
       - uses: actions/setup-node@v4   # Node isn't mise-pinned yet; see mise.toml's "JS SDK" section
         with:
           node-version: "24"
+          cache: npm
+          # sdks/js itself, plus every examples/* app installed by
+          # build:js:examples — each has its own lockfile.
+          cache-dependency-path: |
+            sdks/js/package-lock.json
+            sdks/js/examples/*/package-lock.json
       # reactor-wasm compiles to nothing off a wasm target, so the rust job's
       # host-target clippy covers none of it. No clang needed here: this target
       # pulls in reactor-core only, never reactor-ffi's libwebrtc glue.
