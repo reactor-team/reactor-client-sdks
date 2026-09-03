@@ -85,7 +85,11 @@ def new_reactor(*, model_name: str = MODEL_NAME, jwt: str | None = None) -> Reac
 # (mise.toml's --reruns) is a safety net, not sufficient on its own when the
 # suite's average pace is already close to the limit. Pacing every session
 # creation through one process-wide gate keeps it under, deterministically.
-_SESSION_CREATE_INTERVAL = 8.0  # seconds; ~7.5/min, under the 10/min quota
+# 8.0s (~7.5/min) matched the old 10/min quota; now 100/min, so 0.7s
+# (~86/min) leaves real margin without being needlessly conservative —
+# a RateLimitedError still gets rerun (mise.toml's --reruns) as a second
+# line of defense.
+_SESSION_CREATE_INTERVAL = 0.7  # seconds; ~86/min, under the 100/min quota
 _session_create_lock = asyncio.Lock()
 _last_session_create_at = 0.0
 
