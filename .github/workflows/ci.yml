@@ -147,6 +147,42 @@ jobs:
         run: mise run build:ffi
       - run: mise run test:python
 
+  python-integration-tests:
+    name: Python SDK integration tests (real FFI, real model)
+    # Depends on js-integration-tests finishing, not just `changes`: both
+    # suites hit the same real reactor/echo model, whose session-creation
+    # quota (sessions_per_minute) is shared and far too small for both to
+    # run at once — running in parallel 429ed nearly every test in both
+    # jobs. A custom `if:` below (no success()/failure()/always() in it)
+    # already overrides the implicit "needs must succeed" gate, so this
+    # only serializes the two — it does not make one depend on the other's
+    # result.
+    needs: [changes, js-integration-tests]
+    # Same fork-PR reasoning as js-integration-tests below: GitHub withholds
+    # repo secrets from a fork's pull_request runs, so
+    # INTEGRATION_TESTS_REACTOR_API_KEY would never be populated there —
+    # skipped rather than failing every external contribution. Still runs
+    # for every same-repo PR and on push.
+    if: github.event_name == 'push' || (needs.changes.outputs.python == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Install clang for the libwebrtc C++ glue
+        uses: ./.github/actions/setup-libwebrtc-cxx
+      - name: Integration tests (real FFI client, real model)
+        env:
+          # A dedicated secret, not the general REACTOR_API_KEY examples use —
+          # this key exists only to run this suite (shared with js-integration-tests).
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+        run: mise run test:python:integration-tests
+
   js:
     name: JS SDK + browser binding
     needs: changes
@@ -263,7 +299,7 @@ jobs:
 
   ci-complete:
     name: CI Complete
-    needs: [changes, repo, rust, python, js, js-integration-tests, cpp]
+    needs: [changes, repo, rust, python, python-integration-tests, js, js-integration-tests, cpp]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -276,6 +312,7 @@ jobs:
                    "${{ needs.repo.result }}" \
                    "${{ needs.rust.result }}" \
                    "${{ needs.python.result }}" \
+                   "${{ needs.python-integration-tests.result }}" \
                    "${{ needs.js.result }}" \
                    "${{ needs.js-integration-tests.result }}" \
                    "${{ needs.cpp.result }}"; do
