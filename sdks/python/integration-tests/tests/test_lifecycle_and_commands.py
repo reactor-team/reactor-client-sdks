@@ -79,6 +79,22 @@ async def test_send_command_round_trip_and_message_event(reactor: Reactor) -> No
     }
 
 
+async def test_get_status_returns_correlated_data(reactor: Reactor) -> None:
+    """echo 1.8.0+ (REA-5973): the first echo command whose reply actually
+    carries data, rather than a bodyless ack — every other command
+    (set_effect, set_intensity, set_overlay_image) returns None."""
+    result = await reactor.send_command("get_status", {})
+
+    assert result is not None, "get_status returned no data — still an ack-only command?"
+    assert result == {"type": "status", "data": {"effect": "none", "intensity": 1.0}}
+
+    await reactor.send_command("set_effect", {"effect": "invert"})
+    await reactor.send_command("set_intensity", {"intensity": 0.42})
+
+    updated = await reactor.send_command("get_status", {})
+    assert updated == {"type": "status", "data": {"effect": "invert", "intensity": 0.42}}
+
+
 async def test_send_command_rejects_an_out_of_range_argument(reactor: Reactor) -> None:
     # set_intensity declares ge=0.0, le=1.0 — the model itself refuses this,
     # not the SDK, so the point of this test is that the refusal reaches the
@@ -92,7 +108,7 @@ async def test_request_schema_describes_echos_commands(reactor: Reactor) -> None
 
     paths = schema.get("paths", schema)  # tolerate either an OpenAPI doc or a flat map
     text = str(paths)
-    for command in ("set_effect", "set_intensity", "set_overlay_image"):
+    for command in ("set_effect", "set_intensity", "set_overlay_image", "get_status"):
         assert command in text, f"{command!r} missing from the schema: {schema!r}"
 
 
