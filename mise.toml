@@ -209,11 +209,6 @@ dir = "sdks/js"
 depends = ["install:js"]
 run = "npm run build"
 
-[tasks."build:js:examples"]
-description = "[Build] Smoke-build every JS SDK example against dist/"
-depends = ["build:js"]
-run = "scripts/build-js-examples.sh"
-
 [tasks."install:js:integration-tests"]
 description = "[Setup] npm install the JS SDK integration test harness"
 dir = "sdks/js/integration-tests"

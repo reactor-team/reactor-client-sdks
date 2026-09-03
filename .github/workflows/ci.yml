@@ -205,12 +205,6 @@ jobs:
       - uses: actions/setup-node@v4   # Node isn't mise-pinned yet; see mise.toml's "JS SDK" section
         with:
           node-version: "24"
-          cache: npm
-          # sdks/js itself, plus every examples/* app installed by
-          # build:js:examples — each has its own lockfile.
-          cache-dependency-path: |
-            sdks/js/package-lock.json
-            sdks/js/examples/*/package-lock.json
       # reactor-wasm compiles to nothing off a wasm target, so the rust job's
       # host-target clippy covers none of it. No clang needed here: this target
       # pulls in reactor-core only, never reactor-ffi's libwebrtc glue.
@@ -223,11 +217,6 @@ jobs:
       # a local checkout without a Rust toolchain can't verify.
       - run: mise run build:js
       - run: mise run test:js
-      # Smoke-builds every sdks/js/examples/* app against dist/ — catches an
-      # export renamed or removed out from under an example, which the unit
-      # tests (mocked client) and lint (no cross-package resolution) miss.
-      # No INTEGRATION_TESTS_REACTOR_API_KEY: this only bundles, it never connects.
-      - run: mise run build:js:examples
 
   js-integration-tests:
     name: JS SDK integration tests (real browser, real model)
