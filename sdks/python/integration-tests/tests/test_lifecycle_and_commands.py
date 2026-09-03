@@ -59,12 +59,9 @@ async def test_send_command_round_trip_and_message_event(reactor: Reactor) -> No
     result = await reactor.send_command("set_effect", {"effect": "invert"})
     assert result is None
 
-    # intensity isn't set by this test, and a fresh session's own default
-    # (1.0, per echo_model.py's load()) can't be relied on here — REA-5931's
-    # session-state leak (see README.md) was confirmed to leak intensity too,
-    # not just effect/overlay, during this suite's own diagnosis. Setting it
-    # explicitly keeps this test about the message round trip, not about
-    # REA-5931.
+    # intensity isn't otherwise touched by this test; set it explicitly so the
+    # assertion below is about the message round trip, not about whatever a
+    # fresh session's own default happens to be.
     await reactor.send_command("set_intensity", {"intensity": 1.0})
 
     # The message may arrive a beat after the ack; give it a moment rather

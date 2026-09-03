@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 
-from conftest import solid_rgb_frame, solid_rgb_png, wait_until
+from conftest import assert_dominant_color, solid_rgb_frame, solid_rgb_png, wait_until
 
 from reactor_sdk import FileRef, Reactor
 
@@ -61,14 +61,11 @@ async def test_set_overlay_image_at_full_strength_dominates_output(reactor: Reac
         main_video.on_frame(lambda f: frames.append(f))
         await wait_until(lambda: len(frames) >= 3, timeout=6.0)
 
-        # Pixel assertion disabled — REA-5931 (see README.md): a shared prod
-        # worker can already be carrying a *different* session's leaked
-        # overlay before this command even runs, so this session's own
-        # output isn't a reliable thing to diff against. Same call
-        # sdks/js/integration-tests/tests/tracks-and-upload.spec.ts already
-        # made for its own set_overlay_image step. The command still goes
-        # out above, keeping coverage that the SDK's own upload + send path
-        # works; only the model-side visual verification is off.
+        # overlay_strength=1.0 replaces the frame with the (resized) overlay
+        # outright (echo_model.py's _overlay_image: addWeighted(frame, 0,
+        # resized, 1, 0) == resized) — the webcam's own colour should not
+        # show through at all.
+        assert_dominant_color(frames[-1], overlay_color, tolerance=35)
     finally:
         pump_done.set()
         pump_task.cancel()

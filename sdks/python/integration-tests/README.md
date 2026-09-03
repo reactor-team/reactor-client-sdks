@@ -82,28 +82,17 @@ REACTOR_LOCAL=true REACTOR_API_URL=http://localhost:8080 REACTOR_MODEL_NAME=my-m
 suite documents: nothing here can exercise the API-key-to-JWT exchange or an
 auth-failure error path (`UnauthorizedError`, ...) against a local runtime.
 
-## Known issue: worked around, not fixed
+## Issues found building this suite
 
-Found by running this suite against prod for real. Two other issues this
-suite found along the way are fixed outright, not worked around — session
+Found by running this suite against prod for real, all fixed. Session
 adoption needing a shared token (see `test_multi_connection.py`'s module
-docstring) and `Reactor.close()` abandoning in-flight operations (fixed in
-#139; see `test_concurrency_and_races.py`'s module docstring).
-
-**`reactor/echo` session-state leak (external, not this repo — REA-5931).**
-See `sdks/js/integration-tests/README.md`'s own section on this — production
-has carried per-session model state (`effect`, `intensity`, `_overlay`)
-across sessions that should be isolated, confirmed via Grafana/Loki to not be
-a timing race or a bug in this repo. A shared prod worker in that state
-serves a session's `main_video` whatever a *different*, prior session last
-set, regardless of what this session itself pushes or sends. Left as a real,
-failing pixel assertion, this would flakily block every PR touching
-sdks/python on a bug this repo can't fix — so the pixel assertions it breaks
-are disabled instead (not deleted), the same call
-`sdks/js/integration-tests/tests/tracks-and-upload.spec.ts` already made:
-`test_tracks_and_frames.py::test_set_effect_invert_is_visible_on_main_video`,
-`test_multi_connection.py::test_joiner_observes_state_the_creator_set`, and
-`test_upload_and_conditioning.py::test_set_overlay_image_at_full_strength_dominates_output`.
-Each still sends its command and waits for frames to arrive — only the
-model-side visual verification is off — so a real regression in the SDK's
-own send/receive path still fails these tests.
+docstring), `Reactor.close()` abandoning in-flight operations (fixed in
+#139; see `test_concurrency_and_races.py`'s module docstring), and
+`reactor/echo`'s own per-session state leak (`effect`, `intensity`,
+`_overlay` bleeding across sessions that should be isolated — REA-5931,
+fixed upstream in `reactor-models#329`, confirmed live in prod). The pixel
+assertions the leak used to break — `test_tracks_and_frames.py`'s
+`test_set_effect_invert_is_visible_on_main_video`,
+`test_multi_connection.py`'s `test_joiner_observes_state_the_creator_set`,
+and `test_upload_and_conditioning.py`'s
+`test_set_overlay_image_at_full_strength_dominates_output` — are back on.
