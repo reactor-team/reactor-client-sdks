@@ -113,7 +113,9 @@ async def test_capture_time_us_on_an_audio_track_is_refused(reactor: Reactor) ->
         mic.unpublish()
 
 
-async def test_sample_rate_on_a_video_track_is_merely_redundant_not_an_error(reactor: Reactor) -> None:
+async def test_sample_rate_on_a_video_track_is_merely_redundant_not_an_error(
+    reactor: Reactor,
+) -> None:
     # The asymmetric case the two tests above imply but don't themselves
     # prove: an audio-only keyword on a video track is let through when
     # ignoring it loses nothing, per the same docstring. Verified directly
