@@ -62,7 +62,7 @@ Six files, one per concern, each named after the Python/JS file it mirrors:
   enforced per API key across whatever suite is running against it, not per
   test or per client — confirmed while building the Python suite this one
   mirrors, and true here for the same reason. `paced_connect()` is a
-  process-wide gate spacing every session-creating `connect()` at least 8s
+  process-wide gate spacing every session-creating `connect()` at least 700ms
   apart; every test routes through it rather than calling `connect()`
   directly. `RateLimitedError` also gets one retry as a second line of
   defense — the pacing gate is the primary one.

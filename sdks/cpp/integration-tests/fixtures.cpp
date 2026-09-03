@@ -105,7 +105,10 @@ std::string mint_jwt(const std::string& model_name) {
 namespace {
 
 // Session-creation pacing, process-wide. See paced_connect's own docstring.
-constexpr auto SESSION_CREATE_INTERVAL = std::chrono::milliseconds(8000);
+// 8000ms (~7.5/min) matched the old 10/min quota; now 100/min, so 700ms
+// (~86/min) leaves real margin without being needlessly conservative —
+// RateLimitedError still gets one retry as a second line of defense.
+constexpr auto SESSION_CREATE_INTERVAL = std::chrono::milliseconds(700);
 constexpr int MAX_CONNECT_ATTEMPTS = 3;
 
 // A process-wide gate, deliberately: the quota it paces against is per API key
