@@ -73,21 +73,3 @@ error paths (`UnauthorizedError`, ...) against a local runtime. If this suite ev
 moves its bulk (effects, tracks, commands, clips) to a local runtime for
 per-PR speed, keep a small auth-specific slice pointed at production — there's no
 other way to reach that code path.
-
-## Known, currently-failing issue (external, not this repo)
-
-`reactor/echo` in production carries per-session model state (`effect`,
-`intensity`, `_overlay`) across sessions that should be isolated from each other.
-Reproduced by uploading a solid-color overlay image at full strength in one
-session, then observing a brand-new session — different session id, different
-published color — come back showing that same overlay, with no client-side way to
-clear it (`echo.py` has no "clear overlay" command). `echo.py`'s own
-`session_started` hook does reset this state correctly, so the leak is in the
-coordinator/runtime's session-to-worker lifecycle (private infra, outside both this
-repo and `reactor-runtime`) rather than in the model or the SDK.
-
-Once a shared worker gets into this state, every session that lands on it fails
-`tracks-and-upload.spec.ts`'s effect/overlay assertions regardless of what that
-session itself did. Left as real (failing) assertions rather than skipped, so this
-stays visible in CI until it's fixed upstream — a flaky-looking failure there is
-this, not a new regression, until proven otherwise.

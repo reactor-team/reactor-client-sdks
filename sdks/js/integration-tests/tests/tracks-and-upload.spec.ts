@@ -1,18 +1,5 @@
 import { test, expect } from '@playwright/test';
 
-// KNOWN BUG (REA-5931): `reactor/echo` in production carries per-session
-// model state (`effect`, `intensity`, `_overlay`) across sessions that
-// should be isolated — reproduced by uploading a solid-color overlay at full
-// strength in one session, then seeing a brand-new session (different
-// session id, different published color) come back showing that same
-// overlay, with no client-side way to clear it. Confirmed via Grafana/Loki
-// that the model's `@session_started` hook never fires on a shared,
-// already-warm pod, across every session sampled — not a timing race, not
-// this repo's bug (model and open-source runtime code both audited clean).
-// See REA-5931 for the full trace. The assertions this leak breaks are
-// disabled below (not deleted) until that's fixed upstream — left failing,
-// they'd block every PR touching sdks/js on a bug this repo can't fix.
-
 const NAME = 'tracks';
 
 // Guarantees every session this file opens ends up disconnected server-side
@@ -59,16 +46,28 @@ test('publishTrack() puts a sender behind the slot; pause/resume/unpublish all r
 
   await test.step('grayscale actually desaturates the echoed frame — R, G, B nearly equal', async () => {
     await page.evaluate((name) => window.__harness.get(name).sendCommand('set_effect', { effect: 'grayscale' }), NAME);
-    // Pixel assertion disabled — REA-5931: a shared pod can already be
-    // carrying a *different* session's effect/overlay, so this reads
-    // whatever that session left behind rather than what this one just set.
-    // Still sends the command, keeping coverage that the SDK's own send path
-    // works; only the model-side visual verification is off.
+    await expect
+      .poll(
+        () =>
+          page
+            .evaluate((name) => window.__harness.samplePixelFor(name, 'main_video'), NAME)
+            .then(({ r, g, b }) => Math.abs(r - g) < 12 && Math.abs(g - b) < 12),
+        { timeout: 10_000 },
+      )
+      .toBe(true);
   });
 
   await test.step('invert flips a saturated red input toward cyan', async () => {
     await page.evaluate((name) => window.__harness.get(name).sendCommand('set_effect', { effect: 'invert' }), NAME);
-    // Pixel assertion disabled — REA-5931, same reason as grayscale above.
+    await expect
+      .poll(
+        () =>
+          page.evaluate((name) => window.__harness.samplePixelFor(name, 'main_video'), NAME).then(
+            ({ r, g, b }) => r < 120 && g > 150 && b > 150,
+          ),
+        { timeout: 10_000 },
+      )
+      .toBe(true);
   });
 
   await page.evaluate((name) => window.__harness.get(name).sendCommand('set_effect', { effect: 'none' }), NAME);
@@ -155,6 +154,8 @@ test('uploadFile() + a file-taking command actually changes what the model rende
     )
     .toBe(true);
 
+  const before = await page.evaluate((name) => window.__harness.samplePixelFor(name, 'main_video'), NAME);
+
   await test.step('uploadFile() resolves a FileRef the SDK recognizes', async () => {
     const isRef = await page.evaluate(async (name) => {
       const reactor = window.__harness.get(name);
@@ -167,7 +168,7 @@ test('uploadFile() + a file-taking command actually changes what the model rende
     expect(isRef).toBe(true);
   });
 
-  await test.step('set_overlay_image with that FileRef is accepted', async () => {
+  await test.step('set_overlay_image with that FileRef is accepted and visibly blends in', async () => {
     await page.evaluate((name) => {
       const ref = (window as unknown as { __lastRef: unknown }).__lastRef;
 
@@ -175,9 +176,9 @@ test('uploadFile() + a file-taking command actually changes what the model rende
         .get(name)
         .sendCommand('set_overlay_image', { overlay_image: ref, overlay_strength: 1 });
     }, NAME);
-    // "...and visibly blends in" pixel assertion disabled — REA-5931: a
-    // shared pod can already be carrying a *different* session's overlay
-    // before this command even runs, so this session's own pre-overlay
-    // frame isn't a reliable baseline to diff against.
+
+    await expect
+      .poll(() => page.evaluate((name) => window.__harness.samplePixelFor(name, 'main_video'), NAME))
+      .not.toEqual(before);
   });
 });
