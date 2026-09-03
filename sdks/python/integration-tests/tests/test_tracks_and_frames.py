@@ -123,18 +123,22 @@ async def test_pause_stops_delivery_and_resume_restarts_it(reactor: Reactor) -> 
 async def test_frame_trailer_arrives_with_the_documented_shape(reactor: Reactor) -> None:
     """`on_frame` hands (frame, frame_id, timestamp_us, user_data) for every frame.
 
-    Content, not just shape, would be the better test — but confirmed
-    empirically across two independent live runs, `reactor/echo`'s own
-    `main_video` output is not a reliable source of either: `frame_id` was
-    `0` for every frame both times (plausible — `echo_model.py`'s `run()`
-    calls `self.emit()` with no per-frame id, and it doesn't mirror a
-    client's own pushed `user_data`/id back either, so there may be nothing
-    the runtime *could* stamp here), but `timestamp_us` was real (nonzero)
-    the first run and all zero the second, run against otherwise-identical
-    code. That inconsistency, not this test, is the finding — asserting on
-    either field's content would be asserting something about backend
-    behaviour this suite has already seen be untrue. What's left to check
-    honestly is the shape itself: four arguments, real types, one per frame.
+    Content, not just shape, would be the better test for `frame_id`/
+    `timestamp_us` — but confirmed empirically across two independent live
+    runs, `reactor/echo`'s own `main_video` output is not a reliable source
+    of either: `frame_id` was `0` for every frame both times (plausible —
+    `echo_model.py`'s `run()` calls `self.emit()` with no per-frame id), but
+    `timestamp_us` was real (nonzero) the first run and all zero the second,
+    run against otherwise-identical code. That inconsistency, not this test,
+    is the finding — asserting on either field's content would be asserting
+    something about backend behaviour this suite has already seen be untrue.
+    What's left to check honestly for those two fields is the shape itself:
+    real types, one per frame.
+
+    `user_data` is different: as of echo 1.7.5 (REA-5972) it does mirror
+    back whatever the sender attached, via `TrackPayload` — see
+    `test_frame_user_data_loops_back_on_main_video` for the content
+    assertion.
     """
     webcam = await reactor.publish_track("webcam")
     main_video = reactor.track("main_video")
@@ -153,4 +157,40 @@ async def test_frame_trailer_arrives_with_the_documented_shape(reactor: Reactor)
         assert all(isinstance(ud, bytes) for _, _, ud in trailers)
     finally:
         pump.cancel()
+        webcam.unpublish()
+
+
+async def test_frame_user_data_loops_back_on_main_video(reactor: Reactor) -> None:
+    """echo 1.7.5+ (REA-5972) tags main_video with webcam's own user_data.
+
+    Previously `echo_model.py`'s `run()` emitted a bare pixel array, so
+    `main_video`'s `user_data` never carried anything a client pushed — see
+    `test_frame_trailer_arrives_with_the_documented_shape`'s note above.
+    Fixed by wrapping the emitted frame in `TrackPayload(processed,
+    metadata=frames[0].metadata)`. Each pushed frame here carries a distinct
+    tag so a stale/repeated value would fail the content check below, not
+    just a presence check.
+    """
+    webcam = await reactor.publish_track("webcam")
+    main_video = reactor.track("main_video")
+
+    tags: list[bytes] = []
+
+    @main_video.on_frame
+    def collect(frame, frame_id, timestamp_us, user_data) -> None:
+        tags.append(user_data)
+
+    frame = solid_rgb_frame(WIDTH, HEIGHT, (10, 20, 30))
+    end = asyncio.get_running_loop().time() + 6.0
+    counter = 0
+    try:
+        while asyncio.get_running_loop().time() < end and len(tags) < 5:
+            counter += 1
+            webcam.push_frame(frame, user_data=f"tag-{counter}".encode())
+            await asyncio.sleep(1 / FPS)
+
+        tagged = [t for t in tags if t]
+        assert tagged, "no frame came back with user_data attached"
+        assert all(t.startswith(b"tag-") for t in tagged), tagged[:5]
+    finally:
         webcam.unpublish()
