@@ -14,6 +14,7 @@
 #include <mutex>
 #include <reactor/errors.hpp>
 #include <reactor/reactor.hpp>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -148,13 +149,17 @@ TEST_CASE("pause stops delivery and resume restarts it") {
 }
 
 TEST_CASE("frame trailer arrives with the documented shape") {
-  // Content, not just shape, would be the better test — but the Python suite
-  // this mirrors confirmed empirically, across two independent live runs,
-  // that reactor/echo's own main_video output is not a reliable source of
-  // either: frame_id was 0 for every frame both times, and timestamp_us was
-  // real one run and all zero the next, against otherwise-identical code.
-  // What's left to check honestly is that the trailer fields are readable at
-  // all, for every frame, without asserting their content.
+  // Content, not just shape, would be the better test for frame_id/
+  // timestamp_us — but the Python suite this mirrors confirmed empirically,
+  // across two independent live runs, that reactor/echo's own main_video
+  // output is not a reliable source of either: frame_id was 0 for every
+  // frame both times, and timestamp_us was real one run and all zero the
+  // next, against otherwise-identical code. What's left to check honestly
+  // for those two fields is that they're readable at all, for every frame.
+  //
+  // user_data is different: as of echo 1.7.5 (REA-5972) it does mirror back
+  // whatever the sender attached, via TrackPayload — see the content
+  // assertion in the next test case.
   integration::ConnectedReactor reactor;
   auto webcam = reactor->track("webcam");
   webcam.publish().get();
@@ -186,6 +191,67 @@ TEST_CASE("frame trailer arrives with the documented shape") {
         return trailers_seen >= 5;
       },
       6.0);
+
+  webcam.unpublish();
+}
+
+TEST_CASE("frame user_data loops back on main_video (REA-5972)") {
+  // reactor/echo 1.7.5+ tags main_video with webcam's own user_data, via
+  // TrackPayload — previously echo_model.py's run() emitted a bare pixel
+  // array, so main_video's user_data never carried anything a client pushed
+  // (see the previous test case's note). Each pushed frame here carries a
+  // distinct tag, so a stale/repeated value fails the content check below,
+  // not just a presence check.
+  integration::ConnectedReactor reactor;
+  auto webcam = reactor->track("webcam");
+  webcam.publish().get();
+  auto main_video = reactor->track("main_video");
+
+  const auto bgra = integration::solid_bgra_frame(WIDTH, HEIGHT, 10, 20, 30);
+
+  std::mutex mutex;
+  std::vector<std::string> tags;
+  auto subscription = main_video.on_frame([&](const reactor::VideoFrame& frame) {
+    std::string tag(reinterpret_cast<const char*>(frame.user_data.begin()), frame.user_data.size);
+
+    const std::lock_guard<std::mutex> lock(mutex);
+    tags.push_back(std::move(tag));
+  });
+
+  int counter = 0;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+  while (std::chrono::steady_clock::now() < deadline) {
+    {
+      const std::lock_guard<std::mutex> lock(mutex);
+      if (tags.size() >= 5) {
+        break;
+      }
+    }
+
+    ++counter;
+    const std::string tag = "tag-" + std::to_string(counter);
+    reactor::Track::FrameOptions options;
+    options.user_data =
+        reactor::Bytes{reinterpret_cast<const std::uint8_t*>(tag.data()), tag.size()};
+    webcam.push_frame(reactor::Bytes{bgra.data(), bgra.size()}, WIDTH, HEIGHT, options);
+    std::this_thread::sleep_for(std::chrono::milliseconds(33));  // ~30fps
+  }
+
+  std::vector<std::string> tagged;
+  {
+    const std::lock_guard<std::mutex> lock(mutex);
+    for (const auto& t : tags) {
+      if (!t.empty()) {
+        tagged.push_back(t);
+      }
+    }
+  }
+
+  REQUIRE_FALSE(tagged.empty());
+  for (const auto& t : tagged) {
+    INFO("tag: " << t);
+    REQUIRE(t.rfind("tag-", 0) == 0);
+  }
 
   webcam.unpublish();
 }
