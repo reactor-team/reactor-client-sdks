@@ -86,7 +86,9 @@ test('connect walks disconnected -> connecting -> waiting -> ready, and getters 
     }, NAME);
     const names = (s: typeof cached) => Object.keys(s?.paths ?? {}).sort();
 
-    expect(names(requested)).toEqual(['/events/set_effect', '/events/set_intensity', '/events/set_overlay_image']);
+    expect(names(requested)).toEqual(
+      ['/events/set_effect', '/events/set_intensity', '/events/set_overlay_image', '/events/get_status'].sort(),
+    );
     expect(names(cached)).toEqual(names(requested));
   });
 
@@ -147,6 +149,28 @@ test('sendCommand() round-trips a reply, and the model broadcasts the matching e
 
     expect(reply).toBeUndefined();
   });
+});
+
+test('sendCommand(get_status) returns correlated data (REA-5973)', async ({ page }) => {
+  // echo 1.8.0+: the first echo command whose reply actually carries data,
+  // rather than undefined — every other command (set_effect, set_intensity,
+  // set_overlay_image) resolves with no reply body.
+  await page.goto('/');
+  await page.evaluate(async (name) => {
+    window.__harness.create(name);
+    await window.__harness.get(name).connect(await window.__harness.fetchToken());
+  }, NAME);
+
+  const first = await page.evaluate((name) => window.__harness.get(name).sendCommand('get_status', {}), NAME);
+
+  expect(first).toEqual({ type: 'status', data: { effect: 'none', intensity: 1 } });
+
+  await page.evaluate((name) => window.__harness.get(name).sendCommand('set_effect', { effect: 'invert' }), NAME);
+  await page.evaluate((name) => window.__harness.get(name).sendCommand('set_intensity', { intensity: 0.42 }), NAME);
+
+  const updated = await page.evaluate((name) => window.__harness.get(name).sendCommand('get_status', {}), NAME);
+
+  expect(updated).toEqual({ type: 'status', data: { effect: 'invert', intensity: 0.42 } });
 });
 
 // Genuinely testing "reconnect() resumes a session the transport dropped
