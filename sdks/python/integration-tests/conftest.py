@@ -201,6 +201,20 @@ def solid_rgb_frame(width: int, height: int, color: tuple[int, int, int]) -> np.
     return frame
 
 
+def sine_wave_samples(
+    num_samples: int, *, sample_rate: int = 48_000, num_channels: int = 1, frequency_hz: float = 440.0
+) -> np.ndarray:
+    """`num_samples` of a `frequency_hz` tone, shape (num_samples, num_channels) —
+    exactly what an audio `Track.push_frame` accepts and `Track.on_frame` delivers.
+
+    A4, comfortably audible and easy to reason about — reactor/echo passes audio
+    through unchanged, so nothing here rides on the exact frequency.
+    """
+    t = np.arange(num_samples) / sample_rate
+    tone = (np.sin(2 * np.pi * frequency_hz * t) * 8000).astype(np.int16)  # headroom under int16 max
+    return np.tile(tone[:, None], (1, num_channels))
+
+
 def assert_dominant_color(
     frame: np.ndarray, expected: tuple[int, int, int], *, tolerance: int = 30
 ) -> None:
