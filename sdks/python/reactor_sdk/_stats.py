@@ -127,7 +127,8 @@ class ConnectionStats:
     incoming bitrate yet is not an idle one.
     """
 
-    #: Round-trip time in milliseconds, from the candidate pair ICE nominated.
+    #: Round-trip time in milliseconds, from the candidate pair carrying the
+    #: media — the one ICE nominated and that succeeded.
     #: Falls back to the largest any send stream measured. `None` until one of
     #: them has a reading.
     rtt_ms: float | None
@@ -142,7 +143,7 @@ class ConnectionStats:
     #: Receive rate over the window since the previous `get_stats()`, in bits per
     #: second.
     #:
-    #: Measured on the nominated candidate pair, so it covers everything that
+    #: Measured on the candidate pair carrying the media, so it covers everything
     #: pair carried — RTP, RTCP and the data channel — which is what the browser
     #: SDK's `incomingBitrate` measures.
     #:
@@ -166,7 +167,8 @@ class ConnectionStats:
     #: Frames per second on the received video stream. `None` with no video
     #: stream, and until the engine has measured a window's worth.
     frames_per_second: float | None
-    #: Transport type of the nominated pair's local candidate: ``"host"``,
+    #: Transport type of the local candidate on the pair carrying the media:
+    #: ``"host"``,
     #: ``"srflx"``, ``"prflx"`` or ``"relay"``. ``"relay"`` means the media is
     #: going through a TURN server, which is the first thing worth knowing when
     #: latency is bad. `None` before ICE has selected anything.

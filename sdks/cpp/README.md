@@ -284,8 +284,9 @@ if (stats.rtt_ms) {
 
 These are the same numbers the
 [JS SDK](https://docs.reactor.inc/sdk-reference/types#connectionstats) reports for
-the same connection: the same candidate pair (the one ICE nominated), the same
-byte counters, the same video stream. Two deliberate differences:
+the same connection: the same candidate pair (the one carrying media — nominated
+*and* succeeded), the same byte counters, the same video stream. Two deliberate
+differences:
 
 - **An audio-only session still reports `jitter_s` and `packet_loss_ratio`.** Both
   come from the received video stream, as in the browser; with no video stream

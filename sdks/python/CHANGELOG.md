@@ -42,12 +42,13 @@ matches what the JS SDK reports for the same connection.
   session still gets both, falling back to the streams there are, where the JS
   SDK reports nothing.
 
-- **The bitrates are now measured on the candidate pair ICE nominated**, again
+- **The bitrates are now measured on the candidate pair carrying the media**
+  (nominated and succeeded), again
   matching the JS SDK: they cover everything that pair carried, RTCP and data
   channel included, where before they summed RTP payload and read slightly low.
   A consequence: they are empty until ICE has nominated a pair.
 
-- **`rtt_ms` comes from the nominated pair** rather than from the
+- **`rtt_ms` comes from that same pair** rather than from the
   highest-priority succeeded one, which was an inference standing in for the
   flag the engine now reports.
 

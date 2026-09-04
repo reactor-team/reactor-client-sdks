@@ -11,7 +11,7 @@
 // here is the shape, and the decode behind `Reactor::get_stats`.
 //
 // This reports what the browser SDK's `getStats()` reports, field for field:
-// the same candidate pair (the nominated one), the same byte counters, the same
+// the same candidate pair (the one carrying media), the same byte counters, the same
 // video stream. `reactor-webrtc` 0.15 was what made that possible — before it,
 // `candidate_type`, the available-bitrate estimates and `frames_per_second` did
 // not cross the C ABI at all, and nothing said which stream was video.
@@ -130,7 +130,8 @@ struct CandidatePair {
 /// incoming bitrate yet is not an idle one. Hence the optionals rather than a
 /// sentinel.
 struct ConnectionStats {
-  /// Round-trip time in milliseconds, from the candidate pair ICE nominated.
+  /// Round-trip time in milliseconds, from the candidate pair carrying the
+  /// media — the one ICE nominated and that succeeded.
   ///
   /// Falls back to the largest RTT any send stream measured — which comes from
   /// the far end's RTCP report about us, so it too takes a moment to appear.
@@ -151,7 +152,7 @@ struct ConnectionStats {
   /// Receive rate over the window since the previous `get_stats()`, in bits per
   /// second.
   ///
-  /// Measured on the nominated candidate pair, so it covers everything that pair
+  /// Measured on the candidate pair carrying the media, so it covers everything it
   /// carried — RTP, RTCP and the data channel — which is what the browser SDK's
   /// `incomingBitrate` measures.
   ///
@@ -180,7 +181,8 @@ struct ConnectionStats {
   /// and until the engine has measured a window's worth.
   std::optional<double> frames_per_second;
 
-  /// Transport type of the nominated pair's local candidate: `"host"`, `"srflx"`,
+  /// Transport type of the local candidate on the pair carrying the media:
+  /// `"host"`, `"srflx"`,
   /// `"prflx"` or `"relay"`.
   ///
   /// `"relay"` means the media is going through a TURN server, which is the first

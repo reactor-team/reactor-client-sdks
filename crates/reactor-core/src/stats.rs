@@ -21,7 +21,10 @@
 //! deliberate:
 //!
 //! * **The pair is the *nominated* one**, not the highest-priority `succeeded`
-//!   one. Only the nominated pair carries traffic; the rest report zeroes.
+//!   one — and nominated *and* succeeded, which is what the browser requires
+//!   too. A pair stays nominated after it fails, so `nominated` alone picks a
+//!   dead path during an ICE restart. Only the live pair carries traffic; the
+//!   rest report zeroes.
 //! * **The bitrates come from that pair's byte counters**, so they cover
 //!   everything it carried — RTCP and data channel included — which is what the
 //!   browser measures. Summing the per-stream RTP counters instead read low.
@@ -36,7 +39,7 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 
-use crate::peer::{CandidatePairStats, StreamKind, TransportStats};
+use crate::peer::{CandidatePairState, CandidatePairStats, StreamKind, TransportStats};
 
 /// The shortest window a rate is derived over, in milliseconds.
 ///
@@ -62,10 +65,11 @@ pub const MIN_RATE_WINDOW_MS: f64 = 200.0;
 pub struct ConnectionStats {
     /// Round-trip time in milliseconds, from the selected ICE candidate pair.
     ///
-    /// "Selected" is the pair ICE nominated. With no nominated pair reporting an
-    /// RTT yet, this falls back to the largest any send stream measured — which
-    /// comes from the far end's RTCP report about us, so it too takes a moment to
-    /// appear. `None` until one of them has a reading.
+    /// "Selected" is the pair carrying the media: nominated and succeeded. With
+    /// no such pair reporting an RTT yet, this falls back to the largest any
+    /// send stream measured — the far end's RTCP report about us, which is a
+    /// current reading where a dead pair's would be stale. `None` until one of
+    /// them has one.
     pub rtt_ms: Option<f64>,
 
     /// Jitter on the received video stream, in seconds.
@@ -87,12 +91,12 @@ pub struct ConnectionStats {
 
     /// Receive rate over the window since the previous sample, in bits per second.
     ///
-    /// Measured on the nominated candidate pair, so it covers everything that
+    /// Measured on the candidate pair carrying the media, so it covers everything
     /// pair carried — RTP, RTCP and the data channel — which is what the browser
     /// SDK's `incomingBitrate` measures.
     ///
     /// `None` on the first sample, when the window was shorter than
-    /// [`MIN_RATE_WINDOW_MS`], when there is no nominated pair yet, or when the
+    /// [`MIN_RATE_WINDOW_MS`], when no pair is carrying media yet, or when the
     /// connection changed under it: a reconnect nominates a different pair and
     /// brings up new SSRCs, both of whose counters restart from zero, and
     /// differencing across that would report a large negative rate.
@@ -103,7 +107,7 @@ pub struct ConnectionStats {
     pub outgoing_bitrate_bps: Option<f64>,
 
     /// The congestion controller's own estimate of what the path can carry, in
-    /// bits per second, from the nominated pair.
+    /// bits per second, from the pair carrying the media.
     ///
     /// Not a measurement of what is flowing — compare
     /// [`ConnectionStats::incoming_bitrate_bps`], which is. `None` until the
@@ -125,7 +129,8 @@ pub struct ConnectionStats {
     /// stream, and until the engine has measured a window's worth.
     pub frames_per_second: Option<f64>,
 
-    /// Transport type of the nominated pair's local candidate: `"host"`,
+    /// Transport type of the local candidate on the pair carrying the media:
+    /// `"host"`,
     /// `"srflx"`, `"prflx"` or `"relay"`.
     ///
     /// `"relay"` means the media is going through a TURN server, which is the
@@ -403,39 +408,45 @@ impl StatsSampler {
             });
         }
 
-        let selected = select_pair(&raw.candidate_pairs);
-        // The nominated pair, or nothing. Every pair carries a candidate type,
-        // including the ones ICE is still checking — so reading it off the
-        // fallback would answer "host" during setup and then change to "relay"
-        // once ICE nominated a relayed pair. A caller polling through connection
-        // setup would see a path that was never selected. The browser reports
-        // nothing until nomination, and so does this.
-        let nominated = selected.filter(|p| p.nominated);
-        stats.candidate_type = nominated.and_then(|p| p.local_candidate_type.as_str());
-        stats.relay_protocol = nominated.and_then(|p| p.local_relay_protocol.as_str());
-        // The state and the RTT are about how far ICE got, so they do read the
-        // fallback: "in-progress" is a useful answer where a candidate type is
-        // a misleading one.
-        stats.candidate_pair_state = selected.map(|p| p.state.as_str());
-        stats.rtt_ms = selected
+        // Everything that describes the path media is *on* comes from the live
+        // pair and from nothing else — see `live_pair`. Every pair carries a
+        // candidate type, including ones ICE is still checking and ones that have
+        // died, so reading any other pair would answer about a path that is not
+        // carrying anything.
+        let live = live_pair(&raw.candidate_pairs);
+        stats.candidate_type = live.and_then(|p| p.local_candidate_type.as_str());
+        stats.relay_protocol = live.and_then(|p| p.local_relay_protocol.as_str());
+        stats.available_incoming_bitrate_bps = live
+            .map(|p| p.available_incoming_bitrate_bps)
+            .filter(|b| b.is_finite() && *b > 0.0);
+        stats.available_outgoing_bitrate_bps = live
+            .map(|p| p.available_outgoing_bitrate_bps)
+            .filter(|b| b.is_finite() && *b > 0.0);
+
+        // The state answers "how far did ICE get", which is worth answering even
+        // when nothing is carrying yet — so it does read the highest-priority
+        // pair when there is no live one. `"in-progress"` is a useful answer
+        // where a candidate type would be a misleading one.
+        stats.candidate_pair_state = live
+            .or_else(|| raw.candidate_pairs.iter().max_by_key(|p| p.priority))
+            .map(|p| p.state.as_str());
+
+        // The RTT falls back to the send streams' rather than to another pair's:
+        // a dead pair's last reading is stale, where the RTCP report the send
+        // stream carries is current.
+        stats.rtt_ms = live
             .filter(|p| {
                 p.current_round_trip_time_s.is_finite() && p.current_round_trip_time_s > 0.0
             })
             .map(|p| p.current_round_trip_time_s * 1000.0)
             .or(outbound_rtt_s.map(|s| s * 1000.0));
-        stats.available_incoming_bitrate_bps = nominated
-            .map(|p| p.available_incoming_bitrate_bps)
-            .filter(|b| b.is_finite() && *b > 0.0);
-        stats.available_outgoing_bitrate_bps = nominated
-            .map(|p| p.available_outgoing_bitrate_bps)
-            .filter(|b| b.is_finite() && *b > 0.0);
 
         // ── Rates, against the previous sample ──────────────────────────────
         //
-        // From the nominated pair's counters, which is what the browser measures.
-        // Nothing to measure without one: an un-nominated pair carries no traffic,
-        // so there is no rate to report rather than a rate of zero.
-        let Some(pair) = nominated else {
+        // From the live pair's counters, which is what the browser measures.
+        // Nothing to measure without one: no other pair is carrying traffic, so
+        // there is no rate to report rather than a rate of zero.
+        let Some(pair) = live else {
             return stats;
         };
         let streams: Vec<u32> = raw
@@ -509,17 +520,25 @@ fn rate_bps(previous_bytes: u64, current_bytes: u64, elapsed_ms: f64) -> f64 {
     delta_bits / elapsed_ms * 1000.0
 }
 
-/// The pair the scalars should come from: the one ICE nominated.
+/// The pair that is actually carrying media: nominated *and* succeeded.
 ///
-/// Falling back to the highest-priority pair in any state means a still-
-/// connecting transport reports the state it is actually in rather than `None`,
-/// which reads as "no ICE at all". Anything that needs traffic counters re-checks
-/// `nominated` — a fallback pair carries nothing.
-fn select_pair(pairs: &[CandidatePairStats]) -> Option<&CandidatePairStats> {
+/// Both halves are load-bearing, and the browser extractor requires both
+/// (`sdks/js/src/internal/stats.ts`). `nominated` alone is not enough: a pair
+/// stays nominated after it fails, so during an ICE restart the old dead pair and
+/// the new live one are both nominated at once. Selecting on `nominated` alone
+/// would take whichever came first in the report and answer RTT, candidate type,
+/// available bitrate and the derived rates from a path carrying nothing.
+///
+/// There is no fallback here on purpose. A pair ICE has not settled on describes
+/// a path that is not carrying anything, and reporting its candidate type or its
+/// byte counters is worse than reporting nothing — the caller cannot tell the
+/// difference, and the answer changes under them when nomination lands. What
+/// *is* worth answering without a live pair is how far ICE got, and `sample`
+/// reads the highest-priority pair for that one field alone.
+fn live_pair(pairs: &[CandidatePairStats]) -> Option<&CandidatePairStats> {
     pairs
         .iter()
-        .find(|p| p.nominated)
-        .or_else(|| pairs.iter().max_by_key(|p| p.priority))
+        .find(|p| p.nominated && p.state == CandidatePairState::Succeeded)
 }
 
 #[cfg(test)]
@@ -527,9 +546,7 @@ mod tests {
     use super::*;
     // Only the tests build raw snapshots; the module itself reads them through
     // `TransportStats`, so importing these at the top would be an unused import.
-    use crate::peer::{
-        CandidatePairState, IceCandidateType, InboundRtpStats, OutboundRtpStats, RelayProtocol,
-    };
+    use crate::peer::{IceCandidateType, InboundRtpStats, OutboundRtpStats, RelayProtocol};
 
     fn inbound(ssrc: u32, bytes: u64, packets: u32, lost: i32) -> InboundRtpStats {
         InboundRtpStats {
@@ -567,7 +584,7 @@ mod tests {
         }
     }
 
-    /// The nominated pair, carrying `received`/`sent` bytes.
+    /// The live pair — nominated *and* succeeded — carrying `received`/`sent` bytes.
     fn nominated(priority: u64, received: u64, sent: u64) -> CandidatePairStats {
         CandidatePairStats {
             current_round_trip_time_s: 0.021,
@@ -591,7 +608,7 @@ mod tests {
         }
     }
 
-    // ── Rates, on the nominated pair's counters ───────────────────────────────
+    // ── Rates, on the live pair's counters ────────────────────────────────────
 
     #[test]
     fn the_first_sample_reports_counters_but_no_rates() {
@@ -796,6 +813,84 @@ mod tests {
         assert_eq!(stats.candidate_type, Some("host"));
         // Not relayed is the absence of a protocol, not a protocol.
         assert_eq!(stats.relay_protocol, None);
+    }
+
+    /// The ICE-restart window: the old pair is still nominated and now failed,
+    /// the new one is nominated and succeeded, and both are in the report.
+    ///
+    /// Selecting on `nominated` alone took whichever came first — here the dead
+    /// one — and answered RTT, candidate type, available bitrate and the byte
+    /// counters from a path carrying nothing. Found by the automated review on
+    /// #148.
+    #[test]
+    fn a_nominated_pair_that_died_does_not_shadow_the_live_one() {
+        let sampler = StatsSampler::new();
+        let raw = TransportStats {
+            candidate_pairs: vec![
+                // First in the report, and dead. `nominated` survives the
+                // failure, which is exactly what makes this shadowing possible.
+                CandidatePairStats {
+                    current_round_trip_time_s: 0.400,
+                    priority: 1_000,
+                    state: CandidatePairState::Failed,
+                    nominated: true,
+                    local_candidate_type: IceCandidateType::Relay,
+                    local_relay_protocol: RelayProtocol::Tls,
+                    available_incoming_bitrate_bps: 50_000.0,
+                    bytes_received: 900_000,
+                    ..CandidatePairStats::default()
+                },
+                // The one actually carrying media.
+                CandidatePairStats {
+                    current_round_trip_time_s: 0.015,
+                    priority: 10,
+                    state: CandidatePairState::Succeeded,
+                    nominated: true,
+                    local_candidate_type: IceCandidateType::Host,
+                    available_incoming_bitrate_bps: 4_000_000.0,
+                    bytes_received: 1_000,
+                    ..CandidatePairStats::default()
+                },
+            ],
+            ..TransportStats::default()
+        };
+
+        let stats = sampler.sample(&raw, 1_000.0);
+
+        assert_eq!(stats.rtt_ms, Some(15.0), "read the dead pair's stale RTT");
+        assert_eq!(stats.candidate_type, Some("host"));
+        assert_eq!(stats.relay_protocol, None);
+        assert_eq!(stats.available_incoming_bitrate_bps, Some(4_000_000.0));
+        assert_eq!(stats.candidate_pair_state, Some("succeeded"));
+    }
+
+    /// A pair that is nominated and nothing else is not a path. Before this, its
+    /// counters became the rate baseline and its candidate type became the
+    /// answer.
+    #[test]
+    fn a_nominated_pair_that_has_not_succeeded_is_not_the_live_one() {
+        let sampler = StatsSampler::new();
+        let at = |received| TransportStats {
+            candidate_pairs: vec![CandidatePairStats {
+                current_round_trip_time_s: 0.05,
+                priority: 9,
+                state: CandidatePairState::InProgress,
+                nominated: true,
+                local_candidate_type: IceCandidateType::Host,
+                bytes_received: received,
+                ..CandidatePairStats::default()
+            }],
+            ..TransportStats::default()
+        };
+
+        sampler.sample(&at(1_000), 1_000.0);
+        let stats = sampler.sample(&at(2_000), 2_000.0);
+
+        assert_eq!(stats.candidate_type, None);
+        assert_eq!(stats.rtt_ms, None);
+        assert_eq!(stats.incoming_bitrate_bps, None);
+        // The state still answers how far ICE got.
+        assert_eq!(stats.candidate_pair_state, Some("in-progress"));
     }
 
     /// A candidate type read before nomination is a path that may never be

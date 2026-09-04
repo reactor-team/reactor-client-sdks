@@ -488,10 +488,10 @@ void reactor_request_schema(
  * result_json is an object:
  *
  *   {
- *     "rtt_ms":               ms, from the ICE candidate pair ICE nominated
+ *     "rtt_ms":               ms, from the pair carrying the media
  *     "jitter_s":             seconds, on the received video stream
  *     "packet_loss_ratio":    0..1, cumulative, on the received video stream
- *     "incoming_bitrate_bps": measured on the nominated pair, over the window
+ *     "incoming_bitrate_bps": measured on that same pair, over the window
  *                             since the previous call
  *     "outgoing_bitrate_bps": likewise
  *     "available_incoming_bitrate_bps": the congestion controller's estimate of
@@ -534,13 +534,15 @@ void reactor_request_schema(
  * Every scalar that can be unknown is present as null rather than omitted, so a
  * binding can tell "the engine has not measured this" from "this SDK does not
  * report it".  The two measured bitrates are derived against the previous call,
- * on the nominated pair's byte counters: the first call after connecting reports
+ * on that pair's byte counters: the first call after connecting reports
  * null for them, so does a call made less than 200 ms after the last one, and so
  * does one made before ICE has nominated a pair.
  *
- * Read "nominated" rather than inferring the selected pair from "state" and
- * "priority".  A connection gathers many pairs — a plain loopback produces
- * eighteen — and exactly one carries traffic; the rest report zeroes.
+ * The pair carrying the media is the one with "nominated" true AND "state"
+ * "succeeded".  Both halves matter: a pair stays nominated after it fails, so
+ * during an ICE restart the dead pair and the live one are both nominated at
+ * once.  A connection gathers many pairs — a plain loopback produces eighteen —
+ * and exactly one carries traffic; the rest report zeroes.
  *
  * A pair's byte counters cover everything it carried, RTCP and data channel
  * included, where the per-stream counters are RTP payload for one stream.  A
