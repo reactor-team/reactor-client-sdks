@@ -16,6 +16,46 @@
 
 import PackageDescription
 
+// ── Where libreactor_ffi comes from ──────────────────────────────────────────
+//
+// Three answers, and all three are called `CReactorFFI`: that is the module
+// `import CReactorFFI` resolves, and the name the XCFramework's own module map
+// declares. The SDK's own code cannot tell which one it got, which is the point —
+// what the development loop tests is what ships.
+//
+//   REACTOR_XCFRAMEWORK=<path>   a binary target over an archive already on disk.
+//                                SwiftPM requires that path to be relative to the
+//                                package root, which `target/xcframework/` — where
+//                                build:xcframework puts it — already is.
+//   REACTOR_SWIFT_DEV=1          the crate's header, with the library linked from
+//                                a cargo build by scripts/swift.sh. The inner
+//                                loop: waiting for four Rust slices before every
+//                                `swift test` is not a loop anyone would use.
+//   neither                      the XCFramework a release publishes, which is
+//                                the only shape that works for an app — there is
+//                                no source distribution, because building the
+//                                native library needs a Rust toolchain and a
+//                                libwebrtc download.
+//
+// That last one has no URL yet, because no release exists: the tag namespace and
+// the release workflow arrive with REA-5588, and the checksum of an archive has
+// to be committed alongside the version that produces it. Until then it falls
+// back to the development shape rather than failing, so a bare `swift build` —
+// and Xcode opening this package — keep working exactly as they do today. The day
+// a release is cut, filling in `releasedFFI` makes the consumer's answer the
+// default without anything else here moving.
+let releasedFFI: (url: String, checksum: String)? = nil
+
+let ffiTarget: Target = {
+    if let archive = Context.environment["REACTOR_XCFRAMEWORK"] {
+        return .binaryTarget(name: "CReactorFFI", path: archive)
+    }
+    if let released = releasedFFI, Context.environment["REACTOR_SWIFT_DEV"] == nil {
+        return .binaryTarget(name: "CReactorFFI", url: released.url, checksum: released.checksum)
+    }
+    return .systemLibrary(name: "CReactorFFI", path: "sdks/swift/Sources/CReactorFFI")
+}()
+
 let package = Package(
     name: "reactor-sdk",
     // macOS 13 and iOS 16 — what the shipped binary actually requires, not the
@@ -47,14 +87,11 @@ let package = Package(
         // signature that moves in the FFI is a compile error rather than a
         // corrupted stack at the call.
         //
-        // The module map names no library to link, because nothing calls into
-        // the FFI yet. Linking arrives with the FFI layer, and the XCFramework
-        // that carries libreactor_ffi for each platform slice arrives with
-        // packaging.
-        .systemLibrary(
-            name: "CReactorFFI",
-            path: "sdks/swift/Sources/CReactorFFI"
-        ),
+        // The module map names no library to link: in this shape the library is
+        // linked on the command line by scripts/swift.sh, and in the XCFramework
+        // shape the archive carries it. Which of the two this is was decided
+        // above, and the SDK's code is written against neither.
+        ffiTarget,
         .target(
             name: "Reactor",
             dependencies: ["CReactorFFI"],
