@@ -478,6 +478,61 @@ void reactor_request_schema(
 );
 
 /*
+ * A statistics snapshot for the live connection.
+ *
+ * Asynchronous, unlike the synchronous reads further down, and for a reason
+ * worth knowing: the engine collects a report by dispatching onto its own thread
+ * and waiting for it, so a synchronous read here would block the caller's thread
+ * for however long libwebrtc takes — up to ten seconds in the pathological case.
+ *
+ * result_json is an object:
+ *
+ *   {
+ *     "rtt_ms":               ms, from the selected ICE candidate pair
+ *     "jitter_s":             seconds, the worst of the receive streams
+ *     "packet_loss_ratio":    0..1, cumulative, inbound
+ *     "incoming_bitrate_bps": measured over the window since the previous call
+ *     "outgoing_bitrate_bps": likewise
+ *     "target_bitrate_bps":   what the encoders are aiming at, summed
+ *     "candidate_pair_state": "succeeded" | "waiting" | "in-progress" |
+ *                             "failed" | "cancelled"
+ *     "packets_received", "packets_lost", "packets_sent",
+ *     "bytes_received", "bytes_sent":  cumulative counters
+ *     "timestamp_ms":         when the sample was taken, Unix ms
+ *     "inbound":  [{ssrc, packets_received, packets_lost, bytes_received,
+ *                   jitter_s, nack_count, total_decode_time_s}, …]
+ *     "outbound": [{ssrc, packets_sent, retransmitted_packets_sent, bytes_sent,
+ *                   target_bitrate_bps, round_trip_time_s}, …]
+ *     "candidate_pairs": [{current_round_trip_time_s, priority, state}, …]
+ *   }
+ *
+ * Every scalar that can be unknown is present as null rather than omitted, so a
+ * binding can tell "the engine has not measured this" from "this SDK does not
+ * report it".  The three bitrate/loss rates are derived against the previous
+ * call: the first call after connecting reports null for the two measured
+ * bitrates, and so does a call made less than 200 ms after the last one.
+ *
+ * "packets_lost" is signed.  RFC 3550 allows it to go negative when duplicates
+ * arrive; "packet_loss_ratio" floors it at zero instead, since a negative
+ * fraction is not a fraction.
+ *
+ * Fails with INVALID_STATE unless the session is ready — a report of zeroes
+ * cannot be told from a connection carrying nothing.
+ *
+ * Four fields the browser SDK's getStats() has are absent here, and they are
+ * absent at the engine rather than dropped on the way: candidateType,
+ * availableIncomingBitrate, availableOutgoingBitrate and framesPerSecond.
+ * reactor-webrtc's own C ABI carries no local-candidate reference, no
+ * available-bitrate estimate and no frame counters.  Per-stream detail, NACK
+ * counts, retransmissions and decode time go the other way — here and not there.
+ */
+void reactor_get_stats(
+    ReactorHandle       *handle,
+    reactor_completion_fn completion,
+    void                *userdata
+);
+
+/*
  * Send an application-scoped command over the data channel and wait for its
  * correlated reply.
  *   name         — command name
