@@ -239,6 +239,56 @@ struct TrackTests {
         #expect(throws: ReactorError.self) { _ = try video.onAudio { _ in } }
     }
 
+    @Test("a handler on a closed client is refused rather than silently never firing")
+    func handlerAfterCloseIsRefused() throws {
+        let fake = FakeLibrary()
+        declaringSession(fake)
+        let client = try makeClient(fake: fake)
+
+        let video = try client.track("main_video")
+        client.close()
+
+        // A closed client declares nothing, which used to read as "not connected
+        // yet" — so the registration was accepted, reported success through a
+        // throwing API, and could never fire.
+        do {
+            _ = try video.onFrame { _ in }
+            Issue.record("expected a throw")
+        } catch let error as ReactorError {
+            #expect(error.code == .invalidState)
+            #expect(error.message.contains("closed"))
+        }
+
+        #expect(throws: ReactorError.self) { _ = try video.onRawFrame { _ in } }
+
+        let audio = try client.track("audio_out")
+        #expect(throws: ReactorError.self) { _ = try audio.onAudio { _ in } }
+    }
+
+    @Test("a handler on a track that outlived its client is refused")
+    func handlerOnOrphanedTrackIsRefused() throws {
+        let fake = FakeLibrary()
+        declaringSession(fake)
+
+        // The track holds its client weakly, so a Track parked somewhere does
+        // not keep a session open. The other half of that bargain is saying so
+        // when the client is gone, rather than handing back a Subscription that
+        // cancels nothing.
+        let video: Track
+        do {
+            let client = try makeClient(fake: fake)
+            video = try client.track("main_video")
+            client.close()
+        }
+
+        do {
+            _ = try video.onFrame { _ in }
+            Issue.record("expected a throw")
+        } catch let error as ReactorError {
+            #expect(error.code == .invalidState)
+        }
+    }
+
     // MARK: - Delivery
 
     @Test("a frame runs its handler inline, on the thread the library called on")
