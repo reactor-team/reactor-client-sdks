@@ -123,6 +123,23 @@ jobs:
             echo "bumped=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # A version bump with no matching changelog entry is a release that
+      # ships undocumented — CHANGELOG.md is what the release notes point
+      # users at ("See sdks/cpp/CHANGELOG.md for what changed" below), so this
+      # fails the release rather than let that link go stale. Doesn't write
+      # anything: the entry still has to be added by hand, in the same PR as
+      # the version bump, same as JS and Python.
+      - name: Verify CHANGELOG.md documents this version
+        if: steps.diff.outputs.bumped == 'true'
+        env:
+          VERSION: ${{ steps.diff.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! grep -qF "## [${VERSION}]" sdks/cpp/CHANGELOG.md; then
+            echo "::error::sdks/cpp/CHANGELOG.md has no '## [${VERSION}]' section — move the [Unreleased] entries under one (Keep a Changelog format) before releasing."
+            exit 1
+          fi
+
   # ── 1. One archive per platform ─────────────────────────────────────────────
   build-archives:
     name: Archive · ${{ matrix.platform }}
@@ -510,6 +527,8 @@ jobs:
           13+ on x86_64, and Windows x86_64 — the same five platforms
           \`reactor-webrtc\` ships. Anything else has to build the library itself; the
           README has the table and the instructions.
+
+          See \`sdks/cpp/CHANGELOG.md\` for what changed.
 
           Checksums are in \`SHA256SUMS\`.
           EOF

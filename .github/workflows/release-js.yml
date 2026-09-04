@@ -131,6 +131,23 @@ jobs:
             echo "bumped=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # A version bump with no matching changelog entry is a release that
+      # ships undocumented — CHANGELOG.md is what the release notes point
+      # users at ("See sdks/js/CHANGELOG.md for what changed" below), so this
+      # fails the release rather than let that link go stale. Doesn't write
+      # anything: the entry still has to be added by hand, in the same PR as
+      # the version bump, same as every prior release.
+      - name: Verify CHANGELOG.md documents this version
+        if: steps.diff.outputs.bumped == 'true'
+        env:
+          VERSION: ${{ steps.diff.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! grep -qF "## [${VERSION}]" sdks/js/CHANGELOG.md; then
+            echo "::error::sdks/js/CHANGELOG.md has no '## [${VERSION}]' section — move the [Unreleased] entries under one (Keep a Changelog format) before releasing."
+            exit 1
+          fi
+
   # ── 1. Build + test the package every event gets, release or not ──────────
   build:
     name: Build + test
