@@ -17,11 +17,18 @@ repository = "https://github.com/reactor-team/reactor-client-sdks"
 reactor-protocol = { path = "crates/reactor-protocol" }
 reactor-core     = { path = "crates/reactor-core" }
 reactor-wasm     = { path = "crates/reactor-wasm" }
+# 0.15: the stats report says which stream is which, and carries the candidate
+# pair's identity and counters — `kind`, `nominated`, `local_candidate_type`,
+# the available-bitrate estimates and the frame counters, all of which
+# `crates/reactor-core/src/stats.rs` needs to answer what the browser SDK
+# answers (REA-6019). It also stops narrowing three 64-bit packet counters, and
+# revives the send-path RTT that had been a hard 0.0 since M7907.
+#
 # 0.12: the trailer carries the capture time the caller declared, rather than the
 # instant the engine pushed the frame, and the field is named `capture_time_us`
 # for it (reactor-webrtc #64). 0.10 brought the outbound push that accepts a
 # capture time in the first place (#53); 0.11 is additive.
-reactor-webrtc   = "0.14"
+reactor-webrtc   = "0.15"
 
 serde       = { version = "1",   features = ["derive"] }
 serde_json  = "1"

@@ -64,13 +64,19 @@ std::vector<InboundStream> decode_inbound(const Json& stats) {
   for (const auto& entry : *found) {
     InboundStream stream;
     stream.ssrc = required_field<std::uint32_t>(entry, "ssrc");
+    stream.kind = optional_field<std::string>(entry, "kind");
     stream.packets_received = required_field<std::uint32_t>(entry, "packets_received");
     stream.packets_lost = required_field<std::int32_t>(entry, "packets_lost");
     stream.bytes_received = required_field<std::uint64_t>(entry, "bytes_received");
     stream.jitter_s = required_field<double>(entry, "jitter_s");
     stream.nack_count = required_field<std::uint32_t>(entry, "nack_count");
     stream.total_decode_time_s = required_field<double>(entry, "total_decode_time_s");
-    streams.push_back(stream);
+    stream.frames_per_second = required_field<double>(entry, "frames_per_second");
+    stream.frames_decoded = required_field<std::uint32_t>(entry, "frames_decoded");
+    stream.frames_dropped = required_field<std::uint32_t>(entry, "frames_dropped");
+    stream.frame_width = required_field<std::uint32_t>(entry, "frame_width");
+    stream.frame_height = required_field<std::uint32_t>(entry, "frame_height");
+    streams.push_back(std::move(stream));
   }
   return streams;
 }
@@ -88,13 +94,22 @@ std::vector<OutboundStream> decode_outbound(const Json& stats) {
   for (const auto& entry : *found) {
     OutboundStream stream;
     stream.ssrc = required_field<std::uint32_t>(entry, "ssrc");
-    stream.packets_sent = required_field<std::uint32_t>(entry, "packets_sent");
+    stream.kind = optional_field<std::string>(entry, "kind");
+    // 64-bit: these wrapped at 2^32 before reactor-webrtc 0.15.
+    stream.packets_sent = required_field<std::uint64_t>(entry, "packets_sent");
     stream.retransmitted_packets_sent =
-        required_field<std::uint32_t>(entry, "retransmitted_packets_sent");
+        required_field<std::uint64_t>(entry, "retransmitted_packets_sent");
     stream.bytes_sent = required_field<std::uint64_t>(entry, "bytes_sent");
     stream.target_bitrate_bps = required_field<double>(entry, "target_bitrate_bps");
+    stream.frames_per_second = required_field<double>(entry, "frames_per_second");
+    stream.frames_sent = required_field<std::uint32_t>(entry, "frames_sent");
+    stream.frame_width = required_field<std::uint32_t>(entry, "frame_width");
+    stream.frame_height = required_field<std::uint32_t>(entry, "frame_height");
     stream.round_trip_time_s = required_field<double>(entry, "round_trip_time_s");
-    streams.push_back(stream);
+    stream.total_round_trip_time_s = required_field<double>(entry, "total_round_trip_time_s");
+    stream.fraction_lost = required_field<double>(entry, "fraction_lost");
+    stream.packets_lost = required_field<std::int32_t>(entry, "packets_lost");
+    streams.push_back(std::move(stream));
   }
   return streams;
 }
@@ -112,10 +127,23 @@ std::vector<CandidatePair> decode_candidate_pairs(const Json& stats) {
   for (const auto& entry : *found) {
     CandidatePair pair;
     pair.current_round_trip_time_s = required_field<double>(entry, "current_round_trip_time_s");
+    pair.total_round_trip_time_s = required_field<double>(entry, "total_round_trip_time_s");
     // A 64-bit priority, read as one. Through a double it would round, and two
     // pairs a few units apart would compare equal.
     pair.priority = required_field<std::uint64_t>(entry, "priority");
     pair.state = required_field<std::string>(entry, "state");
+    pair.nominated = required_field<bool>(entry, "nominated");
+    pair.writable = required_field<bool>(entry, "writable");
+    pair.available_outgoing_bitrate_bps =
+        required_field<double>(entry, "available_outgoing_bitrate_bps");
+    pair.available_incoming_bitrate_bps =
+        required_field<double>(entry, "available_incoming_bitrate_bps");
+    pair.bytes_sent = required_field<std::uint64_t>(entry, "bytes_sent");
+    pair.bytes_received = required_field<std::uint64_t>(entry, "bytes_received");
+    pair.packets_sent = required_field<std::uint64_t>(entry, "packets_sent");
+    pair.packets_received = required_field<std::uint64_t>(entry, "packets_received");
+    pair.local_candidate_type = optional_field<std::string>(entry, "local_candidate_type");
+    pair.local_relay_protocol = optional_field<std::string>(entry, "local_relay_protocol");
     pairs.push_back(std::move(pair));
   }
   return pairs;
@@ -150,7 +178,14 @@ void PendingStats::deliver(Json result) {
     stats.packet_loss_ratio = optional_field<double>(result, "packet_loss_ratio");
     stats.incoming_bitrate_bps = optional_field<double>(result, "incoming_bitrate_bps");
     stats.outgoing_bitrate_bps = optional_field<double>(result, "outgoing_bitrate_bps");
+    stats.available_incoming_bitrate_bps =
+        optional_field<double>(result, "available_incoming_bitrate_bps");
+    stats.available_outgoing_bitrate_bps =
+        optional_field<double>(result, "available_outgoing_bitrate_bps");
     stats.target_bitrate_bps = optional_field<double>(result, "target_bitrate_bps");
+    stats.frames_per_second = optional_field<double>(result, "frames_per_second");
+    stats.candidate_type = optional_field<std::string>(result, "candidate_type");
+    stats.relay_protocol = optional_field<std::string>(result, "relay_protocol");
     stats.candidate_pair_state = optional_field<std::string>(result, "candidate_pair_state");
     stats.packets_received = required_field<std::uint64_t>(result, "packets_received");
     stats.packets_lost = required_field<std::int64_t>(result, "packets_lost");
