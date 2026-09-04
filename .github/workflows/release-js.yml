@@ -189,6 +189,13 @@ jobs:
     # push/workflow_dispatch), so this only needs to run before an actual
     # release.
     if: github.event_name != 'pull_request'
+    # See ci.yml's js-integration-tests job for the full reasoning: this
+    # environment is the cross-workflow mutex against reactor/echo's shared
+    # session-creation quota — GitHub queues jobs referencing the same
+    # environment (arbitrary depth, no cancellation) rather than the
+    # cancel-past-one-pending behavior a `concurrency:` group has, which is
+    # what this replaced.
+    environment: reactor-echo-live-session-quota
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
