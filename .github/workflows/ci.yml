@@ -401,6 +401,10 @@ jobs:
       REACTOR_REQUIRE_SWIFT: "1"
     steps:
       - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1   # reads rust-toolchain.toml
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
@@ -412,9 +416,12 @@ jobs:
           xcodebuild -version
           swift --version
           "$(xcrun --find swift-format)" --version
-      # No Rust toolchain and no libreactor_ffi here: nothing links the native
-      # library at this point in the stack. The FFI layer adds both, along with
-      # the first call that needs them.
+      # No setup-libwebrtc-cxx here, unlike the Python and C++ jobs: that action
+      # exists to hand Linux a clang new enough for libwebrtc's bundled libc++
+      # headers, and is a documented no-op off Linux. macOS builds the glue
+      # against the platform libc++, which already matches its toolchain.
+      - name: Build libreactor_ffi (the library the tests link)
+        run: mise run build:ffi
       - run: mise run lint:swift
       - run: mise run build:swift
       # The only thing in this pipeline that compiles the `#if os(iOS)` code.

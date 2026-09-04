@@ -52,10 +52,33 @@ running `mise run lint` — these tasks skip with a reason instead of failing th
 whole aggregate. CI sets `REACTOR_REQUIRE_SWIFT=1`, which turns that skip back
 into a failure.
 
-**Rebuild the native library after pulling changes under `crates/`.** Nothing
-here links it yet, but once it does: a signature that moved in the FFI but not
-in your build still links and then corrupts the stack at the call, which looks
-like a hang rather than a version error.
+## The native library
+
+The tests link `libreactor_ffi`, so a checkout needs one before `test:swift` can
+run:
+
+```bash
+mise run build:ffi   # cargo build -p reactor-ffi --release
+```
+
+It is found in a fixed order, and the same order applies to every binding:
+
+| | Where | |
+|---|---|---|
+| 1 | `REACTOR_FFI_LIB` | a path to the library file — the same override the Python SDK reads, so one variable points every binding at one build |
+| 2 | `target/release/` in this checkout | what `mise run build:ffi` produces |
+
+A release consumer gets the library from the XCFramework instead; this order is
+the development loop. The linker flags are passed on the command line by
+`scripts/swift.sh` rather than declared in `Package.swift`, because
+`unsafeFlags` in a manifest makes a package unusable as anyone's dependency.
+
+**Rebuild the native library after pulling changes under `crates/`.** A
+signature that moved in the FFI but not in your build still links and then
+corrupts the stack at the call, which looks like a hang rather than a version
+error. `reactor_abi_version()` turns that into a message — the SDK compares it
+against the header it was compiled with and refuses to run on a mismatch — but
+only if the library on disk is the one you think it is.
 
 ## Layout
 
