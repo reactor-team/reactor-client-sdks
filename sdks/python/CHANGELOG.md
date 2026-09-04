@@ -9,6 +9,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-04
+
+Minor rather than patch: `get_stats()` gains fields, and three it already had
+**change meaning** — see Changed. Nothing was removed or renamed and no call
+signature changed, so code written against 1.3.0 keeps working; what it reads
+back for jitter, loss and the incoming bitrate is measured differently, and
+matches what the JS SDK reports for the same connection.
+
 ### Added
 
 - `get_stats()` now reports the four fields the JS SDK reported and this SDK
