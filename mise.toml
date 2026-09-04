@@ -173,8 +173,10 @@ run = [
 ]
 
 [tasks.test]
-description = "[Testing] Every test suite (Rust + Python + JS + C++)"
-depends = ["test:rust", "test:python", "test:js", "test:cpp"]
+description = "[Testing] Every test suite (Rust + Python + JS + C++ + Swift)"
+# test:swift skips itself off a machine with a Swift toolchain rather than
+# failing, so this stays runnable on Linux. See the Swift SDK section below.
+depends = ["test:rust", "test:python", "test:js", "test:cpp", "test:swift"]
 
 # ── JS SDK ────────────────────────────────────────────────────────────────────
 # Node/npm aren't in [tools] above yet — every task here just shells out to
@@ -346,6 +348,47 @@ run = [
     "cmake --build sdks/cpp/build-integration-tests",
     "sdks/cpp/build-integration-tests/integration-tests/reactor_sdk_integration_tests",
 ]
+# ── Swift SDK ─────────────────────────────────────────────────────────────────
+# The manifest is `Package.swift` at the repository root, because SwiftPM will
+# not resolve a package that lives in a subdirectory. Everything it points at is
+# under sdks/swift/.
+#
+# All four tasks go through scripts/swift.sh, which answers one question first:
+# is there a Swift toolchain here? Off a machine that has one — a Linux
+# contributor running `mise run lint` — they skip with a reason instead of
+# failing the aggregate. CI runs them on macOS with REACTOR_REQUIRE_SWIFT=1,
+# where a missing toolchain is a failure instead.
+#
+# swift-format comes from the Xcode toolchain rather than from a [tools] pin: it
+# is macOS-only, and `lint:mise-lock` requires every declared tool to resolve on
+# every lockfile platform. The pin that matters here is the runner's Xcode.
+
+[tasks."fmt:swift"]
+description = "[Format] Format the Swift SDK with swift-format"
+run = "scripts/swift.sh format"
+
+[tasks."lint:swift"]
+description = "[Quality] Lint + format-check the Swift SDK with swift-format"
+run = "scripts/swift.sh lint"
+
+[tasks."build:swift"]
+description = "[Build] Build the Swift SDK (swift build)"
+run = "scripts/swift.sh build"
+
+[tasks."build:swift:ios"]
+description = "[Build] Compile the Swift SDK's libraries for iOS (arm64 device)"
+# Separate from build:swift, and not a dependency of it: this needs an iPhoneOS
+# SDK, which only a machine with full Xcode has. It compiles the library targets
+# and links nothing, so it wants no Rust toolchain and no iOS libreactor_ffi.
+#
+# Its whole reason to exist is that `swift build` on macOS never sees a single
+# `#if os(iOS)` branch — and every device the SDK touches on a phone lives in
+# one.
+run = "scripts/swift.sh build-ios"
+
+[tasks."test:swift"]
+description = "[Testing] Swift SDK tests via swift-testing"
+run = "scripts/swift.sh test"
 
 # ── Lints ─────────────────────────────────────────────────────────────────────
 
@@ -385,6 +428,7 @@ depends = [
     "lint:python",
     "lint:js",
     "lint:cpp",
+    "lint:swift",
     "lint:abi",
     "lint:error-codes",
     "lint:shell",

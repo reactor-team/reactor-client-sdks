@@ -39,6 +39,7 @@ jobs:
       python: ${{ steps.filter.outputs.python }}
       js: ${{ steps.filter.outputs.js }}
       cpp: ${{ steps.filter.outputs.cpp }}
+      swift: ${{ steps.filter.outputs.swift }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v3
@@ -70,6 +71,15 @@ jobs:
               - *shared
               - *core
               - 'sdks/cpp/**'
+            # Package.swift is at the repository root — SwiftPM will not resolve
+            # a package in a subdirectory — so it is named here alongside the
+            # sources it points at.
+            swift:
+              - *shared
+              - *core
+              - 'sdks/swift/**'
+              - 'Package.swift'
+              - 'scripts/swift.sh'
 
   # Repo-wide checks: fast, text-only, and about the repository rather than about
   # any one binding — so they always run and need no compiler.
@@ -375,6 +385,42 @@ jobs:
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
         run: mise run test:cpp:integration-tests
 
+  swift:
+    name: Swift SDK
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.swift == 'true'
+    # The only macOS job in this workflow, and the only place it could run: the
+    # SDK targets macOS and iOS, and swift-format comes from the runner's Xcode.
+    runs-on: macos-latest
+    env:
+      # Turns "no Swift toolchain, skipping" into a failure. scripts/swift.sh
+      # skips off a machine without one so `mise run lint` stays usable on
+      # Linux; here a skip would be a gate that quietly checks nothing.
+      REACTOR_REQUIRE_SWIFT: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      # Recorded rather than assumed: the Swift version and the swift-format it
+      # carries are the runner's Xcode, which is what this job pins in practice.
+      - name: Record the toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          swift --version
+          "$(xcrun --find swift-format)" --version
+      # No Rust toolchain and no libreactor_ffi here: nothing links the native
+      # library at this point in the stack. The FFI layer adds both, along with
+      # the first call that needs them.
+      - run: mise run lint:swift
+      - run: mise run build:swift
+      # The only thing in this pipeline that compiles the `#if os(iOS)` code.
+      # Libraries only and no link step, so it costs a compile rather than an
+      # XCFramework build.
+      - run: mise run build:swift:ios
+      - run: mise run test:swift
+
   ci-complete:
     name: CI Complete
     needs:
@@ -388,6 +434,7 @@ jobs:
         js-integration-tests,
         cpp,
         cpp-integration-tests,
+        swift,
       ]
     if: always()
     runs-on: ubuntu-latest
@@ -405,7 +452,8 @@ jobs:
                    "${{ needs.js.result }}" \
                    "${{ needs.js-integration-tests.result }}" \
                    "${{ needs.cpp.result }}" \
-                   "${{ needs.cpp-integration-tests.result }}"; do
+                   "${{ needs.cpp-integration-tests.result }}" \
+                   "${{ needs.swift.result }}"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::a required job failed ($r)"; exit 1
             fi
