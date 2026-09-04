@@ -37,7 +37,12 @@ constexpr const char* FULL_PAYLOAD = R"({
   "packet_loss_ratio": 0.002,
   "incoming_bitrate_bps": 1843200.0,
   "outgoing_bitrate_bps": 96000.0,
+  "available_incoming_bitrate_bps": 3000000.0,
+  "available_outgoing_bitrate_bps": 1500000.0,
   "target_bitrate_bps": 2500000.0,
+  "frames_per_second": 29.97,
+  "candidate_type": "relay",
+  "relay_protocol": "tls",
   "candidate_pair_state": "succeeded",
   "packets_received": 4021,
   "packets_lost": 8,
@@ -46,27 +51,42 @@ constexpr const char* FULL_PAYLOAD = R"({
   "bytes_sent": 65536,
   "timestamp_ms": 1757000000000.0,
   "inbound": [
-    {"ssrc": 111, "packets_received": 4021, "packets_lost": 8, "bytes_received": 5123456,
-     "jitter_s": 0.004, "nack_count": 2, "total_decode_time_s": 1.25}
+    {"ssrc": 111, "kind": "video", "packets_received": 4021, "packets_lost": 8,
+     "bytes_received": 5123456, "jitter_s": 0.004, "nack_count": 2,
+     "total_decode_time_s": 1.25, "frames_per_second": 29.97, "frames_decoded": 900,
+     "frames_dropped": 1, "frame_width": 1920, "frame_height": 1080}
   ],
   "outbound": [
-    {"ssrc": 222, "packets_sent": 512, "retransmitted_packets_sent": 1, "bytes_sent": 65536,
-     "target_bitrate_bps": 2500000.0, "round_trip_time_s": 0.0215}
+    {"ssrc": 222, "kind": "audio", "packets_sent": 512, "retransmitted_packets_sent": 1,
+     "bytes_sent": 65536, "target_bitrate_bps": 2500000.0, "frames_per_second": 0.0,
+     "frames_sent": 0, "frame_width": 0, "frame_height": 0, "round_trip_time_s": 0.0215,
+     "total_round_trip_time_s": 2.15, "fraction_lost": 0.001, "packets_lost": 3}
   ],
   "candidate_pairs": [
-    {"current_round_trip_time_s": 0.0215, "priority": 9115038255631187199, "state": "succeeded"}
+    {"current_round_trip_time_s": 0.0215, "total_round_trip_time_s": 2.15,
+     "priority": 9115038255631187199, "state": "succeeded", "nominated": true,
+     "writable": true, "available_outgoing_bitrate_bps": 1500000.0,
+     "available_incoming_bitrate_bps": 3000000.0, "bytes_sent": 65536,
+     "bytes_received": 5123456, "packets_sent": 5000000000,
+     "packets_received": 5000000001, "local_candidate_type": "relay",
+     "local_relay_protocol": "tls"}
   ]
 })";
 
 /// What the core serializes on the first sample after connecting: counters, but
-/// nothing to have derived a rate from yet.
+/// nothing to have derived a rate from yet, and no pair nominated.
 constexpr const char* FIRST_SAMPLE_PAYLOAD = R"({
   "rtt_ms": null,
   "jitter_s": null,
   "packet_loss_ratio": null,
   "incoming_bitrate_bps": null,
   "outgoing_bitrate_bps": null,
+  "available_incoming_bitrate_bps": null,
+  "available_outgoing_bitrate_bps": null,
   "target_bitrate_bps": null,
+  "frames_per_second": null,
+  "candidate_type": null,
+  "relay_protocol": null,
   "candidate_pair_state": null,
   "packets_received": 0,
   "packets_lost": 0,
@@ -417,9 +437,11 @@ TEST_CASE("a negative loss count survives as negative") {
     "packet_loss_ratio": 0.0,
     "packets_received": 100, "packets_lost": -3, "packets_sent": 0,
     "bytes_received": 0, "bytes_sent": 0, "timestamp_ms": 1.0,
-    "inbound": [{"ssrc": 1, "packets_received": 100, "packets_lost": -3,
+    "inbound": [{"ssrc": 1, "kind": "audio", "packets_received": 100, "packets_lost": -3,
                  "bytes_received": 0, "jitter_s": 0.0, "nack_count": 0,
-                 "total_decode_time_s": 0.0}]
+                 "total_decode_time_s": 0.0, "frames_per_second": 0.0,
+                 "frames_decoded": 0, "frames_dropped": 0, "frame_width": 0,
+                 "frame_height": 0}]
   })";
 
   const auto stats = fixture.client.get_stats().get();
@@ -428,6 +450,102 @@ TEST_CASE("a negative loss count survives as negative") {
   CHECK(stats.inbound.front().packets_lost == -3);
   REQUIRE(stats.packet_loss_ratio.has_value());
   CHECK(stats.packet_loss_ratio.value_or(1.0) == 0.0);
+}
+
+// The fields the JS SDK had and this SDK could not fill until reactor-webrtc
+// 0.15, plus the stream kind that made jitter and loss answerable about the
+// video stream at all. Each was documented as absent, so a decode test is worth
+// having: the alternative was an empty optional a caller could not distinguish
+// from "not measured".
+TEST_CASE("the fields reactor-webrtc 0.15 added come through") {
+  Connected fixture;
+
+  const auto stats = fixture.client.get_stats().get();
+
+  SECTION("the four scalars the browser had and this did not") {
+    REQUIRE(stats.candidate_type.has_value());
+    CHECK(stats.candidate_type.value_or("") == "relay");
+    CHECK(stats.available_incoming_bitrate_bps.value_or(0.0) == 3000000.0);
+    CHECK(stats.available_outgoing_bitrate_bps.value_or(0.0) == 1500000.0);
+    CHECK(stats.frames_per_second.value_or(0.0) == 29.97);
+    // Ours, not the browser's, and only meaningful when relayed.
+    CHECK(stats.relay_protocol.value_or("") == "tls");
+  }
+
+  SECTION("a stream says whether it is audio or video") {
+    REQUIRE(stats.inbound.size() == 1);
+    CHECK(stats.inbound.front().kind.value_or("") == "video");
+    REQUIRE(stats.outbound.size() == 1);
+    CHECK(stats.outbound.front().kind.value_or("") == "audio");
+  }
+
+  SECTION("the video frame counters") {
+    const auto& s = stats.inbound.front();
+    CHECK(s.frame_width == 1920);
+    CHECK(s.frame_height == 1080);
+    CHECK(s.frames_decoded == 900);
+    CHECK(s.frames_dropped == 1);
+  }
+
+  SECTION("the send path's own loss and rtt, from the receiver's report") {
+    const auto& s = stats.outbound.front();
+    CHECK(s.total_round_trip_time_s == 2.15);
+    CHECK(s.fraction_lost == 0.001);
+    CHECK(s.packets_lost == 3);
+  }
+
+  SECTION("the pair says whether ICE selected it") {
+    const auto& p = stats.candidate_pairs.front();
+    CHECK(p.nominated);
+    CHECK(p.writable);
+    CHECK(p.local_candidate_type.value_or("") == "relay");
+    CHECK(p.local_relay_protocol.value_or("") == "tls");
+    // The pair's own counters, wider than the per-stream ones.
+    CHECK(p.bytes_received == 5123456);
+    CHECK(p.available_incoming_bitrate_bps == 3000000.0);
+  }
+
+  // These crossed the C ABI as uint32_t until 0.15 and wrapped silently on a
+  // long-lived connection.
+  SECTION("a pair counter past 2^32 survives") {
+    const auto& p = stats.candidate_pairs.front();
+    CHECK(p.packets_sent == 5000000000ULL);
+    CHECK(p.packets_received == 5000000001ULL);
+  }
+}
+
+// A pair missing the flag is a payload this SDK does not understand, not a pair
+// ICE declined to nominate — the same rule every other counter follows.
+TEST_CASE("a pair missing its nominated flag fails the call") {
+  Connected fixture;
+  fixture.session.result = R"({
+    "packets_received": 0, "packets_lost": 0, "packets_sent": 0,
+    "bytes_received": 0, "bytes_sent": 0, "timestamp_ms": 1.0,
+    "candidate_pairs": [{"current_round_trip_time_s": 0.0,
+                         "total_round_trip_time_s": 0.0, "priority": 1,
+                         "state": "waiting", "writable": false,
+                         "available_outgoing_bitrate_bps": 0.0,
+                         "available_incoming_bitrate_bps": 0.0, "bytes_sent": 0,
+                         "bytes_received": 0, "packets_sent": 0,
+                         "packets_received": 0}]
+  })";
+
+  CHECK_THROWS_AS(fixture.client.get_stats().get(), reactor::DecodeError);
+}
+
+TEST_CASE("an inbound entry missing a frame counter fails the call") {
+  Connected fixture;
+  fixture.session.result = R"({
+    "packets_received": 0, "packets_lost": 0, "packets_sent": 0,
+    "bytes_received": 0, "bytes_sent": 0, "timestamp_ms": 1.0,
+    "inbound": [{"ssrc": 1, "kind": "video", "packets_received": 0,
+                 "packets_lost": 0, "bytes_received": 0, "jitter_s": 0.0,
+                 "nack_count": 0, "total_decode_time_s": 0.0,
+                 "frames_per_second": 0.0, "frames_dropped": 0,
+                 "frame_width": 0, "frame_height": 0}]
+  })";
+
+  CHECK_THROWS_AS(fixture.client.get_stats().get(), reactor::DecodeError);
 }
 
 // serde_json writes a whole f64 as `21.0`, but nothing stops a producer writing

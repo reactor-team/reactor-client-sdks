@@ -273,19 +273,26 @@ if (stats.rtt_ms) {
   for a continuous reading.
 - An empty `std::optional` means the engine has not measured that field yet, which
   is not the same as zero — hence the optionals rather than a sentinel.
+- `candidate_type` is `"relay"` when the session is going through TURN, which is
+  the first thing worth knowing when latency is bad.
 - `inbound`, `outbound` and `candidate_pairs` carry the engine's own per-stream
-  report: SSRCs, NACK counts, retransmissions, decode time.
+  report: SSRCs, stream kinds, frame counters, NACK counts, retransmissions,
+  decode time, and each candidate pair's own totals.
 - Throws `InvalidStateError` unless the session is `Ready`. Asynchronous rather
   than a plain getter because the engine collects a report on its own thread and
   waits for it.
 
-Four fields the [JS SDK](https://docs.reactor.inc/sdk-reference/types#connectionstats)
-reports are absent here — `candidateType`, `availableIncomingBitrate`,
-`availableOutgoingBitrate` and `framesPerSecond`. They are missing at the WebRTC
-engine, not dropped on the way: libwebrtc's report reaches this SDK through
-`reactor-webrtc`'s C ABI, which carries no local-candidate reference, no
-available-bitrate estimate and no frame counters. The per-stream detail above goes
-the other way — here, and not in the browser.
+These are the same numbers the
+[JS SDK](https://docs.reactor.inc/sdk-reference/types#connectionstats) reports for
+the same connection: the same candidate pair (the one ICE nominated), the same
+byte counters, the same video stream. Two deliberate differences:
+
+- **An audio-only session still reports `jitter_s` and `packet_loss_ratio`.** Both
+  come from the received video stream, as in the browser; with no video stream
+  this falls back to the receive streams there are, where the browser reports
+  nothing.
+- **`inbound`, `outbound`, `candidate_pairs` and `relay_protocol` are extra.** The
+  browser's own report has most of that; its SDK does not surface it.
 
 ## Examples
 
