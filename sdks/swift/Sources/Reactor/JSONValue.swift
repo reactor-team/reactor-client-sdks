@@ -171,3 +171,30 @@ extension JSONValue: ExpressibleByDictionaryLiteral {
         self = .object(Dictionary(elements) { first, _ in first })
     }
 }
+
+// MARK: - Printing
+
+extension JSONValue: CustomStringConvertible {
+
+    /// The value as compact JSON.
+    ///
+    /// Without this, printing a model message gives
+    /// `object(["type": Reactor.JSONValue.string("state"), …])` — the enum's
+    /// synthesised description, which is unreadable exactly where a caller is
+    /// most likely to be printing: an example, or a log line about a message that
+    /// arrived. Found by running example 01 and reading its output.
+    ///
+    /// Keys are sorted, so the same value prints the same way twice.
+    public var description: String {
+        let encoder = JSON.encoder()
+        encoder.outputFormatting.insert(.sortedKeys)
+        guard let data = try? encoder.encode(self),
+            let text = String(data: data, encoding: .utf8)
+        else {
+            // Unreachable for a JSONValue, which is JSON by construction — but a
+            // description that can throw is worse than one that says so.
+            return "<unprintable JSON>"
+        }
+        return text
+    }
+}

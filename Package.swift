@@ -77,7 +77,17 @@ let package = Package(
         .iOS(.v16),
     ],
     products: [
-        .library(name: "Reactor", targets: ["Reactor"])
+        .library(name: "Reactor", targets: ["Reactor"]),
+        // The seven examples, numbered as in sdks/python/examples/ so the set is
+        // comparable across bindings at a glance. Product names carry the numbers
+        // because that is what a reader types: `swift run 01_connect_and_receive`.
+        .executable(name: "01_connect_and_receive", targets: ["Example01ConnectAndReceive"]),
+        .executable(name: "02_upload_image", targets: ["Example02UploadImage"]),
+        .executable(name: "03_pause_and_resume", targets: ["Example03PauseAndResume"]),
+        .executable(name: "04_publish_track", targets: ["Example04PublishTrack"]),
+        .executable(name: "05_multi_connection", targets: ["Example05MultiConnection"]),
+        .executable(name: "06_record_clip", targets: ["Example06RecordClip"]),
+        .executable(name: "07_frame_metadata", targets: ["Example07FrameMetadata"]),
     ],
     targets: [
         // The C ABI, imported through a module map over the header the Rust
@@ -139,6 +149,49 @@ let package = Package(
                 .linkedFramework("Security", .when(platforms: [.macOS])),
                 .linkedFramework("SystemConfiguration", .when(platforms: [.macOS])),
             ]
+        ),
+        // Everything the examples share: reading the environment, counting
+        // frames, and writing a PNG so a reader can see that what arrived was the
+        // right something rather than merely something.
+        .target(
+            name: "ExampleSupport",
+            dependencies: ["Reactor"],
+            path: "sdks/swift/Examples/Support"
+        ),
+        .executableTarget(
+            name: "Example01ConnectAndReceive",
+            dependencies: ["Reactor", "ExampleSupport"],
+            path: "sdks/swift/Examples/01_connect_and_receive"
+        ),
+        .executableTarget(
+            name: "Example02UploadImage",
+            dependencies: ["Reactor", "ExampleSupport"],
+            path: "sdks/swift/Examples/02_upload_image"
+        ),
+        .executableTarget(
+            name: "Example03PauseAndResume",
+            dependencies: ["Reactor", "ExampleSupport"],
+            path: "sdks/swift/Examples/03_pause_and_resume"
+        ),
+        .executableTarget(
+            name: "Example04PublishTrack",
+            dependencies: ["Reactor", "ExampleSupport"],
+            path: "sdks/swift/Examples/04_publish_track"
+        ),
+        .executableTarget(
+            name: "Example05MultiConnection",
+            dependencies: ["Reactor", "ExampleSupport"],
+            path: "sdks/swift/Examples/05_multi_connection"
+        ),
+        .executableTarget(
+            name: "Example06RecordClip",
+            dependencies: ["Reactor", "ExampleSupport"],
+            path: "sdks/swift/Examples/06_record_clip"
+        ),
+        .executableTarget(
+            name: "Example07FrameMetadata",
+            dependencies: ["Reactor", "ExampleSupport"],
+            path: "sdks/swift/Examples/07_frame_metadata"
         ),
         .testTarget(
             name: "ReactorTests",
