@@ -497,15 +497,21 @@ class TestPushFrame:
 
         assert captured["audio"][0] == ("mic", b"\x00\x00" * 480, 480, 48000, 1)
 
-    def test_audio_sample_count_accounts_for_channels(
+    def test_a_format_the_send_path_does_not_have_is_refused(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """The shared local source runs at 48 kHz mono and nothing below resamples,
+        so accepting either of these would send the caller's audio at the wrong
+        speed — the silent kind of wrong these guards exist to make loud."""
         reactor, _ = _connected(monkeypatch)
         captured = self._captured(reactor)
 
-        reactor.track("mic").push_frame(b"\x00\x00" * 480, num_channels=2)
+        with pytest.raises(ValueError, match="48000 Hz mono"):
+            reactor.track("mic").push_frame(b"\x00\x00" * 480, sample_rate=16000)
+        with pytest.raises(ValueError, match="48000 Hz mono"):
+            reactor.track("mic").push_frame(b"\x00\x00" * 480, num_channels=2)
 
-        assert captured["audio"][0][2] == 240
+        assert "audio" not in captured
 
     def test_an_int16_array_is_accepted_as_pcm(self, monkeypatch: pytest.MonkeyPatch) -> None:
         reactor, _ = _connected(monkeypatch)

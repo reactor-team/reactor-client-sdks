@@ -411,15 +411,20 @@ class TestMicrophone:
         assert lib.pushed == [(b"mic", 960, 480, 48_000, 1)]
         assert mic.blocks_sent == 1
 
-    def test_the_rate_and_channels_are_the_caller_s(
+    def test_a_format_the_track_cannot_send_is_refused_at_construction(
         self, sd: _FakeSoundDevice, reactor: tuple[Reactor, _FakeLib]
     ) -> None:
-        client, lib = reactor
-        Microphone(client.track("mic"), sample_rate=16_000, channels=2).start()
+        """At construction, not at the first block: `_captured` runs on the device's
+        thread, where a raise is printed and swallowed rather than reaching the
+        caller. Nothing opens a device for a capture that could not be sent."""
+        client, _ = reactor
 
-        assert sd.input.kwargs["blocksize"] == 160
-        sd.input.capture(bytes(160 * 2 * BYTES_PER_SAMPLE))
-        assert lib.pushed[0][3:] == (16_000, 2)
+        with pytest.raises(ValueError, match="48000 Hz mono"):
+            Microphone(client.track("mic"), sample_rate=16_000)
+        with pytest.raises(ValueError, match="48000 Hz mono"):
+            Microphone(client.track("mic"), channels=2)
+
+        assert sd.input is None
 
     def test_stop_closes_the_device_and_is_idempotent(
         self, sd: _FakeSoundDevice, reactor: tuple[Reactor, _FakeLib]
