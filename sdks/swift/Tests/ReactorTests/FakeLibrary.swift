@@ -26,6 +26,8 @@ final class FakeLibrary: @unchecked Sendable {
     enum Event: Equatable {
         case statusEntered
         case statusReturned
+        case downloadEntered
+        case downloadReturned
         case destroyed
     }
 
@@ -73,6 +75,7 @@ final class FakeLibrary: @unchecked Sendable {
         weak var lastUserdataObject: AnyObject?
         var events: [Event] = []
         var whileReadingStatus: (@Sendable () -> Void)?
+        var whileStartingDownload: (@Sendable () -> Void)?
     }
 
     private let state = Locked(State())
@@ -151,6 +154,12 @@ final class FakeLibrary: @unchecked Sendable {
     var whileReadingStatus: (@Sendable () -> Void)? {
         get { state.withLock { $0.whileReadingStatus } }
         set { state.withLock { $0.whileReadingStatus = newValue } }
+    }
+
+    /// Run this inside `reactor_download_clip`, before it returns.
+    var whileStartingDownload: (@Sendable () -> Void)? {
+        get { state.withLock { $0.whileStartingDownload } }
+        set { state.withLock { $0.whileStartingDownload = newValue } }
     }
 
     /// Whether the object the SDK passed as the last `userdata` is still alive.
@@ -506,8 +515,9 @@ final class FakeLibrary: @unchecked Sendable {
                 [self]
                 _, playlistURL, jwt, outPath, predicted, timeout, local, progress,
                 completion, userdata in
-                state.withLock {
-                    $0.downloadCalls.append(
+                let hook = state.withLock { state -> (@Sendable () -> Void)? in
+                    state.events.append(.downloadEntered)
+                    state.downloadCalls.append(
                         DownloadCall(
                             playlistURL: String(borrowing: playlistURL),
                             jwt: String(borrowing: jwt),
@@ -516,9 +526,12 @@ final class FakeLibrary: @unchecked Sendable {
                             readyTimeoutSeconds: timeout,
                             local: local))
                     if let completion, let userdata {
-                        $0.lastDownload = (progress, completion, userdata)
+                        state.lastDownload = (progress, completion, userdata)
                     }
+                    return state.whileStartingDownload
                 }
+                hook?()
+                state.withLock { $0.events.append(.downloadReturned) }
             }
         )
     }

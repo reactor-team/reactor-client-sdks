@@ -289,6 +289,50 @@ struct RecordingTests {
         }
     }
 
+    @Test("close waits for a download that is already inside the library")
+    func closeWaitsForADownloadStartingUp() async throws {
+        // reactor_download_clip requires the handle to be live at call time, and
+        // this is the one operation whose *startup* races teardown: the client
+        // was registered under one lock and the call made after it, so close()
+        // fitted in between, abandoned the operation and destroyed the handle
+        // this call then used.
+        //
+        // An ordering assertion rather than a race, for the same reason as the
+        // status one: a fake library's handle is a stable allocation, so racing
+        // the two would pass either way.
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake)
+
+        let clip = try await answering(fake, result: clipPayload) {
+            try await client.requestClip(.seconds(10))
+        }
+
+        let closeIsComing = DispatchSemaphore(value: 0)
+        fake.whileStartingDownload = {
+            // Hold the ABI open until close() has been asked for and given time
+            // to get ahead. A window close() never gets a chance to enter proves
+            // nothing.
+            _ = closeIsComing.wait(timeout: .now() + .seconds(2))
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        let downloading = Task {
+            try await client.download(clip, to: URL(fileURLWithPath: "/tmp/c.mp4"))
+        }
+        #expect(
+            await waitUntil { fake.events.contains(.downloadEntered) },
+            "the download never reached the library")
+
+        closeIsComing.signal()
+        client.close()
+
+        // And the caller is still settled rather than left awaiting: the
+        // continuation is attached before the operation is reachable from the
+        // client, so a teardown that finds it always has something to resume.
+        await #expect(throws: ReactorError.self) { try await downloading.value }
+        #expect(fake.events == [.downloadEntered, .downloadReturned, .destroyed])
+    }
+
     // MARK: - What the type system rules out
 
     @Test("a ready timeout cannot be a NaN, and a huge one stays finite")

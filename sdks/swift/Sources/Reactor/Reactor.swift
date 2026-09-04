@@ -208,7 +208,11 @@ public final class Reactor: @unchecked Sendable {
     /// Every synchronous entry into the ABI goes through here, which is what
     /// makes the handle valid for the whole of `body` rather than only at the
     /// moment it was read. See ``abiBarrier``.
-    private func withHandle<Result>(
+    ///
+    /// Not `private`, because the operations live in `Reactor+*.swift` and every
+    /// one of them needs this: an entry into the ABI that does not go through
+    /// here is one `close()` can still overtake.
+    func withHandle<Result>(
         else fallback: Result,
         _ body: (OpaquePointer) -> Result
     ) -> Result {
