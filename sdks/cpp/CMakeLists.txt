@@ -193,6 +193,7 @@ add_library(
   src/errors.cpp
   src/reactor.cpp
   src/recording.cpp
+  src/stats.cpp
   src/track.cpp
   src/version.cpp
 )

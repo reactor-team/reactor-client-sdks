@@ -17,6 +17,7 @@ set(REACTOR_TEST_SOURCES
   ffi_test.cpp
   reactor_test.cpp
   recording_test.cpp
+  stats_test.cpp
   track_test.cpp
   smoke_test.cpp
 )

@@ -592,6 +592,25 @@ ReactorHandle* ClientImpl::require_ready_handle(const char* action,
   return handle;
 }
 
+ReactorHandle* ClientImpl::require_ready_session(const char* action) const {
+  ReactorHandle* handle = nullptr;
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    handle = handle_;
+  }
+  if (handle == nullptr) {
+    throw InvalidStateError{std::string{"cannot "} + action +
+                            ": this client has not connected yet"};
+  }
+  const StaticString status{ffi().status(handle)};
+  if (status_from_string(status.view()) != Status::Ready) {
+    throw InvalidStateError{std::string{"cannot "} + action + ": the session is " +
+                            std::string{status.view()} +
+                            ", not ready. Wait for connect() to resolve, or reconnect()."};
+  }
+  return handle;
+}
+
 namespace {
 
 /// Refuse a send on a track that cannot send.

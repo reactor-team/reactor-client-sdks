@@ -258,6 +258,35 @@ the call, so a clip expected in ten seconds with five of grace has fifteen.
 A clip is also clamped to the media that exists: asking for ten seconds after
 eight seconds of wall clock gets you whatever the model has generated.
 
+## Connection statistics
+
+```cpp
+const auto stats = client.get_stats().get();
+if (stats.rtt_ms) {
+  std::cout << *stats.rtt_ms << " ms\n";
+}
+```
+
+- The two measured bitrates are derived **against the previous call**, so the first
+  one after connecting leaves them empty, as does a call made less than 200 ms
+  after the last. Everything else is on every call. Poll a couple of seconds apart
+  for a continuous reading.
+- An empty `std::optional` means the engine has not measured that field yet, which
+  is not the same as zero — hence the optionals rather than a sentinel.
+- `inbound`, `outbound` and `candidate_pairs` carry the engine's own per-stream
+  report: SSRCs, NACK counts, retransmissions, decode time.
+- Throws `InvalidStateError` unless the session is `Ready`. Asynchronous rather
+  than a plain getter because the engine collects a report on its own thread and
+  waits for it.
+
+Four fields the [JS SDK](https://docs.reactor.inc/sdk-reference/types#connectionstats)
+reports are absent here — `candidateType`, `availableIncomingBitrate`,
+`availableOutgoingBitrate` and `framesPerSecond`. They are missing at the WebRTC
+engine, not dropped on the way: libwebrtc's report reaches this SDK through
+`reactor-webrtc`'s C ABI, which carries no local-candidate reference, no
+available-bitrate estimate and no frame counters. The per-stream detail above goes
+the other way — here, and not in the browser.
+
 ## Examples
 
 Seven, one capability each, in [`examples/`](examples) — and each one has been run
