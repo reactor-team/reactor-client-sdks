@@ -164,11 +164,6 @@ jobs:
     # skipped rather than failing every external contribution. Still runs
     # for every same-repo PR and on push.
     if: github.event_name == 'push' || (needs.changes.outputs.python == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
-    # See js-integration-tests's own comment on this group above — same
-    # reasoning, same per-commit scoping, shared with the release-*.yml workflows too.
-    concurrency:
-      group: reactor-echo-live-session-quota-${{ github.sha }}
-      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -226,27 +221,6 @@ jobs:
     # skipped there rather than failing every external contribution. Still
     # runs for every same-repo PR and on push, same as before.
     if: github.event_name == 'push' || (needs.changes.outputs.js == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
-    # This workflow's own top-level `concurrency:` is keyed on the branch/ref,
-    # so it does nothing across this workflow and release-js.yml/
-    # release-python.yml/release-cpp.yml's own equivalents landing on the same
-    # push to main — which has actually happened: release-js.yml's own
-    # comment records it hitting reactor/echo's quota against a concurrent
-    # ci.yml run on the same commit. Scoped to `github.sha`, not a single
-    # fixed name: a GitHub Actions concurrency group holds only one running
-    # and one pending job, and a third arrival *cancels* the pending one
-    # (even with cancel-in-progress: false) rather than queueing behind it —
-    # so one name shared across every PR and every push would occasionally
-    # cancel a required check outright instead of just waiting for it, worse
-    # than the 429 this exists to prevent. Scoping by commit keeps a group's
-    # membership to whatever is testing *that one commit* — this job plus at
-    # most one release-*.yml equivalent, in practice — which stays inside
-    # that one-running-one-pending limit. It deliberately does not serialize
-    # two different commits (two PRs, or a PR against a concurrent push)
-    # against each other; paced_connect()'s own retry-on-429 is what covers
-    # that residual, cross-commit case, same as before this existed.
-    concurrency:
-      group: reactor-echo-live-session-quota-${{ github.sha }}
-      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -336,11 +310,6 @@ jobs:
     # skipped rather than failing every external contribution. Still runs for
     # every same-repo PR and on push.
     if: github.event_name == 'push' || (needs.changes.outputs.cpp == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
-    # See js-integration-tests's own comment on this group above — same
-    # reasoning, same per-commit scoping, shared with the release-*.yml workflows too.
-    concurrency:
-      group: reactor-echo-live-session-quota-${{ github.sha }}
-      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

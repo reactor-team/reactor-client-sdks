@@ -174,11 +174,8 @@ jobs:
   #
   # Its own job, not a step of `build`: test:js:integration-tests builds wasm +
   # dist/ itself (mise.toml) rather than reusing anything `build` produced, so
-  # splitting it out costs nothing to rebuild and is what lets it carry its own
-  # concurrency group below without queuing every pull request's lint/unit-test
-  # run behind some other workflow's live-session quota — the same reasoning
-  # release-python.yml's and release-cpp.yml's own integration jobs already
-  # follow.
+  # splitting it out costs nothing to rebuild and keeps a real-model run out of
+  # the fast lint/unit-test path.
   js-integration-tests:
     name: JS SDK integration tests (real browser, real model)
     needs: detect-version
@@ -192,19 +189,6 @@ jobs:
     # push/workflow_dispatch), so this only needs to run before an actual
     # release.
     if: github.event_name != 'pull_request'
-    # This workflow's own top-level `concurrency:` is keyed on the ref, so it
-    # does nothing across a concurrent ci.yml run on the same push — which is
-    # exactly the 429 collision this job hit in practice per the comment
-    # above. Same per-commit group as every other job in this repo that
-    # creates reactor/echo sessions (ci.yml, release-python.yml,
-    # release-cpp.yml) — see ci.yml's own comment for why it's scoped to
-    # github.sha rather than one name shared by every PR (a GitHub Actions
-    # concurrency group only holds one running and one pending job; a fixed
-    # name shared repo-wide would let a third arrival cancel a required check
-    # outright instead of queueing it).
-    concurrency:
-      group: reactor-echo-live-session-quota-${{ github.sha }}
-      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
