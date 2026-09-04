@@ -3,6 +3,10 @@ import Foundation
 import Reactor
 import os
 
+#if os(iOS)
+    import UIKit
+#endif
+
 /// A camera, pushing what it sees into a sendonly video track.
 ///
 /// ```swift
@@ -35,6 +39,20 @@ public final class Camera: NSObject, @unchecked Sendable {
     private let log = Logger(subsystem: "inc.reactor.sdk", category: "camera")
 
     private let refused = Counter()
+
+    /// Scratch space for compacting padded rows, reused across frames.
+    ///
+    /// Touched only from `queue`, which delivers serially.
+    private var packed = [UInt8]()
+
+    #if os(iOS)
+        private var orientationObserver: NSObjectProtocol?
+
+        /// Whether *this* object asked UIKit to generate orientation
+        /// notifications, so stopping does not switch them off underneath an app
+        /// that wanted them for itself.
+        private var startedOrientationNotifications = false
+    #endif
 
     /// How many frames were captured but not pushed.
     ///
@@ -124,6 +142,9 @@ public final class Camera: NSObject, @unchecked Sendable {
     /// immediately is delivered rather than dropped.
     public func start() throws {
         guard !session.isRunning else { return }
+        #if os(iOS)
+            beginTrackingOrientation()
+        #endif
         gate.open()
         session.startRunning()
     }
@@ -136,8 +157,116 @@ public final class Camera: NSObject, @unchecked Sendable {
     /// waiting for the thread that is waiting for us.
     public func stop() {
         gate.close()
+        #if os(iOS)
+            endTrackingOrientation()
+        #endif
         guard session.isRunning else { return }
         session.stopRunning()
+    }
+
+    #if os(iOS)
+
+        /// Follow the device's orientation for as long as capture runs.
+        ///
+        /// The rotation is asked of the capture connection rather than done in
+        /// the delegate below: AVFoundation applies it inside the capture
+        /// pipeline, where it costs far less than rotating every frame by hand.
+        ///
+        /// UIKit's device orientation is main-thread state, so the whole of this
+        /// happens there.
+        private func beginTrackingOrientation() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let device = UIDevice.current
+                if !device.isGeneratingDeviceOrientationNotifications {
+                    device.beginGeneratingDeviceOrientationNotifications()
+                    startedOrientationNotifications = true
+                }
+                orientationObserver = NotificationCenter.default.addObserver(
+                    forName: UIDevice.orientationDidChangeNotification,
+                    object: device,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.applyRotation(CaptureOrientation.current(UIDevice.current.orientation))
+                }
+                // The orientation the device is already in: waiting for a change
+                // would leave the first seconds of every session sideways.
+                applyRotation(CaptureOrientation.current(device.orientation))
+            }
+        }
+
+        private func endTrackingOrientation() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if let orientationObserver {
+                    NotificationCenter.default.removeObserver(orientationObserver)
+                }
+                orientationObserver = nil
+                if startedOrientationNotifications {
+                    UIDevice.current.endGeneratingDeviceOrientationNotifications()
+                    startedOrientationNotifications = false
+                }
+            }
+        }
+
+        /// Point the capture connection the right way up.
+        ///
+        /// `nil` means the device reported face up, face down or unknown — none
+        /// of which name a way up — so whatever was set last is kept.
+        private func applyRotation(_ orientation: CaptureOrientation?) {
+            guard let orientation, let connection = output.connection(with: .video) else { return }
+            if #available(iOS 17.0, *) {
+                let angle = orientation.degrees
+                guard connection.isVideoRotationAngleSupported(angle) else { return }
+                connection.videoRotationAngle = angle
+            } else if connection.isVideoOrientationSupported {
+                connection.videoOrientation = orientation.videoOrientation
+            }
+        }
+    #endif
+}
+
+/// Copy `height` rows of `rowBytes` each out of a buffer whose rows sit `stride`
+/// apart, into a contiguous destination.
+///
+/// A free function, and internal, so it can be tested against a buffer built by
+/// hand: this is the one place in the capture path where an off-by-one produces
+/// a picture that is plausible and wrong — sheared by a few pixels a row, which
+/// reads as a bad camera rather than as a bug here.
+///
+/// `destination` must have room for `rowBytes * height`.
+func packRows(
+    from base: UnsafeRawPointer,
+    stride: Int,
+    rowBytes: Int,
+    height: Int,
+    into destination: UnsafeMutableRawPointer
+) {
+    for row in 0..<height {
+        memcpy(destination + row * rowBytes, base + row * stride, rowBytes)
+    }
+}
+
+extension Camera {
+
+    /// Pack a padded frame into ``packed``, sizing it to fit.
+    ///
+    /// Sized exactly, not merely grown: `pushFrame` is handed the whole buffer,
+    /// and a longer one would pass its length check while describing a frame that
+    /// is not the one in it. Dimensions change on a rotation and almost never
+    /// otherwise, so this reallocates about as often as someone turns the phone.
+    fileprivate func pack(
+        from base: UnsafeRawPointer, stride: Int, rowBytes: Int, height: UInt32
+    ) {
+        let needed = rowBytes * Int(height)
+        if packed.count != needed {
+            packed = [UInt8](repeating: 0, count: needed)
+        }
+        packed.withUnsafeMutableBytes { destination in
+            guard let target = destination.baseAddress else { return }
+            packRows(
+                from: base, stride: stride, rowBytes: rowBytes, height: Int(height), into: target)
+        }
     }
 }
 
@@ -159,27 +288,40 @@ extension Camera: AVCaptureVideoDataOutputSampleBufferDelegate {
             let width = UInt32(CVPixelBufferGetWidth(pixels))
             let height = UInt32(CVPixelBufferGetHeight(pixels))
             let stride = CVPixelBufferGetBytesPerRow(pixels)
-
-            // A padded row stride would make `width * height * 4` a lie, and the
-            // FFI reads exactly that many bytes. Refusing here beats sending a
-            // sheared picture.
-            guard stride == Int(width) * 4 else {
-                refused.increment()
-                log.error(
-                    "dropping a frame: row stride \(stride) is not \(width) * 4, so the buffer is padded and cannot be pushed as-is"
-                )
-                return
-            }
+            let rowBytes = Int(width) * 4
 
             do {
                 // The capture time comes from the SDK's clock rather than the
                 // sample buffer's: it is the epoch the far end reads, and sharing
                 // one reading across tracks is what synchronises them.
-                try track.pushFrame(
-                    UnsafeRawBufferPointer(start: base, count: Int(width) * Int(height) * 4),
-                    width: width,
-                    height: height,
-                    captureTimeUs: Reactor.timeMicros())
+                let captureTime = Reactor.timeMicros()
+
+                if stride == rowBytes {
+                    // The sensor's own memory, pushed untouched. Every Mac lands
+                    // here, and so does a phone whose frames need no packing.
+                    try track.pushFrame(
+                        UnsafeRawBufferPointer(start: base, count: rowBytes * Int(height)),
+                        width: width,
+                        height: height,
+                        captureTimeUs: captureTime)
+                } else {
+                    // A padded stride makes `width * height * 4` a lie, and the
+                    // FFI reads exactly that many bytes, so the rows are packed
+                    // into a contiguous buffer rather than sent sheared.
+                    //
+                    // This used to refuse the frame. That became the wrong answer
+                    // the moment capture rotation arrived: AVFoundation aligns
+                    // the rows of a rotated buffer, so a portrait iPhone would
+                    // have pushed nothing at all and said so only in a log line —
+                    // trading sideways video for no video. A copy on this path is
+                    // the cheaper mistake, and the unpadded path above still does
+                    // no copying at all.
+                    pack(from: base, stride: stride, rowBytes: rowBytes, height: height)
+                    try packed.withUnsafeBytes { buffer in
+                        try track.pushFrame(
+                            buffer, width: width, height: height, captureTimeUs: captureTime)
+                    }
+                }
             } catch {
                 // Almost always "not published yet". Logged rather than thrown,
                 // because a delegate cannot throw — and counted, so

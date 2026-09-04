@@ -106,6 +106,20 @@ without a camera.
 **visionOS in compatibility mode has no camera.** `Camera` says so by name rather
 than reporting a missing permission, because no permission will ever appear.
 
+**On iOS the camera follows the device.** A phone's sensor is mounted landscape
+and `AVCaptureVideoDataOutput` hands over what it saw, so an upright iPhone would
+otherwise push the model a picture lying on its side — well-formed, correctly
+sized, and wrong, with nothing downstream able to tell. `Camera` watches the
+device's orientation while it captures and asks the capture connection to rotate,
+which AVFoundation does in the pipeline rather than costing a rotate per frame.
+Face up and face down name no way up, so the last real orientation is kept.
+
+That rotation is also why a padded row stride is now packed rather than refused:
+AVFoundation aligns the rows of a rotated buffer, and refusing them would have
+traded sideways video for no video at all. Frames whose rows are already
+contiguous — every Mac, and a phone held the camera's own way up — still go to
+the wire without a copy.
+
 ## The XCFramework
 
 A release carries `libreactor_ffi` as an XCFramework, which is what a consumer
