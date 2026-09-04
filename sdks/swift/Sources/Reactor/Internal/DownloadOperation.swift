@@ -73,6 +73,20 @@ final class DownloadOperation: @unchecked Sendable {
                     operation: "download_clip")))
     }
 
+    /// Settle a download that never reached the library, because the client was
+    /// already closed when it was asked for.
+    ///
+    /// Distinct from ``abandonForTeardown()`` on purpose: nothing is downloading
+    /// here, so there is no file to go looking for.
+    func refuseAsClosed() {
+        settle(
+            .failure(
+                ReactorError(
+                    .invalidState,
+                    "the client is closed, so this download cannot start",
+                    operation: "download_clip")))
+    }
+
     private func decode(_ payload: String?) -> Result<DownloadResult, any Error> {
         guard let payload, let data = payload.data(using: .utf8),
             let object = try? JSONDecoder().decode(JSONValue.self, from: data),

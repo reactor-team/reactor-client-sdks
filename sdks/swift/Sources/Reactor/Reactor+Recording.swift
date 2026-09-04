@@ -78,42 +78,50 @@ extension Reactor {
         }
 
         let operation = DownloadOperation(outPath: url, owner: self, progress: progress)
-        let handle = state.withLock { state -> OpaquePointer? in
-            // A download may outlive the client, but starting one on a client
-            // that is already closed has nothing to bound it and no handle to
-            // read a session from.
-            guard !state.closed else { return nil }
-            state.downloads[ObjectIdentifier(operation)] = operation
-            return state.handle
-        }
-
-        guard let handle else {
-            throw ReactorError(
-                .invalidState,
-                "the client is closed, so this download cannot start",
-                operation: "download_clip")
-        }
 
         let jwt = self.jwt
         let local = self.isLocal
         let predicted = clip.predictedReadyAtMS ?? 0
 
         return try await withCheckedThrowingContinuation { continuation in
+            // Attached before the operation is reachable from `state`, so a
+            // teardown that finds it always has something to settle. The other
+            // order left a window where close() abandoned an operation with no
+            // continuation yet, and the one attached afterwards was never
+            // resumed — the caller's await never returned.
             operation.attach(continuation)
-            // The ticket, not the operation, is what the library holds: it
-            // carries only a weak reference, and the completion frees it.
-            let ticket = Unmanaged.passRetained(DownloadTicket(operation: operation)).toOpaque()
 
-            clip.playlistURL.withCString { playlistPointer in
-                withOptionalCString(jwt) { jwtPointer in
-                    url.path.withCString { pathPointer in
-                        ffi.downloadClip(
-                            handle, playlistPointer, jwtPointer, pathPointer, predicted,
-                            timeoutSeconds, local ? 1 : 0, downloadProgressTrampoline,
-                            downloadCompletionTrampoline, ticket)
+            // Registration and the FFI entry under one barrier, for the reason
+            // `perform` does the same: without it, close() could destroy the
+            // handle between reading it and calling with it, and this call —
+            // whose contract requires a live handle — got a freed one.
+            //
+            // A download may outlive the client, but starting one on a client
+            // that is already closed has nothing to bound it and no handle to
+            // read a session from.
+            let started = withHandle(else: false) { handle in
+                state.withLock { $0.downloads[ObjectIdentifier(operation)] = operation }
+
+                // The ticket, not the operation, is what the library holds: it
+                // carries only a weak reference, and the completion frees it.
+                let ticket = Unmanaged.passRetained(DownloadTicket(operation: operation))
+                    .toOpaque()
+
+                clip.playlistURL.withCString { playlistPointer in
+                    withOptionalCString(jwt) { jwtPointer in
+                        url.path.withCString { pathPointer in
+                            ffi.downloadClip(
+                                handle, playlistPointer, jwtPointer, pathPointer, predicted,
+                                timeoutSeconds, local ? 1 : 0, downloadProgressTrampoline,
+                                downloadCompletionTrampoline, ticket)
+                        }
                     }
                 }
+                return true
             }
+
+            guard !started else { return }
+            operation.refuseAsClosed()
         }
     }
 
