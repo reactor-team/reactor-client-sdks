@@ -72,7 +72,9 @@ pub struct ConnectionStats {
     /// Fraction of inbound packets lost since the connection came up, `0.0`–`1.0`.
     ///
     /// Cumulative rather than per-window, matching the browser SDK. Summed across
-    /// receive streams. `None` until at least one packet has been accounted for.
+    /// receive streams, with each stream's count floored at zero first: a
+    /// negative count is that stream's duplicates and must not cancel a real loss
+    /// on another. `None` until at least one packet has been accounted for.
     pub packet_loss_ratio: Option<f64>,
 
     /// Receive rate over the window since the previous sample, in bits per second.
@@ -111,8 +113,10 @@ pub struct ConnectionStats {
     /// window it likes.
     pub packets_received: u64,
     /// Signed, and the sign is meaningful: RFC 3550 allows a negative count when
-    /// duplicates arrive. [`ConnectionStats::packet_loss_ratio`] floors it at zero
-    /// instead, since a negative fraction of packets lost is not a fraction.
+    /// duplicates arrive. This is the plain sum across receive streams, so one
+    /// stream's duplicates do offset another's losses here —
+    /// [`ConnectionStats::packet_loss_ratio`] floors each stream instead, and is
+    /// the field to read for "how bad is it".
     pub packets_lost: i64,
     pub packets_sent: u64,
     pub bytes_received: u64,
@@ -209,9 +213,18 @@ impl StatsSampler {
 
         // ── Receive side ────────────────────────────────────────────────────
         let mut worst_jitter: Option<f64> = None;
+        // Floored *per stream*, not once over the total. A negative count is one
+        // stream's duplicates (RFC 3550 allows it), and it says nothing about any
+        // other stream — so summing the signed values first lets one stream's
+        // duplicates cancel another's real loss. Audio at -10 and video at +10
+        // then report a ratio of zero on a connection that is dropping video.
+        // `packets_lost` below stays the signed aggregate, which is what it is
+        // documented as.
+        let mut lost_for_ratio: u64 = 0;
         for s in &raw.inbound {
             stats.packets_received += u64::from(s.packets_received);
             stats.packets_lost += i64::from(s.packets_lost);
+            lost_for_ratio += u64::try_from(s.packets_lost).unwrap_or(0);
             stats.bytes_received += s.bytes_received;
             // NaN cannot come from a counter, but it can come from a float field
             // an engine left uninitialised, and `max` on a NaN silently keeps
@@ -231,13 +244,11 @@ impl StatsSampler {
         }
         stats.jitter_s = worst_jitter;
 
-        // Negative loss (duplicates) floors at zero: the ratio is a fraction of
-        // packets accounted for, and a negative fraction is not one. The signed
-        // count stays available in `packets_lost` for anyone who wants it.
-        let lost = stats.packets_lost.max(0) as u64;
-        let accounted = stats.packets_received + lost;
+        // The ratio is a fraction of the packets accounted for, and a negative
+        // fraction is not one — hence the flooring, done per stream above.
+        let accounted = stats.packets_received + lost_for_ratio;
         if accounted > 0 {
-            stats.packet_loss_ratio = Some(lost as f64 / accounted as f64);
+            stats.packet_loss_ratio = Some(lost_for_ratio as f64 / accounted as f64);
         }
 
         // ── Send side ───────────────────────────────────────────────────────
@@ -522,6 +533,37 @@ mod tests {
         // The sign survives where it is meaningful, and is floored where it is not.
         assert_eq!(stats.packets_lost, -3);
         assert_eq!(stats.packet_loss_ratio, Some(0.0));
+    }
+
+    /// One stream's duplicates must not cancel another's real loss.
+    ///
+    /// The bug this pins: summing the signed counts first and flooring the total
+    /// reported 0% on a connection dropping every tenth video packet, because an
+    /// audio stream happened to have received duplicates.
+    #[test]
+    fn duplicates_on_one_stream_do_not_hide_loss_on_another() {
+        let sampler = StatsSampler::new();
+        let raw = TransportStats {
+            inbound: vec![
+                // Audio: duplicates, so RFC 3550's count went negative.
+                inbound(1, 0, 100, -10),
+                // Video: ten genuinely lost out of ninety accounted for.
+                inbound(2, 0, 80, 10),
+            ],
+            ..TransportStats::default()
+        };
+
+        let stats = sampler.sample(&raw, 1_000.0);
+
+        // The signed aggregate still offsets — that is what it is for, and what
+        // it is documented as.
+        assert_eq!(stats.packets_lost, 0);
+        // The ratio must not. 10 lost of (180 received + 10 lost).
+        let ratio = stats.packet_loss_ratio.expect("a ratio");
+        assert!(
+            (ratio - 10.0 / 190.0).abs() < 1e-12,
+            "expected ~5.3% loss, got {ratio}"
+        );
     }
 
     #[test]
