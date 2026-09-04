@@ -18,6 +18,21 @@ final class PendingCompletion: @unchecked Sendable {
     let operation: String
 
     private let state = Locked<CheckedContinuation<String?, any Error>?>(nil)
+
+    /// Whether the FFI still holds the `passRetained` reference to this object
+    /// that was handed to it as `userdata`.
+    ///
+    /// That reference is balanced by exactly one of two things: the completion
+    /// trampoline consuming it, or teardown taking it back once `reactor_destroy`
+    /// has answered that no completion will arrive. Whoever claims it first owns
+    /// it and the other finds nothing — the same "first one wins" rule the
+    /// continuation itself follows, for the same reason.
+    ///
+    /// Without it, closing with an operation in flight leaks this object, its
+    /// continuation and everything that continuation retains, because destroy
+    /// deliberately suppresses the completion that would have balanced it.
+    private let retainedByLibrary = Locked(false)
+
     private weak var owner: Reactor?
 
     init(operation: String, owner: Reactor) {
@@ -50,6 +65,21 @@ final class PendingCompletion: @unchecked Sendable {
         settle(.failure(error))
     }
 
+    /// Record that the FFI was handed a retained reference to this object.
+    func retainedByFFI() {
+        retainedByLibrary.withLock { $0 = true }
+    }
+
+    /// Take ownership of that reference, if it is still outstanding.
+    ///
+    /// Answers `true` to exactly one caller; whoever gets it must release it.
+    func claimRetainedReference() -> Bool {
+        retainedByLibrary.withLock { outstanding in
+            defer { outstanding = false }
+            return outstanding
+        }
+    }
+
     private func settle(_ outcome: Result<String?, any Error>) {
         // Taking the continuation out under the lock is what makes "exactly
         // once" true: whoever finds it settles it, and everyone after finds nil.
@@ -68,9 +98,19 @@ final class PendingCompletion: @unchecked Sendable {
 /// which is what lets it be a `@convention(c)` pointer at all.
 let completionTrampoline: reactor_completion_fn = { ok, resultJSON, errorJSON, userdata in
     guard let userdata else { return }
-    // takeRetainedValue balances the passRetained at the call site. The FFI
-    // promises exactly one completion per call, so this is the one place the
-    // reference is consumed.
-    let pending = Unmanaged<PendingCompletion>.fromOpaque(userdata).takeRetainedValue()
+    let unmanaged = Unmanaged<PendingCompletion>.fromOpaque(userdata)
+    let pending = unmanaged.takeUnretainedValue()
+
+    // Claimed rather than consumed outright, because teardown can get here
+    // first: reactor_destroy suppresses the completions of operations still in
+    // flight, and having promised they will never arrive, close() takes the
+    // reference back itself. Exactly one of the two releases it.
+    //
+    // Reaching this object at all is safe on the same promise the callback
+    // context relies on: close() only releases after destroy has answered 0,
+    // which means no callback is running and none will start.
+    guard pending.claimRetainedReference() else { return }
+    defer { unmanaged.release() }
+
     pending.complete(ok: ok, resultJSON: resultJSON, errorJSON: errorJSON)
 }

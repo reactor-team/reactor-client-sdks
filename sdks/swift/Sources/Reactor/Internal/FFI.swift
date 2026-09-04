@@ -53,6 +53,11 @@ struct FFI: Sendable {
     /// takes the mode from an environment variable instead, which is how a model
     /// declaring a sendonly audio track would end up putting a live microphone on
     /// the wire without anyone asking.
+    ///
+    /// `sdkVersion` and `sdkType` are reported to the coordinator as
+    /// `client_info`. Every binding shares this entry point, which would
+    /// otherwise report `ffi` for all of them — Python sends `python`, so this
+    /// sends `swift`.
     var createWithADM:
         @Sendable (
             _ apiURL: UnsafePointer<CChar>?,
@@ -60,7 +65,9 @@ struct FFI: Sendable {
             _ jwt: UnsafePointer<CChar>?,
             _ local: Int32,
             _ callbacks: UnsafePointer<ReactorCallbacks>?,
-            _ admMode: Int32
+            _ admMode: Int32,
+            _ sdkVersion: UnsafePointer<CChar>?,
+            _ sdkType: UnsafePointer<CChar>?
         ) -> OpaquePointer?
 
     /// `reactor_destroy` — 0 when no callback is running and none will start,
@@ -101,8 +108,9 @@ extension FFI {
     static let system = FFI(
         abiVersion: { reactor_abi_version() },
         freeString: { pointer in reactor_free_string(pointer) },
-        createWithADM: { apiURL, model, jwt, local, callbacks, admMode in
-            reactor_create_with_adm(apiURL, model, jwt, local, callbacks, admMode)
+        createWithADM: { apiURL, model, jwt, local, callbacks, admMode, sdkVersion, sdkType in
+            reactor_create_with_adm(
+                apiURL, model, jwt, local, callbacks, admMode, sdkVersion, sdkType)
         },
         destroy: { handle in reactor_destroy(handle) },
         connect: { handle, sessionID, connectionID, completion, userdata in

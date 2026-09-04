@@ -393,6 +393,116 @@ struct ReactorLifetimeTests {
         #expect((outcome.withLock { $0 } as? ReactorError)?.code == .aborted)
     }
 
+    @Test("closing with an operation in flight releases what the library was handed")
+    func closeBalancesTheRetainedCompletion() async throws {
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake)
+
+        let settled = Locked(false)
+        Task {
+            _ = try? await client.connect()
+            settled.withLock { $0 = true }
+        }
+        #expect(await waitUntil { fake.hasPendingCompletion }, "the SDK never called the library")
+        #expect(fake.lastUserdataIsAlive)
+
+        // reactor_destroy suppresses the completions of operations still in
+        // flight, so the completion callback — the only thing that would balance
+        // the SDK's passRetained — will never run. Teardown has to take that
+        // reference back itself, or every close() with an operation outstanding
+        // leaks it, its continuation and everything the continuation holds.
+        client.close()
+
+        #expect(await waitUntil { settled.withLock { $0 } })
+        #expect(
+            await waitUntil { !fake.lastUserdataIsAlive },
+            "close leaked the completion it handed the library")
+    }
+
+    @Test("a destroy that could not quiesce keeps the completion alive too")
+    func minusOneKeepsTheRetainedCompletion() async throws {
+        let fake = FakeLibrary()
+        fake.destroyResult = -1
+        let client = try makeClient(fake: fake)
+
+        Task { _ = try? await client.connect() }
+        #expect(await waitUntil { fake.hasPendingCompletion }, "the SDK never called the library")
+
+        // -1 means a callback could not be waited for, so the completion may
+        // still fire and reach this pointer. Keeping it alive is correct here
+        // for the same reason releasing it above is: freeing it would be the
+        // use-after-free the ABI warns about.
+        client.close()
+
+        #expect(fake.lastUserdataIsAlive)
+    }
+
+    @Test("the client names itself to the coordinator as the Swift SDK")
+    func reportsItsOwnSDKTypeAndVersion() throws {
+        // Every binding reaches the platform through the same FFI entry point,
+        // which reports "ffi" for all of them unless the binding says otherwise.
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+
+        #expect(fake.createCalls.first?.sdkType == "swift")
+        #expect(fake.createCalls.first?.sdkVersion == ReactorSDK.version)
+    }
+
+    @Test("close waits for a read that is already inside the library")
+    func closeWaitsForAnInFlightRead() throws {
+        // The ABI requires the handle to be live *at call time*, so reading it
+        // under the state lock and calling with it afterwards is not enough:
+        // reactor_destroy landing in between frees the handle the read is still
+        // using. This pins the ordering rather than the pointer, because a fake
+        // library cannot make a use-after-free observable — its handle is a
+        // stable allocation, so a test that merely raced the two would pass with
+        // or without the barrier.
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake)
+
+        let readerIsInside = DispatchSemaphore(value: 0)
+        let closeIsComing = DispatchSemaphore(value: 0)
+
+        fake.whileReadingStatus = {
+            readerIsInside.signal()
+            // Hold the ABI until close() has been asked for and has had time to
+            // get ahead. A window close() is never given a chance to enter
+            // proves nothing.
+            _ = closeIsComing.wait(timeout: .now() + .seconds(2))
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        let reader = Thread { _ = client.status }
+        reader.start()
+        readerIsInside.wait()
+
+        closeIsComing.signal()
+        client.close()
+
+        #expect(fake.events == [.statusEntered, .statusReturned, .destroyed])
+    }
+
+    @Test("closing while reads run neither deadlocks nor reports a live session")
+    func concurrentCloseAndReads() async throws {
+        // The barrier is a second lock taken in the order barrier-then-state.
+        // This is the check that nothing takes them the other way round, and
+        // that the reads answer honestly once the handle is gone.
+        for _ in 0..<200 {
+            let fake = FakeLibrary()
+            let client = try makeClient(fake: fake)
+
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { _ = client.status }
+                group.addTask { _ = client.sessionID }
+                group.addTask { client.close() }
+            }
+
+            #expect(client.status == .disconnected)
+            #expect(client.sessionID == nil)
+        }
+    }
+
     @Test("an operation on a closed client is refused, not silently dropped")
     func operationAfterCloseThrows() async throws {
         let fake = FakeLibrary()
