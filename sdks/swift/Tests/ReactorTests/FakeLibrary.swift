@@ -26,6 +26,8 @@ final class FakeLibrary: @unchecked Sendable {
     enum Event: Equatable {
         case statusEntered
         case statusReturned
+        case downloadEntered
+        case downloadReturned
         case destroyed
     }
 
@@ -61,10 +63,19 @@ final class FakeLibrary: @unchecked Sendable {
         var schemaCalls = 0
         var uploadFileCalls: [String] = []
         var uploadBytesCalls: [UploadBytesCall] = []
+        var clipCalls: [Double] = []
+        var recordingCalls = 0
+        var downloadCalls: [DownloadCall] = []
+        var lastDownload:
+            (
+                progress: reactor_progress_fn?, completion: reactor_completion_fn,
+                userdata: UnsafeMutableRawPointer
+            )?
         var lastCompletion: (fn: reactor_completion_fn, userdata: UnsafeMutableRawPointer)?
         weak var lastUserdataObject: AnyObject?
         var events: [Event] = []
         var whileReadingStatus: (@Sendable () -> Void)?
+        var whileStartingDownload: (@Sendable () -> Void)?
     }
 
     private let state = Locked(State())
@@ -107,6 +118,16 @@ final class FakeLibrary: @unchecked Sendable {
         var mimeType: String?
     }
 
+    /// What the SDK handed `reactor_download_clip`.
+    struct DownloadCall {
+        var playlistURL: String?
+        var jwt: String?
+        var outPath: String?
+        var predictedReadyAtMS: Double
+        var readyTimeoutSeconds: Double
+        var local: Int32
+    }
+
     /// What `reactor_destroy` answers: 0 (quiesced) or -1 (a callback is still
     /// running and the pointers must be kept alive).
     var destroyResult: Int32 = 0
@@ -135,6 +156,12 @@ final class FakeLibrary: @unchecked Sendable {
         set { state.withLock { $0.whileReadingStatus = newValue } }
     }
 
+    /// Run this inside `reactor_download_clip`, before it returns.
+    var whileStartingDownload: (@Sendable () -> Void)? {
+        get { state.withLock { $0.whileStartingDownload } }
+        set { state.withLock { $0.whileStartingDownload = newValue } }
+    }
+
     /// Whether the object the SDK passed as the last `userdata` is still alive.
     var lastUserdataIsAlive: Bool { state.withLock { $0.lastUserdataObject != nil } }
     var destroyCount: Int { state.withLock { $0.destroyCount } }
@@ -152,6 +179,42 @@ final class FakeLibrary: @unchecked Sendable {
     var schemaCalls: Int { state.withLock { $0.schemaCalls } }
     var uploadFileCalls: [String] { state.withLock { $0.uploadFileCalls } }
     var uploadBytesCalls: [UploadBytesCall] { state.withLock { $0.uploadBytesCalls } }
+    var clipCalls: [Double] { state.withLock { $0.clipCalls } }
+    var recordingCalls: Int { state.withLock { $0.recordingCalls } }
+    var downloadCalls: [DownloadCall] { state.withLock { $0.downloadCalls } }
+    var hasPendingDownload: Bool { state.withLock { $0.lastDownload != nil } }
+
+    /// Report progress on the download in flight, as the library's own download
+    /// thread would.
+    func reportDownloadProgress(done: UInt32, total: UInt32) {
+        guard let call = state.withLock({ $0.lastDownload }), let progress = call.progress else {
+            return
+        }
+        progress(done, total, call.userdata)
+    }
+
+    /// Answer the download in flight.
+    ///
+    /// Deliberately usable *after* the client is gone: this call is the one the
+    /// header says outlives the handle, and a fake that could not do that could
+    /// not test the shape that matters.
+    func completeDownload(ok: Bool, result: String? = nil, error: String? = nil) {
+        guard
+            let call = state.withLock({
+                state -> (
+                    progress: reactor_progress_fn?, completion: reactor_completion_fn,
+                    userdata: UnsafeMutableRawPointer
+                )? in
+                defer { state.lastDownload = nil }
+                return state.lastDownload
+            })
+        else { return }
+        withOptionalCString(result) { resultPointer in
+            withOptionalCString(error) { errorPointer in
+                call.completion(ok ? 1 : 0, resultPointer, errorPointer, call.userdata)
+            }
+        }
+    }
 
     /// Whether an operation is waiting on a completion the fake has not fired.
     var hasPendingCompletion: Bool { state.withLock { $0.lastCompletion != nil } }
@@ -439,6 +502,36 @@ final class FakeLibrary: @unchecked Sendable {
                             mimeType: String(borrowing: mimeType)))
                 }
                 record(completion, userdata)
+            },
+            requestClip: { [self] _, duration, completion, userdata in
+                state.withLock { $0.clipCalls.append(duration) }
+                record(completion, userdata)
+            },
+            requestRecording: { [self] _, completion, userdata in
+                state.withLock { $0.recordingCalls += 1 }
+                record(completion, userdata)
+            },
+            downloadClip: {
+                [self]
+                _, playlistURL, jwt, outPath, predicted, timeout, local, progress,
+                completion, userdata in
+                let hook = state.withLock { state -> (@Sendable () -> Void)? in
+                    state.events.append(.downloadEntered)
+                    state.downloadCalls.append(
+                        DownloadCall(
+                            playlistURL: String(borrowing: playlistURL),
+                            jwt: String(borrowing: jwt),
+                            outPath: String(borrowing: outPath),
+                            predictedReadyAtMS: predicted,
+                            readyTimeoutSeconds: timeout,
+                            local: local))
+                    if let completion, let userdata {
+                        state.lastDownload = (progress, completion, userdata)
+                    }
+                    return state.whileStartingDownload
+                }
+                hook?()
+                state.withLock { $0.events.append(.downloadReturned) }
             }
         )
     }

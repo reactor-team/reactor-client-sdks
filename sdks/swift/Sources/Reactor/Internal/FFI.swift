@@ -188,6 +188,29 @@ struct FFI: Sendable {
             _ name: UnsafePointer<CChar>?, _ mimeType: UnsafePointer<CChar>?,
             _ completion: reactor_completion_fn?, _ userdata: UnsafeMutableRawPointer?
         ) -> Void
+
+    /// `reactor_request_clip` — a clip of the last `duration_seconds`.
+    var requestClip:
+        @Sendable (OpaquePointer?, Double, reactor_completion_fn?, UnsafeMutableRawPointer?) -> Void
+
+    /// `reactor_request_recording` — a full-session recording.
+    var requestRecording:
+        @Sendable (OpaquePointer?, reactor_completion_fn?, UnsafeMutableRawPointer?) -> Void
+
+    /// `reactor_download_clip` — fetch and assemble a clip's HLS segments.
+    ///
+    /// **Not bounded by `reactor_destroy`.** The header says so plainly: a
+    /// download outlives the handle it was given one of, so its completion can
+    /// arrive after the client is gone. Everything about how this is called
+    /// follows from that.
+    var downloadClip:
+        @Sendable (
+            _ handle: OpaquePointer?, _ playlistURL: UnsafePointer<CChar>?,
+            _ jwt: UnsafePointer<CChar>?, _ outPath: UnsafePointer<CChar>?,
+            _ predictedReadyAtMS: Double, _ readyTimeoutSeconds: Double, _ local: Int32,
+            _ progress: reactor_progress_fn?, _ completion: reactor_completion_fn?,
+            _ userdata: UnsafeMutableRawPointer?
+        ) -> Void
 }
 
 extension FFI {
@@ -249,6 +272,19 @@ extension FFI {
         },
         uploadBytes: { handle, data, length, name, mimeType, completion, userdata in
             reactor_upload_bytes(handle, data, length, name, mimeType, completion, userdata)
+        },
+        requestClip: { handle, duration, completion, userdata in
+            reactor_request_clip(handle, duration, completion, userdata)
+        },
+        requestRecording: { handle, completion, userdata in
+            reactor_request_recording(handle, completion, userdata)
+        },
+        downloadClip: {
+            handle, playlistURL, jwt, outPath, predicted, timeout, local, progress, completion,
+            userdata in
+            reactor_download_clip(
+                handle, playlistURL, jwt, outPath, predicted, timeout, local, progress, completion,
+                userdata)
         }
     )
 }
