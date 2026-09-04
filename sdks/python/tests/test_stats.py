@@ -29,7 +29,12 @@ FULL_PAYLOAD: dict[str, Any] = {
     "packet_loss_ratio": 0.002,
     "incoming_bitrate_bps": 1_843_200.0,
     "outgoing_bitrate_bps": 96_000.0,
+    "available_incoming_bitrate_bps": 3_000_000.0,
+    "available_outgoing_bitrate_bps": 1_500_000.0,
     "target_bitrate_bps": 2_500_000.0,
+    "frames_per_second": 29.97,
+    "candidate_type": "relay",
+    "relay_protocol": "tls",
     "candidate_pair_state": "succeeded",
     "packets_received": 4_021,
     "packets_lost": 8,
@@ -40,35 +45,61 @@ FULL_PAYLOAD: dict[str, Any] = {
     "inbound": [
         {
             "ssrc": 111,
+            "kind": "video",
             "packets_received": 4_021,
             "packets_lost": 8,
             "bytes_received": 5_123_456,
             "jitter_s": 0.004,
             "nack_count": 2,
             "total_decode_time_s": 1.25,
+            "frames_per_second": 29.97,
+            "frames_decoded": 900,
+            "frames_dropped": 1,
+            "frame_width": 1920,
+            "frame_height": 1080,
         }
     ],
     "outbound": [
         {
             "ssrc": 222,
+            "kind": "audio",
             "packets_sent": 512,
             "retransmitted_packets_sent": 1,
             "bytes_sent": 65_536,
             "target_bitrate_bps": 2_500_000.0,
+            "frames_per_second": 0.0,
+            "frames_sent": 0,
+            "frame_width": 0,
+            "frame_height": 0,
             "round_trip_time_s": 0.0215,
+            "total_round_trip_time_s": 2.15,
+            "fraction_lost": 0.001,
+            "packets_lost": 3,
         }
     ],
     "candidate_pairs": [
         {
             "current_round_trip_time_s": 0.0215,
+            "total_round_trip_time_s": 2.15,
             "priority": 9_115_038_255_631_187_199,
             "state": "succeeded",
+            "nominated": True,
+            "writable": True,
+            "available_outgoing_bitrate_bps": 1_500_000.0,
+            "available_incoming_bitrate_bps": 3_000_000.0,
+            "bytes_sent": 65_536,
+            "bytes_received": 5_123_456,
+            # Past 2^32, which is where these wrapped before reactor-webrtc 0.15.
+            "packets_sent": 5_000_000_000,
+            "packets_received": 5_000_000_001,
+            "local_candidate_type": "relay",
+            "local_relay_protocol": "tls",
         }
     ],
 }
 
 # What the core serializes on the first sample after connecting: counters, but
-# nothing to have derived a rate from yet.
+# nothing to have derived a rate from yet, and no pair nominated.
 FIRST_SAMPLE_PAYLOAD: dict[str, Any] = {
     **FULL_PAYLOAD,
     "rtt_ms": None,
@@ -76,7 +107,12 @@ FIRST_SAMPLE_PAYLOAD: dict[str, Any] = {
     "packet_loss_ratio": None,
     "incoming_bitrate_bps": None,
     "outgoing_bitrate_bps": None,
+    "available_incoming_bitrate_bps": None,
+    "available_outgoing_bitrate_bps": None,
     "target_bitrate_bps": None,
+    "frames_per_second": None,
+    "candidate_type": None,
+    "relay_protocol": None,
     "candidate_pair_state": None,
     "inbound": [],
     "outbound": [],
@@ -188,6 +224,88 @@ class TestGetStatsDispatch:
             await Reactor("m").get_stats()
 
 
+class TestTheFieldsReactorWebrtc015Added:
+    """The four the JS SDK had and this SDK could not fill, plus the stream kind
+    that made jitter and loss answerable about the video stream at all.
+
+    Each one is a field that was documented as absent until REA-6019, so a test
+    that only checks it decodes is worth having: the alternative was a `None` a
+    caller could not distinguish from "not measured".
+    """
+
+    async def test_the_four_missing_scalars_come_through(self) -> None:
+        reactor = _reactor()
+
+        with mock.patch("reactor_sdk.client.get_lib", return_value=_lib_answering(FULL_PAYLOAD)):
+            stats = await reactor.get_stats()
+
+        assert stats.candidate_type == "relay"
+        assert stats.available_incoming_bitrate_bps == 3_000_000.0
+        assert stats.available_outgoing_bitrate_bps == 1_500_000.0
+        assert stats.frames_per_second == 29.97
+        # Not a JS field; ours, and only meaningful when relayed.
+        assert stats.relay_protocol == "tls"
+
+    async def test_a_stream_says_whether_it_is_audio_or_video(self) -> None:
+        reactor = _reactor()
+
+        with mock.patch("reactor_sdk.client.get_lib", return_value=_lib_answering(FULL_PAYLOAD)):
+            stats = await reactor.get_stats()
+
+        assert stats.inbound[0].kind == "video"
+        assert stats.outbound[0].kind == "audio"
+
+    async def test_the_video_frame_counters_come_through(self) -> None:
+        reactor = _reactor()
+
+        with mock.patch("reactor_sdk.client.get_lib", return_value=_lib_answering(FULL_PAYLOAD)):
+            stats = await reactor.get_stats()
+
+        s = stats.inbound[0]
+        assert (s.frame_width, s.frame_height) == (1920, 1080)
+        assert s.frames_decoded == 900
+        assert s.frames_dropped == 1
+
+    async def test_the_send_paths_own_loss_and_rtt_come_through(self) -> None:
+        """From the receiver's RTCP report about us — all three were absent."""
+        reactor = _reactor()
+
+        with mock.patch("reactor_sdk.client.get_lib", return_value=_lib_answering(FULL_PAYLOAD)):
+            stats = await reactor.get_stats()
+
+        s = stats.outbound[0]
+        assert s.total_round_trip_time_s == 2.15
+        assert s.fraction_lost == 0.001
+        assert s.packets_lost == 3
+
+    async def test_the_pair_says_whether_ice_selected_it(self) -> None:
+        reactor = _reactor()
+
+        with mock.patch("reactor_sdk.client.get_lib", return_value=_lib_answering(FULL_PAYLOAD)):
+            stats = await reactor.get_stats()
+
+        p = stats.candidate_pairs[0]
+        assert p.nominated is True
+        assert p.writable is True
+        assert p.local_candidate_type == "relay"
+        assert p.local_relay_protocol == "tls"
+        # The pair's own counters, wider than the per-stream ones.
+        assert p.bytes_received == 5_123_456
+        assert p.available_incoming_bitrate_bps == 3_000_000.0
+
+    async def test_a_pair_counter_past_2_to_the_32_survives(self) -> None:
+        """These were `uint32_t` across the C ABI until reactor-webrtc 0.15 and
+        wrapped silently on a long-lived connection."""
+        reactor = _reactor()
+
+        with mock.patch("reactor_sdk.client.get_lib", return_value=_lib_answering(FULL_PAYLOAD)):
+            stats = await reactor.get_stats()
+
+        p = stats.candidate_pairs[0]
+        assert p.packets_sent == 5_000_000_000
+        assert p.packets_received == 5_000_000_001
+
+
 class TestDecodeRefusesRatherThanGuessing:
     """Every row here used to be a `ConnectionStats` full of zeroes, which is
     indistinguishable from a connection that is up and carrying nothing."""
@@ -230,6 +348,23 @@ class TestDecodeRefusesRatherThanGuessing:
 
     def test_a_malformed_inbound_entry_raises(self) -> None:
         payload = {**FULL_PAYLOAD, "inbound": [{"ssrc": 111}]}
+
+        with pytest.raises(DecodeError, match="could not be read"):
+            stats_from_payload(payload)
+
+    def test_an_inbound_entry_missing_a_frame_counter_raises(self) -> None:
+        """The 0.15 fields are required like every other counter: an entry
+        missing one is a payload this SDK does not understand, not a stream with
+        no frames."""
+        entry = {k: v for k, v in FULL_PAYLOAD["inbound"][0].items() if k != "frames_decoded"}
+        payload = {**FULL_PAYLOAD, "inbound": [entry]}
+
+        with pytest.raises(DecodeError, match="could not be read"):
+            stats_from_payload(payload)
+
+    def test_a_pair_missing_its_nominated_flag_raises(self) -> None:
+        entry = {k: v for k, v in FULL_PAYLOAD["candidate_pairs"][0].items() if k != "nominated"}
+        payload = {**FULL_PAYLOAD, "candidate_pairs": [entry]}
 
         with pytest.raises(DecodeError, match="could not be read"):
             stats_from_payload(payload)
