@@ -29,9 +29,34 @@ public final class Reactor: @unchecked Sendable {
     /// Where a coordinator run locally listens.
     public static let localAPIURL = "http://localhost:8080"
 
+    /// Reported to the coordinator as `client_info.sdk_type`.
+    ///
+    /// Every binding reaches the platform through the same FFI entry point,
+    /// which would otherwise report `ffi` for all of them — this is what lets
+    /// the coordinator tell Swift traffic from Python's and C++'s.
+    static let sdkType = "swift"
+
     private let ffi: FFI
     private let dispatcher: EventDispatcher
     private let state = Locked(State())
+
+    /// Held for the duration of every synchronous call into the library, and by
+    /// ``close()`` around `reactor_destroy`.
+    ///
+    /// Reading the handle under `state`'s lock and calling with it afterwards is
+    /// not enough: the ABI requires a live handle *at call time*, so a `close()`
+    /// landing between the read and the call is a use-after-free rather than a
+    /// stale value. This is the barrier that closes that window.
+    ///
+    /// It is deliberately a second lock rather than `state`'s. `reactor_destroy`
+    /// blocks until every callback in flight has returned and those callbacks
+    /// take `state`'s lock — holding that one across destroy would deadlock with
+    /// the library's own thread. They never take this one, which is what makes
+    /// it safe to hold here.
+    ///
+    /// Lock order is always this one first, then `state`. Nothing acquires them
+    /// the other way round.
+    private let abiBarrier = NSLock()
 
     /// Everything mutable, in one place, behind one lock.
     private struct State {
@@ -111,7 +136,8 @@ public final class Reactor: @unchecked Sendable {
             // never let an env var put a live microphone on the wire because a
             // model happened to declare a sendonly audio track.
             ffi.createWithADM(
-                resolvedURL, model, jwt, local ? 1 : 0, callbacksPointer, 0)
+                resolvedURL, model, jwt, local ? 1 : 0, callbacksPointer, 0,
+                ReactorSDK.version, Reactor.sdkType)
         }
 
         guard let handle else {
@@ -130,6 +156,22 @@ public final class Reactor: @unchecked Sendable {
 
     deinit {
         close()
+    }
+
+    /// Call into the library with a handle it still owns, or answer `fallback`.
+    ///
+    /// Every synchronous entry into the ABI goes through here, which is what
+    /// makes the handle valid for the whole of `body` rather than only at the
+    /// moment it was read. See ``abiBarrier``.
+    private func withHandle<Result>(
+        else fallback: Result,
+        _ body: (OpaquePointer) -> Result
+    ) -> Result {
+        abiBarrier.lock()
+        defer { abiBarrier.unlock() }
+        let handle = state.withLock { $0.closed ? nil : $0.handle }
+        guard let handle else { return fallback }
+        return body(handle)
     }
 
     /// Destroy the client and release the native handle.
@@ -173,17 +215,35 @@ public final class Reactor: @unchecked Sendable {
                     operation: operation.operation))
         }
 
+        // `closed` is already set, so nothing new can enter the ABI. Taking the
+        // barrier waits for whatever was already inside — a status read holding
+        // this handle, or an operation that has not yet reached its FFI entry —
+        // because destroy requires the handle to be live at call time and so do
+        // they.
+        abiBarrier.lock()
         let quiesced = ffi.destroy(handle)
+        abiBarrier.unlock()
 
-        guard let context else { return }
         if quiesced == 0 {
             // No callback is running and none will start: releasing is safe.
-            Unmanaged.passUnretained(context).release()
+            if let context {
+                Unmanaged.passUnretained(context).release()
+            }
+            // And the same for every operation still outstanding. Their
+            // `passRetained` userdata is balanced by the completion trampoline,
+            // which destroy has just promised will never run for them — so
+            // without this each one leaks itself, its continuation, and whatever
+            // that continuation retains.
+            for operation in pending where operation.claimRetainedReference() {
+                Unmanaged.passUnretained(operation).release()
+            }
         } else {
             // A callback is still executing and could not be waited for. The
             // pointers must stay alive; leaking them is correct and freeing them
             // is a use-after-free.
-            OrphanedCallbacks.keep(context)
+            if let context {
+                OrphanedCallbacks.keep(context)
+            }
         }
     }
 
@@ -242,19 +302,19 @@ public final class Reactor: @unchecked Sendable {
     /// cached answer goes on claiming `ready` after a transport drop that no
     /// handler was registered for.
     public var status: ReactorStatus {
-        let handle = state.withLock { $0.handle }
-        guard let handle else { return .disconnected }
-        // A static string. Copied, never freed.
-        guard let text = String(borrowing: ffi.status(handle)) else { return .disconnected }
-        return ReactorStatus(ffiValue: text)
+        withHandle(else: .disconnected) { handle in
+            // A static string. Copied, never freed.
+            guard let text = String(borrowing: ffi.status(handle)) else { return .disconnected }
+            return ReactorStatus(ffiValue: text)
+        }
     }
 
     /// The current session's id, or `nil` when there is no session.
     public var sessionID: String? {
-        let handle = state.withLock { $0.handle }
-        guard let handle else { return nil }
-        // Heap-allocated by the library and owned by this caller.
-        return String(takingOwnership: ffi.sessionID(handle), freeing: ffi.freeString)
+        withHandle(else: nil) { handle in
+            // Heap-allocated by the library and owned by this caller.
+            String(takingOwnership: ffi.sessionID(handle), freeing: ffi.freeString)
+        }
     }
 
     /// Whether ``close()`` has run.
@@ -349,25 +409,29 @@ public final class Reactor: @unchecked Sendable {
     ) async throws -> String? {
         let pending = PendingCompletion(operation: operation, owner: self)
 
-        let handle = state.withLock { state -> OpaquePointer? in
-            guard !state.closed, let handle = state.handle else { return nil }
-            state.pending[ObjectIdentifier(pending)] = pending
-            return handle
-        }
-
-        guard let handle else {
-            throw ReactorError(
-                .invalidState,
-                "the client is closed, so \(operation) cannot run. Create a new Reactor.",
-                operation: operation)
-        }
-
         return try await withCheckedThrowingContinuation { continuation in
             // Attached before the call, or a completion that fires immediately
             // would find nothing to settle.
             pending.attach(continuation)
-            let userdata = Unmanaged.passRetained(pending).toOpaque()
-            call(handle, completionTrampoline, userdata)
+
+            // Registration and the FFI entry happen under one barrier: a close()
+            // either finds this operation and abandons it, or has not started —
+            // it can no longer destroy the handle in between and leave the call
+            // holding a freed pointer.
+            let started = withHandle(else: false) { handle in
+                state.withLock { $0.pending[ObjectIdentifier(pending)] = pending }
+                let userdata = Unmanaged.passRetained(pending).toOpaque()
+                pending.retainedByFFI()
+                call(handle, completionTrampoline, userdata)
+                return true
+            }
+
+            guard !started else { return }
+            pending.abandon(
+                ReactorError(
+                    .invalidState,
+                    "the client is closed, so \(operation) cannot run. Create a new Reactor.",
+                    operation: operation))
         }
     }
 }

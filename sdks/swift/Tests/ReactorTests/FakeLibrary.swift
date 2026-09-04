@@ -21,12 +21,22 @@ import Foundation
 final class FakeLibrary: @unchecked Sendable {
 
     /// What the SDK passed to `reactor_create_with_adm`.
+    /// What the fake was asked to do, in order — enough to tell whether a
+    /// `reactor_destroy` overtook a call that was still inside the ABI.
+    enum Event: Equatable {
+        case statusEntered
+        case statusReturned
+        case destroyed
+    }
+
     struct CreateCall {
         var apiURL: String?
         var model: String?
         var jwt: String?
         var local: Int32
         var admMode: Int32
+        var sdkVersion: String?
+        var sdkType: String?
     }
 
     private struct State {
@@ -40,6 +50,9 @@ final class FakeLibrary: @unchecked Sendable {
         var status = "disconnected"
         var sessionID: String?
         var lastCompletion: (fn: reactor_completion_fn, userdata: UnsafeMutableRawPointer)?
+        weak var lastUserdataObject: AnyObject?
+        var events: [Event] = []
+        var whileReadingStatus: (@Sendable () -> Void)?
     }
 
     private let state = Locked(State())
@@ -61,6 +74,18 @@ final class FakeLibrary: @unchecked Sendable {
     // MARK: - What the tests read
 
     var createCalls: [CreateCall] { state.withLock { $0.createCalls } }
+
+    /// What the fake was asked to do, in order.
+    var events: [Event] { state.withLock { $0.events } }
+
+    /// Run this inside `reactor_status`, before it returns.
+    var whileReadingStatus: (@Sendable () -> Void)? {
+        get { state.withLock { $0.whileReadingStatus } }
+        set { state.withLock { $0.whileReadingStatus = newValue } }
+    }
+
+    /// Whether the object the SDK passed as the last `userdata` is still alive.
+    var lastUserdataIsAlive: Bool { state.withLock { $0.lastUserdataObject != nil } }
     var destroyCount: Int { state.withLock { $0.destroyCount } }
     var freedStrings: Int { state.withLock { $0.freedStrings } }
     var connectCalls: Int { state.withLock { $0.connectCalls } }
@@ -126,7 +151,10 @@ final class FakeLibrary: @unchecked Sendable {
                 state.withLock { $0.freedStrings += 1 }
                 free(pointer)
             },
-            createWithADM: { [self] apiURL, model, jwt, local, callbacks, admMode in
+            createWithADM: {
+                [self]
+                apiURL, model, jwt, local, callbacks, admMode, sdkVersion,
+                sdkType in
                 state.withLock { state in
                     state.createCalls.append(
                         CreateCall(
@@ -134,13 +162,18 @@ final class FakeLibrary: @unchecked Sendable {
                             model: String(borrowing: model),
                             jwt: String(borrowing: jwt),
                             local: local,
-                            admMode: admMode))
+                            admMode: admMode,
+                            sdkVersion: String(borrowing: sdkVersion),
+                            sdkType: String(borrowing: sdkType)))
                     state.callbacks = callbacks?.pointee
                 }
                 return OpaquePointer(handle)
             },
             destroy: { [self] _ in
-                state.withLock { $0.destroyCount += 1 }
+                state.withLock {
+                    $0.destroyCount += 1
+                    $0.events.append(.destroyed)
+                }
                 return destroyResult
             },
             connect: { [self] _, _, _, completion, userdata in
@@ -156,10 +189,19 @@ final class FakeLibrary: @unchecked Sendable {
                 record(completion, userdata)
             },
             status: { [self] _ in
+                let (hook, value) = state.withLock { state -> ((@Sendable () -> Void)?, String) in
+                    state.events.append(.statusEntered)
+                    return (state.whileReadingStatus, state.status)
+                }
+                // Widens the window a close() racing this read has to fit into.
+                // Nothing here holds a lock while it runs, so a close() that is
+                // allowed to overtake this read will.
+                hook?()
+                state.withLock { $0.events.append(.statusReturned) }
                 // A static string, as the header promises: allocated once and
                 // never freed, so the SDK freeing it would be a heap corruption
                 // this fake would not survive either.
-                staticStatus(state.withLock { $0.status })
+                return staticStatus(value)
             },
             sessionID: { [self] _ in
                 guard let sessionID = state.withLock({ $0.sessionID }) else { return nil }
@@ -173,7 +215,14 @@ final class FakeLibrary: @unchecked Sendable {
     private func record(_ completion: reactor_completion_fn?, _ userdata: UnsafeMutableRawPointer?)
     {
         guard let completion, let userdata else { return }
-        state.withLock { $0.lastCompletion = (completion, userdata) }
+        // Held weakly, so a test can tell whether the SDK ever balanced the
+        // `passRetained` it made for this call. A strong reference here would
+        // hide exactly the leak it is meant to expose.
+        let object = Unmanaged<AnyObject>.fromOpaque(userdata).takeUnretainedValue()
+        state.withLock {
+            $0.lastCompletion = (completion, userdata)
+            $0.lastUserdataObject = object
+        }
     }
 }
 
