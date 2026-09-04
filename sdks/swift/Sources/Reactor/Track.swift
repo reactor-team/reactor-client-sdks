@@ -105,8 +105,7 @@ public final class Track: @unchecked Sendable {
     ///   failure this SDK exists to refuse.
     public func onFrame(_ handler: @escaping @Sendable (VideoFrame) -> Void) throws -> Subscription
     {
-        try requireReceivable(.video, method: "onFrame")
-        guard let client else { return Subscription {} }
+        let client = try requireReceivable(.video, method: "onFrame")
         return client.addVideoHandler(track: name) { raw in
             handler(
                 VideoFrame(
@@ -129,26 +128,48 @@ public final class Track: @unchecked Sendable {
     public func onRawFrame(
         _ handler: @escaping @Sendable (borrowing RawVideoFrame) -> Void
     ) throws -> Subscription {
-        try requireReceivable(.video, method: "onRawFrame")
-        guard let client else { return Subscription {} }
+        let client = try requireReceivable(.video, method: "onRawFrame")
         return client.addVideoHandler(track: name, handler)
     }
 
     /// Receive decoded audio on this track.
     public func onAudio(_ handler: @escaping @Sendable (AudioFrame) -> Void) throws -> Subscription
     {
-        try requireReceivable(.audio, method: "onAudio")
-        guard let client else { return Subscription {} }
+        let client = try requireReceivable(.audio, method: "onAudio")
         return client.addAudioHandler(track: name, handler)
     }
 
-    /// Refuse a handler that could never fire.
-    private func requireReceivable(_ wanted: TrackKind, method: String) throws {
-        guard let declaration = client?.declaration(of: name) else {
-            // Nothing declared yet. Registering ahead of connect is allowed on
-            // purpose — the check happens when the declaration arrives, and a
-            // frame for a handler on the wrong track never reaches it anyway.
-            return
+    /// Refuse a handler that could never fire, and answer the client it belongs to.
+    ///
+    /// Three states used to collapse into one here, because "no declaration"
+    /// was read as "not connected yet". A closed client has no declarations
+    /// either, and a released one has nothing at all — so a handler registered
+    /// after `close()`, or on a track outliving its `Reactor`, was accepted by a
+    /// throwing API and then never fired. That is the silent failure this SDK
+    /// exists to refuse, and the other bindings' track implementations refuse it.
+    private func requireReceivable(_ wanted: TrackKind, method: String) throws -> Reactor {
+        guard let client else {
+            throw ReactorError(
+                .invalidState,
+                "\(method) on '\(name)' would never fire: the Reactor that owns this track has "
+                    + "been released. Keep a reference to it for as long as you want frames.",
+                operation: method)
+        }
+
+        guard !client.isClosed else {
+            throw ReactorError(
+                .invalidState,
+                "\(method) on '\(name)' would never fire: the client is closed. "
+                    + "Create a new Reactor.",
+                operation: method)
+        }
+
+        guard let declaration = client.declaration(of: name) else {
+            // Nothing declared yet, on a client that is still live. Registering
+            // ahead of connect is allowed on purpose — the check happens when
+            // the declaration arrives, and a frame for a handler on the wrong
+            // track never reaches it anyway.
+            return client
         }
 
         if declaration.direction == .sendonly {
@@ -167,6 +188,8 @@ public final class Track: @unchecked Sendable {
                     + "\(declaration.kind.rawValue). Use \(other).",
                 operation: method)
         }
+
+        return client
     }
 }
 
