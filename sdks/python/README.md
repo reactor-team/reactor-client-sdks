@@ -281,6 +281,31 @@ clip = await reactor.request_clip(10)
 await download_clip(clip, "clip.mp4")         # the module-level function
 ```
 
+## Connection statistics
+
+```python
+stats = await reactor.get_stats()
+print(f"{stats.rtt_ms:.0f} ms, {stats.incoming_bitrate_bps or 0:,.0f} bps in")
+```
+
+- The two measured bitrates are derived **against the previous call**, so the first
+  one after connecting reports `None` for them, and so does a call made less than
+  200 ms after the last. Everything else is on every call. Poll a couple of seconds
+  apart for a continuous reading.
+- Every field that the engine has not measured yet is `None`, never zero — no RTT
+  yet is not a zero-latency link.
+- `stats.inbound`, `stats.outbound` and `stats.candidate_pairs` carry the engine's
+  own per-stream report: SSRCs, NACK counts, retransmissions, decode time.
+- Raises `InvalidStateError` unless the session is ready.
+
+Four fields the [JS SDK](https://docs.reactor.inc/sdk-reference/types#connectionstats)
+reports are absent here — `candidateType`, `availableIncomingBitrate`,
+`availableOutgoingBitrate` and `framesPerSecond`. They are missing at the WebRTC
+engine, not dropped on the way: libwebrtc's report reaches this SDK through
+`reactor-webrtc`'s C ABI, which carries no local-candidate reference, no
+available-bitrate estimate and no frame counters. The per-stream detail above goes
+the other way — here, and not in the browser.
+
 ## Samples
 
 Seven minimal examples in [`examples/`](https://github.com/reactor-team/reactor-client-sdks/tree/main/sdks/python/examples),

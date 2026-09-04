@@ -33,6 +33,7 @@ from ._ffi import (
 # `on_frame` is gone — `Track` uses them — but the import path stays.
 from ._media import _bgra_to_rgb_array, _positional_arity  # noqa: F401  (re-export)
 from ._recording import download_clip
+from ._stats import ConnectionStats, stats_from_payload
 from .errors import (  # noqa: F401  (ReactorError/error_for_code/error_from_payload re-export)
     AbortedError,
     ReactorError,
@@ -1014,6 +1015,47 @@ class Reactor:
         return await self._async_op(
             lambda fn: lib.reactor_request_schema(ctypes.c_void_p(handle), fn, None)
         )
+
+    # ------------------------------------------------------------------
+    # Statistics
+    # ------------------------------------------------------------------
+
+    async def get_stats(self) -> ConnectionStats:
+        """A statistics snapshot for the live connection.
+
+        RTT, jitter, packet loss, bitrates, and the engine's per-stream counters::
+
+            stats = await reactor.get_stats()
+            print(f"{stats.rtt_ms:.0f} ms, {stats.incoming_bitrate_bps or 0:,.0f} bps in")
+
+        The two measured bitrates are derived against the previous call, so the
+        first call after connecting reports `None` for them, as does a call made
+        less than 200 ms after the last one. Everything else is on every call. For
+        a continuous reading, poll — a couple of seconds apart is what the browser
+        SDK's own `statsUpdate` uses::
+
+            while reactor.status == "ready":
+                stats = await reactor.get_stats()
+                ...
+                await asyncio.sleep(2)
+
+        Raises `InvalidStateError` unless the session is ready: a snapshot of
+        zeroes cannot be told from a connection carrying nothing.
+
+        Four fields the browser SDK reports are absent here — `candidateType`,
+        `availableIncomingBitrate`, `availableOutgoingBitrate` and
+        `framesPerSecond`. They are missing at the WebRTC engine rather than
+        dropped on the way, so no arithmetic here recovers them. What this has and
+        the browser does not: `inbound`, `outbound` and `candidate_pairs`, with
+        NACK counts, retransmissions and decode time.
+        """
+        self._require_handle()
+        handle = self._handle
+        lib = get_lib()
+        payload = await self._async_op(
+            lambda fn: lib.reactor_get_stats(ctypes.c_void_p(handle), fn, None)
+        )
+        return stats_from_payload(payload)
 
     # ------------------------------------------------------------------
     # Track control

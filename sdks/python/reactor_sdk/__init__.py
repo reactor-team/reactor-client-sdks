@@ -26,6 +26,7 @@ except PackageNotFoundError:
 from ._auth import AuthError, fetch_jwt
 from ._media import time_micros
 from ._recording import download_clip
+from ._stats import CandidatePair, ConnectionStats, InboundStream, OutboundStream
 from .client import (
     DEFAULT_API_URL,
     LOCAL_API_URL,
@@ -65,6 +66,11 @@ __all__ = [
     "TrackList",
     "Clip",
     "FileRef",
+    # What get_stats() answers with.
+    "ConnectionStats",
+    "InboundStream",
+    "OutboundStream",
+    "CandidatePair",
     # Failures, and the `on_error` event payload — the same class. `ReactorError`
     # is the base of every one below it, so catching it still catches everything.
     "ReactorError",
