@@ -166,7 +166,7 @@ jobs:
     if: github.event_name == 'push' || (needs.changes.outputs.python == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
     # See js-integration-tests's own comment on this environment below —
     # same cross-workflow mutex, shared with the release-*.yml workflows too.
-    environment: reactor-echo-live-session-quota
+    environment: reactor-echo-live-session-quota-${{ github.sha }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -225,21 +225,28 @@ jobs:
     # runs for every same-repo PR and on push, same as before.
     if: github.event_name == 'push' || (needs.changes.outputs.js == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
     # Cross-workflow mutex against reactor/echo's shared session-creation
-    # quota. This job's own workflow and every release-*.yml integration-tests
-    # job reference this same environment name, and a job referencing an
-    # environment queues (in order, no depth limit) behind any other job
-    # anywhere in the repo currently referencing it, rather than the
-    # cancel-instead-of-queue behavior a `concurrency:` group has past its
-    # one-running/one-pending limit — which is what cancelled 2 of 4
-    # simultaneous quota-consuming jobs when push ff56fc4 touched crates/**
+    # quota, scoped to this commit (${{ github.sha }} in the name): this
+    # job's own workflow and every release-*.yml integration-tests job for
+    # the SAME commit reference this same environment name, and a job
+    # referencing an environment queues (in order, no depth limit) behind
+    # any other job anywhere in the repo currently referencing it, rather
+    # than the cancel-instead-of-queue behavior a `concurrency:` group has
+    # past its one-running/one-pending limit — which is what cancelled 2 of
+    # 4 simultaneous quota-consuming jobs when push ff56fc4 touched crates/**
     # and fired ci.yml plus all three release-*.yml workflows at once.
-    # Still needed at the current 100/min quota (raised from 10/min): each
-    # suite already paces its own session creation to ~86/min by itself (see
-    # conftest.py/fixtures.cpp/this suite's own harness), so two copies of
-    # the same suite — this job plus its release-*.yml counterpart, both
-    # racing the same push — or several different suites at once can still
-    # exceed 100/min combined even though none of them would alone.
-    environment: reactor-echo-live-session-quota
+    # Scoped by commit rather than one fixed name on purpose: a fixed name
+    # would serialize every PR's integration-tests job against every other
+    # PR's, repo-wide, which is real, needless slowdown most of the time —
+    # only the same-commit case (a push to main touching crates/**, at most
+    # ci.yml plus 3 release-*.yml jobs) ever needs to wait. Different
+    # commits/PRs racing each other is accepted, same as before this
+    # existed: paced_connect()'s own retry-on-429 covers that residual case.
+    # Still needed at the current 500/min quota (raised from 100, itself
+    # raised from 10): each suite already paces its own session creation to
+    # ~86/min by itself (see conftest.py/fixtures.cpp/this suite's own
+    # harness), so up to 4 simultaneous same-commit claimants can sum to
+    # ~344/min — under 500, but not by a margin worth removing this over.
+    environment: reactor-echo-live-session-quota-${{ github.sha }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -331,7 +338,7 @@ jobs:
     if: github.event_name == 'push' || (needs.changes.outputs.cpp == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
     # See js-integration-tests's own comment on this environment above — same
     # cross-workflow mutex, shared with the release-*.yml workflows too.
-    environment: reactor-echo-live-session-quota
+    environment: reactor-echo-live-session-quota-${{ github.sha }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

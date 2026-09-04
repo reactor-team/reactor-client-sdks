@@ -378,7 +378,7 @@ jobs:
     # environment (arbitrary depth, no cancellation) rather than the
     # cancel-past-one-pending behavior a `concurrency:` group has, which is
     # what this replaced.
-    environment: reactor-echo-live-session-quota
+    environment: reactor-echo-live-session-quota-${{ github.sha }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
