@@ -55,6 +55,7 @@ namespace reactor::detail {
   /* Commands, messages, uploads */                                                 \
   X(send_command, reactor_send_command)                                             \
   X(request_schema, reactor_request_schema)                                         \
+  X(get_stats, reactor_get_stats)                                                   \
   X(upload_file, reactor_upload_file)                                               \
   X(upload_bytes, reactor_upload_bytes)                                             \
   /* Recording */                                                                   \

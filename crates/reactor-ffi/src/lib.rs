@@ -1487,6 +1487,40 @@ pub unsafe extern "C" fn reactor_request_schema(
     );
 }
 
+/// A statistics snapshot for the live connection. On success `result_json` is a
+/// connection-stats object.
+///
+/// Asynchronous, and deliberately not one of the synchronous getters beside
+/// [`reactor_tracks`]: the engine collects a report by dispatching onto its own
+/// thread and waiting for it, so a synchronous read here would block the caller
+/// — a Python event loop, a UI thread — for however long libwebrtc took.
+///
+/// The bitrates are derived against the previous call, so the first call after
+/// connecting reports none. See [`reactor_core::stats::ConnectionStats`].
+///
+/// # Safety
+///
+/// `handle` must be null or a live handle. `completion` as [`reactor_connect`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_get_stats(
+    handle: *mut ReactorHandle,
+    completion: Option<unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void)>,
+    userdata: *mut c_void,
+) {
+    async_op!(
+        "get_stats",
+        handle,
+        completion,
+        userdata,
+        |r: Arc<Reactor>, _tasks: TaskSet| async move {
+            let stats = r.get_stats().await?;
+            serde_json::to_value(&stats)
+                .map(Some)
+                .map_err(|e| CoreError::Decode(e.to_string()))
+        }
+    );
+}
+
 /// Send an application-scoped command over the data channel and wait for its
 /// correlated reply. On success `result_json` is `{type, data}`.
 ///

@@ -32,6 +32,7 @@ pub mod recording;
 pub mod runtime;
 pub mod signaling;
 pub mod state;
+pub mod stats;
 
 /// Re-export of the wire-protocol crate.
 pub use reactor_protocol as protocol;

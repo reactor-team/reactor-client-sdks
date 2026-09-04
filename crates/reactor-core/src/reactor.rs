@@ -40,6 +40,7 @@ use crate::recording::{clip_failed_code, clip_from_ready, Clip};
 use crate::runtime::timeout;
 use crate::signaling::WebRtcSignaling;
 use crate::state::ReactorStatus;
+use crate::stats::{ConnectionStats, StatsSampler};
 use crate::{SharedAuth, SharedHttp, SharedPeer, SharedPlatform};
 
 /// Host-supplied platform implementations.
@@ -198,6 +199,8 @@ pub struct Reactor {
     control: ControlCorrelator,
     data: DataCorrelator,
     state: Mutex<State>,
+    /// Holds the previous stats sample, so `get_stats` can answer with rates.
+    stats: StatsSampler,
 }
 
 impl Reactor {
@@ -231,6 +234,7 @@ impl Reactor {
             dispatcher: Dispatcher::new(),
             control: ControlCorrelator::new(),
             data: DataCorrelator::new(),
+            stats: StatsSampler::new(),
             state: Mutex::new(State {
                 auto_resume_tracks: options.auto_resume_tracks,
                 sdp_max_attempts: options.sdp_poll.max_attempts,
@@ -571,6 +575,12 @@ impl Reactor {
         if let Err(error) = self.peer.close().await {
             log::warn!("peer close failed: {error}");
         }
+
+        // The stats baseline belongs to the peer connection that produced it. The
+        // SSRC check in `StatsSampler` would catch the reconnect anyway; dropping
+        // it here is what keeps the first sample afterwards from reporting a rate
+        // averaged over the gap the disconnect left.
+        self.stats.reset();
 
         if terminate_session {
             if let Some(id) = &session_id {
@@ -1046,6 +1056,29 @@ impl Reactor {
         self.peer
             .set_track_bitrate(track_name, min_bps, max_bps)
             .await
+    }
+
+    /// A statistics snapshot for the live connection.
+    ///
+    /// Counters come from the WebRTC engine; the bitrates are derived here,
+    /// against the previous call. So the first call after connecting — and the
+    /// first after a reconnect — reports no rates, and a caller polling faster
+    /// than [`crate::stats::MIN_RATE_WINDOW_MS`] gets them on some calls and not
+    /// others. Everything else is present on every call.
+    ///
+    /// Fails while there is no transport to ask, rather than answering a report
+    /// of zeroes that reads like a connection carrying nothing.
+    pub async fn get_stats(&self) -> Result<ConnectionStats, CoreError> {
+        // Checked before the engine is asked, so "not connected" reports as
+        // itself rather than as whatever a closed peer connection says.
+        if self.status() != ReactorStatus::Ready {
+            return Err(CoreError::InvalidState(format!(
+                "no connection to read statistics from (status: {})",
+                self.status().as_str()
+            )));
+        }
+        let raw = self.peer.get_stats().await?;
+        Ok(self.stats.sample(&raw, self.platform.now_ms()))
     }
 
     pub fn paused_tracks(&self) -> HashSet<String> {
@@ -1601,6 +1634,155 @@ mod tests {
         reactor.state.lock().unwrap().status = ReactorStatus::Ready;
         let result = reactor.connect(ConnectOptions::default()).await;
         assert!(matches!(result, Err(CoreError::InvalidState(_))));
+    }
+
+    // ── get_stats() ────────────────────────────────────────────────────────────
+
+    /// Refused before the engine is asked. A transport with no peer connection
+    /// answers a report of zeroes, which cannot be told from a live connection
+    /// carrying nothing — so the state is checked here, where it is known.
+    #[tokio::test]
+    async fn get_stats_is_refused_unless_the_session_is_ready() {
+        let reactor = make_reactor();
+
+        let result = reactor.get_stats().await;
+
+        match result {
+            Err(CoreError::InvalidState(message)) => {
+                // The status is named, so a caller polling too early can see why.
+                assert!(message.contains("disconnected"), "message was: {message}");
+            }
+            other => panic!("expected InvalidState, got {other:?}"),
+        }
+    }
+
+    /// `NullPeer` does not override `get_stats`, so this exercises the trait's
+    /// default — which refuses, rather than answering an empty report a caller
+    /// would read as a healthy idle connection.
+    #[tokio::test]
+    async fn a_transport_that_reports_no_statistics_refuses_rather_than_answering_nothing() {
+        let reactor = make_reactor();
+        reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+
+        let result = reactor.get_stats().await;
+
+        assert!(matches!(result, Err(CoreError::Peer(_))), "got {result:?}");
+    }
+
+    /// The whole point of the sampler living on the client: the second call is a
+    /// rate because the first one left a baseline behind.
+    #[tokio::test]
+    async fn successive_calls_derive_a_rate_from_the_previous_sample() {
+        struct CountingPeer {
+            bytes: std::sync::atomic::AtomicU64,
+        }
+
+        #[async_trait::async_trait]
+        impl PeerTransport for CountingPeer {
+            async fn prepare(
+                &self,
+                _: &[IceServer],
+                _: &[TrackCapability],
+            ) -> Result<PreparedOffer, CoreError> {
+                Ok(PreparedOffer {
+                    sdp_offer: String::new(),
+                    track_mapping: vec![],
+                })
+            }
+            async fn set_remote_description(&self, _: &str) -> Result<(), CoreError> {
+                Ok(())
+            }
+            fn send_data(&self, _: &[u8], _: bool) -> Result<(), CoreError> {
+                Ok(())
+            }
+            fn send_control(&self, _: &[u8]) -> Result<(), CoreError> {
+                Ok(())
+            }
+            async fn set_track_direction(&self, _: &str, _: bool) -> Result<(), CoreError> {
+                Ok(())
+            }
+            async fn get_stats(&self) -> Result<crate::peer::TransportStats, CoreError> {
+                // A thousand more bytes on every call.
+                let bytes = self
+                    .bytes
+                    .fetch_add(1_000, std::sync::atomic::Ordering::SeqCst)
+                    + 1_000;
+                Ok(crate::peer::TransportStats {
+                    inbound: vec![crate::peer::InboundRtpStats {
+                        ssrc: 7,
+                        bytes_received: bytes,
+                        packets_received: 10,
+                        ..crate::peer::InboundRtpStats::default()
+                    }],
+                    ..crate::peer::TransportStats::default()
+                })
+            }
+            async fn close(&self) -> Result<(), CoreError> {
+                Ok(())
+            }
+        }
+
+        // `TestPlatform`'s clock is frozen at zero, and a rate needs a window.
+        // A second's worth per call, so the arithmetic below is exact rather than
+        // dependent on how long the test took.
+        struct TickingClock {
+            ms: std::sync::atomic::AtomicU64,
+        }
+
+        impl Platform for TickingClock {
+            fn sleep(&self, d: Duration) -> BoxFut<'static, ()> {
+                Box::pin(tokio::time::sleep(d))
+            }
+            fn now_ms(&self) -> f64 {
+                self.ms
+                    .fetch_add(1_000, std::sync::atomic::Ordering::SeqCst) as f64
+            }
+        }
+
+        let reactor = Arc::new(Reactor::new(
+            ReactorDeps {
+                http: Arc::new(PendingHttp) as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TickingClock {
+                    ms: std::sync::atomic::AtomicU64::new(0),
+                }) as SharedPlatform,
+                peer: Arc::new(CountingPeer {
+                    bytes: std::sync::atomic::AtomicU64::new(0),
+                }) as SharedPeer,
+            },
+            ReactorOptions::new("http://localhost", "test-model"),
+        ));
+        reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+
+        let first = reactor.get_stats().await.expect("first sample");
+        assert_eq!(first.bytes_received, 1_000);
+        // Nothing to difference against yet, and a zero here would read as an
+        // idle connection.
+        assert_eq!(first.incoming_bitrate_bps, None);
+
+        let second = reactor.get_stats().await.expect("second sample");
+        assert_eq!(second.bytes_received, 2_000);
+        // 1000 bytes over the 1000 ms the clock advanced.
+        assert_eq!(second.incoming_bitrate_bps, Some(8_000.0));
+    }
+
+    /// The baseline belongs to the peer connection that produced it. Reading a
+    /// rate across a disconnect would average over a window in which nothing was
+    /// connected.
+    #[tokio::test]
+    async fn a_disconnect_drops_the_stats_baseline() {
+        let reactor = make_reactor();
+        // Seed a baseline the way a sample would, then tear the transport down.
+        reactor
+            .stats
+            .sample(&crate::peer::TransportStats::default(), 1_000.0);
+
+        reactor.teardown(true, false).await;
+
+        let after = reactor
+            .stats
+            .sample(&crate::peer::TransportStats::default(), 2_000.0);
+        assert_eq!(after.incoming_bitrate_bps, None);
     }
 
     // ── disconnect() / reconnect() session lifecycle ────────────────────────────

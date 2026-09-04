@@ -154,6 +154,18 @@ class PendingOptionalJson final : public Pending {
   void deliver_error(const std::exception_ptr& error) override { promise.set_exception(error); }
 };
 
+/// A call that answers with a connection-statistics snapshot.
+///
+/// `deliver` is out-of-line, in stats.cpp, where the decode lives.
+class PendingStats final : public Pending {
+ public:
+  std::promise<ConnectionStats> promise;
+
+ private:
+  void deliver(Json result) override;
+  void deliver_error(const std::exception_ptr& error) override { promise.set_exception(error); }
+};
+
 /// A call that answers with a clip.
 class PendingClip final : public Pending {
  public:
@@ -430,6 +442,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   void begin_send_command(std::unique_ptr<Pending> op, const std::string& command, const Json& args,
                           const std::map<std::string, FileRef>& uploads);
   void begin_request_schema(std::unique_ptr<Pending> op);
+  void begin_get_stats(std::unique_ptr<Pending> op);
   void begin_upload_file(std::unique_ptr<Pending> op, const std::string& path);
   void begin_upload_bytes(std::unique_ptr<Pending> op, Bytes data, const std::string& name,
                           const std::string& mime_type);
@@ -769,6 +782,15 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
 
   /// The handle, or a thrown error naming what a caller has to do first.
   ReactorHandle* require_ready_handle(const char* action, const std::string& track_name) const;
+
+  /// As above, for an operation that is about the session rather than a track.
+  ///
+  /// Its own rather than an argument to the one above, because that one welds
+  /// `track "<name>"` into the message — right for `publish`, wrong for anything
+  /// whose subject is the connection. (`request_clip` still goes through the
+  /// track-shaped one and reads oddly for it; migrating it is a message change to
+  /// make on its own, not under a feature.)
+  ReactorHandle* require_ready_session(const char* action) const;
 
   /// Media, and the reason these are separate from everything above: they run
   /// *inline*, on the thread the library called on, and never go near the

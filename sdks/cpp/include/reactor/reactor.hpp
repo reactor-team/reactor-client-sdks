@@ -28,6 +28,7 @@
 #include "reactor/errors.hpp"
 #include "reactor/json.hpp"
 #include "reactor/recording.hpp"
+#include "reactor/stats.hpp"
 #include "reactor/status.hpp"
 #include "reactor/subscription.hpp"
 #include "reactor/track.hpp"
@@ -278,6 +279,30 @@ class Reactor {
   ///
   /// Throws on a session that is not `Ready`. The bounds outlive a reconnect.
   std::future<void> set_bitrate(Bitrate bounds);
+
+  /// A statistics snapshot for the live connection.
+  ///
+  /// RTT, jitter, packet loss, bitrates, and the engine's per-stream counters:
+  ///
+  /// ```cpp
+  /// const auto stats = reactor.get_stats().get();
+  /// if (stats.rtt_ms) {
+  ///   std::cout << *stats.rtt_ms << " ms\n";
+  /// }
+  /// ```
+  ///
+  /// The two measured bitrates are derived against the previous call, so the
+  /// first call after connecting leaves them empty, as does a call made less than
+  /// 200 ms after the last one. Everything else is on every call. For a continuous
+  /// reading, poll — a couple of seconds apart is the interval the browser SDK's
+  /// own `statsUpdate` uses.
+  ///
+  /// Throws `InvalidStateError` unless the session is `Ready`: a snapshot of
+  /// zeroes cannot be told from a connection carrying nothing. Asynchronous
+  /// rather than a plain getter because the engine collects a report on its own
+  /// thread and waits for it — see `stats.hpp` for what the report does and does
+  /// not carry.
+  std::future<ConnectionStats> get_stats();
 
   /// Called as each incoming track is received, with the track itself.
   Subscription on_track(std::function<void(Track)> handler);

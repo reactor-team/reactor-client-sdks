@@ -41,6 +41,97 @@ pub enum PeerEvent {
     IceGatheringComplete,
 }
 
+/// One receive stream's counters, as the engine reports them.
+///
+/// A subset of `RTCInboundRtpStreamStats`, and the subset is the engine's, not a
+/// choice made here: these are the fields `reactor-webrtc` carries across its own
+/// C ABI. Notably absent is the stream's *kind* — there is no way to tell a video
+/// stream from an audio one at this layer, which is why [`crate::stats`] aggregates
+/// across streams instead of picking the video one out the way the browser SDK can.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InboundRtpStats {
+    pub ssrc: u32,
+    pub packets_received: u32,
+    pub bytes_received: u64,
+    /// Jitter in seconds.
+    pub jitter_s: f64,
+    /// Cumulative packets lost. Signed, and the sign is meaningful: RFC 3550
+    /// allows it to go negative when duplicates arrive.
+    pub packets_lost: i32,
+    pub nack_count: u32,
+    /// Cumulative decode time in seconds.
+    pub total_decode_time_s: f64,
+}
+
+/// One send stream's counters, as the engine reports them.
+///
+/// A subset of `RTCOutboundRtpStreamStats`, on the same terms as
+/// [`InboundRtpStats`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OutboundRtpStats {
+    pub ssrc: u32,
+    pub packets_sent: u32,
+    pub bytes_sent: u64,
+    /// What the encoder is currently aiming at, in bits per second.
+    pub target_bitrate_bps: f64,
+    /// Round-trip time in seconds; `0.0` when not yet measured.
+    pub round_trip_time_s: f64,
+    pub retransmitted_packets_sent: u32,
+}
+
+/// State of an ICE candidate pair — mirror of `RTCIceCandidatePairStats::state`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidatePairState {
+    Waiting,
+    InProgress,
+    Failed,
+    Succeeded,
+    Cancelled,
+}
+
+impl CandidatePairState {
+    /// The lowercase spelling the browser SDK reports, so a caller reading both
+    /// sees one vocabulary.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CandidatePairState::Waiting => "waiting",
+            CandidatePairState::InProgress => "in-progress",
+            CandidatePairState::Failed => "failed",
+            CandidatePairState::Succeeded => "succeeded",
+            CandidatePairState::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// One ICE candidate pair, as the engine reports it.
+///
+/// A subset of `RTCIceCandidatePairStats` — and a thin one. There is no pair id,
+/// no `nominated` flag, no byte counters and no local-candidate reference, so the
+/// pair cannot say which transport type carried it (host/srflx/relay) or how much
+/// went over it. The browser SDK's `candidateType`, `availableIncomingBitrate` and
+/// `availableOutgoingBitrate` all come from those missing fields; closing that gap
+/// is a `reactor-webrtc` change, not one this crate can make.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CandidatePairStats {
+    /// Current RTT in seconds; `0.0` when not yet measured.
+    pub current_round_trip_time_s: f64,
+    pub priority: u64,
+    pub state: CandidatePairState,
+}
+
+/// A raw statistics snapshot from the engine.
+///
+/// Everything here is cumulative-since-the-peer-connection or instantaneous, in
+/// the engine's own units. [`crate::stats::StatsSampler`] is what turns it into
+/// the rates a caller wants, because doing that needs a previous sample and this
+/// is one sample.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TransportStats {
+    pub inbound: Vec<InboundRtpStats>,
+    pub outbound: Vec<OutboundRtpStats>,
+    pub candidate_pairs: Vec<CandidatePairStats>,
+}
+
 /// Result of [`PeerTransport::prepare`]: a local SDP offer plus the
 /// `mid` → track mapping for the signaling request.
 #[derive(Debug, Clone)]
@@ -131,6 +222,21 @@ pub trait PeerTransport {
     ) -> Result<(), crate::error::CoreError> {
         Err(crate::error::CoreError::Peer(
             "this transport does not support per-track bitrate limits".into(),
+        ))
+    }
+
+    /// A statistics snapshot from the engine.
+    ///
+    /// Cumulative counters and instantaneous readings, not rates — see
+    /// [`crate::stats::StatsSampler`], which is where a rate can be derived
+    /// because that is where the previous sample lives.
+    ///
+    /// Defaults to refusing, for the same reason the bitrate bounds above do: a
+    /// transport that answered an empty report would be indistinguishable from a
+    /// connection carrying nothing.
+    async fn get_stats(&self) -> Result<TransportStats, crate::error::CoreError> {
+        Err(crate::error::CoreError::Peer(
+            "this transport does not report statistics".into(),
         ))
     }
 

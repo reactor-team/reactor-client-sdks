@@ -14,16 +14,19 @@ use log::{debug, info, warn};
 
 use reactor_core::error::CoreError;
 use reactor_core::peer::{
+    CandidatePairState, CandidatePairStats, InboundRtpStats, OutboundRtpStats,
     PeerConnectionState as CorePeerConnectionState, PeerEvent, PeerTransport, PreparedOffer,
+    TransportStats,
 };
 use reactor_core::protocol::session::{TrackCapability, TrackDirection, TrackKind};
 use reactor_core::protocol::webrtc::{IceCandidate, IceServer, TrackMappingEntry};
 
 use reactor_webrtc::{
     AdmMode, AudioTrack, ContinualGatheringPolicy, DataChannel, DataChannelState,
-    IceGatheringState, IceServer as RwIceServer, MediaKind, PeerConnection, PeerConnectionFactory,
-    PeerConnectionObserver, PeerConnectionState, RemoteTrack, RtcConfiguration, SdpType,
-    SessionDescription, Track, Transceiver, TransceiverDirection, VideoFrame, VideoTrack,
+    IceCandidatePairState, IceGatheringState, IceServer as RwIceServer, MediaKind, PeerConnection,
+    PeerConnectionFactory, PeerConnectionObserver, PeerConnectionState, RemoteTrack,
+    RtcConfiguration, SdpType, SessionDescription, StatsReport, Track, Transceiver,
+    TransceiverDirection, VideoFrame, VideoTrack,
 };
 
 fn peer_err(e: impl std::fmt::Display) -> CoreError {
@@ -101,6 +104,61 @@ fn map_state(s: PeerConnectionState) -> CorePeerConnectionState {
         PeerConnectionState::Disconnected => CorePeerConnectionState::Disconnected,
         PeerConnectionState::Failed => CorePeerConnectionState::Failed,
         PeerConnectionState::Closed => CorePeerConnectionState::Closed,
+    }
+}
+
+fn map_pair_state(s: IceCandidatePairState) -> CandidatePairState {
+    match s {
+        IceCandidatePairState::Waiting => CandidatePairState::Waiting,
+        IceCandidatePairState::InProgress => CandidatePairState::InProgress,
+        IceCandidatePairState::Failed => CandidatePairState::Failed,
+        IceCandidatePairState::Succeeded => CandidatePairState::Succeeded,
+        IceCandidatePairState::Cancelled => CandidatePairState::Cancelled,
+    }
+}
+
+/// Translate the engine's report into the core's vocabulary.
+///
+/// Field for field — the core's structs were shaped from this report, so there is
+/// nothing to compute here and nothing to drop. The one thing to notice is what
+/// neither side has: no stream kind, no candidate-pair identity, no
+/// available-bitrate estimate. See `reactor_core::stats` for what that costs.
+fn map_stats(report: StatsReport) -> TransportStats {
+    TransportStats {
+        inbound: report
+            .inbound_rtp
+            .into_iter()
+            .map(|s| InboundRtpStats {
+                ssrc: s.ssrc,
+                packets_received: s.packets_received,
+                bytes_received: s.bytes_received,
+                jitter_s: s.jitter_s,
+                packets_lost: s.packets_lost,
+                nack_count: s.nack_count,
+                total_decode_time_s: s.total_decode_time_s,
+            })
+            .collect(),
+        outbound: report
+            .outbound_rtp
+            .into_iter()
+            .map(|s| OutboundRtpStats {
+                ssrc: s.ssrc,
+                packets_sent: s.packets_sent,
+                bytes_sent: s.bytes_sent,
+                target_bitrate_bps: s.target_bitrate_bps,
+                round_trip_time_s: s.round_trip_time_s,
+                retransmitted_packets_sent: s.retransmitted_packets_sent,
+            })
+            .collect(),
+        candidate_pairs: report
+            .candidate_pairs
+            .into_iter()
+            .map(|p| CandidatePairStats {
+                current_round_trip_time_s: p.current_round_trip_time_s,
+                priority: p.priority,
+                state: map_pair_state(p.state),
+            })
+            .collect(),
     }
 }
 
@@ -647,6 +705,31 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             Some(tc) => tc.set_send_bitrate(min_bps, max_bps).map_err(peer_err),
             None => Ok(()),
         })
+    }
+
+    async fn get_stats(&self) -> Result<TransportStats, CoreError> {
+        // The Arc comes out from under the lock before the call, for the reason
+        // set_track_bitrate documents: the engine dispatches this onto a libwebrtc
+        // thread and waits for the report, and that thread can be inside a frame
+        // sink whose host handler wants this same mutex.
+        let pc = self.state.lock().unwrap().pc.clone();
+        let Some(pc) = pc else {
+            return Err(CoreError::InvalidState(
+                "no peer connection to read statistics from".into(),
+            ));
+        };
+
+        // `get_stats` blocks the calling thread until the engine answers, up to
+        // its own ten-second timeout. On a tokio worker that parks the worker,
+        // and unlike the bitrate setters — called once, by hand — this one is
+        // built to be polled, so every sample would cost a worker for as long as
+        // libwebrtc took to answer.
+        tokio::task::spawn_blocking(move || pc.get_stats().map(map_stats).map_err(peer_err))
+            .await
+            // A panic inside the blocking call, or a runtime shutting down under
+            // it. Neither leaves a report, and neither is this transport's own
+            // failure to describe any more precisely than by saying so.
+            .map_err(|e| CoreError::Peer(format!("statistics collection failed: {e}")))?
     }
 
     async fn close(&self) -> Result<(), CoreError> {
