@@ -57,7 +57,9 @@ public final class Track: @unchecked Sendable {
 
     // Weak, for the reason every reference back to the client is weak here: a
     // Track parked in a view model must not be what keeps a session open.
-    private weak var client: Reactor?
+    // Internal rather than private because the sending half of this type lives
+    // in its own file, and `private` in Swift is file scope.
+    weak var client: Reactor?
 
     init(name: String, client: Reactor) {
         self.name = name
