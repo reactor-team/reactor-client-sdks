@@ -9,6 +9,27 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-04
+
+### Added
+
+- `Reactor.get_stats()` — a statistics snapshot for the live connection: RTT,
+  jitter, packet loss, bitrates, and the WebRTC engine's own per-stream
+  counters (`inbound`, `outbound`, `candidate_pairs`), as frozen
+  `ConnectionStats` / `InboundStream` / `OutboundStream` / `CandidatePair`
+  objects.
+
+  The two measured bitrates are derived against the previous call, so the first
+  call after connecting reports `None` for them, as does a call made less than
+  200 ms after the last one. A field the engine has not measured yet is `None`,
+  never zero — no RTT yet is not a zero-latency link. Raises
+  `InvalidStateError` unless the session is ready.
+
+  Four fields the JS SDK reports are absent — `candidateType`,
+  `availableIncomingBitrate`, `availableOutgoingBitrate` and
+  `framesPerSecond` — because they are missing at the WebRTC engine rather than
+  dropped on the way. See REA-6019.
+
 ### Fixed
 
 - `Reactor.close()` now settles any operation still in flight (e.g. a
