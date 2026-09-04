@@ -145,7 +145,7 @@ extension Reactor {
 
     private func clip(from payload: String?, operation: String) throws -> Clip {
         guard let payload, let data = payload.data(using: .utf8),
-            let value = try? JSONDecoder().decode(JSONValue.self, from: data)
+            let value = try? JSON.decoder().decode(JSONValue.self, from: data)
         else {
             throw ReactorError(
                 .decodeFailed,

@@ -45,6 +45,9 @@ final class FakeLibrary: @unchecked Sendable {
         var createCalls: [CreateCall] = []
         var callbacks: ReactorCallbacks?
         var destroyCount = 0
+        /// Set when `destroy` answered 0, which is the library promising that no
+        /// callback will start afterwards.
+        var quiesced = false
         var freedStrings = 0
         var connectCalls = 0
         var disconnectCalls = 0
@@ -63,6 +66,7 @@ final class FakeLibrary: @unchecked Sendable {
         var schemaCalls = 0
         var uploadFileCalls: [String] = []
         var uploadBytesCalls: [UploadBytesCall] = []
+        var jwtCalls: [JWTCall] = []
         var clipCalls: [Double] = []
         var recordingCalls = 0
         var downloadCalls: [DownloadCall] = []
@@ -128,6 +132,14 @@ final class FakeLibrary: @unchecked Sendable {
         var local: Int32
     }
 
+    /// What the SDK handed `reactor_fetch_jwt`.
+    struct JWTCall {
+        var apiURL: String?
+        var apiKey: String?
+        var optionsJSON: String?
+        var local: Int32
+    }
+
     /// What `reactor_destroy` answers: 0 (quiesced) or -1 (a callback is still
     /// running and the pointers must be kept alive).
     var destroyResult: Int32 = 0
@@ -179,6 +191,7 @@ final class FakeLibrary: @unchecked Sendable {
     var schemaCalls: Int { state.withLock { $0.schemaCalls } }
     var uploadFileCalls: [String] { state.withLock { $0.uploadFileCalls } }
     var uploadBytesCalls: [UploadBytesCall] { state.withLock { $0.uploadBytesCalls } }
+    var jwtCalls: [JWTCall] { state.withLock { $0.jwtCalls } }
     var clipCalls: [Double] { state.withLock { $0.clipCalls } }
     var recordingCalls: Int { state.withLock { $0.recordingCalls } }
     var downloadCalls: [DownloadCall] { state.withLock { $0.downloadCalls } }
@@ -219,6 +232,18 @@ final class FakeLibrary: @unchecked Sendable {
     /// Whether an operation is waiting on a completion the fake has not fired.
     var hasPendingCompletion: Bool { state.withLock { $0.lastCompletion != nil } }
 
+    /// Whether the library would still call back.
+    ///
+    /// False once `destroy` has answered 0. The header is explicit that no
+    /// callback starts after that, and the SDK releases the context it would be
+    /// reached through — so a fake that fires anyway does not test resilience,
+    /// it tests undefined behaviour. It crashed in `swift_weakLoadStrong` when
+    /// one of these tests did exactly that.
+    ///
+    /// On `-1` this stays true, because that is the case where the pointers must
+    /// stay alive: a callback *is* still in flight.
+    private var canFireCallbacks: Bool { !state.withLock { $0.quiesced } }
+
     // MARK: - What the tests drive
 
     func setStatus(_ status: String) {
@@ -249,6 +274,7 @@ final class FakeLibrary: @unchecked Sendable {
 
     /// Fire `on_track`, the way the library reports a media id arriving.
     func fireTrack(name: String, mid: String?) {
+        guard canFireCallbacks else { return }
         guard let callbacks = state.withLock({ $0.callbacks }), let onTrack = callbacks.on_track
         else { return }
         name.withCString { namePointer in
@@ -260,6 +286,7 @@ final class FakeLibrary: @unchecked Sendable {
 
     /// Fire `on_message`, the way the library reports a model message.
     func fireMessage(_ payload: String, runtime: Bool = false) {
+        guard canFireCallbacks else { return }
         guard let callbacks = state.withLock({ $0.callbacks }) else { return }
         let handler = runtime ? callbacks.on_runtime_message : callbacks.on_message
         guard let handler else { return }
@@ -277,6 +304,7 @@ final class FakeLibrary: @unchecked Sendable {
         userData: [UInt8]? = nil,
         fill: UInt8 = 0xAB
     ) {
+        guard canFireCallbacks else { return }
         guard let callbacks = state.withLock({ $0.callbacks }), let onFrame = callbacks.on_frame
         else { return }
         var pixels = [UInt8](repeating: fill, count: Int(width) * Int(height) * 4)
@@ -305,6 +333,7 @@ final class FakeLibrary: @unchecked Sendable {
         sampleRate: UInt32 = 48000,
         channels: UInt32 = 1
     ) {
+        guard canFireCallbacks else { return }
         guard let callbacks = state.withLock({ $0.callbacks }), let onAudio = callbacks.on_audio
         else { return }
         var buffer = samples
@@ -319,6 +348,7 @@ final class FakeLibrary: @unchecked Sendable {
 
     /// Fire `on_status`, the way the library's control thread would.
     func fireStatus(_ status: String) {
+        guard canFireCallbacks else { return }
         guard let callbacks = state.withLock({ $0.callbacks }),
             let onStatus = callbacks.on_status
         else { return }
@@ -327,6 +357,7 @@ final class FakeLibrary: @unchecked Sendable {
 
     /// Fire `on_error` with a payload, the way the library's control thread would.
     func fireError(_ payload: String) {
+        guard canFireCallbacks else { return }
         guard let callbacks = state.withLock({ $0.callbacks }),
             let onError = callbacks.on_error
         else { return }
@@ -363,6 +394,17 @@ final class FakeLibrary: @unchecked Sendable {
                 state.withLock { $0.freedStrings += 1 }
                 free(pointer)
             },
+            fetchJWT: { [self] apiURL, apiKey, optionsJSON, local, completion, userdata in
+                state.withLock {
+                    $0.jwtCalls.append(
+                        JWTCall(
+                            apiURL: String(borrowing: apiURL),
+                            apiKey: String(borrowing: apiKey),
+                            optionsJSON: String(borrowing: optionsJSON),
+                            local: local))
+                }
+                record(completion, userdata)
+            },
             createWithADM: {
                 [self]
                 apiURL, model, jwt, local, callbacks, admMode, sdkVersion,
@@ -385,6 +427,11 @@ final class FakeLibrary: @unchecked Sendable {
                 state.withLock {
                     $0.destroyCount += 1
                     $0.events.append(.destroyed)
+                    // 0 means "no callback is running and none will start", which
+                    // is exactly when the SDK releases its callback context. A
+                    // fake that fired afterwards would be reading freed memory
+                    // and testing nothing — see `canFireCallbacks`.
+                    if destroyResult == 0 { $0.quiesced = true }
                 }
                 return destroyResult
             },

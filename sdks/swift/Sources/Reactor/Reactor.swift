@@ -29,6 +29,21 @@ public final class Reactor: @unchecked Sendable {
     /// Where a coordinator run locally listens.
     public static let localAPIURL = "http://localhost:8080"
 
+    /// The coordinator a call should actually reach.
+    ///
+    /// Mirrors the Python SDK: asking for local dev without naming a URL means
+    /// the local coordinator, not the production one over plaintext.
+    ///
+    /// Written once and used by everything that talks to a coordinator, because
+    /// two copies drifted the moment there were two. With only the client
+    /// initialiser resolving it, `Reactor(model:apiKey:local: true)` exchanged
+    /// its key at `https://api.reactor.inc` and then pointed the client it
+    /// created at `http://localhost:8080` — local development either failed to
+    /// authenticate or ran on a token minted by the wrong coordinator.
+    static func resolveAPIURL(_ apiURL: String, local: Bool) -> String {
+        (local && apiURL == Reactor.defaultAPIURL) ? Reactor.localAPIURL : apiURL
+    }
+
     /// Reported to the coordinator as `client_info.sdk_type`.
     ///
     /// Every binding reaches the platform through the same FFI entry point,
@@ -151,9 +166,7 @@ public final class Reactor: @unchecked Sendable {
         self.jwt = jwt
         self.isLocal = local
 
-        // Mirrors the Python SDK: asking for local dev without naming a URL
-        // means the local coordinator, not the production one over plaintext.
-        let resolvedURL = (local && apiURL == Reactor.defaultAPIURL) ? Reactor.localAPIURL : apiURL
+        let resolvedURL = Reactor.resolveAPIURL(apiURL, local: local)
 
         let context = CallbackContext(client: self)
         // Retained by hand, and released only once reactor_destroy answers 0.
