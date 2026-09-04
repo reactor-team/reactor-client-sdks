@@ -12,24 +12,31 @@
 //! binding, by contrast, would otherwise reimplement it, and two bindings
 //! disagreeing about what "outgoing bitrate" means is worse than either answer.
 //!
-//! # What this cannot report, and why
+//! # Reading the same numbers the browser reads
 //!
-//! The browser SDK's `ConnectionStats` carries four fields absent here:
-//! `candidateType`, `availableIncomingBitrate`, `availableOutgoingBitrate` and
-//! `framesPerSecond`. All four are missing at the engine, not dropped here —
-//! `reactor-webrtc`'s C ABI carries no local-candidate reference, no
-//! available-bitrate estimate and no frame counters, and no arithmetic recovers a
-//! field that never arrived. See [`crate::peer::CandidatePairStats`].
+//! Since `reactor-webrtc` 0.15 (REA-6019) the engine reports the fields this
+//! needs to match `sdks/js/src/internal/stats.ts`, and it now does: the same
+//! candidate pair, the same byte counters, the same video stream. Three choices
+//! are worth knowing about, because each one used to be forced and is now
+//! deliberate:
 //!
-//! What is here and not there: the per-stream arrays, NACK counts, retransmitted
-//! packets and cumulative decode time, which the browser's own report has but the
-//! browser SDK's extractor does not surface.
+//! * **The pair is the *nominated* one**, not the highest-priority `succeeded`
+//!   one. Only the nominated pair carries traffic; the rest report zeroes.
+//! * **The bitrates come from that pair's byte counters**, so they cover
+//!   everything it carried — RTCP and data channel included — which is what the
+//!   browser measures. Summing the per-stream RTP counters instead read low.
+//! * **Jitter, loss and fps come from the video stream**, found by
+//!   [`crate::peer::StreamKind`]. With no video stream, jitter and loss fall back
+//!   to the aggregate across receive streams, where the browser reports nothing
+//!   at all; that is the one place this deliberately answers more than the
+//!   browser does, because an audio-only session having no readable jitter is a
+//!   limitation rather than a definition.
 
 use std::sync::Mutex;
 
 use serde::Serialize;
 
-use crate::peer::{CandidatePairState, CandidatePairStats, TransportStats};
+use crate::peer::{CandidatePairStats, StreamKind, TransportStats};
 
 /// The shortest window a rate is derived over, in milliseconds.
 ///
@@ -55,44 +62,56 @@ pub const MIN_RATE_WINDOW_MS: f64 = 200.0;
 pub struct ConnectionStats {
     /// Round-trip time in milliseconds, from the selected ICE candidate pair.
     ///
-    /// "Selected" is inferred: the engine reports no `nominated` flag, so this is
-    /// the highest-priority pair in state `succeeded` — which is what nomination
-    /// picks in practice. With no succeeded pair reporting one, this falls back to
-    /// the largest RTT any send stream measured, and is `None` when neither has a
-    /// reading yet.
+    /// "Selected" is the pair ICE nominated. With no nominated pair reporting an
+    /// RTT yet, this falls back to the largest any send stream measured — which
+    /// comes from the far end's RTCP report about us, so it too takes a moment to
+    /// appear. `None` until one of them has a reading.
     pub rtt_ms: Option<f64>,
 
-    /// Worst jitter across the receive streams, in seconds.
+    /// Jitter on the received video stream, in seconds.
     ///
-    /// The maximum, not a particular stream's: the engine does not say which
-    /// stream is video, so there is no "the video stream" to single out the way
-    /// the browser SDK does. Read `inbound` for the per-stream values.
+    /// The same stream the browser SDK reads. With no video stream, the worst
+    /// jitter across the receive streams there are — see the module docs. Read
+    /// `inbound` for the per-stream values.
     pub jitter_s: Option<f64>,
 
-    /// Fraction of inbound packets lost since the connection came up, `0.0`–`1.0`.
+    /// Fraction of inbound packets lost since the connection came up, `0.0`-`1.0`.
     ///
-    /// Cumulative rather than per-window, matching the browser SDK. Summed across
-    /// receive streams, with each stream's count floored at zero first: a
-    /// negative count is that stream's duplicates and must not cancel a real loss
-    /// on another. `None` until at least one packet has been accounted for.
+    /// Cumulative rather than per-window, matching the browser SDK, and taken
+    /// from the video stream for the same reason `jitter_s` is. With no video
+    /// stream it is summed across receive streams, with each stream's count
+    /// floored at zero first: a negative count is that stream's duplicates and
+    /// must not cancel a real loss on another. `None` until at least one packet
+    /// has been accounted for.
     pub packet_loss_ratio: Option<f64>,
 
     /// Receive rate over the window since the previous sample, in bits per second.
     ///
-    /// `None` on the first sample, when the window was shorter than
-    /// [`MIN_RATE_WINDOW_MS`], or when the stream set changed under it — a
-    /// reconnect brings up new SSRCs whose counters restart from zero, and
-    /// differencing across that would report a large negative rate.
+    /// Measured on the nominated candidate pair, so it covers everything that
+    /// pair carried — RTP, RTCP and the data channel — which is what the browser
+    /// SDK's `incomingBitrate` measures.
     ///
-    /// This counts RTP payload only, where the browser SDK's `incomingBitrate`
-    /// counts everything the selected candidate pair carried — RTCP and data
-    /// channel included. The media rate is the more useful of the two and the only
-    /// one available here; expect it to read slightly lower than the browser's.
+    /// `None` on the first sample, when the window was shorter than
+    /// [`MIN_RATE_WINDOW_MS`], when there is no nominated pair yet, or when the
+    /// connection changed under it: a reconnect nominates a different pair and
+    /// brings up new SSRCs, both of whose counters restart from zero, and
+    /// differencing across that would report a large negative rate.
     pub incoming_bitrate_bps: Option<f64>,
 
     /// Send rate over the same window, in bits per second. As
     /// [`ConnectionStats::incoming_bitrate_bps`].
     pub outgoing_bitrate_bps: Option<f64>,
+
+    /// The congestion controller's own estimate of what the path can carry, in
+    /// bits per second, from the nominated pair.
+    ///
+    /// Not a measurement of what is flowing — compare
+    /// [`ConnectionStats::incoming_bitrate_bps`], which is. `None` until the
+    /// controller has an estimate, which needs media on the wire: a
+    /// data-channel-only connection reports nothing here for its whole life.
+    pub available_incoming_bitrate_bps: Option<f64>,
+    /// As above, for the send direction.
+    pub available_outgoing_bitrate_bps: Option<f64>,
 
     /// What the encoders are currently aiming at, summed across send streams, in
     /// bits per second.
@@ -101,6 +120,25 @@ pub struct ConnectionStats {
     /// [`ConnectionStats::outgoing_bitrate_bps`], which is measured. `None` when
     /// nothing is being sent.
     pub target_bitrate_bps: Option<f64>,
+
+    /// Frames per second on the received video stream. `None` with no video
+    /// stream, and until the engine has measured a window's worth.
+    pub frames_per_second: Option<f64>,
+
+    /// Transport type of the nominated pair's local candidate: `"host"`,
+    /// `"srflx"`, `"prflx"` or `"relay"`.
+    ///
+    /// `"relay"` means the media is going through a TURN server, which is the
+    /// first thing worth knowing when latency is bad. `None` before ICE has
+    /// selected anything — the same point at which the browser's `candidateType`
+    /// is undefined.
+    pub candidate_type: Option<&'static str>,
+
+    /// Transport to the TURN server when `candidate_type` is `"relay"`:
+    /// `"udp"`, `"tcp"` or `"tls"`. `None` when the path is not relayed.
+    ///
+    /// Not a field the browser SDK reports.
+    pub relay_protocol: Option<&'static str>,
 
     /// State of the pair `rtt_ms` was read from: `"succeeded"`, `"waiting"`,
     /// `"in-progress"`, `"failed"` or `"cancelled"`. `None` when the engine
@@ -115,8 +153,8 @@ pub struct ConnectionStats {
     /// Signed, and the sign is meaningful: RFC 3550 allows a negative count when
     /// duplicates arrive. This is the plain sum across receive streams, so one
     /// stream's duplicates do offset another's losses here —
-    /// [`ConnectionStats::packet_loss_ratio`] floors each stream instead, and is
-    /// the field to read for "how bad is it".
+    /// [`ConnectionStats::packet_loss_ratio`] is the field to read for "how bad
+    /// is it".
     pub packets_lost: i64,
     pub packets_sent: u64,
     pub bytes_received: u64,
@@ -136,31 +174,60 @@ pub struct ConnectionStats {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct InboundStats {
     pub ssrc: u32,
+    /// `"audio"`, `"video"`, or `null` when the engine reported no kind.
+    pub kind: Option<&'static str>,
     pub packets_received: u32,
     pub packets_lost: i32,
     pub bytes_received: u64,
     pub jitter_s: f64,
     pub nack_count: u32,
     pub total_decode_time_s: f64,
+    pub frames_per_second: f64,
+    pub frames_decoded: u32,
+    pub frames_dropped: u32,
+    pub frame_width: u32,
+    pub frame_height: u32,
 }
 
 /// One send stream, as serialized. Mirrors [`crate::peer::OutboundRtpStats`].
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct OutboundStats {
     pub ssrc: u32,
-    pub packets_sent: u32,
-    pub retransmitted_packets_sent: u32,
+    /// `"audio"`, `"video"`, or `null` when the engine reported no kind.
+    pub kind: Option<&'static str>,
+    pub packets_sent: u64,
+    pub retransmitted_packets_sent: u64,
     pub bytes_sent: u64,
     pub target_bitrate_bps: f64,
     pub round_trip_time_s: f64,
+    pub total_round_trip_time_s: f64,
+    /// The receiver's own numbers for this stream, from its RTCP report.
+    pub fraction_lost: f64,
+    pub packets_lost: i32,
+    pub frames_per_second: f64,
+    pub frames_sent: u32,
+    pub frame_width: u32,
+    pub frame_height: u32,
 }
 
-/// One ICE candidate pair, as serialized. Mirrors [`CandidatePairStats`].
+/// One ICE candidate pair, as serialized. Mirrors
+/// [`crate::peer::CandidatePairStats`].
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CandidatePair {
     pub current_round_trip_time_s: f64,
+    pub total_round_trip_time_s: f64,
     pub priority: u64,
     pub state: &'static str,
+    pub nominated: bool,
+    pub writable: bool,
+    pub available_outgoing_bitrate_bps: f64,
+    pub available_incoming_bitrate_bps: f64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub packets_sent: u64,
+    pub packets_received: u64,
+    pub local_candidate_type: Option<&'static str>,
+    pub local_relay_protocol: Option<&'static str>,
 }
 
 /// The previous sample, kept so the next one can be a rate.
@@ -169,13 +236,18 @@ struct Baseline {
     at_ms: f64,
     bytes_received: u64,
     bytes_sent: u64,
+    /// Which pair the byte counts came from.
+    ///
+    /// The browser SDK watches the candidate-pair id for this, because an ICE
+    /// restart nominates a different pair whose counters have their own baseline.
+    /// The engine reports no id, so this is the pair's priority — derived from the
+    /// candidate pair itself, and different for a different pair.
+    pair_priority: u64,
     /// The SSRCs the sample covered, in the order the engine listed them.
     ///
-    /// The guard against differencing across a reconnect. The browser SDK watches
-    /// the candidate-pair id for the same reason — an ICE restart nominates a
-    /// different pair whose counters have their own baseline — and the SSRC set is
-    /// this layer's equivalent, since a fresh peer connection negotiates fresh
-    /// ones.
+    /// Belt to the priority's braces. A reconnect over the same interfaces could
+    /// in principle nominate a pair with the same priority; it cannot also
+    /// negotiate the same SSRCs.
     streams: Vec<u32>,
 }
 
@@ -196,10 +268,10 @@ impl StatsSampler {
 
     /// Forget the baseline.
     ///
-    /// Called when the transport goes away. The SSRC check would catch the
-    /// reconnect anyway — this is the belt to its braces, and it also means the
-    /// first sample after a reconnect reports no rate rather than a rate measured
-    /// across the gap the disconnect left.
+    /// Called when the transport goes away. The pair and SSRC checks would catch
+    /// the reconnect anyway — this is the belt to their braces, and it also means
+    /// the first sample after a reconnect reports no rate rather than a rate
+    /// measured across the gap the disconnect left.
     pub fn reset(&self) {
         *self.previous.lock().unwrap() = None;
     }
@@ -212,14 +284,15 @@ impl StatsSampler {
         };
 
         // ── Receive side ────────────────────────────────────────────────────
+        //
+        // The aggregate counters are summed over every stream; the scalar
+        // *quality* readings come from the video stream, which is what the browser
+        // SDK reads. Both happen in one walk so the per-stream array is built once.
         let mut worst_jitter: Option<f64> = None;
-        // Floored *per stream*, not once over the total. A negative count is one
-        // stream's duplicates (RFC 3550 allows it), and it says nothing about any
-        // other stream — so summing the signed values first lets one stream's
-        // duplicates cancel another's real loss. Audio at -10 and video at +10
-        // then report a ratio of zero on a connection that is dropping video.
-        // `packets_lost` below stays the signed aggregate, which is what it is
-        // documented as.
+        // Floored per stream, not once over the total: a negative count is one
+        // stream's duplicates (RFC 3550 allows it) and says nothing about any
+        // other, so summing the signed values first lets one stream's duplicates
+        // cancel another's real loss.
         let mut lost_for_ratio: u64 = 0;
         for s in &raw.inbound {
             stats.packets_received += u64::from(s.packets_received);
@@ -234,29 +307,50 @@ impl StatsSampler {
             }
             stats.inbound.push(InboundStats {
                 ssrc: s.ssrc,
+                kind: stream_kind_str(s.kind),
                 packets_received: s.packets_received,
                 packets_lost: s.packets_lost,
                 bytes_received: s.bytes_received,
                 jitter_s: s.jitter_s,
                 nack_count: s.nack_count,
                 total_decode_time_s: s.total_decode_time_s,
+                frames_per_second: s.frames_per_second,
+                frames_decoded: s.frames_decoded,
+                frames_dropped: s.frames_dropped,
+                frame_width: s.frame_width,
+                frame_height: s.frame_height,
             });
         }
-        stats.jitter_s = worst_jitter;
 
-        // The ratio is a fraction of the packets accounted for, and a negative
-        // fraction is not one — hence the flooring, done per stream above.
-        let accounted = stats.packets_received + lost_for_ratio;
-        if accounted > 0 {
-            stats.packet_loss_ratio = Some(lost_for_ratio as f64 / accounted as f64);
-        }
+        // The first video receive stream, as the browser SDK picks it. A model
+        // declaring several video outputs has several; the browser reads the first
+        // and so does this, rather than inventing an aggregate the two SDKs would
+        // then disagree about.
+        let video_in = raw.inbound.iter().find(|s| s.kind == StreamKind::Video);
+
+        stats.jitter_s = match video_in {
+            Some(s) if s.jitter_s.is_finite() => Some(s.jitter_s),
+            // No video stream, or a video stream whose reading is unusable: the
+            // worst of what there is. See the module docs for why this answers
+            // where the browser does not.
+            _ => worst_jitter,
+        };
+
+        stats.frames_per_second = video_in
+            .map(|s| s.frames_per_second)
+            .filter(|fps| fps.is_finite() && *fps > 0.0);
+
+        stats.packet_loss_ratio = match video_in {
+            Some(s) => loss_ratio(u64::from(s.packets_received), s.packets_lost.max(0) as u64),
+            None => loss_ratio(stats.packets_received, lost_for_ratio),
+        };
 
         // ── Send side ───────────────────────────────────────────────────────
         let mut target_bps = 0.0_f64;
         let mut any_target = false;
         let mut outbound_rtt_s: Option<f64> = None;
         for s in &raw.outbound {
-            stats.packets_sent += u64::from(s.packets_sent);
+            stats.packets_sent += s.packets_sent;
             stats.bytes_sent += s.bytes_sent;
             if s.target_bitrate_bps.is_finite() && s.target_bitrate_bps > 0.0 {
                 target_bps += s.target_bitrate_bps;
@@ -270,11 +364,19 @@ impl StatsSampler {
             }
             stats.outbound.push(OutboundStats {
                 ssrc: s.ssrc,
+                kind: stream_kind_str(s.kind),
                 packets_sent: s.packets_sent,
                 retransmitted_packets_sent: s.retransmitted_packets_sent,
                 bytes_sent: s.bytes_sent,
                 target_bitrate_bps: s.target_bitrate_bps,
                 round_trip_time_s: s.round_trip_time_s,
+                total_round_trip_time_s: s.total_round_trip_time_s,
+                fraction_lost: s.fraction_lost,
+                packets_lost: s.packets_lost,
+                frames_per_second: s.frames_per_second,
+                frames_sent: s.frames_sent,
+                frame_width: s.frame_width,
+                frame_height: s.frame_height,
             });
         }
         if any_target {
@@ -285,11 +387,35 @@ impl StatsSampler {
         for p in &raw.candidate_pairs {
             stats.candidate_pairs.push(CandidatePair {
                 current_round_trip_time_s: p.current_round_trip_time_s,
+                total_round_trip_time_s: p.total_round_trip_time_s,
                 priority: p.priority,
                 state: p.state.as_str(),
+                nominated: p.nominated,
+                writable: p.writable,
+                available_outgoing_bitrate_bps: p.available_outgoing_bitrate_bps,
+                available_incoming_bitrate_bps: p.available_incoming_bitrate_bps,
+                bytes_sent: p.bytes_sent,
+                bytes_received: p.bytes_received,
+                packets_sent: p.packets_sent,
+                packets_received: p.packets_received,
+                local_candidate_type: p.local_candidate_type.as_str(),
+                local_relay_protocol: p.local_relay_protocol.as_str(),
             });
         }
+
         let selected = select_pair(&raw.candidate_pairs);
+        // The nominated pair, or nothing. Every pair carries a candidate type,
+        // including the ones ICE is still checking — so reading it off the
+        // fallback would answer "host" during setup and then change to "relay"
+        // once ICE nominated a relayed pair. A caller polling through connection
+        // setup would see a path that was never selected. The browser reports
+        // nothing until nomination, and so does this.
+        let nominated = selected.filter(|p| p.nominated);
+        stats.candidate_type = nominated.and_then(|p| p.local_candidate_type.as_str());
+        stats.relay_protocol = nominated.and_then(|p| p.local_relay_protocol.as_str());
+        // The state and the RTT are about how far ICE got, so they do read the
+        // fallback: "in-progress" is a useful answer where a candidate type is
+        // a misleading one.
         stats.candidate_pair_state = selected.map(|p| p.state.as_str());
         stats.rtt_ms = selected
             .filter(|p| {
@@ -297,8 +423,21 @@ impl StatsSampler {
             })
             .map(|p| p.current_round_trip_time_s * 1000.0)
             .or(outbound_rtt_s.map(|s| s * 1000.0));
+        stats.available_incoming_bitrate_bps = nominated
+            .map(|p| p.available_incoming_bitrate_bps)
+            .filter(|b| b.is_finite() && *b > 0.0);
+        stats.available_outgoing_bitrate_bps = nominated
+            .map(|p| p.available_outgoing_bitrate_bps)
+            .filter(|b| b.is_finite() && *b > 0.0);
 
         // ── Rates, against the previous sample ──────────────────────────────
+        //
+        // From the nominated pair's counters, which is what the browser measures.
+        // Nothing to measure without one: an un-nominated pair carries no traffic,
+        // so there is no rate to report rather than a rate of zero.
+        let Some(pair) = nominated else {
+            return stats;
+        };
         let streams: Vec<u32> = raw
             .inbound
             .iter()
@@ -307,14 +446,18 @@ impl StatsSampler {
             .collect();
         let current = Baseline {
             at_ms: now_ms,
-            bytes_received: stats.bytes_received,
-            bytes_sent: stats.bytes_sent,
+            bytes_received: pair.bytes_received,
+            bytes_sent: pair.bytes_sent,
+            pair_priority: pair.priority,
             streams,
         };
 
         let mut previous = self.previous.lock().unwrap();
         match previous.as_ref() {
-            Some(prev) if prev.streams == current.streams => {
+            Some(prev)
+                if prev.pair_priority == current.pair_priority
+                    && prev.streams == current.streams =>
+            {
                 let elapsed_ms = current.at_ms - prev.at_ms;
                 if elapsed_ms >= MIN_RATE_WINDOW_MS {
                     stats.incoming_bitrate_bps = Some(rate_bps(
@@ -329,8 +472,8 @@ impl StatsSampler {
                 // Too short a window: the baseline stays put, so the next sample
                 // measures from it over a window long enough to mean something.
             }
-            // First sample, or the streams changed under us. Either way there is
-            // nothing to difference against; this becomes the baseline.
+            // First sample, or the connection changed under us. Either way there
+            // is nothing to difference against; this becomes the baseline.
             _ => *previous = Some(current),
         }
 
@@ -338,29 +481,44 @@ impl StatsSampler {
     }
 }
 
+fn stream_kind_str(kind: StreamKind) -> Option<&'static str> {
+    match kind {
+        StreamKind::Unknown => None,
+        StreamKind::Audio => Some("audio"),
+        StreamKind::Video => Some("video"),
+    }
+}
+
+/// `lost / (received + lost)`, or `None` when nothing has been accounted for.
+///
+/// `None` rather than zero on an idle stream: no packets seen is not a perfect
+/// link.
+fn loss_ratio(received: u64, lost: u64) -> Option<f64> {
+    let accounted = received + lost;
+    (accounted > 0).then(|| lost as f64 / accounted as f64)
+}
+
 /// Bits per second between two cumulative byte counts `elapsed_ms` apart.
 ///
 /// `saturating_sub` because a counter that went backwards means the stream was
-/// reset under a set of SSRCs that happened not to change — reporting `0.0` for
-/// that window is wrong by one sample, where a negative bitrate is wrong in a way
-/// that propagates into whatever averages it.
+/// reset under a pair and SSRC set that happened not to change — reporting `0.0`
+/// for that window is wrong by one sample, where a negative bitrate is wrong in a
+/// way that propagates into whatever averages it.
 fn rate_bps(previous_bytes: u64, current_bytes: u64, elapsed_ms: f64) -> f64 {
     let delta_bits = (current_bytes.saturating_sub(previous_bytes) as f64) * 8.0;
     delta_bits / elapsed_ms * 1000.0
 }
 
-/// The pair `rtt_ms` should come from.
+/// The pair the scalars should come from: the one ICE nominated.
 ///
-/// The engine reports no `nominated` flag, so this stands in for it: the
-/// highest-priority `succeeded` pair, which is the one nomination arrives at.
-/// Falling back to the highest-priority pair in any state means an
-/// still-connecting transport reports the state it is actually in rather than
-/// `None`, which reads as "no ICE at all".
+/// Falling back to the highest-priority pair in any state means a still-
+/// connecting transport reports the state it is actually in rather than `None`,
+/// which reads as "no ICE at all". Anything that needs traffic counters re-checks
+/// `nominated` — a fallback pair carries nothing.
 fn select_pair(pairs: &[CandidatePairStats]) -> Option<&CandidatePairStats> {
     pairs
         .iter()
-        .filter(|p| p.state == CandidatePairState::Succeeded)
-        .max_by_key(|p| p.priority)
+        .find(|p| p.nominated)
         .or_else(|| pairs.iter().max_by_key(|p| p.priority))
 }
 
@@ -369,7 +527,9 @@ mod tests {
     use super::*;
     // Only the tests build raw snapshots; the module itself reads them through
     // `TransportStats`, so importing these at the top would be an unused import.
-    use crate::peer::{InboundRtpStats, OutboundRtpStats};
+    use crate::peer::{
+        CandidatePairState, IceCandidateType, InboundRtpStats, OutboundRtpStats, RelayProtocol,
+    };
 
     fn inbound(ssrc: u32, bytes: u64, packets: u32, lost: i32) -> InboundRtpStats {
         InboundRtpStats {
@@ -377,6 +537,24 @@ mod tests {
             packets_received: packets,
             bytes_received: bytes,
             packets_lost: lost,
+            ..InboundRtpStats::default()
+        }
+    }
+
+    /// An inbound stream that says what it is — the 0.15 shape.
+    fn inbound_kind(
+        ssrc: u32,
+        kind: StreamKind,
+        packets: u32,
+        lost: i32,
+        jitter_s: f64,
+    ) -> InboundRtpStats {
+        InboundRtpStats {
+            ssrc,
+            kind,
+            packets_received: packets,
+            packets_lost: lost,
+            jitter_s,
             ..InboundRtpStats::default()
         }
     }
@@ -389,19 +567,38 @@ mod tests {
         }
     }
 
+    /// The nominated pair, carrying `received`/`sent` bytes.
+    fn nominated(priority: u64, received: u64, sent: u64) -> CandidatePairStats {
+        CandidatePairStats {
+            current_round_trip_time_s: 0.021,
+            priority,
+            state: CandidatePairState::Succeeded,
+            nominated: true,
+            writable: true,
+            bytes_received: received,
+            bytes_sent: sent,
+            local_candidate_type: IceCandidateType::Host,
+            ..CandidatePairStats::default()
+        }
+    }
+
     fn pair(rtt_s: f64, priority: u64, state: CandidatePairState) -> CandidatePairStats {
         CandidatePairStats {
             current_round_trip_time_s: rtt_s,
             priority,
             state,
+            ..CandidatePairStats::default()
         }
     }
+
+    // ── Rates, on the nominated pair's counters ───────────────────────────────
 
     #[test]
     fn the_first_sample_reports_counters_but_no_rates() {
         let sampler = StatsSampler::new();
         let raw = TransportStats {
             inbound: vec![inbound(1, 1_000, 10, 0)],
+            candidate_pairs: vec![nominated(9, 1_000, 0)],
             ..TransportStats::default()
         };
 
@@ -414,22 +611,23 @@ mod tests {
         assert_eq!(stats.outgoing_bitrate_bps, None);
     }
 
+    /// The rate is the *pair's* bytes, not the streams'. That is what the browser
+    /// measures, and the two differ: the pair also carried RTCP and the data
+    /// channel.
     #[test]
-    fn a_rate_is_bytes_over_the_window_in_bits_per_second() {
+    fn a_rate_is_the_nominated_pairs_bytes_over_the_window() {
         let sampler = StatsSampler::new();
-        let first = TransportStats {
-            inbound: vec![inbound(1, 1_000, 10, 0)],
-            outbound: vec![outbound(2, 500)],
-            ..TransportStats::default()
-        };
-        let second = TransportStats {
-            inbound: vec![inbound(1, 2_000, 20, 0)],
-            outbound: vec![outbound(2, 1_000)],
-            ..TransportStats::default()
+        let at = |received, sent| TransportStats {
+            // Deliberately unlike the pair's, so a regression that reads the
+            // stream counters instead produces a different number rather than
+            // the same one by luck.
+            inbound: vec![inbound(1, 1, 10, 0)],
+            outbound: vec![outbound(2, 1)],
+            candidate_pairs: vec![nominated(9, received, sent)],
         };
 
-        sampler.sample(&first, 1_000.0);
-        let stats = sampler.sample(&second, 2_000.0);
+        sampler.sample(&at(1_000, 500), 1_000.0);
+        let stats = sampler.sample(&at(2_000, 1_000), 2_000.0);
 
         // 1000 bytes in 1000 ms = 8000 bits/s.
         assert_eq!(stats.incoming_bitrate_bps, Some(8_000.0));
@@ -437,10 +635,28 @@ mod tests {
     }
 
     #[test]
+    fn with_no_nominated_pair_there_is_no_rate_to_report() {
+        let sampler = StatsSampler::new();
+        // Succeeded but not nominated: it carries nothing, so there is nothing to
+        // measure — and a zero would read as an idle connection.
+        let raw = TransportStats {
+            candidate_pairs: vec![pair(0.02, 9, CandidatePairState::Succeeded)],
+            ..TransportStats::default()
+        };
+
+        sampler.sample(&raw, 1_000.0);
+        let stats = sampler.sample(&raw, 2_000.0);
+
+        assert_eq!(stats.incoming_bitrate_bps, None);
+        // The state still reports, so a caller can see how far ICE got.
+        assert_eq!(stats.candidate_pair_state, Some("succeeded"));
+    }
+
+    #[test]
     fn a_window_below_the_floor_reports_no_rate_and_keeps_the_baseline() {
         let sampler = StatsSampler::new();
-        let at = |bytes| TransportStats {
-            inbound: vec![inbound(1, bytes, 10, 0)],
+        let at = |received| TransportStats {
+            candidate_pairs: vec![nominated(9, received, 0)],
             ..TransportStats::default()
         };
 
@@ -455,16 +671,18 @@ mod tests {
         assert_eq!(usable.incoming_bitrate_bps, Some(8_000.0));
     }
 
+    /// An ICE restart nominates a different pair, whose counters have their own
+    /// baseline. The browser guards on the pair's id; the engine reports none, so
+    /// this guards on its priority.
     #[test]
-    fn new_ssrcs_after_a_reconnect_are_not_differenced_against_the_old_ones() {
+    fn a_newly_nominated_pair_is_not_differenced_against_the_old_one() {
         let sampler = StatsSampler::new();
         let before = TransportStats {
-            inbound: vec![inbound(1, 100_000, 1_000, 0)],
+            candidate_pairs: vec![nominated(9, 100_000, 0)],
             ..TransportStats::default()
         };
-        // A reconnect: fresh peer connection, fresh SSRC, counters from zero.
         let after = TransportStats {
-            inbound: vec![inbound(99, 1_000, 10, 0)],
+            candidate_pairs: vec![nominated(7, 1_000, 0)],
             ..TransportStats::default()
         };
 
@@ -473,14 +691,35 @@ mod tests {
 
         // Differencing these would report roughly -792 kbps.
         assert_eq!(stats.incoming_bitrate_bps, None);
-        assert_eq!(stats.bytes_received, 1_000);
+    }
+
+    /// The same pair could in principle come back with the same priority after a
+    /// reconnect; it cannot also negotiate the same SSRCs.
+    #[test]
+    fn new_ssrcs_after_a_reconnect_are_not_differenced_against_the_old_ones() {
+        let sampler = StatsSampler::new();
+        let before = TransportStats {
+            inbound: vec![inbound(1, 0, 1_000, 0)],
+            candidate_pairs: vec![nominated(9, 100_000, 0)],
+            ..TransportStats::default()
+        };
+        let after = TransportStats {
+            inbound: vec![inbound(99, 0, 10, 0)],
+            candidate_pairs: vec![nominated(9, 1_000, 0)],
+            ..TransportStats::default()
+        };
+
+        sampler.sample(&before, 1_000.0);
+        let stats = sampler.sample(&after, 2_000.0);
+
+        assert_eq!(stats.incoming_bitrate_bps, None);
     }
 
     #[test]
     fn a_counter_that_went_backwards_reports_zero_rather_than_a_negative_rate() {
         let sampler = StatsSampler::new();
-        let at = |bytes| TransportStats {
-            inbound: vec![inbound(1, bytes, 10, 0)],
+        let at = |received| TransportStats {
+            candidate_pairs: vec![nominated(9, received, 0)],
             ..TransportStats::default()
         };
 
@@ -493,8 +732,8 @@ mod tests {
     #[test]
     fn reset_makes_the_next_sample_a_first_sample_again() {
         let sampler = StatsSampler::new();
-        let at = |bytes| TransportStats {
-            inbound: vec![inbound(1, bytes, 10, 0)],
+        let at = |received| TransportStats {
+            candidate_pairs: vec![nominated(9, received, 0)],
             ..TransportStats::default()
         };
 
@@ -507,104 +746,98 @@ mod tests {
         assert_eq!(stats.incoming_bitrate_bps, None);
     }
 
+    // ── Which pair the scalars come from ──────────────────────────────────────
+
+    /// `nominated` beats priority, and that is the whole point of taking it: the
+    /// pair ICE chose is not always the highest-priority succeeded one, and only
+    /// it carries traffic.
     #[test]
-    fn loss_is_a_fraction_of_the_packets_accounted_for() {
-        let sampler = StatsSampler::new();
-        let raw = TransportStats {
-            inbound: vec![inbound(1, 0, 99, 1)],
-            ..TransportStats::default()
-        };
-
-        let stats = sampler.sample(&raw, 1_000.0);
-
-        assert_eq!(stats.packet_loss_ratio, Some(0.01));
-    }
-
-    #[test]
-    fn duplicates_make_the_signed_count_negative_and_the_ratio_zero() {
-        let sampler = StatsSampler::new();
-        let raw = TransportStats {
-            inbound: vec![inbound(1, 0, 100, -3)],
-            ..TransportStats::default()
-        };
-
-        let stats = sampler.sample(&raw, 1_000.0);
-
-        // The sign survives where it is meaningful, and is floored where it is not.
-        assert_eq!(stats.packets_lost, -3);
-        assert_eq!(stats.packet_loss_ratio, Some(0.0));
-    }
-
-    /// One stream's duplicates must not cancel another's real loss.
-    ///
-    /// The bug this pins: summing the signed counts first and flooring the total
-    /// reported 0% on a connection dropping every tenth video packet, because an
-    /// audio stream happened to have received duplicates.
-    #[test]
-    fn duplicates_on_one_stream_do_not_hide_loss_on_another() {
-        let sampler = StatsSampler::new();
-        let raw = TransportStats {
-            inbound: vec![
-                // Audio: duplicates, so RFC 3550's count went negative.
-                inbound(1, 0, 100, -10),
-                // Video: ten genuinely lost out of ninety accounted for.
-                inbound(2, 0, 80, 10),
-            ],
-            ..TransportStats::default()
-        };
-
-        let stats = sampler.sample(&raw, 1_000.0);
-
-        // The signed aggregate still offsets — that is what it is for, and what
-        // it is documented as.
-        assert_eq!(stats.packets_lost, 0);
-        // The ratio must not. 10 lost of (180 received + 10 lost).
-        let ratio = stats.packet_loss_ratio.expect("a ratio");
-        assert!(
-            (ratio - 10.0 / 190.0).abs() < 1e-12,
-            "expected ~5.3% loss, got {ratio}"
-        );
-    }
-
-    #[test]
-    fn nothing_received_yet_is_no_ratio_rather_than_a_perfect_one() {
-        let sampler = StatsSampler::new();
-
-        let stats = sampler.sample(&TransportStats::default(), 1_000.0);
-
-        assert_eq!(stats.packet_loss_ratio, None);
-        assert_eq!(stats.jitter_s, None);
-        assert_eq!(stats.candidate_pair_state, None);
-        assert_eq!(stats.rtt_ms, None);
-    }
-
-    #[test]
-    fn rtt_comes_from_the_highest_priority_succeeded_pair() {
+    fn the_scalars_come_from_the_nominated_pair_not_the_highest_priority_one() {
         let sampler = StatsSampler::new();
         let raw = TransportStats {
             candidate_pairs: vec![
-                pair(0.100, 10, CandidatePairState::Succeeded),
-                pair(0.020, 99, CandidatePairState::Succeeded),
-                // A better priority, but not the pair carrying anything.
-                pair(0.001, 1_000, CandidatePairState::Failed),
+                // Higher priority, succeeded — and not the one ICE picked.
+                pair(0.100, 1_000, CandidatePairState::Succeeded),
+                CandidatePairStats {
+                    current_round_trip_time_s: 0.020,
+                    priority: 10,
+                    state: CandidatePairState::Succeeded,
+                    nominated: true,
+                    local_candidate_type: IceCandidateType::Relay,
+                    local_relay_protocol: RelayProtocol::Tls,
+                    available_incoming_bitrate_bps: 3_000_000.0,
+                    available_outgoing_bitrate_bps: 1_500_000.0,
+                    ..CandidatePairStats::default()
+                },
             ],
             ..TransportStats::default()
         };
 
         let stats = sampler.sample(&raw, 1_000.0);
 
+        // 20ms, not 100ms.
         assert_eq!(stats.rtt_ms, Some(20.0));
-        assert_eq!(stats.candidate_pair_state, Some("succeeded"));
+        assert_eq!(stats.candidate_type, Some("relay"));
+        assert_eq!(stats.relay_protocol, Some("tls"));
+        assert_eq!(stats.available_incoming_bitrate_bps, Some(3_000_000.0));
+        assert_eq!(stats.available_outgoing_bitrate_bps, Some(1_500_000.0));
+    }
+
+    #[test]
+    fn a_direct_path_reports_its_candidate_type_and_no_relay_protocol() {
+        let sampler = StatsSampler::new();
+        let raw = TransportStats {
+            candidate_pairs: vec![nominated(9, 0, 0)],
+            ..TransportStats::default()
+        };
+
+        let stats = sampler.sample(&raw, 1_000.0);
+
+        assert_eq!(stats.candidate_type, Some("host"));
+        // Not relayed is the absence of a protocol, not a protocol.
+        assert_eq!(stats.relay_protocol, None);
+    }
+
+    /// A candidate type read before nomination is a path that may never be
+    /// selected. The state is still worth reporting, because "how far did ICE
+    /// get" is a different question from "what is carrying the media".
+    #[test]
+    fn a_pair_ice_has_not_nominated_reports_no_candidate_type() {
+        let sampler = StatsSampler::new();
+        let raw = TransportStats {
+            candidate_pairs: vec![CandidatePairStats {
+                priority: 5,
+                state: CandidatePairState::InProgress,
+                nominated: false,
+                // Present on the pair, and deliberately not reported.
+                local_candidate_type: IceCandidateType::Host,
+                available_incoming_bitrate_bps: 900_000.0,
+                ..CandidatePairStats::default()
+            }],
+            ..TransportStats::default()
+        };
+
+        let stats = sampler.sample(&raw, 1_000.0);
+
+        assert_eq!(stats.candidate_type, None);
+        assert_eq!(stats.relay_protocol, None);
+        assert_eq!(stats.available_incoming_bitrate_bps, None);
+        // But the state does report, so a caller can see ICE is still working.
+        assert_eq!(stats.candidate_pair_state, Some("in-progress"));
+        // And the pair itself is in the array, type included, for anyone who
+        // wants to watch nomination happen.
+        assert_eq!(stats.candidate_pairs[0].local_candidate_type, Some("host"));
     }
 
     #[test]
     fn a_connecting_transport_reports_its_state_and_falls_back_for_rtt() {
         let sampler = StatsSampler::new();
         let raw = TransportStats {
-            // No succeeded pair, and no RTT measured on the one there is.
+            // Nothing nominated, and no RTT on the pair there is.
             candidate_pairs: vec![pair(0.0, 5, CandidatePairState::InProgress)],
             outbound: vec![OutboundRtpStats {
                 ssrc: 2,
+                // Now a real measurement: 0.15 revived this field.
                 round_trip_time_s: 0.035,
                 ..OutboundRtpStats::default()
             }],
@@ -618,18 +851,61 @@ mod tests {
     }
 
     #[test]
-    fn jitter_is_the_worst_stream_and_the_per_stream_values_survive() {
+    fn an_unestimated_available_bitrate_is_absent_rather_than_zero() {
+        let sampler = StatsSampler::new();
+        // A data-channel-only connection: nominated, carrying bytes, and the
+        // congestion controller has no media to estimate against.
+        let raw = TransportStats {
+            candidate_pairs: vec![nominated(9, 1_000, 1_000)],
+            ..TransportStats::default()
+        };
+
+        let stats = sampler.sample(&raw, 1_000.0);
+
+        assert_eq!(stats.available_incoming_bitrate_bps, None);
+        assert_eq!(stats.available_outgoing_bitrate_bps, None);
+    }
+
+    // ── Jitter, loss and fps come from the video stream ───────────────────────
+
+    /// The acceptance criterion of REA-6019: the same number the browser reports
+    /// for the same connection. The browser reads the video inbound-rtp; so does
+    /// this, now that the engine says which one that is.
+    #[test]
+    fn jitter_and_loss_come_from_the_video_stream_not_from_the_worst_one() {
         let sampler = StatsSampler::new();
         let raw = TransportStats {
             inbound: vec![
-                InboundRtpStats {
-                    ssrc: 1,
-                    jitter_s: 0.004,
-                    ..InboundRtpStats::default()
-                },
+                // Audio, and much worse — the old aggregate reported this one.
+                inbound_kind(1, StreamKind::Audio, 900, 100, 0.080),
+                inbound_kind(2, StreamKind::Video, 990, 10, 0.004),
+            ],
+            ..TransportStats::default()
+        };
+
+        let stats = sampler.sample(&raw, 1_000.0);
+
+        assert_eq!(stats.jitter_s, Some(0.004));
+        let ratio = stats.packet_loss_ratio.expect("a ratio");
+        assert!((ratio - 10.0 / 1_000.0).abs() < 1e-12, "got {ratio}");
+        // The aggregate counters still cover everything.
+        assert_eq!(stats.packets_received, 1_890);
+        assert_eq!(stats.packets_lost, 110);
+    }
+
+    #[test]
+    fn fps_comes_from_the_video_stream() {
+        let sampler = StatsSampler::new();
+        let raw = TransportStats {
+            inbound: vec![
+                inbound_kind(1, StreamKind::Audio, 100, 0, 0.0),
                 InboundRtpStats {
                     ssrc: 2,
-                    jitter_s: 0.031,
+                    kind: StreamKind::Video,
+                    frames_per_second: 29.97,
+                    frame_width: 1920,
+                    frame_height: 1080,
+                    frames_decoded: 300,
                     ..InboundRtpStats::default()
                 },
             ],
@@ -638,10 +914,108 @@ mod tests {
 
         let stats = sampler.sample(&raw, 1_000.0);
 
-        assert_eq!(stats.jitter_s, Some(0.031));
-        assert_eq!(stats.inbound.len(), 2);
-        assert_eq!(stats.inbound[1].jitter_s, 0.031);
+        assert_eq!(stats.frames_per_second, Some(29.97));
+        // And the per-stream detail survives, kind included.
+        assert_eq!(stats.inbound[0].kind, Some("audio"));
+        assert_eq!(stats.inbound[1].kind, Some("video"));
+        assert_eq!(stats.inbound[1].frame_width, 1920);
     }
+
+    #[test]
+    fn an_audio_only_session_still_reports_jitter_and_loss() {
+        let sampler = StatsSampler::new();
+        let raw = TransportStats {
+            inbound: vec![inbound_kind(1, StreamKind::Audio, 990, 10, 0.012)],
+            ..TransportStats::default()
+        };
+
+        let stats = sampler.sample(&raw, 1_000.0);
+
+        // The browser reports nothing here, having only looked for video. See the
+        // module docs: answering is the deliberate difference.
+        assert_eq!(stats.jitter_s, Some(0.012));
+        assert!(stats.packet_loss_ratio.is_some());
+        // But no fps, because there is no video to have a frame rate.
+        assert_eq!(stats.frames_per_second, None);
+    }
+
+    /// One stream's duplicates must not cancel another's real loss.
+    ///
+    /// Reachable on the no-video path, which is the path an audio-only session
+    /// takes — the video path reads a single stream and cannot cancel anything.
+    #[test]
+    fn duplicates_on_one_stream_do_not_hide_loss_on_another() {
+        let sampler = StatsSampler::new();
+        let raw = TransportStats {
+            inbound: vec![
+                // Duplicates, so RFC 3550's count went negative.
+                inbound(1, 0, 100, -10),
+                // Ten genuinely lost.
+                inbound(2, 0, 80, 10),
+            ],
+            ..TransportStats::default()
+        };
+
+        let stats = sampler.sample(&raw, 1_000.0);
+
+        // The signed aggregate still offsets — that is what it is for.
+        assert_eq!(stats.packets_lost, 0);
+        // The ratio must not: 10 lost of (180 received + 10 lost).
+        let ratio = stats.packet_loss_ratio.expect("a ratio");
+        assert!((ratio - 10.0 / 190.0).abs() < 1e-12, "got {ratio}");
+    }
+
+    #[test]
+    fn nothing_received_yet_is_no_ratio_rather_than_a_perfect_one() {
+        let sampler = StatsSampler::new();
+
+        let stats = sampler.sample(&TransportStats::default(), 1_000.0);
+
+        assert_eq!(stats.packet_loss_ratio, None);
+        assert_eq!(stats.jitter_s, None);
+        assert_eq!(stats.candidate_pair_state, None);
+        assert_eq!(stats.candidate_type, None);
+        assert_eq!(stats.rtt_ms, None);
+        assert_eq!(stats.frames_per_second, None);
+    }
+
+    #[test]
+    fn a_nan_jitter_does_not_become_the_answer() {
+        let sampler = StatsSampler::new();
+        let raw = TransportStats {
+            inbound: vec![
+                inbound_kind(1, StreamKind::Unknown, 0, 0, f64::NAN),
+                inbound_kind(2, StreamKind::Unknown, 0, 0, 0.007),
+            ],
+            ..TransportStats::default()
+        };
+
+        let stats = sampler.sample(&raw, 1_000.0);
+
+        // `f64::max` keeps whichever operand it was handed second when one is
+        // NaN, so ordering alone would have decided this.
+        assert_eq!(stats.jitter_s, Some(0.007));
+    }
+
+    /// A video stream whose jitter is NaN must not poison the answer either — the
+    /// video path reads one field and cannot fall back on `max` by itself.
+    #[test]
+    fn a_nan_jitter_on_the_video_stream_falls_back_to_the_aggregate() {
+        let sampler = StatsSampler::new();
+        let raw = TransportStats {
+            inbound: vec![
+                inbound_kind(1, StreamKind::Audio, 0, 0, 0.005),
+                inbound_kind(2, StreamKind::Video, 0, 0, f64::NAN),
+            ],
+            ..TransportStats::default()
+        };
+
+        let stats = sampler.sample(&raw, 1_000.0);
+
+        assert_eq!(stats.jitter_s, Some(0.005));
+    }
+
+    // ── Send side ─────────────────────────────────────────────────────────────
 
     #[test]
     fn an_unmeasured_target_bitrate_is_absent_rather_than_zero() {
@@ -680,6 +1054,41 @@ mod tests {
         assert_eq!(stats.target_bitrate_bps, Some(1_500_000.0));
     }
 
+    /// The send path's own loss and RTT, from the receiver's report — all absent
+    /// before 0.15 — and counters past where a u32 wrapped.
+    #[test]
+    fn the_receivers_report_about_us_reaches_the_outbound_entry() {
+        let sampler = StatsSampler::new();
+        let raw = TransportStats {
+            outbound: vec![OutboundRtpStats {
+                ssrc: 2,
+                kind: StreamKind::Video,
+                packets_sent: 5_000_000_000,
+                retransmitted_packets_sent: 5_000_000_001,
+                round_trip_time_s: 0.031,
+                total_round_trip_time_s: 3.1,
+                fraction_lost: 0.02,
+                packets_lost: 7,
+                ..OutboundRtpStats::default()
+            }],
+            ..TransportStats::default()
+        };
+
+        let stats = sampler.sample(&raw, 1_000.0);
+
+        let s = &stats.outbound[0];
+        assert_eq!(s.kind, Some("video"));
+        assert_eq!(s.fraction_lost, 0.02);
+        assert_eq!(s.packets_lost, 7);
+        assert_eq!(s.total_round_trip_time_s, 3.1);
+        // Past 2^32, which is where a u32 counter wrapped.
+        assert_eq!(s.packets_sent, 5_000_000_000);
+        assert_eq!(s.retransmitted_packets_sent, 5_000_000_001);
+        assert_eq!(stats.packets_sent, 5_000_000_000);
+    }
+
+    // ── Serialization ─────────────────────────────────────────────────────────
+
     #[test]
     fn an_unknown_scalar_serializes_as_null_rather_than_disappearing() {
         let sampler = StatsSampler::new();
@@ -689,37 +1098,42 @@ mod tests {
 
         // A binding must be able to tell "not measured" from "not reported by
         // this SDK", and an absent key cannot say which it is.
-        assert!(json.get("rtt_ms").is_some());
-        assert!(json["rtt_ms"].is_null());
-        assert!(json["incoming_bitrate_bps"].is_null());
+        for key in [
+            "rtt_ms",
+            "incoming_bitrate_bps",
+            "available_incoming_bitrate_bps",
+            "available_outgoing_bitrate_bps",
+            "frames_per_second",
+            "candidate_type",
+            "relay_protocol",
+        ] {
+            assert!(json.get(key).is_some(), "{key} is missing from the payload");
+            assert!(json[key].is_null(), "{key} should be null");
+        }
         assert_eq!(json["timestamp_ms"], 42.0);
         assert_eq!(json["packets_received"], 0);
         assert_eq!(json["inbound"], serde_json::json!([]));
     }
 
     #[test]
-    fn a_nan_jitter_does_not_become_the_answer() {
+    fn the_pair_array_carries_the_new_fields() {
         let sampler = StatsSampler::new();
         let raw = TransportStats {
-            inbound: vec![
-                InboundRtpStats {
-                    ssrc: 1,
-                    jitter_s: f64::NAN,
-                    ..InboundRtpStats::default()
-                },
-                InboundRtpStats {
-                    ssrc: 2,
-                    jitter_s: 0.007,
-                    ..InboundRtpStats::default()
-                },
-            ],
+            candidate_pairs: vec![nominated(9_115_038_255_631_187_199, 4_000, 3_000)],
             ..TransportStats::default()
         };
 
         let stats = sampler.sample(&raw, 1_000.0);
+        let json = serde_json::to_value(&stats).expect("serialize");
+        let p = &json["candidate_pairs"][0];
 
-        // `f64::max` keeps whichever operand it was handed second when one is
-        // NaN, so ordering alone would have decided this.
-        assert_eq!(stats.jitter_s, Some(0.007));
+        assert_eq!(p["nominated"], true);
+        assert_eq!(p["writable"], true);
+        assert_eq!(p["local_candidate_type"], "host");
+        assert!(p["local_relay_protocol"].is_null());
+        assert_eq!(p["bytes_received"], 4_000);
+        assert_eq!(p["packets_received"], 0);
+        // A 64-bit priority must survive as an integer, not round through a float.
+        assert_eq!(p["priority"], 9_115_038_255_631_187_199u64);
     }
 }

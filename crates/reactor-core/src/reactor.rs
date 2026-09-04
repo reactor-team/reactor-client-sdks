@@ -1714,6 +1714,17 @@ mod tests {
                         packets_received: 10,
                         ..crate::peer::InboundRtpStats::default()
                     }],
+                    // The rate is measured on the pair ICE nominated, so there
+                    // has to be one: a report with streams and no nominated pair
+                    // is what a connection looks like before ICE has chosen a
+                    // path, and has no rate to give.
+                    candidate_pairs: vec![crate::peer::CandidatePairStats {
+                        priority: 9,
+                        state: crate::peer::CandidatePairState::Succeeded,
+                        nominated: true,
+                        bytes_received: bytes,
+                        ..crate::peer::CandidatePairStats::default()
+                    }],
                     ..crate::peer::TransportStats::default()
                 })
             }

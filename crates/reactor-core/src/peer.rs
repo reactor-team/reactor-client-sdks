@@ -41,16 +41,86 @@ pub enum PeerEvent {
     IceGatheringComplete,
 }
 
+/// Media kind of an RTP stream — mirror of `RTCRtpStreamStats::kind`.
+///
+/// What makes "the video stream's jitter" a question that can be asked. Before
+/// the engine reported it, [`crate::stats`] had only the SSRC and had to
+/// aggregate across every receive stream.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StreamKind {
+    /// The engine did not report a kind.
+    #[default]
+    Unknown,
+    Audio,
+    Video,
+}
+
+/// Type of an ICE candidate — mirror of `RTCIceCandidateStats::candidate_type`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum IceCandidateType {
+    /// Not reported, or the pair named no local candidate.
+    #[default]
+    Unknown,
+    /// A local interface address.
+    Host,
+    /// Server-reflexive: discovered through STUN.
+    Srflx,
+    /// Peer-reflexive: learned from an incoming connectivity check.
+    Prflx,
+    /// Relayed through TURN.
+    Relay,
+}
+
+impl IceCandidateType {
+    /// The spelling the browser reports for `candidateType`, so a caller reading
+    /// both SDKs sees one vocabulary. `None` when unknown, which is what the
+    /// browser's own field is before ICE has selected anything.
+    pub fn as_str(self) -> Option<&'static str> {
+        match self {
+            IceCandidateType::Unknown => None,
+            IceCandidateType::Host => Some("host"),
+            IceCandidateType::Srflx => Some("srflx"),
+            IceCandidateType::Prflx => Some("prflx"),
+            IceCandidateType::Relay => Some("relay"),
+        }
+    }
+}
+
+/// Transport a relayed candidate uses to reach its TURN server — mirror of
+/// `RTCIceCandidateStats::relay_protocol`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RelayProtocol {
+    /// Not relayed, or not reported. Distinct from a protocol: a host candidate
+    /// has no relay to reach.
+    #[default]
+    NotRelayed,
+    Udp,
+    Tcp,
+    Tls,
+}
+
+impl RelayProtocol {
+    pub fn as_str(self) -> Option<&'static str> {
+        match self {
+            RelayProtocol::NotRelayed => None,
+            RelayProtocol::Udp => Some("udp"),
+            RelayProtocol::Tcp => Some("tcp"),
+            RelayProtocol::Tls => Some("tls"),
+        }
+    }
+}
+
 /// One receive stream's counters, as the engine reports them.
 ///
-/// A subset of `RTCInboundRtpStreamStats`, and the subset is the engine's, not a
-/// choice made here: these are the fields `reactor-webrtc` carries across its own
-/// C ABI. Notably absent is the stream's *kind* — there is no way to tell a video
-/// stream from an audio one at this layer, which is why [`crate::stats`] aggregates
-/// across streams instead of picking the video one out the way the browser SDK can.
+/// A subset of `RTCInboundRtpStreamStats` — the subset `reactor-webrtc` carries
+/// across its own C ABI.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct InboundRtpStats {
     pub ssrc: u32,
+    /// Audio or video. See [`StreamKind`].
+    pub kind: StreamKind,
+    /// 32-bit because `RTCReceivedRtpStreamStats` reports it that way; the
+    /// candidate pair's own counter is 64-bit.
     pub packets_received: u32,
     pub bytes_received: u64,
     /// Jitter in seconds.
@@ -61,6 +131,13 @@ pub struct InboundRtpStats {
     pub nack_count: u32,
     /// Cumulative decode time in seconds.
     pub total_decode_time_s: f64,
+    /// Decoded frames per second; `0.0` when not measured. Video only.
+    pub frames_per_second: f64,
+    pub frames_decoded: u32,
+    pub frames_dropped: u32,
+    /// Decoded frame size; `0` for audio and before the first frame.
+    pub frame_width: u32,
+    pub frame_height: u32,
 }
 
 /// One send stream's counters, as the engine reports them.
@@ -70,18 +147,42 @@ pub struct InboundRtpStats {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct OutboundRtpStats {
     pub ssrc: u32,
-    pub packets_sent: u32,
+    /// Audio or video. See [`StreamKind`].
+    pub kind: StreamKind,
+    /// 64-bit: `RTCSentRtpStreamStats` reports it that way, and a 32-bit counter
+    /// wraps after ~4.3 billion packets — about seven weeks at a thousand a
+    /// second — after which a cumulative counter appears to go backwards.
+    pub packets_sent: u64,
     pub bytes_sent: u64,
     /// What the encoder is currently aiming at, in bits per second.
     pub target_bitrate_bps: f64,
     /// Round-trip time in seconds; `0.0` when not yet measured.
+    ///
+    /// From the receiver's RTCP report about us, which is where libwebrtc moved
+    /// it — so it stays `0.0` until the far end has sent one.
     pub round_trip_time_s: f64,
-    pub retransmitted_packets_sent: u32,
+    /// Cumulative round-trip time in seconds, from the same report.
+    pub total_round_trip_time_s: f64,
+    /// Fraction of this stream the receiver reports as lost, `0.0`–`1.0`.
+    pub fraction_lost: f64,
+    /// Packets the receiver reports as lost. Signed, per RFC 3550.
+    pub packets_lost: i32,
+    /// 64-bit, for the same reason as [`OutboundRtpStats::packets_sent`].
+    pub retransmitted_packets_sent: u64,
+    /// Encoded frames per second; `0.0` when not measured. Video only.
+    pub frames_per_second: f64,
+    pub frames_sent: u32,
+    /// Encoded frame size; `0` for audio and before the first frame.
+    pub frame_width: u32,
+    pub frame_height: u32,
 }
 
 /// State of an ICE candidate pair — mirror of `RTCIceCandidatePairStats::state`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CandidatePairState {
+    /// Also the default, so a `CandidatePairStats` built field-by-field starts
+    /// from "no check has completed" rather than from a state ICE reached.
+    #[default]
     Waiting,
     InProgress,
     Failed,
@@ -105,18 +206,37 @@ impl CandidatePairState {
 
 /// One ICE candidate pair, as the engine reports it.
 ///
-/// A subset of `RTCIceCandidatePairStats` — and a thin one. There is no pair id,
-/// no `nominated` flag, no byte counters and no local-candidate reference, so the
-/// pair cannot say which transport type carried it (host/srflx/relay) or how much
-/// went over it. The browser SDK's `candidateType`, `availableIncomingBitrate` and
-/// `availableOutgoingBitrate` all come from those missing fields; closing that gap
-/// is a `reactor-webrtc` change, not one this crate can make.
-#[derive(Debug, Clone, PartialEq)]
+/// A subset of `RTCIceCandidatePairStats`. [`CandidatePairStats::nominated`] is
+/// the field that matters most: it is the pair ICE actually selected, and only
+/// that pair carries traffic — the others report zeroes, so anything aggregating
+/// across pairs averages in candidates that carried nothing.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct CandidatePairStats {
     /// Current RTT in seconds; `0.0` when not yet measured.
     pub current_round_trip_time_s: f64,
+    /// Cumulative RTT in seconds across every check on this pair.
+    pub total_round_trip_time_s: f64,
     pub priority: u64,
     pub state: CandidatePairState,
+    /// Whether ICE selected this pair.
+    pub nominated: bool,
+    pub writable: bool,
+    /// The congestion controller's own estimates, in bits per second; `0.0` when
+    /// it has none yet. Nothing derived substitutes for these.
+    pub available_outgoing_bitrate_bps: f64,
+    pub available_incoming_bitrate_bps: f64,
+    /// Everything this pair carried — RTCP and data channel included, so wider
+    /// than the per-stream RTP counters. This is what the browser SDK derives its
+    /// bitrates from.
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub packets_sent: u64,
+    pub packets_received: u64,
+    /// Type of this pair's *local* candidate. [`IceCandidateType::Relay`] says
+    /// the session is going through TURN.
+    pub local_candidate_type: IceCandidateType,
+    /// Transport to the TURN server, when relayed.
+    pub local_relay_protocol: RelayProtocol,
 }
 
 /// A raw statistics snapshot from the engine.

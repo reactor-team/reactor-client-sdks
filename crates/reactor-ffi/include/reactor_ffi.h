@@ -488,43 +488,75 @@ void reactor_request_schema(
  * result_json is an object:
  *
  *   {
- *     "rtt_ms":               ms, from the selected ICE candidate pair
- *     "jitter_s":             seconds, the worst of the receive streams
- *     "packet_loss_ratio":    0..1, cumulative, inbound
- *     "incoming_bitrate_bps": measured over the window since the previous call
+ *     "rtt_ms":               ms, from the ICE candidate pair ICE nominated
+ *     "jitter_s":             seconds, on the received video stream
+ *     "packet_loss_ratio":    0..1, cumulative, on the received video stream
+ *     "incoming_bitrate_bps": measured on the nominated pair, over the window
+ *                             since the previous call
  *     "outgoing_bitrate_bps": likewise
+ *     "available_incoming_bitrate_bps": the congestion controller's estimate of
+ *                             what the path can carry — not what is flowing
+ *     "available_outgoing_bitrate_bps": likewise
  *     "target_bitrate_bps":   what the encoders are aiming at, summed
+ *     "frames_per_second":    on the received video stream
+ *     "candidate_type":       "host" | "srflx" | "prflx" | "relay" — "relay"
+ *                             means the media is going through TURN
+ *     "relay_protocol":       "udp" | "tcp" | "tls" when relayed, else null
  *     "candidate_pair_state": "succeeded" | "waiting" | "in-progress" |
  *                             "failed" | "cancelled"
  *     "packets_received", "packets_lost", "packets_sent",
- *     "bytes_received", "bytes_sent":  cumulative counters
+ *     "bytes_received", "bytes_sent":  cumulative counters, summed over streams
  *     "timestamp_ms":         when the sample was taken, Unix ms
- *     "inbound":  [{ssrc, packets_received, packets_lost, bytes_received,
- *                   jitter_s, nack_count, total_decode_time_s}, …]
- *     "outbound": [{ssrc, packets_sent, retransmitted_packets_sent, bytes_sent,
- *                   target_bitrate_bps, round_trip_time_s}, …]
- *     "candidate_pairs": [{current_round_trip_time_s, priority, state}, …]
+ *     "inbound":  [{ssrc, kind, packets_received, packets_lost, bytes_received,
+ *                   jitter_s, nack_count, total_decode_time_s,
+ *                   frames_per_second, frames_decoded, frames_dropped,
+ *                   frame_width, frame_height}, …]
+ *     "outbound": [{ssrc, kind, packets_sent, retransmitted_packets_sent,
+ *                   bytes_sent, target_bitrate_bps, round_trip_time_s,
+ *                   total_round_trip_time_s, fraction_lost, packets_lost,
+ *                   frames_per_second, frames_sent, frame_width,
+ *                   frame_height}, …]
+ *     "candidate_pairs": [{current_round_trip_time_s, total_round_trip_time_s,
+ *                          priority, state, nominated, writable,
+ *                          available_outgoing_bitrate_bps,
+ *                          available_incoming_bitrate_bps, bytes_sent,
+ *                          bytes_received, packets_sent, packets_received,
+ *                          local_candidate_type, local_relay_protocol}, …]
  *   }
+ *
+ * A stream's "kind" is "audio", "video" or null.  It is what makes "the video
+ * stream's jitter" answerable, and the scalars above take it: jitter, loss and
+ * fps come from the received video stream, which is the stream the browser SDK
+ * reads.  With no video stream, jitter and loss fall back to the aggregate
+ * across receive streams — the browser reports nothing there, and this
+ * deliberately does not.
  *
  * Every scalar that can be unknown is present as null rather than omitted, so a
  * binding can tell "the engine has not measured this" from "this SDK does not
- * report it".  The three bitrate/loss rates are derived against the previous
- * call: the first call after connecting reports null for the two measured
- * bitrates, and so does a call made less than 200 ms after the last one.
+ * report it".  The two measured bitrates are derived against the previous call,
+ * on the nominated pair's byte counters: the first call after connecting reports
+ * null for them, so does a call made less than 200 ms after the last one, and so
+ * does one made before ICE has nominated a pair.
+ *
+ * Read "nominated" rather than inferring the selected pair from "state" and
+ * "priority".  A connection gathers many pairs — a plain loopback produces
+ * eighteen — and exactly one carries traffic; the rest report zeroes.
+ *
+ * A pair's byte counters cover everything it carried, RTCP and data channel
+ * included, where the per-stream counters are RTP payload for one stream.  A
+ * bitrate derived from one will not match a bitrate derived from the other.
  *
  * "packets_lost" is signed.  RFC 3550 allows it to go negative when duplicates
- * arrive; "packet_loss_ratio" floors it at zero instead, since a negative
- * fraction is not a fraction.
+ * arrive; "packet_loss_ratio" floors each stream at zero first, so one stream's
+ * duplicates cannot cancel another's real loss.
+ *
+ * An outbound stream's "round_trip_time_s", "total_round_trip_time_s",
+ * "fraction_lost" and "packets_lost" come from the far end's RTCP report about
+ * us, so they stay 0 until it has sent one — a zero there means "not measured
+ * yet", not a zero-latency link.
  *
  * Fails with INVALID_STATE unless the session is ready — a report of zeroes
  * cannot be told from a connection carrying nothing.
- *
- * Four fields the browser SDK's getStats() has are absent here, and they are
- * absent at the engine rather than dropped on the way: candidateType,
- * availableIncomingBitrate, availableOutgoingBitrate and framesPerSecond.
- * reactor-webrtc's own C ABI carries no local-candidate reference, no
- * available-bitrate estimate and no frame counters.  Per-stream detail, NACK
- * counts, retransmissions and decode time go the other way — here and not there.
  */
 void reactor_get_stats(
     ReactorHandle       *handle,

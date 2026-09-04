@@ -14,19 +14,20 @@ use log::{debug, info, warn};
 
 use reactor_core::error::CoreError;
 use reactor_core::peer::{
-    CandidatePairState, CandidatePairStats, InboundRtpStats, OutboundRtpStats,
+    CandidatePairState, CandidatePairStats, IceCandidateType, InboundRtpStats, OutboundRtpStats,
     PeerConnectionState as CorePeerConnectionState, PeerEvent, PeerTransport, PreparedOffer,
-    TransportStats,
+    RelayProtocol, StreamKind, TransportStats,
 };
 use reactor_core::protocol::session::{TrackCapability, TrackDirection, TrackKind};
 use reactor_core::protocol::webrtc::{IceCandidate, IceServer, TrackMappingEntry};
 
 use reactor_webrtc::{
     AdmMode, AudioTrack, ContinualGatheringPolicy, DataChannel, DataChannelState,
-    IceCandidatePairState, IceGatheringState, IceServer as RwIceServer, MediaKind, PeerConnection,
-    PeerConnectionFactory, PeerConnectionObserver, PeerConnectionState, RemoteTrack,
-    RtcConfiguration, SdpType, SessionDescription, StatsReport, Track, Transceiver,
-    TransceiverDirection, VideoFrame, VideoTrack,
+    IceCandidatePairState, IceCandidateType as RwIceCandidateType, IceGatheringState,
+    IceServer as RwIceServer, MediaKind, PeerConnection, PeerConnectionFactory,
+    PeerConnectionObserver, PeerConnectionState, RelayProtocol as RwRelayProtocol, RemoteTrack,
+    RtcConfiguration, SdpType, SessionDescription, StatsReport, StreamKind as RwStreamKind, Track,
+    Transceiver, TransceiverDirection, VideoFrame, VideoTrack,
 };
 
 fn peer_err(e: impl std::fmt::Display) -> CoreError {
@@ -107,6 +108,33 @@ fn map_state(s: PeerConnectionState) -> CorePeerConnectionState {
     }
 }
 
+fn map_stream_kind(k: RwStreamKind) -> StreamKind {
+    match k {
+        RwStreamKind::Unknown => StreamKind::Unknown,
+        RwStreamKind::Audio => StreamKind::Audio,
+        RwStreamKind::Video => StreamKind::Video,
+    }
+}
+
+fn map_candidate_type(t: RwIceCandidateType) -> IceCandidateType {
+    match t {
+        RwIceCandidateType::Unknown => IceCandidateType::Unknown,
+        RwIceCandidateType::Host => IceCandidateType::Host,
+        RwIceCandidateType::Srflx => IceCandidateType::Srflx,
+        RwIceCandidateType::Prflx => IceCandidateType::Prflx,
+        RwIceCandidateType::Relay => IceCandidateType::Relay,
+    }
+}
+
+fn map_relay_protocol(p: RwRelayProtocol) -> RelayProtocol {
+    match p {
+        RwRelayProtocol::NotRelayed => RelayProtocol::NotRelayed,
+        RwRelayProtocol::Udp => RelayProtocol::Udp,
+        RwRelayProtocol::Tcp => RelayProtocol::Tcp,
+        RwRelayProtocol::Tls => RelayProtocol::Tls,
+    }
+}
+
 fn map_pair_state(s: IceCandidatePairState) -> CandidatePairState {
     match s {
         IceCandidatePairState::Waiting => CandidatePairState::Waiting,
@@ -120,9 +148,9 @@ fn map_pair_state(s: IceCandidatePairState) -> CandidatePairState {
 /// Translate the engine's report into the core's vocabulary.
 ///
 /// Field for field — the core's structs were shaped from this report, so there is
-/// nothing to compute here and nothing to drop. The one thing to notice is what
-/// neither side has: no stream kind, no candidate-pair identity, no
-/// available-bitrate estimate. See `reactor_core::stats` for what that costs.
+/// nothing to compute here and nothing to drop. Only the enums need mapping,
+/// because the core cannot name `reactor-webrtc`'s: it does not depend on it, and
+/// must not, since the wasm build has no libwebrtc at all.
 fn map_stats(report: StatsReport) -> TransportStats {
     TransportStats {
         inbound: report
@@ -130,12 +158,18 @@ fn map_stats(report: StatsReport) -> TransportStats {
             .into_iter()
             .map(|s| InboundRtpStats {
                 ssrc: s.ssrc,
+                kind: map_stream_kind(s.kind),
                 packets_received: s.packets_received,
                 bytes_received: s.bytes_received,
                 jitter_s: s.jitter_s,
                 packets_lost: s.packets_lost,
                 nack_count: s.nack_count,
                 total_decode_time_s: s.total_decode_time_s,
+                frames_per_second: s.frames_per_second,
+                frames_decoded: s.frames_decoded,
+                frames_dropped: s.frames_dropped,
+                frame_width: s.frame_width,
+                frame_height: s.frame_height,
             })
             .collect(),
         outbound: report
@@ -143,11 +177,19 @@ fn map_stats(report: StatsReport) -> TransportStats {
             .into_iter()
             .map(|s| OutboundRtpStats {
                 ssrc: s.ssrc,
+                kind: map_stream_kind(s.kind),
                 packets_sent: s.packets_sent,
                 bytes_sent: s.bytes_sent,
                 target_bitrate_bps: s.target_bitrate_bps,
                 round_trip_time_s: s.round_trip_time_s,
+                total_round_trip_time_s: s.total_round_trip_time_s,
+                fraction_lost: s.fraction_lost,
+                packets_lost: s.packets_lost,
                 retransmitted_packets_sent: s.retransmitted_packets_sent,
+                frames_per_second: s.frames_per_second,
+                frames_sent: s.frames_sent,
+                frame_width: s.frame_width,
+                frame_height: s.frame_height,
             })
             .collect(),
         candidate_pairs: report
@@ -155,8 +197,19 @@ fn map_stats(report: StatsReport) -> TransportStats {
             .into_iter()
             .map(|p| CandidatePairStats {
                 current_round_trip_time_s: p.current_round_trip_time_s,
+                total_round_trip_time_s: p.total_round_trip_time_s,
                 priority: p.priority,
                 state: map_pair_state(p.state),
+                nominated: p.nominated,
+                writable: p.writable,
+                available_outgoing_bitrate_bps: p.available_outgoing_bitrate_bps,
+                available_incoming_bitrate_bps: p.available_incoming_bitrate_bps,
+                bytes_sent: p.bytes_sent,
+                bytes_received: p.bytes_received,
+                packets_sent: p.packets_sent,
+                packets_received: p.packets_received,
+                local_candidate_type: map_candidate_type(p.local_candidate_type),
+                local_relay_protocol: map_relay_protocol(p.local_relay_protocol),
             })
             .collect(),
     }
