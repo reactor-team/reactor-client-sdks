@@ -40,6 +40,7 @@ jobs:
       js: ${{ steps.filter.outputs.js }}
       cpp: ${{ steps.filter.outputs.cpp }}
       swift: ${{ steps.filter.outputs.swift }}
+      swift_package: ${{ steps.filter.outputs.swift_package }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v3
@@ -80,6 +81,19 @@ jobs:
               - 'sdks/swift/**'
               - 'Package.swift'
               - 'scripts/swift.sh'
+            # Narrower than `swift` on purpose: this one builds four Rust target
+            # triples, each downloading its own prebuilt libwebrtc. It is worth
+            # that for a change to packaging or to the library the package
+            # carries, and not worth it for a change to the Swift object model.
+            swift_package:
+              - *shared
+              - 'Package.swift'
+              - 'scripts/build-swift-xcframework.sh'
+              - 'scripts/swift-package-check.sh'
+              - 'crates/reactor-ffi/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
 
   # Repo-wide checks: fast, text-only, and about the repository rather than about
   # any one binding — so they always run and need no compiler.
@@ -94,7 +108,7 @@ jobs:
         with:
           version: ${{ env.MISE_VERSION }}
       - run: hk validate
-      - name: ABI parity (lib.rs / reactor_ffi.h / _ffi.py / sdks/cpp)
+      - name: ABI parity (lib.rs / reactor_ffi.h / _ffi.py / sdks/cpp / sdks/swift)
         run: mise run lint:abi
       - name: Error-code parity (error.rs / errors.ts / errors.py / errors.hpp)
         run: mise run lint:error-codes
@@ -430,6 +444,39 @@ jobs:
       - run: mise run build:swift:ios
       - run: mise run test:swift
 
+  swift-package:
+    name: Swift XCFramework
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.swift_package == 'true'
+    runs-on: macos-latest
+    env:
+      # Keep one target triple's build tree at a time. Four of them come to about
+      # 13 GB — the iOS device triple alone is 8 GB — and a macOS runner has
+      # roughly 14 GB free.
+      REACTOR_XCFRAMEWORK_PRUNE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1   # reads rust-toolchain.toml
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      # One step, not two: test:swift:package `depends` on build:xcframework, and
+      # a separate `mise run build:xcframework` line before it would be a second
+      # mise invocation rather than a cache hit — the build task declares no
+      # sources/outputs, so mise has no freshness rule to skip it with, and all
+      # four slices (minutes, ~13 GB of build tree) would be built twice.
+      #
+      # So this one line does both: builds every slice, links an iOS dylib
+      # against exactly the framework list Package.swift declares — the only
+      # thing that catches a framework missing from it, since a static library
+      # links nothing and the failure would otherwise land in a consumer's app —
+      # then consumes the result from a throwaway package, moves the tree, and
+      # builds and runs again.
+      - run: mise run test:swift:package
+
   ci-complete:
     name: CI Complete
     needs:
@@ -444,6 +491,7 @@ jobs:
         cpp,
         cpp-integration-tests,
         swift,
+        swift-package,
       ]
     if: always()
     runs-on: ubuntu-latest
@@ -462,7 +510,8 @@ jobs:
                    "${{ needs.js-integration-tests.result }}" \
                    "${{ needs.cpp.result }}" \
                    "${{ needs.cpp-integration-tests.result }}" \
-                   "${{ needs.swift.result }}"; do
+                   "${{ needs.swift.result }}" \
+                   "${{ needs['swift-package'].result }}"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::a required job failed ($r)"; exit 1
             fi

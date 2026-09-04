@@ -18,6 +18,13 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Every task here is the development loop, and Package.swift asks. Set now rather
+# than on the day it starts to matter: the moment a release fills in the
+# manifest's `releasedFFI`, an unset variable would quietly send `swift test` off
+# to download a published XCFramework instead of linking the cargo build the
+# contributor just made — which is the one thing this script exists to link.
+export REACTOR_SWIFT_DEV=1
 FORMAT_CONFIG="$REPO_ROOT/sdks/swift/.swift-format"
 
 usage() {

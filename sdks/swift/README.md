@@ -80,6 +80,60 @@ error. `reactor_abi_version()` turns that into a message — the SDK compares it
 against the header it was compiled with and refuses to run on a mismatch — but
 only if the library on disk is the one you think it is.
 
+## The XCFramework
+
+A release carries `libreactor_ffi` as an XCFramework, which is what a consumer
+links against — there is no source distribution, because building the native
+library needs a Rust toolchain and a libwebrtc download.
+
+```bash
+mise run build:xcframework    # four slices, then create-xcframework
+mise run test:swift:package   # consume it, move the tree, build and run again
+```
+
+`Package.swift` decides where `libreactor_ffi` comes from, and offers three
+answers under one target name — `CReactorFFI`, which is what `import CReactorFFI`
+resolves and what the XCFramework's own module map declares, so the SDK's code
+cannot tell them apart:
+
+| | |
+|---|---|
+| `REACTOR_XCFRAMEWORK=<path>` | a binary target over an archive on disk. SwiftPM wants the path relative to the package root, which `target/xcframework/` already is |
+| `REACTOR_SWIFT_DEV=1` | the crate's header, linking a cargo build. `scripts/swift.sh` sets it, so every `mise run *:swift` is this |
+| neither | the XCFramework a release publishes — the only shape that works for an app |
+
+The third has no URL yet: no release exists, and the checksum of an archive has
+to be committed beside the version that produces it. Until then it falls back to
+the development shape rather than failing, so a bare `swift build` and Xcode
+opening this package keep working. Filling in `releasedFFI` is what makes the
+consumer's answer the default.
+
+| Slice | Architectures | Minimum |
+|---|---|---|
+| macOS | arm64 + x86_64 (one lipo'd slice) | 13.0 — libwebrtc's x86_64 build requires it, and one slice cannot claim two minimums |
+| iOS device | arm64 | 16.0 |
+| iOS simulator | arm64 | 16.0 |
+
+**The Intel-Mac simulator is not supported.** `reactor-webrtc-sys` maps
+`x86_64-apple-ios` to the *arm64* simulator archive, so such a build would link
+the wrong architecture.
+
+**visionOS** is reached through compatibility mode, on the iOS device slice —
+there is no `xros` prebuilt libwebrtc, and a native visionOS target needs one.
+
+### The frameworks a static library cannot carry
+
+`Package.swift` declares the Apple frameworks libwebrtc needs at final link.
+A static library carries none of the flags its own build emitted, so the app
+that links this package is where they have to be declared — and a missing one
+surfaces as undefined symbols in *the consumer's* build.
+
+`Network` is on that list and is **not** among the flags
+`reactor-webrtc-sys`'s `build.rs` emits for iOS: libwebrtc's `RTCNetworkMonitor`
+calls `nw_path_monitor_create` and friends. `build:xcframework` links an iOS
+dylib against exactly the list in the manifest, so a framework going missing
+fails there rather than in someone's app.
+
 ## Layout
 
 | Path | |
