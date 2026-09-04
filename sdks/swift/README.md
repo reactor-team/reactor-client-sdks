@@ -91,6 +91,23 @@ mise run build:xcframework    # four slices, then create-xcframework
 mise run test:swift:package   # consume it, move the tree, build and run again
 ```
 
+`Package.swift` decides where `libreactor_ffi` comes from, and offers three
+answers under one target name — `CReactorFFI`, which is what `import CReactorFFI`
+resolves and what the XCFramework's own module map declares, so the SDK's code
+cannot tell them apart:
+
+| | |
+|---|---|
+| `REACTOR_XCFRAMEWORK=<path>` | a binary target over an archive on disk. SwiftPM wants the path relative to the package root, which `target/xcframework/` already is |
+| `REACTOR_SWIFT_DEV=1` | the crate's header, linking a cargo build. `scripts/swift.sh` sets it, so every `mise run *:swift` is this |
+| neither | the XCFramework a release publishes — the only shape that works for an app |
+
+The third has no URL yet: no release exists, and the checksum of an archive has
+to be committed beside the version that produces it. Until then it falls back to
+the development shape rather than failing, so a bare `swift build` and Xcode
+opening this package keep working. Filling in `releasedFFI` is what makes the
+consumer's answer the default.
+
 | Slice | Architectures | Minimum |
 |---|---|---|
 | macOS | arm64 + x86_64 (one lipo'd slice) | 13.0 — libwebrtc's x86_64 build requires it, and one slice cannot claim two minimums |
