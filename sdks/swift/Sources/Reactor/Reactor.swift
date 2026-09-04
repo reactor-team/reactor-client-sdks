@@ -83,6 +83,8 @@ public final class Reactor: @unchecked Sendable {
         /// records none of this — see PublishState.
         var publishStates: [String: PublishState] = [:]
 
+        var messageHandlers: [UUID: @Sendable (JSONValue) -> Void] = [:]
+        var runtimeMessageHandlers: [UUID: @Sendable (JSONValue) -> Void] = [:]
         /// Bumped every time the publish states are dropped wholesale, so a
         /// publish that was in flight across the drop can tell that its answer
         /// is about a connection that no longer exists. See
@@ -148,6 +150,8 @@ public final class Reactor: @unchecked Sendable {
         callbacks.on_status = statusTrampoline
         callbacks.on_error = errorTrampoline
         callbacks.on_track = trackTrampoline
+        callbacks.on_message = messageTrampoline
+        callbacks.on_runtime_message = runtimeMessageTrampoline
         // Media, unlike everything above, is delivered inline on the library's
         // own thread and never through the dispatcher. See Track.onFrame.
         callbacks.on_frame = frameTrampoline
@@ -230,6 +234,8 @@ public final class Reactor: @unchecked Sendable {
             state.audioHandlers = [:]
             state.mids = [:]
             state.publishStates = [:]
+            state.messageHandlers = [:]
+            state.runtimeMessageHandlers = [:]
             state.publishGeneration &+= 1
             return (handle, context, pending)
         }
@@ -436,6 +442,12 @@ public final class Reactor: @unchecked Sendable {
         }
     }
 
+    /// Run `work` on the event queue: control events never run on the thread
+    /// the library called on.
+    func dispatch(_ work: @escaping @Sendable () -> Void) {
+        dispatcher.post(work)
+    }
+
     /// Drop a completion that has been answered.
     func forget(_ operation: PendingCompletion) {
         state.withLock { $0.pending[ObjectIdentifier(operation)] = nil }
@@ -510,7 +522,7 @@ private let errorTrampoline: reactor_on_error_fn = { errorJSON, userdata in
 ///
 /// `withCString` has no optional form, and the alternative — building a
 /// `strdup`ed copy — would be an allocation to free on every path out.
-private func withOptionalCString<Result>(
+func withOptionalCString<Result>(
     _ value: String?,
     _ body: (UnsafePointer<CChar>?) -> Result
 ) -> Result {

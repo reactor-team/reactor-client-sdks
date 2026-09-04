@@ -158,6 +158,36 @@ struct FFI: Sendable {
     /// `reactor_time_micros` — the engine's monotonic clock, which is the epoch
     /// a capture time is read in. Not the UNIX epoch, and it takes no handle.
     var timeMicros: @Sendable () -> Int64
+
+    /// `reactor_send_command` — an application command over the data channel,
+    /// with its correlated reply.
+    var sendCommand:
+        @Sendable (
+            _ handle: OpaquePointer?, _ name: UnsafePointer<CChar>?,
+            _ argsJSON: UnsafePointer<CChar>?, _ uploadsJSON: UnsafePointer<CChar>?,
+            _ completion: reactor_completion_fn?, _ userdata: UnsafeMutableRawPointer?
+        ) -> Void
+
+    /// `reactor_request_schema` — the model's command schema, as an OpenAPI
+    /// document.
+    var requestSchema:
+        @Sendable (OpaquePointer?, reactor_completion_fn?, UnsafeMutableRawPointer?) -> Void
+
+    /// `reactor_upload_file` — upload from a path on disk.
+    var uploadFile:
+        @Sendable (
+            OpaquePointer?, UnsafePointer<CChar>?, reactor_completion_fn?,
+            UnsafeMutableRawPointer?
+        ) -> Void
+
+    /// `reactor_upload_bytes` — upload from memory, for a caller who has the
+    /// bytes rather than a path.
+    var uploadBytes:
+        @Sendable (
+            _ handle: OpaquePointer?, _ data: UnsafePointer<UInt8>?, _ length: Int,
+            _ name: UnsafePointer<CChar>?, _ mimeType: UnsafePointer<CChar>?,
+            _ completion: reactor_completion_fn?, _ userdata: UnsafeMutableRawPointer?
+        ) -> Void
 }
 
 extension FFI {
@@ -207,6 +237,18 @@ extension FFI {
             reactor_push_audio_frame(
                 handle, track, samples, samplesPerChannel, sampleRate, channels)
         },
-        timeMicros: { reactor_time_micros() }
+        timeMicros: { reactor_time_micros() },
+        sendCommand: { handle, name, argsJSON, uploadsJSON, completion, userdata in
+            reactor_send_command(handle, name, argsJSON, uploadsJSON, completion, userdata)
+        },
+        requestSchema: { handle, completion, userdata in
+            reactor_request_schema(handle, completion, userdata)
+        },
+        uploadFile: { handle, path, completion, userdata in
+            reactor_upload_file(handle, path, completion, userdata)
+        },
+        uploadBytes: { handle, data, length, name, mimeType, completion, userdata in
+            reactor_upload_bytes(handle, data, length, name, mimeType, completion, userdata)
+        }
     )
 }
