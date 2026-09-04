@@ -229,8 +229,8 @@ tracks and nothing else, so a slot published before one is not published after i
 
 ## Errors
 
-One base `reactor::ReactorError` and sixteen subclasses over the codes the core
-defines. The same type is what a failed call throws *and* what `on_error`
+One base `reactor::ReactorError` and seventeen subclasses over the codes the
+core defines. The same type is what a failed call throws *and* what `on_error`
 delivers — they used to disagree in the Python SDK, and anything listening to the
 event reconnected in a loop against a token that would never work.
 
@@ -297,7 +297,7 @@ differences:
 
 ## Examples
 
-Seven, one capability each, in [`examples/`](examples) — and each one has been run
+Eight, one capability each, in [`examples/`](examples) — and each one has been run
 against a published model in production. Start with
 [`01_connect_and_receive.cpp`](examples/01_connect_and_receive.cpp); the diff
 against it is the lesson in every other one. `examples/README.md` has the matrix,
@@ -340,7 +340,7 @@ it is.
 | `src/detail/` | the FFI boundary: the symbol table, RAII strings, the dispatcher |
 | `src/audio/` | the optional device helpers |
 | `tests/` | Catch2 unit tests, run against a fake library |
-| `examples/` | the seven |
+| `examples/` | the eight |
 
 ### Dependencies
 
