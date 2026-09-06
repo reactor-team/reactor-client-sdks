@@ -52,6 +52,7 @@ final class FakeLibrary: @unchecked Sendable {
         var lastCompletion: (fn: reactor_completion_fn, userdata: UnsafeMutableRawPointer)?
         weak var lastUserdataObject: AnyObject?
         var events: [Event] = []
+        var quiesced = false
         var whileReadingStatus: (@Sendable () -> Void)?
     }
 
@@ -74,6 +75,19 @@ final class FakeLibrary: @unchecked Sendable {
     // MARK: - What the tests read
 
     var createCalls: [CreateCall] { state.withLock { $0.createCalls } }
+
+    /// Whether the library would still call back.
+    ///
+    /// False once `destroy` has answered 0. The header is explicit that no
+    /// callback starts after that, and the SDK releases the context it would be
+    /// reached through — so a fake that fires anyway does not test resilience,
+    /// it tests undefined behaviour. It crashes in `swift_weakLoadStrong`, and
+    /// only sometimes: reading freed memory usually succeeds, so this shows up
+    /// as an unrelated suite segfaulting once every few runs.
+    ///
+    /// On `-1` this stays true, because that is the case where the pointers must
+    /// stay alive: a callback *is* still in flight.
+    private var canFireCallbacks: Bool { !state.withLock { $0.quiesced } }
 
     /// What the fake was asked to do, in order.
     var events: [Event] { state.withLock { $0.events } }
@@ -107,6 +121,7 @@ final class FakeLibrary: @unchecked Sendable {
 
     /// Fire `on_status`, the way the library's control thread would.
     func fireStatus(_ status: String) {
+        guard canFireCallbacks else { return }
         guard let callbacks = state.withLock({ $0.callbacks }),
             let onStatus = callbacks.on_status
         else { return }
@@ -115,6 +130,7 @@ final class FakeLibrary: @unchecked Sendable {
 
     /// Fire `on_error` with a payload, the way the library's control thread would.
     func fireError(_ payload: String) {
+        guard canFireCallbacks else { return }
         guard let callbacks = state.withLock({ $0.callbacks }),
             let onError = callbacks.on_error
         else { return }
@@ -173,6 +189,11 @@ final class FakeLibrary: @unchecked Sendable {
                 state.withLock {
                     $0.destroyCount += 1
                     $0.events.append(.destroyed)
+                    // 0 means "no callback is running and none will start", which
+                    // is exactly when the SDK releases its callback context. A
+                    // fake that fired afterwards would be reading freed memory
+                    // and testing nothing — see `canFireCallbacks`.
+                    if destroyResult == 0 { $0.quiesced = true }
                 }
                 return destroyResult
             },
