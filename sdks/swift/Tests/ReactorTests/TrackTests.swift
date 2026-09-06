@@ -451,6 +451,7 @@ struct TrackTests {
     @Test("closing stops delivery without reaching into a freed client")
     func framesAfterCloseAreDropped() throws {
         let fake = FakeLibrary()
+        fake.destroyResult = -1
         declaringSession(fake)
         let client = try makeClient(fake: fake)
 
@@ -460,8 +461,16 @@ struct TrackTests {
         defer { subscription.cancel() }
 
         client.close()
-        // reactor_destroy promises no callback starts after it answers 0, but a
-        // fake can be ruder than the library — and the SDK still has to cope.
+        // -1 is the one case where a late frame is real: destroy could not wait
+        // for the callback in flight, so the SDK deliberately keeps the context
+        // alive and the library may still call. Dropping the frame is then the
+        // SDK's own doing — close() cleared the handlers.
+        //
+        // Deliberately not the 0 case. There the SDK has already released that
+        // context, on the header's promise that nothing more will arrive, so a
+        // fake firing anyway would not be testing resilience: it would be
+        // reading freed memory, and it crashed in `swift_weakLoadStrong` doing
+        // exactly that. `FakeLibrary.canFireCallbacks` now refuses to.
         fake.fireFrame(track: "main_video")
 
         #expect(count.withLock { $0 } == 0)

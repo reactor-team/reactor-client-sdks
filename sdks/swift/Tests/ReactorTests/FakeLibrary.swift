@@ -141,6 +141,7 @@ final class FakeLibrary: @unchecked Sendable {
 
     /// Fire `on_track`, the way the library reports a media id arriving.
     func fireTrack(name: String, mid: String?) {
+        guard canFireCallbacks else { return }
         guard let callbacks = state.withLock({ $0.callbacks }), let onTrack = callbacks.on_track
         else { return }
         name.withCString { namePointer in
@@ -161,6 +162,7 @@ final class FakeLibrary: @unchecked Sendable {
         userData: [UInt8]? = nil,
         fill: UInt8 = 0xAB
     ) {
+        guard canFireCallbacks else { return }
         guard let callbacks = state.withLock({ $0.callbacks }), let onFrame = callbacks.on_frame
         else { return }
         var pixels = [UInt8](repeating: fill, count: Int(width) * Int(height) * 4)
@@ -189,6 +191,7 @@ final class FakeLibrary: @unchecked Sendable {
         sampleRate: UInt32 = 48000,
         channels: UInt32 = 1
     ) {
+        guard canFireCallbacks else { return }
         guard let callbacks = state.withLock({ $0.callbacks }), let onAudio = callbacks.on_audio
         else { return }
         var buffer = samples
