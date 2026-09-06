@@ -205,7 +205,11 @@ MODULEMAP
     # — libwebrtc is whole-archived into it — and what reaches an app binary
     # after dead-stripping is a different, smaller number that only a real app
     # can measure. Saying both here keeps the README's claim measured.
-    find "$FRAMEWORK" -name 'libreactor_ffi.a' -print0 |
+    # Every archive, not `-name libreactor_ffi.a`: xcodebuild keeps the filename
+    # it was handed, and only the macOS slice arrives under that name — the iOS
+    # ones are still called after their triple. So that spelling silently listed
+    # one slice of three and read exactly like two missing ones.
+    find "$FRAMEWORK" -name '*.a' -print0 |
         while IFS= read -r -d '' archive; do
             printf '  %-52s %s\n' \
                 "${archive#"$FRAMEWORK"/}" \

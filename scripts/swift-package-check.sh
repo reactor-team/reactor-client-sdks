@@ -85,3 +85,63 @@ rm -rf "$MOVED/.build"
 build_probe "$MOVED" "building it again after moving the tree"
 
 printf '\n%s\n' "swift-package-check: the XCFramework survives relocation."
+
+# ── And the package a consumer actually resolves ─────────────────────────────
+#
+# Everything above proves the *archive*: it relocates, and a minimal binary
+# target over it links and runs. It says nothing about this repository's own
+# Package.swift, which is what `.package(url:)` resolves — and that manifest is
+# where a consumer's link is decided.
+#
+# The gap that matters is a product nobody links. The C++ SDK's package check
+# verified its main library and missed the optional audio one, and the failure
+# surfaced in a consumer's build naming symbols they had never heard of. So this
+# links *every* library product the manifest exports, and reads that list from
+# the manifest so it cannot drift as the stack adds them.
+library_products() {
+    sed -n 's/.*\.library(name: "\([^"]*\)".*/\1/p' "$REPO_ROOT/Package.swift"
+}
+
+CONSUMER="$WORK/consumer"
+mkdir -p "$CONSUMER/Sources/Consumer"
+
+{
+    printf '// swift-tools-version: 6.0\nimport PackageDescription\n\n'
+    printf 'let package = Package(\n'
+    printf '    name: "consumer",\n'
+    printf '    platforms: [.macOS(.v13)],\n'
+    printf '    dependencies: [.package(path: "%s")],\n' "$REPO_ROOT"
+    printf '    targets: [\n'
+    printf '        .executableTarget(\n'
+    printf '            name: "Consumer",\n'
+    printf '            dependencies: [\n'
+    while IFS= read -r product; do
+        [ -n "$product" ] || continue
+        printf '                .product(name: "%s", package: "reactor-client-sdks"),\n' "$product"
+    done < <(library_products)
+    printf '            ],\n'
+    printf '            path: "Sources/Consumer"\n'
+    printf '        )\n'
+    printf '    ]\n)\n'
+} > "$CONSUMER/Package.swift"
+
+{
+    while IFS= read -r product; do
+        [ -n "$product" ] || continue
+        printf 'import %s\n' "$product"
+    done < <(library_products)
+    # Calling in is the point, as in the probe above: a link that resolves every
+    # symbol is what proves the manifest's framework list complete, and a process
+    # that starts is what proves the archive loadable.
+    printf '\nprint("consumer: linked \\(ReactorSDK.version)")\n'
+} > "$CONSUMER/Sources/Consumer/main.swift"
+
+printf '\n▸ %s\n' "building a consumer against this repository's own Package.swift"
+printf '  products: %s\n' "$(library_products | tr '\n' ' ')"
+
+# The XCFramework mode, named relative to the package root because SwiftPM
+# requires that of a binary target's path — and pointed at the archive this
+# script just proved rather than at a release that may not exist yet.
+(cd "$CONSUMER" && REACTOR_XCFRAMEWORK="${FRAMEWORK#"$REPO_ROOT"/}" swift run Consumer)
+
+printf '\n%s\n' "swift-package-check: every exported product links against the XCFramework."
