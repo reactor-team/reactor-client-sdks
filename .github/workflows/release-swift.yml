@@ -296,24 +296,50 @@ jobs:
           TAG="v${VERSION}"
           URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/ReactorFFI.xcframework.zip"
 
-          if ! grep -q '^let releasedFFI: (url: String, checksum: String)? = ' Package.swift; then
-            echo "::error::releasedFFI line not found in Package.swift" >&2
-            exit 1
-          fi
-
-          # # as the sed delimiter, not /: the URL contains slashes.
-          sed -i.bak \
-            "s#^let releasedFFI: (url: String, checksum: String)? = .*#let releasedFFI: (url: String, checksum: String)? = (url: \"${URL}\", checksum: \"${CHECKSUM}\")#" \
-            Package.swift
-          rm Package.swift.bak
-
-          git diff Package.swift
-
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Package.swift
-          git commit -s -m "sdks/swift: release ${VERSION} — XCFramework URL and checksum"
-          git push origin HEAD:main
+
+          # Retried against main's *current* tip, not the commit this run was
+          # triggered by: the build+test phase above takes on the order of ten
+          # minutes, long enough for an unrelated PR to merge in between. A
+          # plain `git push origin HEAD:main` at that point is rejected as
+          # non-fast-forward — and since the version file itself didn't
+          # change, a simple re-run would see it as already built and never
+          # release at all, leaving this bump stuck without someone noticing.
+          # Re-fetching and re-applying the patch each attempt (rather than
+          # rebasing the one local commit) keeps this correct even if main
+          # moved more than once.
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git checkout -B main origin/main
+
+            if ! grep -q '^let releasedFFI: (url: String, checksum: String)? = ' Package.swift; then
+              echo "::error::releasedFFI line not found in Package.swift" >&2
+              exit 1
+            fi
+
+            # # as the sed delimiter, not /: the URL contains slashes.
+            sed -i.bak \
+              "s#^let releasedFFI: (url: String, checksum: String)? = .*#let releasedFFI: (url: String, checksum: String)? = (url: \"${URL}\", checksum: \"${CHECKSUM}\")#" \
+              Package.swift
+            rm Package.swift.bak
+            git diff Package.swift
+
+            git add Package.swift
+            git commit -s -m "sdks/swift: release ${VERSION} — XCFramework URL and checksum"
+
+            if git push origin HEAD:main; then
+              echo "::notice::Pushed the checksum commit on attempt ${attempt}"
+              break
+            fi
+
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::main moved out from under this push ${attempt} times in a row — giving up" >&2
+              exit 1
+            fi
+            echo "::warning::Push rejected (main moved) — retrying (attempt ${attempt})" >&2
+            sleep $((attempt * 5))
+          done
 
       - name: Tag the commit that carries the checksum
         env:
