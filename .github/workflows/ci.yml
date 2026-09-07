@@ -387,6 +387,91 @@ jobs:
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
         run: mise run test:cpp:integration-tests
 
+  swift-integration-tests:
+    name: Swift SDK integration tests (real FFI, real model)
+    # Chained onto cpp-integration-tests rather than just `changes`, extending
+    # the same js -> python -> cpp sequencing those jobs already use: the
+    # custom `if:` below (no success()/failure()/always() in it) overrides the
+    # implicit "needs must succeed" gate, so this only serializes execution
+    # after cpp-integration-tests finishes — it doesn't depend on its result.
+    # That keeps this workflow's own reactor-echo-live-session-quota group
+    # (below) to at most two members at a time, the same invariant
+    # js/python's own concurrent pair relies on.
+    #
+    # NOTE, found while wiring this up: this whole per-commit concurrency-
+    # group mechanism predates a since-merged fix on `main` (PR #149) that
+    # replaced it with self-pacing alone (~86/min per suite) plus a comment
+    # explicitly anticipating "a 5th binding (Swift, in progress)" — this
+    # stack branched before that landed, so `main`'s current ci.yml no longer
+    # matches what's below. Reconcile this when the stack rebases onto
+    # current main; until then this job matches what this branch actually
+    # has, not what main has moved on to.
+    needs: [changes, cpp-integration-tests]
+    if: github.event_name == 'push' || (needs.changes.outputs.swift == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    concurrency:
+      group: reactor-echo-live-session-quota-${{ github.sha }}
+      cancel-in-progress: false
+    runs-on: macos-latest
+    env:
+      REACTOR_REQUIRE_SWIFT: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+          cache-shared-key: reactor-swift-${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Build libreactor_ffi (the library the tests link)
+        run: mise run build:ffi
+      - name: Swift SDK integration tests (real FFI, real model)
+        env:
+          # Same dedicated secret js/python/cpp-integration-tests use.
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+        run: mise run test:swift:integration-tests
+
+  swift-integration-tests-ios-simulator:
+    name: Swift SDK integration tests (iOS Simulator, real FFI, real model)
+    # Chained after swift-integration-tests, same reasoning: keeps this
+    # workflow's reactor-echo-live-session-quota group to at most two members
+    # at a time. See that job's own comment on both counts.
+    needs: [changes, swift-integration-tests]
+    if: github.event_name == 'push' || (needs.changes.outputs.swift == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    concurrency:
+      group: reactor-echo-live-session-quota-${{ github.sha }}
+      cancel-in-progress: false
+    runs-on: macos-latest
+    env:
+      # Same one-triple-at-a-time reasoning as swift-package's own job: four
+      # slices come to about 13 GB and a macOS runner has roughly 14 GB free.
+      REACTOR_XCFRAMEWORK_PRUNE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+          cache-shared-key: reactor-swift-xcframework-${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      # test:swift:integration-tests:ios-simulator depends on build:xcframework
+      # (mise.toml), so this one line builds every slice and then runs the
+      # suite through xcodebuild against a simulator destination — no separate
+      # build step, same reasoning as swift-package's own single-line job.
+      - name: Swift SDK integration tests, iOS Simulator (real FFI, real model)
+        env:
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+          # Package.swift's binaryTarget resolves to this archive rather than
+          # the dev (REACTOR_SWIFT_DEV) or released shape — the whole point:
+          # xcodebuild picks the right slice per destination on its own.
+          # Relative to the package root, not absolute: SwiftPM requires that
+          # for a local binaryTarget path and refuses an absolute one outright.
+          REACTOR_XCFRAMEWORK: target/xcframework/ReactorFFI.xcframework
+        run: mise run test:swift:integration-tests:ios-simulator
+
   swift:
     name: Swift SDK
     needs: changes
@@ -405,6 +490,12 @@ jobs:
         with:
           cache-on-failure: true
           cache-key: ${{ hashFiles('mise.lock') }}
+          # Shared with swift-integration-tests below: both build reactor-ffi
+          # for the same macOS host target, and `cache-key` only decorates the
+          # per-job key — `cache-shared-key` is the input that actually pools a
+          # cache across jobs (see #152's own investigation into this same gap
+          # on the rust/python/cpp jobs).
+          cache-shared-key: reactor-swift-${{ hashFiles('mise.lock') }}
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
@@ -446,6 +537,11 @@ jobs:
         with:
           cache-on-failure: true
           cache-key: ${{ hashFiles('mise.lock') }}
+          # Shared with swift-integration-tests-ios-simulator below: both
+          # cross-compile the full four-slice XCFramework, so pooling this
+          # cache is worth far more here than on the plain macOS-host jobs —
+          # see the swift job's own comment on cache-shared-key vs cache-key.
+          cache-shared-key: reactor-swift-xcframework-${{ hashFiles('mise.lock') }}
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
@@ -477,6 +573,8 @@ jobs:
         cpp,
         cpp-integration-tests,
         swift,
+        swift-integration-tests,
+        swift-integration-tests-ios-simulator,
         swift-package,
       ]
     if: always()
@@ -497,6 +595,8 @@ jobs:
                    "${{ needs.cpp.result }}" \
                    "${{ needs.cpp-integration-tests.result }}" \
                    "${{ needs.swift.result }}" \
+                   "${{ needs.swift-integration-tests.result }}" \
+                   "${{ needs.swift-integration-tests-ios-simulator.result }}" \
                    "${{ needs['swift-package'].result }}"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::a required job failed ($r)"; exit 1

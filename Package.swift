@@ -219,5 +219,33 @@ let package = Package(
             dependencies: ["Reactor", "CReactorFFI"],
             path: "sdks/swift/Tests/ReactorTests"
         ),
+        // Real FFI, real WebRTC, against a real model in production — not part
+        // of the fast, hermetic FakeLibrary-based suites above. `swift.sh test`
+        // skips this target explicitly; `swift.sh integration-tests` filters in
+        // only this one. See IntegrationTests/Fixtures.swift.
+        .testTarget(
+            name: "IntegrationTests",
+            dependencies: ["Reactor", "ExampleSupport"],
+            path: "sdks/swift/IntegrationTests",
+            // -ObjC, not declared on the Reactor target itself: a static
+            // library carries none of its build's flags (see that target's own
+            // linkerSettings comment), and libwebrtc's Objective-C++ categories
+            // — found the hard way, on the iOS Simulator run: a category
+            // method (`+[UIDevice maxSupportedH264Profile]`) went unresolved
+            // and crashed on load, because nothing in a normal link forces the
+            // linker to pull in a .o file whose only content is a category. A
+            // consumer app hits the same crash and fixes it the same way,
+            // Apple's own documented answer for exactly this — but that fix
+            // has to live in *their* Xcode project, not here: `unsafeFlags`
+            // makes a target unusable as anyone's dependency, which the
+            // Reactor/ReactorMedia products cannot afford. A test target is
+            // never resolved as a dependency, so it can afford it, and README
+            // carries the same requirement for consumers.
+            // -Xlinker, not a bare "-ObjC": the plain `swift build`/`swift
+            // test` driver (unlike xcodebuild) rejects an unrecognised raw
+            // token in linkerSettings — found by running this exact target
+            // through `swift test` after xcodebuild had already accepted it.
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-ObjC"])]
+        ),
     ]
 )
