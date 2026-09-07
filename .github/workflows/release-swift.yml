@@ -98,6 +98,25 @@ jobs:
           fi
           echo "version=${NEW_VER}" >> "$GITHUB_OUTPUT"
 
+          # A manual dispatch with dry_run=false is an explicit "release the
+          # current commit now" request — release it outright, without
+          # diffing against the previous commit. Same pattern release-js.yml
+          # uses; found missing here (dry_run was declared but never read) by
+          # Codex review.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+              echo "::notice::workflow_dispatch dry run — building ${NEW_VER}, not releasing."
+              echo "bumped=false" >> "$GITHUB_OUTPUT"
+            elif [ "${{ github.ref }}" != "refs/heads/main" ]; then
+              echo "::error::Manual releases are only allowed from main (this run is on ${{ github.ref }}) — refusing to release ${NEW_VER}."
+              exit 1
+            else
+              echo "::notice::workflow_dispatch release — releasing ${NEW_VER}."
+              echo "bumped=true" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+
           if [ "${{ github.event_name }}" != "push" ]; then
             echo "::notice::${{ github.event_name }} — building ${NEW_VER}, not releasing."
             echo "bumped=false" >> "$GITHUB_OUTPUT"
@@ -257,8 +276,12 @@ jobs:
         swift-integration-tests,
         swift-integration-tests-ios-simulator,
       ]
+    # bumped alone, not also github.event_name == 'push': detect-version sets
+    # it true for a workflow_dispatch release (dry_run=false) too, and gating
+    # here on 'push' as well silently dropped that path — the exact gap
+    # dry_run's own Codex comment named.
     if: >-
-      github.event_name == 'push' && needs.detect-version.outputs.bumped == 'true' &&
+      needs.detect-version.outputs.bumped == 'true' &&
       needs.swift-integration-tests.result == 'success' &&
       needs.swift-integration-tests-ios-simulator.result == 'success'
     runs-on: ubuntu-latest
