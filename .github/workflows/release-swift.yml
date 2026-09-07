@@ -1,0 +1,343 @@
+# Build and release the Swift SDK's XCFramework.
+#
+# Triggered by a push to main that changes the version in
+# sdks/swift/Sources/Reactor/ReactorSDK.swift's `version` constant — the
+# version is the release switch, so shipping is "bump the version and merge",
+# same as release-python.yml/release-cpp.yml.
+#
+# Unlike those two, this workflow does something they don't: it **commits back
+# to main** before tagging. SwiftPM resolves a package's manifest at the exact
+# commit a tag points at, and `Package.swift`'s `releasedFFI` constant is what
+# tells a consumer's build where the XCFramework is and what it must hash to —
+# so that constant has to already hold *this* release's URL and checksum
+# before the tag exists, or every consumer resolving the new version gets a
+# manifest pointing at nothing (or at the previous release). Order matters:
+# build, then commit the checksum, then tag the commit that carries it, then
+# attach the archive to a release at that tag.
+#
+# `v<version>`, not `swift-v<version>`: SwiftPM only recognises `1.0.0` and
+# `v1.0.0` as valid dependency versions, so this is the one tag namespace here
+# that cannot carry the `<lang>-` prefix the other three do. See
+# CONTRIBUTING.md and Package.swift's own top-of-file comment.
+name: Release Swift SDK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sdks/swift/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "Package.swift"
+      - ".github/workflows/release-swift.yml"
+      - "scripts/build-swift-xcframework.sh"
+
+  # Builds, zips and computes the checksum without releasing — the only way to
+  # find out whether the packaging mechanics work before they are the release
+  # path, since a workflow only runs from the default branch. Narrow on
+  # purpose, same reasoning as release-python.yml/release-cpp.yml's own
+  # pull_request triggers: this is about exercising *this workflow's* steps,
+  # not the SDK itself — ci.yml's swift/swift-package jobs already cover the
+  # object model and a plain XCFramework build on every PR that touches them.
+  pull_request:
+    paths:
+      - "sdks/swift/Sources/Reactor/ReactorSDK.swift"
+      - "Package.swift"
+      - "scripts/build-swift-xcframework.sh"
+      - "crates/reactor-ffi/**"
+      - ".github/workflows/release-swift.yml"
+
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build the archive but do not create a release"
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-swift-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  MISE_VERSION: "2026.8.8"
+  # One target triple's build tree at a time — four of them come to about
+  # 13 GB, and a macOS runner has roughly 14 GB free. Same as ci.yml's
+  # swift-package job.
+  REACTOR_XCFRAMEWORK_PRUNE: "1"
+
+jobs:
+  # ── 0. Is this push a release? ──────────────────────────────────────────────
+  detect-version:
+    name: Detect version bump
+    runs-on: ubuntu-latest
+    outputs:
+      bumped: ${{ steps.diff.outputs.bumped }}
+      version: ${{ steps.diff.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Diff the SDK version against the previous commit on main
+        id: diff
+        run: |
+          set -euo pipefail
+
+          version_at() {
+            git show "$1:sdks/swift/Sources/Reactor/ReactorSDK.swift" 2>/dev/null \
+              | sed -n 's/.*public static let version = "\([^"]*\)".*/\1/p' \
+              | head -1
+          }
+
+          NEW_VER=$(version_at "${{ github.sha }}")
+          if [ -z "$NEW_VER" ]; then
+            echo "::error::Could not read the version from ReactorSDK.swift"
+            exit 1
+          fi
+          echo "version=${NEW_VER}" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "::notice::${{ github.event_name }} — building ${NEW_VER}, not releasing."
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          BEFORE="${{ github.event.before }}"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "::warning::No previous commit to diff against (new branch or force-push) — not releasing."
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          OLD_VER=$(version_at "$BEFORE")
+          if [ "$OLD_VER" != "$NEW_VER" ]; then
+            echo "::notice::Version bump: ${OLD_VER:-<none>} -> ${NEW_VER}"
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Version unchanged at ${NEW_VER} — building only."
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── 1. The XCFramework, zipped and checksummed ──────────────────────────────
+  build-xcframework:
+    name: Build ReactorFFI.xcframework
+    needs: detect-version
+    runs-on: macos-latest
+    outputs:
+      checksum: ${{ steps.package.outputs.checksum }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+          # Shared with ci.yml's swift-package job — both cross-compile the
+          # same four slices, and cache-shared-key (not cache-key) is the
+          # input that actually pools a cache across jobs/workflows.
+          cache-shared-key: reactor-swift-xcframework-${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+
+      - run: mise run build:xcframework
+
+      # SwiftPM's binaryTarget(url:) resolves a zip archive, not a bare
+      # directory — ditto compute-checksum, which hashes the zip it will
+      # actually download.
+      - name: Zip the XCFramework
+        run: |
+          set -euo pipefail
+          cd target/xcframework
+          zip -qr ReactorFFI.xcframework.zip ReactorFFI.xcframework
+          ls -lh ReactorFFI.xcframework.zip
+
+      - name: Compute the SwiftPM checksum
+        id: package
+        run: |
+          set -euo pipefail
+          CHECKSUM="$(swift package compute-checksum target/xcframework/ReactorFFI.xcframework.zip)"
+          echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"
+          echo "::notice::checksum=$CHECKSUM"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: xcframework
+          path: target/xcframework/ReactorFFI.xcframework.zip
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'pull_request' && 14 || 30 }}
+
+  # ── 1b. Integration tests — the code, then the archive this run just built ──
+  #
+  # Two jobs, not one: the first is release-python.yml's own shape (rerun the
+  # same suite ci.yml already required, as a final guard against releasing a
+  # different commit than the one that passed it) and needs nothing this
+  # workflow builds. The second is Swift-specific — proving the *exact bytes*
+  # about to ship actually link and run, which the dev-mode suite cannot
+  # answer since it never touches the XCFramework at all.
+  swift-integration-tests:
+    name: Swift SDK integration tests (real FFI, real model)
+    needs: detect-version
+    # Skipped on pull_request: ci.yml's own swift-integration-tests job
+    # already runs this suite against the same commit, required via
+    # ci-complete, and reactor/echo's session quota doesn't have room for both
+    # workflows racing it at once — the exact collision release-js.yml's own
+    # notes describe. Nothing publishes off a pull_request event here either
+    # (the release job below), so this only needs to run before an actual
+    # release.
+    if: github.event_name != 'pull_request'
+    concurrency:
+      group: reactor-echo-live-session-quota-${{ github.sha }}
+      cancel-in-progress: false
+    runs-on: macos-latest
+    env:
+      REACTOR_REQUIRE_SWIFT: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+          cache-shared-key: reactor-swift-${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - run: mise run build:ffi
+      - name: Swift SDK integration tests (real FFI, real model)
+        env:
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+        run: mise run test:swift:integration-tests
+
+  swift-integration-tests-ios-simulator:
+    name: Swift SDK integration tests (iOS Simulator, the archive this run built)
+    # Chained after swift-integration-tests rather than run alongside it, same
+    # reasoning ci.yml's own pair uses: keeps this workflow's membership in the
+    # shared quota group to at most two at a time. !cancelled() so a skip
+    # upstream (e.g. a dry run with nothing to gate) doesn't silently skip
+    # this one too — see ci.yml's own comment on exactly this failure mode,
+    # found by Codex review on REA-6080.
+    needs: [detect-version, build-xcframework, swift-integration-tests]
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    concurrency:
+      group: reactor-echo-live-session-quota-${{ github.sha }}
+      cancel-in-progress: false
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: xcframework
+          path: target/xcframework/
+      - name: Unzip the archive this run built
+        run: unzip -q target/xcframework/ReactorFFI.xcframework.zip -d target/xcframework/
+      - name: Swift SDK integration tests, iOS Simulator (real FFI, real model)
+        env:
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+          REACTOR_XCFRAMEWORK: target/xcframework/ReactorFFI.xcframework
+        run: mise run test:swift:integration-tests:ios-simulator
+
+  # ── 2. Commit the checksum, tag, and release ────────────────────────────────
+  release:
+    name: Commit checksum, tag, and publish GitHub release
+    needs:
+      [
+        detect-version,
+        build-xcframework,
+        swift-integration-tests,
+        swift-integration-tests-ios-simulator,
+      ]
+    if: >-
+      github.event_name == 'push' && needs.detect-version.outputs.bumped == 'true' &&
+      needs.swift-integration-tests.result == 'success' &&
+      needs.swift-integration-tests-ios-simulator.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # A real token, not the default GITHUB_TOKEN: this job pushes a
+          # commit straight to main ahead of tagging it, and the default
+          # token's push is what triggers this very workflow's own `push`
+          # filter — harmless here since the version doesn't change again,
+          # but the standard reason to avoid it is that some repos block a
+          # GITHUB_TOKEN-authored push from re-triggering workflows at all,
+          # which would leave the checksum committed but nothing tagging it.
+          # If this repo's branch protection requires every push to go
+          # through a reviewed pull request, this step needs main's ruleset
+          # to explicitly allow this workflow (or a bot/service account) to
+          # bypass that — a repo-settings change, not something fixable here.
+          token: ${{ secrets.RELEASE_PUSH_TOKEN || github.token }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: xcframework
+          path: dist/
+
+      - name: Commit the release's URL and checksum into Package.swift
+        env:
+          VERSION: ${{ needs.detect-version.outputs.version }}
+          CHECKSUM: ${{ needs.build-xcframework.outputs.checksum }}
+        run: |
+          set -euo pipefail
+
+          TAG="v${VERSION}"
+          URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/ReactorFFI.xcframework.zip"
+
+          if ! grep -q '^let releasedFFI: (url: String, checksum: String)? = ' Package.swift; then
+            echo "::error::releasedFFI line not found in Package.swift" >&2
+            exit 1
+          fi
+
+          # # as the sed delimiter, not /: the URL contains slashes.
+          sed -i.bak \
+            "s#^let releasedFFI: (url: String, checksum: String)? = .*#let releasedFFI: (url: String, checksum: String)? = (url: \"${URL}\", checksum: \"${CHECKSUM}\")#" \
+            Package.swift
+          rm Package.swift.bak
+
+          git diff Package.swift
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Package.swift
+          git commit -s -m "sdks/swift: release ${VERSION} — XCFramework URL and checksum"
+          git push origin HEAD:main
+
+      - name: Tag the commit that carries the checksum
+        env:
+          VERSION: ${{ needs.detect-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          git tag "$TAG"
+          git push origin "$TAG"
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          mv dist/ReactorFFI.xcframework.zip "ReactorFFI.xcframework.zip"
+          sha256sum ReactorFFI.xcframework.zip | tee SHA256SUMS
+
+          gh release create "$TAG" ReactorFFI.xcframework.zip SHA256SUMS \
+            --title "Swift SDK ${VERSION}" \
+            --notes "$(cat <<EOF
+          Reactor Swift SDK ${VERSION}.
+
+          \`\`\`swift
+          .package(url: "https://github.com/${{ github.repository }}", from: "${VERSION}")
+          \`\`\`
+
+          Ships as an XCFramework (macOS arm64+x86_64, iOS 16+ arm64 device and
+          simulator) resolved automatically by SwiftPM — nothing to install by
+          hand. See \`sdks/swift/README.md\` for the platform table and
+          \`sdks/swift/CHANGELOG.md\` for what changed.
+
+          Checksum: \`${{ needs.build-xcframework.outputs.checksum }}\`
+          EOF
+          )"

@@ -4,12 +4,27 @@ A Swift client for [Reactor](https://reactor.inc), for macOS and iOS, built on
 `libreactor_ffi` — the same Rust core the [Python SDK](../python) and the
 [C++ SDK](../cpp) bind.
 
-> **Status: under construction.** This directory currently holds the package
-> setup and nothing else. The object model arrives over the pull requests
-> grouped by the **Swift SDK** milestone in
-> [Client SDKs based on reactor-webrtc](https://linear.app/reactor-team/project/client-sdks-based-on-reactor-webrtc-c6286c8b64d0);
-> `Reactor`, `Track` and the seven examples are not here yet. The full README —
-> platform table, quickstart, the API — lands with the release.
+## Quickstart
+
+```swift
+import Reactor
+
+let reactor = try await Reactor(model: "reactor/helios", apiKey: apiKey)
+
+let subscription = try reactor.track("main_video").onFrame { frame in
+    // frame.pixels is BGRA, frame.width x frame.height
+}
+
+try await reactor.connect()
+try await reactor.sendCommand("set_prompt", ["prompt": "a forest at dawn"])
+try await reactor.sendCommand("start")
+```
+
+`Reactor` is the client — connection, commands, recordings, uploads. Media
+lives on `Track`, asked for by name, the way an app that knows its model
+does. `reactor.tracks` and its `.withKind`/`.withDirection` filters are for
+*discovering* what a session declares, not for everyday use. See
+[Examples/](Examples/) for the seven scenarios every Reactor SDK ships.
 
 ## Where the manifest lives
 
@@ -27,6 +42,15 @@ That is also why Swift releases are tagged `v<version>` while Python's are
 tagged `python-v<version>`: SwiftPM recognises `1.0.0` and `v1.0.0` and nothing
 else. The exception is written down in
 [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
+
+**Swift Package Manager only — no CocoaPods.** SPM is Apple's own package
+manager, built into Xcode since 2019, with no separate spec repository to
+publish to and native support for the one shape this package actually needs:
+a prebuilt binary (the XCFramework below) rather than source, since building
+`libreactor_ffi` needs a Rust toolchain and a libwebrtc download no consumer
+should have to own. CocoaPods remains supported by Apple's tooling but
+predates SPM and is the third-party alternative today; this package ships no
+`.podspec`.
 
 ## Building it from this repo
 
@@ -51,6 +75,11 @@ a separate pin. Off a machine with a Swift toolchain — a Linux contributor
 running `mise run lint` — these tasks skip with a reason instead of failing the
 whole aggregate. CI sets `REACTOR_REQUIRE_SWIFT=1`, which turns that skip back
 into a failure.
+
+`test:swift` is the fast, hermetic unit suite (`FakeLibrary`, no network) —
+`mise run test:swift:integration-tests` and its `:ios-simulator` twin are the
+real-FFI, real-model suite, and have their own key and their own README; see
+[`IntegrationTests/README.md`](IntegrationTests/README.md).
 
 ## The native library
 
@@ -174,14 +203,46 @@ calls `nw_path_monitor_create` and friends. `build:xcframework` links an iOS
 dylib against exactly the list in the manifest, so a framework going missing
 fails there rather than in someone's app.
 
+**`-ObjC` is not on that list, because it cannot be — and a consumer needs it
+anyway.** Add it to your app's own "Other Linker Flags" in Xcode, or it
+crashes on launch with `+[UIDevice maxSupportedH264Profile]: unrecognized
+selector`. libwebrtc ships an Objective-C++ category the linker silently
+drops from a static archive unless something forces every object file in
+rather than only the ones another symbol already pulls in — Apple's own
+documented answer is `-ObjC` on whatever links it, and `Package.swift` cannot
+set that on a consumer's behalf: `unsafeFlags` there would make the whole
+package unusable as anyone's dependency. Found on the integration-tests
+suite's own iOS Simulator run, not in code review — the crash is on load,
+before anything this SDK does runs at all.
+
+## What's still unverified
+
+- **The app-size delta.** Not yet measured. The unlinked static archive is
+  roughly 140 MB per slice with libwebrtc whole-archived; what actually
+  reaches a shipped binary after dead-stripping is a real number, not this
+  one — tracked in
+  [REA-5587](https://linear.app/reactor-team/issue/REA-5587), which will
+  update this section once the iOS demo app exists to measure it against.
+- **visionOS, beyond the compatibility-mode theory above.** Nobody has run
+  this package on a Vision Pro yet, simulator or device. Also tracked in
+  REA-5587 — this section will name the visionOS version and what was
+  actually observed once it has.
+
 ## Layout
 
 | Path | |
 |---|---|
 | `Sources/Reactor/` | the SDK; a consumer writes `import Reactor` |
+| `Sources/ReactorMedia/` | camera, microphone, speaker, `ReactorVideoView` — a separate product, see [Two products, and why](#two-products-and-why) |
 | `Sources/CReactorFFI/` | the module map over `crates/reactor-ffi/include/reactor_ffi.h` — the C ABI, never a copy of it |
-| `Tests/ReactorTests/` | swift-testing suites, run by `swift test` |
+| `Examples/` | the seven scenarios every Reactor SDK ships — parity requirements, not documentation |
+| `Tests/ReactorTests/`, `Tests/ReactorMediaTests/` | swift-testing suites, run by `swift test` — `FakeLibrary`, no network |
+| `IntegrationTests/` | real FFI, real WebRTC, against a live model — see [`IntegrationTests/README.md`](IntegrationTests/README.md) |
 | `.swift-format` | what `lint:swift` enforces |
+
+## Changelog
+
+See [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Contributing
 

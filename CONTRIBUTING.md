@@ -11,6 +11,7 @@ you need to get a change from your machine into `main`.
 - [Commit messages](#commit-messages)
 - [Developer Certificate of Origin (DCO)](#developer-certificate-of-origin-dco)
 - [Opening a pull request](#opening-a-pull-request)
+- [Release tags](#release-tags)
 - [Reporting a bug or requesting a feature](#reporting-a-bug-or-requesting-a-feature)
 
 ## Getting set up
@@ -124,6 +125,25 @@ git push --force-with-lease
    - The `CI Complete` status check passing.
    - No unresolved review threads.
 4. PRs merge via a regular merge commit or squash — either is allowed.
+
+## Release tags
+
+Each binding tags and releases independently, on a bump to its own version
+file merged to `main` — see that SDK's `release-<lang>.yml`. Namespaced per
+language, because this repo tags more than one thing:
+
+| SDK | Tag |
+|---|---|
+| Python | `python-v<version>` |
+| C++ | `cpp-v<version>` |
+| JS | `js-v<version>` |
+| Swift | `v<version>` — no prefix |
+
+Swift is the one exception, not an inconsistency: consumers depend on this
+repository itself as a git package (`.package(url: ..., from: "1.0.0")`), and
+SwiftPM recognises only `1.0.0` or `v1.0.0` as a valid dependency version —
+any prefix, including `swift-v1.0.0`, fails to resolve at all. See
+`Package.swift`'s own top-of-file comment.
 
 ## Reporting a bug or requesting a feature
 
