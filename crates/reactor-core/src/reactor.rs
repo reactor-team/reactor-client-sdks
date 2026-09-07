@@ -554,26 +554,19 @@ impl Reactor {
         if let Some(reassigned) = answer.connection_id {
             self.state.lock().unwrap().connection_id = Some(reassigned);
         }
-        // A concurrent `on_peer_connection_state` teardown (REA-5659) may have
-        // closed the peer transport while the SDP answer was in flight. Calling
-        // into it now would hit its own "not prepared" guard and mask the real
-        // reason the connection died behind a generic error — so check first and
-        // surface the recorded cause (or a generic fallback if this teardown was
-        // a caller's plain disconnect(), not a reported failure) instead.
-        let teardown_reason = {
-            let state = self.state.lock().unwrap();
-            if state.closing {
-                Some(state.teardown_reason.clone())
-            } else {
-                None
-            }
-        };
-        if let Some(reason) = teardown_reason {
-            return Err(CoreError::Disconnected(
-                reason.unwrap_or_else(|| "connection closed during negotiation".into()),
-            ));
+        // A concurrent `on_peer_connection_state` teardown (REA-5659) may close
+        // the peer transport at any point up to and including while this call is
+        // in flight. Check first, to skip a call already known to fail against a
+        // transport that's gone; and check again if it does fail, since the same
+        // teardown can also land *during* the call — either way, prefer the real
+        // recorded reason over whatever generic error (e.g. "not prepared")
+        // calling into an already-closing transport produces.
+        if let Some(error) = self.teardown_error() {
+            return Err(error);
         }
-        self.peer.set_remote_description(&answer.sdp_answer).await?;
+        if let Err(error) = self.peer.set_remote_description(&answer.sdp_answer).await {
+            return Err(self.teardown_error().unwrap_or(error));
+        }
 
         match timeout(
             &self.platform,
@@ -586,6 +579,22 @@ impl Reactor {
             Ok(()) => Ok(()),
             Err(_cancelled) => Err(CoreError::Aborted),
         }
+    }
+
+    /// `Some` when a concurrent `on_peer_connection_state` teardown (REA-5659)
+    /// has closed the transport — the real reason it recorded, in place of
+    /// whatever generic error calling into the now-closed transport produces.
+    fn teardown_error(&self) -> Option<CoreError> {
+        let state = self.state.lock().unwrap();
+        if !state.closing {
+            return None;
+        }
+        Some(CoreError::Disconnected(
+            state
+                .teardown_reason
+                .clone()
+                .unwrap_or_else(|| "connection closed during negotiation".into()),
+        ))
     }
 
     async fn teardown(&self, recoverable: bool, already_failing: bool) {
@@ -1819,6 +1828,106 @@ mod tests {
             }
             other => panic!(
                 "expected the real disconnect reason instead of a generic error, got {other:?}"
+            ),
+        }
+    }
+
+    /// The narrower half of the same race (flagged in review on this PR): the
+    /// teardown doesn't finish before `set_remote_description` is called — it
+    /// lands *during* that call, so the call itself fails (the way the real
+    /// wasm transport's own "not prepared" guard would) rather than being
+    /// skipped by the pre-check above. The failure still has to map back to the
+    /// real recorded reason, not the transport's generic one.
+    struct TeardownDuringSetRemoteDescriptionPeer {
+        reactor: std::sync::Mutex<Option<std::sync::Weak<Reactor>>>,
+    }
+
+    impl TeardownDuringSetRemoteDescriptionPeer {
+        fn new() -> Self {
+            Self {
+                reactor: std::sync::Mutex::new(None),
+            }
+        }
+
+        fn arm(&self, reactor: &Arc<Reactor>) {
+            *self.reactor.lock().unwrap() = Some(Arc::downgrade(reactor));
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PeerTransport for TeardownDuringSetRemoteDescriptionPeer {
+        async fn prepare(
+            &self,
+            _: &[IceServer],
+            _: &[TrackCapability],
+        ) -> Result<PreparedOffer, CoreError> {
+            Ok(PreparedOffer {
+                sdp_offer: "offer".into(),
+                track_mapping: vec![],
+            })
+        }
+        async fn set_remote_description(&self, _: &str) -> Result<(), CoreError> {
+            let reactor = self.reactor.lock().unwrap().clone().and_then(|w| w.upgrade());
+            if let Some(reactor) = reactor {
+                reactor
+                    .handle_peer_event(PeerEvent::ConnectionStateChanged(
+                        PeerConnectionState::Failed,
+                    ))
+                    .await;
+            }
+            // What a transport whose state the teardown just wiped underneath
+            // this call would raise.
+            Err(CoreError::InvalidState("peer transport not prepared".into()))
+        }
+        fn send_data(&self, _: &[u8], _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn send_control(&self, _: &[u8]) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn set_track_direction(&self, _: &str, _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn close(&self) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_teardown_that_lands_during_set_remote_description_still_surfaces_the_real_reason()
+    {
+        // Unarmed: the HTTP side plays out with no race of its own, so the only
+        // teardown is the one the peer transport below triggers mid-call.
+        let http = Arc::new(TeardownRacingHttp::new());
+        let peer = Arc::new(TeardownDuringSetRemoteDescriptionPeer::new());
+        let reactor = Arc::new(Reactor::new(
+            ReactorDeps {
+                http: http as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: peer.clone() as SharedPeer,
+            },
+            ReactorOptions::new("http://localhost", "test-model"),
+        ));
+        peer.arm(&reactor);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            reactor.connect(ConnectOptions::default()),
+        )
+        .await
+        .expect("connect() must not hang");
+
+        match result {
+            Err(CoreError::Disconnected(message)) => {
+                assert!(
+                    message.contains("Failed"),
+                    "expected the real teardown reason, got: {message}"
+                );
+            }
+            other => panic!(
+                "expected the real disconnect reason instead of the transport's generic \
+                 error, got {other:?}"
             ),
         }
     }
