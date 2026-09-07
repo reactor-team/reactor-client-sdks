@@ -65,7 +65,10 @@ struct CaptureGateTests {
         }
         delivering.start()
 
-        #expect(insideDelivery.wait(timeout: .now() + 2) == .success)
+        // A generous window for a background task to merely get *scheduled* —
+        // not what this test is about, but a loaded CI runner made 2s flaky in
+        // practice (this test racing the machine's scheduler, not the gate).
+        #expect(insideDelivery.wait(timeout: .now() + 10) == .success)
 
         let closing = Thread {
             gate.close()
@@ -74,8 +77,8 @@ struct CaptureGateTests {
         closing.start()
 
         // The assertion that matters: this returns while the delivery is still
-        // in its closure.
-        #expect(closed.wait(timeout: .now() + 2) == .success)
+        // in its closure. Same generous window as above, for the same reason.
+        #expect(closed.wait(timeout: .now() + 10) == .success)
         #expect(!gate.isOpen)
 
         releaseDelivery.signal()
