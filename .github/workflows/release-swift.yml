@@ -231,11 +231,21 @@ jobs:
           path: target/xcframework/
       - name: Unzip the archive this run built
         run: unzip -q target/xcframework/ReactorFFI.xcframework.zip -d target/xcframework/
+      # scripts/swift.sh directly, not `mise run test:swift:integration-
+      # tests:ios-simulator`: that task `depends = ["build:xcframework"]` in
+      # mise.toml, and build-swift-xcframework.sh's own first step is
+      # `rm -rf ... "$FRAMEWORK"` — going through mise here would delete the
+      # archive just downloaded and cross-compile a fresh one in its place,
+      # both defeating the point (testing the exact bytes about to ship) and
+      # wasting a full four-slice rebuild this job has no reason to pay for.
+      # The script itself needs neither mise nor a Rust toolchain — Xcode's
+      # own xcodebuild is all it calls — which is also why this job has
+      # neither setup step the adjacent Swift jobs do.
       - name: Swift SDK integration tests, iOS Simulator (real FFI, real model)
         env:
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
           REACTOR_XCFRAMEWORK: target/xcframework/ReactorFFI.xcframework
-        run: mise run test:swift:integration-tests:ios-simulator
+        run: scripts/swift.sh integration-tests-ios-simulator
 
   # ── 2. Commit the checksum, tag, and release ────────────────────────────────
   release:
