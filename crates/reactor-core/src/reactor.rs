@@ -737,7 +737,11 @@ impl Reactor {
                 };
                 if should_report {
                     let message = format!("peer connection state: {connection_state:?}");
-                    self.emit_error(ErrorDetails::new(codes::DISCONNECTED, message.clone(), true));
+                    self.emit_error(ErrorDetails::new(
+                        codes::DISCONNECTED,
+                        message.clone(),
+                        true,
+                    ));
                     // Recorded before teardown() sets `closing`, so a negotiation
                     // still in flight (see `finish_transport`) can report the real
                     // reason instead of calling into a transport this is about to
@@ -1743,7 +1747,12 @@ mod tests {
             if req.method == Method::Get && req.url.ends_with("/sdp_params") {
                 // The race: the teardown runs to completion — closing the peer
                 // transport — before finish_transport ever sees the answer.
-                let reactor = self.reactor.lock().unwrap().clone().and_then(|w| w.upgrade());
+                let reactor = self
+                    .reactor
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .and_then(|w| w.upgrade());
                 if let Some(reactor) = reactor {
                     reactor
                         .handle_peer_event(PeerEvent::ConnectionStateChanged(
@@ -1867,7 +1876,12 @@ mod tests {
             })
         }
         async fn set_remote_description(&self, _: &str) -> Result<(), CoreError> {
-            let reactor = self.reactor.lock().unwrap().clone().and_then(|w| w.upgrade());
+            let reactor = self
+                .reactor
+                .lock()
+                .unwrap()
+                .clone()
+                .and_then(|w| w.upgrade());
             if let Some(reactor) = reactor {
                 reactor
                     .handle_peer_event(PeerEvent::ConnectionStateChanged(
@@ -1877,7 +1891,9 @@ mod tests {
             }
             // What a transport whose state the teardown just wiped underneath
             // this call would raise.
-            Err(CoreError::InvalidState("peer transport not prepared".into()))
+            Err(CoreError::InvalidState(
+                "peer transport not prepared".into(),
+            ))
         }
         fn send_data(&self, _: &[u8], _: bool) -> Result<(), CoreError> {
             Ok(())
@@ -1894,8 +1910,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_teardown_that_lands_during_set_remote_description_still_surfaces_the_real_reason()
-    {
+    async fn a_teardown_that_lands_during_set_remote_description_still_surfaces_the_real_reason() {
         // Unarmed: the HTTP side plays out with no race of its own, so the only
         // teardown is the one the peer transport below triggers mid-call.
         let http = Arc::new(TeardownRacingHttp::new());
