@@ -577,7 +577,11 @@ impl Reactor {
         .await?
         {
             Ok(()) => Ok(()),
-            Err(_cancelled) => Err(CoreError::Aborted),
+            // The gate is dropped when `teardown()` clears `ready_gate` — which
+            // happens for this same REA-5659 race (a peer failure landing after
+            // `set_remote_description` succeeded but before readiness) as much
+            // as for an ordinary disconnect. Prefer the recorded reason.
+            Err(_cancelled) => Err(self.teardown_error().unwrap_or(CoreError::Aborted)),
         }
     }
 
@@ -1944,6 +1948,107 @@ mod tests {
                 "expected the real disconnect reason instead of the transport's generic \
                  error, got {other:?}"
             ),
+        }
+    }
+
+    /// The third window in the same race (flagged in a second round of review
+    /// on this PR): the teardown lands *after* `set_remote_description`
+    /// succeeds but before the readiness gate resolves. `teardown()` drops
+    /// `ready_gate`, so the gate receiver resolves to the cancelled branch —
+    /// which has to map back to the real recorded reason too, not `Aborted`.
+    struct TeardownAfterSetRemoteDescriptionPeer {
+        reactor: std::sync::Mutex<Option<std::sync::Weak<Reactor>>>,
+    }
+
+    impl TeardownAfterSetRemoteDescriptionPeer {
+        fn new() -> Self {
+            Self {
+                reactor: std::sync::Mutex::new(None),
+            }
+        }
+
+        fn arm(&self, reactor: &Arc<Reactor>) {
+            *self.reactor.lock().unwrap() = Some(Arc::downgrade(reactor));
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PeerTransport for TeardownAfterSetRemoteDescriptionPeer {
+        async fn prepare(
+            &self,
+            _: &[IceServer],
+            _: &[TrackCapability],
+        ) -> Result<PreparedOffer, CoreError> {
+            Ok(PreparedOffer {
+                sdp_offer: "offer".into(),
+                track_mapping: vec![],
+            })
+        }
+        async fn set_remote_description(&self, _: &str) -> Result<(), CoreError> {
+            // Succeeds, but the teardown this triggers drops `ready_gate`
+            // before readiness ever arrives — nothing in this test signals
+            // `DataChannelOpen`/`ControlChannelOpen`/`Connected`.
+            let reactor = self
+                .reactor
+                .lock()
+                .unwrap()
+                .clone()
+                .and_then(|w| w.upgrade());
+            if let Some(reactor) = reactor {
+                reactor
+                    .handle_peer_event(PeerEvent::ConnectionStateChanged(
+                        PeerConnectionState::Failed,
+                    ))
+                    .await;
+            }
+            Ok(())
+        }
+        fn send_data(&self, _: &[u8], _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn send_control(&self, _: &[u8]) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn set_track_direction(&self, _: &str, _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn close(&self) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_teardown_that_lands_while_awaiting_readiness_still_surfaces_the_real_reason() {
+        let http = Arc::new(TeardownRacingHttp::new());
+        let peer = Arc::new(TeardownAfterSetRemoteDescriptionPeer::new());
+        let reactor = Arc::new(Reactor::new(
+            ReactorDeps {
+                http: http as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: peer.clone() as SharedPeer,
+            },
+            ReactorOptions::new("http://localhost", "test-model"),
+        ));
+        peer.arm(&reactor);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            reactor.connect(ConnectOptions::default()),
+        )
+        .await
+        .expect("connect() must not hang");
+
+        match result {
+            Err(CoreError::Disconnected(message)) => {
+                assert!(
+                    message.contains("Failed"),
+                    "expected the real teardown reason, got: {message}"
+                );
+            }
+            other => {
+                panic!("expected the real disconnect reason instead of Aborted, got {other:?}")
+            }
         }
     }
 
