@@ -326,6 +326,15 @@ jobs:
             git diff Package.swift
 
             git add Package.swift
+            # Idempotent: a rerun after a failure downstream (tag/release)
+            # lands here with Package.swift already matching — nothing to
+            # commit is success, not an error, or the tag/release steps
+            # below could never be retried.
+            if git diff --cached --quiet; then
+              echo "::notice::Package.swift already has this release's checksum — nothing to commit"
+              break
+            fi
+
             git commit -s -m "sdks/swift: release ${VERSION} — XCFramework URL and checksum"
 
             if git push origin HEAD:main; then
@@ -347,8 +356,15 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          git tag "$TAG"
-          git push origin "$TAG"
+          # Idempotent, same reason as the commit step above: a rerun after a
+          # failed release step must not fail here just because a prior run
+          # already pushed this tag.
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::notice::Tag $TAG already exists on origin — skipping"
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
 
       - name: Create the release
         env:
@@ -359,6 +375,14 @@ jobs:
           TAG="v${VERSION}"
           mv dist/ReactorFFI.xcframework.zip "ReactorFFI.xcframework.zip"
           sha256sum ReactorFFI.xcframework.zip | tee SHA256SUMS
+
+          # Idempotent: replace the assets on a rerun rather than failing
+          # because the release already exists.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::Release $TAG exists — replacing its assets"
+            gh release upload "$TAG" ReactorFFI.xcframework.zip SHA256SUMS --clobber
+            exit 0
+          fi
 
           gh release create "$TAG" ReactorFFI.xcframework.zip SHA256SUMS \
             --title "Swift SDK ${VERSION}" \
