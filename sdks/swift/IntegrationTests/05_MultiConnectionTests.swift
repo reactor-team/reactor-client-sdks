@@ -21,7 +21,12 @@ struct MultiConnectionTests {
     /// A connected creator, and a callable that connects a joiner to it — both
     /// built from one token minted up front, the whole point of this suite.
     private func sharedPair() async throws -> (creator: Reactor, join: () async throws -> Reactor) {
-        let token = try await IntegrationConfig.mintJWT()
+        // No key to mint from in local mode, and none needed: `makeReactor`'s
+        // own local branch ignores `jwt` and connects to the local
+        // coordinator directly. Minting unconditionally here made both tests
+        // in this suite fail during setup on every local run — found by
+        // Codex review on this PR.
+        let token = IntegrationConfig.local ? nil : try await IntegrationConfig.mintJWT()
         let creator = try await IntegrationConfig.makeReactor(jwt: token)
         try await pacedConnect(creator)
 

@@ -390,13 +390,21 @@ jobs:
   swift-integration-tests:
     name: Swift SDK integration tests (real FFI, real model)
     # Chained onto cpp-integration-tests rather than just `changes`, extending
-    # the same js -> python -> cpp sequencing those jobs already use: the
-    # custom `if:` below (no success()/failure()/always() in it) overrides the
-    # implicit "needs must succeed" gate, so this only serializes execution
-    # after cpp-integration-tests finishes — it doesn't depend on its result.
-    # That keeps this workflow's own reactor-echo-live-session-quota group
-    # (below) to at most two members at a time, the same invariant
-    # js/python's own concurrent pair relies on.
+    # the same js -> python -> cpp sequencing those jobs already use — keeps
+    # this workflow's own reactor-echo-live-session-quota group (below) to at
+    # most two members at a time, the same invariant js/python's own
+    # concurrent pair relies on.
+    #
+    # `!cancelled() &&` is load-bearing, not decoration: GitHub Actions skips
+    # a job whenever any of its `needs` was itself skipped, *even with* a
+    # custom `if:`, unless that condition includes a status-check function —
+    # found by Codex review on this PR. cpp-integration-tests is skipped by
+    # its own path filter on a Swift-only PR, and without this every commit
+    # like that would silently skip both Swift integration jobs while
+    # ci-complete reports them as passing (a skipped result isn't a failure).
+    # `!cancelled()` is the narrowest fix: it only excuses a *skipped*
+    # dependency, and still lets a genuinely cancelled workflow run skip this
+    # job too, unlike always().
     #
     # NOTE, found while wiring this up: this whole per-commit concurrency-
     # group mechanism predates a since-merged fix on `main` (PR #149) that
@@ -407,7 +415,7 @@ jobs:
     # current main; until then this job matches what this branch actually
     # has, not what main has moved on to.
     needs: [changes, cpp-integration-tests]
-    if: github.event_name == 'push' || (needs.changes.outputs.swift == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    if: ${{ !cancelled() && (github.event_name == 'push' || (needs.changes.outputs.swift == 'true' && github.event.pull_request.head.repo.full_name == github.repository)) }}
     concurrency:
       group: reactor-echo-live-session-quota-${{ github.sha }}
       cancel-in-progress: false
@@ -434,11 +442,10 @@ jobs:
 
   swift-integration-tests-ios-simulator:
     name: Swift SDK integration tests (iOS Simulator, real FFI, real model)
-    # Chained after swift-integration-tests, same reasoning: keeps this
-    # workflow's reactor-echo-live-session-quota group to at most two members
-    # at a time. See that job's own comment on both counts.
+    # Chained after swift-integration-tests, same reasoning, including the
+    # `!cancelled()` fix — see that job's own comment on both counts.
     needs: [changes, swift-integration-tests]
-    if: github.event_name == 'push' || (needs.changes.outputs.swift == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    if: ${{ !cancelled() && (github.event_name == 'push' || (needs.changes.outputs.swift == 'true' && github.event.pull_request.head.repo.full_name == github.repository)) }}
     concurrency:
       group: reactor-echo-live-session-quota-${{ github.sha }}
       cancel-in-progress: false

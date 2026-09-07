@@ -39,8 +39,13 @@ struct RecordClipTests {
                 .appendingPathComponent("reactor-integration-tests-clip-\(UUID()).mp4")
             defer { try? FileManager.default.removeItem(at: destination) }
 
-            let result = try await reactor.download(
-                clip, to: destination, readyTimeout: .seconds(30))
+            // nil waits as long as the session can still produce the clip —
+            // the documented sane default for a model generating slower than
+            // real time (see download's own doc). A fixed 30s here timed out
+            // for real on CI: the model was generating slow enough that the
+            // requested window was still clamped well below what was asked
+            // for, and the boundary chunk took longer than 30s to close.
+            let result = try await reactor.download(clip, to: destination, readyTimeout: nil)
             #expect(result.bytes > 0)
 
             let handle = try FileHandle(forReadingFrom: destination)

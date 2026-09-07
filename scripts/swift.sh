@@ -301,7 +301,15 @@ case "${1:-}" in
         xcodebuild_bin="$TOOL"
         : "${REACTOR_XCFRAMEWORK:?set REACTOR_XCFRAMEWORK to the archive mise run build:xcframework produces}"
         : "${SIMULATOR_DESTINATION:=platform=iOS Simulator,name=iPhone 17,OS=latest}"
-        : "${INTEGRATION_TESTS_REACTOR_API_KEY:?set INTEGRATION_TESTS_REACTOR_API_KEY, or REACTOR_LOCAL=1}"
+        # REACTOR_LOCAL=1 is a real alternative, not just words in the error
+        # message below — found missing by Codex review on this PR, which also
+        # caught that this whole shell's environment isn't the Simulator
+        # process's: the injection loop further down is what actually makes
+        # either path reach it.
+        if [ -z "${REACTOR_LOCAL:-}" ] && [ -z "${INTEGRATION_TESTS_REACTOR_API_KEY:-}" ]; then
+            echo "swift.sh: set INTEGRATION_TESTS_REACTOR_API_KEY, or REACTOR_LOCAL=1 for a local coordinator." >&2
+            exit 1
+        fi
 
         derived_data="$(mktemp -d)"
         trap 'rm -rf "$derived_data"' EXIT
@@ -322,10 +330,19 @@ case "${1:-}" in
             exit 1
         fi
         # IntegrationTests is TestTargets index 0 — the only target this whole
-        # invocation was scoped to build via -only-testing above.
-        /usr/libexec/PlistBuddy -c \
-            "Add :TestConfigurations:0:TestTargets:0:EnvironmentVariables:INTEGRATION_TESTS_REACTOR_API_KEY string $INTEGRATION_TESTS_REACTOR_API_KEY" \
-            "$xctestrun"
+        # invocation was scoped to build via -only-testing above. Inject
+        # whichever of this suite's env vars are actually set: the Simulator
+        # process inherits none of this shell's environment otherwise, so
+        # REACTOR_LOCAL/REACTOR_API_URL need the same treatment the API key
+        # already got, or local mode silently falls through to requiring a key
+        # inside the test process even after passing the check above.
+        for var in INTEGRATION_TESTS_REACTOR_API_KEY REACTOR_LOCAL REACTOR_API_URL; do
+            value="$(eval "printf '%s' \"\${$var:-}\"")"
+            [ -n "$value" ] || continue
+            /usr/libexec/PlistBuddy -c \
+                "Add :TestConfigurations:0:TestTargets:0:EnvironmentVariables:$var string $value" \
+                "$xctestrun"
+        done
 
         "$xcodebuild_bin" test-without-building \
             -xctestrun "$xctestrun" \
