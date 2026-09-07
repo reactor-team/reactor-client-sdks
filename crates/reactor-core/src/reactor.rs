@@ -155,6 +155,13 @@ struct State {
     ice_ready: bool,
     paused_tracks: HashSet<String>,
     closing: bool,
+    /// The reason `on_peer_connection_state` tore the connection down, when
+    /// `closing` was set by that (a real `Failed`/`Disconnected`/`Closed`
+    /// `connectionstatechange`) rather than by a caller's plain `disconnect()`.
+    /// Reset alongside `closing` at the start of every `connect()`/
+    /// `reconnect()`, so `finish_transport` never reports one connection
+    /// attempt's teardown as the cause of a later one's.
+    teardown_reason: Option<String>,
     /// Incremented on every `connect()` / `reconnect()`.  Each `run_heartbeat`
     /// instance captures the epoch at spawn time and exits when it changes.
     heartbeat_epoch: u64,
@@ -293,6 +300,7 @@ impl Reactor {
             // Atomically guard + update: both happen in the same lock acquisition
             // so that two concurrent connect() calls cannot both pass the check.
             state.closing = false;
+            state.teardown_reason = None;
             state.status = ReactorStatus::Connecting;
             state.heartbeat_epoch = state.heartbeat_epoch.wrapping_add(1);
             if let Some(auto_resume) = connect_options.auto_resume_tracks {
@@ -436,6 +444,7 @@ impl Reactor {
             }
             // Reset transport state and bump epoch atomically with the guard check.
             state.closing = false;
+            state.teardown_reason = None;
             state.peer_connected = false;
             state.data_open = false;
             state.control_open = false;
@@ -544,6 +553,25 @@ impl Reactor {
         let answer = signaling.poll_sdp_answer(connection_id).await?;
         if let Some(reassigned) = answer.connection_id {
             self.state.lock().unwrap().connection_id = Some(reassigned);
+        }
+        // A concurrent `on_peer_connection_state` teardown (REA-5659) may have
+        // closed the peer transport while the SDP answer was in flight. Calling
+        // into it now would hit its own "not prepared" guard and mask the real
+        // reason the connection died behind a generic error — so check first and
+        // surface the recorded cause (or a generic fallback if this teardown was
+        // a caller's plain disconnect(), not a reported failure) instead.
+        let teardown_reason = {
+            let state = self.state.lock().unwrap();
+            if state.closing {
+                Some(state.teardown_reason.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(reason) = teardown_reason {
+            return Err(CoreError::Disconnected(
+                reason.unwrap_or_else(|| "connection closed during negotiation".into()),
+            ));
         }
         self.peer.set_remote_description(&answer.sdp_answer).await?;
 
@@ -699,11 +727,13 @@ impl Reactor {
                     !state.closing && state.status != ReactorStatus::Disconnected
                 };
                 if should_report {
-                    self.emit_error(ErrorDetails::new(
-                        codes::DISCONNECTED,
-                        format!("peer connection state: {connection_state:?}"),
-                        true,
-                    ));
+                    let message = format!("peer connection state: {connection_state:?}");
+                    self.emit_error(ErrorDetails::new(codes::DISCONNECTED, message.clone(), true));
+                    // Recorded before teardown() sets `closing`, so a negotiation
+                    // still in flight (see `finish_transport`) can report the real
+                    // reason instead of calling into a transport this is about to
+                    // close out from under it.
+                    self.state.lock().unwrap().teardown_reason = Some(message);
                     self.teardown(true, true).await;
                 }
             }
@@ -1634,6 +1664,163 @@ mod tests {
         reactor.state.lock().unwrap().status = ReactorStatus::Ready;
         let result = reactor.connect(ConnectOptions::default()).await;
         assert!(matches!(result, Err(CoreError::InvalidState(_))));
+    }
+
+    // ── REA-5659: a concurrent teardown racing finish_transport ────────────────
+
+    /// Plays a connect all the way to `poll_sdp_answer`, and on that request —
+    /// deterministically, no real concurrency needed — fires a `Failed`
+    /// `connectionstatechange` into the reactor before answering. Reproduces the
+    /// exact race from the bug report: `on_peer_connection_state`'s teardown
+    /// (`peer.close()`) runs while `finish_transport` is still awaiting the SDP
+    /// answer, so by the time it comes back the transport is already gone.
+    struct TeardownRacingHttp {
+        // Set once the reactor exists, so the GET handler below can drive it.
+        // Weak: the fake must not be what keeps the reactor alive.
+        reactor: std::sync::Mutex<Option<std::sync::Weak<Reactor>>>,
+    }
+
+    impl TeardownRacingHttp {
+        fn new() -> Self {
+            Self {
+                reactor: std::sync::Mutex::new(None),
+            }
+        }
+
+        fn arm(&self, reactor: &Arc<Reactor>) {
+            *self.reactor.lock().unwrap() = Some(Arc::downgrade(reactor));
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HttpClient for TeardownRacingHttp {
+        async fn request(&self, req: HttpRequest) -> Result<HttpResponse, CoreError> {
+            let json = |body: &str| {
+                Ok(HttpResponse {
+                    status: 200,
+                    headers: vec![],
+                    body: body.as_bytes().to_vec(),
+                })
+            };
+            if req.url.ends_with("/ice_servers") {
+                return json(r#"{"ice_servers": []}"#);
+            }
+            if req.method == Method::Post && req.url.ends_with("/sessions") {
+                return json(r#"{"session_id": "sess_1", "state": "CREATED"}"#);
+            }
+            if req.method == Method::Get && req.url.ends_with("/sessions/sess_1") {
+                return json(
+                    r#"{
+                        "session_id": "sess_1",
+                        "state": "ACTIVE",
+                        "selected_transport": {"protocol": "webrtc", "version": "1.0"},
+                        "capabilities": {
+                            "protocol_version": "1.0",
+                            "tracks": [{"name": "output", "kind": "video", "direction": "recvonly"}]
+                        }
+                    }"#,
+                );
+            }
+            if req.method == Method::Post && req.url.ends_with("/connections") {
+                return json(r#"{"connection_id": 1}"#);
+            }
+            if req.method == Method::Post && req.url.ends_with("/sdp_params") {
+                return Ok(HttpResponse {
+                    status: 200,
+                    headers: vec![],
+                    body: vec![],
+                });
+            }
+            if req.method == Method::Get && req.url.ends_with("/sdp_params") {
+                // The race: the teardown runs to completion — closing the peer
+                // transport — before finish_transport ever sees the answer.
+                let reactor = self.reactor.lock().unwrap().clone().and_then(|w| w.upgrade());
+                if let Some(reactor) = reactor {
+                    reactor
+                        .handle_peer_event(PeerEvent::ConnectionStateChanged(
+                            PeerConnectionState::Failed,
+                        ))
+                        .await;
+                }
+                return json(r#"{"sdp_answer": "answer"}"#);
+            }
+            Err(CoreError::Http(format!(
+                "TeardownRacingHttp: no route for {:?} {}",
+                req.method, req.url
+            )))
+        }
+    }
+
+    /// Fails the test if `finish_transport` calls into it after the transport is
+    /// already known to be torn down — the exact call the bug report says hits
+    /// the wasm transport's own "not prepared" guard.
+    struct PanicsIfSetRemoteDescriptionIsCalled;
+
+    #[async_trait::async_trait]
+    impl PeerTransport for PanicsIfSetRemoteDescriptionIsCalled {
+        async fn prepare(
+            &self,
+            _: &[IceServer],
+            _: &[TrackCapability],
+        ) -> Result<PreparedOffer, CoreError> {
+            Ok(PreparedOffer {
+                sdp_offer: "offer".into(),
+                track_mapping: vec![],
+            })
+        }
+        async fn set_remote_description(&self, _: &str) -> Result<(), CoreError> {
+            panic!(
+                "finish_transport must not call into a transport it already knows \
+                 a concurrent teardown closed"
+            );
+        }
+        fn send_data(&self, _: &[u8], _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn send_control(&self, _: &[u8]) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn set_track_direction(&self, _: &str, _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn close(&self) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn finish_transport_surfaces_the_real_reason_when_a_teardown_races_ahead_of_set_remote_description(
+    ) {
+        let http = Arc::new(TeardownRacingHttp::new());
+        let reactor = Arc::new(Reactor::new(
+            ReactorDeps {
+                http: http.clone() as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: Arc::new(PanicsIfSetRemoteDescriptionIsCalled) as SharedPeer,
+            },
+            ReactorOptions::new("http://localhost", "test-model"),
+        ));
+        http.arm(&reactor);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            reactor.connect(ConnectOptions::default()),
+        )
+        .await
+        .expect("connect() must not hang waiting on a transport that already closed");
+
+        match result {
+            Err(CoreError::Disconnected(message)) => {
+                assert!(
+                    message.contains("Failed"),
+                    "expected the real teardown reason, got: {message}"
+                );
+            }
+            other => panic!(
+                "expected the real disconnect reason instead of a generic error, got {other:?}"
+            ),
+        }
     }
 
     // ── get_stats() ────────────────────────────────────────────────────────────
