@@ -309,7 +309,46 @@ jobs:
           name: xcframework
           path: dist/
 
+      # A rebuild is not guaranteed to be reproducible byte-for-byte (the zip
+      # carries file timestamps at minimum), so a rerun after the tag already
+      # exists can compute a *different* checksum than the one Package.swift
+      # already has committed at that tag. Blindly proceeding would either
+      # commit a checksum the tag's own manifest disagrees with, or (worse)
+      # replace the release's asset with a zip whose hash no longer matches
+      # what every consumer resolving that tag already has pinned — found by
+      # Codex review, exploiting the idempotency this same job just added for
+      # a different partial-failure case. Checked once, up front, so every
+      # step below can stay simple: either this run's checksum is what the
+      # tag already has (nothing left to do) or the tag doesn't exist yet
+      # (proceed) — a mismatch fails loudly instead of mutating anything.
+      - name: Check whether this exact release already exists
+        id: check
+        env:
+          VERSION: ${{ needs.detect-version.outputs.version }}
+          CHECKSUM: ${{ needs.build-xcframework.outputs.checksum }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}" 2>/dev/null || true
+
+          if ! git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "already_done=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          EXISTING="$(git show "${TAG}:Package.swift" \
+            | sed -n 's/.*checksum: "\([^"]*\)".*/\1/p')"
+
+          if [ "$EXISTING" = "$CHECKSUM" ]; then
+            echo "::notice::${TAG} already exists with this exact checksum — nothing to do"
+            echo "already_done=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::${TAG} already exists with a DIFFERENT checksum (existing=${EXISTING}, this run=${CHECKSUM}). The XCFramework build is not reproducible between runs — refusing to overwrite a public release's asset out from under its already-tagged checksum. Investigate why the build differs before retrying; do not delete/retag without understanding that first." >&2
+            exit 1
+          fi
+
       - name: Commit the release's URL and checksum into Package.swift
+        if: steps.check.outputs.already_done != 'true'
         env:
           VERSION: ${{ needs.detect-version.outputs.version }}
           CHECKSUM: ${{ needs.build-xcframework.outputs.checksum }}
