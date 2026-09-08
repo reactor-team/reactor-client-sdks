@@ -11,8 +11,11 @@ exception/error hierarchy:
   * `sdks/cpp/include/reactor/errors.hpp`  — the `REACTOR_ERROR_CLASSES(X)` macro,
     plus its own `codes::` namespace of string constants (a second hand-copy,
     independent of the macro, because C++ can't share Rust's consts directly)
+  * `sdks/swift/Sources/Reactor/ReactorError.swift` — the `Code` constants,
+    plus the `catch ReactorError.<code>` matchers (a second hand-copy again,
+    and the one that decides what the advertised catch idiom can reach)
 
-Nothing keeps these four copies in sync with the core or with each other, and
+Nothing keeps these six copies in sync with the core or with each other, and
 they have drifted before: `RECORDER_DISABLED` was added to `error.rs` and to
 `errors.ts`, but never to Python's or C++'s copy — the two SDKs quietly fell
 back to their generic base error for a code the platform genuinely reports.
@@ -35,7 +38,8 @@ from __future__ import annotations
 
 import re
 import sys
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -53,11 +57,19 @@ CORE_CODE = re.compile(r'pub const [A-Z_]+: &str = "([A-Z_]+)";')
 FALLBACK_CODE = "INTERNAL_ERROR"
 
 
+def screaming_snake(name: str) -> str:
+    """`recorderDisabled` -> `RECORDER_DISABLED`."""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).upper()
+
+
 @dataclass(frozen=True)
 class Sdk:
     label: str
     path: Path
-    pattern: re.Pattern[str]  # first capture group is the declared CODE
+    pattern: re.Pattern[str]  # first capture group is the declared CODE...
+    # ...unless the declaration names a member instead of repeating the string,
+    # as Swift's matcher list does; then this turns the name back into a code.
+    normalize: Callable[[str], str] = field(default=lambda captured: captured)
 
 
 # JS: `static override readonly code = 'NETWORK_ERROR';`. The base class's own
@@ -77,11 +89,26 @@ CPP_CLASS_CODE = re.compile(r"X\(\w+,\s*([A-Z_]+)\)")
 # `inline constexpr std::string_view NETWORK_ERROR = "NETWORK_ERROR";`.
 CPP_NAMESPACE_CODE = re.compile(r'inline constexpr std::string_view \w+ = "([A-Z_]+)";')
 
+# Swift: `public static let networkError = Code(rawValue: "NETWORK_ERROR")`.
+SWIFT_CODE = re.compile(r'public static let \w+ = Code\(rawValue: "([A-Z_]+)"\)')
+
+# Swift's second hand-copy: the matchers `catch ReactorError.networkError`
+# resolves through, `public static var networkError: Code { .networkError }`.
+# They name the member rather than repeat the string, hence `screaming_snake`.
+# Checked separately from the constants above because a code declared in `Code`
+# but missing a matcher is still broken — the SDK advertises the catch idiom as
+# the way to handle it, and that idiom would not compile.
+SWIFT_MATCHER = re.compile(r"public static var (\w+): Code \{ \.\w+ \}")
+
+SWIFT_ERRORS = REPO_ROOT / "sdks/swift/Sources/Reactor/ReactorError.swift"
+
 SDKS = [
     Sdk("JS", REPO_ROOT / "sdks/js/src/errors.ts", JS_CODE),
     Sdk("Python", REPO_ROOT / "sdks/python/reactor_sdk/errors.py", PY_CODE),
     Sdk("C++ (classes)", REPO_ROOT / "sdks/cpp/include/reactor/errors.hpp", CPP_CLASS_CODE),
     Sdk("C++ (codes::)", REPO_ROOT / "sdks/cpp/include/reactor/errors.hpp", CPP_NAMESPACE_CODE),
+    Sdk("Swift (Code)", SWIFT_ERRORS, SWIFT_CODE),
+    Sdk("Swift (matchers)", SWIFT_ERRORS, SWIFT_MATCHER, screaming_snake),
 ]
 
 
@@ -99,7 +126,9 @@ def main() -> int:
     problems: list[str] = []
 
     for sdk in SDKS:
-        declared = set(sdk.pattern.findall(read(sdk.path))) - {FALLBACK_CODE}
+        declared = {sdk.normalize(m) for m in sdk.pattern.findall(read(sdk.path))} - {
+            FALLBACK_CODE
+        }
         where = str(sdk.path.relative_to(REPO_ROOT))
 
         missing = sorted(core_codes - declared)
@@ -123,7 +152,8 @@ def main() -> int:
             print(f"  {problem}\n", file=sys.stderr)
         print(
             "Every code in crates/reactor-core/src/error.rs's `codes` module needs a\n"
-            "matching declared entry in every SDK (JS, Python, and both of C++'s copies).\n"
+            "matching declared entry in every SDK (JS, Python, and both of C++'s\n"
+            "and Swift's copies).\n"
             "Add the missing declarations, or remove the stale ones.",
             file=sys.stderr,
         )
