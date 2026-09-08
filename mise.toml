@@ -390,6 +390,15 @@ run = "scripts/swift.sh build-ios"
 description = "[Testing] Swift SDK tests via swift-testing"
 run = "scripts/swift.sh test"
 
+[tasks."test:swift:integration-tests"]
+description = "[Testing] Swift SDK integration tests (real FFI, real model) on macOS"
+run = "scripts/swift.sh integration-tests"
+
+[tasks."test:swift:integration-tests:ios-simulator"]
+description = "[Testing] The same suite, run on an iOS Simulator destination via xcodebuild"
+depends = ["build:xcframework"]
+run = "scripts/swift.sh integration-tests-ios-simulator"
+
 [tasks."build:xcframework"]
 description = "[Build] Build ReactorFFI.xcframework (macOS + iOS device + iOS simulator)"
 # Four target triples, each downloading its own prebuilt libwebrtc — minutes, and

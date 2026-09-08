@@ -28,7 +28,7 @@ export REACTOR_SWIFT_DEV=1
 FORMAT_CONFIG="$REPO_ROOT/sdks/swift/.swift-format"
 
 usage() {
-    echo "usage: ${0##*/} <format|lint|build|build-ios|test|run <example> [args...]>" >&2
+    echo "usage: ${0##*/} <format|lint|build|build-ios|test|integration-tests|integration-tests-ios-simulator|run <example> [args...]>" >&2
     exit 2
 }
 
@@ -261,7 +261,93 @@ case "${1:-}" in
         swift_bin="$TOOL"
         resolve_ffi_library
         collect_link_flags
-        "$swift_bin" test --package-path "$REPO_ROOT" "${link_flags[@]}"
+        # IntegrationTests is real FFI against a real model in production — not
+        # part of this fast, hermetic FakeLibrary suite. --skip by target name,
+        # the same separation sdks/python/integration-tests/ and
+        # sdks/js/integration-tests/ keep from their own unit suites.
+        "$swift_bin" test --package-path "$REPO_ROOT" --skip IntegrationTests "${link_flags[@]}"
+        ;;
+    integration-tests)
+        resolve_tool swift
+        swift_bin="$TOOL"
+        resolve_ffi_library
+        collect_link_flags
+        # The macOS run: real FFI, real WebRTC, against a real model in
+        # production. Needs INTEGRATION_TESTS_REACTOR_API_KEY (or
+        # REACTOR_LOCAL=1) — see IntegrationTests/Fixtures.swift.
+        "$swift_bin" test --package-path "$REPO_ROOT" --filter IntegrationTests \
+            "${link_flags[@]}"
+        ;;
+    integration-tests-ios-simulator)
+        # The same suite, same source, run through xcodebuild against an iOS
+        # Simulator destination — a real, hardware-free check that the iOS slice
+        # of the XCFramework actually links and behaves like the macOS slice
+        # against a live session. Needs the XCFramework built first
+        # (`mise run build:xcframework`): REACTOR_XCFRAMEWORK points
+        # Package.swift's binaryTarget at it, so xcodebuild picks the right
+        # slice for the destination on its own — no raw linker flags to thread
+        # through a build system that isn't `swift build`.
+        #
+        # Three steps, not one `xcodebuild test` — found the hard way: a
+        # Simulator test bundle runs as its own sandboxed process, which does
+        # **not** inherit this shell's environment. Neither `INTEGRATION_TESTS_
+        # REACTOR_API_KEY=... xcodebuild test` nor the commonly-cited
+        # `SIMCTL_CHILD_*` prefix reaches it. The one thing that does: build the
+        # test bundle first, inject the variable into its own .xctestrun
+        # (xcodebuild's on-disk description of exactly which environment each
+        # test target launches with), then run from that file without
+        # rebuilding.
+        resolve_tool xcodebuild
+        xcodebuild_bin="$TOOL"
+        : "${REACTOR_XCFRAMEWORK:?set REACTOR_XCFRAMEWORK to the archive mise run build:xcframework produces}"
+        : "${SIMULATOR_DESTINATION:=platform=iOS Simulator,name=iPhone 17,OS=latest}"
+        # REACTOR_LOCAL=1 is a real alternative, not just words in the error
+        # message below — found missing by Codex review on this PR, which also
+        # caught that this whole shell's environment isn't the Simulator
+        # process's: the injection loop further down is what actually makes
+        # either path reach it.
+        if [ -z "${REACTOR_LOCAL:-}" ] && [ -z "${INTEGRATION_TESTS_REACTOR_API_KEY:-}" ]; then
+            echo "swift.sh: set INTEGRATION_TESTS_REACTOR_API_KEY, or REACTOR_LOCAL=1 for a local coordinator." >&2
+            exit 1
+        fi
+
+        derived_data="$(mktemp -d)"
+        trap 'rm -rf "$derived_data"' EXIT
+
+        (
+            cd "$REPO_ROOT"
+            REACTOR_XCFRAMEWORK="$REACTOR_XCFRAMEWORK" "$xcodebuild_bin" build-for-testing \
+                -scheme reactor-sdk-Package \
+                -destination "$SIMULATOR_DESTINATION" \
+                -derivedDataPath "$derived_data" \
+                -only-testing:IntegrationTests \
+                -skipMacroValidation
+        )
+
+        xctestrun="$(find "$derived_data/Build/Products" -maxdepth 1 -name '*.xctestrun' | head -1)"
+        if [ -z "$xctestrun" ]; then
+            echo "swift.sh: build-for-testing produced no .xctestrun file." >&2
+            exit 1
+        fi
+        # IntegrationTests is TestTargets index 0 — the only target this whole
+        # invocation was scoped to build via -only-testing above. Inject
+        # whichever of this suite's env vars are actually set: the Simulator
+        # process inherits none of this shell's environment otherwise, so
+        # REACTOR_LOCAL/REACTOR_API_URL need the same treatment the API key
+        # already got, or local mode silently falls through to requiring a key
+        # inside the test process even after passing the check above.
+        for var in INTEGRATION_TESTS_REACTOR_API_KEY REACTOR_LOCAL REACTOR_API_URL; do
+            value="$(eval "printf '%s' \"\${$var:-}\"")"
+            [ -n "$value" ] || continue
+            /usr/libexec/PlistBuddy -c \
+                "Add :TestConfigurations:0:TestTargets:0:EnvironmentVariables:$var string $value" \
+                "$xctestrun"
+        done
+
+        "$xcodebuild_bin" test-without-building \
+            -xctestrun "$xctestrun" \
+            -destination "$SIMULATOR_DESTINATION" \
+            -only-testing:IntegrationTests
         ;;
     run)
         # `swift run 01_connect_and_receive` on its own fails with a wall of
