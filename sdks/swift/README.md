@@ -80,6 +80,46 @@ error. `reactor_abi_version()` turns that into a message — the SDK compares it
 against the header it was compiled with and refuses to run on a mismatch — but
 only if the library on disk is the one you think it is.
 
+## Two products, and why
+
+```swift
+import Reactor        // the client, tracks, commands, recording
+import ReactorMedia   // camera, microphone, speaker, ReactorVideoView
+```
+
+`import Reactor` touches no device. That split is the point: on iOS a camera or
+microphone usage description is a permission prompt for every user and a line in
+App Store review, and an app that only *receives* video should need neither.
+`ReactorMedia` is where AVFoundation lives, and only an app that imports it needs
+`NSCameraUsageDescription` / `NSMicrophoneUsageDescription` in its Info.plist.
+
+The same split exists in Python as `reactor_sdk.audio_devices`.
+
+`ReactorMedia` also carries the one design asymmetry worth knowing about. Closing
+a **capture** device waits for the callback that is running right now, so a lock
+shared with that callback deadlocks — `Camera` and `Microphone` therefore flip a
+flag, release its lock, and only then stop the device. A **render** path pulls
+instead, so `Speaker` may hold a lock across its own teardown. The symmetric fix
+deadlocks, and `CaptureGate` is where that discipline lives so it is testable
+without a camera.
+
+**visionOS in compatibility mode has no camera.** `Camera` says so by name rather
+than reporting a missing permission, because no permission will ever appear.
+
+**On iOS the camera follows the device.** A phone's sensor is mounted landscape
+and `AVCaptureVideoDataOutput` hands over what it saw, so an upright iPhone would
+otherwise push the model a picture lying on its side — well-formed, correctly
+sized, and wrong, with nothing downstream able to tell. `Camera` watches the
+device's orientation while it captures and asks the capture connection to rotate,
+which AVFoundation does in the pipeline rather than costing a rotate per frame.
+Face up and face down name no way up, so the last real orientation is kept.
+
+That rotation is also why a padded row stride is now packed rather than refused:
+AVFoundation aligns the rows of a rotated buffer, and refusing them would have
+traded sideways video for no video at all. Frames whose rows are already
+contiguous — every Mac, and a phone held the camera's own way up — still go to
+the wire without a copy.
+
 ## The XCFramework
 
 A release carries `libreactor_ffi` as an XCFramework, which is what a consumer

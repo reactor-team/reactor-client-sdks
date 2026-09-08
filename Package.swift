@@ -78,6 +78,12 @@ let package = Package(
     ],
     products: [
         .library(name: "Reactor", targets: ["Reactor"]),
+        // Devices and a view, as their own product. `import Reactor` touches no
+        // camera and no microphone, so an app that only receives media needs no
+        // usage description in its Info.plist — which on iOS is a permission
+        // prompt for every user and a line in App Store review. This is the same
+        // split `reactor_sdk.audio_devices` has in Python.
+        .library(name: "ReactorMedia", targets: ["ReactorMedia"]),
         // The seven examples, numbered as in sdks/python/examples/ so the set is
         // comparable across bindings at a glance. Product names carry the numbers
         // because that is what a reader types: `swift run 01_connect_and_receive`.
@@ -150,6 +156,16 @@ let package = Package(
                 .linkedFramework("SystemConfiguration", .when(platforms: [.macOS])),
             ]
         ),
+        .target(
+            name: "ReactorMedia",
+            dependencies: ["Reactor"],
+            path: "sdks/swift/Sources/ReactorMedia",
+            linkerSettings: [
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("CoreMedia"),
+                .linkedFramework("CoreVideo"),
+            ]
+        ),
         // Everything the examples share: reading the environment, counting
         // frames, and writing a PNG so a reader can see that what arrived was the
         // right something rather than merely something.
@@ -192,6 +208,11 @@ let package = Package(
             name: "Example07FrameMetadata",
             dependencies: ["Reactor", "ExampleSupport"],
             path: "sdks/swift/Examples/07_frame_metadata"
+        ),
+        .testTarget(
+            name: "ReactorMediaTests",
+            dependencies: ["ReactorMedia"],
+            path: "sdks/swift/Tests/ReactorMediaTests"
         ),
         .testTarget(
             name: "ReactorTests",
