@@ -172,6 +172,25 @@ run = [
     "uv run --group dev --locked pytest integration-tests/tests -v --reruns 2 --reruns-delay 5 --only-rerun RateLimitedError",
 ]
 
+[tasks."test:python:endurance-tests"]
+description = "[Testing] Python SDK endurance/leak tests — repeated churn against a live model, watching RSS/CPU/handle counts for growth (needs INTEGRATION_TESTS_REACTOR_API_KEY)"
+dir = "sdks/python"
+# Manual-only (REA-6088): not a dependency of `test`/`test:python`, and not
+# wired into ci.yml the way integration-tests is — these are long (minutes to
+# hours, via ENDURANCE_DURATION_SECONDS), noisier by nature (a growth trend,
+# not a single correctness assertion), and not meant to gate every PR.
+# Scheduling this on a cadence is a deliberate follow-up, not done here.
+#
+# No --reruns here on purpose, unlike test:python:integration-tests: these
+# runs can be long, and re-running the whole loop from scratch over one
+# transient RateLimitedError would be expensive. paced_connect's own pacing
+# (see integration-tests/conftest.py, reused by endurance-tests/conftest.py)
+# already keeps session creation well under reactor/echo's quota.
+run = [
+    "cargo build -p reactor-ffi --release",
+    "uv run --group dev --locked pytest endurance-tests/tests -v -s",
+]
+
 [tasks.test]
 description = "[Testing] Every test suite (Rust + Python + JS + C++ + Swift)"
 # test:swift skips itself off a machine with a Swift toolchain rather than
