@@ -30,14 +30,20 @@
 #      guaranteed byte-for-byte reproducible, so re-deriving the checksum a
 #      second time could disagree with what the PR just had reviewed and
 #      merged).
-#   3. `stage-release` is a required status check on `main` — the PR cannot
-#      merge until it (and therefore the checksum commit) finishes
-#      successfully. Beyond that, merging is normal: 1 approval, CI
-#      Complete, nothing else special. See `pull_request:` below for why
-#      this workflow has no `paths:` filter — a required check tied to one
-#      would leave every *other* PR in the repo waiting on a status that
-#      never arrives.
-#   4. The resulting push to `main` verifies the merged `Package.swift`
+#   3. `stage-release` is not itself a required check — a required check
+#      cannot cross workflow files, and duplicating this one onto every PR
+#      in the repo (most of which have nothing to do with Swift) was worse
+#      than the problem it solved. Instead, ci.yml's "repo lints" job — which
+#      already runs on everything, feeding the one required check the repo
+#      already has — polls for this exact commit's checksum whenever it
+#      detects a version bump, and blocks CI Complete until it lands (or
+#      times out). See that step's own comment for why polling instead of
+#      failing fast: it is cosmetic, not load-bearing — the fresh commit
+#      stage-release pushes reruns ci.yml on its own regardless, and *that*
+#      run is what actually gates the merge either way.
+#   4. Merging is otherwise normal: 1 approval, CI Complete, nothing else
+#      special.
+#   5. The resulting push to `main` verifies the merged `Package.swift`
 #      still matches the staged draft's archive, then publishes that draft
 #      retargeted at the merge commit — which is what actually creates the
 #      `v<version>` tag. It fails outright, rather than building and
@@ -63,17 +69,22 @@ on:
       - ".github/workflows/release-swift.yml"
       - "scripts/build-swift-xcframework.sh"
 
-  # No `paths:` filter, deliberately — this fires on every PR in the repo,
-  # not just ones touching Swift. `stage-release` below is a required status
-  # check on main, and a required check tied to a workflow that never
-  # triggers for a given PR (because of a path filter) leaves that PR
-  # waiting forever for a status that will never arrive — GitHub has no way
-  # to know the check is inapplicable rather than merely slow. Firing always
-  # and skipping the irrelevant work job-by-job (same pattern ci.yml already
-  # uses for its own per-SDK jobs) means every PR gets an actual "skipped"
-  # status instead of no status at all, and a skipped required check is one
-  # GitHub does treat as satisfied.
+  # Also where a version-bump PR gets its checksum committed and its release
+  # staged (see stage-release below) — not just a dry validation build, when
+  # the PR actually changes the version. Narrow on purpose, same reasoning
+  # release-python.yml/release-cpp.yml's own pull_request triggers use: this
+  # is nothing this workflow needs to run for a PR the paths below don't
+  # touch. Nothing here is a required check any more (see the header
+  # comment's point 3), so unlike an earlier version of this file, a path
+  # filter no longer risks leaving some other PR waiting on a status that
+  # never posts.
   pull_request:
+    paths:
+      - "sdks/swift/Sources/Reactor/ReactorSDK.swift"
+      - "Package.swift"
+      - "scripts/build-swift-xcframework.sh"
+      - "crates/reactor-ffi/**"
+      - ".github/workflows/release-swift.yml"
 
   workflow_dispatch:
     inputs:
@@ -204,11 +215,12 @@ jobs:
   build-xcframework:
     name: Build ReactorFFI.xcframework
     needs: detect-version
-    # Skipped for a pull_request that isn't a release (an ordinary PR to
-    # some other SDK, or a Swift PR that doesn't touch the version) — this
-    # job existing to build every single PR in the repo would be exactly
-    # the cost dropping the `paths:` filter above was supposed to avoid.
-    # Unconditional on push/workflow_dispatch, same as before.
+    # Skipped for a pull_request that touches these paths without actually
+    # bumping the version (e.g. an edit to ReactorSDK.swift that isn't a
+    # release, or a Package.swift change unrelated to releasedFFI) — the
+    # paths filter above only answers "might this PR matter", is_release_pr
+    # is what actually answers "does it". Unconditional on push/
+    # workflow_dispatch, same as before.
     if: needs.detect-version.outputs.is_release_pr == 'true' || github.event_name != 'pull_request'
     runs-on: macos-latest
     outputs:
