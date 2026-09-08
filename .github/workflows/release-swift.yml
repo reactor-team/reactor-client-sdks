@@ -2,18 +2,40 @@
 #
 # Triggered by a push to main that changes the version in
 # sdks/swift/Sources/Reactor/ReactorSDK.swift's `version` constant — the
-# version is the release switch, so shipping is "bump the version and merge",
-# same as release-python.yml/release-cpp.yml.
+# version is the release switch, same as release-python.yml/release-cpp.yml.
 #
-# Unlike those two, this workflow does something they don't: it **commits back
-# to main** before tagging. SwiftPM resolves a package's manifest at the exact
-# commit a tag points at, and `Package.swift`'s `releasedFFI` constant is what
-# tells a consumer's build where the XCFramework is and what it must hash to —
-# so that constant has to already hold *this* release's URL and checksum
-# before the tag exists, or every consumer resolving the new version gets a
-# manifest pointing at nothing (or at the previous release). Order matters:
-# build, then commit the checksum, then tag the commit that carries it, then
-# attach the archive to a release at that tag.
+# Unlike those two, releasing here needs a write to `main` that isn't just a
+# tag: SwiftPM resolves a package's manifest at the exact commit a tag points
+# at, and `Package.swift`'s `releasedFFI` constant is what tells a consumer's
+# build where the XCFramework is and what it must hash to — so that constant
+# has to already hold *this* release's URL and checksum before the tag
+# exists, or every consumer resolving the new version gets a manifest
+# pointing at nothing (or at the previous release).
+#
+# This repo's ruleset on `main` requires every change to go through a
+# reviewed pull request — a robot cannot just push that constant onto `main`
+# directly, and giving one standing permission to bypass that ruleset is a
+# bigger and riskier change than this workflow should make on its own. So the
+# checksum is committed *during the version-bump PR's own review*, not after
+# it merges:
+#
+#   1. A PR bumps the version. Its `pull_request` run here builds the
+#      XCFramework, computes the checksum, and pushes a second commit — onto
+#      the PR's own branch, which isn't protected — filling in
+#      `releasedFFI`. Whoever reviews the PR reviews that commit too.
+#   2. The same run stages a *draft* GitHub release for `v<version>`, with
+#      this exact archive attached. A draft's tag isn't created until the
+#      draft is published — staging it early costs nothing and means the
+#      merge-triggered run below never has to rebuild (a rebuild is not
+#      guaranteed byte-for-byte reproducible, so re-deriving the checksum a
+#      second time could disagree with what the PR just had reviewed and
+#      merged).
+#   3. The PR merges normally — 1 approval, CI Complete, same as any other
+#      PR. Nothing about that merge is special.
+#   4. The resulting push to `main` verifies the merged `Package.swift`
+#      still matches the staged draft's archive, then publishes that draft
+#      retargeted at the merge commit — which is what actually creates the
+#      `v<version>` tag.
 #
 # `v<version>`, not `swift-v<version>`: SwiftPM only recognises `1.0.0` and
 # `v1.0.0` as valid dependency versions, so this is the one tag namespace here
@@ -34,13 +56,9 @@ on:
       - ".github/workflows/release-swift.yml"
       - "scripts/build-swift-xcframework.sh"
 
-  # Builds, zips and computes the checksum without releasing — the only way to
-  # find out whether the packaging mechanics work before they are the release
-  # path, since a workflow only runs from the default branch. Narrow on
-  # purpose, same reasoning as release-python.yml/release-cpp.yml's own
-  # pull_request triggers: this is about exercising *this workflow's* steps,
-  # not the SDK itself — ci.yml's swift/swift-package jobs already cover the
-  # object model and a plain XCFramework build on every PR that touches them.
+  # Also where a version-bump PR gets its checksum committed and its release
+  # staged (see stage-release below) — not just a dry validation build, when
+  # the PR actually changes the version.
   pull_request:
     paths:
       - "sdks/swift/Sources/Reactor/ReactorSDK.swift"
@@ -68,19 +86,20 @@ env:
   REACTOR_XCFRAMEWORK_PRUNE: "1"
 
 jobs:
-  # ── 0. Is this push a release? ──────────────────────────────────────────────
+  # ── 0. Is this a release, and is it this PR that's cutting it? ──────────────
   detect-version:
     name: Detect version bump
     runs-on: ubuntu-latest
     outputs:
       bumped: ${{ steps.diff.outputs.bumped }}
+      is_release_pr: ${{ steps.diff.outputs.is_release_pr }}
       version: ${{ steps.diff.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Diff the SDK version against the previous commit on main
+      - name: Diff the SDK version against main
         id: diff
         run: |
           set -euo pipefail
@@ -98,6 +117,27 @@ jobs:
           fi
           echo "version=${NEW_VER}" >> "$GITHUB_OUTPUT"
 
+          # A pull_request never releases directly — stage-release below
+          # commits the checksum and drafts the release, but only the merge
+          # this PR eventually produces (a 'push' event) actually publishes.
+          # What a pull_request run needs to know is whether *this PR*
+          # changes the version at all, compared to main right now.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            git fetch origin main
+            BASE_VER=$(version_at origin/main)
+            if [ "$BASE_VER" != "$NEW_VER" ]; then
+              echo "::notice::This PR bumps the version: ${BASE_VER:-<none>} -> ${NEW_VER}"
+              echo "is_release_pr=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "::notice::Version unchanged at ${NEW_VER} — an ordinary PR, not a release."
+              echo "is_release_pr=false" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+
+          echo "is_release_pr=false" >> "$GITHUB_OUTPUT"
+
           # A manual dispatch with dry_run=false is an explicit "release the
           # current commit now" request — release it outright, without
           # diffing against the previous commit. Same pattern release-js.yml
@@ -114,12 +154,6 @@ jobs:
               echo "::notice::workflow_dispatch release — releasing ${NEW_VER}."
               echo "bumped=true" >> "$GITHUB_OUTPUT"
             fi
-            exit 0
-          fi
-
-          if [ "${{ github.event_name }}" != "push" ]; then
-            echo "::notice::${{ github.event_name }} — building ${NEW_VER}, not releasing."
-            echo "bumped=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -145,8 +179,10 @@ jobs:
       # this fails the release rather than let that link go stale. Doesn't
       # write anything: the entry still has to be added by hand, in the same
       # PR as the version bump, same as release-python.yml/release-cpp.yml.
+      # Checked on the PR too (is_release_pr), not just at merge time — the
+      # whole point of moving work into the PR is to fail it there.
       - name: Verify CHANGELOG.md documents this version
-        if: steps.diff.outputs.bumped == 'true'
+        if: steps.diff.outputs.bumped == 'true' || steps.diff.outputs.is_release_pr == 'true'
         env:
           VERSION: ${{ steps.diff.outputs.version }}
         run: |
@@ -186,7 +222,20 @@ jobs:
         run: |
           set -euo pipefail
           cd target/xcframework
-          zip -qr ReactorFFI.xcframework.zip ReactorFFI.xcframework
+
+          # Normalize every file's mtime before zipping: zip embeds
+          # timestamps, so two builds of the identical commit would
+          # otherwise produce different bytes — and therefore a different
+          # SwiftPM checksum — for no reason but wall-clock time. This used
+          # to only matter for a rerun of an already-tagged release
+          # (release's own "Check whether this exact release already
+          # exists" step, and the Codex finding it guards against); now that
+          # a PR can rebuild and recompute this checksum many times before
+          # merging (stage-release below, retried on every push to the PR),
+          # a checksum that never stabilizes would recommit forever instead
+          # of converging.
+          find ReactorFFI.xcframework -exec touch -t 202001010000 {} +
+          zip -qX -r ReactorFFI.xcframework.zip ReactorFFI.xcframework
           ls -lh ReactorFFI.xcframework.zip
 
       - name: Compute the SwiftPM checksum
@@ -219,9 +268,8 @@ jobs:
     # already runs this suite against the same commit, required via
     # ci-complete, and reactor/echo's session quota doesn't have room for both
     # workflows racing it at once — the exact collision release-js.yml's own
-    # notes describe. Nothing publishes off a pull_request event here either
-    # (the release job below), so this only needs to run before an actual
-    # release.
+    # notes describe. This only needs to run before an actual publish, which
+    # is only ever a 'push' or 'workflow_dispatch' now.
     if: github.event_name != 'pull_request'
     concurrency:
       group: reactor-echo-live-session-quota-${{ github.sha }}
@@ -283,42 +331,30 @@ jobs:
           REACTOR_XCFRAMEWORK: target/xcframework/ReactorFFI.xcframework
         run: scripts/swift.sh integration-tests-ios-simulator
 
-  # ── 2. Commit the checksum, tag, and release ────────────────────────────────
-  release:
-    name: Commit checksum, tag, and publish GitHub release
-    needs:
-      [
-        detect-version,
-        build-xcframework,
-        swift-integration-tests,
-        swift-integration-tests-ios-simulator,
-      ]
-    # bumped alone, not also github.event_name == 'push': detect-version sets
-    # it true for a workflow_dispatch release (dry_run=false) too, and gating
-    # here on 'push' as well silently dropped that path — the exact gap
-    # dry_run's own Codex comment named.
+  # ── 2. Commit the checksum onto the PR, and stage the release ──────────────
+  #
+  # Runs only for a pull_request that actually bumps the version
+  # (is_release_pr) and only when that PR's branch lives in this repo, not a
+  # fork — pushing the checksum commit back needs write access to that
+  # branch, which a fork does not grant this repo's GITHUB_TOKEN. A fork
+  # opening a version-bump PR is not a case this repo expects (only
+  # maintainers cut releases): skipped outright rather than half-working, so
+  # it fails obviously — no checksum commit ever appears — instead of
+  # silently.
+  stage-release:
+    name: Stage the release (commit checksum, draft the GitHub release)
+    needs: [detect-version, build-xcframework]
     if: >-
-      needs.detect-version.outputs.bumped == 'true' &&
-      needs.swift-integration-tests.result == 'success' &&
-      needs.swift-integration-tests-ios-simulator.result == 'success'
+      github.event_name == 'pull_request' &&
+      needs.detect-version.outputs.is_release_pr == 'true' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
         with:
-          # A real token, not the default GITHUB_TOKEN: this job pushes a
-          # commit straight to main ahead of tagging it, and the default
-          # token's push is what triggers this very workflow's own `push`
-          # filter — harmless here since the version doesn't change again,
-          # but the standard reason to avoid it is that some repos block a
-          # GITHUB_TOKEN-authored push from re-triggering workflows at all,
-          # which would leave the checksum committed but nothing tagging it.
-          # If this repo's branch protection requires every push to go
-          # through a reviewed pull request, this step needs main's ruleset
-          # to explicitly allow this workflow (or a bot/service account) to
-          # bypass that — a repo-settings change, not something fixable here.
-          token: ${{ secrets.RELEASE_PUSH_TOKEN || github.token }}
+          ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
 
       - uses: actions/download-artifact@v8
@@ -326,46 +362,7 @@ jobs:
           name: xcframework
           path: dist/
 
-      # A rebuild is not guaranteed to be reproducible byte-for-byte (the zip
-      # carries file timestamps at minimum), so a rerun after the tag already
-      # exists can compute a *different* checksum than the one Package.swift
-      # already has committed at that tag. Blindly proceeding would either
-      # commit a checksum the tag's own manifest disagrees with, or (worse)
-      # replace the release's asset with a zip whose hash no longer matches
-      # what every consumer resolving that tag already has pinned — found by
-      # Codex review, exploiting the idempotency this same job just added for
-      # a different partial-failure case. Checked once, up front, so every
-      # step below can stay simple: either this run's checksum is what the
-      # tag already has (nothing left to do) or the tag doesn't exist yet
-      # (proceed) — a mismatch fails loudly instead of mutating anything.
-      - name: Check whether this exact release already exists
-        id: check
-        env:
-          VERSION: ${{ needs.detect-version.outputs.version }}
-          CHECKSUM: ${{ needs.build-xcframework.outputs.checksum }}
-        run: |
-          set -euo pipefail
-          TAG="v${VERSION}"
-          git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}" 2>/dev/null || true
-
-          if ! git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "already_done=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          EXISTING="$(git show "${TAG}:Package.swift" \
-            | sed -n 's/.*checksum: "\([^"]*\)".*/\1/p')"
-
-          if [ "$EXISTING" = "$CHECKSUM" ]; then
-            echo "::notice::${TAG} already exists with this exact checksum — nothing to do"
-            echo "already_done=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error::${TAG} already exists with a DIFFERENT checksum (existing=${EXISTING}, this run=${CHECKSUM}). The XCFramework build is not reproducible between runs — refusing to overwrite a public release's asset out from under its already-tagged checksum. Investigate why the build differs before retrying; do not delete/retag without understanding that first." >&2
-            exit 1
-          fi
-
-      - name: Commit the release's URL and checksum into Package.swift
-        if: steps.check.outputs.already_done != 'true'
+      - name: Commit the checksum onto this PR's branch, if it isn't there already
         env:
           VERSION: ${{ needs.detect-version.outputs.version }}
           CHECKSUM: ${{ needs.build-xcframework.outputs.checksum }}
@@ -374,23 +371,38 @@ jobs:
 
           TAG="v${VERSION}"
           URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/ReactorFFI.xcframework.zip"
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          COMMIT_MSG="sdks/swift: release ${VERSION} — XCFramework URL and checksum"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Retried against main's *current* tip, not the commit this run was
-          # triggered by: the build+test phase above takes on the order of ten
-          # minutes, long enough for an unrelated PR to merge in between. A
-          # plain `git push origin HEAD:main` at that point is rejected as
-          # non-fast-forward — and since the version file itself didn't
-          # change, a simple re-run would see it as already built and never
-          # release at all, leaving this bump stuck without someone noticing.
-          # Re-fetching and re-applying the patch each attempt (rather than
-          # rebasing the one local commit) keeps this correct even if main
-          # moved more than once.
-          for attempt in 1 2 3 4 5; do
-            git fetch origin main
-            git checkout -B main origin/main
+          # A safety valve, not the normal path: mtime normalization in the
+          # Zip step above is meant to make this checksum stable across
+          # rebuilds of identical source, so an ordinary correction commit
+          # or two (the version-bump commit itself, maybe one fixup) is
+          # expected, but a growing pile of them is that assumption failing
+          # in practice — the build genuinely isn't reproducible for some
+          # other reason. Fail loudly rather than let CI keep rebuilding and
+          # repushing on every commit to this PR forever.
+          EXISTING_BOT_COMMITS="$(git log --author='github-actions\[bot\]' --oneline \
+            | grep -Fc "$COMMIT_MSG" || true)"
+          if [ "$EXISTING_BOT_COMMITS" -ge 3 ]; then
+            echo "::error::This branch already has ${EXISTING_BOT_COMMITS} checksum-correction commits. The XCFramework build does not look reproducible across runs even for identical source — investigate before this keeps recommitting." >&2
+            exit 1
+          fi
+
+          # Same idempotency shape as the checksum-mismatch check the merge-
+          # triggered publish step below runs, and the same reason: a
+          # rebuild is not guaranteed reproducible byte-for-byte, so any
+          # later push to this PR can recompute a different checksum than
+          # the one already committed here. Rerun this comparison every
+          # time rather than trusting a prior run's commit — it converges
+          # on whatever the latest build actually produced, right up to the
+          # moment someone merges.
+          for attempt in 1 2 3; do
+            git fetch origin "$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
 
             if ! grep -q '^let releasedFFI: (url: String, checksum: String)? = ' Package.swift; then
               echo "::error::releasedFFI line not found in Package.swift" >&2
@@ -405,54 +417,161 @@ jobs:
             git diff Package.swift
 
             git add Package.swift
-            # Idempotent: a rerun after a failure downstream (tag/release)
-            # lands here with Package.swift already matching — nothing to
-            # commit is success, not an error, or the tag/release steps
-            # below could never be retried.
             if git diff --cached --quiet; then
-              echo "::notice::Package.swift already has this release's checksum — nothing to commit"
+              echo "::notice::Package.swift on this branch already has this build's checksum — nothing to commit"
               break
             fi
 
-            git commit -s -m "sdks/swift: release ${VERSION} — XCFramework URL and checksum"
+            git commit -s -m "$COMMIT_MSG"
 
-            if git push origin HEAD:main; then
+            if git push origin "HEAD:${BRANCH}"; then
               echo "::notice::Pushed the checksum commit on attempt ${attempt}"
               break
             fi
 
-            if [ "$attempt" -eq 5 ]; then
-              echo "::error::main moved out from under this push ${attempt} times in a row — giving up" >&2
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::${BRANCH} moved out from under this push ${attempt} times in a row — giving up" >&2
               exit 1
             fi
-            echo "::warning::Push rejected (main moved) — retrying (attempt ${attempt})" >&2
+            echo "::warning::Push rejected (branch moved) — retrying (attempt ${attempt})" >&2
             sleep $((attempt * 5))
           done
 
-      - name: Tag the commit that carries the checksum
+      - name: Stage (or update) a draft GitHub release with this build's archive
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.detect-version.outputs.version }}
+          CHECKSUM: ${{ needs.build-xcframework.outputs.checksum }}
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          # Idempotent, same reason as the commit step above: a rerun after a
-          # failed release step must not fail here just because a prior run
-          # already pushed this tag.
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "::notice::Tag $TAG already exists on origin — skipping"
+          mv dist/ReactorFFI.xcframework.zip ReactorFFI.xcframework.zip
+          sha256sum ReactorFFI.xcframework.zip | tee SHA256SUMS
+
+          NOTES="$(cat <<EOF
+          Reactor Swift SDK ${VERSION}.
+
+          \`\`\`swift
+          .package(url: "https://github.com/${{ github.repository }}", from: "${VERSION}")
+          \`\`\`
+
+          Ships as an XCFramework (macOS arm64+x86_64, iOS 16+ arm64 device and
+          simulator) resolved automatically by SwiftPM — nothing to install by
+          hand. See \`sdks/swift/README.md\` for the platform table and
+          \`sdks/swift/CHANGELOG.md\` for what changed.
+
+          Checksum: \`${CHECKSUM}\`
+          EOF
+          )"
+
+          # Draft, and left untagged: a draft release's tag_name only
+          # becomes a real git tag once the release is published, which is
+          # what makes it safe to stage before this PR has even been
+          # approved. target_commitish is a placeholder (this PR's current
+          # head) — the real target, the merge commit, isn't known until
+          # the publish step below retargets it right before publishing.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::Draft release $TAG already staged — replacing its assets"
+            gh release upload "$TAG" ReactorFFI.xcframework.zip SHA256SUMS --clobber
+            gh release edit "$TAG" --notes "$NOTES"
           else
-            git tag "$TAG"
-            git push origin "$TAG"
+            gh release create "$TAG" ReactorFFI.xcframework.zip SHA256SUMS \
+              --draft \
+              --target "${{ github.event.pull_request.head.sha }}" \
+              --title "Swift SDK ${VERSION}" \
+              --notes "$NOTES"
           fi
 
-      - name: Create the release
+  # ── 3. Publish the staged release ───────────────────────────────────────────
+  release:
+    name: Publish the GitHub release
+    needs:
+      [
+        detect-version,
+        build-xcframework,
+        swift-integration-tests,
+        swift-integration-tests-ios-simulator,
+      ]
+    # bumped alone, not also github.event_name == 'push': detect-version sets
+    # it true for a workflow_dispatch release (dry_run=false) too, and gating
+    # here on 'push' as well would silently drop that path.
+    if: >-
+      needs.detect-version.outputs.bumped == 'true' &&
+      needs.swift-integration-tests.result == 'success' &&
+      needs.swift-integration-tests-ios-simulator.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # The normal path is "a staged draft exists, and it matches what's on
+      # main" — the version-bump PR's own stage-release job already put it
+      # there. workflow_dispatch is the one way to reach this job without
+      # that ever having happened (a manual release with no PR behind it,
+      # or a draft that got deleted by hand), so it falls back to building
+      # the release directly from this run's own artifact instead of
+      # assuming a draft is there to publish.
+      - name: Check for a staged draft release matching main
+        id: verify
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.detect-version.outputs.version }}
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          mv dist/ReactorFFI.xcframework.zip "ReactorFFI.xcframework.zip"
+
+          if ! grep -q '^let releasedFFI: (url: String, checksum: String)? = (url: "' Package.swift; then
+            echo "::notice::main's Package.swift has no releasedFFI URL yet for ${VERSION} — no PR staged this release. Falling back to building it directly."
+            echo "staged=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null | grep -q true; then
+            echo "::notice::No draft release staged for ${TAG}. Falling back to building it directly."
+            echo "staged=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          MAIN_CHECKSUM="$(sed -n 's/.*checksum: "\([^"]*\)".*/\1/p' Package.swift)"
+          gh release download "$TAG" --pattern 'ReactorFFI.xcframework.zip' --output staged.zip --clobber
+          STAGED_CHECKSUM="$(sha256sum staged.zip | cut -d' ' -f1)"
+
+          if [ "$MAIN_CHECKSUM" != "$STAGED_CHECKSUM" ]; then
+            echo "::error::main's Package.swift checksum (${MAIN_CHECKSUM}) does not match the staged draft release's archive (${STAGED_CHECKSUM}) for ${TAG}. Refusing to publish a release whose asset would not match the checksum every consumer resolving this version will see in the manifest. Investigate before retrying — do not just re-run." >&2
+            exit 1
+          fi
+
+          echo "::notice::Staged draft ${TAG} matches main's checksum — publishing it as-is, no rebuild."
+          echo "staged=true" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the staged draft, retargeted at this merge commit
+        if: steps.verify.outputs.staged == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          gh release edit "$TAG" --target "${{ github.sha }}"
+          gh release edit "$TAG" --draft=false
+
+      - uses: actions/download-artifact@v8
+        if: steps.verify.outputs.staged != 'true'
+        with:
+          name: xcframework
+          path: dist/
+
+      - name: Build and publish the release directly (no staged draft found)
+        if: steps.verify.outputs.staged != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect-version.outputs.version }}
+          CHECKSUM: ${{ needs.build-xcframework.outputs.checksum }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          mv dist/ReactorFFI.xcframework.zip ReactorFFI.xcframework.zip
           sha256sum ReactorFFI.xcframework.zip | tee SHA256SUMS
 
           # Idempotent: replace the assets on a rerun rather than failing
@@ -464,6 +583,7 @@ jobs:
           fi
 
           gh release create "$TAG" ReactorFFI.xcframework.zip SHA256SUMS \
+            --target "${{ github.sha }}" \
             --title "Swift SDK ${VERSION}" \
             --notes "$(cat <<EOF
           Reactor Swift SDK ${VERSION}.
@@ -477,6 +597,6 @@ jobs:
           hand. See \`sdks/swift/README.md\` for the platform table and
           \`sdks/swift/CHANGELOG.md\` for what changed.
 
-          Checksum: \`${{ needs.build-xcframework.outputs.checksum }}\`
+          Checksum: \`${CHECKSUM}\`
           EOF
           )"
