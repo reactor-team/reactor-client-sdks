@@ -44,6 +44,12 @@ import PackageDescription
 // and Xcode opening this package — keep working exactly as they do today. The day
 // a release is cut, filling in `releasedFFI` makes the consumer's answer the
 // default without anything else here moving.
+//
+// A real URL plus a real sha256 checksum cannot fit `.swift-format`'s
+// 100-column limit on one line, and neither token can be wrapped without
+// changing its value — so the directive below has to stay even after
+// release-swift.yml fills this in, not just while it reads `nil`.
+// swift-format-ignore
 let releasedFFI: (url: String, checksum: String)? = nil
 
 let ffiTarget: Target = {
