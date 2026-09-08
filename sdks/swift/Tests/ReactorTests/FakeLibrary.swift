@@ -212,6 +212,7 @@ final class FakeLibrary: @unchecked Sendable {
 
     /// Fire `on_message`, the way the library reports a model message.
     func fireMessage(_ payload: String, runtime: Bool = false) {
+        guard canFireCallbacks else { return }
         guard let callbacks = state.withLock({ $0.callbacks }) else { return }
         let handler = runtime ? callbacks.on_runtime_message : callbacks.on_message
         guard let handler else { return }
