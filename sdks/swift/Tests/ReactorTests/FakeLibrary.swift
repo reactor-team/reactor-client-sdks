@@ -45,6 +45,9 @@ final class FakeLibrary: @unchecked Sendable {
         var createCalls: [CreateCall] = []
         var callbacks: ReactorCallbacks?
         var destroyCount = 0
+        /// Set when `destroy` answered 0, which is the library promising that no
+        /// callback will start afterwards.
+        var quiesced = false
         var freedStrings = 0
         var connectCalls = 0
         var disconnectCalls = 0
@@ -63,6 +66,7 @@ final class FakeLibrary: @unchecked Sendable {
         var schemaCalls = 0
         var uploadFileCalls: [String] = []
         var uploadBytesCalls: [UploadBytesCall] = []
+        var jwtCalls: [JWTCall] = []
         var clipCalls: [Double] = []
         var recordingCalls = 0
         var downloadCalls: [DownloadCall] = []
@@ -74,7 +78,6 @@ final class FakeLibrary: @unchecked Sendable {
         var lastCompletion: (fn: reactor_completion_fn, userdata: UnsafeMutableRawPointer)?
         weak var lastUserdataObject: AnyObject?
         var events: [Event] = []
-        var quiesced = false
         var whileReadingStatus: (@Sendable () -> Void)?
         var whileStartingDownload: (@Sendable () -> Void)?
     }
@@ -126,6 +129,14 @@ final class FakeLibrary: @unchecked Sendable {
         var outPath: String?
         var predictedReadyAtMS: Double
         var readyTimeoutSeconds: Double
+        var local: Int32
+    }
+
+    /// What the SDK handed `reactor_fetch_jwt`.
+    struct JWTCall {
+        var apiURL: String?
+        var apiKey: String?
+        var optionsJSON: String?
         var local: Int32
     }
 
@@ -193,6 +204,7 @@ final class FakeLibrary: @unchecked Sendable {
     var schemaCalls: Int { state.withLock { $0.schemaCalls } }
     var uploadFileCalls: [String] { state.withLock { $0.uploadFileCalls } }
     var uploadBytesCalls: [UploadBytesCall] { state.withLock { $0.uploadBytesCalls } }
+    var jwtCalls: [JWTCall] { state.withLock { $0.jwtCalls } }
     var clipCalls: [Double] { state.withLock { $0.clipCalls } }
     var recordingCalls: Int { state.withLock { $0.recordingCalls } }
     var downloadCalls: [DownloadCall] { state.withLock { $0.downloadCalls } }
@@ -382,6 +394,17 @@ final class FakeLibrary: @unchecked Sendable {
             freeString: { [self] pointer in
                 state.withLock { $0.freedStrings += 1 }
                 free(pointer)
+            },
+            fetchJWT: { [self] apiURL, apiKey, optionsJSON, local, completion, userdata in
+                state.withLock {
+                    $0.jwtCalls.append(
+                        JWTCall(
+                            apiURL: String(borrowing: apiURL),
+                            apiKey: String(borrowing: apiKey),
+                            optionsJSON: String(borrowing: optionsJSON),
+                            local: local))
+                }
+                record(completion, userdata)
             },
             createWithADM: {
                 [self]

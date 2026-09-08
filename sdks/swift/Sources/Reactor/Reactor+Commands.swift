@@ -28,7 +28,7 @@ public struct CommandReply: Sendable, Hashable {
                 operation: "send_command")
         }
         do {
-            return try JSONDecoder().decode(T.self, from: try JSONEncoder().encode(data))
+            return try JSON.decoder().decode(T.self, from: try JSON.encoder().encode(data))
         } catch {
             throw ReactorError(
                 .decodeFailed,
@@ -210,20 +210,9 @@ extension Reactor {
 
     // MARK: - JSON, in one place
 
-    /// The encoder every outbound payload goes through.
-    ///
-    /// `.withoutEscapingSlashes` because Foundation escapes `/` as `\/` by
-    /// default: legal JSON, and unreadable the moment anyone looks at a mime
-    /// type or a URL in a log.
-    private static let jsonEncoder: JSONEncoder = {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.withoutEscapingSlashes]
-        return encoder
-    }()
-
     private func encodeJSON(_ value: some Encodable, operation: String) throws -> String {
         do {
-            let data = try Self.jsonEncoder.encode(value)
+            let data = try JSON.encoder().encode(value)
             guard let text = String(data: data, encoding: .utf8) else {
                 throw ReactorError(
                     .badRequest, "arguments are not valid UTF-8", operation: operation)
@@ -246,7 +235,7 @@ extension Reactor {
 
     private func decodeJSON(_ payload: String, operation: String) throws -> JSONValue {
         guard let data = payload.data(using: .utf8),
-            let value = try? JSONDecoder().decode(JSONValue.self, from: data)
+            let value = try? JSON.decoder().decode(JSONValue.self, from: data)
         else {
             throw ReactorError(
                 .decodeFailed,
@@ -258,7 +247,7 @@ extension Reactor {
 
     private func decodeFileRef(_ payload: String?, operation: String) throws -> FileRef {
         guard let payload, let data = payload.data(using: .utf8),
-            let ref = try? JSONDecoder().decode(FileRef.self, from: data)
+            let ref = try? JSON.decoder().decode(FileRef.self, from: data)
         else {
             throw ReactorError(
                 .decodeFailed,
