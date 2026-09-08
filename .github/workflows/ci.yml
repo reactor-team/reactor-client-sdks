@@ -119,6 +119,70 @@ jobs:
       - name: mise.lock drift (vs merge-base)
         run: mise run lint:mise-lock
 
+      # Blocks CI Complete on a version-bump PR until release-swift.yml's
+      # stage-release job has committed the release checksum onto this
+      # PR's branch — see that workflow's header comment for the full
+      # mechanism. Lives here, as a step in a job ci.yml already always
+      # runs, rather than as its own required check: a required check
+      # cannot depend on a job in a different workflow file, and this repo
+      # already treats "CI Complete passes" as the one thing every PR has
+      # to satisfy.
+      #
+      # Polls instead of failing immediately when the checksum isn't there
+      # yet — which it never is on the very first push, since
+      # release-swift.yml's build takes on the order of ten minutes. This
+      # is cosmetic, not load-bearing: stage-release's own commit is a new
+      # push to this branch, which reruns ci.yml on its own regardless, and
+      # that later run is what actually determines whether the PR can
+      # merge (GitHub evaluates a required check against the current head
+      # commit, not this run's). Without the poll, this run would just fail
+      # fast and get superseded a few minutes later — functionally
+      # identical, but a needless red X in the interim. The tradeoff is
+      # this step (and the runner under it) sits idle for however long the
+      # wait lasts, only for pull_request runs that reach this point.
+      - name: Wait for the Swift release checksum, if this PR bumps the version
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+
+          version_at() {
+            git show "$1:sdks/swift/Sources/Reactor/ReactorSDK.swift" 2>/dev/null \
+              | sed -n 's/.*public static let version = "\([^"]*\)".*/\1/p' \
+              | head -1
+          }
+
+          git fetch origin main
+          NEW_VER=$(version_at HEAD)
+          BASE_VER=$(version_at origin/main)
+
+          if [ "$BASE_VER" = "$NEW_VER" ]; then
+            echo "Version unchanged (${NEW_VER:-<none>}) — not a release PR, nothing to wait for."
+            exit 0
+          fi
+
+          echo "This PR bumps the Swift SDK version: ${BASE_VER:-<none>} -> ${NEW_VER}."
+
+          if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+            echo "::error::This PR's branch is on a fork. release-swift.yml's stage-release job refuses to push a checksum commit onto a fork's branch, so this will never resolve — see release-swift.yml's stage-release job comment. A maintainer needs to open this version bump from a branch on this repo instead." >&2
+            exit 1
+          fi
+
+          BRANCH="${{ github.head_ref }}"
+          DEADLINE=$((SECONDS + 1200))   # 20 minutes — build-xcframework alone runs ~10
+          while [ "$SECONDS" -lt "$DEADLINE" ]; do
+            git fetch origin "$BRANCH"
+            if git show "origin/${BRANCH}:Package.swift" \
+                | grep -q '^let releasedFFI: (url: String, checksum: String)? = (url: "'; then
+              echo "Checksum committed on origin/${BRANCH} — release-swift.yml's stage-release finished."
+              exit 0
+            fi
+            echo "Not yet — release-swift.yml's stage-release job is presumably still building. Checking again in 30s ($((DEADLINE - SECONDS))s left)."
+            sleep 30
+          done
+
+          echo "::error::Timed out waiting for release-swift.yml's stage-release job to commit the release checksum onto this branch. Check that job's own status in the Actions tab — if it failed, this will never resolve on its own; push a fix and this step will pick it up on the next run." >&2
+          exit 1
+
   rust:
     name: Rust core
     needs: changes
