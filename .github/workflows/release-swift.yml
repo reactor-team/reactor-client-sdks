@@ -171,15 +171,23 @@ jobs:
             # build-xcframework (and stage-release along with it, via
             # `needs`) without ever validating the checksum, only to fail
             # obviously later at publish, or worse, leave consumers
-            # resolving a broken archive. Requiring HEAD to be
-            # github-actions[bot]'s own commit, touching nothing but
+            # resolving a broken archive. Requiring the PR's head commit to
+            # be github-actions[bot]'s own, touching nothing but
             # Package.swift, ties the skip to "this exact push is
             # stage-release's own follow-up to a build already validated
             # one commit ago" — a human edit, whatever it contains, always
             # takes the normal build-and-verify path below.
+            #
+            # Checked by explicit SHA, not bare HEAD/HEAD^: actions/checkout's
+            # default ref for a pull_request event is the synthetic
+            # refs/pull/<n>/merge commit, whose first parent is *main*'s tip
+            # — HEAD^..HEAD there is this PR's entire cumulative diff, not
+            # this one push's. Found live: this check silently stayed false
+            # on a real release PR's own follow-up push, rebuilding anyway.
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
             if grep -qF "/v${NEW_VER}/ReactorFFI.xcframework.zip\"" Package.swift \
-               && [ "$(git log -1 --format='%an')" = "github-actions[bot]" ] \
-               && [ "$(git diff --name-only HEAD^ HEAD)" = "Package.swift" ]; then
+               && [ "$(git log -1 --format='%an' "$HEAD_SHA")" = "github-actions[bot]" ] \
+               && [ "$(git diff --name-only "${HEAD_SHA}^" "$HEAD_SHA")" = "Package.swift" ]; then
               echo "::notice::Package.swift already stages a checksum for v${NEW_VER}, committed by stage-release itself — nothing to build."
               echo "already_staged=true" >> "$GITHUB_OUTPUT"
             else
