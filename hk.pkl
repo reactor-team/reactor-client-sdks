@@ -55,6 +55,7 @@ hooks {
           "sdks/python/reactor_sdk/_ffi.py",
           "sdks/cpp/**/*.cpp",
           "sdks/cpp/**/*.hpp",
+          "sdks/swift/**/*.swift",
           "scripts/check-abi-parity.py"
         )
         check = "mise run lint:abi"
