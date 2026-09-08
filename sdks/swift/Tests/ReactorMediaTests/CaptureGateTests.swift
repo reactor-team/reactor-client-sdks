@@ -46,20 +46,32 @@ struct CaptureGateTests {
         let releaseDelivery = DispatchSemaphore(value: 0)
         let closed = DispatchSemaphore(value: 0)
 
-        DispatchQueue.global().async {
+        // Dedicated threads rather than DispatchQueue.global(), and that is not a
+        // style choice. The delivery below parks for up to five seconds, and a
+        // parked *pool worker* is one fewer thread for everything else running
+        // beside it. On a three-core runner, with the whole suite in parallel and
+        // several tests parked the same way, the block that calls close() ends up
+        // waiting for a worker rather than for the lock — so the timeout below
+        // fired without close() ever having been called, and this test failed
+        // about half the time on CI while never failing on a laptop with
+        // eighteen cores. A Thread is scheduled on its own, so the timeout now
+        // measures close() rather than libdispatch's queueing.
+        let delivering = Thread {
             gate.withDelivery {
                 insideDelivery.signal()
                 // Stands in for a push that is taking its time.
                 _ = releaseDelivery.wait(timeout: .now() + 5)
             }
         }
+        delivering.start()
 
         #expect(insideDelivery.wait(timeout: .now() + 2) == .success)
 
-        DispatchQueue.global().async {
+        let closing = Thread {
             gate.close()
             closed.signal()
         }
+        closing.start()
 
         // The assertion that matters: this returns while the delivery is still
         // in its closure.
