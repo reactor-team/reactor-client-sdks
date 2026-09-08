@@ -41,8 +41,31 @@ jobs:
       cpp: ${{ steps.filter.outputs.cpp }}
       swift: ${{ steps.filter.outputs.swift }}
       swift_package: ${{ steps.filter.outputs.swift_package }}
+      skip_bot_checksum_commit: ${{ steps.bot-checksum.outputs.skip }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2   # bot-checksum below diffs HEAD against its parent
+      - name: Is this push exactly release-swift.yml's checksum commit?
+        id: bot-checksum
+        run: |
+          set -euo pipefail
+          # release-swift.yml's stage-release job pushes a commit, as
+          # github-actions[bot], that touches nothing but Package.swift's
+          # releasedFFI line (see that workflow's own header comment). That
+          # push retriggers this workflow on the same PR, and Package.swift
+          # is in swift_package's filter above, so without this check
+          # swift-package would pay for a second full four-slice rebuild of
+          # source this same PR already validated one commit ago — and, if
+          # that rebuild isn't byte-reproducible, could even contradict the
+          # checksum stage-release just committed.
+          SKIP=false
+          if [ "${{ github.event_name }}" = "pull_request" ] && \
+             [ "${{ github.actor }}" = "github-actions[bot]" ] && \
+             [ "$(git diff --name-only HEAD^ HEAD)" = "Package.swift" ]; then
+            SKIP=true
+          fi
+          echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -595,7 +618,7 @@ jobs:
   swift-package:
     name: Swift XCFramework
     needs: changes
-    if: github.event_name == 'push' || needs.changes.outputs.swift_package == 'true'
+    if: (github.event_name == 'push' || needs.changes.outputs.swift_package == 'true') && needs.changes.outputs.skip_bot_checksum_commit != 'true'
     runs-on: macos-latest
     env:
       # Keep one target triple's build tree at a time. Four of them come to about
