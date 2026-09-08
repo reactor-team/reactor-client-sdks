@@ -44,7 +44,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 2   # bot-checksum below diffs HEAD against its parent
+          # Full history, not just enough for bot-checksum's diff below:
+          # actions/checkout's default ref for a pull_request event is the
+          # synthetic refs/pull/<n>/merge commit, whose parents are (base,
+          # head) — a shallow fetch keyed to *that* commit isn't guaranteed
+          # to include the head commit's own parent, which bot-checksum
+          # needs. fetch-depth: 0 sidesteps the question entirely.
+          fetch-depth: 0
       - name: Is this push exactly release-swift.yml's checksum commit?
         id: bot-checksum
         run: |
@@ -61,10 +67,19 @@ jobs:
           # ~15-20 minutes, rerunning the integration suites means a second
           # unnecessary shot at reactor/echo's live session quota, on a run
           # that has nothing to do with Swift source at all.
+          #
+          # Diffed by explicit SHA, not bare HEAD/HEAD^: checkout's actual
+          # HEAD on a pull_request event is the synthetic
+          # refs/pull/<n>/merge commit, whose first parent is the *base*
+          # branch's tip — HEAD^..HEAD there is the PR's entire cumulative
+          # diff against main, not this one push's diff. Found the hard way,
+          # watching this wrongly stay false on a real release PR's own
+          # follow-up push.
           SKIP=false
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           if [ "${{ github.event_name }}" = "pull_request" ] && \
              [ "${{ github.actor }}" = "github-actions[bot]" ] && \
-             [ "$(git diff --name-only HEAD^ HEAD)" = "Package.swift" ]; then
+             [ "$(git diff --name-only "${HEAD_SHA}^" "$HEAD_SHA")" = "Package.swift" ]; then
             SKIP=true
           fi
           echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
