@@ -39,9 +39,8 @@ jobs:
       python: ${{ steps.filter.outputs.python }}
       js: ${{ steps.filter.outputs.js }}
       cpp: ${{ steps.filter.outputs.cpp }}
-      swift: ${{ steps.filter.outputs.swift }}
-      swift_package: ${{ steps.filter.outputs.swift_package }}
-      skip_bot_checksum_commit: ${{ steps.bot-checksum.outputs.skip }}
+      swift: ${{ steps.effective.outputs.swift }}
+      swift_package: ${{ steps.effective.outputs.swift_package }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -54,11 +53,14 @@ jobs:
           # github-actions[bot], that touches nothing but Package.swift's
           # releasedFFI line (see that workflow's own header comment). That
           # push retriggers this workflow on the same PR, and Package.swift
-          # is in swift_package's filter above, so without this check
-          # swift-package would pay for a second full four-slice rebuild of
-          # source this same PR already validated one commit ago — and, if
-          # that rebuild isn't byte-reproducible, could even contradict the
-          # checksum stage-release just committed.
+          # is in both the `swift` and `swift_package` filters below, so
+          # without this check every Swift job here — not just the
+          # XCFramework rebuild, but the plain Swift SDK build and both live
+          # integration-test suites — would rerun to validate source that
+          # hasn't changed since the previous commit. Beyond the wasted
+          # ~15-20 minutes, rerunning the integration suites means a second
+          # unnecessary shot at reactor/echo's live session quota, on a run
+          # that has nothing to do with Swift source at all.
           SKIP=false
           if [ "${{ github.event_name }}" = "pull_request" ] && \
              [ "${{ github.actor }}" = "github-actions[bot]" ] && \
@@ -117,6 +119,26 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
+
+      # Overrides the raw filter results above with `false` when this push is
+      # bot-checksum's own commit — see that step's comment. Done once, here,
+      # rather than in each of the four Swift jobs' own `if:` (swift,
+      # swift-package, and both swift-integration-tests jobs all key off
+      # `needs.changes.outputs.swift`/`swift_package`): a job-by-job repeat of
+      # this condition is a fifth place to keep in sync, and Codex review on
+      # the equivalent release-swift.yml check already flagged how easy a
+      # partial version of this guard is to get wrong.
+      - name: Effective swift filters (a bot-checksum-only push never counts)
+        id: effective
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.bot-checksum.outputs.skip }}" = "true" ]; then
+            echo "swift=false" >> "$GITHUB_OUTPUT"
+            echo "swift_package=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "swift=${{ steps.filter.outputs.swift }}" >> "$GITHUB_OUTPUT"
+            echo "swift_package=${{ steps.filter.outputs.swift_package }}" >> "$GITHUB_OUTPUT"
+          fi
 
   # Repo-wide checks: fast, text-only, and about the repository rather than about
   # any one binding — so they always run and need no compiler.
@@ -618,7 +640,7 @@ jobs:
   swift-package:
     name: Swift XCFramework
     needs: changes
-    if: (github.event_name == 'push' || needs.changes.outputs.swift_package == 'true') && needs.changes.outputs.skip_bot_checksum_commit != 'true'
+    if: github.event_name == 'push' || needs.changes.outputs.swift_package == 'true'
     runs-on: macos-latest
     env:
       # Keep one target triple's build tree at a time. Four of them come to about
