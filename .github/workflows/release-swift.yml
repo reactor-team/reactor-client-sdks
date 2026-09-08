@@ -30,12 +30,19 @@
 #      guaranteed byte-for-byte reproducible, so re-deriving the checksum a
 #      second time could disagree with what the PR just had reviewed and
 #      merged).
-#   3. The PR merges normally — 1 approval, CI Complete, same as any other
-#      PR. Nothing about that merge is special.
+#   3. `stage-release` is a required status check on `main` — the PR cannot
+#      merge until it (and therefore the checksum commit) finishes
+#      successfully. Beyond that, merging is normal: 1 approval, CI
+#      Complete, nothing else special. See `pull_request:` below for why
+#      this workflow has no `paths:` filter — a required check tied to one
+#      would leave every *other* PR in the repo waiting on a status that
+#      never arrives.
 #   4. The resulting push to `main` verifies the merged `Package.swift`
 #      still matches the staged draft's archive, then publishes that draft
 #      retargeted at the merge commit — which is what actually creates the
-#      `v<version>` tag.
+#      `v<version>` tag. It fails outright, rather than building and
+#      shipping a replacement, if that checksum somehow isn't there — see
+#      the `release` job's own comment on why that's unrecoverable here.
 #
 # `v<version>`, not `swift-v<version>`: SwiftPM only recognises `1.0.0` and
 # `v1.0.0` as valid dependency versions, so this is the one tag namespace here
@@ -56,16 +63,17 @@ on:
       - ".github/workflows/release-swift.yml"
       - "scripts/build-swift-xcframework.sh"
 
-  # Also where a version-bump PR gets its checksum committed and its release
-  # staged (see stage-release below) — not just a dry validation build, when
-  # the PR actually changes the version.
+  # No `paths:` filter, deliberately — this fires on every PR in the repo,
+  # not just ones touching Swift. `stage-release` below is a required status
+  # check on main, and a required check tied to a workflow that never
+  # triggers for a given PR (because of a path filter) leaves that PR
+  # waiting forever for a status that will never arrive — GitHub has no way
+  # to know the check is inapplicable rather than merely slow. Firing always
+  # and skipping the irrelevant work job-by-job (same pattern ci.yml already
+  # uses for its own per-SDK jobs) means every PR gets an actual "skipped"
+  # status instead of no status at all, and a skipped required check is one
+  # GitHub does treat as satisfied.
   pull_request:
-    paths:
-      - "sdks/swift/Sources/Reactor/ReactorSDK.swift"
-      - "Package.swift"
-      - "scripts/build-swift-xcframework.sh"
-      - "crates/reactor-ffi/**"
-      - ".github/workflows/release-swift.yml"
 
   workflow_dispatch:
     inputs:
@@ -196,6 +204,12 @@ jobs:
   build-xcframework:
     name: Build ReactorFFI.xcframework
     needs: detect-version
+    # Skipped for a pull_request that isn't a release (an ordinary PR to
+    # some other SDK, or a Swift PR that doesn't touch the version) — this
+    # job existing to build every single PR in the repo would be exactly
+    # the cost dropping the `paths:` filter above was supposed to avoid.
+    # Unconditional on push/workflow_dispatch, same as before.
+    if: needs.detect-version.outputs.is_release_pr == 'true' || github.event_name != 'pull_request'
     runs-on: macos-latest
     outputs:
       checksum: ${{ steps.package.outputs.checksum }}
@@ -505,14 +519,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # The normal path is "a staged draft exists, and it matches what's on
-      # main" — the version-bump PR's own stage-release job already put it
-      # there. workflow_dispatch is the one way to reach this job without
-      # that ever having happened (a manual release with no PR behind it,
-      # or a draft that got deleted by hand), so it falls back to building
-      # the release directly from this run's own artifact instead of
-      # assuming a draft is there to publish.
-      - name: Check for a staged draft release matching main
+      # main's Package.swift not having a checksum here is not recoverable
+      # by building one now and shipping it anyway: this job never writes to
+      # main (see the header comment), so whatever checksum this run
+      # computed would never make it into the manifest at this tag — every
+      # consumer resolving this version would still read the `nil` (or
+      # stale) releasedFFI actually committed here, regardless of what
+      # asset gets attached to the release. That combination — a real
+      # tag/release existing, but pointing at a manifest that doesn't
+      # describe them — is worse than not releasing at all, so this fails
+      # outright rather than falling back to building one. It normally
+      # can't happen: stage-release is a required check on this PR, so a
+      # merge should never reach main without the checksum already there.
+      # The one way to get here anyway is merging before that check
+      # finished — this is what catches it.
+      - name: Verify main's Package.swift has this release's checksum
         id: verify
         env:
           GH_TOKEN: ${{ github.token }}
@@ -522,28 +543,33 @@ jobs:
           TAG="v${VERSION}"
 
           if ! grep -q '^let releasedFFI: (url: String, checksum: String)? = (url: "' Package.swift; then
-            echo "::notice::main's Package.swift has no releasedFFI URL yet for ${VERSION} — no PR staged this release. Falling back to building it directly."
-            echo "staged=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if ! gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null | grep -q true; then
-            echo "::notice::No draft release staged for ${TAG}. Falling back to building it directly."
-            echo "staged=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          MAIN_CHECKSUM="$(sed -n 's/.*checksum: "\([^"]*\)".*/\1/p' Package.swift)"
-          gh release download "$TAG" --pattern 'ReactorFFI.xcframework.zip' --output staged.zip --clobber
-          STAGED_CHECKSUM="$(sha256sum staged.zip | cut -d' ' -f1)"
-
-          if [ "$MAIN_CHECKSUM" != "$STAGED_CHECKSUM" ]; then
-            echo "::error::main's Package.swift checksum (${MAIN_CHECKSUM}) does not match the staged draft release's archive (${STAGED_CHECKSUM}) for ${TAG}. Refusing to publish a release whose asset would not match the checksum every consumer resolving this version will see in the manifest. Investigate before retrying — do not just re-run." >&2
+            echo "::error::main's Package.swift has no releasedFFI checksum for ${VERSION}. stage-release (a required check) should have committed this onto the version-bump PR before it could merge — if you're seeing this, either that check was bypassed, or the PR merged before stage-release finished. Do not retry this job as-is: it has nothing to publish. Open a follow-up PR that adds the correct checksum to Package.swift, merge that, and the release will publish from the new commit." >&2
             exit 1
           fi
 
-          echo "::notice::Staged draft ${TAG} matches main's checksum — publishing it as-is, no rebuild."
-          echo "staged=true" >> "$GITHUB_OUTPUT"
+          MAIN_CHECKSUM="$(sed -n 's/.*checksum: "\([^"]*\)".*/\1/p' Package.swift)"
+          echo "main_checksum=${MAIN_CHECKSUM}" >> "$GITHUB_OUTPUT"
+
+          if gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null | grep -q true; then
+            gh release download "$TAG" --pattern 'ReactorFFI.xcframework.zip' --output staged.zip --clobber
+            STAGED_CHECKSUM="$(sha256sum staged.zip | cut -d' ' -f1)"
+            if [ "$MAIN_CHECKSUM" != "$STAGED_CHECKSUM" ]; then
+              echo "::error::main's Package.swift checksum (${MAIN_CHECKSUM}) does not match the staged draft release's archive (${STAGED_CHECKSUM}) for ${TAG}. Refusing to publish a release whose asset would not match the checksum every consumer resolving this version will see in the manifest. Investigate before retrying — do not just re-run." >&2
+              exit 1
+            fi
+            echo "::notice::Staged draft ${TAG} matches main's checksum — publishing it as-is, no rebuild."
+            echo "staged=true" >> "$GITHUB_OUTPUT"
+          else
+            # workflow_dispatch's own escape hatch: main already has a real
+            # checksum committed (checked above) but nothing staged it as a
+            # release — most likely a manual dispatch that never went
+            # through a version-bump PR. Rebuilding here is safe precisely
+            # because it's verified, not trusted: the fallback step below
+            # only ships this run's build if its checksum reproduces what's
+            # already committed, and fails otherwise.
+            echo "::notice::No draft release staged for ${TAG}, but main already has a checksum. Will build fresh and verify it reproduces that exact checksum before publishing."
+            echo "staged=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Publish the staged draft, retargeted at this merge commit
         if: steps.verify.outputs.staged == 'true'
@@ -562,16 +588,23 @@ jobs:
           name: xcframework
           path: dist/
 
-      - name: Build and publish the release directly (no staged draft found)
+      - name: Build fresh, verify it reproduces main's checksum, and publish
         if: steps.verify.outputs.staged != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.detect-version.outputs.version }}
-          CHECKSUM: ${{ needs.build-xcframework.outputs.checksum }}
+          MAIN_CHECKSUM: ${{ steps.verify.outputs.main_checksum }}
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
           mv dist/ReactorFFI.xcframework.zip ReactorFFI.xcframework.zip
+          FRESH_CHECKSUM="$(sha256sum ReactorFFI.xcframework.zip | cut -d' ' -f1)"
+
+          if [ "$FRESH_CHECKSUM" != "$MAIN_CHECKSUM" ]; then
+            echo "::error::This run's freshly built archive (${FRESH_CHECKSUM}) does not match the checksum already committed in main's Package.swift (${MAIN_CHECKSUM}) for ${TAG}. Refusing to publish an asset that would not match the manifest every consumer resolving this version will see. This can happen if the build genuinely isn't reproducible, or if Package.swift's checksum was set by hand incorrectly — investigate before retrying." >&2
+            exit 1
+          fi
+
           sha256sum ReactorFFI.xcframework.zip | tee SHA256SUMS
 
           # Idempotent: replace the assets on a rerun rather than failing
@@ -597,6 +630,6 @@ jobs:
           hand. See \`sdks/swift/README.md\` for the platform table and
           \`sdks/swift/CHANGELOG.md\` for what changed.
 
-          Checksum: \`${CHECKSUM}\`
+          Checksum: \`${MAIN_CHECKSUM}\`
           EOF
           )"
