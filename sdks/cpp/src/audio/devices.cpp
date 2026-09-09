@@ -68,7 +68,7 @@ void require_audio(const Track& track, TrackDirection wanted, const char* what) 
       std::string{"this build of the Reactor SDK has no audio backend, so a "} + what +
       " cannot open a device. Rebuild with the reactor::sdk_audio target enabled "
       "(-DREACTOR_SDK_BUILD_AUDIO=ON), or push and receive PCM yourself with "
-      "Track::push_audio() and Track::on_audio()."};
+      "Track::push_frame() and Track::on_frame()."};
 }
 
 }  // namespace
@@ -205,7 +205,7 @@ struct Speaker::Impl {
 };
 
 // NOLINTNEXTLINE(performance-unnecessary-value-param) — `track` is used
-// non-const below (on_audio registers on it), and a Track is two words: a weak
+// non-const below (on_frame registers on it), and a Track is two words: a weak
 // pointer and a name.
 Speaker::Speaker(Track track) : impl_(std::make_shared<Impl>()) {
   require_audio(track, TrackDirection::RecvOnly, "speaker");
@@ -213,7 +213,7 @@ Speaker::Speaker(Track track) : impl_(std::make_shared<Impl>()) {
   // Registered now, playing only once started: audio that arrives before start()
   // is dropped rather than queued, because a listener hearing four seconds of
   // backlog when they press play is worse than missing it.
-  subscription_ = track.on_audio([impl = impl_](const AudioFrame& frame) { impl->play(frame); });
+  subscription_ = track.on_frame([impl = impl_](const AudioFrame& frame) { impl->play(frame); });
 }
 
 Speaker::~Speaker() {
@@ -292,7 +292,7 @@ struct Microphone::Impl {
       return;
     }
     try {
-      track.push_audio(Samples{samples, count}, rate, channels);
+      track.push_frame(Samples{samples, count}, rate, channels);
       blocks_sent.fetch_add(1, std::memory_order_relaxed);
     } catch (const ReactorError& error) {
       blocks_refused.fetch_add(1, std::memory_order_relaxed);

@@ -81,6 +81,10 @@ class FakeLibrary {
   std::string created_with_sdk_version;
   std::string created_with_sdk_type;
   std::string fetch_jwt_options;
+  std::string fetch_jwt_api_url;
+  std::string fetch_jwt_key;
+  int fetch_jwt_local = 0;
+  int created_with_local = 0;
   int connects = 0;
   std::string connect_session_id;
 
@@ -98,6 +102,8 @@ class FakeLibrary {
   /// completion is not bounded by `reactor_destroy`, so a stalled exchange is a
   /// caller waiting on a future nothing else will resolve.
   bool answer_token = true;
+  std::string token_result = R"({"jwt":"minted-token"})";
+  std::string token_error;
 
   /// Whether a `connect` answers at all. False leaves the call outstanding, which
   /// is the shape teardown has to cope with.
@@ -140,6 +146,19 @@ class FakeLibrary {
     spawn([this, error_json] { callbacks_.on_error(error_json.c_str(), callbacks_.userdata); });
   }
 
+  void push_capabilities(std::string payload) {
+    REQUIRE(callbacks_.on_capabilities != nullptr);
+    spawn([this, payload] { callbacks_.on_capabilities(payload.c_str(), callbacks_.userdata); });
+    join_all();
+  }
+
+  void push_session_id(std::optional<std::string> id) {
+    REQUIRE(callbacks_.on_session_id != nullptr);
+    spawn(
+        [this, id] { callbacks_.on_session_id(id ? id->c_str() : nullptr, callbacks_.userdata); });
+    join_all();
+  }
+
  private:
   /// Run `work` on a thread of the fake library's own, as the real one does.
   ///
@@ -164,12 +183,12 @@ class FakeLibrary {
   static std::uint32_t abi_version() { return REACTOR_ABI_VERSION; }
 
   static ReactorHandle* create_with_adm(const char* api_url, const char* model, const char* jwt,
-                                        int /*local*/, const ReactorCallbacks* callbacks,
-                                        int adm_mode, const char* sdk_version,
-                                        const char* sdk_type) {
+                                        int local, const ReactorCallbacks* callbacks, int adm_mode,
+                                        const char* sdk_version, const char* sdk_type) {
     auto& self = current();
     ++self.creates;
     self.adm_mode = adm_mode;
+    self.created_with_local = local;
     self.created_with_api_url = api_url == nullptr ? "" : api_url;
     self.created_with_model = model == nullptr ? "" : model;
     self.created_with_jwt = jwt == nullptr ? "" : jwt;
@@ -253,10 +272,13 @@ class FakeLibrary {
     std::free(s);  // NOLINT(cppcoreguidelines-no-malloc)
   }
 
-  static void fetch_jwt(const char* /*api_url*/, const char* /*api_key*/, const char* options_json,
-                        int /*local*/, reactor_completion_fn completion, void* userdata) {
+  static void fetch_jwt(const char* api_url, const char* api_key, const char* options_json,
+                        int local, reactor_completion_fn completion, void* userdata) {
     auto& self = current();
     self.fetch_jwt_options = options_json == nullptr ? "" : options_json;
+    self.fetch_jwt_api_url = api_url;
+    self.fetch_jwt_key = api_key;
+    self.fetch_jwt_local = local;
     ++self.token_requests;
     if (completion == nullptr || !self.answer_token) {
       // Kept so a test can fire it by hand, after the client that asked is gone.
@@ -264,8 +286,10 @@ class FakeLibrary {
       self.token_userdata = userdata;
       return;
     }
-    self.spawn(
-        [completion, userdata] { completion(1, R"({"jwt":"minted-token"})", nullptr, userdata); });
+    self.spawn([completion, userdata, result = self.token_result, error = self.token_error] {
+      completion(error.empty() ? 1 : 0, result.c_str(), error.empty() ? nullptr : error.c_str(),
+                 userdata);
+    });
   }
 
   static char* heap_copy(const char* text) {
@@ -748,4 +772,170 @@ TEST_CASE("the status enum round-trips through its wire spelling") {
   // Anything unrecognised reads as the least capable state, never the most.
   CHECK(reactor::status_from_string("teleporting") == reactor::Status::Disconnected);
   CHECK(reactor::status_from_string("") == reactor::Status::Disconnected);
+}
+
+TEST_CASE("local mode selects localhost and never exchanges an API key") {
+  Fixture fixture;
+  reactor::Options options;
+  options.local = true;
+  SECTION("default URL") {}
+  SECTION("explicit production default") { options.api_url = reactor::DEFAULT_API_URL; }
+  SECTION("custom local URL") { options.api_url = "http://localhost:9000"; }
+  const std::string expected = options.api_url == reactor::DEFAULT_API_URL
+                                   ? std::string{reactor::LOCAL_API_URL}
+                                   : options.api_url;
+  reactor::Reactor client{"reactor/echo", reactor::ApiKey{"unused-key"}, options};
+  client.connect().get();
+  CHECK(fixture.library.token_requests == 0);
+  CHECK(fixture.library.created_with_api_url == expected);
+  CHECK(fixture.library.created_with_local == 1);
+  CHECK(fixture.library.created_with_jwt.empty());
+}
+
+TEST_CASE("a local client can connect without credentials") {
+  Fixture fixture;
+  reactor::Options options;
+  options.local = true;
+  reactor::Reactor client{"reactor/echo", options};
+  client.connect().get();
+  CHECK(fixture.library.created_with_api_url == reactor::LOCAL_API_URL);
+  CHECK(fixture.library.created_with_jwt.empty());
+  CHECK(fixture.library.token_requests == 0);
+}
+
+TEST_CASE("local mode preserves a caller supplied JWT") {
+  Fixture fixture;
+  reactor::Options options;
+  options.local = true;
+  reactor::Reactor client{"reactor/echo", reactor::Jwt{"caller-token"}, options};
+  client.connect().get();
+  CHECK(fixture.library.created_with_jwt == "caller-token");
+  CHECK(fixture.library.token_requests == 0);
+}
+
+TEST_CASE("fetch_jwt mints a token without creating a client") {
+  Fixture fixture;
+  CHECK(reactor::fetch_jwt(reactor::ApiKey{"secret"}).get() == "minted-token");
+  CHECK(fixture.library.creates == 0);
+  CHECK(fixture.library.fetch_jwt_key == "secret");
+  CHECK(fixture.library.fetch_jwt_api_url == reactor::DEFAULT_API_URL);
+  CHECK(fixture.library.fetch_jwt_local == 0);
+  CHECK(reactor::Json::parse(fixture.library.fetch_jwt_options) == reactor::Json::object());
+}
+
+TEST_CASE("fetch_jwt forwards all token constraints and preserves an empty model scope") {
+  Fixture fixture;
+  reactor::FetchJwtOptions options;
+  options.api_url = "https://dev.example.test";
+  options.local = true;
+  options.models = std::vector<std::string>{"owner/model"};
+  SECTION("a named model") {}
+  SECTION("empty scope stays scoped") { options.models = std::vector<std::string>{}; }
+  options.max_sessions = 2;
+  options.max_session_duration_seconds = 600;
+  options.expires_after = 3600;
+  CHECK(reactor::fetch_jwt(reactor::ApiKey{"secret"}, options).get() == "minted-token");
+  CHECK(fixture.library.fetch_jwt_api_url == options.api_url);
+  CHECK(fixture.library.fetch_jwt_local == 1);
+  const auto request = reactor::Json::parse(fixture.library.fetch_jwt_options);
+  CHECK(request == reactor::Json{{"models", *options.models},
+                                 {"max_sessions", 2},
+                                 {"max_session_duration_seconds", 600},
+                                 {"expires_after", 3600}});
+}
+
+TEST_CASE("fetch_jwt reports typed failures and rejects malformed success payloads") {
+  Fixture fixture;
+  SECTION("authorization failure") {
+    fixture.library.token_error = R"({"code":"UNAUTHORIZED","message":"invalid key","status":401})";
+    try {
+      reactor::fetch_jwt(reactor::ApiKey{"bad"}).get();
+      FAIL("a rejected key must throw");
+    } catch (const reactor::UnauthorizedError& error) {
+      CHECK(error.operation() == "fetch_jwt");
+      CHECK(error.status() == 401);
+    }
+  }
+  SECTION("invalid success payloads") {
+    for (const auto* payload :
+         {"not-json", "null", "{}", R"({"jwt":null})", R"({"jwt":5})", R"({"jwt":""})"}) {
+      fixture.library.token_result = payload;
+      CHECK_THROWS_AS(reactor::fetch_jwt(reactor::ApiKey{"key"}).get(), reactor::DecodeError);
+      fixture.library.join_all();
+    }
+  }
+}
+
+TEST_CASE("fetch_jwt completion remains valid after its future is discarded") {
+  Fixture fixture;
+  fixture.library.answer_token = false;
+  {
+    auto future = reactor::fetch_jwt(reactor::ApiKey{"key"});
+    CHECK(future.wait_for(0ms) == std::future_status::timeout);
+  }
+  REQUIRE(fixture.library.token_completion != nullptr);
+  CHECK_NOTHROW(fixture.library.token_completion(1, R"({"jwt":"late-token"})", nullptr,
+                                                 fixture.library.token_userdata));
+  CHECK(fixture.library.creates == 0);
+}
+
+TEST_CASE("capabilities and session ids are copied and delivered through the control executor") {
+  Fixture fixture;
+  std::vector<std::function<void()>> queued;
+  reactor::Options options;
+  options.executor = [&](std::function<void()> work) { queued.push_back(std::move(work)); };
+  reactor::Reactor client{"reactor/echo", reactor::Jwt{"token"}, options};
+  client.connect().get();
+  std::vector<reactor::Json> capabilities;
+  std::vector<std::optional<std::string>> ids;
+  auto caps = client.on_capabilities_received(
+      [&](const reactor::Json& value) { capabilities.push_back(value); });
+  auto session = client.on_session_id_changed(
+      [&](const std::optional<std::string>& value) { ids.push_back(value); });
+  // Each fake callback's buffer has been freed before the executor runs.
+  fixture.library.push_capabilities(R"({"tracks":[],"custom":{"enabled":true}})");
+  fixture.library.push_session_id("session-new");
+  fixture.library.push_session_id(std::nullopt);
+  CHECK(capabilities.empty());
+  CHECK(ids.empty());
+  REQUIRE(queued.size() == 3);
+  for (auto& work : queued) {
+    work();
+  }
+  queued.clear();
+  REQUIRE(capabilities.size() == 1);
+  CHECK(capabilities.front()["custom"]["enabled"] == true);
+  CHECK(ids == std::vector<std::optional<std::string>>{"session-new", std::nullopt});
+  fixture.library.push_capabilities("invalid-json");
+  CHECK(queued.empty());
+  caps.remove();
+  session.remove();
+  fixture.library.push_capabilities("{}");
+  fixture.library.push_session_id("session-removed");
+  for (auto& work : queued) {
+    work();
+  }
+  CHECK(capabilities.size() == 1);
+  CHECK(ids.size() == 2);
+}
+
+TEST_CASE("queued capabilities and session events are safe after client destruction") {
+  Fixture fixture;
+  std::vector<std::function<void()>> queued;
+  reactor::Options options;
+  options.executor = [&](std::function<void()> work) { queued.push_back(std::move(work)); };
+  int received = 0;
+  {
+    reactor::Reactor client{"reactor/echo", reactor::Jwt{"token"}, options};
+    client.on_capabilities_received([&](const reactor::Json&) { ++received; }).detach();
+    client.on_session_id_changed([&](const std::optional<std::string>&) { ++received; }).detach();
+    client.connect().get();
+    fixture.library.push_capabilities("{}");
+    fixture.library.push_session_id("session-closed");
+  }
+  REQUIRE(queued.size() == 2);
+  for (auto& work : queued) {
+    work();
+  }
+  CHECK(received == 0);
 }

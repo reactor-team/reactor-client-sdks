@@ -48,7 +48,7 @@ struct Bytes {
 
 /// A borrowed run of interleaved 16-bit PCM samples.
 ///
-/// A length, not just a pointer, so `push_audio` can check it against the channel
+/// A length, not just a pointer, so `push_frame` can check it against the channel
 /// count instead of trusting it — the FFI reads what it is told to read.
 struct Samples {
   const std::int16_t* data = nullptr;
@@ -166,14 +166,14 @@ class Track {
   ///
   /// Throws `InvalidStateError` on a sendonly track: the callback would never
   /// fire, and a handler that never runs is indistinguishable from a model that
-  /// sends nothing. Throws on an audio track, which has `on_audio`.
+  /// sends nothing. Throws if the handler type does not match `kind()`.
   ///
   /// The handler runs inline on the library's thread. See `VideoFrame`.
   Subscription on_frame(std::function<void(const VideoFrame&)> handler);
 
-  /// Receive decoded audio frames. Refuses the wrong kind or direction, as
-  /// `on_frame` does.
-  Subscription on_audio(std::function<void(const AudioFrame&)> handler);
+  /// Receive decoded audio frames on a track whose `kind()` is `Audio`.
+  /// Refuses the wrong kind or direction, as the video overload does.
+  Subscription on_frame(std::function<void(const AudioFrame&)> handler);
 
   // ── Sending ────────────────────────────────────────────────────────────────
 
@@ -234,11 +234,12 @@ class Track {
   /// end's, and nothing here can bound it — and on a session that is not `Ready`.
   std::future<void> set_bitrate(Bitrate bounds);
 
-  /// Stop this track. Nothing is generated while paused, which on a video track
+  /// Stop this recvonly track. Throws InvalidStateError on sendonly tracks.
+  /// Nothing is generated while paused, which on a video track
   /// is visible only as a frozen frame.
   std::future<void> pause();
 
-  /// Start it again.
+  /// Start this recvonly track again. Throws InvalidStateError on sendonly tracks.
   std::future<void> resume();
 
   /// What a pushed frame carries besides its pixels.
@@ -258,7 +259,7 @@ class Track {
     std::optional<std::int64_t> capture_time_us;
   };
 
-  /// Push one BGRA frame into this track.
+  /// Push one BGRA frame into a track whose `kind()` is `Video`.
   ///
   /// `bgra` must hold exactly `width * height * 4` bytes — checked here, because
   /// the FFI reads what it is told to read and a wrong length is a read past the
@@ -272,11 +273,12 @@ class Track {
   void push_frame(Bytes bgra, std::uint32_t width, std::uint32_t height,
                   const FrameOptions& options = {});
 
-  /// Push interleaved 16-bit PCM into this track.
+  /// Push interleaved 16-bit PCM into a track whose `kind()` is `Audio`.
+  /// Throws `InvalidStateError` if the track kind does not match, as above.
   ///
   /// `sample_rate` must be 48000 and `channels` 1, which is what the source
   /// expects; `pcm.size` must divide evenly by `channels`.
-  void push_audio(Samples pcm, std::uint32_t sample_rate = 48'000, std::uint32_t channels = 1);
+  void push_frame(Samples pcm, std::uint32_t sample_rate = 48'000, std::uint32_t channels = 1);
 
  private:
   friend class Reactor;

@@ -8,6 +8,23 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-08
+
+### Changed
+
+- **Breaking:** audio tracks now use `on_frame` with an `AudioFrame` handler and
+  `push_frame` with `Samples`. Removed `on_audio` and `push_audio`; the overload
+  must match the track's kind, just as for video.
+- `pause()` and `resume()` now reject sendonly tracks for both audio and video.
+- Local connections select localhost when using the default API URL, preserve
+  custom URLs, and skip API-key exchange, matching Python.
+
+### Added
+
+- Independent `fetch_jwt()` with model scope, session limits and token expiry.
+- `on_capabilities_received()` and `on_session_id_changed()` subscriptions.
+- A constructor taking a model and `Options` for connections without credentials.
+
 ## [1.0.0] - 2026-09-04
 
 The first release of the SDK, so this entry is the surface itself rather than

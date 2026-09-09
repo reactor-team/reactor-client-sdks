@@ -20,7 +20,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
   reactor-sdk
-  VERSION 1.0.0
+  VERSION 2.0.0
   DESCRIPTION "Reactor client SDK for C++"
   HOMEPAGE_URL "https://github.com/reactor-team/reactor-client-sdks"
   LANGUAGES CXX
@@ -190,6 +190,7 @@ add_library(
   src/detail/dispatcher.cpp
   src/detail/ffi.cpp
   src/detail/log.cpp
+  src/auth.cpp
   src/errors.cpp
   src/reactor.cpp
   src/recording.cpp

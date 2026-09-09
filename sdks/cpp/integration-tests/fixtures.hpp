@@ -117,7 +117,7 @@ class ConnectedReactor {
 /// Poll `predicate` until it is true or `timeout_s` elapses. Throws
 /// `std::runtime_error` on timeout.
 ///
-/// Used for anything fed from `on_frame`/`on_audio` callbacks, which run inline
+/// Used for anything fed from `on_frame` callbacks, which run inline
 /// on the FFI's own delivery thread — a plain counter or vector a callback
 /// writes to is fine to poll here, just not fine to wait on with a condition
 /// variable the callback itself would have to know about.

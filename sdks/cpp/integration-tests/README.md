@@ -56,7 +56,7 @@ one new:
 | `recording_test.cpp` | `test_recording.py` | `request_clip`/`request_recording`, `Clip::download` |
 | `concurrency_and_races_test.cpp` | `test_concurrency_and_races.py` | concurrent commands, abandoned futures, teardown while a call is in flight |
 | `refusals_and_edge_cases_test.cpp` | *(none — new)* | the "Refuse; do not fail quietly" table and a few state-invariant races, probed directly against the real backend rather than the unit suite's fake FFI |
-| `audio_test.cpp` | *(none — new; a gap in the Python/JS suites too)* | `Track::push_audio`/`on_audio` — the data plane, not `reactor::sdk_audio`'s device I/O, which this suite's build disables entirely (see below) |
+| `audio_test.cpp` | *(none — new; a gap in the Python/JS suites too)* | `Track::push_frame`/`on_frame` — the data plane, not `reactor::sdk_audio`'s device I/O, which this suite's build disables entirely (see below) |
 
 ### Audio
 
@@ -68,7 +68,7 @@ fetch and compile miniaudio for nothing that links it. `mise run
 test:cpp:integration-tests` configures with `-DREACTOR_SDK_BUILD_AUDIO=OFF`
 for exactly that reason.
 
-`Track::push_audio`/`on_audio` — synthetic PCM in, synthetic PCM out, no
+`Track::push_frame`/`on_frame` — synthetic PCM in, synthetic PCM out, no
 hardware involved — is a different story and is tested in `audio_test.cpp`.
 `reactor/echo` declares `mic` (sendonly) and `main_audio` (recvonly) and
 passes audio through unchanged, but its tick loop only advances on a `webcam`

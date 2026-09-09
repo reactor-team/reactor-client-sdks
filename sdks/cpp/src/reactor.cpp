@@ -176,12 +176,27 @@ void ClientImpl::on_capabilities_trampoline(const char* caps_json, void* userdat
     if (!impl) {
       return;
     }
-    // The capabilities carry the same track entries `reactor_tracks` reports, so
-    // there is nothing here to parse — what matters is that the answer changed, and
-    // the cached one has to go.
-    (void)caps_json;
     impl->invalidate_declared();
+    impl->fire_message(impl->capabilities_handlers_, caps_json);
   } catch (...) {
+  }
+}
+
+void ClientImpl::on_session_id_trampoline(const char* session_id, void* userdata) noexcept {
+  try {
+    if (const auto impl = from_userdata(userdata)) {
+      const auto id = std::make_shared<std::optional<std::string>>();
+      if (session_id != nullptr) {
+        *id = session_id;
+      }
+      impl->dispatcher_.post([weak = impl->weak_from_this(), id] {
+        if (const auto self = weak.lock()) {
+          self->session_id_handlers_.invoke(*id);
+        }
+      });
+    }
+  } catch (...) {  // NOLINT(bugprone-empty-catch)
+    // A failed allocation or enqueue must not unwind into the FFI.
   }
 }
 
@@ -448,7 +463,7 @@ void ClientImpl::begin_connect(std::unique_ptr<Pending> op, ConnectOptions optio
     // Not just "have we got one": a token minted for one connect is not
     // necessarily right for the next. Never re-minted over a token the caller
     // supplied, which is theirs.
-    needs_token = api_key_.has_value() && !caller_supplied_jwt_ &&
+    needs_token = !local_ && api_key_.has_value() && !caller_supplied_jwt_ &&
                   (!jwt_.has_value() || minted_for_ != wanted);
     if (needs_token) {
       key = *api_key_;
@@ -573,6 +588,9 @@ void ClientImpl::begin_upload_bytes(std::unique_ptr<Pending> op, Bytes data,
 
 // ── Reactor ──────────────────────────────────────────────────────────────────
 
+Reactor::Reactor(std::string model, Options options)
+    : impl_(std::make_shared<detail::ClientImpl>(std::move(model), std::move(options))) {}
+
 Reactor::Reactor(std::string model, ApiKey key, Options options)
     : impl_(std::make_shared<detail::ClientImpl>(std::move(model), std::move(options))) {
   impl_->set_api_key(std::move(key.value));
@@ -620,6 +638,25 @@ Subscription Reactor::on_status(std::function<void(Status)> handler) {
   return Subscription{[weak = std::weak_ptr<detail::ClientImpl>{impl_}, id] {
     if (const auto impl = weak.lock()) {
       impl->status_handlers().remove(id);
+    }
+  }};
+}
+
+Subscription Reactor::on_capabilities_received(std::function<void(const Json&)> handler) {
+  const std::uint64_t id = impl_->capabilities_handlers().add(std::move(handler));
+  return Subscription{[weak = std::weak_ptr<detail::ClientImpl>{impl_}, id] {
+    if (const auto impl = weak.lock()) {
+      impl->capabilities_handlers().remove(id);
+    }
+  }};
+}
+
+Subscription Reactor::on_session_id_changed(
+    std::function<void(const std::optional<std::string>&)> handler) {
+  const std::uint64_t id = impl_->session_id_handlers().add(std::move(handler));
+  return Subscription{[weak = std::weak_ptr<detail::ClientImpl>{impl_}, id] {
+    if (const auto impl = weak.lock()) {
+      impl->session_id_handlers().remove(id);
     }
   }};
 }
