@@ -37,28 +37,36 @@ async def test_lifecycle_churn_leaves_no_leftover_handles_or_growth() -> None:
 
     while not sampler.deadline_reached():
         client = new_reactor()
-        await paced_connect(client)
         try:
-            # Registered and never explicitly torn down (unlike
-            # test_session_churn.py's on/off pair) — close() below has to clean
-            # this up on its own, on a client that may still have a frame in
-            # flight. That's the specific path _ORPHANED_CALLBACKS exists to
-            # catch (see client.py's own comment on it), and publish/push_frame
-            # alone never reaches it: nothing before this touched
-            # Track._adapters or Reactor._handlers at all.
-            received: list[object] = []
-            main_video = client.track("main_video")
-            main_video.on_frame(lambda received_frame: received.append(received_frame))
-
-            webcam = await client.publish_track("webcam")
-            await pump_until_frame_received(webcam, frame, received)
-            await client.send_command("set_intensity", {"intensity": 0.5})
-            webcam.unpublish()
-        finally:
+            # Inside the try, not before it: a `paced_connect()` failure
+            # (a transient live-service error, say) can still leave a native
+            # handle — and possibly a partially created server session —
+            # behind, so close() in the outer finally below has to run
+            # regardless of whether connect itself succeeded.
+            await paced_connect(client)
             try:
-                await client.disconnect()
-            except Exception:
-                pass
+                # Registered and never explicitly torn down (unlike
+                # test_session_churn.py's on/off pair) — close() below has to
+                # clean this up on its own, on a client that may still have a
+                # frame in flight. That's the specific path
+                # _ORPHANED_CALLBACKS exists to catch (see client.py's own
+                # comment on it), and publish/push_frame alone never reaches
+                # it: nothing before this touched Track._adapters or
+                # Reactor._handlers at all.
+                received: list[object] = []
+                main_video = client.track("main_video")
+                main_video.on_frame(lambda received_frame: received.append(received_frame))
+
+                webcam = await client.publish_track("webcam")
+                await pump_until_frame_received(webcam, frame, received)
+                await client.send_command("set_intensity", {"intensity": 0.5})
+                webcam.unpublish()
+            finally:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+        finally:
             client.close()
 
         # Mirrors _close_live_clients()'s own assumption (client.py): a client
