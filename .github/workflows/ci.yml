@@ -297,15 +297,12 @@ jobs:
 
   python-integration-tests:
     name: Python SDK integration tests (real FFI, real model)
-    # Depends on js-integration-tests finishing, not just `changes`: both
-    # suites hit the same real reactor/echo model, whose session-creation
-    # quota (sessions_per_minute) is shared and far too small for both to
-    # run at once — running in parallel 429ed nearly every test in both
-    # jobs. A custom `if:` below (no success()/failure()/always() in it)
-    # already overrides the implicit "needs must succeed" gate, so this
-    # only serializes the two — it does not make one depend on the other's
-    # result.
-    needs: [changes, js-integration-tests]
+    # No longer chained onto js-integration-tests (see that job's own
+    # comment): each suite self-paces its own session creation to ~86/min,
+    # well under the shared reactor/echo quota (500/min), so running every
+    # binding's integration suite at once no longer needs artificial
+    # serialization to stay under it. Experimental — see js-integration-tests.
+    needs: changes
     # Same fork-PR reasoning as js-integration-tests below: GitHub withholds
     # repo secrets from a fork's pull_request runs, so
     # INTEGRATION_TESTS_REACTOR_API_KEY would never be populated there —
@@ -384,8 +381,21 @@ jobs:
     # ~344/min, comfortably under the 500/min quota (raised from 100, itself
     # raised from 10). A commit/PR racing an unrelated one is accepted the
     # same as before: paced_connect()'s own retry-on-429 covers that
-    # residual case. Revisit if a 5th binding (Swift, in progress) or looser
-    # per-suite pacing pushes the worst case close to 500 again.
+    # residual case.
+    #
+    # EXPERIMENT (REA CI speed review): this used to also feed a js -> python
+    # -> cpp -> swift `needs:` chain inside this one workflow, purely to keep
+    # reactor/echo's live session load down to one suite at a time — a much
+    # stricter constraint than the quota math above actually requires now.
+    # That chain is removed here (python/cpp/swift-integration-tests all now
+    # depend on just `changes`) to see how 4-5 suites hitting reactor/echo
+    # genuinely concurrently behaves in practice. Known risk: reactor/echo
+    # has an unrelated, still-open capacity issue (429 "no available
+    # servers", isolated to echo's model-server pool, not this quota) that
+    # concurrent load could make more visible. If this run trips that a lot
+    # more than the sequential chain did, that is itself the answer and the
+    # chain should come back — the self-pacing math was never the part in
+    # doubt.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -459,16 +469,9 @@ jobs:
 
   cpp-integration-tests:
     name: C++ SDK integration tests (real FFI, real model)
-    # Depends on python-integration-tests finishing, not just `changes`: all
-    # three integration suites hit the same real reactor/echo model, whose
-    # session-creation quota (sessions_per_minute) is shared and far too small
-    # for more than one to run at once — js-integration-tests and
-    # python-integration-tests already learned this the hard way (see that
-    # job's own comment). A custom `if:` below (no success()/failure()/
-    # always() in it) already overrides the implicit "needs must succeed"
-    # gate, so this only serializes the chain js -> python -> cpp; it doesn't
-    # make this job depend on either of the others' results.
-    needs: [changes, python-integration-tests]
+    # No longer chained onto python-integration-tests — see
+    # js-integration-tests' comment (the experiment this is part of).
+    needs: changes
     # Same fork-PR reasoning as the other two integration jobs: GitHub
     # withholds repo secrets from a fork's pull_request runs, so
     # INTEGRATION_TESTS_REACTOR_API_KEY would never be populated there —
@@ -513,36 +516,16 @@ jobs:
 
   swift-integration-tests:
     name: Swift SDK integration tests (real FFI, real model)
-    # Chained onto cpp-integration-tests rather than just `changes`, extending
-    # the same js -> python -> cpp sequencing those jobs already use — keeps
-    # this workflow's own reactor-echo-live-session-quota group (below) to at
-    # most two members at a time, the same invariant js/python's own
-    # concurrent pair relies on.
-    #
-    # `!cancelled() &&` is load-bearing, not decoration: GitHub Actions skips
-    # a job whenever any of its `needs` was itself skipped, *even with* a
-    # custom `if:`, unless that condition includes a status-check function —
-    # found by Codex review on this PR. cpp-integration-tests is skipped by
-    # its own path filter on a Swift-only PR, and without this every commit
-    # like that would silently skip both Swift integration jobs while
-    # ci-complete reports them as passing (a skipped result isn't a failure).
-    # `!cancelled()` is the narrowest fix: it only excuses a *skipped*
-    # dependency, and still lets a genuinely cancelled workflow run skip this
-    # job too, unlike always().
-    #
-    # NOTE, found while wiring this up: this whole per-commit concurrency-
-    # group mechanism predates a since-merged fix on `main` (PR #149) that
-    # replaced it with self-pacing alone (~86/min per suite) plus a comment
-    # explicitly anticipating "a 5th binding (Swift, in progress)" — this
-    # stack branched before that landed, so `main`'s current ci.yml no longer
-    # matches what's below. Reconcile this when the stack rebases onto
-    # current main; until then this job matches what this branch actually
-    # has, not what main has moved on to.
-    needs: [changes, cpp-integration-tests]
-    if: ${{ !cancelled() && (github.event_name == 'push' || (needs.changes.outputs.swift == 'true' && github.event.pull_request.head.repo.full_name == github.repository)) }}
-    concurrency:
-      group: reactor-echo-live-session-quota-${{ github.sha }}
-      cancel-in-progress: false
+    # No longer chained onto cpp-integration-tests, and the
+    # reactor-echo-live-session-quota concurrency group that used to serialize
+    # this with swift-integration-tests-ios-simulator is gone too — both were
+    # leftover from before self-pacing (~86/min/suite) made that manual
+    # serialization unnecessary; main dropped the equivalent lock for
+    # js/python/cpp back in PR #149 but this job never got reconciled to
+    # match. See js-integration-tests' comment for the parallelization
+    # experiment this is now part of.
+    needs: changes
+    if: github.event_name == 'push' || (needs.changes.outputs.swift == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: macos-latest
     env:
       REACTOR_REQUIRE_SWIFT: "1"
@@ -566,13 +549,12 @@ jobs:
 
   swift-integration-tests-ios-simulator:
     name: Swift SDK integration tests (iOS Simulator, real FFI, real model)
-    # Chained after swift-integration-tests, same reasoning, including the
-    # `!cancelled()` fix — see that job's own comment on both counts.
-    needs: [changes, swift-integration-tests]
-    if: ${{ !cancelled() && (github.event_name == 'push' || (needs.changes.outputs.swift == 'true' && github.event.pull_request.head.repo.full_name == github.repository)) }}
-    concurrency:
-      group: reactor-echo-live-session-quota-${{ github.sha }}
-      cancel-in-progress: false
+    # No longer chained after swift-integration-tests, and the shared
+    # concurrency group with it is gone too — see that job's own comment.
+    # Runs concurrently with swift-integration-tests itself now, not just
+    # with the other bindings' suites.
+    needs: changes
+    if: github.event_name == 'push' || (needs.changes.outputs.swift == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: macos-latest
     env:
       # Same one-triple-at-a-time reasoning as swift-package's own job: four
