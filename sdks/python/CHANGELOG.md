@@ -9,6 +9,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-09
+
 ### Added
 
 - Linux Alpine (musl 1.2+) wheels for x86_64 and aarch64, with the native

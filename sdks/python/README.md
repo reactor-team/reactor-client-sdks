@@ -395,7 +395,7 @@ be built for musl; retagging a glibc wheel is not sufficient. See
 The SDK depends on `reactor-webrtc` 0.16.0, which supports musl and uses the
 `webrtc-7907-a5ddff60-p6` native build. The musl jobs explicitly pin that native
 release and require its `linux-musl-x64` and `linux-musl-arm64` assets.
-The SDK version remains unchanged until a separate release bump.
+Alpine wheels are available starting with SDK 1.5.0.
 
 For local validation before publishing, mount a musl prebuilt into the builder
 and set `REACTOR_WEBRTC_LIB_DIR` to its container path. The directory must carry
