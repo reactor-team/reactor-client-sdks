@@ -41,7 +41,6 @@ jobs:
       cpp: ${{ steps.filter.outputs.cpp }}
       swift: ${{ steps.effective.outputs.swift }}
       swift_package: ${{ steps.effective.outputs.swift_package }}
-      integration_tests_already_ran: ${{ steps.already-tested.outputs.result }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -84,35 +83,6 @@ jobs:
             SKIP=true
           fi
           echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
-      - name: Did this exact commit already run integration tests, via a same-repo PR?
-        id: already-tested
-        if: github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # Every integration-tests job below runs unconditionally on a push
-          # to main today, regardless of what changed — a push has no PR
-          # diff to filter against. But a same-repo (non-fork) PR is the
-          # only kind that ever runs integration tests *before* merge (a
-          # fork PR's run is skipped for lack of secrets — see
-          # js-integration-tests' own comment), so merging one just reruns,
-          # against the exact same diff, suites that already passed. A fork
-          # PR's merge or a direct push to main were never tested, so those
-          # still need a real run.
-          #
-          # Asks GitHub which pull request(s) this commit belongs to, rather
-          # than parsing the commit message: that association survives every
-          # merge strategy this repo allows (merge commit or squash, see
-          # CONTRIBUTING.md) even though both produce a SHA distinct from
-          # the PR's own head SHA, where a message-format guess would not.
-          SAME_REPO_MERGED_PRS=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" \
-            --jq '[.[] | select(.merged_at != null and .head.repo.full_name == "${{ github.repository }}")] | length')
-          ALREADY_TESTED=false
-          if [ "$SAME_REPO_MERGED_PRS" -gt 0 ]; then
-            ALREADY_TESTED=true
-          fi
-          echo "result=$ALREADY_TESTED" >> "$GITHUB_OUTPUT"
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -336,10 +306,9 @@ jobs:
     # Same fork-PR reasoning as js-integration-tests below: GitHub withholds
     # repo secrets from a fork's pull_request runs, so
     # INTEGRATION_TESTS_REACTOR_API_KEY would never be populated there —
-    # skipped rather than failing every external contribution. Runs for
-    # every same-repo PR, and on push unless `changes`' already-tested step
-    # found this exact commit already ran this suite pre-merge.
-    if: (github.event_name == 'push' && needs.changes.outputs.integration_tests_already_ran != 'true') || (needs.changes.outputs.python == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    # skipped rather than failing every external contribution. Still runs
+    # for every same-repo PR and on push.
+    if: github.event_name == 'push' || (needs.changes.outputs.python == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -394,11 +363,9 @@ jobs:
     needs: changes
     # GitHub withholds repo secrets from a fork's pull_request runs, so a
     # fork PR could never populate INTEGRATION_TESTS_REACTOR_API_KEY —
-    # skipped there rather than failing every external contribution. Runs
-    # for every same-repo PR, and on push unless `changes`' already-tested
-    # step (see that job) found this exact commit is a same-repo PR that
-    # already ran this suite pre-merge.
-    if: (github.event_name == 'push' && needs.changes.outputs.integration_tests_already_ran != 'true') || (needs.changes.outputs.js == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    # skipped there rather than failing every external contribution. Still
+    # runs for every same-repo PR and on push, same as before.
+    if: github.event_name == 'push' || (needs.changes.outputs.js == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
     # No cross-workflow lock against reactor/echo's shared session-creation
     # quota (there used to be one — a `reactor-echo-live-session-quota-<sha>`
     # environment referenced here and by every release-*.yml integration
@@ -508,10 +475,9 @@ jobs:
     # Same fork-PR reasoning as the other two integration jobs: GitHub
     # withholds repo secrets from a fork's pull_request runs, so
     # INTEGRATION_TESTS_REACTOR_API_KEY would never be populated there —
-    # skipped rather than failing every external contribution. Runs for
-    # every same-repo PR, and on push unless `changes`' already-tested step
-    # found this exact commit already ran this suite pre-merge.
-    if: (github.event_name == 'push' && needs.changes.outputs.integration_tests_already_ran != 'true') || (needs.changes.outputs.cpp == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    # skipped rather than failing every external contribution. Still runs for
+    # every same-repo PR and on push.
+    if: github.event_name == 'push' || (needs.changes.outputs.cpp == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -558,12 +524,8 @@ jobs:
     # js/python/cpp back in PR #149 but this job never got reconciled to
     # match. See js-integration-tests' comment for the parallelization
     # experiment this is now part of.
-    #
-    # On push, skipped when `changes`' already-tested step found this exact
-    # commit is a same-repo PR merge that already ran this suite pre-merge —
-    # same reasoning as js/python/cpp-integration-tests.
     needs: changes
-    if: (github.event_name == 'push' && needs.changes.outputs.integration_tests_already_ran != 'true') || (needs.changes.outputs.swift == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    if: github.event_name == 'push' || (needs.changes.outputs.swift == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: macos-latest
     env:
       REACTOR_REQUIRE_SWIFT: "1"
@@ -590,10 +552,9 @@ jobs:
     # No longer chained after swift-integration-tests, and the shared
     # concurrency group with it is gone too — see that job's own comment.
     # Runs concurrently with swift-integration-tests itself now, not just
-    # with the other bindings' suites. On push, skipped under the same
-    # already-tested condition — see swift-integration-tests' own comment.
+    # with the other bindings' suites.
     needs: changes
-    if: (github.event_name == 'push' && needs.changes.outputs.integration_tests_already_ran != 'true') || (needs.changes.outputs.swift == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    if: github.event_name == 'push' || (needs.changes.outputs.swift == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: macos-latest
     env:
       # Prunes the one target triple this job builds after copying its
