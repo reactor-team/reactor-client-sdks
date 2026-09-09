@@ -207,6 +207,9 @@ struct TrackTests {
 
         let source = try client.track("source")
         do {
+            // Untyped, deliberately: an existing video caller's own closure
+            // shape, and proof `@_disfavoredOverload` on the audio overload
+            // keeps it resolving to `VideoFrame` rather than turning ambiguous.
             _ = try source.onFrame { _ in }
             Issue.record("expected a throw")
         } catch let error as ReactorError {
@@ -227,16 +230,19 @@ struct TrackTests {
 
         let audio = try client.track("audio_out")
         do {
+            // Untyped: resolves to the VideoFrame overload (disfavored loses
+            // this tie), which is the wrong kind for this track — same refusal
+            // an explicitly-typed VideoFrame handler would get.
             _ = try audio.onFrame { _ in }
             Issue.record("expected a throw")
         } catch let error as ReactorError {
             #expect(error.code == .invalidState)
-            #expect(error.message.contains("onAudio"))
+            #expect(error.message.contains("AudioFrame"))
         }
 
         // And the reverse.
         let video = try client.track("main_video")
-        #expect(throws: ReactorError.self) { _ = try video.onAudio { _ in } }
+        #expect(throws: ReactorError.self) { _ = try video.onFrame { (_: AudioFrame) in } }
     }
 
     @Test("a handler on a closed client is refused rather than silently never firing")
@@ -262,7 +268,7 @@ struct TrackTests {
         #expect(throws: ReactorError.self) { _ = try video.onRawFrame { _ in } }
 
         let audio = try client.track("audio_out")
-        #expect(throws: ReactorError.self) { _ = try audio.onAudio { _ in } }
+        #expect(throws: ReactorError.self) { _ = try audio.onFrame { (_: AudioFrame) in } }
     }
 
     @Test("a handler on a track that outlived its client is refused")
@@ -419,7 +425,7 @@ struct TrackTests {
 
         let track = try client.track("audio_out")
         let seen = Locked<AudioFrame?>(nil)
-        let subscription = try track.onAudio { frame in seen.withLock { $0 = frame } }
+        let subscription = try track.onFrame { (frame: AudioFrame) in seen.withLock { $0 = frame } }
         defer { subscription.cancel() }
 
         fake.fireAudio(track: "audio_out", samples: [3, -3, 4, -4], sampleRate: 48000, channels: 1)

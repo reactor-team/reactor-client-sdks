@@ -27,6 +27,31 @@ func pumpFrames(
     }
 }
 
+/// Push a 440Hz tone into `track` in 20ms chunks until the returned task is
+/// cancelled.
+///
+/// `reactor/echo`'s tick loop only advances on a `webcam` read (see
+/// `pumpFrames`'s own doc), so `main_audio` never emits unless `webcam` is
+/// also being pumped — every scenario that wants audio output pumps both,
+/// even when it only asserts on audio.
+@discardableResult
+func pumpAudio(
+    into track: Track, sampleRate: Int = 48_000, channels: UInt32 = 1, chunkMs: Double = 20
+) -> Task<Void, Never> {
+    let samplesPerChunk = Int(Double(sampleRate) * chunkMs / 1000)
+    return Task {
+        while !Task.isCancelled {
+            let samples = MediaFixtures.sineWaveSamples(
+                numSamples: samplesPerChunk, sampleRate: sampleRate)
+            // A push after unpublish()/disconnect() throws — swallowed here for
+            // the same reason pumpFrames swallows it: a pump's job ends with the
+            // task being cancelled, not with reporting its own last chunk's fate.
+            try? track.pushFrame(samples, sampleRate: UInt32(sampleRate), channels: channels)
+            try? await Task.sleep(for: .milliseconds(chunkMs))
+        }
+    }
+}
+
 /// Deterministic, synthetic frames — not a webcam or mic — so pixel assertions
 /// against reactor/echo's effects are exact rather than dependent on whatever a
 /// fake device happens to generate. Same reasoning as the Python suite's
@@ -53,7 +78,7 @@ enum MediaFixtures {
         return Data(pixels)
     }
 
-    /// `numSamples` of a `frequencyHz` tone — exactly what `Track.pushAudioFrame`
+    /// `numSamples` of a `frequencyHz` tone — exactly what `Track.pushFrame`
     /// accepts. A4, comfortably audible; nothing in this suite rides on the
     /// exact frequency.
     static func sineWaveSamples(

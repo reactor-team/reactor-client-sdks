@@ -11,5 +11,5 @@ public enum ReactorSDK {
     /// Changing this and merging to `main` is what publishes a release, so it
     /// stays at a development value until the release workflow exists to act
     /// on it.
-    public static let version = "1.0.0"
+    public static let version = "0.0.0-dev"
 }

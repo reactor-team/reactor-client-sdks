@@ -7,7 +7,7 @@ import os
 ///
 /// ```swift
 /// let speaker = try Speaker()
-/// let playing = try reactor.track("audio_out").onAudio { speaker.play($0) }
+/// let playing = try reactor.track("audio_out").onFrame { frame in speaker.play(frame) }
 /// try speaker.start()
 /// ```
 ///
