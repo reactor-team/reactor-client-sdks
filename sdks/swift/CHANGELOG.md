@@ -7,6 +7,13 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-09
+
+Initial release. Distributed as a SwiftPM binary target — an XCFramework
+attached to this release, resolved automatically via
+`.package(url: "https://github.com/reactor-team/reactor-client-sdks", from: "1.0.0")` —
+for macOS (arm64, x86_64) and iOS 16+ (arm64 device and simulator).
+
 ### Added
 
 - `Reactor`: connect/disconnect/reconnect/close, with status and error
@@ -33,5 +40,3 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - An integration-test suite against a live `reactor/echo` model, run in CI
   both for the development build and, separately, against the exact
   XCFramework a release ships (including on the iOS Simulator).
-
-## [0.0.0-dev]
