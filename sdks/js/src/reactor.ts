@@ -259,9 +259,11 @@ export class Reactor implements Disposable {
    * mode) actually hands back `null` — normalized here so callers can rely
    * on the documented type instead of the binding's serialization quirk.
    *
-   * A `FileRef` (from `uploadFile`) may be passed as a top-level value in
-   * `data` alongside regular parameters — it is extracted and sent as a
-   * separate upload reference rather than embedded in the JSON payload.
+   * A `FileRef` (from `uploadFile`) may be passed in `data` wherever the
+   * model's schema declares a file. As a top-level value it is extracted and
+   * sent as a separate upload reference rather than embedded in the JSON
+   * payload; inside an array or object (a parameter that takes several files,
+   * say) it is serialized as an upload reference in place.
    *
    * Unlike every other method here, this never rejects — a failure (the
    * session isn't `"ready"`, the send itself fails, …) is reported through
@@ -571,8 +573,9 @@ export class Reactor implements Disposable {
 
   /**
    * Uploads a file to the session's object store, resolving with a
-   * `FileRef` to pass as a top-level value in a `sendCommand()`'s `data`
-   * (see `extractFileRefs`). The binding itself takes `(file, name?)`
+   * `FileRef` to pass in a `sendCommand()`'s `data`, at the top level or
+   * inside an array or object (see `extractFileRefs`). The binding itself
+   * takes `(file, name?)`
    * positionally and already applies the right defaulting — a bare
    * `Blob`'s name falls back to `"upload"`, and an empty/missing mime type
    * to `"application/octet-stream"` — so there's nothing to wrap here.

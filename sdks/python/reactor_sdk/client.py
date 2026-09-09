@@ -87,6 +87,23 @@ class FileRef:
     size: int
 
 
+def _wire_file_ref(value: object) -> dict[str, Any]:
+    """The upload reference a `FileRef` becomes on the wire.
+
+    Also the `json.dumps` fallback for a command's arguments, so a `FileRef` nested
+    in a list or dict serialises as a reference instead of failing the encode. Any
+    other unserialisable value raises the same `TypeError` `json.dumps` would.
+    """
+    if not isinstance(value, FileRef):
+        raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+    return {
+        "upload_id": value.upload_id,
+        "name": value.name,
+        "mime_type": value.mime_type,
+        "size": value.size,
+    }
+
+
 _log = logging.getLogger(__name__)
 
 # Callback trampolines belonging to handles that could not be confirmed quiesced on
@@ -961,15 +978,17 @@ class Reactor:
         Returns ``None`` if the handler ran and acknowledged the command but
         returned no message — e.g. an auto-generated ``set_<field>`` setter.
 
-        A ``FileRef`` (from `upload_file`) may be passed as a top-level value in
-        ``data``, alongside regular parameters — it is pulled out and sent as a
-        separate upload reference rather than embedded in the JSON payload::
+        A ``FileRef`` (from `upload_file`) may be passed in ``data`` wherever the
+        model's schema declares a file. As a top-level value it is pulled out and
+        sent as a separate upload reference rather than embedded in the JSON
+        payload; nested inside a list or a dict, where no separate slot exists,
+        it is serialised in place as an upload reference::
 
             ref = await reactor.upload_file("photo.jpg")
             await reactor.send_command("set_image", {"image": ref})
 
-        Only top-level values are inspected — a `FileRef` nested inside a list or
-        another dict is not detected and is left for `json.dumps` to reject.
+            refs = [await reactor.upload_file(path) for path in paths]
+            await reactor.send_command("enqueue", {"reference_images": refs})
 
         To fire a command without waiting on the reply, schedule the call
         instead of awaiting it directly, e.g. ``asyncio.create_task(
@@ -985,17 +1004,12 @@ class Reactor:
             scalars = {}
             for key, value in data.items():
                 if isinstance(value, FileRef):
-                    uploads[key] = {
-                        "upload_id": value.upload_id,
-                        "name": value.name,
-                        "mime_type": value.mime_type,
-                        "size": value.size,
-                    }
+                    uploads[key] = _wire_file_ref(value)
                 else:
                     scalars[key] = value
             data = scalars
 
-        args_json = json.dumps(data).encode()
+        args_json = json.dumps(data, default=_wire_file_ref).encode()
         uploads_json = json.dumps(uploads).encode() if uploads else None
         return await self._async_op(
             lambda fn: lib.reactor_send_command(

@@ -24,9 +24,14 @@ export function toPublicFileRef(fileRef: WireFileRef): FileRef {
  * wasm binding's wire shape here, since that's what `sendCommand`'s
  * `uploads` argument actually expects.
  *
- * Only top-level values are inspected — a `FileRef` nested inside a list or
- * another object is left in place for the wire to reject, same as the Python
- * SDK's `send_command`.
+ * A top-level `FileRef` moves into `uploads`, keyed by its parameter name —
+ * the one slot the wire has for a named upload. A `FileRef` nested inside an
+ * array or a plain object has no such slot, so it stays in `data` and is
+ * rewritten to the wire shape in place: the binding reads an object's own
+ * properties when it serializes `data`, so a `FileRef` left as-is would cross
+ * the wire with its camelCase field names, which the model side does not
+ * read. Only arrays and plain objects are walked; anything else (a `Blob`, a
+ * `Date`, a typed array) is a value in its own right and is passed through.
  *
  * Uses `isFileRef()`'s structural check rather than `instanceof FileRef`:
  * a duplicate copy of this package (e.g. two versions bundled into the same
@@ -47,14 +52,68 @@ export function extractFileRefs(data: Record<string, unknown> | undefined): {
   let scalars: Record<string, unknown> | undefined;
 
   for (const [key, value] of Object.entries(data)) {
-    if (!isFileRef(value)) {
+    if (isFileRef(value)) {
+      uploads ??= {};
+      scalars ??= { ...data };
+      uploads[key] = toWireFileRef(value);
+      delete scalars[key];
       continue;
     }
-    uploads ??= {};
-    scalars ??= { ...data };
-    uploads[key] = toWireFileRef(value);
-    delete scalars[key];
+    const rewritten = rewriteNestedFileRefs(value);
+
+    if (rewritten !== value) {
+      scalars ??= { ...data };
+      scalars[key] = rewritten;
+    }
   }
 
   return { data: scalars ?? data, uploads };
+}
+
+/**
+ * Returns `value` with every `FileRef` inside it replaced by its wire shape,
+ * or `value` itself when it contains none, so an untouched payload keeps its
+ * identity.
+ */
+function rewriteNestedFileRefs(value: unknown): unknown {
+  if (isFileRef(value)) {
+    return toWireFileRef(value);
+  }
+  if (Array.isArray(value)) {
+    const elements: unknown[] = value;
+    let copy: unknown[] | undefined;
+
+    elements.forEach((element, index) => {
+      const rewritten = rewriteNestedFileRefs(element);
+
+      if (rewritten !== element) {
+        copy ??= [...elements];
+        copy[index] = rewritten;
+      }
+    });
+    return copy ?? elements;
+  }
+  if (isPlainObject(value)) {
+    let copy: Record<string, unknown> | undefined;
+
+    for (const [key, element] of Object.entries(value)) {
+      const rewritten = rewriteNestedFileRefs(element);
+
+      if (rewritten !== element) {
+        copy ??= { ...value };
+        copy[key] = rewritten;
+      }
+    }
+    return copy ?? value;
+  }
+  return value;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const proto: unknown = Object.getPrototypeOf(value);
+
+  return proto === Object.prototype || proto === null;
 }

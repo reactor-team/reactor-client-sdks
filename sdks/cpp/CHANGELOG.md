@@ -8,6 +8,13 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `FileRef` converts to `Json` as the upload reference the model reads, so a
+  parameter that takes several files is filled with
+  `Json::array({first, second})` inside `send_command`'s arguments. A single
+  file is still named in the `uploads` map as before.
+
 ## [2.0.0] - 2026-09-08
 
 ### Changed

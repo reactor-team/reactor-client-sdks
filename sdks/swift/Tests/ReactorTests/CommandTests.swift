@@ -164,6 +164,44 @@ struct CommandTests {
         #expect(call.uploadsJSON?.contains("image/jpeg") == true)
     }
 
+    @Test("a FileRef inside a typed command's arguments encodes as an upload reference")
+    func nestedFileRefEncodesInTheWireShape() async throws {
+        struct Enqueue: Encodable {
+            let prompt: String
+            let referenceImages: [FileRef]
+
+            enum CodingKeys: String, CodingKey {
+                case prompt
+                case referenceImages = "reference_images"
+            }
+        }
+
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+
+        let first = FileRef(uploadID: "up_1", name: "a.jpg", mimeType: "image/jpeg", size: 12)
+        let second = FileRef(uploadID: "up_2", name: "b.jpg", mimeType: "image/jpeg", size: 34)
+        _ = try await answering(fake, result: nil) {
+            try await client.sendCommand(
+                "enqueue", arguments: Enqueue(prompt: "two cats", referenceImages: [first, second]))
+        }
+
+        // A list has no named upload slot, so its entries travel inside the
+        // arguments, spelled the way the platform reads them and in the order
+        // given.
+        let call = try #require(fake.commandCalls.first)
+        #expect(call.uploadsJSON == nil)
+        let argsJSON = try #require(call.argsJSON)
+        let args = try JSONDecoder().decode([String: JSONValue].self, from: Data(argsJSON.utf8))
+        let images = try #require(args["reference_images"]?.arrayValue)
+        #expect(images.count == 2)
+        #expect(images[0]["upload_id"]?.stringValue == "up_1")
+        #expect(images[0]["mime_type"]?.stringValue == "image/jpeg")
+        #expect(images[0]["uploadID"] == nil)
+        #expect(images[1]["upload_id"]?.stringValue == "up_2")
+    }
+
     // MARK: - Schema
 
     @Test("the schema comes back as the document the model sent")

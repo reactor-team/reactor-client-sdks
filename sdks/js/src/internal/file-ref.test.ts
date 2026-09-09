@@ -54,18 +54,67 @@ describe('extractFileRefs', () => {
     expect(result.data).toEqual({ label: 'id card' });
   });
 
-  it('does not detect a FileRef nested inside another object', () => {
-    const result = extractFileRefs({ wrapper: { image: fileRef } });
+  it('rewrites a FileRef nested inside an array to the wire shape, in place and in order', () => {
+    const second = new FileRef('up_2', 'b.png', fileRef.mimeType, fileRef.size);
+    const result = extractFileRefs({ images: [second, fileRef], caption: 'two cats' });
 
+    // No named slot exists for an entry of a list, so it stays in `data`
+    // rather than moving to `uploads`.
     expect(result.uploads).toBeUndefined();
-    expect(result.data).toEqual({ wrapper: { image: fileRef } });
+    expect(result.data).toEqual({
+      images: [{ ...wireFileRef, upload_id: 'up_2', name: 'b.png' }, wireFileRef],
+      caption: 'two cats',
+    });
   });
 
-  it('does not detect a FileRef nested inside an array', () => {
-    const result = extractFileRefs({ images: [fileRef] });
+  it('rewrites a FileRef nested inside a plain object to the wire shape', () => {
+    const result = extractFileRefs({ cover: { image: fileRef, caption: 'front' } });
 
     expect(result.uploads).toBeUndefined();
-    expect(result.data).toEqual({ images: [fileRef] });
+    expect(result.data).toEqual({ cover: { image: wireFileRef, caption: 'front' } });
+  });
+
+  it('rewrites FileRefs however deeply arrays and objects nest', () => {
+    const result = extractFileRefs({ albums: [{ title: 'one', pages: [fileRef] }, { title: 'two' }] });
+
+    expect(result.data).toEqual({
+      albums: [{ title: 'one', pages: [wireFileRef] }, { title: 'two' }],
+    });
+  });
+
+  it('extracts a top-level FileRef and rewrites a nested one in the same payload', () => {
+    const page = new FileRef('up_2', 'page.png', fileRef.mimeType, fileRef.size);
+    const result = extractFileRefs({ cover: fileRef, pages: [page] });
+
+    expect(result.uploads).toEqual({ cover: wireFileRef });
+    expect(result.data).toEqual({ pages: [{ ...wireFileRef, upload_id: 'up_2', name: 'page.png' }] });
+  });
+
+  it('keeps the identity of nested values that hold no FileRef', () => {
+    const images = ['https://example.com/a.png'];
+    const meta = { tags: ['cat'], count: 1 };
+    const data = { images, meta, other: [fileRef] };
+
+    const result = extractFileRefs(data);
+
+    expect(result.data).not.toBe(data);
+    expect((result.data as Record<string, unknown>).images).toBe(images);
+    expect((result.data as Record<string, unknown>).meta).toBe(meta);
+  });
+
+  it('does not walk into values that are not arrays or plain objects', () => {
+    class Holder {
+      constructor(public readonly image: FileRef) {}
+    }
+    const holder = new Holder(fileRef);
+    const blob = new Blob(['x']);
+    const data = { holder, blob };
+
+    const result = extractFileRefs(data);
+
+    expect(result.uploads).toBeUndefined();
+    expect(result.data).toBe(data);
+    expect(holder.image).toBe(fileRef);
   });
 
   it('does not treat a partial/shape-mismatched object as a FileRef', () => {

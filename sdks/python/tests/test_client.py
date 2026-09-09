@@ -276,6 +276,87 @@ class TestSendCommandUploads:
         assert json.loads(captured["args_json"]) == {}
         assert set(json.loads(captured["uploads_json"])) == {"front", "back"}
 
+    async def test_filerefs_nested_in_a_list_serialise_inline_as_references(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_send_command(handle, name, args_json, uploads_json, completion, userdata):
+            captured["args_json"] = args_json
+            captured["uploads_json"] = uploads_json
+            completion(1, b"{}", None, None)
+
+        fake_lib = mock.Mock()
+        fake_lib.reactor_send_command = fake_send_command
+        reactor = self._reactor()
+
+        ref_a = FileRef(upload_id="up_a", name="a.jpg", mime_type="image/jpeg", size=1)
+        ref_b = FileRef(upload_id="up_b", name="b.jpg", mime_type="image/jpeg", size=2)
+        with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
+            await reactor.send_command(
+                "enqueue",
+                {
+                    "prompt": "two cats",
+                    "reference_images": [ref_b, ref_a],
+                    "cover": {"image": ref_a},
+                },
+            )
+
+        # A list or dict entry has no named upload slot, so the reference travels
+        # inside the arguments, in the shape the model side reads and in the
+        # order sent.
+        assert json.loads(captured["args_json"]) == {
+            "prompt": "two cats",
+            "reference_images": [
+                {"upload_id": "up_b", "name": "b.jpg", "mime_type": "image/jpeg", "size": 2},
+                {"upload_id": "up_a", "name": "a.jpg", "mime_type": "image/jpeg", "size": 1},
+            ],
+            "cover": {
+                "image": {
+                    "upload_id": "up_a",
+                    "name": "a.jpg",
+                    "mime_type": "image/jpeg",
+                    "size": 1,
+                }
+            },
+        }
+        assert captured["uploads_json"] is None
+
+    async def test_a_top_level_and_a_nested_fileref_take_their_own_paths(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_send_command(handle, name, args_json, uploads_json, completion, userdata):
+            captured["args_json"] = args_json
+            captured["uploads_json"] = uploads_json
+            completion(1, b"{}", None, None)
+
+        fake_lib = mock.Mock()
+        fake_lib.reactor_send_command = fake_send_command
+        reactor = self._reactor()
+
+        cover = FileRef(upload_id="up_c", name="c.jpg", mime_type="image/jpeg", size=3)
+        page = FileRef(upload_id="up_p", name="p.jpg", mime_type="image/jpeg", size=4)
+        with mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib):
+            await reactor.send_command("set_gallery", {"cover": cover, "images": [page]})
+
+        assert json.loads(captured["uploads_json"]) == {
+            "cover": {"upload_id": "up_c", "name": "c.jpg", "mime_type": "image/jpeg", "size": 3}
+        }
+        assert json.loads(captured["args_json"]) == {
+            "images": [{"upload_id": "up_p", "name": "p.jpg", "mime_type": "image/jpeg", "size": 4}]
+        }
+
+    async def test_an_unserialisable_value_still_raises(self) -> None:
+        fake_lib = mock.Mock()
+        fake_lib.reactor_send_command = mock.Mock()
+        reactor = self._reactor()
+
+        with (
+            mock.patch("reactor_sdk.client.get_lib", return_value=fake_lib),
+            pytest.raises(TypeError, match="not JSON serializable"),
+        ):
+            await reactor.send_command("set_when", {"at": object()})
+
+        fake_lib.reactor_send_command.assert_not_called()
+
 
 class TestUploadFileDispatch:
     """`upload_file` accepts a path, raw bytes, or a file-like object — a path
