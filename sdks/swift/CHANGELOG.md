@@ -7,15 +7,6 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.0.0-dev]
-
-Placeholder version, not a real release: the actual `v1.0.0` was cut and then
-deleted before anything consumed it, over the API mess `Track.onAudio` /
-`Track.pushAudioFrame` turned out to be (see git history). This section is
-here only so `release-swift.yml`'s own CHANGELOG-format check accepts this
-version; a follow-up PR bumps back to `1.0.0` with the real entry below,
-fix included.
-
 ### Added
 
 - `Reactor`: connect/disconnect/reconnect/close, with status and error
@@ -42,3 +33,5 @@ fix included.
 - An integration-test suite against a live `reactor/echo` model, run in CI
   both for the development build and, separately, against the exact
   XCFramework a release ships (including on the iOS Simulator).
+
+## [0.0.0-dev]
