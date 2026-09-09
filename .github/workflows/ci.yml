@@ -87,6 +87,16 @@ jobs:
       - name: Did this exact commit already run integration tests, via a same-repo PR?
         id: already-tested
         if: github.event_name == 'push'
+        # This step only ever *skips* work below, never gates it — if the
+        # GitHub API call fails (rate limit, an org's default GITHUB_TOKEN
+        # permissions not covering pull-requests read, a transient 5xx),
+        # `continue-on-error` keeps that failure from failing this job,
+        # which every other job here `needs:`. Without it, a hiccup in this
+        # one optimization would take down the entire push's CI run instead
+        # of just losing the optimization. `result` is left unset by a
+        # failed run, and every integration-tests job's `if:` already
+        # treats "not literally 'true'" as "run it" — the safe default.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
