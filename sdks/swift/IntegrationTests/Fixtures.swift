@@ -203,7 +203,7 @@ func withConnectedReactor<Result>(
 
 /// Poll `predicate` until it's true or `timeout` elapses.
 ///
-/// Used for anything fed from `onFrame`/`onAudio` callbacks, which run inline
+/// Used for anything fed from `onFrame` callbacks, which run inline
 /// on the library's media delivery thread rather than through the event queue —
 /// the same reason Python's `wait_until` polls a plain counter instead of using
 /// an `asyncio.Event`.

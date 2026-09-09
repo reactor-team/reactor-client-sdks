@@ -21,7 +21,10 @@ for macOS (arm64, x86_64) and iOS 16+ (arm64 device and simulator).
   file/byte uploads.
 - `Track` / `TrackList`: publish, unpublish, pause, and resume; receiving
   frames and the end-of-track trailer; `pushFrame` for a sendonly track,
-  including its refusal cases (paused, unpublished, wrong direction).
+  including its refusal cases (paused, unpublished, wrong direction). One
+  `onFrame`/`pushFrame` pair for both media kinds, overloaded for
+  `VideoFrame`/`AudioFrame` and for BGRA/`Samples` — `Track.kind` decides
+  which overload applies, matching Python and C++.
 - Recording: request a clip and download it once ready.
 - Auth: exchange an API key for a session JWT.
 - `ReactorMedia`, a separate product from `Reactor` so an app that only

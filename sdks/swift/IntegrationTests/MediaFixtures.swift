@@ -53,7 +53,7 @@ enum MediaFixtures {
         return Data(pixels)
     }
 
-    /// `numSamples` of a `frequencyHz` tone — exactly what `Track.pushAudioFrame`
+    /// `numSamples` of a `frequencyHz` tone — exactly what `Track.pushFrame`
     /// accepts. A4, comfortably audible; nothing in this suite rides on the
     /// exact frequency.
     static func sineWaveSamples(

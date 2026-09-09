@@ -209,7 +209,7 @@ public final class Microphone: @unchecked Sendable {
         let samples = Array(
             UnsafeBufferPointer(start: channel[0], count: Int(converted.frameLength)))
         do {
-            try track.pushAudioFrame(
+            try track.pushFrame(
                 samples, sampleRate: UInt32(Self.sampleRate), channels: UInt32(Self.channels))
         } catch {
             refused.increment()
