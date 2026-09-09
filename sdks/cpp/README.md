@@ -32,11 +32,11 @@ native library, and building it needs a Rust toolchain and a libwebrtc download.
 
 | Platform | Archive | Requires |
 |---|---|---|
-| Linux x86_64 | `…-linux-x64.tar.gz` | glibc 2.34+ (Ubuntu 22.04, Debian 12, RHEL 9, Amazon Linux 2023) |
-| Linux aarch64 | `…-linux-arm64.tar.gz` | glibc 2.34+ |
-| macOS arm64 | `…-macos-arm64.tar.gz` | macOS 11+ |
-| macOS x86_64 | `…-macos-x64.tar.gz` | macOS 13+ — libwebrtc's floor on this architecture |
-| Windows x86_64 | `…-windows-x64.zip` | Windows 10+ |
+| Linux x86_64 | `reactor-sdk-cpp-2.0.0-linux-x64.tar.gz` | glibc 2.34+ (Ubuntu 22.04, Debian 12, RHEL 9, Amazon Linux 2023) |
+| Linux aarch64 | `reactor-sdk-cpp-2.0.0-linux-arm64.tar.gz` | glibc 2.34+ |
+| macOS arm64 | `reactor-sdk-cpp-2.0.0-macos-arm64.tar.gz` | macOS 11+ |
+| macOS x86_64 | `reactor-sdk-cpp-2.0.0-macos-x64.tar.gz` | macOS 13+ — libwebrtc's floor on this architecture |
+| Windows x86_64 | `reactor-sdk-cpp-2.0.0-windows-x64.zip` | Windows 10+ |
 
 Anything outside that table — musl distributions, glibc older than 2.34, 32-bit,
 Windows on ARM — has no archive, and has to build `libreactor_ffi` from this
@@ -49,8 +49,8 @@ than 2.34 or that was built for a later macOS than its row here says.
 Extract an archive and point CMake at it:
 
 ```bash
-tar xzf reactor-sdk-cpp-1.0.0-linux-x64.tar.gz
-cmake -S . -B build -DCMAKE_PREFIX_PATH=$PWD/reactor-sdk-cpp-1.0.0-linux-x64
+tar xzf reactor-sdk-cpp-2.0.0-linux-x64.tar.gz
+cmake -S . -B build -DCMAKE_PREFIX_PATH=$PWD/reactor-sdk-cpp-2.0.0-linux-x64
 ```
 
 ```cmake
