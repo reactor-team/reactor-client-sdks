@@ -123,8 +123,8 @@ public final class Track: @unchecked Sendable {
 
     /// Receive frames without copying them.
     ///
-    /// Same arguments, same thread, same backpressure as ``onFrame(_:)`` — but
-    /// the buffers belong to the library and are **gone when the handler
+    /// Same arguments, same thread, same backpressure as `onFrame` — but the
+    /// buffers belong to the library and are **gone when the handler
     /// returns**. For a renderer that uploads straight to a texture, this is the
     /// version that does no work it does not need to.
     public func onRawFrame(
@@ -134,10 +134,28 @@ public final class Track: @unchecked Sendable {
         return client.addVideoHandler(track: name, handler)
     }
 
-    /// Receive decoded audio on this track.
-    public func onAudio(_ handler: @escaping @Sendable (AudioFrame) -> Void) throws -> Subscription
+    /// Receive decoded audio frames on this track.
+    ///
+    /// One `onFrame` for both media kinds: the overload the compiler picks is
+    /// the one whose handler type matches ``kind``, video or audio.
+    ///
+    /// `@_disfavoredOverload`, deliberately: an untyped closure that never uses
+    /// its parameter — `onFrame { _ in count += 1 }`, which every existing
+    /// video caller could write before this overload existed — has nothing to
+    /// pick `VideoFrame` over `AudioFrame` with, and would otherwise become
+    /// ambiguous rather than staying the video handler it always was. A caller
+    /// after the audio overload specifically still gets it, either by
+    /// annotating the parameter's type or by using a member only `AudioFrame`
+    /// has; only a closure that could be either — and would have meant video
+    /// before today — keeps meaning video.
+    ///
+    /// - Throws: ``ReactorError`` with ``ReactorError/Code/invalidState`` when
+    ///   this track sends rather than receives, or carries video rather than
+    ///   audio.
+    @_disfavoredOverload
+    public func onFrame(_ handler: @escaping @Sendable (AudioFrame) -> Void) throws -> Subscription
     {
-        let client = try requireReceivable(.audio, method: "onAudio")
+        let client = try requireReceivable(.audio, method: "onFrame")
         return client.addAudioHandler(track: name, handler)
     }
 
@@ -183,11 +201,12 @@ public final class Track: @unchecked Sendable {
         }
 
         if declaration.kind != wanted {
-            let other = wanted == .video ? "onAudio" : "onFrame"
+            let expected = declaration.kind == .video ? "VideoFrame" : "AudioFrame"
             throw ReactorError(
                 .invalidState,
                 "\(method) on '\(name)' would never fire: the session declares it "
-                    + "\(declaration.kind.rawValue). Use \(other).",
+                    + "\(declaration.kind.rawValue). Use onFrame(_:) with a handler taking "
+                    + "\(expected) instead.",
                 operation: method)
         }
 

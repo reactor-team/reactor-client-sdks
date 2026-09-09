@@ -208,7 +208,7 @@ struct SendingTests {
         try await publish(mic, on: fake)
 
         #expect(throws: ReactorError.self) {
-            try mic.pushAudioFrame([1, 2, 3], sampleRate: 48000, channels: 2)
+            try mic.pushFrame([1, 2, 3], sampleRate: 48000, channels: 2)
         }
     }
 
@@ -264,7 +264,7 @@ struct SendingTests {
 
         let mic = try client.track("mic")
         try await publish(mic, on: fake)
-        try mic.pushAudioFrame([1, -1, 2, -2], sampleRate: 48000, channels: 1)
+        try mic.pushFrame([1, -1, 2, -2], sampleRate: 48000, channels: 1)
 
         let pushed = try #require(fake.pushedAudio.first)
         #expect(pushed.track == "mic")

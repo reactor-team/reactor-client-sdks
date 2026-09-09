@@ -131,14 +131,14 @@ extension Reactor {
         sampleRate: UInt32,
         channels: UInt32
     ) throws {
-        let handle = try requirePushable(track: name, kind: .audio, method: "pushAudioFrame")
+        let handle = try requirePushable(track: name, kind: .audio, method: "pushFrame")
 
         guard channels > 0, samples.count % Int(channels) == 0 else {
             throw ReactorError(
                 .badRequest,
-                "pushAudioFrame on '\(name)' was given \(samples.count) samples for "
+                "pushFrame on '\(name)' was given \(samples.count) samples for "
                     + "\(channels) channel(s), which does not divide evenly.",
-                operation: "pushAudioFrame")
+                operation: "pushFrame")
         }
 
         let perChannel = UInt32(samples.count / Int(channels))
@@ -174,10 +174,14 @@ extension Reactor {
                     operation: method)
             }
             guard declaration.kind == kind else {
+                let expected =
+                    declaration.kind == .video
+                    ? "pushFrame(_:width:height:userData:captureTimeUs:)"
+                    : "pushFrame(_:sampleRate:channels:)"
                 throw ReactorError(
                     .invalidState,
                     "\(method) on '\(name)' goes nowhere: the session declares it "
-                        + "\(declaration.kind.rawValue).",
+                        + "\(declaration.kind.rawValue). Use \(expected) instead.",
                     operation: method)
             }
         }
@@ -357,7 +361,7 @@ extension Track {
     ///
     /// The rate and channel count must match what the source declared — 48 kHz
     /// mono for every model today.
-    public func pushAudioFrame(
+    public func pushFrame(
         _ samples: [Int16],
         sampleRate: UInt32 = 48000,
         channels: UInt32 = 1
