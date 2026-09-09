@@ -207,7 +207,10 @@ struct TrackTests {
 
         let source = try client.track("source")
         do {
-            _ = try source.onFrame { (_: VideoFrame) in }
+            // Untyped, deliberately: an existing video caller's own closure
+            // shape, and proof `@_disfavoredOverload` on the audio overload
+            // keeps it resolving to `VideoFrame` rather than turning ambiguous.
+            _ = try source.onFrame { _ in }
             Issue.record("expected a throw")
         } catch let error as ReactorError {
             // It would never fire, and a handler that never fires is exactly the
@@ -227,7 +230,10 @@ struct TrackTests {
 
         let audio = try client.track("audio_out")
         do {
-            _ = try audio.onFrame { (_: VideoFrame) in }
+            // Untyped: resolves to the VideoFrame overload (disfavored loses
+            // this tie), which is the wrong kind for this track — same refusal
+            // an explicitly-typed VideoFrame handler would get.
+            _ = try audio.onFrame { _ in }
             Issue.record("expected a throw")
         } catch let error as ReactorError {
             #expect(error.code == .invalidState)
@@ -252,7 +258,7 @@ struct TrackTests {
         // yet" — so the registration was accepted, reported success through a
         // throwing API, and could never fire.
         do {
-            _ = try video.onFrame { (_: VideoFrame) in }
+            _ = try video.onFrame { _ in }
             Issue.record("expected a throw")
         } catch let error as ReactorError {
             #expect(error.code == .invalidState)
@@ -282,7 +288,7 @@ struct TrackTests {
         }
 
         do {
-            _ = try video.onFrame { (_: VideoFrame) in }
+            _ = try video.onFrame { _ in }
             Issue.record("expected a throw")
         } catch let error as ReactorError {
             #expect(error.code == .invalidState)
@@ -300,7 +306,7 @@ struct TrackTests {
 
         let track = try client.track("main_video")
         let seen = Locked<(thread: Thread, count: Int)?>(nil)
-        let subscription = try track.onFrame { (_: VideoFrame) in
+        let subscription = try track.onFrame { _ in
             seen.withLock { $0 = (Thread.current, ($0?.count ?? 0) + 1) }
         }
         defer { subscription.cancel() }
@@ -325,7 +331,7 @@ struct TrackTests {
 
         let track = try client.track("main_video")
         let seen = Locked<VideoFrame?>(nil)
-        let subscription = try track.onFrame { (frame: VideoFrame) in seen.withLock { $0 = frame } }
+        let subscription = try track.onFrame { frame in seen.withLock { $0 = frame } }
         defer { subscription.cancel() }
 
         fake.fireFrame(
@@ -353,7 +359,7 @@ struct TrackTests {
 
         let track = try client.track("main_video")
         let seen = Locked<VideoFrame?>(nil)
-        let subscription = try track.onFrame { (frame: VideoFrame) in seen.withLock { $0 = frame } }
+        let subscription = try track.onFrame { frame in seen.withLock { $0 = frame } }
         defer { subscription.cancel() }
 
         fake.fireFrame(track: "main_video")
@@ -398,7 +404,7 @@ struct TrackTests {
 
         let track = try client.track("main_video")
         let count = Locked(0)
-        let subscription = try track.onFrame { (_: VideoFrame) in count.withLock { $0 += 1 } }
+        let subscription = try track.onFrame { _ in count.withLock { $0 += 1 } }
         defer { subscription.cancel() }
 
         // A different track, and the empty name the library uses when a
@@ -439,7 +445,7 @@ struct TrackTests {
 
         let track = try client.track("main_video")
         let count = Locked(0)
-        let subscription = try track.onFrame { (_: VideoFrame) in count.withLock { $0 += 1 } }
+        let subscription = try track.onFrame { _ in count.withLock { $0 += 1 } }
 
         fake.fireFrame(track: "main_video")
         subscription.cancel()
@@ -457,7 +463,7 @@ struct TrackTests {
 
         let track = try client.track("main_video")
         let count = Locked(0)
-        let subscription = try track.onFrame { (_: VideoFrame) in count.withLock { $0 += 1 } }
+        let subscription = try track.onFrame { _ in count.withLock { $0 += 1 } }
         defer { subscription.cancel() }
 
         client.close()

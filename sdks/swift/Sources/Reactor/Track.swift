@@ -139,9 +139,20 @@ public final class Track: @unchecked Sendable {
     /// One `onFrame` for both media kinds: the overload the compiler picks is
     /// the one whose handler type matches ``kind``, video or audio.
     ///
+    /// `@_disfavoredOverload`, deliberately: an untyped closure that never uses
+    /// its parameter — `onFrame { _ in count += 1 }`, which every existing
+    /// video caller could write before this overload existed — has nothing to
+    /// pick `VideoFrame` over `AudioFrame` with, and would otherwise become
+    /// ambiguous rather than staying the video handler it always was. A caller
+    /// after the audio overload specifically still gets it, either by
+    /// annotating the parameter's type or by using a member only `AudioFrame`
+    /// has; only a closure that could be either — and would have meant video
+    /// before today — keeps meaning video.
+    ///
     /// - Throws: ``ReactorError`` with ``ReactorError/Code/invalidState`` when
     ///   this track sends rather than receives, or carries video rather than
     ///   audio.
+    @_disfavoredOverload
     public func onFrame(_ handler: @escaping @Sendable (AudioFrame) -> Void) throws -> Subscription
     {
         let client = try requireReceivable(.audio, method: "onFrame")
