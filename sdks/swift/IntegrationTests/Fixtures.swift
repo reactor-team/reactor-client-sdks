@@ -140,17 +140,24 @@ actor SessionPacer {
 /// Python suite's `paced_connect`: it reuses the existing session rather than
 /// creating a new one, so it isn't counted against this quota either.
 ///
-/// Retries up to three times on a rate limit or a transient "no available
-/// capacity" from the platform, waiting the server's own `retryAfterMS` (or 2s,
-/// absent one) — belt and suspenders, not the primary defense: pacing is what
-/// keeps this suite's own average under quota, but the quota is shared with
-/// every other suite and every other tenant hitting the same model, and a
-/// burst or a momentary capacity dip landing from outside this process is real
-/// and observed in practice (`current == limit` on a suite that alone could not
-/// have produced that many connects; "no available servers" moments later with
-/// no quota involved at all). Python gets this from `pytest-rerunfailures`, JS
-/// for free from Playwright's `retries: 1` — this is Swift's equivalent,
-/// written by hand because `swift test` has no rerun-on-failure flag.
+/// Retries up to three times on a rate limit, a transient "no available
+/// capacity" from the platform, or a session that never reached `ready`,
+/// waiting the server's own `retryAfterMS` (or 2s, absent one) — belt and
+/// suspenders, not the primary defense: pacing is what keeps this suite's own
+/// average under quota, but the quota is shared with every other suite and
+/// every other tenant hitting the same model, and a burst or a momentary
+/// capacity dip landing from outside this process is real and observed in
+/// practice (`current == limit` on a suite that alone could not have produced
+/// that many connects; "no available servers" moments later with no quota
+/// involved at all; a `REQUEST_TIMEOUT` naming a session that polled 20 times
+/// without ever going `ready`, seen twice on two different, unrelated tests
+/// across two separate CI runs — a stuck negotiation somewhere between this
+/// client and the platform, not a bug in whichever test happened to be
+/// connecting when it did). Python gets this from `pytest-rerunfailures`
+/// (though filtered to rate limits only, same gap this had), JS for free from
+/// Playwright's `retries: 1` (not filtered by error type, so it already
+/// absorbs this) — this is Swift's equivalent, written by hand because `swift
+/// test` has no rerun-on-failure flag.
 func pacedConnect(
     _ reactor: Reactor, sessionID: String? = nil, connectionID: UInt32? = nil
 ) async throws {
@@ -160,7 +167,9 @@ func pacedConnect(
         do {
             try await reactor.connect(sessionID: sessionID, connectionID: connectionID)
             return
-        } catch let error as ReactorError where error.code == .rateLimited {
+        } catch let error as ReactorError
+            where error.code == .rateLimited || error.code == .requestTimeout
+        {
             guard attempt < maxAttempts else { throw error }
             let backoff: Duration = error.retryAfterMS.map { .milliseconds($0) } ?? .seconds(2)
             try await Task.sleep(for: backoff)
