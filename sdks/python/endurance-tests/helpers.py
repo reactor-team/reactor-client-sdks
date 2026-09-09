@@ -149,6 +149,29 @@ class ResourceSampler:
         self.samples.append(s)
         return s
 
+    # The report table's columns, in plain language — read this before reading
+    # a printed table, not just README.md's own copy of the same explanation:
+    #
+    #   cycle           which iteration of the loop this row is (0, 1, 2, ...).
+    #   elapsed_s       seconds since this test started.
+    #   ram_mb          physical RAM this whole process is using right now
+    #                   (not just the SDK — Python, libreactor_ffi, everything
+    #                   in this one process). Should plateau, not keep climbing.
+    #   cpu_s_per_cycle CPU time *this one cycle* burned (not a running total —
+    #                   see cpu_deltas()'s own docstring for why that matters).
+    #                   Should stay roughly flat cycle to cycle.
+    #   live_clients    how many Reactor clients still have an open native
+    #                   connection right now. 0 in test_lifecycle_churn.py
+    #                   (each cycle closes its own client); 1 in
+    #                   test_session_churn.py (one client, the whole run).
+    #                   Should never exceed that.
+    #   orphaned_cbs    frame/event callbacks the SDK couldn't confirm were
+    #                   safe to free when a client closed. Should always be 0.
+    #   num_threads     OS-level threads this process currently has (mostly
+    #                   the native Rust runtime's). Some warm-up wobble is
+    #                   normal; should not keep climbing.
+    #   num_fds         open file descriptors (sockets, mainly — every WebRTC
+    #                   connection needs some). Should not keep climbing.
     def print_report(self) -> None:
         # Per-cycle CPU (cpu_deltas), not the raw cumulative Sample.cpu_s: the
         # latter is psutil's total process CPU time since start, so it climbs
@@ -158,15 +181,15 @@ class ResourceSampler:
         # docstring; the first cycle has no prior sample to diff against.
         deltas = cpu_deltas(self.samples)
         print(
-            f"\n{'cycle':>6} {'elapsed_s':>10} {'rss_mb':>10} {'cpu_s/cyc':>9} "
-            f"{'live':>5} {'orphaned':>9} {'threads':>8} {'fds':>5}"
+            f"\n{'cycle':>6} {'elapsed_s':>10} {'ram_mb':>8} {'cpu_s_per_cycle':>15} "
+            f"{'live_clients':>12} {'orphaned_cbs':>12} {'num_threads':>11} {'num_fds':>7}"
         )
         for i, s in enumerate(self.samples):
-            cpu_per_cycle = f"{deltas[i - 1]:>9.3f}" if i > 0 else f"{'—':>9}"
+            cpu_per_cycle = f"{deltas[i - 1]:>15.3f}" if i > 0 else f"{'—':>15}"
             print(
-                f"{s.cycle:>6} {s.elapsed_s:>10.1f} {s.rss_bytes / 1e6:>10.2f} "
-                f"{cpu_per_cycle} {s.live_clients:>5} {s.orphaned_callbacks:>9} "
-                f"{s.num_threads:>8} {s.num_fds:>5}"
+                f"{s.cycle:>6} {s.elapsed_s:>10.1f} {s.rss_bytes / 1e6:>8.2f} "
+                f"{cpu_per_cycle} {s.live_clients:>12} {s.orphaned_callbacks:>12} "
+                f"{s.num_threads:>11} {s.num_fds:>7}"
             )
 
 

@@ -50,29 +50,68 @@ and will handle a future scheduled run too, without changes.
   command completions) a coarser connect/close cycle wouldn't surface as
   clearly.
 
-## The four signals, and what "leak" means for each
+## Reading the printed table
 
-- **Process RSS** (`psutil`) — should plateau, not grow without bound.
-  Checked as a trend (mean of the run's last third vs. its first third, after
-  dropping a 20% warm-up) rather than a single before/after number: allocator
-  and OS page-cache behavior is noisy sample-to-sample, so only a *sustained*
-  climb counts.
-- **CPU time** (`psutil`, user+system) — same trend check, wider tolerance.
-  CPU isn't itself what "leak" means (it's a rate, not accumulated state),
-  but a steadily rising cost per cycle is still worth surfacing.
-- **Native/handle-object counts** — `reactor_sdk.client._LIVE_CLIENTS` (a
-  `weakref.WeakSet` the SDK already keeps so the interpreter can force-close
-  stragglers at exit) and `_ORPHANED_CALLBACKS` (callback trampolines the SDK
-  couldn't confirm were safe to free — its own comment says growth there
-  "means handlers are blocking or clients are being closed from inside a
-  handler"). Unlike RSS/CPU these are exact integers, not noisy
-  measurements, so they get a plain assertion instead of a trend: `_LIVE_CLIENTS`
-  must be **exactly 0** after every single lifecycle-churn cycle (a leak on
-  cycle 3 that happens to clear by cycle 40 is still a real bug), and
-  `_ORPHANED_CALLBACKS` must **never grow** past its starting value in either
-  scenario. `test_session_churn.py` also asserts `Reactor._pending_completions`
-  is empty between iterations — every `send_command` above is awaited to
-  completion, so nothing should still be sitting there.
+Every scenario ends by printing one row per cycle. In plain language, left to
+right:
+
+| column            | what it is                                                                                          | what "bad" looks like                          |
+| ----------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `cycle`           | which iteration of the loop this row is (0, 1, 2, ...)                                                 | —                                                |
+| `elapsed_s`       | seconds since this test started                                                                        | —                                                |
+| `ram_mb`          | physical RAM the whole process is using right now — not just the SDK, everything in this one process   | keeps climbing, never plateaus                  |
+| `cpu_s_per_cycle` | CPU time *this one cycle* burned (not a running total)                                                | keeps getting bigger cycle to cycle             |
+| `live_clients`    | how many `Reactor` clients still have an open native connection right now                              | higher than expected (0 in lifecycle-churn, 1 in session-churn) |
+| `orphaned_cbs`    | frame/event callbacks the SDK couldn't confirm were safe to free when a client closed                  | anything above 0, ever                          |
+| `num_threads`     | OS-level threads this process currently has (mostly the native Rust runtime's)                         | keeps climbing (some early wobble is normal)    |
+| `num_fds`         | open file descriptors — sockets, mainly, since every WebRTC connection needs some                      | keeps climbing                                  |
+
+This table (with the same wording) also lives as a comment directly above
+`ResourceSampler.print_report()` in `helpers.py` — keep both in sync if either
+changes.
+
+## The signals, and what "leak" means for each
+
+- **Process RSS** (`ram_mb` above, via `psutil`) — should plateau, not grow
+  without bound. Checked as a trend (mean of the run's last third vs. its
+  first third, after dropping a 20% warm-up) rather than a single before/after
+  number: allocator and OS page-cache behavior is noisy sample-to-sample, so
+  only a *sustained* climb counts.
+- **CPU time** (`cpu_s_per_cycle` above, `psutil` user+system) — same trend
+  check, wider tolerance. CPU isn't itself what "leak" means (it's a rate, not
+  accumulated state), but a steadily rising cost per cycle is still worth
+  surfacing.
+- **Threads and file descriptors** (`num_threads`/`num_fds` above, `psutil`) —
+  a leaked native thread or socket in WebRTC-adjacent code doesn't always show
+  up as a dramatic RSS jump before something else (a thread or fd ceiling)
+  fails first. `num_fds` proved a rock-solid exact count in a real run (never
+  varied cycle to cycle), so it gets the same strict "never past its starting
+  value" treatment as `orphaned_cbs` below. `num_threads` did *not* — native
+  thread teardown isn't guaranteed synchronous with `close()`/`gc.collect()`
+  the way an fd close or a Python object's collection is, so it's checked as a
+  trend like RSS/CPU instead.
+- **Native/handle-object counts** (`live_clients`/`orphaned_cbs` above) —
+  `reactor_sdk.client._LIVE_CLIENTS` (a `weakref.WeakSet` the SDK already
+  keeps so the interpreter can force-close stragglers at exit) and
+  `_ORPHANED_CALLBACKS` (callback trampolines the SDK couldn't confirm were
+  safe to free — its own comment says growth there "means handlers are
+  blocking or clients are being closed from inside a handler"). Unlike
+  RSS/CPU these are exact integers, not noisy measurements, so they get a
+  plain assertion instead of a trend: `_LIVE_CLIENTS` must be **exactly 0**
+  after every single lifecycle-churn cycle (a leak on cycle 3 that happens to
+  clear by cycle 40 is still a real bug), and `_ORPHANED_CALLBACKS` must
+  **never grow** past its starting value in either scenario.
+- **The receive path** — both scenarios also subscribe to `main_video` via
+  `on_frame`/`off_frame` (`Track._adapters`), not just publish/push frames:
+  `test_lifecycle_churn.py` registers once per client and lets `close()` tear
+  it down; `test_session_churn.py` registers and unregisters every single
+  iteration on the same long-lived session, asserting `Track._adapters` is
+  empty afterward every time — the leak this would have caught otherwise
+  (a subscribe/unsubscribe cycle leaking a handler) is invisible to every
+  other signal above. `test_session_churn.py` also asserts
+  `Reactor._pending_completions` is empty between iterations — every
+  `send_command` above is awaited to completion, so nothing should still be
+  sitting there.
 - **Managed-runtime (Python heap) memory** — `tracemalloc`, snapshotted at
   ~30% of the run and again at the end, diffed with `compare_to(..., 'lineno')`.
   Printed in full (top 10 allocation sites by growth) as a diagnostic always;
