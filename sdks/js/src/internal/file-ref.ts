@@ -26,12 +26,15 @@ export function toPublicFileRef(fileRef: WireFileRef): FileRef {
  *
  * A top-level `FileRef` moves into `uploads`, keyed by its parameter name —
  * the one slot the wire has for a named upload. A `FileRef` nested inside an
- * array or a plain object has no such slot, so it stays in `data` and is
- * rewritten to the wire shape in place: the binding reads an object's own
- * properties when it serializes `data`, so a `FileRef` left as-is would cross
+ * array or an object has no such slot, so it stays in `data` and is rewritten
+ * to the wire shape in place: the binding serializes `data` by reading each
+ * object's own enumerable properties, so a `FileRef` left as-is would cross
  * the wire with its camelCase field names, which the model side does not
- * read. Only arrays and plain objects are walked; anything else (a `Blob`, a
- * `Date`, a typed array) is a value in its own right and is passed through.
+ * read. The walk follows the same rule the binding does — every array
+ * element and every own enumerable property of every object, whatever its
+ * prototype — so a `FileRef` is found wherever the binding would have
+ * serialized it. A `Date` or a `Blob` has no enumerable properties and passes
+ * through; a typed array is bytes and is skipped outright.
  *
  * Uses `isFileRef()`'s structural check rather than `instanceof FileRef`:
  * a duplicate copy of this package (e.g. two versions bundled into the same
@@ -93,9 +96,13 @@ function rewriteNestedFileRefs(value: unknown): unknown {
     });
     return copy ?? elements;
   }
-  if (isPlainObject(value)) {
+  if (isSerializedAsObject(value)) {
     let copy: Record<string, unknown> | undefined;
 
+    // A copy spreads the own enumerable properties, which is exactly the set
+    // the binding would have serialized off the original, so a class instance
+    // that held a `FileRef` reaches the wire the same as before, minus the
+    // camelCase reference.
     for (const [key, element] of Object.entries(value)) {
       const rewritten = rewriteNestedFileRefs(element);
 
@@ -109,11 +116,9 @@ function rewriteNestedFileRefs(value: unknown): unknown {
   return value;
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
-  const proto: unknown = Object.getPrototypeOf(value);
-
-  return proto === Object.prototype || proto === null;
+/** Whether the binding serializes `value` as an object of its own enumerable
+ *  properties — anything object-like except a typed array, which it serializes
+ *  as bytes and which could hold no `FileRef` anyway. */
+function isSerializedAsObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !ArrayBuffer.isView(value);
 }

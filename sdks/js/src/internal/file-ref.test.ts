@@ -102,19 +102,37 @@ describe('extractFileRefs', () => {
     expect((result.data as Record<string, unknown>).meta).toBe(meta);
   });
 
-  it('does not walk into values that are not arrays or plain objects', () => {
+  it('rewrites a FileRef held by a class instance, as the binding serializes its own fields', () => {
     class Holder {
-      constructor(public readonly image: FileRef) {}
+      constructor(
+        public readonly image: FileRef,
+        public readonly caption: string,
+      ) {}
+      describe(): string {
+        return this.caption;
+      }
     }
-    const holder = new Holder(fileRef);
+    const holder = new Holder(fileRef, 'front');
+
+    const result = extractFileRefs({ options: holder });
+
+    // The binding would have serialized `holder` as `{ image, caption }`; the
+    // rewrite hands it the same two fields with the reference in wire shape.
+    expect(result.uploads).toBeUndefined();
+    expect(result.data).toEqual({ options: { image: wireFileRef, caption: 'front' } });
+    expect(holder.image).toBe(fileRef);
+  });
+
+  it('passes through values with no enumerable properties and skips typed arrays', () => {
     const blob = new Blob(['x']);
-    const data = { holder, blob };
+    const when = new Date(0);
+    const bytes = new Uint8Array([1, 2, 3]);
+    const data = { blob, when, bytes, images: ['not a ref'] };
 
     const result = extractFileRefs(data);
 
     expect(result.uploads).toBeUndefined();
     expect(result.data).toBe(data);
-    expect(holder.image).toBe(fileRef);
   });
 
   it('does not treat a partial/shape-mismatched object as a FileRef', () => {
