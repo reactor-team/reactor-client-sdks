@@ -110,14 +110,22 @@ class ResourceSampler:
         return s
 
     def print_report(self) -> None:
+        # Per-cycle CPU (cpu_deltas), not the raw cumulative Sample.cpu_s: the
+        # latter is psutil's total process CPU time since start, so it climbs
+        # every row by construction — printing it invites reading "always
+        # going up" as a leak signal, when it says nothing about whether any
+        # single cycle is getting more expensive. See cpu_deltas()'s own
+        # docstring; the first cycle has no prior sample to diff against.
+        deltas = cpu_deltas(self.samples)
         print(
-            f"\n{'cycle':>6} {'elapsed_s':>10} {'rss_mb':>10} {'cpu_s':>8} "
+            f"\n{'cycle':>6} {'elapsed_s':>10} {'rss_mb':>10} {'cpu_s/cyc':>9} "
             f"{'live':>5} {'orphaned':>9}"
         )
-        for s in self.samples:
+        for i, s in enumerate(self.samples):
+            cpu_per_cycle = f"{deltas[i - 1]:>9.3f}" if i > 0 else f"{'—':>9}"
             print(
                 f"{s.cycle:>6} {s.elapsed_s:>10.1f} {s.rss_bytes / 1e6:>10.2f} "
-                f"{s.cpu_s:>8.2f} {s.live_clients:>5} {s.orphaned_callbacks:>9}"
+                f"{cpu_per_cycle} {s.live_clients:>5} {s.orphaned_callbacks:>9}"
             )
 
 
