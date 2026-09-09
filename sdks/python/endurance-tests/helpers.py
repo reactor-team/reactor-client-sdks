@@ -15,12 +15,14 @@ import from, not `conftest`.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import importlib.util
 import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import psutil
 
@@ -52,6 +54,31 @@ solid_rgb_frame = _integration_conftest.solid_rgb_frame
 reactor_factory = _integration_conftest.reactor_factory
 reactor = _integration_conftest.reactor
 
+
+async def pump_until_frame_received(
+    track: Any, frame: Any, received: list[Any], *, timeout: float = 2.0, fps: float = 30.0
+) -> bool:
+    """Push `frame` into `track` at ~`fps` until something lands in `received`
+    (appended to by an `on_frame`/`on_raw_frame` callback registered on the
+    *receiving* track — e.g. `main_video`) or `timeout` elapses.
+
+    Exists so the endurance loops also exercise the receive path — registering
+    and tearing down a frame handler — not just publish/push_frame, which never
+    touches `Track._adapters`/`Reactor._handlers` at all. Best-effort and never
+    raises: this suite is about churn/leak detection over many cycles, not
+    frame-delivery correctness (`integration-tests/` already covers that with a
+    real timeout-and-fail `wait_until`) — one cycle where nothing happened to
+    arrive in time just means that cycle's receive path went untouched, not a
+    failure worth stopping an hours-long run over.
+    """
+    deadline = time.monotonic() + timeout
+    interval = 1.0 / fps
+    while not received and time.monotonic() < deadline:
+        track.push_frame(frame)
+        await asyncio.sleep(interval)
+    return bool(received)
+
+
 # ── duration ─────────────────────────────────────────────────────────────────
 #
 # Wall-clock driven, not a fixed iteration count: one knob, shared by every
@@ -70,6 +97,14 @@ class Sample:
     cpu_s: float
     live_clients: int
     orphaned_callbacks: int
+    # OS-level, not SDK-level — a leaked native thread (the Rust runtime not
+    # joining a worker) or a leaked socket/fd (a WebRTC connection not fully
+    # torn down) is a classic class of bug in networking code that RSS alone
+    # can miss for a while: a few thousand small, live allocations (thread
+    # stacks, socket buffers) don't always show up as a dramatic RSS jump
+    # before something else (an FD or thread ceiling) fails first.
+    num_threads: int
+    num_fds: int
 
 
 class ResourceSampler:
@@ -105,6 +140,11 @@ class ResourceSampler:
             cpu_s=cpu.user + cpu.system,
             live_clients=len(_client_module._LIVE_CLIENTS),
             orphaned_callbacks=len(_client_module._ORPHANED_CALLBACKS),
+            num_threads=self._process.num_threads(),
+            # Unix-only (no Windows equivalent in psutil — num_handles() there
+            # counts a different, non-comparable thing) — fine here, this SDK's
+            # CI only runs this suite on macOS/Linux.
+            num_fds=self._process.num_fds(),
         )
         self.samples.append(s)
         return s
@@ -119,13 +159,14 @@ class ResourceSampler:
         deltas = cpu_deltas(self.samples)
         print(
             f"\n{'cycle':>6} {'elapsed_s':>10} {'rss_mb':>10} {'cpu_s/cyc':>9} "
-            f"{'live':>5} {'orphaned':>9}"
+            f"{'live':>5} {'orphaned':>9} {'threads':>8} {'fds':>5}"
         )
         for i, s in enumerate(self.samples):
             cpu_per_cycle = f"{deltas[i - 1]:>9.3f}" if i > 0 else f"{'—':>9}"
             print(
                 f"{s.cycle:>6} {s.elapsed_s:>10.1f} {s.rss_bytes / 1e6:>10.2f} "
-                f"{cpu_per_cycle} {s.live_clients:>5} {s.orphaned_callbacks:>9}"
+                f"{cpu_per_cycle} {s.live_clients:>5} {s.orphaned_callbacks:>9} "
+                f"{s.num_threads:>8} {s.num_fds:>5}"
             )
 
 

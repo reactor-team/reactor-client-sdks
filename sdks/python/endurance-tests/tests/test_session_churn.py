@@ -21,6 +21,7 @@ from helpers import (
     assert_never_grows,
     assert_no_sustained_growth,
     cpu_deltas,
+    pump_until_frame_received,
     solid_rgb_frame,
 )
 
@@ -42,11 +43,31 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
     iteration = 0
 
     while not sampler.deadline_reached():
+        # Registered and torn down every iteration — unlike
+        # test_lifecycle_churn.py, which registers once per client and lets
+        # close() clean it up, this is the scenario for repeated
+        # subscribe/unsubscribe on a *long-lived* track: does on_frame/
+        # off_frame leak across many cycles on the same session, not just
+        # survive one client's teardown.
+        main_video = reactor.track("main_video")
+        received: list[object] = []
+
+        # A named function, not an inline lambda passed separately to each
+        # call: off_frame() unregisters by matching the exact callable object
+        # on_frame() was given (Track._adapters is keyed by it) — two
+        # differently-created lambdas that merely *do* the same thing would
+        # never match, and off_frame() would silently no-op (it pops with a
+        # default rather than raising), leaking a handler every iteration.
+        def on_video_frame(received_frame: object) -> None:
+            received.append(received_frame)
+
+        main_video.on_frame(on_video_frame)
+
         track = await reactor.publish_track(TRACK_NAME)
-        for _ in range(3):
-            track.push_frame(frame)
+        await pump_until_frame_received(track, frame, received)
         await reactor.send_command("set_effect", {"effect": "invert"})
         track.unpublish()
+        main_video.off_frame(on_video_frame)
 
         # Exact, not trend-based: every send_command above is awaited to
         # completion before this line runs, so nothing should still be
@@ -56,6 +77,13 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
             f"{len(reactor._pending_completions)} pending completion(s) left "
             f"over after iteration {iteration} — a send_command reply was "
             "never settled"
+        )
+        # Same reasoning, for the receive side: off_frame() above should have
+        # popped this iteration's handler back out, every time.
+        assert len(main_video._adapters) == 0, (
+            f"{len(main_video._adapters)} frame handler(s) left registered on "
+            f"main_video after iteration {iteration} — off_frame() didn't clean "
+            "up"
         )
 
         sampler.sample(cycle=iteration)
@@ -88,6 +116,23 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
         name="cpu_s_per_cycle",
         max_growth_ratio=0.5,
         min_absolute_delta=0.05,
+    )
+    # Trend-based, not "never past the start" like test_lifecycle_churn.py's:
+    # one long-lived session can legitimately grow a thread or two / open a
+    # few fds during warm-up (a connection pool, a worker thread spinning up)
+    # and then plateau — same reasoning as RSS/CPU above, just with small
+    # integers instead of bytes/seconds, hence the small min_absolute_delta.
+    assert_no_sustained_growth(
+        [float(s.num_threads) for s in sampler.samples],
+        name="num_threads",
+        max_growth_ratio=0.15,
+        min_absolute_delta=2,
+    )
+    assert_no_sustained_growth(
+        [float(s.num_fds) for s in sampler.samples],
+        name="num_fds",
+        max_growth_ratio=0.15,
+        min_absolute_delta=3,
     )
 
     # Diagnostic always, hard-asserted only against a generous floor:
