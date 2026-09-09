@@ -8,6 +8,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-09-09
+
 ### Added
 
 - `FileRef` converts to `Json` as the upload reference the model reads, so a

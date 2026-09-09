@@ -9,6 +9,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.0.2]
+
 ### Fixed
 
 - A `FileRef` nested inside `sendCommand()`'s `data` — an entry of a list, or a
