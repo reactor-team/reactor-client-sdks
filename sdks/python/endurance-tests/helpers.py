@@ -232,6 +232,9 @@ def assert_no_sustained_growth(
     fields (`live_clients`, `orphaned_callbacks`) — those are deterministic
     counts, not noisy measurements; use `assert_always_zero`/`assert_never_grows`
     for them instead.
+
+    Always prints one line verdict, pass or fail — not just on failure — so a
+    clean run still says *why* each signal looked fine, not just silence.
     """
     n = len(values)
     if n < 6:
@@ -246,31 +249,58 @@ def assert_no_sustained_growth(
     last_mean = sum(last) / len(last)
     delta = last_mean - first_mean
     ratio = (delta / first_mean) if first_mean else (1.0 if delta > 0 else 0.0)
-    if delta > min_absolute_delta and ratio > max_growth_ratio:
-        raise AssertionError(
-            f"{name} grew {ratio:.0%} across the run (from {first_mean:,.3f} to "
-            f"{last_mean:,.3f}) — looks like a sustained leak, not noise"
+    is_leak = delta > min_absolute_delta and ratio > max_growth_ratio
+
+    trend = f"{first_mean:,.3f} → {last_mean:,.3f} ({ratio:+.0%})"
+    if is_leak:
+        reason = (
+            f"over the {max_growth_ratio:.0%} growth threshold — looks like a real leak, not noise"
         )
+    elif delta <= min_absolute_delta:
+        reason = (
+            f"the {delta:,.3f} change is under the {min_absolute_delta:,.3g} floor, "
+            f"so it's noise regardless of the {ratio:+.0%} ratio"
+        )
+    else:
+        reason = f"under the {max_growth_ratio:.0%} growth threshold"
+    print(f"[{name}] {'LEAK?' if is_leak else 'ok'}: {trend} — {reason}")
+
+    if is_leak:
+        raise AssertionError(f"{name} grew {ratio:.0%} across the run ({trend}) — {reason}")
 
 
 def assert_always_zero(samples: list[Sample], *, field: str) -> None:
     """Fail if `field` was ever nonzero, on *any* cycle — for a count that
     should return to exactly 0 every time (e.g. live client handles right
     after `close()`), a trend isn't the right test: a leak on cycle 3 that
-    happens to get cleaned up by cycle 40 is still a real bug."""
+    happens to get cleaned up by cycle 40 is still a real bug.
+
+    Always prints one line verdict, pass or fail — see
+    `assert_no_sustained_growth`'s own docstring for why.
+    """
     bad = [(s.cycle, getattr(s, field)) for s in samples if getattr(s, field) != 0]
     if bad:
         cycle, value = bad[0]
-        raise AssertionError(
-            f"{field} was nonzero on {len(bad)}/{len(samples)} cycles "
-            f"(first at cycle {cycle}: {value}) — a handle leaked mid-run"
+        reason = (
+            f"nonzero on {len(bad)}/{len(samples)} cycles (first at cycle {cycle}: "
+            f"{value}) — a handle leaked mid-run"
         )
+        print(f"[{field}] LEAK?: {reason}")
+        raise AssertionError(f"{field} was {reason}")
+    print(f"[{field}] ok: stayed at exactly 0 across all {len(samples)} cycles")
 
 
 def assert_never_grows(samples: list[Sample], *, field: str) -> None:
     """Fail if `field`'s peak ever exceeds its starting value — for a count
-    that's expected to stay flat across the whole run (not necessarily 0)."""
+    that's expected to stay flat across the whole run (not necessarily 0).
+
+    Always prints one line verdict, pass or fail — see
+    `assert_no_sustained_growth`'s own docstring for why.
+    """
     baseline = getattr(samples[0], field)
     peak = max(getattr(s, field) for s in samples)
     if peak > baseline:
-        raise AssertionError(f"{field} grew from {baseline} to {peak} during the run")
+        reason = f"grew from {baseline} to {peak} during the run"
+        print(f"[{field}] LEAK?: {reason}")
+        raise AssertionError(f"{field} {reason}")
+    print(f"[{field}] ok: never exceeded its starting value ({baseline}; peak seen was {peak})")

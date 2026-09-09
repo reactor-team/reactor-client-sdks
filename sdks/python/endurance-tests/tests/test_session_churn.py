@@ -145,7 +145,18 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
         for stat in diff[:10]:
             print(f"  {stat}")
         biggest = diff[0].size_diff if diff else 0
-        assert biggest < 5_000_000, (
+        is_leak = biggest >= 5_000_000
+        print(
+            f"[tracemalloc] {'LEAK?' if is_leak else 'ok'}: biggest single-traceback "
+            f"growth was {biggest / 1e6:.2f} MB — "
+            + (
+                "over the 5 MB floor, see the breakdown above for where"
+                if is_leak
+                else "under the 5 MB floor treated as noise (one-time caches, "
+                "string interning — see README.md)"
+            )
+        )
+        assert not is_leak, (
             f"a single allocation site grew {biggest / 1e6:.1f} MB between the "
             "run's ~30% mark and its end — see the top-10 breakdown above"
         )
