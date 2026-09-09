@@ -9,6 +9,17 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-09-09
+
+### Fixed
+
+- A `FileRef` nested inside `send_command()`'s `data` — an entry of a list, or
+  a value of a dict — is now serialised as the upload reference the model reads
+  (`upload_id`, `name`, `mime_type`, `size`). `json.dumps` previously raised
+  `TypeError` on it, so a parameter taking several files needed a hand-written
+  `{"upload_id": ...}` conversion. A top-level `FileRef` still travels beside
+  the arguments as before.
+
 ## [1.4.0] - 2026-09-04
 
 Minor rather than patch: `get_stats()` gains fields, and three it already had

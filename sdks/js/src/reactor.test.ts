@@ -123,6 +123,31 @@ describe('Reactor.sendCommand', () => {
     ]);
   });
 
+  it('serializes FileRef values nested in a list as wire-shape references inside data', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const first = new FileRef('up_1', 'a.jpg', 'image/jpeg', 10);
+    const second = new FileRef('up_2', 'b.jpg', 'image/jpeg', 20);
+
+    await reactor.sendCommand('enqueue', { prompt: 'two cats', reference_images: [first, second] });
+
+    // A list has no named upload slot, so its entries travel inline in the
+    // JSON payload, in the shape the model side reads and in the order sent.
+    expect(client.sendCommandCalls).toEqual([
+      {
+        command: 'enqueue',
+        data: {
+          prompt: 'two cats',
+          reference_images: [
+            { upload_id: 'up_1', name: 'a.jpg', mime_type: 'image/jpeg', size: 10 },
+            { upload_id: 'up_2', name: 'b.jpg', mime_type: 'image/jpeg', size: 20 },
+          ],
+        },
+        uploads: undefined,
+      },
+    ]);
+  });
+
   it('waits out an in-flight connect() before disconnecting or freeing the client', async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const gate = createDeferred<void>();

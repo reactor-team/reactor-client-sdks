@@ -10,7 +10,9 @@ import Foundation
 /// try await reactor.sendCommand("set_image", uploads: ["image": photo])
 /// ```
 ///
-/// `Codable`, so it also drops into a typed command's arguments.
+/// `Codable`, so it also drops into a typed command's arguments — the way a
+/// parameter that takes several files, a list of references, is filled. It
+/// encodes as the upload reference the platform reads, whichever way it travels.
 public struct FileRef: Sendable, Hashable, Codable {
 
     /// The platform's id for the uploaded bytes.

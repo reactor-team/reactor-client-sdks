@@ -9,6 +9,17 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.0.2]
+
+### Fixed
+
+- A `FileRef` nested inside `sendCommand()`'s `data` — an entry of a list, or a
+  field of an object — is now serialized as the upload reference the model reads
+  (`upload_id`, `name`, `mime_type`, `size`). It previously crossed the wire with
+  the class's camelCase field names, which the model refused, so a parameter
+  taking several files needed a hand-written `{ upload_id }` conversion. A
+  top-level `FileRef` still travels beside the arguments as before.
+
 ## [3.0.1]
 
 ### Fixed

@@ -1,8 +1,9 @@
 /**
- * Reference to a file uploaded via `Reactor.uploadFile()`. Pass it back as a
- * top-level value in `sendCommand()`'s `data` and it's extracted and sent as
- * a separate upload reference rather than embedded in the JSON payload —
- * see `extractFileRefs()`.
+ * Reference to a file uploaded via `Reactor.uploadFile()`. Pass it back in
+ * `sendCommand()`'s `data` wherever the model's schema declares a file: as a
+ * top-level value it's extracted and sent as a separate upload reference,
+ * and inside an array or object it's serialized as one — see
+ * `extractFileRefs()`.
  */
 export class FileRef {
   constructor(

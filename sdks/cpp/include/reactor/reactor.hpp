@@ -129,15 +129,22 @@ struct ConnectOptions {
 
 /// A file the platform is holding, ready to be passed into a command.
 ///
-/// Returned by `upload_file` / `upload_bytes`, and handed to `send_command` as a
-/// named upload rather than embedded in the arguments — the platform resolves the
-/// reference on its side, so the bytes cross the wire once.
+/// Returned by `upload_file` / `upload_bytes`. A parameter that takes one file is
+/// handed to `send_command` as a named upload rather than embedded in the
+/// arguments — the platform resolves the reference on its side, so the bytes
+/// cross the wire once. A parameter that takes several — a list, or a field of an
+/// object — has no named slot, so the reference goes inside the arguments
+/// instead: `FileRef` converts to `Json` as the upload reference the platform
+/// reads, so `Json::array({first, second})` is that list.
 struct FileRef {
   std::string upload_id;
   std::string name;
   std::string mime_type;
   std::uint64_t size = 0;
 };
+
+/// `FileRef` → its upload reference, for a `FileRef` placed inside a `Json`.
+void to_json(Json& json, const FileRef& ref);
 
 /// A Reactor client: one session, and the tracks and commands on it.
 ///

@@ -18,6 +18,15 @@
 
 namespace reactor {
 
+// ── Uploads ──────────────────────────────────────────────────────────────────
+
+void to_json(Json& json, const FileRef& ref) {
+  json = Json{{"upload_id", ref.upload_id},
+              {"name", ref.name},
+              {"mime_type", ref.mime_type},
+              {"size", ref.size}};
+}
+
 // ── Status ───────────────────────────────────────────────────────────────────
 
 std::string_view to_string(Status status) noexcept {
@@ -525,10 +534,7 @@ void ClientImpl::begin_send_command(std::unique_ptr<Pending> op, const std::stri
     if (!uploads.empty()) {
       Json object = Json::object();
       for (const auto& [parameter, ref] : uploads) {
-        object[parameter] = Json{{"upload_id", ref.upload_id},
-                                 {"name", ref.name},
-                                 {"mime_type", ref.mime_type},
-                                 {"size", ref.size}};
+        object[parameter] = ref;
       }
       uploads_json = object.dump();
     }

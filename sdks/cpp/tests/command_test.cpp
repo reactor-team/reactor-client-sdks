@@ -402,6 +402,38 @@ TEST_CASE("a FileRef reaches the uploads object, and never the arguments") {
   CHECK(uploads["image"]["size"] == 42);
 }
 
+TEST_CASE("a FileRef placed inside the arguments serializes as an upload reference") {
+  Connected fixture;
+  const TempFile file{"bytes"};
+  const auto ref = fixture.client.upload_file(file.path.string()).get();
+  reactor::FileRef second = ref;
+  second.upload_id = "up_456";
+  second.name = "second.jpg";
+
+  // A list has no named upload slot, so its entries travel inside the
+  // arguments, in the shape the platform reads and in the order given.
+  fixture.client
+      .send_command("enqueue",
+                    reactor::Json{{"prompt", "two cats"},
+                                  {"reference_images", reactor::Json::array({ref, second})}})
+      .get();
+
+  REQUIRE(fixture.session.commands.size() == 1);
+  const auto& command = fixture.session.commands.front();
+  CHECK(command.uploads_were_null);
+
+  const auto args = reactor::Json::parse(command.args_json);
+  CHECK(args["prompt"] == "two cats");
+  REQUIRE(args["reference_images"].is_array());
+  REQUIRE(args["reference_images"].size() == 2);
+  CHECK(args["reference_images"][0] == reactor::Json{{"upload_id", "up_123"},
+                                                     {"name", "photo.jpg"},
+                                                     {"mime_type", "image/jpeg"},
+                                                     {"size", 42}});
+  CHECK(args["reference_images"][1]["upload_id"] == "up_456");
+  CHECK(args["reference_images"][1]["name"] == "second.jpg");
+}
+
 TEST_CASE("uploading bytes passes them through with their name and type") {
   Connected fixture;
   const std::vector<std::uint8_t> data{1, 2, 3, 4, 5};
