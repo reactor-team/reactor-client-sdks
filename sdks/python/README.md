@@ -26,6 +26,8 @@ native library, and building it needs a Rust toolchain and a libwebrtc download.
 |---|---|---|
 | Linux x86_64 | `manylinux_2_34_x86_64` | glibc 2.34+ (Ubuntu 22.04, Debian 12, RHEL 9, Amazon Linux 2023) |
 | Linux aarch64 | `manylinux_2_34_aarch64` | glibc 2.34+ |
+| Linux musl x86_64 | `musllinux_1_2_x86_64` | musl 1.2+ (Alpine Linux) |
+| Linux musl aarch64 | `musllinux_1_2_aarch64` | musl 1.2+ (Alpine Linux) |
 | macOS arm64 | `macosx_11_0_arm64` | macOS 11+ |
 | macOS x86_64 | `macosx_13_0_x86_64` | macOS 13+ — libwebrtc's floor on this architecture |
 | Windows x86_64 | `win_amd64` | Windows 10+ |
@@ -34,7 +36,7 @@ Any interpreter 3.10 or newer works on all of them: the SDK reaches the library
 through `ctypes` and links no libpython, so the wheels are tagged
 `py3-none-<platform>` and there is nothing per-version to match.
 
-Anything outside that table — musl distributions, glibc older than 2.34, 32-bit,
+Anything outside that table — musl older than 1.2, glibc older than 2.34, 32-bit,
 Windows on ARM — has no wheel, and **pip will not say so**: 0.8.0 and earlier
 were a single `py3-none-any` wheel that installs anywhere, so pip walks back to
 one of those and leaves you on an older SDK with a different API. Pin a floor to
@@ -382,6 +384,32 @@ commit conventions, opening a PR).
 
 The [full documentation](https://docs.reactor.inc/sdk-reference/using-the-sdk#python)
 covers platform concepts and the other language SDKs.
+
+## Building Alpine wheels
+
+The release workflow uses PyPA's `musllinux_1_2` images and repairs the wheel
+with `auditwheel`. Both the Rust library and its WebRTC/C++ dependencies must
+be built for musl; retagging a glibc wheel is not sufficient. See
+[the musllinux platform specification](https://packaging.python.org/en/latest/specifications/platform-compatibility-tags/#musllinux).
+
+The musl jobs require `reactor-webrtc` release `webrtc-7907-a5ddff60-p6`, with
+`linux-musl-x64` and `linux-musl-arm64` assets, from the companion native build
+change. Publish those release prebuilts before merging this wheel pipeline.
+The SDK version remains unchanged until a separate release bump.
+
+For local validation before publishing, mount a musl prebuilt into the builder
+and set `REACTOR_WEBRTC_LIB_DIR` to its container path. The directory must carry
+`lib/linux_libc` containing `musl`. For example, on an ARM64 host, from the SDK
+repository root (use the `x86_64` builder and matching prebuilt on x86_64):
+
+```bash
+# PREBUILT points at the companion build's out/linux-musl-arm64-release/dist.
+docker run --rm -v "$PWD:/io" -v "$PREBUILT:/prebuilt:ro" -w /io \
+  -e REACTOR_WEBRTC_LIB_DIR=/prebuilt quay.io/pypa/musllinux_1_2_aarch64 \
+  bash /io/scripts/build-musllinux-wheel.sh
+docker run --rm -v "$PWD:/io:ro" -w /tmp python:3.10-alpine3.22 \
+  sh /io/scripts/test-musllinux-wheel.sh
+```
 
 ## License
 

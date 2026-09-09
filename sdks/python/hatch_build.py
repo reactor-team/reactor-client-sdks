@@ -44,8 +44,8 @@ def _expected_lib_name() -> str:
 def _platform_tag() -> str:
     """The wheel's platform tag.
 
-    ``REACTOR_WHEEL_PLATFORM_TAG`` wins when set, and the release workflow always
-    sets it. The inferred value is a fallback for local builds, and it is only a
+    ``REACTOR_WHEEL_PLATFORM_TAG`` wins when set, and the macOS/Windows release builds
+    set it. The inferred value is a fallback for local builds, and it is only a
     guess: ``sysconfig.get_platform()`` reports the floor *the interpreter* was built
     against, not the one the bundled library actually needs. Those differ — Rust
     targets macOS 11 on arm64 by default while libwebrtc needs 13 on x86_64 — and a
@@ -53,8 +53,8 @@ def _platform_tag() -> str:
     the wheel and the failure surfaces later as a load error.
 
     On Linux the inferred value is a bare ``linux_x86_64``, which PyPI rejects
-    outright; the workflow runs ``auditwheel`` to find the manylinux tag the binary
-    has actually earned.
+    outright; the workflow runs ``auditwheel`` to find the manylinux or musllinux
+    tag the binary has actually earned.
     """
     override = os.environ.get("REACTOR_WHEEL_PLATFORM_TAG")
     if override:
