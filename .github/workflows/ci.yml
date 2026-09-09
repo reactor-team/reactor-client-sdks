@@ -606,8 +606,10 @@ jobs:
     if: (github.event_name == 'push' && needs.changes.outputs.integration_tests_already_ran != 'true') || (needs.changes.outputs.swift == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: macos-latest
     env:
-      # Same one-triple-at-a-time reasoning as swift-package's own job: four
-      # slices come to about 13 GB and a macOS runner has roughly 14 GB free.
+      # Prunes the one target triple this job builds after copying its
+      # archive out — cheap insurance on disk, though with only one slice
+      # (see below) it is no longer the 13-GB-across-4-slices concern
+      # swift-package's own job has.
       REACTOR_XCFRAMEWORK_PRUNE: "1"
     steps:
       - uses: actions/checkout@v7
@@ -615,14 +617,22 @@ jobs:
         with:
           cache-on-failure: true
           cache-key: ${{ hashFiles('mise.lock') }}
-          cache-shared-key: reactor-swift-xcframework-${{ hashFiles('mise.lock') }}
+          # Its own key, not swift-package's reactor-swift-xcframework-<hash>:
+          # that job builds all 4 slices, this one only 1 (see below) — sharing
+          # a key would mean whichever job's cache save runs last overwrites
+          # the other's with a mismatched shape.
+          cache-shared-key: reactor-swift-xcframework-ios-sim-${{ hashFiles('mise.lock') }}
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
-      # test:swift:integration-tests:ios-simulator depends on build:xcframework
-      # (mise.toml), so this one line builds every slice and then runs the
-      # suite through xcodebuild against a simulator destination — no separate
-      # build step, same reasoning as swift-package's own single-line job.
+      # test:swift:integration-tests:ios-simulator depends on
+      # build:xcframework:ios-simulator-only (mise.toml), not the full
+      # build:xcframework swift-package uses: this suite only ever runs
+      # xcodebuild against a Simulator destination (see swift.sh's own
+      # comment on it), so building the macOS and iOS-device slices too —
+      # each its own cargo build plus a multi-GB libwebrtc-prebuilt download —
+      # would be pure waste here. One line still does build-then-run, same
+      # reasoning as swift-package's own single-line job.
       - name: Swift SDK integration tests, iOS Simulator (real FFI, real model)
         env:
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}

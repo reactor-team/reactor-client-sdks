@@ -10,6 +10,13 @@
 #   iOS        arm64 (device)
 #   iOS        arm64 (simulator)
 #
+# `ios-simulator-only` builds and packages just the last of those. It exists
+# for test:swift:integration-tests:ios-simulator, the one caller that only
+# ever runs xcodebuild against a Simulator destination (see swift.sh's own
+# comment on that suite) — building the other two slices for it is a real
+# cargo build plus a multi-GB libwebrtc-prebuilt download each, spent on
+# output that suite never links against.
+#
 # Intel Macs are supported and are the x86_64 half of that first slice: a Mac of
 # either architecture links the same macOS library. It is also why the macOS
 # floor is 13 rather than 11 — see Package.swift.
@@ -149,57 +156,7 @@ verify_ios_link() {
     fi
 }
 
-main() {
-    # `frameworks <platform>` prints the manifest's list for that platform, which
-    # is how swift-package-check.sh links its probe without a second copy of it.
-    if [ "${1:-}" = "frameworks" ]; then
-        platform_frameworks "${2:?usage: build-swift-xcframework.sh frameworks <iOS|macOS>}"
-        return 0
-    fi
-
-    rm -rf "$STAGING" "$FRAMEWORK" "$SLICES"
-
-    for target in "${MAC_TARGETS[@]}"; do
-        build_slice "$target"
-    done
-
-    # `keep`, because the check below links a cdylib out of this triple's tree
-    # and so has to run before it is pruned. Passed as an argument rather than as
-    # an environment prefix: whether such a prefix survives a *function* call is
-    # exactly the kind of shell detail that differs between shells.
-    build_slice "$IOS_DEVICE_TARGET" keep
-    verify_ios_link
-    if [ -n "${REACTOR_XCFRAMEWORK_PRUNE:-}" ]; then
-        rm -rf "${REPO_ROOT:?}/target/$IOS_DEVICE_TARGET"
-    fi
-
-    build_slice "$IOS_SIM_TARGET"
-
-    mkdir -p "$STAGING/include" "$STAGING/macos"
-
-    # The headers every slice shares. The module map's name has to match the
-    # SwiftPM target that imports it, or `import CReactorFFI` finds nothing.
-    cp "$HEADER" "$STAGING/include/reactor_ffi.h"
-    cat > "$STAGING/include/module.modulemap" <<'MODULEMAP'
-module CReactorFFI {
-    header "reactor_ffi.h"
-    export *
-}
-MODULEMAP
-
-    log "lipo: one macOS slice from arm64 + x86_64"
-    lipo -create \
-        "$(slice_path "${MAC_TARGETS[0]}")" \
-        "$(slice_path "${MAC_TARGETS[1]}")" \
-        -output "$STAGING/macos/libreactor_ffi.a"
-
-    log "xcodebuild -create-xcframework"
-    xcodebuild -create-xcframework \
-        -library "$STAGING/macos/libreactor_ffi.a" -headers "$STAGING/include" \
-        -library "$(slice_path "$IOS_DEVICE_TARGET")" -headers "$STAGING/include" \
-        -library "$(slice_path "$IOS_SIM_TARGET")" -headers "$STAGING/include" \
-        -output "$FRAMEWORK"
-
+print_summary() {
     log "what came out"
     # Sizes and architectures, printed rather than assumed. The archive is large
     # — libwebrtc is whole-archived into it — and what reaches an app binary
@@ -217,6 +174,88 @@ MODULEMAP
         done
 
     printf '\n%s\n' "ReactorFFI.xcframework → $FRAMEWORK"
+}
+
+# The headers every slice shares, staged once regardless of which mode below
+# runs. The module map's name has to match the SwiftPM target that imports
+# it, or `import CReactorFFI` finds nothing.
+stage_headers() {
+    mkdir -p "$STAGING/include"
+    cp "$HEADER" "$STAGING/include/reactor_ffi.h"
+    cat > "$STAGING/include/module.modulemap" <<'MODULEMAP'
+module CReactorFFI {
+    header "reactor_ffi.h"
+    export *
+}
+MODULEMAP
+}
+
+# Only the iOS Simulator slice — see this script's header comment for who
+# this is for and why. No lipo (one architecture), no macOS/iOS-device
+# builds, no verify_ios_link (that check is about the device slice's own
+# framework list, which this mode never produces).
+build_ios_simulator_only() {
+    build_slice "$IOS_SIM_TARGET"
+
+    log "xcodebuild -create-xcframework (iOS Simulator slice only)"
+    xcodebuild -create-xcframework \
+        -library "$(slice_path "$IOS_SIM_TARGET")" -headers "$STAGING/include" \
+        -output "$FRAMEWORK"
+
+    print_summary
+}
+
+build_all_slices() {
+    mkdir -p "$STAGING/macos"
+
+    for target in "${MAC_TARGETS[@]}"; do
+        build_slice "$target"
+    done
+
+    # `keep`, because the check below links a cdylib out of this triple's tree
+    # and so has to run before it is pruned. Passed as an argument rather than as
+    # an environment prefix: whether such a prefix survives a *function* call is
+    # exactly the kind of shell detail that differs between shells.
+    build_slice "$IOS_DEVICE_TARGET" keep
+    verify_ios_link
+    if [ -n "${REACTOR_XCFRAMEWORK_PRUNE:-}" ]; then
+        rm -rf "${REPO_ROOT:?}/target/$IOS_DEVICE_TARGET"
+    fi
+
+    build_slice "$IOS_SIM_TARGET"
+
+    log "lipo: one macOS slice from arm64 + x86_64"
+    lipo -create \
+        "$(slice_path "${MAC_TARGETS[0]}")" \
+        "$(slice_path "${MAC_TARGETS[1]}")" \
+        -output "$STAGING/macos/libreactor_ffi.a"
+
+    log "xcodebuild -create-xcframework"
+    xcodebuild -create-xcframework \
+        -library "$STAGING/macos/libreactor_ffi.a" -headers "$STAGING/include" \
+        -library "$(slice_path "$IOS_DEVICE_TARGET")" -headers "$STAGING/include" \
+        -library "$(slice_path "$IOS_SIM_TARGET")" -headers "$STAGING/include" \
+        -output "$FRAMEWORK"
+
+    print_summary
+}
+
+main() {
+    # `frameworks <platform>` prints the manifest's list for that platform, which
+    # is how swift-package-check.sh links its probe without a second copy of it.
+    if [ "${1:-}" = "frameworks" ]; then
+        platform_frameworks "${2:?usage: build-swift-xcframework.sh frameworks <iOS|macOS>}"
+        return 0
+    fi
+
+    rm -rf "$STAGING" "$FRAMEWORK" "$SLICES"
+    stage_headers
+
+    if [ "${1:-}" = "ios-simulator-only" ]; then
+        build_ios_simulator_only
+    else
+        build_all_slices
+    fi
 }
 
 main "$@"

@@ -396,7 +396,13 @@ run = "scripts/swift.sh integration-tests"
 
 [tasks."test:swift:integration-tests:ios-simulator"]
 description = "[Testing] The same suite, run on an iOS Simulator destination via xcodebuild"
-depends = ["build:xcframework"]
+# Only the iOS Simulator slice, not the full XCFramework: this suite only
+# ever runs against a Simulator destination (see swift.sh's own comment on
+# it), so the macOS and iOS-device slices `build:xcframework` also builds —
+# each its own cargo build plus a multi-GB libwebrtc-prebuilt download —
+# would be pure waste here. `test:swift:package` still depends on the full
+# `build:xcframework` below, since it validates every slice.
+depends = ["build:xcframework:ios-simulator-only"]
 run = "scripts/swift.sh integration-tests-ios-simulator"
 
 [tasks."build:xcframework"]
@@ -406,6 +412,10 @@ description = "[Build] Build ReactorFFI.xcframework (macOS + iOS device + iOS si
 # keeps only one triple at a time, which is what CI sets and what a 14 GB runner
 # needs.
 run = "scripts/build-swift-xcframework.sh"
+
+[tasks."build:xcframework:ios-simulator-only"]
+description = "[Build] Build ReactorFFI.xcframework with just the iOS Simulator slice"
+run = "scripts/build-swift-xcframework.sh ios-simulator-only"
 
 [tasks."test:swift:package"]
 description = "[Testing] Consume the XCFramework from a throwaway package, move it, build again"
