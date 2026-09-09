@@ -35,17 +35,40 @@ env:
   MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
 
 jobs:
+  # A separate job, not an expression on the `python` job's own timeout-minutes:
+  # GitHub Actions expressions have no arithmetic operators (`*`/`+` aren't part
+  # of the expression grammar at all, unlike `needs`/`inputs` context access,
+  # which *is* supported there) — the multiply-by-two-plus-setup-buffer math
+  # has to happen in a shell step instead, and `timeout-minutes` can only take
+  # a literal or a `needs.<job>.outputs.*` expression, never one of its own
+  # steps' outputs (those don't exist yet when the job's own timeout is
+  # evaluated).
+  setup:
+    name: Compute job timeout
+    runs-on: ubuntu-latest
+    outputs:
+      timeout_minutes: ${{ steps.compute.outputs.timeout_minutes }}
+    steps:
+      - name: Compute timeout-minutes from duration_minutes
+        id: compute
+        env:
+          DURATION_MINUTES: ${{ inputs.duration_minutes }}
+        # `10#` forces base-10 parsing: bash's arithmetic context otherwise
+        # treats a leading-zero numeral (e.g. "08") as octal and errors out.
+        run: |
+          echo "timeout_minutes=$((10#$DURATION_MINUTES * 2 + 30))" >> "$GITHUB_OUTPUT"
+
   python:
     name: Python SDK endurance tests
+    needs: setup
     if: inputs.sdk == 'python'
     runs-on: ubuntu-latest
-    # Derived from duration_minutes, not a fixed figure: the two scenarios
-    # run sequentially, each for duration_minutes, so the job needs at least
-    # 2x that plus setup (toolchain install, clang, build) — a fixed timeout
-    # would silently kill any multi-hour duration_minutes partway through the
-    # second scenario. 30 extra minutes covers setup; `jobs.<job_id>.timeout-
-    # minutes` supports the `inputs` context per GitHub's own docs.
-    timeout-minutes: ${{ fromJSON(inputs.duration_minutes) * 2 + 30 }}
+    # The two scenarios run sequentially, each for duration_minutes, so the
+    # job needs at least 2x that plus setup (toolchain install, clang,
+    # build) — a fixed timeout would silently kill any multi-hour
+    # duration_minutes run partway through the second scenario. Computed in
+    # the `setup` job above, not inline here (see its comment for why).
+    timeout-minutes: ${{ fromJSON(needs.setup.outputs.timeout_minutes) }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -64,10 +87,12 @@ jobs:
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
           DURATION_MINUTES: ${{ inputs.duration_minutes }}
         # The conversion happens here, in shell, rather than in the `env:`
-        # block above: GitHub Actions expressions have no reliable arithmetic
-        # operator across versions, but the input is a plain integer string,
-        # so bash's own `$(( ))` handles it directly.
+        # block above: GitHub Actions expressions have no arithmetic operators
+        # at all (see the `setup` job's comment), but the input is a plain
+        # integer string, so bash's own `$(( ))` handles it directly — with
+        # the same `10#` base-10 guard as `setup`, since duration_minutes is
+        # free-form user input and could just as easily be "08" here.
         run: |
-          export ENDURANCE_DURATION_SECONDS=$((DURATION_MINUTES * 60))
+          export ENDURANCE_DURATION_SECONDS=$((10#$DURATION_MINUTES * 60))
           echo "Running for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s) per scenario"
           mise run test:python:endurance-tests
