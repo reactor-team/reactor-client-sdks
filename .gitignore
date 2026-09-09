@@ -5,6 +5,7 @@ __pycache__/
 *.py[cod]
 .venv/
 dist/
+dist-unrepaired/
 *.egg-info/
 node_modules/
 .env

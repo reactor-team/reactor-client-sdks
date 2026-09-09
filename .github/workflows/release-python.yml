@@ -7,12 +7,12 @@
 # The wheels go out as GitHub release assets and to PyPI, in that order — see the
 # publish-pypi job. A bump that reaches main is a public release.
 #
-# Linux builds inside a manylinux container so its wheels carry a manylinux tag that
-# is earned rather than asserted; mac and Windows build on the runner. See
-# scripts/build-manylinux-wheel.sh.
+# Linux builds inside PyPA manylinux/musllinux containers; auditwheel checks
+# the platform tags. macOS and Windows build on the runner. See
+# scripts/build-manylinux-wheel.sh and scripts/build-musllinux-wheel.sh.
 #
-# Five platforms, matching what reactor-webrtc ships. iOS and Android have prebuilt
-# libwebrtc but no CPython, so they have no wheel.
+# Seven platforms, including separate glibc and musl Linux wheels. iOS and
+# Android have prebuilt libwebrtc but no wheel in this pipeline.
 #
 # Pull requests that touch packaging or the FFI build the wheels and upload them as
 # artifacts, releasing nothing. workflow_dispatch does the same on demand. Only a
@@ -29,6 +29,8 @@ on:
       - "Cargo.lock"
       - ".github/workflows/release-python.yml"
       - "scripts/build-manylinux-wheel.sh"
+      - "scripts/build-musllinux-wheel.sh"
+      - "scripts/test-musllinux-wheel.sh"
 
   # Pull requests build the wheels and upload them as artifacts, without releasing
   # anything — the release and publish jobs are gated on a push to main. This is the
@@ -36,7 +38,7 @@ on:
   # workflow only runs from the default branch, so nothing here can be exercised by
   # merging it and hoping.
   #
-  # The paths are narrow on purpose. Five runners, two of them macOS and one Windows,
+  # The paths are narrow on purpose. Seven runners, two of them macOS and one Windows,
   # each doing a full release build of libwebrtc's glue — worth it for a change to
   # packaging or to the library the wheel carries, and not worth it for anything else.
   # Narrow it further, or drop it, if it turns out to fire more often than it earns.
@@ -48,6 +50,8 @@ on:
       - "Cargo.lock"
       - ".github/workflows/release-python.yml"
       - "scripts/build-manylinux-wheel.sh"
+      - "scripts/build-musllinux-wheel.sh"
+      - "scripts/test-musllinux-wheel.sh"
 
   workflow_dispatch:
     inputs:
@@ -167,6 +171,17 @@ jobs:
             container_image: quay.io/pypa/manylinux_2_34_aarch64
             manylinux_plat: manylinux_2_34_aarch64
 
+          # Requires the p6 musl prebuilts from reactor-webrtc's companion change.
+          - platform: linux-musl-x64
+            os: ubuntu-24.04
+            container_image: quay.io/pypa/musllinux_1_2_x86_64
+            musl: true
+
+          - platform: linux-musl-arm64
+            os: ubuntu-24.04-arm
+            container_image: quay.io/pypa/musllinux_1_2_aarch64
+            musl: true
+
           - platform: mac-arm64
             os: macos-latest
             target: aarch64-apple-darwin
@@ -204,7 +219,7 @@ jobs:
       # host contributes nothing but the mount, so none of the host setup below
       # applies.
       - name: Build wheel in ${{ matrix.container_image }}
-        if: matrix.container_image != ''
+        if: matrix.container_image != '' && !matrix.musl
         run: |
           set -euo pipefail
           docker run --rm \
@@ -212,6 +227,20 @@ jobs:
             -e MANYLINUX_PLAT="${{ matrix.manylinux_plat }}" \
             "${{ matrix.container_image }}" \
             bash /io/scripts/build-manylinux-wheel.sh
+
+      - name: Build musllinux wheel
+        if: matrix.musl
+        run: |
+          docker run --rm -v "$PWD:/io" -w /io \
+            -e REACTOR_WEBRTC_TAG=webrtc-7907-a5ddff60-p6 \
+            "${{ matrix.container_image }}" \
+            bash /io/scripts/build-musllinux-wheel.sh
+
+      - name: Test musllinux wheel in clean Alpine
+        if: matrix.musl
+        run: |
+          docker run --rm -v "$PWD:/io:ro" -w /tmp \
+            python:3.10-alpine3.22 sh /io/scripts/test-musllinux-wheel.sh
 
       # ── macOS and Windows: build on the runner ──────────────────────────────
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -246,7 +275,7 @@ jobs:
           # tool, and asking mise for it cost both of these platforms: mise.lock
           # carries no windows-x64 URLs at all, and no macos-x64 URL for hk, so
           # `mise install --locked` refuses before it gets to uv. It also matches how
-          # the container script builds, so all five platforms now do the same thing.
+          # the container script builds, so all seven platforms now do the same thing.
           if [ "$RUNNER_OS" = "Windows" ]; then
             HOST_PY=python
             VENV_PY="$GITHUB_WORKSPACE/buildenv/Scripts/python.exe"
@@ -265,6 +294,7 @@ jobs:
       # binary that is present but unloadable — a missing symbol, the wrong libc++
       # linkage — before it ever reaches a release asset.
       - name: Smoke-test the wheel
+        if: ${{ !matrix.musl }}
         shell: bash
         run: |
           set -euo pipefail
@@ -319,7 +349,7 @@ jobs:
       # argtypes match the compiled ABI — ctypes verifies nothing itself, so a drifted
       # signature is silent undefined behaviour. Until now they only ever ran on Linux,
       # in the `test` job against a target/release build; on Windows the DLL was never
-      # exercised at all. Running them here covers all five platforms against the
+      # exercised at all. Running them here covers all seven platforms against the
       # binary a user actually gets.
       #
       # test_client.py comes along because it is fast and some of it is
@@ -327,6 +357,7 @@ jobs:
       # test_build_hook.py deliberately does not: it tests the build machinery rather
       # than the wheel, and belongs in the `test` job that already runs it.
       - name: Run the test suite against the wheel
+        if: ${{ !matrix.musl }}
         shell: bash
         run: |
           set -euo pipefail
@@ -349,7 +380,7 @@ jobs:
           name: wheel-${{ matrix.platform }}
           path: dist/*.whl
           if-no-files-found: error
-          # Each wheel carries a ~20 MB library, so a full matrix is ~100 MB. A
+          # Each wheel carries a ~20 MB library, so a full matrix is ~140 MB. A
           # pull-request build is only interesting while the pull request is; a
           # release build is already preserved as a release asset.
           retention-days: ${{ github.event_name == 'pull_request' && 14 || 30 }}
@@ -457,7 +488,7 @@ jobs:
           links no libpython, so one wheel per platform covers every supported
           interpreter (3.10+).
 
-          Linux needs glibc 2.34 or newer (x86_64, aarch64), macOS 11+ on arm64 and
+          Linux needs glibc 2.34+ or musl 1.2+ (x86_64, aarch64), macOS 11+ on arm64 and
           13+ on x86_64, and Windows x86_64. There is no sdist, so on anything else
           pip resolves to an older release instead of failing — pin
           \`reactor-sdk>=1.0\` to turn that into an error. The README has the table.

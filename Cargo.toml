@@ -17,6 +17,8 @@ repository = "https://github.com/reactor-team/reactor-client-sdks"
 reactor-protocol = { path = "crates/reactor-protocol" }
 reactor-core     = { path = "crates/reactor-core" }
 reactor-wasm     = { path = "crates/reactor-wasm" }
+# 0.16: Linux musl prebuilt selection and the libwebrtc p6 native build.
+#
 # 0.15: the stats report says which stream is which, and carries the candidate
 # pair's identity and counters — `kind`, `nominated`, `local_candidate_type`,
 # the available-bitrate estimates and the frame counters, all of which
@@ -28,7 +30,7 @@ reactor-wasm     = { path = "crates/reactor-wasm" }
 # instant the engine pushed the frame, and the field is named `capture_time_us`
 # for it (reactor-webrtc #64). 0.10 brought the outbound push that accepts a
 # capture time in the first place (#53); 0.11 is additive.
-reactor-webrtc   = "0.15"
+reactor-webrtc   = "0.16.0"
 
 serde       = { version = "1",   features = ["derive"] }
 serde_json  = "1"
