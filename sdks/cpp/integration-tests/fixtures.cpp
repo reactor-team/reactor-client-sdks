@@ -254,7 +254,7 @@ void AudioPump::run() {
           chunk[(frame * channels_) + channel] = sample;
         }
       }
-      track_.push_audio(reactor::Samples{chunk.data(), chunk.size()}, sample_rate_, channels_);
+      track_.push_frame(reactor::Samples{chunk.data(), chunk.size()}, sample_rate_, channels_);
       std::this_thread::sleep_for(std::chrono::milliseconds(CHUNK_MS));
     }
   } catch (...) {

@@ -1,4 +1,4 @@
-// The audio data plane — push_audio/on_audio — new to this suite, not
+// The audio data plane — push_frame/on_frame — new to this suite, not
 // mirrored from Python or JS: neither of those suites' own scenarios cover it
 // either, and it was skipped here too until asked whether it should be.
 //
@@ -8,7 +8,7 @@
 // speaker can never reach the wire regardless, and this suite's own build
 // disables that optional module entirely (see mise.toml's
 // REACTOR_SDK_BUILD_AUDIO=OFF). What *is* testable without any hardware is
-// Track::push_audio/on_audio itself — synthetic PCM in, synthetic PCM out —
+// Track::push_frame/on_frame itself — synthetic PCM in, synthetic PCM out —
 // the same way the rest of this suite pushes synthetic BGRA rather than
 // reading a webcam.
 //
@@ -36,7 +36,7 @@ constexpr std::uint32_t WIDTH = 64;
 constexpr std::uint32_t HEIGHT = 64;
 }  // namespace
 
-TEST_CASE("publish(mic) + push_audio reaches main_audio") {
+TEST_CASE("publish(mic) + push_frame reaches main_audio") {
   integration::ConnectedReactor reactor;
   auto webcam = reactor->track("webcam");
   webcam.publish().get();
@@ -49,7 +49,7 @@ TEST_CASE("publish(mic) + push_audio reaches main_audio") {
 
   auto main_audio = reactor->track("main_audio");
   std::atomic<int> audible_chunks{0};
-  auto subscription = main_audio.on_audio([&](const reactor::AudioFrame& frame) {
+  auto subscription = main_audio.on_frame([&](const reactor::AudioFrame& frame) {
     if (frame.num_samples == 0) {
       return;
     }
@@ -80,23 +80,23 @@ TEST_CASE("pushing audio before publish() raises InvalidStateError") {
   auto mic = reactor->track("mic");
 
   const std::vector<std::int16_t> pcm(960, 1000);  // 20ms @ 48kHz mono
-  REQUIRE_THROWS_AS(mic.push_audio(reactor::Samples{pcm.data(), pcm.size()}, 48'000, 1),
+  REQUIRE_THROWS_AS(mic.push_frame(reactor::Samples{pcm.data(), pcm.size()}, 48'000, 1),
                     reactor::InvalidStateError);
 }
 
-TEST_CASE("on_audio on a video track is refused") {
+TEST_CASE("an AudioFrame handler on a video track is refused") {
   integration::ConnectedReactor reactor;
   auto webcam = reactor->track("webcam");  // video kind
-  REQUIRE_THROWS_AS(webcam.on_audio([](const reactor::AudioFrame&) {}), reactor::InvalidStateError);
+  REQUIRE_THROWS_AS(webcam.on_frame([](const reactor::AudioFrame&) {}), reactor::InvalidStateError);
 }
 
-TEST_CASE("on_frame on an audio track is refused") {
+TEST_CASE("a VideoFrame handler on an audio track is refused") {
   integration::ConnectedReactor reactor;
   auto mic = reactor->track("mic");  // audio kind
   REQUIRE_THROWS_AS(mic.on_frame([](const reactor::VideoFrame&) {}), reactor::InvalidStateError);
 }
 
-TEST_CASE("push_audio with a sample count that doesn't divide evenly by channels is refused") {
+TEST_CASE("push_frame with a sample count that doesn't divide evenly by channels is refused") {
   // track.hpp's own docs state the requirement ("pcm.size must divide evenly
   // by channels") without saying what happens if it doesn't — probed here
   // rather than assumed, the same way the wrong-length BGRA buffer is probed
@@ -106,7 +106,7 @@ TEST_CASE("push_audio with a sample count that doesn't divide evenly by channels
   mic.publish().get();
 
   const std::vector<std::int16_t> odd_pcm(961, 1000);  // 961 does not divide by 2
-  REQUIRE_THROWS_AS(mic.push_audio(reactor::Samples{odd_pcm.data(), odd_pcm.size()}, 48'000, 2),
+  REQUIRE_THROWS_AS(mic.push_frame(reactor::Samples{odd_pcm.data(), odd_pcm.size()}, 48'000, 2),
                     reactor::BadRequestError);
 
   mic.unpublish();

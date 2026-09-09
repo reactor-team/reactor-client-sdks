@@ -24,6 +24,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "reactor/errors.hpp"
 #include "reactor/json.hpp"
@@ -66,6 +67,27 @@ struct Jwt {
   std::string value;
 };
 
+/// Options for an independent API-key exchange.
+struct FetchJwtOptions {
+  std::string api_url{DEFAULT_API_URL};
+  /// Accept a dev coordinator's self-signed certificate. This explicit exchange
+  /// still mints a token, unlike a local Reactor connection, which skips auth.
+  bool local = false;
+  /// Unset mints an unscoped token; set (even empty) scopes it to these models.
+  std::optional<std::vector<std::string>> models;
+  /// Session limits apply only when models is set.
+  std::optional<std::uint32_t> max_sessions;
+  /// 1–86400 seconds; validated by the coordinator.
+  std::optional<std::uint32_t> max_session_duration_seconds;
+  /// Token lifetime in seconds; clamped by the coordinator.
+  std::optional<std::uint64_t> expires_after;
+};
+
+/// Exchange an API key without creating a client or session. The returned future
+/// receives the JWT or a typed ReactorError. Dropping it does not cancel the
+/// request; the FFI owns completion until the exchange finishes.
+std::future<std::string> fetch_jwt(const ApiKey& key, const FetchJwtOptions& options = {});
+
 /// Where control-event handlers run.
 ///
 /// Given one, the SDK hands it a callable per event instead of using its own
@@ -84,8 +106,9 @@ struct Options {
   /// The coordinator. Defaults to production.
   std::string api_url{DEFAULT_API_URL};
 
-  /// Accept a dev coordinator's self-signed certificate, and speak its
-  /// local-development protocol.
+  /// Use local development mode and skip API-key exchange. When api_url is
+  /// still DEFAULT_API_URL, use LOCAL_API_URL; an explicit custom URL is kept.
+  /// Also accepts the coordinator's self-signed certificate.
   bool local = false;
 
   /// Where control events run. Empty means the SDK's own dispatcher thread.
@@ -124,6 +147,9 @@ struct FileRef {
 /// and the next run cannot start until it clears.
 class Reactor {
  public:
+  /// A client without credentials, for Options::local connections.
+  explicit Reactor(std::string model, Options options);
+
   /// A client that will exchange `key` for a token when it connects.
   Reactor(std::string model, ApiKey key, Options options = {});
 
@@ -165,6 +191,15 @@ class Reactor {
 
   /// Called on every status change, with the new status.
   Subscription on_status(std::function<void(Status)> handler);
+
+  /// The model capabilities as received from the coordinator. Delivered on the
+  /// control-event executor, after the declared-track cache has been invalidated.
+  Subscription on_capabilities_received(std::function<void(const Json&)> handler);
+
+  /// The session id changed; nullopt means it was cleared. Delivered on the
+  /// control-event executor. The callback payload is owned until handlers return.
+  Subscription on_session_id_changed(
+      std::function<void(const std::optional<std::string>&)> handler);
 
   /// Send a command and wait for its correlated reply.
   ///

@@ -104,7 +104,7 @@ Subscription Track::on_frame(std::function<void(const VideoFrame&)> handler) {
   return client("receive frames")->add_video_handler(name_, std::move(handler));
 }
 
-Subscription Track::on_audio(std::function<void(const AudioFrame&)> handler) {
+Subscription Track::on_frame(std::function<void(const AudioFrame&)> handler) {
   return client("receive audio")->add_audio_handler(name_, std::move(handler));
 }
 
@@ -151,7 +151,7 @@ void Track::push_frame(Bytes bgra, std::uint32_t width, std::uint32_t height,
   client("push a frame")->push_video(name_, bgra, width, height, options);
 }
 
-void Track::push_audio(Samples pcm, std::uint32_t sample_rate, std::uint32_t channels) {
+void Track::push_frame(Samples pcm, std::uint32_t sample_rate, std::uint32_t channels) {
   client("push audio")->push_audio(name_, pcm, sample_rate, channels);
 }
 
@@ -371,8 +371,7 @@ namespace {
 /// and simply never call back, which is indistinguishable from a model that sends
 /// nothing.
 void require_receivable(const std::string& name, const std::optional<ClientImpl::Declared>& track,
-                        TrackKind wanted, const char* other_method,
-                        const std::vector<std::string>& declared_names) {
+                        TrackKind wanted, const std::vector<std::string>& declared_names) {
   if (!track) {
     if (declared_names.empty()) {
       throw InvalidStateError{
@@ -393,7 +392,8 @@ void require_receivable(const std::string& name, const std::optional<ClientImpl:
   if (track->kind != wanted) {
     throw InvalidStateError{
         "track \"" + name + "\" carries " + std::string{to_string(track->kind)} + ", not " +
-        std::string{to_string(wanted)} + ". Use " + other_method + "() for it."};
+        std::string{to_string(wanted)} + ". Use on_frame() with a handler taking const " +
+        (track->kind == TrackKind::Audio ? "AudioFrame&" : "VideoFrame&") + " instead."};
   }
 }
 
@@ -404,7 +404,7 @@ Subscription ClientImpl::add_video_handler(const std::string& name,
   const auto tracks = declared_tracks();
   const Declared* found = find_declared(tracks, name);
   require_receivable(name, found == nullptr ? std::nullopt : std::optional<Declared>{*found},
-                     TrackKind::Video, "on_audio", names_of(tracks));
+                     TrackKind::Video, names_of(tracks));
 
   std::uint64_t id = 0;
   {
@@ -427,7 +427,7 @@ Subscription ClientImpl::add_audio_handler(const std::string& name,
   const auto tracks = declared_tracks();
   const Declared* found = find_declared(tracks, name);
   require_receivable(name, found == nullptr ? std::nullopt : std::optional<Declared>{*found},
-                     TrackKind::Audio, "on_frame", names_of(tracks));
+                     TrackKind::Audio, names_of(tracks));
 
   std::uint64_t id = 0;
   {
@@ -700,9 +700,17 @@ void ClientImpl::unpublish(const std::string& name) {
 
 void ClientImpl::begin_pause(std::unique_ptr<Pending> op, const std::string& name) {
   try {
-    if (!declared(name) && !declared_names().empty()) {
-      throw NotFoundError{"this session declares no track called \"" + name + "\". It declares " +
-                          quoted_list(declared_names()) + "."};
+    const auto track = declared(name);
+    if (!track) {
+      const auto names = declared_names();
+      if (!names.empty()) {
+        throw NotFoundError{"no track named " + name + ". Declared: " + quoted_list(names)};
+      }
+      throw InvalidStateError{"cannot pause: the session has not declared its tracks yet"};
+    }
+    if (track->direction != TrackDirection::RecvOnly) {
+      throw InvalidStateError{"cannot pause track " + name +
+                              ": it is sendonly. Use unpublish() to stop sending."};
     }
     ReactorHandle* handle = require_ready_handle("pause", name);
     auto* raw = track_pending(std::move(op));
@@ -714,9 +722,17 @@ void ClientImpl::begin_pause(std::unique_ptr<Pending> op, const std::string& nam
 
 void ClientImpl::begin_resume(std::unique_ptr<Pending> op, const std::string& name) {
   try {
-    if (!declared(name) && !declared_names().empty()) {
-      throw NotFoundError{"this session declares no track called \"" + name + "\". It declares " +
-                          quoted_list(declared_names()) + "."};
+    const auto track = declared(name);
+    if (!track) {
+      const auto names = declared_names();
+      if (!names.empty()) {
+        throw NotFoundError{"no track named " + name + ". Declared: " + quoted_list(names)};
+      }
+      throw InvalidStateError{"cannot resume: the session has not declared its tracks yet"};
+    }
+    if (track->direction != TrackDirection::RecvOnly) {
+      throw InvalidStateError{"cannot resume track " + name +
+                              ": it is sendonly. Use unpublish() to stop sending."};
     }
     ReactorHandle* handle = require_ready_handle("resume", name);
     auto* raw = track_pending(std::move(op));
@@ -779,7 +795,7 @@ void ClientImpl::push_video(const std::string& name, Bytes bgra, std::uint32_t w
 
   if (declared_track.kind != TrackKind::Video) {
     throw InvalidStateError{"track \"" + name +
-                            "\" carries audio, not video. Use push_audio() for it."};
+                            "\" carries audio, not video. Use push_frame() with Samples for it."};
   }
 
   require_published(name);
@@ -821,8 +837,9 @@ void ClientImpl::push_audio(const std::string& name, Samples pcm, std::uint32_t 
                        names_of(tracks), "push audio into");
 
   if (declared_track.kind != TrackKind::Audio) {
-    throw InvalidStateError{"track \"" + name +
-                            "\" carries video, not audio. Use push_frame() for it."};
+    throw InvalidStateError{
+        "track \"" + name +
+        "\" carries video, not audio. Use push_frame() with Bytes, width and height for it."};
   }
   require_published(name);
   if (channels == 0) {

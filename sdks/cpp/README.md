@@ -32,11 +32,11 @@ native library, and building it needs a Rust toolchain and a libwebrtc download.
 
 | Platform | Archive | Requires |
 |---|---|---|
-| Linux x86_64 | `…-linux-x64.tar.gz` | glibc 2.34+ (Ubuntu 22.04, Debian 12, RHEL 9, Amazon Linux 2023) |
-| Linux aarch64 | `…-linux-arm64.tar.gz` | glibc 2.34+ |
-| macOS arm64 | `…-macos-arm64.tar.gz` | macOS 11+ |
-| macOS x86_64 | `…-macos-x64.tar.gz` | macOS 13+ — libwebrtc's floor on this architecture |
-| Windows x86_64 | `…-windows-x64.zip` | Windows 10+ |
+| Linux x86_64 | `reactor-sdk-cpp-2.0.0-linux-x64.tar.gz` | glibc 2.34+ (Ubuntu 22.04, Debian 12, RHEL 9, Amazon Linux 2023) |
+| Linux aarch64 | `reactor-sdk-cpp-2.0.0-linux-arm64.tar.gz` | glibc 2.34+ |
+| macOS arm64 | `reactor-sdk-cpp-2.0.0-macos-arm64.tar.gz` | macOS 11+ |
+| macOS x86_64 | `reactor-sdk-cpp-2.0.0-macos-x64.tar.gz` | macOS 13+ — libwebrtc's floor on this architecture |
+| Windows x86_64 | `reactor-sdk-cpp-2.0.0-windows-x64.zip` | Windows 10+ |
 
 Anything outside that table — musl distributions, glibc older than 2.34, 32-bit,
 Windows on ARM — has no archive, and has to build `libreactor_ffi` from this
@@ -49,8 +49,8 @@ than 2.34 or that was built for a later macOS than its row here says.
 Extract an archive and point CMake at it:
 
 ```bash
-tar xzf reactor-sdk-cpp-1.0.0-linux-x64.tar.gz
-cmake -S . -B build -DCMAKE_PREFIX_PATH=$PWD/reactor-sdk-cpp-1.0.0-linux-x64
+tar xzf reactor-sdk-cpp-2.0.0-linux-x64.tar.gz
+cmake -S . -B build -DCMAKE_PREFIX_PATH=$PWD/reactor-sdk-cpp-2.0.0-linux-x64
 ```
 
 ```cmake
@@ -126,16 +126,68 @@ auto output = client.tracks().with_direction(reactor::TrackDirection::RecvOnly)
 A model name is `owner/name`. A bare name resolves under `reactor/`, so it works
 by luck of ownership and answers 403 for anyone else's model.
 
+## Authentication and local development
+
+Exchange a key independently when a backend needs to hand a scoped token to a client:
+
+```cpp
+reactor::FetchJwtOptions token_options;
+token_options.models = std::vector<std::string>{"owner/model"};
+token_options.max_sessions = 1;
+token_options.max_session_duration_seconds = 600;
+token_options.expires_after = 3600;
+auto token = reactor::fetch_jwt(reactor::ApiKey{api_key}, token_options).get();
+reactor::Reactor client{"owner/model", reactor::Jwt{token}};
+```
+
+Omitting `models` mints an unscoped token. `FetchJwtOptions::api_url` selects the
+coordinator; its `local` flag allows a development certificate for that explicit
+exchange. Errors reach the future as typed `ReactorError` subclasses.
+
+For a local runtime, credentials are optional:
+
+```cpp
+reactor::Options options;
+options.local = true;
+reactor::Reactor client{"owner/model", options};
+client.connect().get();
+```
+
+Local connections use `http://localhost:8080` when `api_url` has its production
+default, preserve custom URLs, and skip API-key exchange even when a key was
+provided. A caller-supplied JWT is preserved.
+
+## Session events
+
+Register before connecting to observe the initial capabilities and session id:
+
+```cpp
+auto capabilities = client.on_capabilities_received([](const reactor::Json& caps) {
+  // Full capabilities payload from the coordinator.
+});
+auto session = client.on_session_id_changed([](const std::optional<std::string>& id) {
+  // nullopt when the session id is cleared.
+});
+```
+
+Both events use the control-event executor and return a `Subscription`. Payloads
+are copied before the FFI callback returns. Capabilities also invalidate the
+track cache before delivery, so handlers can read the current track declarations.
+
 ## Tracks
 
 ### Receiving
+
+Both video and audio use `on_frame` and `push_frame`. The overload must match
+`Track::kind()`: `VideoFrame` handlers and `Bytes` for video, `AudioFrame` handlers
+and `Samples` for audio. A mismatch throws `InvalidStateError`.
 
 ```cpp
 auto frames = client.track("main_video").on_frame([](const reactor::VideoFrame& frame) {
   // BGRA, width * height * 4 bytes, plus the trailer: frame_id, timestamp_us,
   // user_data. Borrowed — gone when this returns.
 });
-auto audio = client.track("main_audio").on_audio([](const reactor::AudioFrame& frame) {
+auto audio = client.track("main_audio").on_frame([](const reactor::AudioFrame& frame) {
   // Interleaved int16 PCM.
 });
 ```
@@ -148,7 +200,7 @@ is short and keeps its backlog instead, because there the queue is the jitter
 buffer and a hole in it is audible.
 
 Control events (`on_status`, `on_error`, `on_message`, `on_runtime_message`,
-`on_track`) are different: they run on a thread the SDK owns, one at a time, so a
+`on_track`, `on_capabilities_received`, `on_session_id_changed`) are different: they run on a thread the SDK owns, one at a time, so a
 handler never runs on a library thread and never races another handler. A host
 with a loop of its own can take them instead:
 
@@ -176,6 +228,15 @@ input.unpublish();                           // synchronous: no round trip
 Read `time_micros()` **once per unit of produced media** and stamp every track
 with that one value: tracks are synchronised by sharing a capture time, not by
 reaching the encoder at the same moment.
+
+Audio uses the same sending method with interleaved 16-bit PCM:
+
+```cpp
+auto mic = client.track("mic");
+mic.publish().get();
+mic.push_frame(reactor::Samples{pcm.data(), pcm.size()});  // defaults: 48000 Hz, mono
+mic.unpublish();
+```
 
 ### Audio devices
 
@@ -215,8 +276,9 @@ receiving nothing. Every one of these throws instead, with the fix in the messag
 | | |
 |---|---|
 | a track name the session never declared | `NotFoundError`, listing the names it does declare |
+| `pause()` / `resume()` on a sendonly track | `InvalidStateError` — these operations control receiving, for either audio or video |
 | `on_frame` on a sendonly track | `InvalidStateError` — it would never fire |
-| a video handler on an audio track | `InvalidStateError`, naming `on_audio` |
+| a video handler on an audio track | `InvalidStateError`, naming the required `AudioFrame` handler |
 | `push_frame` on a recvonly track | `InvalidStateError`, naming the direction |
 | `push_frame` before `publish()` | `InvalidStateError` |
 | a pixel buffer that is not `width * height * 4` | `BadRequestError`, naming both sizes |

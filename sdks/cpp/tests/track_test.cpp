@@ -628,7 +628,7 @@ TEST_CASE("audio arrives as interleaved PCM with its rate and channel count") {
   std::int16_t first_sample = 0;
 
   auto subscription =
-      fixture.client.track("main_audio").on_audio([&](const reactor::AudioFrame& frame) {
+      fixture.client.track("main_audio").on_frame([&](const reactor::AudioFrame& frame) {
         num_samples = frame.num_samples;
         sample_rate = frame.sample_rate;
         channels = frame.channels;
@@ -643,6 +643,30 @@ TEST_CASE("audio arrives as interleaved PCM with its rate and channel count") {
   CHECK(channels == 2);
   CHECK(frames == 480);
   CHECK(first_sample == 1234);
+}
+
+TEST_CASE("on_frame routes both kinds and removes the audio subscription independently") {
+  Connected fixture;
+  int video_frames = 0;
+  int audio_frames = 0;
+  auto video = fixture.client.track("main_video");
+  auto audio = fixture.client.track("main_audio");
+  REQUIRE(video.kind() == reactor::TrackKind::Video);
+  REQUIRE(audio.kind() == reactor::TrackKind::Audio);
+  auto video_subscription = video.on_frame([&](const reactor::VideoFrame&) { ++video_frames; });
+  {
+    auto audio_subscription = audio.on_frame([&](const reactor::AudioFrame&) { ++audio_frames; });
+    fixture.session.push_video("main_video", 2, 2);
+    CHECK(video_frames == 1);
+    CHECK(audio_frames == 0);
+    fixture.session.push_audio("main_audio", 480, 48'000, 1);
+    CHECK(video_frames == 1);
+    CHECK(audio_frames == 1);
+  }
+  fixture.session.push_audio("main_audio", 480, 48'000, 1);
+  fixture.session.push_video("main_video", 2, 2);
+  CHECK(audio_frames == 1);
+  CHECK(video_frames == 2);
 }
 
 // Media runs inline on the library's thread, deliberately: blocking there is the
@@ -706,14 +730,14 @@ TEST_CASE("the wrong kind of handler is refused, and points at the right one") {
     fixture.client.track("main_audio").on_frame([](const reactor::VideoFrame&) {});
     FAIL("a video handler on an audio track must be refused");
   } catch (const reactor::InvalidStateError& error) {
-    CHECK(std::string{error.what()}.find("on_audio") != std::string::npos);
+    CHECK(std::string{error.what()}.find("AudioFrame&") != std::string::npos);
   }
 
   try {
-    fixture.client.track("main_video").on_audio([](const reactor::AudioFrame&) {});
+    fixture.client.track("main_video").on_frame([](const reactor::AudioFrame&) {});
     FAIL("an audio handler on a video track must be refused");
   } catch (const reactor::InvalidStateError& error) {
-    CHECK(std::string{error.what()}.find("on_frame") != std::string::npos);
+    CHECK(std::string{error.what()}.find("VideoFrame&") != std::string::npos);
   }
 }
 
@@ -1112,7 +1136,7 @@ TEST_CASE("pushing audio divides the interleaved samples by the channel count") 
   input.publish().get();
 
   const std::vector<std::int16_t> pcm(960, 7);
-  input.push_audio(reactor::Samples{pcm.data(), pcm.size()}, 48'000, 2);
+  input.push_frame(reactor::Samples{pcm.data(), pcm.size()}, 48'000, 2);
 
   REQUIRE(fixture.session.audio_pushes.size() == 1);
   const auto& push = fixture.session.audio_pushes.front();
@@ -1120,6 +1144,26 @@ TEST_CASE("pushing audio divides the interleaved samples by the channel count") 
   CHECK(push.samples_per_channel == 480);
   CHECK(push.sample_rate == 48'000);
   CHECK(push.channels == 2);
+}
+
+TEST_CASE("audio push_frame defaults and sending lifecycle are enforced") {
+  Connected fixture;
+  fixture.session.redeclare(R"([{"name":"input_audio","kind":"audio","direction":"sendonly"}])");
+  auto input = fixture.client.track("input_audio");
+  const std::vector<std::int16_t> pcm(480, 7);
+  const reactor::Samples samples{pcm.data(), pcm.size()};
+  CHECK_THROWS_AS(input.push_frame(samples), reactor::InvalidStateError);
+  CHECK_THROWS_AS(input.on_frame([](const reactor::AudioFrame&) {}), reactor::InvalidStateError);
+  CHECK(fixture.session.audio_pushes.empty());
+  input.publish().get();
+  input.push_frame(samples);
+  REQUIRE(fixture.session.audio_pushes.size() == 1);
+  CHECK(fixture.session.audio_pushes.front().sample_rate == 48'000);
+  CHECK(fixture.session.audio_pushes.front().channels == 1);
+  CHECK(fixture.session.audio_pushes.front().samples_per_channel == pcm.size());
+  input.unpublish();
+  CHECK_THROWS_AS(input.push_frame(samples), reactor::InvalidStateError);
+  CHECK(fixture.session.audio_pushes.size() == 1);
 }
 
 TEST_CASE("pausing and resuming reach the session") {
@@ -1266,7 +1310,7 @@ TEST_CASE("audio into a video track and frames into an audio track are both refu
   const std::vector<std::int16_t> pcm(480, 0);
   const auto frame = bgra_frame(2, 2);
 
-  CHECK_THROWS_AS(video.push_audio(reactor::Samples{pcm.data(), pcm.size()}),
+  CHECK_THROWS_AS(video.push_frame(reactor::Samples{pcm.data(), pcm.size()}),
                   reactor::InvalidStateError);
   CHECK_THROWS_AS(audio.push_frame(as_bytes(frame), 2, 2), reactor::InvalidStateError);
 }
@@ -1278,9 +1322,9 @@ TEST_CASE("PCM that does not divide by the channel count is refused") {
   input.publish().get();
 
   const std::vector<std::int16_t> odd(481, 0);
-  CHECK_THROWS_AS(input.push_audio(reactor::Samples{odd.data(), odd.size()}, 48'000, 2),
+  CHECK_THROWS_AS(input.push_frame(reactor::Samples{odd.data(), odd.size()}, 48'000, 2),
                   reactor::BadRequestError);
-  CHECK_THROWS_AS(input.push_audio(reactor::Samples{}, 48'000, 1), reactor::BadRequestError);
+  CHECK_THROWS_AS(input.push_frame(reactor::Samples{}, 48'000, 1), reactor::BadRequestError);
   CHECK(fixture.session.audio_pushes.empty());
 }
 
@@ -1316,4 +1360,26 @@ TEST_CASE("the client has no name-based twins of the track methods") {
                                      const std::string&, int>,
                 "Reactor::track takes a name and nothing else");
   SUCCEED("asserted at compile time");
+}
+
+TEST_CASE("pause and resume validate direction for both media kinds before calling the FFI") {
+  Connected fixture;
+  fixture.session.redeclare(R"([{"name":"input_video","kind":"video","direction":"sendonly"},)"
+                            R"({"name":"input_audio","kind":"audio","direction":"sendonly"},)"
+                            R"({"name":"main_video","kind":"video","direction":"recvonly"},)"
+                            R"({"name":"main_audio","kind":"audio","direction":"recvonly"}])");
+  for (const auto* name : {"input_video", "input_audio"}) {
+    auto track = fixture.client.track(name);
+    CHECK_THROWS_AS(track.pause().get(), reactor::InvalidStateError);
+    CHECK_THROWS_AS(track.resume().get(), reactor::InvalidStateError);
+  }
+  CHECK(fixture.session.paused_calls.empty());
+  CHECK(fixture.session.resumed_calls.empty());
+  for (const auto* name : {"main_video", "main_audio"}) {
+    auto track = fixture.client.track(name);
+    track.pause().get();
+    track.resume().get();
+  }
+  CHECK(fixture.session.paused_calls == std::vector<std::string>{"main_video", "main_audio"});
+  CHECK(fixture.session.resumed_calls == std::vector<std::string>{"main_video", "main_audio"});
 }

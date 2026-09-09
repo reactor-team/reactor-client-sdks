@@ -282,7 +282,8 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
  public:
   ClientImpl(std::string model_name, Options options)
       : model_(std::move(model_name)),
-        api_url_(std::move(options.api_url)),
+        api_url_(options.local && options.api_url == DEFAULT_API_URL ? std::string{LOCAL_API_URL}
+                                                                     : std::move(options.api_url)),
         local_(options.local),
         dispatcher_(std::move(options.executor)) {}
 
@@ -375,6 +376,10 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
 
   // ── Events ─────────────────────────────────────────────────────────────────
 
+  Handlers<const Json&>& capabilities_handlers() { return capabilities_handlers_; }
+  Handlers<const std::optional<std::string>&>& session_id_handlers() {
+    return session_id_handlers_;
+  }
   Handlers<Status>& status_handlers() { return status_handlers_; }
   Handlers<const ReactorError&>& error_handlers() { return error_handlers_; }
 
@@ -587,6 +592,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     callbacks.on_error = &on_error_trampoline;
     callbacks.on_track = &on_track_trampoline;
     callbacks.on_capabilities = &on_capabilities_trampoline;
+    callbacks.on_session_id = &on_session_id_trampoline;
     callbacks.on_message = &on_message_trampoline;
     callbacks.on_runtime_message = &on_runtime_message_trampoline;
     callbacks.on_frame = &on_frame_trampoline;
@@ -764,6 +770,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   static void on_track_trampoline(const char* name, const char* mid_or_null,
                                   void* userdata) noexcept;
   static void on_capabilities_trampoline(const char* caps_json, void* userdata) noexcept;
+  static void on_session_id_trampoline(const char* session_id, void* userdata) noexcept;
   static void on_message_trampoline(const char* msg_json, void* userdata) noexcept;
   static void on_runtime_message_trampoline(const char* msg_json, void* userdata) noexcept;
 
@@ -832,6 +839,8 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   bool caller_supplied_jwt_ = false;
 
   Dispatcher dispatcher_;
+  Handlers<const Json&> capabilities_handlers_;
+  Handlers<const std::optional<std::string>&> session_id_handlers_;
   Handlers<Status> status_handlers_;
   Handlers<const ReactorError&> error_handlers_;
   Handlers<Track> track_handlers_;

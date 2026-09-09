@@ -3,8 +3,8 @@ name: sdk-from-ffi
 description: >
   Build a new Reactor client SDK in another language on top of `libreactor_ffi` — Node,
   Go, Swift, Kotlin, C#, Ruby — or review a PR that adds or changes one. Use this when
-  the user asks to "write the Node/Go/Swift SDK", "bind reactor-ffi from <language>",
-  "port the Python SDK to <language>", "add a new SDK under sdks/", or asks how the FFI
+  the user asks to "write the Node/Go/Swift SDK", "bind reactor-ffi from another language",
+  "port the Python SDK to another language", "add a new SDK under sdks/", or asks how the FFI
   boundary, callback threading, string ownership, or wheel-style packaging is supposed to
   work for a binding. Also use it when a binding crashes on teardown, receives frames
   that never arrive, or silently sends nothing — those are the failure modes this
@@ -133,8 +133,8 @@ purpose:
 - Control events (status, error, message, track, session id) end up calling into the host's
   concurrency primitives, which are usually not thread-safe from a foreign thread. Python
   hands them to the event loop with `call_soon_threadsafe`.
-- Media (`on_frame`, `on_audio`) runs **inline on the FFI's delivery thread**, deliberately.
-  Blocking there is the backpressure: the FFI keeps only the newest video frame while your
+- Media (`Track.on_frame` for both video and audio) runs **inline on the FFI's delivery
+  thread**, deliberately. Blocking there is the backpressure: the FFI keeps only the newest video frame while your
   handler runs. Hand frames to a queue instead and you trade a bounded drop for unbounded
   latency and memory.
 
@@ -267,6 +267,17 @@ No media methods on it: see below.
 are the same operations. It carries `push_frame`, `on_frame`, `on_raw_frame`, `publish`,
 `unpublish`, `pause`, `resume`, `published`, `paused`, `mid`.
 
+**One frame API for both kinds.** Expose `Track.on_frame` and `Track.push_frame`
+for video and audio; do not add separate `on_audio` / `push_audio` methods or aliases.
+`Track.kind` determines the media type: video handlers receive video frames and audio
+handlers receive PCM audio frames. Keep the language's native typing: C++ overloads
+`on_frame` for `const VideoFrame&` / `const AudioFrame&` and `push_frame` for `Bytes`
+with dimensions / `Samples` with sample rate and channel count. Validate typed handlers
+and buffers against the declared kind, and name the expected type in a mismatch error.
+The FFI's separate video/audio callbacks and push functions stay internal; this is a
+public object-model contract, not an ABI rename. Migrate device helpers, examples,
+tests and docs together when removing the old audio-specific methods.
+
 **A list of tracks with filters** — `tracks.with_kind(...)`, `.with_direction(...)`,
 `.one()`, chainable in either order, so a caller can say which track they mean without
 hardcoding a name.
@@ -304,7 +315,8 @@ Every one of these must raise in your binding, with the fix in the message:
 | `push_frame` on a recvonly track | nothing | raise, naming the direction |
 | `on_frame` on a sendonly track | never fires | raise |
 | `push_frame` before `publish()` | drops the frame | raise `InvalidStateError` |
-| Raw frame bytes whose length ≠ `width * height * 4` | reads out of bounds | raise, naming both numbers |
+| A typed handler or push buffer incompatible with `Track.kind` | never fires or sends the wrong media | reject, naming the expected frame or buffer type |
+| Raw video frame bytes whose length ≠ `width * height * 4` | reads out of bounds | raise, naming both numbers |
 | Handler registered on a removed event | never fires | raise at registration |
 | Frame arriving with no matching track | — | drop, and log it |
 
