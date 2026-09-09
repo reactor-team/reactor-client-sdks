@@ -1,0 +1,72 @@
+# Manual-only (REA-6088): endurance/leak suites are long, noisier than a
+# correctness assertion (a growth trend, not a single right-or-wrong call),
+# and not meant to gate a PR or a release — see
+# sdks/python/endurance-tests/README.md. workflow_dispatch only, run by hand
+# from the Actions tab (or `gh workflow run endurance-tests.yml`) until this
+# graduates to a schedule trigger, a deliberate follow-up not done here.
+#
+# One job per SDK, each gated on the `sdk` input rather than a single
+# combined job: only Python has a suite today (sdks/python/endurance-tests/),
+# and adding JS/C++/Swift later is meant to be "add a choice + a job", not a
+# restructure of this file.
+name: Endurance tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      sdk:
+        description: "Which SDK's endurance suite to run"
+        type: choice
+        options:
+          - python
+        default: python
+      duration_minutes:
+        description: "How long each scenario loops for, in minutes"
+        type: string
+        default: "5"
+
+concurrency:
+  group: endurance-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  MISE_VERSION: "2026.8.8"    # pinned; must be >= mise.toml min_version
+  MISE_LOCKED: "1"            # install/run only mise.lock versions; never float
+  MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
+
+jobs:
+  python:
+    name: Python SDK endurance tests
+    if: inputs.sdk == 'python'
+    runs-on: ubuntu-latest
+    # Generous, not derived from duration_minutes: a run twice that long
+    # (setup + two scenarios back to back) still fits well under the
+    # 360-minute default GitHub would otherwise apply, up to a multi-hour
+    # duration_minutes. Raise this by hand for a duration_minutes long enough
+    # to threaten it.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Install clang for the libwebrtc C++ glue
+        uses: ./.github/actions/setup-libwebrtc-cxx
+      - name: Endurance tests (real FFI client, real model)
+        env:
+          # Same dedicated secret ci.yml's python-integration-tests (and every
+          # other binding's integration-tests job) already uses.
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+          DURATION_MINUTES: ${{ inputs.duration_minutes }}
+        # The conversion happens here, in shell, rather than in the `env:`
+        # block above: GitHub Actions expressions have no reliable arithmetic
+        # operator across versions, but the input is a plain integer string,
+        # so bash's own `$(( ))` handles it directly.
+        run: |
+          export ENDURANCE_DURATION_SECONDS=$((DURATION_MINUTES * 60))
+          echo "Running for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s) per scenario"
+          mise run test:python:endurance-tests
