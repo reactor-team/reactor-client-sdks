@@ -77,7 +77,12 @@ async def test_lifecycle_churn_leaves_no_leftover_handles_or_growth() -> None:
     )
 
     assert_always_zero(sampler.samples, field="live_clients")
-    assert_never_grows(sampler.samples, field="orphaned_callbacks")
+    # Always-zero, not never-grows: this scenario starts with no clients, and
+    # the documented invariant (helpers.py's column guide, README.md) is that
+    # orphaned callbacks are always 0 — a leak already present on cycle 0
+    # would slip past assert_never_grows, which only flags growth *past*
+    # whatever the first sample happened to be.
+    assert_always_zero(sampler.samples, field="orphaned_callbacks")
     # num_fds, unlike num_threads just below, proved rock-solid across a real
     # run (constant every single cycle) — socket/fd teardown is synchronous
     # with disconnect()/close() returning, so the strict "never past its

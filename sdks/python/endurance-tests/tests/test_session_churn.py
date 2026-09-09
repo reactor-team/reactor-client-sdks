@@ -152,7 +152,11 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
         print("\ntracemalloc top growth (~30% mark → end):")
         for stat in diff[:10]:
             print(f"  {stat}")
-        biggest = diff[0].size_diff if diff else 0
+        # Max, not diff[0]: compare_to() sorts by *absolute* size_diff, so a
+        # large negative (freed) entry can sort first and mask a smaller-in-
+        # magnitude but still-over-the-floor positive (grown) entry elsewhere
+        # in the list.
+        biggest = max((stat.size_diff for stat in diff), default=0)
         is_leak = biggest >= 5_000_000
         print(
             f"[tracemalloc] {'LEAK?' if is_leak else 'ok'}: biggest single-traceback "

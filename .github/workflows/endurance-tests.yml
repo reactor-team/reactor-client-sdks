@@ -39,12 +39,13 @@ jobs:
     name: Python SDK endurance tests
     if: inputs.sdk == 'python'
     runs-on: ubuntu-latest
-    # Generous, not derived from duration_minutes: a run twice that long
-    # (setup + two scenarios back to back) still fits well under the
-    # 360-minute default GitHub would otherwise apply, up to a multi-hour
-    # duration_minutes. Raise this by hand for a duration_minutes long enough
-    # to threaten it.
-    timeout-minutes: 180
+    # Derived from duration_minutes, not a fixed figure: the two scenarios
+    # run sequentially, each for duration_minutes, so the job needs at least
+    # 2x that plus setup (toolchain install, clang, build) — a fixed timeout
+    # would silently kill any multi-hour duration_minutes partway through the
+    # second scenario. 30 extra minutes covers setup; `jobs.<job_id>.timeout-
+    # minutes` supports the `inputs` context per GitHub's own docs.
+    timeout-minutes: ${{ fromJSON(inputs.duration_minutes) * 2 + 30 }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
