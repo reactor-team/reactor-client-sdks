@@ -96,6 +96,16 @@ async def test_lifecycle_churn_leaves_no_leftover_handles_or_growth() -> None:
         max_growth_ratio=0.5,
         min_absolute_delta=0.05,
     )
+    # Same trend check, on the % reading instead of the raw seconds — the two
+    # answer different questions (see Sample.cpu_percent's own docstring), so
+    # a leak that shows up as a growing *proportion* of the CPU being busy,
+    # even without cpu_s_per_cycle itself trending, would still get caught.
+    assert_no_sustained_growth(
+        [s.cpu_percent for s in sampler.samples],
+        name="cpu_percent",
+        max_growth_ratio=0.5,
+        min_absolute_delta=5.0,
+    )
     # Trend-based, not exact like num_fds above: a real run showed
     # num_threads oscillating (25, 31, 25, 24, 24, 25, 31, 30, 25, 25) with no
     # sustained direction — native thread teardown isn't guaranteed

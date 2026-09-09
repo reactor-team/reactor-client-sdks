@@ -95,6 +95,17 @@ class Sample:
     elapsed_s: float
     rss_bytes: int
     cpu_s: float
+    # % of one CPU core busy since the *previous* sample (psutil's own
+    # interval-based cpu_percent(), not an instantaneous reading) — a
+    # different question from cpu_s (derived into cpu_deltas() below): that
+    # one is "how much actual CPU work did this cycle do", this is "how busy
+    # was the CPU relative to how long the cycle took". A cycle that's mostly
+    # waiting on the network can do the same CPU work in more wall-clock time
+    # and show a *lower* percentage even with identical cpu_s — the two can
+    # disagree, and that disagreement itself is informative. Can exceed 100%
+    # if more than one native thread is genuinely busy at once; that's
+    # expected, not a bug, given this SDK's multi-threaded Rust runtime.
+    cpu_percent: float
     live_clients: int
     orphaned_callbacks: int
     # OS-level, not SDK-level — a leaked native thread (the Rust runtime not
@@ -121,6 +132,12 @@ class ResourceSampler:
         self._start = time.monotonic()
         self._duration_s = duration_s
         self.samples: list[Sample] = []
+        # psutil's own documented priming call: the *first* cpu_percent()
+        # reading has no prior call to measure an interval against, so it's
+        # meaningless (usually 0.0) — call it once now, throw the result
+        # away, so the first real sample() below already measures a genuine
+        # interval instead of a start-up artifact.
+        self._process.cpu_percent(interval=None)
 
     def deadline_reached(self) -> bool:
         return time.monotonic() - self._start >= self._duration_s
@@ -138,6 +155,11 @@ class ResourceSampler:
             elapsed_s=time.monotonic() - self._start,
             rss_bytes=self._process.memory_info().rss,
             cpu_s=cpu.user + cpu.system,
+            # Interval since the *previous* call, not since process start —
+            # psutil tracks that internally per-Process object, which is why
+            # this is one long-lived self._process rather than a fresh one
+            # per sample.
+            cpu_percent=self._process.cpu_percent(interval=None),
             live_clients=len(_client_module._LIVE_CLIENTS),
             orphaned_callbacks=len(_client_module._ORPHANED_CALLBACKS),
             num_threads=self._process.num_threads(),
@@ -160,6 +182,14 @@ class ResourceSampler:
     #   cpu_s_per_cycle CPU time *this one cycle* burned (not a running total —
     #                   see cpu_deltas()'s own docstring for why that matters).
     #                   Should stay roughly flat cycle to cycle.
+    #   cpu_percent     % of one CPU core busy since the previous row (like
+    #                   Activity Monitor/htop's own number) — a different
+    #                   question from cpu_s_per_cycle: that one is "how much
+    #                   CPU work happened", this is "how busy was the CPU
+    #                   relative to how long the cycle took". Can read over
+    #                   100% if more than one native thread is genuinely busy
+    #                   at once — expected, not a bug. Should stay roughly
+    #                   flat, same as cpu_s_per_cycle.
     #   live_clients    how many Reactor clients still have an open native
     #                   connection right now. 0 in test_lifecycle_churn.py
     #                   (each cycle closes its own client); 1 in
@@ -182,14 +212,15 @@ class ResourceSampler:
         deltas = cpu_deltas(self.samples)
         print(
             f"\n{'cycle':>6} {'elapsed_s':>10} {'ram_mb':>8} {'cpu_s_per_cycle':>15} "
-            f"{'live_clients':>12} {'orphaned_cbs':>12} {'num_threads':>11} {'num_fds':>7}"
+            f"{'cpu_percent':>11} {'live_clients':>12} {'orphaned_cbs':>12} "
+            f"{'num_threads':>11} {'num_fds':>7}"
         )
         for i, s in enumerate(self.samples):
             cpu_per_cycle = f"{deltas[i - 1]:>15.3f}" if i > 0 else f"{'—':>15}"
             print(
                 f"{s.cycle:>6} {s.elapsed_s:>10.1f} {s.rss_bytes / 1e6:>8.2f} "
-                f"{cpu_per_cycle} {s.live_clients:>12} {s.orphaned_callbacks:>12} "
-                f"{s.num_threads:>11} {s.num_fds:>7}"
+                f"{cpu_per_cycle} {s.cpu_percent:>10.1f}% {s.live_clients:>12} "
+                f"{s.orphaned_callbacks:>12} {s.num_threads:>11} {s.num_fds:>7}"
             )
 
 

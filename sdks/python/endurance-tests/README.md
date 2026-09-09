@@ -61,6 +61,7 @@ right:
 | `elapsed_s`       | seconds since this test started                                                                        | —                                                |
 | `ram_mb`          | physical RAM the whole process is using right now — not just the SDK, everything in this one process   | keeps climbing, never plateaus                  |
 | `cpu_s_per_cycle` | CPU time *this one cycle* burned (not a running total)                                                | keeps getting bigger cycle to cycle             |
+| `cpu_percent`     | % of one CPU core busy since the previous row (like Activity Monitor/htop's own number) — can read over 100% if more than one native thread is genuinely busy at once, that's normal | keeps getting bigger cycle to cycle |
 | `live_clients`    | how many `Reactor` clients still have an open native connection right now                              | higher than expected (0 in lifecycle-churn, 1 in session-churn) |
 | `orphaned_cbs`    | frame/event callbacks the SDK couldn't confirm were safe to free when a client closed                  | anything above 0, ever                          |
 | `num_threads`     | OS-level threads this process currently has (mostly the native Rust runtime's)                         | keeps climbing (some early wobble is normal)    |
@@ -77,8 +78,14 @@ changes.
   first third, after dropping a 20% warm-up) rather than a single before/after
   number: allocator and OS page-cache behavior is noisy sample-to-sample, so
   only a *sustained* climb counts.
-- **CPU time** (`cpu_s_per_cycle` above, `psutil` user+system) — same trend
-  check, wider tolerance. CPU isn't itself what "leak" means (it's a rate, not
+- **CPU time and CPU %** (`cpu_s_per_cycle`/`cpu_percent` above, both from
+  `psutil`) — same trend check as RSS, wider tolerance, on two different
+  questions: `cpu_s_per_cycle` is how much actual CPU work a cycle did,
+  `cpu_percent` is how busy the CPU was *relative to how long the cycle
+  took*. A cycle that's mostly waiting on the network can do identical CPU
+  work in more wall-clock time and show a lower percentage even with the same
+  `cpu_s_per_cycle` — checking both catches a leak that shows up in one but
+  not the other. Neither is itself what "leak" means (they're rates, not
   accumulated state), but a steadily rising cost per cycle is still worth
   surfacing.
 - **Threads and file descriptors** (`num_threads`/`num_fds` above, `psutil`) —

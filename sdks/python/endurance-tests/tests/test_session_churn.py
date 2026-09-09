@@ -117,6 +117,14 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
         max_growth_ratio=0.5,
         min_absolute_delta=0.05,
     )
+    # Same trend check, on the % reading instead of the raw seconds — see
+    # Sample.cpu_percent's own docstring for why the two can disagree.
+    assert_no_sustained_growth(
+        [s.cpu_percent for s in sampler.samples],
+        name="cpu_percent",
+        max_growth_ratio=0.5,
+        min_absolute_delta=5.0,
+    )
     # Trend-based, not "never past the start" like test_lifecycle_churn.py's:
     # one long-lived session can legitimately grow a thread or two / open a
     # few fds during warm-up (a connection pool, a worker thread spinning up)
