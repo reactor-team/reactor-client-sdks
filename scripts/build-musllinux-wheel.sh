@@ -27,9 +27,9 @@ source "$HOME/.cargo/env"
 cd /io
 rustup target add "$TARGET"
 
-# Resolve the musl asset explicitly: reactor-webrtc-sys 0.15's automatic
-# selection only knows the glibc names. A future crate can select these itself.
-# A local prebuilt directory allows testing before that release is published.
+# reactor-webrtc-sys 0.16 supports automatic musl selection. Resolve the asset
+# explicitly here to pin the workflow's native release and verify its libc marker.
+# A local prebuilt directory also supports validating unpublished native builds.
 if [ -z "${REACTOR_WEBRTC_LIB_DIR:-}" ]; then
     URL="https://github.com/reactor-team/reactor-webrtc/releases/download/${REACTOR_WEBRTC_TAG}"
     ASSET="reactor-webrtc-${PLATFORM}-release.tar.zst"

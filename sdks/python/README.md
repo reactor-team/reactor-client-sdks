@@ -392,9 +392,9 @@ with `auditwheel`. Both the Rust library and its WebRTC/C++ dependencies must
 be built for musl; retagging a glibc wheel is not sufficient. See
 [the musllinux platform specification](https://packaging.python.org/en/latest/specifications/platform-compatibility-tags/#musllinux).
 
-The musl jobs require `reactor-webrtc` release `webrtc-7907-a5ddff60-p6`, with
-`linux-musl-x64` and `linux-musl-arm64` assets, from the companion native build
-change. Publish those release prebuilts before merging this wheel pipeline.
+The SDK depends on `reactor-webrtc` 0.16.0, which supports musl and uses the
+`webrtc-7907-a5ddff60-p6` native build. The musl jobs explicitly pin that native
+release and require its `linux-musl-x64` and `linux-musl-arm64` assets.
 The SDK version remains unchanged until a separate release bump.
 
 For local validation before publishing, mount a musl prebuilt into the builder
