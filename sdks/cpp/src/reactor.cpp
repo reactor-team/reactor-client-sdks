@@ -675,8 +675,13 @@ Subscription Reactor::on_session_id_changed(
   }};
 }
 
-std::future<std::optional<Json>> Reactor::send_command(
-    const std::string& command, const Json& args, const std::map<std::string, FileRef>& uploads) {
+// By value, not const&: an exported symbol, and the released 2.0.1 shared
+// library's ABI depends on this exact mangled name -- see the declaration's
+// own comment in reactor.hpp.
+// NOLINTBEGIN(performance-unnecessary-value-param)
+std::future<std::optional<Json>> Reactor::send_command(std::string command, Json args,
+                                                       std::map<std::string, FileRef> uploads) {
+  // NOLINTEND(performance-unnecessary-value-param)
   auto op = std::make_unique<detail::PendingOptionalJson>();
   op->operation = "send_command";
   auto future = op->promise.get_future();
@@ -692,7 +697,9 @@ std::future<Json> Reactor::request_schema() {
   return future;
 }
 
-std::future<FileRef> Reactor::upload_file(const std::string& path) {
+// See send_command's own comment above on staying by-value.
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
+std::future<FileRef> Reactor::upload_file(std::string path) {
   auto op = std::make_unique<detail::PendingFileRef>();
   op->operation = "upload_file";
   auto future = op->promise.get_future();
@@ -700,8 +707,8 @@ std::future<FileRef> Reactor::upload_file(const std::string& path) {
   return future;
 }
 
-std::future<FileRef> Reactor::upload_bytes(Bytes data, const std::string& name,
-                                           const std::string& mime_type) {
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
+std::future<FileRef> Reactor::upload_bytes(Bytes data, std::string name, std::string mime_type) {
   auto op = std::make_unique<detail::PendingFileRef>();
   op->operation = "upload_bytes";
   auto future = op->promise.get_future();

@@ -12,7 +12,11 @@
 
 namespace reactor {
 
-std::future<void> Clip::download(const std::string& path, DownloadOptions options) const {
+// By value, not const&: an exported symbol whose ABI the released shared
+// library depends on -- see Reactor::send_command's own comment in
+// reactor.hpp.
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
+std::future<void> Clip::download(std::string path, DownloadOptions options) const {
   auto op = std::make_unique<detail::PendingDownload>();
   op->operation = "download_clip";
   op->on_progress = std::move(options.on_progress);
