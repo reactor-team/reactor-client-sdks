@@ -275,11 +275,27 @@ func makeAndConnectWithRetries(
     retryDelay: Duration = .seconds(5)
 ) async throws -> Reactor {
     for attempt in 1...maxAttempts {
+        // Declared outside the `do`, not just a `let` inside it: if
+        // `pacedConnect` throws *after* the coordinator already created a
+        // session (a documented case in `pacedConnect`'s own doc — a
+        // session that polled 20 times without ever reaching `ready`), the
+        // reactor still has to be caught here to disconnect it before this
+        // attempt is abandoned. `Reactor.close()` explicitly does not end
+        // the session server-side, and letting `reactor` just fall out of
+        // scope would only ever reach `deinit`'s `close()` — never
+        // `disconnect()` — orphaning a session that then blocks the next
+        // attempt/run from starting (caught by Codex review on PR #171).
+        var reactor: Reactor?
         do {
-            let reactor = try await IntegrationConfig.makeReactor(model: model)
-            try await pacedConnect(reactor)
-            return reactor
+            let created = try await IntegrationConfig.makeReactor(model: model)
+            reactor = created
+            try await pacedConnect(created)
+            return created
         } catch {
+            if let reactor {
+                try? await reactor.disconnect()
+                reactor.close()
+            }
             guard attempt < maxAttempts else { throw error }
             try? await Task.sleep(for: retryDelay)
         }
