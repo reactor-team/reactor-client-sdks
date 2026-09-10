@@ -7,8 +7,6 @@
 #include <functional>
 #include <mutex>
 #include <string>
-#include <thread>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -112,7 +110,16 @@ class Handlers {
     if (invoke_nesting_depth() > 0) {
       return;
     }
-    idle_.wait(lock, [this] { return total_in_flight() == 0; });
+    // Only invocations that had already taken their snapshot as of this exact
+    // point can possibly still hold the handler just erased above — not any
+    // that start afterward, which read `handlers_` after the erase and so
+    // never see it. `started_` at this instant is that boundary: waiting for
+    // `finished_` to reach it (not for it to reach whatever `started_` climbs
+    // to later) is what keeps this from blocking forever under continuous or
+    // overlapping delivery, which keeps incrementing `started_` the whole time
+    // this waits.
+    const std::uint64_t target = started_;
+    idle_.wait(lock, [this, target] { return finished_ >= target; });
   }
 
   /// Call every handler with `args`.
@@ -131,15 +138,14 @@ class Handlers {
   template <typename... Called>
   void invoke(Called&&... args) const {  // NOLINT(cppcoreguidelines-missing-std-forward)
     std::vector<std::pair<std::uint64_t, Handler>> snapshot;
-    const auto this_thread = std::this_thread::get_id();
     {
       const std::lock_guard<std::mutex> lock(mutex_);
       snapshot = handlers_;
-      // Marks this copy as outstanding *before* the lock that guards
-      // `handlers_` is released, so a `remove()` that acquires that lock next
-      // is guaranteed to see it and wait — the ordering `remove()`'s own
-      // comment relies on.
-      ++in_flight_[this_thread];
+      // Marks this copy as started *before* the lock that guards `handlers_`
+      // is released, so a `remove()` that acquires that lock next reads a
+      // `started_` that already counts this copy — the ordering `remove()`'s
+      // own comment relies on.
+      ++started_;
     }
     const InvokeNestingGuard nesting_guard;
     for (const auto& [id, handler] : snapshot) {
@@ -163,10 +169,7 @@ class Handlers {
     }
     {
       const std::lock_guard<std::mutex> lock(mutex_);
-      const auto found = in_flight_.find(this_thread);
-      if (--found->second == 0) {
-        in_flight_.erase(found);
-      }
+      ++finished_;
     }
     // Outside the lock: a `remove()` waiting in `idle_.wait` re-acquires it
     // itself, and there is nothing left for it to see here.
@@ -179,21 +182,15 @@ class Handlers {
   }
 
  private:
-  /// Callers hold `mutex_` already; this only reads what it protects.
-  std::size_t total_in_flight() const {
-    std::size_t total = 0;
-    for (const auto& [thread_id, count] : in_flight_) {
-      (void)thread_id;
-      total += count;
-    }
-    return total;
-  }
-
   mutable std::mutex mutex_;
   mutable std::condition_variable idle_;
-  /// In-flight `invoke()` copies, counted per thread so `remove()` can exclude
-  /// the copy it is itself running inside of — see `remove()`'s own comment.
-  mutable std::unordered_map<std::thread::id, std::size_t> in_flight_;
+  /// How many `invoke()` copies have been taken, and how many have finished
+  /// calling every handler in theirs — see `remove()`'s own comment on why
+  /// `remove()` only ever waits for `finished_` to catch up to a `started_`
+  /// captured at erase time, not to reach whatever `started_` is by the time
+  /// it is checked.
+  mutable std::uint64_t started_ = 0;
+  mutable std::uint64_t finished_ = 0;
   std::uint64_t next_id_ = 1;
   std::vector<std::pair<std::uint64_t, Handler>> handlers_;
 };

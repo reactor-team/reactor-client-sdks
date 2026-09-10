@@ -2,9 +2,9 @@
 // (see this directory's CMakeLists.txt on why that's the point of this suite).
 #include "detail/handlers.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <future>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -97,9 +97,14 @@ TEST_CASE("remove() waits out a delivery already in flight on another thread") {
 // remove() closes this by never waiting at all when the calling thread is
 // nested inside any callback, not just this list's own — see its own
 // comment. This test exercises exactly the cycle above; before that fix, it
-// deadlocks instead of finishing, so the bounded wait_for below is not
-// decoration — it is what turns a regression here into a failed assertion
-// instead of a hung test binary.
+// deadlocks instead of finishing.
+//
+// Plain std::thread, not std::async/std::future: a future from
+// std::launch::async blocks in its *destructor* until the task finishes, so
+// if the two threads really were deadlocked, unwinding past a timed-out
+// REQUIRE would hang the test process anyway, just a few seconds later than
+// without the bound at all. Polling an atomic flag and detaching on timeout
+// is what actually lets a regression here fail the assertion and move on.
 TEST_CASE(
     "remove() does not deadlock when two threads are each mid-callback removing the "
     "other's subscription") {
@@ -140,9 +145,144 @@ TEST_CASE(
     a.remove(target_in_a);
   });
 
-  auto future_a = std::async(std::launch::async, [&] { a.invoke(1); });
-  auto future_b = std::async(std::launch::async, [&] { b.invoke(1); });
+  std::atomic<bool> a_done{false};
+  std::atomic<bool> b_done{false};
+  std::thread thread_a([&] {
+    a.invoke(1);
+    a_done = true;
+  });
+  std::thread thread_b([&] {
+    b.invoke(1);
+    b_done = true;
+  });
 
-  REQUIRE(future_a.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
-  REQUIRE(future_b.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while ((!a_done || !b_done) && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  const bool finished_in_time = a_done && b_done;
+
+  if (finished_in_time) {
+    thread_a.join();
+    thread_b.join();
+  } else {
+    // Deliberately abandoned, not joined: a regression here means these two
+    // are genuinely deadlocked forever, and joining (or letting a
+    // std::jthread-style destructor join) would just hang this test process
+    // instead of failing it.
+    thread_a.detach();
+    thread_b.detach();
+  }
+
+  REQUIRE(finished_in_time);
+}
+
+// The wait remove() added is only correct if it waits for exactly the
+// invoke() copies already taken at erase time — not however many more start
+// afterward. A first version of the fix waited for a live in-flight count to
+// hit zero instead, which is a different, broader condition: a second
+// invoke() call, on another thread, whose snapshot is taken *after* the
+// handler was already erased (and so cannot possibly contain it) still counts
+// toward that live total. Deterministic, not flooding-based: that second call
+// is deliberately never released, so if remove() waits for it too, it hangs
+// forever rather than just occasionally running long.
+TEST_CASE("remove() does not wait for invoke() copies that start after it erases the handler") {
+  Handlers<int> handlers;
+
+  std::mutex gate_one;
+  std::condition_variable gate_one_cv;
+  bool call_one_entered = false;
+  bool release_call_one = false;
+  std::atomic<bool> call_one_handler_consumed{false};
+
+  // Call #1's snapshot includes `id`, taken before it is erased below — the
+  // one remove() legitimately has to wait for. Blocks so that wait has
+  // something real to do, rather than remove() finding nothing in flight at
+  // all.
+  //
+  // Guarded by `call_one_handler_consumed`, not called unconditionally: this
+  // handler stays registered (nothing here ever removes it) for the rest of
+  // the test, so call #2 below has it in its own snapshot too. Only the
+  // first invocation — call #1's — is meant to block; a second one calling
+  // in must return immediately, or call #2 would never reach its own handler
+  // to signal `call_two_entered`.
+  handlers.add([&](int) {
+    if (call_one_handler_consumed.exchange(true)) {
+      return;
+    }
+    {
+      const std::lock_guard<std::mutex> lock(gate_one);
+      call_one_entered = true;
+    }
+    gate_one_cv.notify_all();
+    std::unique_lock<std::mutex> lock(gate_one);
+    gate_one_cv.wait(lock, [&] { return release_call_one; });
+  });
+
+  const std::uint64_t id = handlers.add([](int) {});
+
+  std::thread call_one([&] { handlers.invoke(1); });
+  {
+    std::unique_lock<std::mutex> lock(gate_one);
+    gate_one_cv.wait(lock, [&] { return call_one_entered; });
+  }
+
+  std::atomic<bool> remove_done{false};
+  std::thread remover([&] {
+    handlers.remove(id);
+    remove_done = true;
+  });
+
+  // Lets remove() erase `id` and enter its wait before call #2 exists below —
+  // both a handful of instructions under a lock, several orders of magnitude
+  // faster than this pause, the same reasoning every "wait for a flag" in
+  // this file relies on to not itself be a race.
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+  // Call #2: its snapshot is taken strictly after `id` was erased, so it
+  // cannot contain it. Never released — remove() must not be waiting for
+  // this one at all, so whether it ever finishes must not matter.
+  std::mutex gate_two;
+  std::condition_variable gate_two_cv;
+  bool call_two_entered = false;
+  handlers.add([&](int) {
+    {
+      const std::lock_guard<std::mutex> lock(gate_two);
+      call_two_entered = true;
+    }
+    gate_two_cv.notify_all();
+    std::this_thread::sleep_for(std::chrono::hours(1));
+  });
+  std::thread call_two([&] { handlers.invoke(1); });
+  {
+    std::unique_lock<std::mutex> lock(gate_two);
+    gate_two_cv.wait(lock, [&] { return call_two_entered; });
+  }
+
+  // Release call #1. The fix under test: remover must finish promptly once
+  // this alone is done, regardless of call #2 still being (deliberately)
+  // stuck.
+  {
+    const std::lock_guard<std::mutex> lock(gate_one);
+    release_call_one = true;
+  }
+  gate_one_cv.notify_all();
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!remove_done && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  call_one.join();
+  if (remove_done) {
+    remover.join();
+  } else {
+    // Deliberately abandoned: a regression here means remove() really is
+    // waiting on call #2, which never finishes by design, so joining would
+    // hang this test process instead of failing it.
+    remover.detach();
+  }
+  call_two.detach();  // Never finishes by design; nothing here waits for it.
+
+  REQUIRE(remove_done);
 }
