@@ -29,8 +29,10 @@ build-backend = "hatchling.build"
 [dependency-groups]
 # Dev-only; not shipped in the wheel. Installed by `mise run test:python`.
 # hatchling is here so the tests can import hatch_build.py, which is otherwise only
-# present in the isolated build environment.
-dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "pytest-rerunfailures>=14.0", "hatchling", "numpy"]
+# present in the isolated build environment. psutil is only used by
+# endurance-tests/ (current RSS + CPU sampling) — pulled in here rather than a
+# separate group since every other dev tool already lives in one flat group.
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "pytest-rerunfailures>=14.0", "hatchling", "numpy", "psutil>=6.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["reactor_sdk"]

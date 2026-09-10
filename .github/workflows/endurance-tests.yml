@@ -1,0 +1,109 @@
+# Manual-only (REA-6088): endurance/leak suites are long, noisier than a
+# correctness assertion (a growth trend, not a single right-or-wrong call),
+# and not meant to gate a PR or a release — see
+# sdks/python/endurance-tests/README.md. workflow_dispatch only, run by hand
+# from the Actions tab (or `gh workflow run endurance-tests.yml`) until this
+# graduates to a schedule trigger, a deliberate follow-up not done here.
+#
+# One job per SDK, each gated on the `sdk` input rather than a single
+# combined job: only Python has a suite today (sdks/python/endurance-tests/),
+# and adding JS/C++/Swift later is meant to be "add a choice + a job", not a
+# restructure of this file.
+name: Endurance tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      sdk:
+        description: "Which SDK's endurance suite to run"
+        type: choice
+        options:
+          - python
+        default: python
+      duration_minutes:
+        description: "How long each scenario loops for, in minutes"
+        type: string
+        default: "5"
+
+concurrency:
+  group: endurance-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  MISE_VERSION: "2026.8.8"    # pinned; must be >= mise.toml min_version
+  MISE_LOCKED: "1"            # install/run only mise.lock versions; never float
+  MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
+
+jobs:
+  # A separate job, not an expression on the `python` job's own timeout-minutes:
+  # GitHub Actions expressions have no arithmetic operators (`*`/`+` aren't part
+  # of the expression grammar at all, unlike `needs`/`inputs` context access,
+  # which *is* supported there) — the multiply-by-two-plus-setup-buffer math
+  # has to happen in a shell step instead, and `timeout-minutes` can only take
+  # a literal or a `needs.<job>.outputs.*` expression, never one of its own
+  # steps' outputs (those don't exist yet when the job's own timeout is
+  # evaluated).
+  setup:
+    name: Compute job timeout
+    runs-on: ubuntu-latest
+    outputs:
+      timeout_minutes: ${{ steps.compute.outputs.timeout_minutes }}
+    steps:
+      - name: Compute timeout-minutes from duration_minutes
+        id: compute
+        env:
+          DURATION_MINUTES: ${{ inputs.duration_minutes }}
+        # `10#` forces base-10 parsing: bash's arithmetic context otherwise
+        # treats a leading-zero numeral (e.g. "08") as octal and errors out.
+        # GitHub Actions hard-caps a job's timeout-minutes at 360, so a
+        # duration_minutes large enough to exceed that would otherwise just
+        # get silently killed mid-run — fail fast here instead, with the
+        # largest duration_minutes that still fits.
+        run: |
+          timeout_minutes=$((10#$DURATION_MINUTES * 2 + 30))
+          max_timeout_minutes=360
+          if (( timeout_minutes > max_timeout_minutes )); then
+            max_duration_minutes=$(( (max_timeout_minutes - 30) / 2 ))
+            echo "::error::duration_minutes=$DURATION_MINUTES needs a ${timeout_minutes}-minute job timeout, but GitHub Actions caps job timeouts at ${max_timeout_minutes} minutes. Use duration_minutes <= ${max_duration_minutes}."
+            exit 1
+          fi
+          echo "timeout_minutes=$timeout_minutes" >> "$GITHUB_OUTPUT"
+
+  python:
+    name: Python SDK endurance tests
+    needs: setup
+    if: inputs.sdk == 'python'
+    runs-on: ubuntu-latest
+    # The two scenarios run sequentially, each for duration_minutes, so the
+    # job needs at least 2x that plus setup (toolchain install, clang,
+    # build) — a fixed timeout would silently kill any multi-hour
+    # duration_minutes run partway through the second scenario. Computed in
+    # the `setup` job above, not inline here (see its comment for why).
+    timeout-minutes: ${{ fromJSON(needs.setup.outputs.timeout_minutes) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Install clang for the libwebrtc C++ glue
+        uses: ./.github/actions/setup-libwebrtc-cxx
+      - name: Endurance tests (real FFI client, real model)
+        env:
+          # Same dedicated secret ci.yml's python-integration-tests (and every
+          # other binding's integration-tests job) already uses.
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+          DURATION_MINUTES: ${{ inputs.duration_minutes }}
+        # The conversion happens here, in shell, rather than in the `env:`
+        # block above: GitHub Actions expressions have no arithmetic operators
+        # at all (see the `setup` job's comment), but the input is a plain
+        # integer string, so bash's own `$(( ))` handles it directly — with
+        # the same `10#` base-10 guard as `setup`, since duration_minutes is
+        # free-form user input and could just as easily be "08" here.
+        run: |
+          export ENDURANCE_DURATION_SECONDS=$((10#$DURATION_MINUTES * 60))
+          echo "Running for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s) per scenario"
+          mise run test:python:endurance-tests
