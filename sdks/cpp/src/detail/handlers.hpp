@@ -42,8 +42,15 @@ class Handlers {
   /// own subscription — without invalidating the iteration or deadlocking on the
   /// lock. The cost is a copy of a small vector of `std::function`s per event,
   /// and control events are low-rate by construction.
+  ///
+  /// `args` is deliberately never forwarded, forwarding reference and all:
+  /// forwarding it would let the *first* handler in the loop below move from it
+  /// (whenever `Called` deduces to an rvalue reference), leaving every handler
+  /// after it reading a moved-from value. One delivery calling N handlers must
+  /// give each of them the same `args`, which plain, repeatable-by-value passing
+  /// does and a single forward cannot.
   template <typename... Called>
-  void invoke(Called&&... args) const {
+  void invoke(Called&&... args) const {  // NOLINT(cppcoreguidelines-missing-std-forward)
     std::vector<std::pair<std::uint64_t, Handler>> snapshot;
     {
       const std::lock_guard<std::mutex> lock(mutex_);

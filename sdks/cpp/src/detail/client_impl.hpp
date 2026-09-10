@@ -287,9 +287,17 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
         local_(options.local),
         dispatcher_(std::move(options.executor)) {}
 
+  // NOLINTNEXTLINE(bugprone-exception-escape)
   ~ClientImpl() {
     // Before any member is destroyed: a callback that is still running is reading
     // them, and `destroy_handle` is what waits for it.
+    //
+    // Neither call below is declared noexcept, so clang-tidy flags this
+    // destructor as one that could let an exception escape — true in principle
+    // (a map erase or a string operation could throw bad_alloc), and not worth
+    // wrapping in a try/catch for: the only two things that could actually throw
+    // here are allocation failures already fatal to the process by the time they
+    // happen.
     destroy_handle();
     dispatcher_.stop();
   }
@@ -604,12 +612,12 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     // servers must never let an env var put a live microphone on the wire because
     // a model happened to declare a sendonly audio track. The other entry point
     // is not even in the symbol table — see detail/ffi.hpp.
-    constexpr int SYNTHETIC_ADM = 0;
+    constexpr int synthetic_adm = 0;
     // REACTOR_SDK_VERSION is a string literal (see version.hpp.in), so it needs
     // no lifetime management here unlike the other c_str()s above.
     handle_ = ffi().create_with_adm(api_url_.c_str(), model_.c_str(),
                                     jwt_ ? jwt_->c_str() : nullptr, local_ ? 1 : 0, &callbacks,
-                                    SYNTHETIC_ADM, REACTOR_SDK_VERSION, "cpp");
+                                    synthetic_adm, REACTOR_SDK_VERSION, "cpp");
     if (handle_ == nullptr) {
       throw ReactorError{"libreactor_ffi could not create a client (allocation failed)"};
     }

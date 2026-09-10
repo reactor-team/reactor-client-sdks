@@ -411,6 +411,13 @@ Subscription ClientImpl::add_video_handler(const std::string& name,
     const std::lock_guard<std::mutex> lock(media_mutex_);
     id = video_handlers_[name].add(std::move(handler));
   }
+  // `name` is captured by copy, not reference: this outlives the call that
+  // created it, so a reference into `add_video_handler`'s own parameter would
+  // dangle. clang-tidy flags the copy as an exception that could, in principle,
+  // escape a callable that must not throw — true of any std::string copy, and
+  // std::length_error is the only way that ever actually happens, which a track
+  // name never gets close to.
+  // NOLINTNEXTLINE(bugprone-exception-escape)
   return Subscription{[weak = weak_from_this(), name, id] {
     if (const auto self = weak.lock()) {
       const std::lock_guard<std::mutex> lock(self->media_mutex_);
@@ -434,6 +441,8 @@ Subscription ClientImpl::add_audio_handler(const std::string& name,
     const std::lock_guard<std::mutex> lock(media_mutex_);
     id = audio_handlers_[name].add(std::move(handler));
   }
+  // See add_video_handler's own comment on the capture and the NOLINT.
+  // NOLINTNEXTLINE(bugprone-exception-escape)
   return Subscription{[weak = weak_from_this(), name, id] {
     if (const auto self = weak.lock()) {
       const std::lock_guard<std::mutex> lock(self->media_mutex_);
@@ -655,6 +664,9 @@ void ClientImpl::begin_publish(std::unique_ptr<Pending> op, const std::string& n
     }
 
     auto* raw = track_pending(std::move(op));
+    // See add_video_handler's own comment on capturing `name` by copy across a
+    // completion boundary, and on the NOLINT.
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     raw->on_success = [weak = weak_from_this(), name] {
       if (const auto self = weak.lock()) {
         const std::lock_guard<std::mutex> lock(self->media_mutex_);
@@ -662,6 +674,7 @@ void ClientImpl::begin_publish(std::unique_ptr<Pending> op, const std::string& n
         self->published_.insert(name);
       }
     };
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     raw->on_failure = [weak = weak_from_this(), name] {
       if (const auto self = weak.lock()) {
         const std::lock_guard<std::mutex> lock(self->media_mutex_);

@@ -87,10 +87,12 @@ void ClientImpl::on_status_trampoline(const char* status, void* userdata) noexce
     }
 
     impl->fire_status(now);
-  } catch (...) {
+  } catch (...) {  // NOLINT(bugprone-empty-catch)
     // Dropped deliberately. There is no caller to report to — the caller is
-    // Rust — and a status this SDK failed to queue is one it will be told again
-    // on the next transition.
+    // Rust, this function is noexcept, and an exception let loose from here
+    // unwinds straight into Rust's stack — and a status this SDK failed to
+    // queue is one it will be told again on the next transition. Every
+    // trampoline below follows the same shape for the same reason.
   }
 }
 
@@ -100,7 +102,7 @@ void ClientImpl::on_error_trampoline(const char* error_json, void* userdata) noe
       std::shared_ptr<ReactorError> error{error_from_payload(error_json)};
       impl->fire_error(error);
     }
-  } catch (...) {
+  } catch (...) {  // NOLINT(bugprone-empty-catch)
     // As above. Failing to deliver an error event is bad; unwinding into Rust is
     // worse.
   }
@@ -136,7 +138,7 @@ void ClientImpl::on_track_trampoline(const char* name, const char* mid_or_null,
         self->track_handlers_.invoke(track);
       }
     });
-  } catch (...) {
+  } catch (...) {  // NOLINT(bugprone-empty-catch)
     // As with every trampoline: this frame was called from Rust.
   }
 }
@@ -163,7 +165,9 @@ void ClientImpl::on_message_trampoline(const char* msg_json, void* userdata) noe
     if (const auto impl = from_userdata(userdata)) {
       impl->fire_message(impl->message_handlers_, msg_json);
     }
-  } catch (...) {
+  } catch (...) {  // NOLINT(bugprone-empty-catch)
+    // See on_status_trampoline's own comment: every trampoline here is noexcept
+    // and called from Rust, so nothing may unwind out of it.
   }
 }
 
@@ -175,7 +179,8 @@ void ClientImpl::on_runtime_message_trampoline(const char* msg_json, void* userd
       // messages should never have to sift them out.
       impl->fire_message(impl->runtime_message_handlers_, msg_json);
     }
-  } catch (...) {
+  } catch (...) {  // NOLINT(bugprone-empty-catch)
+    // See on_status_trampoline's own comment.
   }
 }
 
@@ -187,7 +192,8 @@ void ClientImpl::on_capabilities_trampoline(const char* caps_json, void* userdat
     }
     impl->invalidate_declared();
     impl->fire_message(impl->capabilities_handlers_, caps_json);
-  } catch (...) {
+  } catch (...) {  // NOLINT(bugprone-empty-catch)
+    // See on_status_trampoline's own comment.
   }
 }
 
@@ -237,7 +243,8 @@ void ClientImpl::on_frame_trampoline(const char* track_name, const std::uint8_t*
     // Nothing is copied. The frame is handed to the handler exactly as it arrived,
     // and is invalid the moment this returns — which is why VideoFrame says so.
     impl->deliver_video(name, frame);
-  } catch (...) {
+  } catch (...) {  // NOLINT(bugprone-empty-catch)
+    // See on_status_trampoline's own comment.
   }
 }
 
@@ -259,7 +266,8 @@ void ClientImpl::on_audio_trampoline(const char* track_name, const std::int16_t*
     frame.channels = channels;
 
     impl->deliver_audio(name, frame);
-  } catch (...) {
+  } catch (...) {  // NOLINT(bugprone-empty-catch)
+    // See on_status_trampoline's own comment.
   }
 }
 
@@ -667,8 +675,8 @@ Subscription Reactor::on_session_id_changed(
   }};
 }
 
-std::future<std::optional<Json>> Reactor::send_command(std::string command, Json args,
-                                                       std::map<std::string, FileRef> uploads) {
+std::future<std::optional<Json>> Reactor::send_command(
+    const std::string& command, const Json& args, const std::map<std::string, FileRef>& uploads) {
   auto op = std::make_unique<detail::PendingOptionalJson>();
   op->operation = "send_command";
   auto future = op->promise.get_future();
@@ -684,7 +692,7 @@ std::future<Json> Reactor::request_schema() {
   return future;
 }
 
-std::future<FileRef> Reactor::upload_file(std::string path) {
+std::future<FileRef> Reactor::upload_file(const std::string& path) {
   auto op = std::make_unique<detail::PendingFileRef>();
   op->operation = "upload_file";
   auto future = op->promise.get_future();
@@ -692,7 +700,8 @@ std::future<FileRef> Reactor::upload_file(std::string path) {
   return future;
 }
 
-std::future<FileRef> Reactor::upload_bytes(Bytes data, std::string name, std::string mime_type) {
+std::future<FileRef> Reactor::upload_bytes(Bytes data, const std::string& name,
+                                           const std::string& mime_type) {
   auto op = std::make_unique<detail::PendingFileRef>();
   op->operation = "upload_bytes";
   auto future = op->promise.get_future();
