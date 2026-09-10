@@ -261,7 +261,15 @@ jobs:
           # mismatch its build.rs warns about — silently, since Cargo's
           # fingerprint does not see the compiler swap. A tool bump is a cache
           # miss now, which is the safe direction.
-          cache-key: ${{ hashFiles('mise.lock') }}
+          #
+          # cache-shared-key (not cache-key): this job, python, cpp and their
+          # integration-test counterparts all compile the same reactor-core /
+          # reactor-protocol / reactor-ffi for the same host target with the
+          # same clang — one shared cache instead of five near-duplicates. js
+          # / js-integration-tests are deliberately not in this group: they
+          # build only for wasm32 and share nothing with the host-target
+          # artifacts here (see their own shared key below).
+          cache-shared-key: reactor-host-${{ hashFiles('mise.lock') }}
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
@@ -282,7 +290,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1   # reads rust-toolchain.toml
         with:
           cache-on-failure: true
-          cache-key: ${{ hashFiles('mise.lock') }}
+          # See the rust job's cache-shared-key comment above.
+          cache-shared-key: reactor-host-${{ hashFiles('mise.lock') }}
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
@@ -315,7 +324,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache-on-failure: true
-          cache-key: ${{ hashFiles('mise.lock') }}
+          # See the rust job's cache-shared-key comment above.
+          cache-shared-key: reactor-host-${{ hashFiles('mise.lock') }}
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
@@ -338,13 +348,29 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1   # reads rust-toolchain.toml,
         with:                                            # including the wasm32 target
           cache-on-failure: true
-          cache-key: ${{ hashFiles('mise.lock') }}
+          # cache-shared-key (not cache-key): this job and js-integration-tests
+          # both compile reactor-wasm (and reactor-core/reactor-protocol for
+          # wasm32) — one shared cache between the two instead of duplicating
+          # it. Deliberately a different key than the host-target jobs' (see
+          # the rust job): wasm32 artifacts share nothing with those, and
+          # mixing them into one cache would only grow it for no reuse.
+          cache-shared-key: reactor-wasm-${{ hashFiles('mise.lock') }}
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
       - uses: actions/setup-node@v4   # Node isn't mise-pinned yet; see mise.toml's "JS SDK" section
         with:
           node-version: "24"
+      # wasm-pack fetches its own wasm-opt/binaryen binary straight from
+      # GitHub releases on first use — outside mise's cache entirely, and a
+      # real (if infrequent) source of flaky failures on that download (see
+      # REA-5659's PR #151 CI run). Cached here so a run only ever pays for
+      # that download once per wasm-pack version.
+      - name: Cache wasm-pack's wasm-opt/binaryen download
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/.wasm-pack
+          key: wasm-pack-binaryen-${{ hashFiles('mise.lock') }}
       # reactor-wasm compiles to nothing off a wasm target, so the rust job's
       # host-target clippy covers none of it. No clang needed here: this target
       # pulls in reactor-core only, never reactor-ffi's libwebrtc glue.
@@ -402,13 +428,20 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache-on-failure: true
-          cache-key: ${{ hashFiles('mise.lock') }}
+          # See the js job's cache-shared-key comment above.
+          cache-shared-key: reactor-wasm-${{ hashFiles('mise.lock') }}
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+      # See the js job's comment above — same download, same flake risk.
+      - name: Cache wasm-pack's wasm-opt/binaryen download
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/.wasm-pack
+          key: wasm-pack-binaryen-${{ hashFiles('mise.lock') }}
       # test:js:integration-tests builds wasm + dist/ itself (mise.toml)
       # rather than reusing the `js` job's — same reasoning as
       # release-js.yml's build job: never test something that wasn't built
@@ -430,10 +463,20 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1   # reads rust-toolchain.toml
         with:
           cache-on-failure: true
-          cache-key: ${{ hashFiles('mise.lock') }}
+          # See the rust job's cache-shared-key comment above.
+          cache-shared-key: reactor-host-${{ hashFiles('mise.lock') }}
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
+      # Catch2 (compiled, not header-only) and nlohmann/json are fetched and
+      # built into build/_deps by CMake's FetchContent on every run otherwise
+      # — cached here, keyed on the two CMakeLists.txt that declare them, so a
+      # pin bump is a cache miss and everything else is a hit.
+      - name: Cache CMake FetchContent dependencies (Catch2, nlohmann/json)
+        uses: actions/cache@v4
+        with:
+          path: sdks/cpp/build/_deps
+          key: cpp-deps-${{ hashFiles('sdks/cpp/CMakeLists.txt', 'sdks/cpp/tests/CMakeLists.txt') }}
       # Sets CXX to the pinned conda clang++, which the step below needs and the
       # ones after it must not use.
       - name: Install clang for the libwebrtc C++ glue
@@ -484,10 +527,18 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache-on-failure: true
-          cache-key: ${{ hashFiles('mise.lock') }}
+          # See the rust job's cache-shared-key comment above.
+          cache-shared-key: reactor-host-${{ hashFiles('mise.lock') }}
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
+      # See the cpp job's comment above — same fetch, its own build dir
+      # (build-integration-tests, not build/) so its own cache.
+      - name: Cache CMake FetchContent dependencies (Catch2)
+        uses: actions/cache@v4
+        with:
+          path: sdks/cpp/build-integration-tests/_deps
+          key: cpp-integration-deps-${{ hashFiles('sdks/cpp/CMakeLists.txt', 'sdks/cpp/integration-tests/CMakeLists.txt') }}
       - name: Install clang for the libwebrtc C++ glue
         uses: ./.github/actions/setup-libwebrtc-cxx
       - name: Build libreactor_ffi (the library the SDK links)
