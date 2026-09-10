@@ -1,22 +1,21 @@
 #include "helpers.hpp"
 
+#include <dirent.h>
 #include <unistd.h>
-
-#include <reactor/errors.hpp>
-
-#include "fixtures.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
-#include <dirent.h>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <numeric>
+#include <reactor/errors.hpp>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+
+#include "fixtures.hpp"
 
 namespace endurance {
 
@@ -110,8 +109,7 @@ double endurance_duration_seconds() {
 
 namespace {
 double monotonic_now_s() {
-  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch())
-      .count();
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 }  // namespace
 
@@ -146,10 +144,11 @@ const Sample& ResourceSampler::sample(int cycle) {
 
 void ResourceSampler::print_report() const {
   const auto deltas = cpu_deltas(samples_);
-  std::cout << "\n" << std::setw(6) << "cycle" << " " << std::setw(10) << "elapsed_s" << " "
-            << std::setw(8) << "ram_mb" << " " << std::setw(15) << "cpu_s_per_cycle" << " "
-            << std::setw(11) << "cpu_percent" << " " << std::setw(11) << "num_threads" << " "
-            << std::setw(7) << "num_fds" << "\n";
+  std::cout << "\n"
+            << std::setw(6) << "cycle" << " " << std::setw(10) << "elapsed_s" << " " << std::setw(8)
+            << "ram_mb" << " " << std::setw(15) << "cpu_s_per_cycle" << " " << std::setw(11)
+            << "cpu_percent" << " " << std::setw(11) << "num_threads" << " " << std::setw(7)
+            << "num_fds" << "\n";
   std::cout << std::fixed;
   for (std::size_t i = 0; i < samples_.size(); ++i) {
     const Sample& s = samples_[i];
@@ -205,8 +204,10 @@ void assert_no_sustained_growth(const std::vector<double>& values, const std::st
       values.begin() + static_cast<std::ptrdiff_t>(static_cast<double>(n) * warmup_fraction),
       values.end());
   const std::size_t third = std::max<std::size_t>(1, warmed_up.size() / 3);
-  const std::vector<double> first(warmed_up.begin(), warmed_up.begin() + static_cast<std::ptrdiff_t>(third));
-  const std::vector<double> last(warmed_up.end() - static_cast<std::ptrdiff_t>(third), warmed_up.end());
+  const std::vector<double> first(warmed_up.begin(),
+                                  warmed_up.begin() + static_cast<std::ptrdiff_t>(third));
+  const std::vector<double> last(warmed_up.end() - static_cast<std::ptrdiff_t>(third),
+                                 warmed_up.end());
 
   const double first_mean = use_median ? median(first) : mean(first);
   const double last_mean = use_median ? median(last) : mean(last);
@@ -229,8 +230,8 @@ void assert_no_sustained_growth(const std::vector<double>& values, const std::st
     reason = "under the " + std::to_string(static_cast<int>(max_growth_ratio * 100)) +
              "% growth threshold";
   }
-  std::cout << "[" << name << "] " << (is_leak ? "LEAK?" : "ok") << ": " << trend << " — "
-            << reason << "\n";
+  std::cout << "[" << name << "] " << (is_leak ? "LEAK?" : "ok") << ": " << trend << " — " << reason
+            << "\n";
 
   if (is_leak) {
     throw std::runtime_error(name + " grew " + std::to_string(static_cast<int>(ratio * 100)) +

@@ -111,7 +111,7 @@ TEST_CASE("session churn has no sustained resource growth") {
       }(),
       "rss_bytes", 0.15, 5'000'000);
   endurance::assert_no_sustained_growth(endurance::cpu_deltas(sampler.samples()), "cpu_s_per_cycle",
-                                       0.5, 0.05);
+                                        0.5, 0.05);
   endurance::assert_no_sustained_growth(
       [&] {
         std::vector<double> pct;

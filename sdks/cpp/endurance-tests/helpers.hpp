@@ -15,10 +15,9 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <reactor/reactor.hpp>
 #include <string>
 #include <vector>
-
-#include <reactor/reactor.hpp>
 
 namespace endurance {
 
