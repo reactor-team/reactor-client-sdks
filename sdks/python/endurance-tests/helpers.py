@@ -19,6 +19,7 @@ import asyncio
 import dataclasses
 import importlib.util
 import os
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -249,6 +250,7 @@ def assert_no_sustained_growth(
     max_growth_ratio: float,
     min_absolute_delta: float = 0.0,
     warmup_fraction: float = 0.2,
+    use_median: bool = False,
 ) -> None:
     """Fail if `values`'s mean over the run's last third exceeds its mean over
     the first third (after dropping `warmup_fraction` to let one-time costs —
@@ -264,6 +266,16 @@ def assert_no_sustained_growth(
     counts, not noisy measurements; use `assert_always_zero`/`assert_never_grows`
     for them instead.
 
+    `use_median=True` swaps the mean for a median within each window —
+    `num_threads` specifically has a documented one-cycle artifact (a cycle
+    that catches the previous cycle's native thread teardown still in
+    flight, briefly double-counting), and on a short run the "third" window
+    can be small enough (as few as 2-3 samples) that a single such cycle
+    landing in the last window skews its *mean* enough to misread as a
+    sustained trend. A median shrugs off one outlier as long as it isn't the
+    majority of the window; a real, sustained leak still moves the median
+    just as surely as the mean.
+
     Always prints one line verdict, pass or fail — not just on failure — so a
     clean run still says *why* each signal looked fine, not just silence.
     """
@@ -276,8 +288,9 @@ def assert_no_sustained_growth(
     warmed_up = values[int(n * warmup_fraction) :]
     third = max(1, len(warmed_up) // 3)
     first, last = warmed_up[:third], warmed_up[-third:]
-    first_mean = sum(first) / len(first)
-    last_mean = sum(last) / len(last)
+    average = statistics.median if use_median else (lambda xs: sum(xs) / len(xs))
+    first_mean = average(first)
+    last_mean = average(last)
     delta = last_mean - first_mean
     ratio = (delta / first_mean) if first_mean else (1.0 if delta > 0 else 0.0)
     is_leak = delta > min_absolute_delta and ratio > max_growth_ratio

@@ -40,67 +40,78 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
     frame = solid_rgb_frame(WIDTH, HEIGHT, (30, 150, 90))
     tracemalloc.start()
     mid_snapshot = None
+    final_snapshot = None
     iteration = 0
 
-    while not sampler.deadline_reached():
-        # Registered and torn down every iteration — unlike
-        # test_lifecycle_churn.py, which registers once per client and lets
-        # close() clean it up, this is the scenario for repeated
-        # subscribe/unsubscribe on a *long-lived* track: does on_frame/
-        # off_frame leak across many cycles on the same session, not just
-        # survive one client's teardown.
-        main_video = reactor.track("main_video")
-        # A bounded flag, not an accumulating frame buffer — see
-        # test_lifecycle_churn.py's own comment on the same pattern: only
-        # whether one frame arrived matters to pump_until_frame_received()
-        # below, and this stays registered until off_frame() a few lines down.
-        received: list[bool] = []
+    try:
+        while not sampler.deadline_reached():
+            # Registered and torn down every iteration — unlike
+            # test_lifecycle_churn.py, which registers once per client and lets
+            # close() clean it up, this is the scenario for repeated
+            # subscribe/unsubscribe on a *long-lived* track: does on_frame/
+            # off_frame leak across many cycles on the same session, not just
+            # survive one client's teardown.
+            main_video = reactor.track("main_video")
+            # A bounded flag, not an accumulating frame buffer — see
+            # test_lifecycle_churn.py's own comment on the same pattern: only
+            # whether one frame arrived matters to pump_until_frame_received()
+            # below, and this stays registered until off_frame() a few lines down.
+            received: list[bool] = []
 
-        # A named function, not an inline lambda passed separately to each
-        # call: off_frame() unregisters by matching the exact callable object
-        # on_frame() was given (Track._adapters is keyed by it) — two
-        # differently-created lambdas that merely *do* the same thing would
-        # never match, and off_frame() would silently no-op (it pops with a
-        # default rather than raising), leaking a handler every iteration.
-        def on_video_frame(_frame: object) -> None:
-            if not received:
-                received.append(True)
+            # A named function, not an inline lambda passed separately to each
+            # call: off_frame() unregisters by matching the exact callable object
+            # on_frame() was given (Track._adapters is keyed by it) — two
+            # differently-created lambdas that merely *do* the same thing would
+            # never match, and off_frame() would silently no-op (it pops with a
+            # default rather than raising), leaking a handler every iteration.
+            def on_video_frame(_frame: object) -> None:
+                if not received:
+                    received.append(True)
 
-        main_video.on_frame(on_video_frame)
+            main_video.on_frame(on_video_frame)
 
-        track = await reactor.publish_track(TRACK_NAME)
-        await pump_until_frame_received(track, frame, received)
-        await reactor.send_command("set_effect", {"effect": "invert"})
-        track.unpublish()
-        main_video.off_frame(on_video_frame)
+            track = await reactor.publish_track(TRACK_NAME)
+            await pump_until_frame_received(track, frame, received)
+            await reactor.send_command("set_effect", {"effect": "invert"})
+            track.unpublish()
+            main_video.off_frame(on_video_frame)
 
-        # Exact, not trend-based: every send_command above is awaited to
-        # completion before this line runs, so nothing should still be
-        # sitting in the pending-completions map between iterations. If
-        # something is, that's a leaked awaitable, not noise.
-        assert len(reactor._pending_completions) == 0, (
-            f"{len(reactor._pending_completions)} pending completion(s) left "
-            f"over after iteration {iteration} — a send_command reply was "
-            "never settled"
-        )
-        # Same reasoning, for the receive side: off_frame() above should have
-        # popped this iteration's handler back out, every time.
-        assert len(main_video._adapters) == 0, (
-            f"{len(main_video._adapters)} frame handler(s) left registered on "
-            f"main_video after iteration {iteration} — off_frame() didn't clean "
-            "up"
-        )
+            # Exact, not trend-based: every send_command above is awaited to
+            # completion before this line runs, so nothing should still be
+            # sitting in the pending-completions map between iterations. If
+            # something is, that's a leaked awaitable, not noise.
+            assert len(reactor._pending_completions) == 0, (
+                f"{len(reactor._pending_completions)} pending completion(s) left "
+                f"over after iteration {iteration} — a send_command reply was "
+                "never settled"
+            )
+            # Same reasoning, for the receive side: off_frame() above should have
+            # popped this iteration's handler back out, every time.
+            assert len(main_video._adapters) == 0, (
+                f"{len(main_video._adapters)} frame handler(s) left registered on "
+                f"main_video after iteration {iteration} — off_frame() didn't clean "
+                "up"
+            )
 
-        sampler.sample(cycle=iteration)
-        elapsed = sampler.samples[-1].elapsed_s
-        if mid_snapshot is None and elapsed >= ENDURANCE_DURATION_SECONDS * 0.3:
-            mid_snapshot = tracemalloc.take_snapshot()
-        iteration += 1
+            sampler.sample(cycle=iteration)
+            elapsed = sampler.samples[-1].elapsed_s
+            if mid_snapshot is None and elapsed >= ENDURANCE_DURATION_SECONDS * 0.3:
+                mid_snapshot = tracemalloc.take_snapshot()
+            iteration += 1
 
-    final_snapshot = tracemalloc.take_snapshot()
-    tracemalloc.stop()
+        final_snapshot = tracemalloc.take_snapshot()
+    finally:
+        # Stopping tracemalloc unconditionally matters as much as the report
+        # below: an in-loop assertion failure above (a real leak) would
+        # otherwise leave tracemalloc tracing every allocation for the rest
+        # of this pytest process, skewing RSS/CPU for whatever runs next.
+        tracemalloc.stop()
+        # Same reasoning as test_lifecycle_churn.py's own finally: a
+        # transient failure mid-run shouldn't cost the whole accumulated
+        # trend, which is the one thing a soak test actually exists to show.
+        if sampler.samples:
+            sampler.print_report()
 
-    sampler.print_report()
     assert iteration >= 3, (
         f"only completed {iteration} iteration(s) — raise ENDURANCE_DURATION_SECONDS "
         "to get enough data for a trend"
@@ -134,12 +145,16 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
     # one long-lived session can legitimately grow a thread or two / open a
     # few fds during warm-up (a connection pool, a worker thread spinning up)
     # and then plateau — same reasoning as RSS/CPU above, just with small
-    # integers instead of bytes/seconds, hence the small min_absolute_delta.
+    # integers instead of bytes/seconds. `use_median` and the wider floor —
+    # see test_lifecycle_churn.py's own comment on the identical call — guard
+    # against the same one-cycle double-counted-thread artifact skewing a
+    # short run's small comparison windows.
     assert_no_sustained_growth(
         [float(s.num_threads) for s in sampler.samples],
         name="num_threads",
         max_growth_ratio=0.15,
-        min_absolute_delta=2,
+        min_absolute_delta=4,
+        use_median=True,
     )
     assert_no_sustained_growth(
         [float(s.num_fds) for s in sampler.samples],
