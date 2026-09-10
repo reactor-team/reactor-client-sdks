@@ -16,6 +16,40 @@
 
 namespace reactor::detail {
 
+/// How many `Handlers<...>::invoke()` calls — of any specialization, not just
+/// one — the calling thread is presently nested inside.
+///
+/// A function-local `static thread_local`, not a namespace-scope variable:
+/// still exactly one instance per thread, shared across every translation
+/// unit that includes this header (inline function, C++17), but without
+/// exposing a global for anything else to reach into.
+///
+/// Shared across every `Handlers<...>` instantiation on purpose: two different
+/// handler lists (say, the video handlers for one track and the status
+/// handlers) can each have a thread inside a callback that destroys a
+/// subscription belonging to the *other* list. Per-instance bookkeeping alone
+/// cannot see that — each side would look, to its own `remove()`, like an
+/// unrelated, safe-to-wait-for-outsider thread — and the two would wait on
+/// each other forever. This is checked instead: a thread already inside any
+/// callback never blocks in `remove()`, full stop — see `remove()`'s comment.
+inline int& invoke_nesting_depth() {
+  static thread_local int depth = 0;
+  return depth;
+}
+
+/// RAII around `invoke_nesting_depth()`, so a handler that throws still
+/// leaves it correct. (`invoke()` itself never lets a handler's exception
+/// escape it — see its own comment — but this does not depend on that.)
+class InvokeNestingGuard {
+ public:
+  InvokeNestingGuard() { ++invoke_nesting_depth(); }
+  ~InvokeNestingGuard() { --invoke_nesting_depth(); }
+  InvokeNestingGuard(const InvokeNestingGuard&) = delete;
+  InvokeNestingGuard& operator=(const InvokeNestingGuard&) = delete;
+  InvokeNestingGuard(InvokeNestingGuard&&) = delete;
+  InvokeNestingGuard& operator=(InvokeNestingGuard&&) = delete;
+};
+
 template <typename... Args>
 class Handlers {
  public:
@@ -44,10 +78,29 @@ class Handlers {
   /// before returning — after that, no copy containing this handler still
   /// exists anywhere.
   ///
-  /// Exempted: an `invoke()` this very thread is already inside. That is the
-  /// self-removal case `invoke()`'s own comment describes — a handler dropping
-  /// its own subscription — and waiting for it here would be waiting for this
-  /// thread to finish what it is presently doing, forever.
+  /// Not waited for: a thread already inside some callback when it calls
+  /// this.
+  ///
+  /// The self-removal case `invoke()`'s own comment describes — a handler
+  /// dropping its own subscription — is one instance of this: waiting here
+  /// would wait for this thread to finish what it is presently doing,
+  /// forever. But it is not the only one a per-thread exemption would need to
+  /// cover: two threads each inside a callback, each destroying a
+  /// subscription the *other*'s already-taken copy still holds, would
+  /// otherwise each wait for the other's `invoke()` to finish — and neither
+  /// can, because each is blocked on this very wait. Skipping the wait
+  /// whenever the caller is nested inside *any* callback, not just checking
+  /// whether it is this list's own, avoids that cycle: a thread that is not
+  /// itself running a callback can never be the other half of one.
+  ///
+  /// The tradeoff this leaves: a callback that removes a *different*
+  /// callback's subscription and destroys its captures immediately after
+  /// keeps the original race for that one case. That is narrower than it
+  /// sounds — it requires two callbacks in flight on two different threads at
+  /// once, which most callers of this class never do — and it is the price of
+  /// not deadlocking the far more common shape this fix targets: a
+  /// `Subscription` member going out of scope on a thread that is not itself
+  /// mid-callback, ordinary destructor teardown included.
   void remove(std::uint64_t id) {
     std::unique_lock<std::mutex> lock(mutex_);
     for (auto it = handlers_.begin(); it != handlers_.end(); ++it) {
@@ -56,11 +109,10 @@ class Handlers {
         break;
       }
     }
-    const auto own = [this] {
-      const auto found = in_flight_.find(std::this_thread::get_id());
-      return found == in_flight_.end() ? std::size_t{0} : found->second;
-    }();
-    idle_.wait(lock, [this, own] { return total_in_flight() <= own; });
+    if (invoke_nesting_depth() > 0) {
+      return;
+    }
+    idle_.wait(lock, [this] { return total_in_flight() == 0; });
   }
 
   /// Call every handler with `args`.
@@ -89,6 +141,7 @@ class Handlers {
       // comment relies on.
       ++in_flight_[this_thread];
     }
+    const InvokeNestingGuard nesting_guard;
     for (const auto& [id, handler] : snapshot) {
       (void)id;
       // Per handler, so one caller's bug does not silence the others registered

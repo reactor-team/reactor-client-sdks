@@ -2,7 +2,9 @@
 // (see this directory's CMakeLists.txt on why that's the point of this suite).
 #include "detail/handlers.hpp"
 
+#include <chrono>
 #include <condition_variable>
+#include <future>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -82,4 +84,65 @@ TEST_CASE("remove() waits out a delivery already in flight on another thread") {
   CHECK(names.front() == "delivered");
 
   dispatcher.join();
+}
+
+// A per-thread exemption in remove() — "don't wait for an invoke() this
+// thread is already inside" — is enough to fix the case above, but not
+// enough on its own: two threads, each mid-callback on a *different*
+// Handlers instance, each removing a subscription the *other*'s callback
+// belongs to, would each look like a safe-to-wait-for outsider to the
+// other's remove(). Both would then wait for the other's invoke() to finish,
+// and neither can, because each is itself the thing blocking the other.
+//
+// remove() closes this by never waiting at all when the calling thread is
+// nested inside any callback, not just this list's own — see its own
+// comment. This test exercises exactly the cycle above; before that fix, it
+// deadlocks instead of finishing, so the bounded wait_for below is not
+// decoration — it is what turns a regression here into a failed assertion
+// instead of a hung test binary.
+TEST_CASE(
+    "remove() does not deadlock when two threads are each mid-callback removing the "
+    "other's subscription") {
+  Handlers<int> a;
+  Handlers<int> b;
+
+  const std::uint64_t target_in_a = a.add([](int) {});
+  const std::uint64_t target_in_b = b.add([](int) {});
+
+  std::mutex gate;
+  std::condition_variable gate_cv;
+  bool a_is_mid_callback = false;
+  bool b_is_mid_callback = false;
+
+  a.add([&](int) {
+    {
+      const std::lock_guard<std::mutex> lock(gate);
+      a_is_mid_callback = true;
+    }
+    gate_cv.notify_all();
+    {
+      std::unique_lock<std::mutex> lock(gate);
+      gate_cv.wait(lock, [&] { return b_is_mid_callback; });
+    }
+    b.remove(target_in_b);
+  });
+
+  b.add([&](int) {
+    {
+      const std::lock_guard<std::mutex> lock(gate);
+      b_is_mid_callback = true;
+    }
+    gate_cv.notify_all();
+    {
+      std::unique_lock<std::mutex> lock(gate);
+      gate_cv.wait(lock, [&] { return a_is_mid_callback; });
+    }
+    a.remove(target_in_a);
+  });
+
+  auto future_a = std::async(std::launch::async, [&] { a.invoke(1); });
+  auto future_b = std::async(std::launch::async, [&] { b.invoke(1); });
+
+  REQUIRE(future_a.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+  REQUIRE(future_b.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
 }

@@ -420,10 +420,23 @@ Subscription ClientImpl::add_video_handler(const std::string& name,
   // NOLINTNEXTLINE(bugprone-exception-escape)
   return Subscription{[weak = weak_from_this(), name, id] {
     if (const auto self = weak.lock()) {
-      const std::lock_guard<std::mutex> lock(self->media_mutex_);
-      const auto entry = self->video_handlers_.find(name);
-      if (entry != self->video_handlers_.end()) {
-        entry->second.remove(id);
+      // Not held across remove(): remove() can now block waiting for an
+      // in-flight invoke() to finish (see its own comment), and a video
+      // callback that reaches back into this client for anything guarded by
+      // media_mutex_ would deadlock against this lock still being held here.
+      // Safe to look the list up and drop the lock first, same as
+      // deliver_video's own comment: entries are only ever added, so the
+      // object found here outlives the lookup.
+      Handlers<const VideoFrame&>* handlers = nullptr;
+      {
+        const std::lock_guard<std::mutex> lock(self->media_mutex_);
+        const auto entry = self->video_handlers_.find(name);
+        if (entry != self->video_handlers_.end()) {
+          handlers = &entry->second;
+        }
+      }
+      if (handlers != nullptr) {
+        handlers->remove(id);
       }
     }
   }};
@@ -445,10 +458,18 @@ Subscription ClientImpl::add_audio_handler(const std::string& name,
   // NOLINTNEXTLINE(bugprone-exception-escape)
   return Subscription{[weak = weak_from_this(), name, id] {
     if (const auto self = weak.lock()) {
-      const std::lock_guard<std::mutex> lock(self->media_mutex_);
-      const auto entry = self->audio_handlers_.find(name);
-      if (entry != self->audio_handlers_.end()) {
-        entry->second.remove(id);
+      // See add_video_handler's own comment: not held across remove(), for
+      // the same reason.
+      Handlers<const AudioFrame&>* handlers = nullptr;
+      {
+        const std::lock_guard<std::mutex> lock(self->media_mutex_);
+        const auto entry = self->audio_handlers_.find(name);
+        if (entry != self->audio_handlers_.end()) {
+          handlers = &entry->second;
+        }
+      }
+      if (handlers != nullptr) {
+        handlers->remove(id);
       }
     }
   }};
