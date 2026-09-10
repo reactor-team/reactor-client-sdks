@@ -6,9 +6,9 @@
 # graduates to a schedule trigger, a deliberate follow-up not done here.
 #
 # One job per SDK, each gated on the `sdk` input rather than a single
-# combined job: only Python has a suite today (sdks/python/endurance-tests/),
-# and adding JS/C++/Swift later is meant to be "add a choice + a job", not a
-# restructure of this file.
+# combined job: python and cpp have suites today (sdks/python/endurance-tests/,
+# sdks/cpp/endurance-tests/), and adding JS/Swift later is meant to be "add a
+# choice + a job", not a restructure of this file.
 name: Endurance tests
 
 on:
@@ -19,6 +19,7 @@ on:
         type: choice
         options:
           - python
+          - cpp
         default: python
       duration_minutes:
         description: "How long each scenario loops for, in minutes"
@@ -33,16 +34,23 @@ env:
   MISE_VERSION: "2026.8.8"    # pinned; must be >= mise.toml min_version
   MISE_LOCKED: "1"            # install/run only mise.lock versions; never float
   MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
+  # Embeds debug info into every release build this workflow produces —
+  # opt-level stays 3 (this doesn't become a debug build, which would change
+  # the very timing a race condition like REA-6154 depends on), but a crash's
+  # core dump can now be symbolized. See
+  # .github/actions/collect-core-dump/action.yml for why this exists and
+  # where it's used below.
+  CARGO_PROFILE_RELEASE_DEBUG: "1"
 
 jobs:
-  # A separate job, not an expression on the `python` job's own timeout-minutes:
-  # GitHub Actions expressions have no arithmetic operators (`*`/`+` aren't part
-  # of the expression grammar at all, unlike `needs`/`inputs` context access,
-  # which *is* supported there) — the multiply-by-two-plus-setup-buffer math
-  # has to happen in a shell step instead, and `timeout-minutes` can only take
-  # a literal or a `needs.<job>.outputs.*` expression, never one of its own
-  # steps' outputs (those don't exist yet when the job's own timeout is
-  # evaluated).
+  # A separate job, not an expression on the `python`/`cpp` jobs' own
+  # timeout-minutes: GitHub Actions expressions have no arithmetic operators
+  # (`*`/`+` aren't part of the expression grammar at all, unlike `needs`/
+  # `inputs` context access, which *is* supported there) — the multiply-by-
+  # two-plus-setup-buffer math has to happen in a shell step instead, and
+  # `timeout-minutes` can only take a literal or a `needs.<job>.outputs.*`
+  # expression, never one of its own steps' outputs (those don't exist yet
+  # when the job's own timeout is evaluated).
   setup:
     name: Compute job timeout
     runs-on: ubuntu-latest
@@ -91,6 +99,14 @@ jobs:
           version: ${{ env.MISE_VERSION }}
       - name: Install clang for the libwebrtc C++ glue
         uses: ./.github/actions/setup-libwebrtc-cxx
+      - name: Enable core dumps
+        # A bare core_pattern (no leading '/' or '|') writes into whatever
+        # the crashing process's cwd was — sdks/python here, since that's
+        # `test:python:endurance-tests`'s mise `dir` — which is exactly
+        # where the "Collect crash diagnostics" step below looks. A kernel
+        # setting, not shell state, so it holds for every later step in this
+        # job regardless of which one actually crashes.
+        run: sudo sysctl -w kernel.core_pattern='core.%e.%p'
       - name: Endurance tests (real FFI client, real model)
         env:
           # Same dedicated secret ci.yml's python-integration-tests (and every
@@ -103,7 +119,81 @@ jobs:
         # integer string, so bash's own `$(( ))` handles it directly — with
         # the same `10#` base-10 guard as `setup`, since duration_minutes is
         # free-form user input and could just as easily be "08" here.
+        #
+        # `ulimit -c unlimited` has to be set here, in the same shell that
+        # execs the test process, not in a separate step — it's shell state,
+        # not a kernel setting, and only reaches this run's own children.
         run: |
+          ulimit -c unlimited
           export ENDURANCE_DURATION_SECONDS=$((10#$DURATION_MINUTES * 60))
           echo "Running for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s) per scenario"
           mise run test:python:endurance-tests
+      - name: Collect crash diagnostics (core dump + backtrace)
+        if: failure()
+        uses: ./.github/actions/collect-core-dump
+        with:
+          binary-path: sdks/python/.venv/bin/python3
+          search-dir: sdks/python
+
+  cpp:
+    name: C++ SDK endurance tests
+    needs: setup
+    if: inputs.sdk == 'cpp'
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(needs.setup.outputs.timeout_minutes) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Cache CMake FetchContent dependencies (Catch2)
+        uses: actions/cache@v4
+        with:
+          path: sdks/cpp/build-endurance-tests/_deps
+          key: cpp-endurance-deps-${{ hashFiles('sdks/cpp/CMakeLists.txt', 'sdks/cpp/endurance-tests/CMakeLists.txt') }}
+      - name: Install clang for the libwebrtc C++ glue
+        uses: ./.github/actions/setup-libwebrtc-cxx
+      - name: Build libreactor_ffi (the library the SDK links)
+        run: mise run build:ffi
+      # Same two-compiler split as ci.yml's `cpp`/`cpp-integration-tests`
+      # jobs: the conda clang++ just built libreactor_ffi's libwebrtc glue,
+      # but the SDK itself (and this suite) must link against the runner's
+      # own glibc.
+      - name: Use the platform clang for the SDK itself
+        run: |
+          set -euo pipefail
+          if [ ! -x /usr/bin/clang++ ]; then
+            echo "::error::/usr/bin/clang++ is missing on this runner image."
+            exit 1
+          fi
+          echo "CXX=/usr/bin/clang++" >> "$GITHUB_ENV"
+      - name: Enable core dumps
+        # See the `python` job's identical step for why this is a separate
+        # step (a kernel setting, unlike ulimit below). This suite's mise
+        # task builds/runs from the repo root (no `dir` override), so a bare
+        # core_pattern lands there — matching "Collect crash diagnostics"
+        # below.
+        run: sudo sysctl -w kernel.core_pattern='core.%e.%p'
+      - name: Endurance tests (real FFI client, real model)
+        env:
+          # Same dedicated secret every other binding's endurance/integration
+          # job uses.
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+          DURATION_MINUTES: ${{ inputs.duration_minutes }}
+        # See the `python` job's identical step for both the `10#` guard and
+        # why `ulimit` belongs in this same shell rather than its own step.
+        run: |
+          ulimit -c unlimited
+          export ENDURANCE_DURATION_SECONDS=$((10#$DURATION_MINUTES * 60))
+          echo "Running for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s) per scenario"
+          mise run test:cpp:endurance-tests
+      - name: Collect crash diagnostics (core dump + backtrace)
+        if: failure()
+        uses: ./.github/actions/collect-core-dump
+        with:
+          binary-path: sdks/cpp/build-endurance-tests/endurance-tests/reactor_sdk_endurance_tests
+          search-dir: .
