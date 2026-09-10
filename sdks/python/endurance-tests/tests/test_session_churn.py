@@ -50,7 +50,11 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
         # off_frame leak across many cycles on the same session, not just
         # survive one client's teardown.
         main_video = reactor.track("main_video")
-        received: list[object] = []
+        # A bounded flag, not an accumulating frame buffer — see
+        # test_lifecycle_churn.py's own comment on the same pattern: only
+        # whether one frame arrived matters to pump_until_frame_received()
+        # below, and this stays registered until off_frame() a few lines down.
+        received: list[bool] = []
 
         # A named function, not an inline lambda passed separately to each
         # call: off_frame() unregisters by matching the exact callable object
@@ -58,8 +62,9 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
         # differently-created lambdas that merely *do* the same thing would
         # never match, and off_frame() would silently no-op (it pops with a
         # default rather than raising), leaking a handler every iteration.
-        def on_video_frame(received_frame: object) -> None:
-            received.append(received_frame)
+        def on_video_frame(_frame: object) -> None:
+            if not received:
+                received.append(True)
 
         main_video.on_frame(on_video_frame)
 

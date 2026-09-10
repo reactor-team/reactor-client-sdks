@@ -53,9 +53,20 @@ async def test_lifecycle_churn_leaves_no_leftover_handles_or_growth() -> None:
                 # comment on it), and publish/push_frame alone never reaches
                 # it: nothing before this touched Track._adapters or
                 # Reactor._handlers at all.
-                received: list[object] = []
+                # A bounded flag, not an accumulating frame buffer: only
+                # whether one arrived matters to pump_until_frame_received()
+                # below, and the callback stays registered for the rest of
+                # this cycle (through send_command/unpublish/disconnect) —
+                # appending every subsequent frame here would grow for no
+                # reason and read like a leak on a report someone's skimming.
+                received: list[bool] = []
                 main_video = client.track("main_video")
-                main_video.on_frame(lambda received_frame: received.append(received_frame))
+
+                def _mark_received(_frame: object) -> None:
+                    if not received:
+                        received.append(True)
+
+                main_video.on_frame(_mark_received)
 
                 webcam = await client.publish_track("webcam")
                 await pump_until_frame_received(webcam, frame, received)
