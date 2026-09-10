@@ -18,6 +18,7 @@ import tracemalloc
 from helpers import (
     ENDURANCE_DURATION_SECONDS,
     ResourceSampler,
+    assert_always_zero,
     assert_never_grows,
     assert_no_sustained_growth,
     cpu_deltas,
@@ -117,10 +118,16 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
         "to get enough data for a trend"
     )
 
-    # live_clients/orphaned_callbacks should stay exactly flat (not 0 — the
-    # `reactor` fixture's one client is connected for the whole test).
+    # live_clients should stay exactly flat, but not at 0 — the `reactor`
+    # fixture's one client is connected for the whole test, so its baseline
+    # is 1, not 0.
     assert_never_grows(sampler.samples, field="live_clients")
-    assert_never_grows(sampler.samples, field="orphaned_callbacks")
+    # Always-zero, not never-grows: orphaned callbacks come only from clients
+    # that have already closed, so the invariant is 0 regardless of how many
+    # clients are live. assert_never_grows would only flag growth *past*
+    # whatever the first sample happened to be, so a leak already present at
+    # cycle 0 (fixture setup, an earlier test) would pass silently forever.
+    assert_always_zero(sampler.samples, field="orphaned_callbacks")
     assert_no_sustained_growth(
         [s.rss_bytes for s in sampler.samples],
         name="rss_bytes",
