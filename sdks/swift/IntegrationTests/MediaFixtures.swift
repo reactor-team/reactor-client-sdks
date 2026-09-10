@@ -57,11 +57,14 @@ func pumpAudio(
 /// fake device happens to generate. Same reasoning as the Python suite's
 /// `solid_rgb_frame`/`sine_wave_samples` and the JS harness's synthetic
 /// canvas/audio-tone fixtures.
-enum MediaFixtures {
+// `package`, not `internal`: EnduranceTests reuses `solidBGRAFrame` rather
+// than re-deriving a synthetic frame fixture — same reasoning as
+// `IntegrationConfig`'s own `package` comment in Fixtures.swift.
+package enum MediaFixtures {
 
     /// A BGRA frame of `color`, `width * height * 4` bytes — exactly what
     /// `Track.pushFrame` accepts.
-    static func solidBGRAFrame(
+    package static func solidBGRAFrame(
         width: Int, height: Int, color: (b: UInt8, g: UInt8, r: UInt8)
     )
         -> Data

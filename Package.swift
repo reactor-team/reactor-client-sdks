@@ -253,5 +253,22 @@ let package = Package(
             // through `swift test` after xcodebuild had already accepted it.
             linkerSettings: [.unsafeFlags(["-Xlinker", "-ObjC"])]
         ),
+        // REA-6088's Swift follow-up. Real FFI, real WebRTC, against
+        // reactor/echo in production, watching resource usage for growth
+        // across a long-lived session and repeated connect/disconnect
+        // cycles — not part of the fast, hermetic suites above, and not
+        // filtered in by `swift.sh integration-tests` either. Depends on
+        // `IntegrationTests` itself (a test target may depend on another
+        // test target) to reuse its fixtures — `withConnectedReactor`,
+        // `pacedConnect`, `pumpFrames`/`MediaFixtures` — rather than
+        // re-deriving connection setup, pacing, and media fixtures, the
+        // same reasoning `sdks/python/endurance-tests/helpers.py` gives for
+        // importing straight from `../integration-tests/conftest.py`.
+        .testTarget(
+            name: "EnduranceTests",
+            dependencies: ["Reactor", "ExampleSupport", "IntegrationTests"],
+            path: "sdks/swift/EnduranceTests",
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-ObjC"])]
+        ),
     ]
 )

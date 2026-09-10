@@ -14,7 +14,14 @@ import Reactor
 /// (the mocked-`FakeLibrary` unit suite) — only `swift.sh integration-tests`
 /// filters it in. Same separation `sdks/js/integration-tests/` and
 /// `sdks/python/integration-tests/` keep from their own unit suites.
-enum IntegrationConfig {
+// `package`, not `internal`: EnduranceTests (a separate target/module within
+// this same package) reuses `defaultModel`, `makeReactor`, `pacedConnect`,
+// and `withConnectedReactor` rather than re-deriving connection setup and
+// pacing — the same reasoning sdks/python/endurance-tests/helpers.py gives
+// for importing straight from ../integration-tests/conftest.py. `package` is
+// the access level for exactly this: shared within the package, not part of
+// this SDK's public surface the way anything in Sources/ is.
+package enum IntegrationConfig {
 
     /// Same names as `sdks/js/integration-tests/harness/src/config.ts` and
     /// `sdks/python/integration-tests/conftest.py`.
@@ -42,7 +49,7 @@ enum IntegrationConfig {
     /// helios, **nothing arrives on `main_video` until something has been
     /// pushed into `webcam`** (`echo_model.py`'s `run()` skips a tick with
     /// nothing to read).
-    static let defaultModel = "reactor/echo"
+    package static let defaultModel = "reactor/echo"
 
     /// The API key this suite runs with, or a clear failure naming the fix —
     /// never a crash, so one test's missing key fails that test rather than the
@@ -63,7 +70,7 @@ enum IntegrationConfig {
     /// coordinator only accepts the token that *created* a session for a second
     /// connection to adopt it by id, not a fresh one minted per client, so a
     /// joiner needs the creator's own token, not its own key.
-    static func makeReactor(
+    package static func makeReactor(
         model: String = defaultModel, jwt: String? = nil
     ) async throws
         -> Reactor
@@ -158,7 +165,7 @@ actor SessionPacer {
 /// Playwright's `retries: 1` (not filtered by error type, so it already
 /// absorbs this) — this is Swift's equivalent, written by hand because `swift
 /// test` has no rerun-on-failure flag.
-func pacedConnect(
+package func pacedConnect(
     _ reactor: Reactor, sessionID: String? = nil, connectionID: UInt32? = nil
 ) async throws {
     let maxAttempts = 4
@@ -189,7 +196,7 @@ func pacedConnect(
 /// reason the `sdk-from-ffi` skill puts it in a `finally` in every example: a
 /// creator that goes away without disconnecting orphans the session, and the
 /// next run cannot start until it clears.
-func withConnectedReactor<Result>(
+package func withConnectedReactor<Result>(
     model: String = IntegrationConfig.defaultModel,
     jwt: String? = nil,
     sessionID: String? = nil,
