@@ -260,14 +260,28 @@ jobs:
     # bumping the version (e.g. an edit to ReactorSDK.swift that isn't a
     # release, or a Package.swift change unrelated to releasedFFI) — the
     # paths filter above only answers "might this PR matter", is_release_pr
-    # is what actually answers "does it". Unconditional on push/
-    # workflow_dispatch, same as before.
+    # is what actually answers "does it".
+    #
+    # Skipped on an ordinary push the same way, via bumped: this job's
+    # checksum output only ever feeds `release` (gated on bumped) or
+    # `stage-release` (pull_request-only), so a push that doesn't bump the
+    # version has nothing downstream that will ever read it — building and
+    # checksumming the XCFramework anyway would be pure waste.
+    #
+    # workflow_dispatch stays unconditional even when detect-version's own
+    # dry_run handling sets bumped=false: a dry run's entire point is to
+    # build and test the release artifact without publishing it, so it must
+    # still reach this job.
     #
     # Also skipped once already_staged is true — see detect-version's own
     # comment on that output. Only reachable on a pull_request (push and
     # workflow_dispatch never set it), so it never touches the actual
     # publish path.
-    if: needs.detect-version.outputs.already_staged != 'true' && (needs.detect-version.outputs.is_release_pr == 'true' || github.event_name != 'pull_request')
+    if: >-
+      needs.detect-version.outputs.already_staged != 'true' &&
+      (needs.detect-version.outputs.is_release_pr == 'true' ||
+        github.event_name == 'workflow_dispatch' ||
+        needs.detect-version.outputs.bumped == 'true')
     runs-on: macos-latest
     outputs:
       checksum: ${{ steps.package.outputs.checksum }}
@@ -340,9 +354,20 @@ jobs:
     # already runs this suite against the same commit, required via
     # ci-complete, and reactor/echo's session quota doesn't have room for both
     # workflows racing it at once — the exact collision release-js.yml's own
-    # notes describe. This only needs to run before an actual publish, which
-    # is only ever a 'push' or 'workflow_dispatch' now.
-    if: github.event_name != 'pull_request'
+    # notes describe. bumped is hard-coded false on a pull_request, so gating
+    # on it already excludes that event without a separate check.
+    #
+    # On an ordinary push, also gated on bumped rather than unconditional:
+    # this job's result only ever feeds `release` below (needs.swift-
+    # integration-tests.result == 'success', itself gated on bumped), so a
+    # push that doesn't bump the version has nothing downstream that reads
+    # it — ci.yml's own copy of this suite already ran against the same
+    # commit regardless.
+    #
+    # workflow_dispatch stays unconditional (even a dry_run, which sets
+    # bumped=false) — same reasoning as build-xcframework above: a dry run
+    # exists to build and test without publishing.
+    if: github.event_name == 'workflow_dispatch' || needs.detect-version.outputs.bumped == 'true'
     concurrency:
       group: reactor-echo-live-session-quota-${{ github.sha }}
       cancel-in-progress: false
@@ -373,8 +398,13 @@ jobs:
     # upstream (e.g. a dry run with nothing to gate) doesn't silently skip
     # this one too — see ci.yml's own comment on exactly this failure mode,
     # found by Codex review on REA-6080.
+    #
+    # Same gate as its two needs (build-xcframework, swift-integration-tests)
+    # rather than the plain `github.event_name != 'pull_request'` those used
+    # to share: this job downloads the artifact build-xcframework produces,
+    # so it must skip whenever that job does, not just on pull_request.
     needs: [detect-version, build-xcframework, swift-integration-tests]
-    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.detect-version.outputs.bumped == 'true') }}
     concurrency:
       group: reactor-echo-live-session-quota-${{ github.sha }}
       cancel-in-progress: false
