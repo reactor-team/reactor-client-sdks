@@ -55,8 +55,19 @@ jobs:
           DURATION_MINUTES: ${{ inputs.duration_minutes }}
         # `10#` forces base-10 parsing: bash's arithmetic context otherwise
         # treats a leading-zero numeral (e.g. "08") as octal and errors out.
+        # GitHub Actions hard-caps a job's timeout-minutes at 360, so a
+        # duration_minutes large enough to exceed that would otherwise just
+        # get silently killed mid-run — fail fast here instead, with the
+        # largest duration_minutes that still fits.
         run: |
-          echo "timeout_minutes=$((10#$DURATION_MINUTES * 2 + 30))" >> "$GITHUB_OUTPUT"
+          timeout_minutes=$((10#$DURATION_MINUTES * 2 + 30))
+          max_timeout_minutes=360
+          if (( timeout_minutes > max_timeout_minutes )); then
+            max_duration_minutes=$(( (max_timeout_minutes - 30) / 2 ))
+            echo "::error::duration_minutes=$DURATION_MINUTES needs a ${timeout_minutes}-minute job timeout, but GitHub Actions caps job timeouts at ${max_timeout_minutes} minutes. Use duration_minutes <= ${max_duration_minutes}."
+            exit 1
+          fi
+          echo "timeout_minutes=$timeout_minutes" >> "$GITHUB_OUTPUT"
 
   python:
     name: Python SDK endurance tests
