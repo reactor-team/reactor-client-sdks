@@ -15,6 +15,7 @@ set(REACTOR_TEST_SOURCES
   command_test.cpp
   errors_test.cpp
   ffi_test.cpp
+  handlers_test.cpp
   reactor_test.cpp
   recording_test.cpp
   stats_test.cpp
