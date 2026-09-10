@@ -16,10 +16,9 @@ import Testing
 /// native-handle lifecycle (construction through the FFI, then `close()`
 /// releasing it), unlike SessionChurnTests.swift's single long-lived
 /// session, which only ever takes the per-operation paths.
-@Suite("Lifecycle churn")
-struct LifecycleChurnTests {
+extension EnduranceTests {
 
-    @Test("leaves no leftover threads/fds or resource growth")
+    @Test("Lifecycle churn: leaves no leftover threads/fds or resource growth")
     func leavesNoLeftoverResourcesOrGrowth() async throws {
         let sampler = ResourceSampler()
         let frame = MediaFixtures.solidBGRAFrame(width: 64, height: 64, color: (200, 80, 40))
@@ -40,33 +39,50 @@ struct LifecycleChurnTests {
                 // `withExtendedLifetime`, sidesteps the same class of
                 // ambiguity for Swift's ARC-driven deinit timing.
                 let reactor = try await makeAndConnectWithRetries()
+                // A nested do/catch, not just the outer one below: once
+                // connected, *any* failure from here on (a track lookup, a
+                // publish, a command, an unpublish) has to still disconnect
+                // and close this cycle's reactor before propagating —
+                // otherwise it jumps straight to the outer catch, which
+                // never touches `reactor` (declared inside this loop
+                // iteration), leaving the session orphaned server-side the
+                // same way an exhausted connect retry could (see
+                // makeAndConnectWithRetries' own comment; caught here by
+                // Codex review on the same PR).
+                do {
+                    // Registered and never explicitly cancelled (unlike
+                    // SessionChurnTests.swift's explicit `.cancel()`) — the
+                    // client's `close()` below has to clean this up on its
+                    // own, on a client that may still have a frame in
+                    // flight.
+                    let received = AtomicFlag()
+                    let mainVideo = try reactor.track("main_video")
+                    let subscription = try mainVideo.onFrame { _ in received.set() }
 
-                // Registered and never explicitly cancelled (unlike
-                // SessionChurnTests.swift's explicit `.cancel()`) — the
-                // client's `close()` below has to clean this up on its own,
-                // on a client that may still have a frame in flight.
-                let received = AtomicFlag()
-                let mainVideo = try reactor.track("main_video")
-                let subscription = try mainVideo.onFrame { _ in received.set() }
+                    let webcam = try reactor.track("webcam")
+                    try await webcam.publish()
+                    await pumpUntilFrameReceived(webcam, frame: frame, width: 64, height: 64) {
+                        received.value
+                    }
+                    _ = try await reactor.sendCommand("set_intensity", ["intensity": 0.5])
+                    try webcam.unpublish()
 
-                let webcam = try reactor.track("webcam")
-                try await webcam.publish()
-                await pumpUntilFrameReceived(webcam, frame: frame, width: 64, height: 64) {
-                    received.value
-                }
-                _ = try await reactor.sendCommand("set_intensity", ["intensity": 0.5])
-                try webcam.unpublish()
-
-                try? await reactor.disconnect()
-                // `withExtendedLifetime` guarantees ARC has not already
-                // deallocated `subscription` (which would cancel it) by
-                // this point despite no further use above — Swift does not
-                // promise a local's lifetime extends to the end of its
-                // lexical scope, only to its last use, so without this a
-                // sufficiently aggressive optimizer could reorder exactly
-                // the way the C++ bug did by construction.
-                withExtendedLifetime(subscription) {
+                    try? await reactor.disconnect()
+                    // `withExtendedLifetime` guarantees ARC has not already
+                    // deallocated `subscription` (which would cancel it) by
+                    // this point despite no further use above — Swift does
+                    // not promise a local's lifetime extends to the end of
+                    // its lexical scope, only to its last use, so without
+                    // this a sufficiently aggressive optimizer could
+                    // reorder exactly the way the C++ bug did by
+                    // construction.
+                    withExtendedLifetime(subscription) {
+                        reactor.close()
+                    }
+                } catch {
+                    try? await reactor.disconnect()
                     reactor.close()
+                    throw error
                 }
 
                 sampler.sample(cycle: cycle)

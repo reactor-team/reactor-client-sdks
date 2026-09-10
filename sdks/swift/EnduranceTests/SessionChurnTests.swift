@@ -16,17 +16,16 @@ import Testing
 /// packs far more iterations into the same wall-clock window — the scenario
 /// for per-operation leaks (frame buffers, `Track`/`Subscription` objects)
 /// that a coarser connect/disconnect cycle wouldn't surface as clearly.
-@Suite("Session churn")
-struct SessionChurnTests {
+extension EnduranceTests {
 
     // reactor/echo declares a fixed set of track names (see echo_model.py) —
     // there is no such thing as a fresh per-iteration name to publish,
     // unlike a client handle, which is why this scenario republishes the
     // same "webcam" slot every iteration instead of
     // LifecycleChurnTests.swift's fresh-object-per-cycle shape.
-    private static let trackName = "webcam"
+    private static let sessionChurnTrackName = "webcam"
 
-    @Test("has no sustained resource growth")
+    @Test("Session churn: has no sustained resource growth")
     func hasNoSustainedResourceGrowth() async throws {
         let sampler = ResourceSampler()
         let frame = MediaFixtures.solidBGRAFrame(width: 64, height: 64, color: (30, 150, 90))
@@ -52,7 +51,7 @@ struct SessionChurnTests {
                     let mainVideo = try reactor.track("main_video")
                     let subscription = try mainVideo.onFrame { _ in received.set() }
 
-                    let track = try reactor.track(Self.trackName)
+                    let track = try reactor.track(Self.sessionChurnTrackName)
                     try await track.publish()
                     await pumpUntilFrameReceived(track, frame: frame, width: 64, height: 64) {
                         received.value

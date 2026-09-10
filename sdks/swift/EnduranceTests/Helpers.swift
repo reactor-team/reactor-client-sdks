@@ -108,19 +108,34 @@ final class ResourceSampler {
     }
 
     // MARK: - macOS resource readers
+    //
+    // Gated on canImport(Darwin), not just the module import at the top of
+    // this file: SwiftPM compiles every target's sources before `swift
+    // test`'s own --skip/--filter ever applies, so an EnduranceTests that
+    // merely *imports* Darwin conditionally but calls Mach APIs
+    // unconditionally still fails to compile the whole package on a
+    // non-Darwin platform with a Swift toolchain installed — exactly the
+    // "Linux contributor running `mise run test`" case scripts/swift.sh's
+    // own comments describe as supported (caught by Codex review on PR
+    // #171). The #else arm exists only to keep that compile green; nothing
+    // calls it, since this suite only ever *runs* on macOS.
 
-    private static func readRSSBytes() -> UInt64 {
-        var info = mach_task_basic_info()
-        var count = mach_msg_type_number_t(
-            MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
-        let result = withUnsafeMutablePointer(to: &info) { pointer -> kern_return_t in
-            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+    #if canImport(Darwin)
+        private static func readRSSBytes() -> UInt64 {
+            var info = mach_task_basic_info()
+            var count = mach_msg_type_number_t(
+                MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+            let result = withUnsafeMutablePointer(to: &info) { pointer -> kern_return_t in
+                pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                    task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+                }
             }
+            guard result == KERN_SUCCESS else { return 0 }
+            return UInt64(info.resident_size)
         }
-        guard result == KERN_SUCCESS else { return 0 }
-        return UInt64(info.resident_size)
-    }
+    #else
+        private static func readRSSBytes() -> UInt64 { 0 }
+    #endif
 
     private static func readCPUSeconds() -> Double {
         var usage = rusage()
@@ -131,30 +146,39 @@ final class ResourceSampler {
         return seconds(usage.ru_utime) + seconds(usage.ru_stime)
     }
 
-    /// `task_threads` hands back a send right *per thread*, owned by this
-    /// call — not just the array itself. Deallocating only the array (as
-    /// several widely-copied "get thread count in Swift" snippets do) leaks
-    /// one mach port per thread per sample: exactly the kind of native leak
-    /// this suite exists to catch, injected by its own instrumentation.
-    private static func readNumThreads() -> Int {
-        var threadList: thread_act_array_t?
-        var threadCount: mach_msg_type_number_t = 0
-        let result = task_threads(mach_task_self_, &threadList, &threadCount)
-        guard result == KERN_SUCCESS, let threadList else { return 0 }
-        for i in 0..<Int(threadCount) {
-            mach_port_deallocate(mach_task_self_, threadList[i])
+    #if canImport(Darwin)
+        /// `task_threads` hands back a send right *per thread*, owned by
+        /// this call — not just the array itself. Deallocating only the
+        /// array (as several widely-copied "get thread count in Swift"
+        /// snippets do) leaks one mach port per thread per sample: exactly
+        /// the kind of native leak this suite exists to catch, injected by
+        /// its own instrumentation.
+        private static func readNumThreads() -> Int {
+            var threadList: thread_act_array_t?
+            var threadCount: mach_msg_type_number_t = 0
+            let result = task_threads(mach_task_self_, &threadList, &threadCount)
+            guard result == KERN_SUCCESS, let threadList else { return 0 }
+            for i in 0..<Int(threadCount) {
+                mach_port_deallocate(mach_task_self_, threadList[i])
+            }
+            vm_deallocate(
+                mach_task_self_, vm_address_t(UInt(bitPattern: threadList)),
+                vm_size_t(threadCount) * vm_size_t(MemoryLayout<thread_t>.stride))
+            return Int(threadCount)
         }
-        vm_deallocate(
-            mach_task_self_, vm_address_t(UInt(bitPattern: threadList)),
-            vm_size_t(threadCount) * vm_size_t(MemoryLayout<thread_t>.stride))
-        return Int(threadCount)
-    }
+    #else
+        private static func readNumThreads() -> Int { 0 }
+    #endif
 
     /// `/dev/fd` lists this process's open descriptors on macOS, the same
     /// role `/proc/self/fd` plays on Linux (see the C++ suite's identical
-    /// reader). Listing it opens one descriptor of its own, transiently —
-    /// a constant, cycle-to-cycle offset that doesn't affect any check here
-    /// (all of them compare against a baseline taken the same way).
+    /// reader) — and is itself just Foundation's cross-platform
+    /// `FileManager`, unlike the Mach-specific readers above, so this one
+    /// needs no platform gate to *compile* (only to be meaningful, which is
+    /// out of scope on a platform this suite never runs on). Listing it
+    /// opens one descriptor of its own, transiently — a constant,
+    /// cycle-to-cycle offset that doesn't affect any check here (all of
+    /// them compare against a baseline taken the same way).
     private static func readNumFDs() -> Int {
         (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd"))?.count ?? 0
     }
