@@ -41,8 +41,18 @@ TEST_CASE("lifecycle churn leaves no leftover threads/fds or resource growth") {
       // exercises repeated construction/destruction rather than
       // accumulating thousands of clients for the run's whole duration.
       {
-        integration::ReactorFactory factory;
-        auto& client = factory.create();
+        // A unique_ptr, not a plain local: C++ destroys locals in *reverse*
+        // declaration order, so a plain `ReactorFactory factory;` declared
+        // here (before `subscription` below) would have its destructor run
+        // *after* subscription's — unregistering the frame handler first,
+        // then disconnecting/destroying an already-handler-free client. That
+        // silently skips the one thing this cycle means to exercise: closing
+        // a client while its subscription is still registered (caught by
+        // Codex review on PR #170). `factory.reset()` below destroys the
+        // client at the exact point that matters, independent of where
+        // `subscription` happens to be declared.
+        auto factory = std::make_unique<integration::ReactorFactory>();
+        auto& client = factory->create();
         // Not plain paced_connect(): this cycle's connect is one of
         // hundreds over a run that can last hours, so a transient
         // coordinator-side blip here shouldn't cost the whole accumulated
@@ -65,7 +75,16 @@ TEST_CASE("lifecycle churn leaves no leftover threads/fds or resource growth") {
         endurance::pump_until_frame_received(webcam, frame, WIDTH, HEIGHT, received);
         client.send_command("set_intensity", {{"intensity", 0.5}}).get();
         webcam.unpublish();
-      }  // factory destructor: disconnect().get(), then the client is freed
+
+        // Disconnects and destroys the client here, now, while `subscription`
+        // is still a live, registered handler — see the comment on
+        // `factory`'s declaration above for why this can't just be left to
+        // the closing brace below.
+        factory.reset();
+      }  // subscription/main_video/webcam/received destroyed here, on an
+         // already-gone client — safe: Subscription::remove() is documented
+         // idempotent and safe after the client is gone, and Track holds its
+         // client only weakly.
 
       sampler.sample(cycle);
       ++cycle;
@@ -122,7 +141,7 @@ TEST_CASE("lifecycle churn leaves no leftover threads/fds or resource growth") {
       }(),
       "rss_bytes", 0.15, 5'000'000);
   endurance::assert_no_sustained_growth(endurance::cpu_deltas(sampler.samples()), "cpu_s_per_cycle",
-                                       0.5, 0.05);
+                                        0.5, 0.05);
   endurance::assert_no_sustained_growth(
       [&] {
         std::vector<double> pct;
