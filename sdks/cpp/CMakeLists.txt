@@ -50,6 +50,11 @@ option(REACTOR_SDK_BUILD_EXAMPLES "Build the C++ SDK examples" ${PROJECT_IS_TOP_
 # test:cpp:integration-tests` is the one thing that turns it on.
 option(REACTOR_SDK_BUILD_INTEGRATION_TESTS "Build the C++ SDK integration tests (real FFI, real model)" OFF)
 
+# Same reasoning as REACTOR_SDK_BUILD_INTEGRATION_TESTS just above — off by
+# default, on only for `mise run test:cpp:endurance-tests` (REA-6088's C++
+# follow-up). These runs are minutes to hours, not seconds.
+option(REACTOR_SDK_BUILD_ENDURANCE_TESTS "Build the C++ SDK endurance/leak tests (real FFI, real model)" OFF)
+
 # The device helpers, in a target of their own. On by default so they are built
 # and tested, and separate so that linking `reactor::sdk` brings in no audio
 # library at all — which is what keeps the mandatory path unable to open a
@@ -337,6 +342,10 @@ endif()
 
 if(REACTOR_SDK_BUILD_INTEGRATION_TESTS)
   add_subdirectory(integration-tests)
+endif()
+
+if(REACTOR_SDK_BUILD_ENDURANCE_TESTS)
+  add_subdirectory(endurance-tests)
 endif()
 
 # ── Install ───────────────────────────────────────────────────────────────────

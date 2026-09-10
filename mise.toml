@@ -367,6 +367,28 @@ run = [
     "cmake --build sdks/cpp/build-integration-tests",
     "sdks/cpp/build-integration-tests/integration-tests/reactor_sdk_integration_tests",
 ]
+
+[tasks."test:cpp:endurance-tests"]
+description = "[Testing] C++ SDK endurance/leak tests — repeated churn against a live model, watching RSS/CPU/thread/fd counts for growth (needs INTEGRATION_TESTS_REACTOR_API_KEY)"
+# REA-6088's C++ follow-up — mirrors test:python:endurance-tests' own
+# reasoning file-for-file (see sdks/python/endurance-tests/README.md and this
+# suite's own endurance-tests/README.md): long (minutes to hours, via
+# ENDURANCE_DURATION_SECONDS), noisier by nature than a correctness
+# assertion, and not meant to gate every PR — not a dependency of
+# `test`/`test:cpp`, not wired into ci.yml.
+#
+# A separate build directory (build-endurance-tests), same reasoning as
+# test:cpp:integration-tests' own comment on build-integration-tests — never
+# shares a CMake cache with build/ or build-integration-tests.
+#
+# Deliberately does NOT build libreactor_ffi itself — same two-compiler split
+# as test:cpp:integration-tests (its own comment explains why): whoever calls
+# this runs `mise run build:ffi` first.
+run = [
+    "cmake -S sdks/cpp -B sdks/cpp/build-endurance-tests -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DREACTOR_SDK_BUILD_TESTS=OFF -DREACTOR_SDK_BUILD_EXAMPLES=OFF -DREACTOR_SDK_BUILD_ENDURANCE_TESTS=ON -DREACTOR_SDK_BUILD_AUDIO=OFF",
+    "cmake --build sdks/cpp/build-endurance-tests",
+    "sdks/cpp/build-endurance-tests/endurance-tests/reactor_sdk_endurance_tests",
+]
 # ── Swift SDK ─────────────────────────────────────────────────────────────────
 # The manifest is `Package.swift` at the repository root, because SwiftPM will
 # not resolve a package that lives in a subdirectory. Everything it points at is
