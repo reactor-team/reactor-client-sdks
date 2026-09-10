@@ -588,17 +588,14 @@ impl Reactor {
     /// `Some` when a concurrent `on_peer_connection_state` teardown (REA-5659)
     /// has closed the transport — the real reason it recorded, in place of
     /// whatever generic error calling into the now-closed transport produces.
+    ///
+    /// Gated on `teardown_reason` rather than `closing` alone: `closing` is
+    /// also set by an ordinary caller-initiated `disconnect()`, which never
+    /// records a reason — that case must fall through to the caller's own
+    /// error (e.g. `Aborted`), not get misreported as `Disconnected`.
     fn teardown_error(&self) -> Option<CoreError> {
         let state = self.state.lock().unwrap();
-        if !state.closing {
-            return None;
-        }
-        Some(CoreError::Disconnected(
-            state
-                .teardown_reason
-                .clone()
-                .unwrap_or_else(|| "connection closed during negotiation".into()),
-        ))
+        state.teardown_reason.clone().map(CoreError::Disconnected)
     }
 
     async fn teardown(&self, recoverable: bool, already_failing: bool) {
@@ -2049,6 +2046,99 @@ mod tests {
             other => {
                 panic!("expected the real disconnect reason instead of Aborted, got {other:?}")
             }
+        }
+    }
+
+    /// The flip side of the same race (flagged in a third round of review on
+    /// this PR): an *intentional* concurrent `disconnect()` also sets
+    /// `closing` and drops `ready_gate`, but — unlike a peer-driven teardown —
+    /// never records a `teardown_reason`. That must still surface as
+    /// `Aborted`, not get misreported as `Disconnected`.
+    struct DisconnectsDuringSetRemoteDescriptionPeer {
+        reactor: std::sync::Mutex<Option<std::sync::Weak<Reactor>>>,
+    }
+
+    impl DisconnectsDuringSetRemoteDescriptionPeer {
+        fn new() -> Self {
+            Self {
+                reactor: std::sync::Mutex::new(None),
+            }
+        }
+
+        fn arm(&self, reactor: &Arc<Reactor>) {
+            *self.reactor.lock().unwrap() = Some(Arc::downgrade(reactor));
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PeerTransport for DisconnectsDuringSetRemoteDescriptionPeer {
+        async fn prepare(
+            &self,
+            _: &[IceServer],
+            _: &[TrackCapability],
+        ) -> Result<PreparedOffer, CoreError> {
+            Ok(PreparedOffer {
+                sdp_offer: "offer".into(),
+                track_mapping: vec![],
+            })
+        }
+        async fn set_remote_description(&self, _: &str) -> Result<(), CoreError> {
+            // Succeeds, but the caller-initiated disconnect this triggers
+            // drops `ready_gate` before readiness ever arrives — nothing in
+            // this test signals `DataChannelOpen`/`ControlChannelOpen`/
+            // `Connected`. Unlike the peer-failure tests above, this never
+            // goes through `on_peer_connection_state`, so `teardown_reason`
+            // stays unset.
+            let reactor = self
+                .reactor
+                .lock()
+                .unwrap()
+                .clone()
+                .and_then(|w| w.upgrade());
+            if let Some(reactor) = reactor {
+                let _ = reactor.disconnect(false).await;
+            }
+            Ok(())
+        }
+        fn send_data(&self, _: &[u8], _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn send_control(&self, _: &[u8]) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn set_track_direction(&self, _: &str, _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn close(&self) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn an_intentional_concurrent_disconnect_still_surfaces_aborted() {
+        let http = Arc::new(TeardownRacingHttp::new());
+        let peer = Arc::new(DisconnectsDuringSetRemoteDescriptionPeer::new());
+        let reactor = Arc::new(Reactor::new(
+            ReactorDeps {
+                http: http as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: peer.clone() as SharedPeer,
+            },
+            ReactorOptions::new("http://localhost", "test-model"),
+        ));
+        peer.arm(&reactor);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            reactor.connect(ConnectOptions::default()),
+        )
+        .await
+        .expect("connect() must not hang");
+
+        match result {
+            Err(CoreError::Aborted) => {}
+            other => panic!("expected Aborted for a caller-cancelled connect, got {other:?}"),
         }
     }
 
