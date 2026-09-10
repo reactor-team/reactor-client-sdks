@@ -20,9 +20,9 @@ from helpers import (
     assert_always_zero,
     assert_never_grows,
     assert_no_sustained_growth,
+    connect_with_retries,
     cpu_deltas,
     new_reactor,
-    paced_connect,
     pump_until_frame_received,
     solid_rgb_frame,
 )
@@ -44,7 +44,12 @@ async def test_lifecycle_churn_leaves_no_leftover_handles_or_growth() -> None:
                 # handle — and possibly a partially created server session —
                 # behind, so close() in the outer finally below has to run
                 # regardless of whether connect itself succeeded.
-                await paced_connect(client)
+                # Not plain paced_connect(): this cycle's connect is one of
+                # hundreds over a run that can last hours, so a transient
+                # coordinator-side blip here shouldn't cost the whole
+                # accumulated trend — see connect_with_retries' own
+                # docstring for why.
+                await connect_with_retries(client)
                 try:
                     # Registered and never explicitly torn down (unlike
                     # test_session_churn.py's on/off pair) — close() below has to
