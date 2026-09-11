@@ -1,7 +1,6 @@
 import Foundation
-import IntegrationTests
 import Reactor
-
+import TestSupport
 #if canImport(Darwin)
     import Darwin
 #endif

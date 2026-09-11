@@ -225,13 +225,25 @@ let package = Package(
             dependencies: ["Reactor", "CReactorFFI"],
             path: "sdks/swift/Tests/ReactorTests"
         ),
+        // Connection setup, pacing, and media fixtures shared by
+        // `IntegrationTests` and `EnduranceTests` below — a plain library
+        // target, not a test target, specifically so both can depend on it:
+        // see TestSupport/Fixtures.swift's own header comment for why a
+        // *test*-target-on-*test*-target dependency (which `swift build`/
+        // `swift test` do support) briefly broke `xcodebuild`'s package
+        // resolution for the iOS Simulator job instead.
+        .target(
+            name: "TestSupport",
+            dependencies: ["Reactor"],
+            path: "sdks/swift/TestSupport"
+        ),
         // Real FFI, real WebRTC, against a real model in production — not part
         // of the fast, hermetic FakeLibrary-based suites above. `swift.sh test`
         // skips this target explicitly; `swift.sh integration-tests` filters in
-        // only this one. See IntegrationTests/Fixtures.swift.
+        // only this one. See TestSupport/Fixtures.swift.
         .testTarget(
             name: "IntegrationTests",
-            dependencies: ["Reactor", "ExampleSupport"],
+            dependencies: ["Reactor", "ExampleSupport", "TestSupport"],
             path: "sdks/swift/IntegrationTests",
             // -ObjC, not declared on the Reactor target itself: a static
             // library carries none of its build's flags (see that target's own
@@ -258,15 +270,14 @@ let package = Package(
         // across a long-lived session and repeated connect/disconnect
         // cycles — not part of the fast, hermetic suites above, and not
         // filtered in by `swift.sh integration-tests` either. Depends on
-        // `IntegrationTests` itself (a test target may depend on another
-        // test target) to reuse its fixtures — `withConnectedReactor`,
-        // `pacedConnect`, `pumpFrames`/`MediaFixtures` — rather than
-        // re-deriving connection setup, pacing, and media fixtures, the
-        // same reasoning `sdks/python/endurance-tests/helpers.py` gives for
-        // importing straight from `../integration-tests/conftest.py`.
+        // `TestSupport` (see that target's own comment above) for
+        // `withConnectedReactor`, `pacedConnect`, `MediaFixtures` rather
+        // than re-deriving connection setup, pacing, and media fixtures —
+        // the same reasoning `sdks/python/endurance-tests/helpers.py` gives
+        // for importing straight from `../integration-tests/conftest.py`.
         .testTarget(
             name: "EnduranceTests",
-            dependencies: ["Reactor", "ExampleSupport", "IntegrationTests"],
+            dependencies: ["Reactor", "ExampleSupport", "TestSupport"],
             path: "sdks/swift/EnduranceTests",
             linkerSettings: [.unsafeFlags(["-Xlinker", "-ObjC"])]
         ),

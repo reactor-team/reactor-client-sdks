@@ -1,6 +1,7 @@
 import ExampleSupport
 import Foundation
 import Reactor
+import TestSupport
 import Testing
 
 /// Scenario 06, scripted: request a clip and download it. Mirrors

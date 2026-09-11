@@ -1,8 +1,7 @@
 import Foundation
-import IntegrationTests
 import Reactor
+import TestSupport
 import Testing
-
 /// Endurance: repeated full connect -> publish -> command -> disconnect ->
 /// close cycles, each on a brand-new `Reactor`. Mirrors
 /// `sdks/python/endurance-tests/tests/test_lifecycle_churn.py` and

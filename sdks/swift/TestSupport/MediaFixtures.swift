@@ -11,7 +11,7 @@ import Testing
 /// long as it wants `main_video` to keep producing — mirrors
 /// `sdks/python/integration-tests/tests/test_tracks_and_frames.py`'s `_pump`.
 @discardableResult
-func pumpFrames(
+package func pumpFrames(
     into track: Track, color: (b: UInt8, g: UInt8, r: UInt8) = (10, 20, 30),
     width: Int = 64, height: Int = 64, fps: Double = 30
 ) -> Task<Void, Never> {
@@ -35,7 +35,7 @@ func pumpFrames(
 /// also being pumped — every scenario that wants audio output pumps both,
 /// even when it only asserts on audio.
 @discardableResult
-func pumpAudio(
+package func pumpAudio(
     into track: Track, sampleRate: Int = 48_000, channels: UInt32 = 1, chunkMs: Double = 20
 ) -> Task<Void, Never> {
     let samplesPerChunk = Int(Double(sampleRate) * chunkMs / 1000)
@@ -57,9 +57,9 @@ func pumpAudio(
 /// fake device happens to generate. Same reasoning as the Python suite's
 /// `solid_rgb_frame`/`sine_wave_samples` and the JS harness's synthetic
 /// canvas/audio-tone fixtures.
-// `package`, not `internal`: EnduranceTests reuses `solidBGRAFrame` rather
-// than re-deriving a synthetic frame fixture — same reasoning as
-// `IntegrationConfig`'s own `package` comment in Fixtures.swift.
+// `package`, not `internal` — see Fixtures.swift's own header comment for
+// why this whole file lives in the shared TestSupport target, and why every
+// symbol `IntegrationTests`/`EnduranceTests` reference needs this.
 package enum MediaFixtures {
 
     /// A BGRA frame of `color`, `width * height * 4` bytes — exactly what
@@ -84,7 +84,7 @@ package enum MediaFixtures {
     /// `numSamples` of a `frequencyHz` tone — exactly what `Track.pushFrame`
     /// accepts. A4, comfortably audible; nothing in this suite rides on the
     /// exact frequency.
-    static func sineWaveSamples(
+    package static func sineWaveSamples(
         numSamples: Int, sampleRate: Int = 48_000, frequencyHz: Double = 440.0
     ) -> [Int16] {
         (0..<numSamples).map { i in
@@ -102,7 +102,7 @@ package enum MediaFixtures {
     /// lossy codec does not reproduce a solid fill exactly, especially at its
     /// edges. The mean over the whole frame is what a solid-colour input
     /// actually guarantees survives that.
-    static func assertDominantColor(
+    package static func assertDominantColor(
         _ frame: VideoFrame, expected: (b: UInt8, g: UInt8, r: UInt8), tolerance: Double = 30,
         sourceLocation: SourceLocation = #_sourceLocation
     ) {

@@ -1,8 +1,7 @@
 import Foundation
-import IntegrationTests
 import Reactor
+import TestSupport
 import Testing
-
 /// Endurance: one long-lived session, repeated
 /// publish/pushFrame/command/unpublish cycles against it. Mirrors
 /// `sdks/python/endurance-tests/tests/test_session_churn.py` and
