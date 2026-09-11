@@ -276,8 +276,10 @@ class Track {
   /// Push interleaved 16-bit PCM into a track whose `kind()` is `Audio`.
   /// Throws `InvalidStateError` if the track kind does not match, as above.
   ///
-  /// `sample_rate` must be 48000 and `channels` 1, which is what the source
-  /// expects; `pcm.size` must divide evenly by `channels`.
+  /// Capture rates: 8000, 16000, 24000, 32000, 44100 or 48000 Hz; mono or stereo.
+  /// WebRTC resamples locally. `pcm.size` must divide evenly by `channels`.
+  /// Pace pushes at the capture rate. Partial 10 ms blocks are buffered and
+  /// discarded on format change or disconnect. Local audio tracks share a device.
   void push_frame(Samples pcm, std::uint32_t sample_rate = 48'000, std::uint32_t channels = 1);
 
  private:

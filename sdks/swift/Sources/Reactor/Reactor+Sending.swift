@@ -359,8 +359,10 @@ extension Track {
 
     /// Push interleaved 16-bit PCM into this track.
     ///
-    /// The rate and channel count must match what the source declared — 48 kHz
-    /// mono for every model today.
+    /// Capture rates: 8000, 16000, 24000, 32000, 44100 or 48000 Hz; mono or stereo.
+    /// WebRTC resamples locally. Pace pushes at the capture rate. Partial 10 ms
+    /// blocks are buffered and discarded on format change or disconnect.
+    /// Local audio tracks still share the synthetic capture device.
     public func pushFrame(
         _ samples: [Int16],
         sampleRate: UInt32 = 48000,

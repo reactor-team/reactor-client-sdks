@@ -413,5 +413,12 @@ pub trait PeerTransport {
 
     /// Push interleaved i16 PCM audio into the named sendonly track.
     /// Default implementation is a no-op — override in native transports.
-    fn push_audio_frame(&self, _track_name: &str, _data: &[i16]) {}
+    fn push_audio_frame(
+        &self,
+        _track_name: &str,
+        _data: &[i16],
+        _sample_rate: u32,
+        _num_channels: u32,
+    ) {
+    }
 }

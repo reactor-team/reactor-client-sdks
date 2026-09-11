@@ -32,6 +32,8 @@ import threading
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
+from .track import _validate_audio_format
+
 if TYPE_CHECKING:  # pragma: no cover - types only
     from .track import Track
 
@@ -340,12 +342,14 @@ class Microphone:
         Args:
             track: The sendonly audio track to push into. Publish it first —
                 pushing into a slot that was never activated goes nowhere.
-            sample_rate: Capture rate in Hz. 48 kHz is what the wire uses; another
-                rate is resampled by the far end, or refused by the device.
-            channels: 1 for mono, which is what a microphone usually is.
+            sample_rate: Capture rate in Hz: 8000, 16000, 24000, 32000, 44100 or
+                48000. WebRTC resamples locally to the negotiated send format.
+                The input device must support the requested capture rate.
+            channels: 1 for mono or 2 for stereo.
             device: Which input device, in `sounddevice`'s terms — an index or a
                 name substring. None uses the system default.
         """
+        _validate_audio_format(sample_rate, channels)
         self._track = track
         self._sample_rate = sample_rate
         self._channels = channels
