@@ -9,13 +9,13 @@ description: >
 
 # Why this exists
 # ───────────────
-# The endurance suites (REA-6088, REA-6154) run for minutes to hours against
-# a real model and have already hit at least one real native SIGSEGV in CI
-# that never reproduced locally — with no debug symbols and no core dump,
-# all that crash left behind was faulthandler's plain Python-frame dump (see
-# REA-6154). This exists so the *next* crash, wherever it happens, leaves a
-# real backtrace and a core file behind automatically, without anyone having
-# to notice, re-run with extra instrumentation, and hope it reproduces again.
+# The endurance suites run for minutes to hours against a real model and
+# have already hit at least one real native SIGSEGV in CI that never
+# reproduced locally — with no debug symbols and no core dump, all that
+# crash left behind was faulthandler's plain Python-frame dump. This exists
+# so the *next* crash, wherever it happens, leaves a real backtrace and a
+# core file behind automatically, without anyone having to notice, re-run
+# with extra instrumentation, and hope it reproduces again.
 #
 # Linux-only (core(5)/procfs), which is fine — every job that calls this runs
 # on ubuntu-latest.

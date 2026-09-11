@@ -370,8 +370,8 @@ run = [
 
 [tasks."test:cpp:endurance-tests"]
 description = "[Testing] C++ SDK endurance/leak tests — repeated churn against a live model, watching RSS/CPU/thread/fd counts for growth (needs INTEGRATION_TESTS_REACTOR_API_KEY)"
-# REA-6088's C++ follow-up — mirrors test:python:endurance-tests' own
-# reasoning file-for-file (see sdks/python/endurance-tests/README.md and this
+# Mirrors test:python:endurance-tests' own reasoning file-for-file (see
+# sdks/python/endurance-tests/README.md and this
 # suite's own endurance-tests/README.md): long (minutes to hours, via
 # ENDURANCE_DURATION_SECONDS), noisier by nature than a correctness
 # assertion, and not meant to gate every PR — not a dependency of

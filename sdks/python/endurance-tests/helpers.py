@@ -63,7 +63,7 @@ async def connect_with_retries(
     a fixed delay between attempts, before letting the last failure
     propagate.
 
-    Written after a real CI run (REA-6154) lost ~20 minutes of accumulated
+    Written after a real CI run lost ~20 minutes of accumulated
     trend to one coordinator-side blip — the token-exchange endpoint
     answering a single, isolated 503 ("Token authorization is unavailable"),
     confirmed via Grafana as a one-off rather than a real outage. An

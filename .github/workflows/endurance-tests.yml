@@ -36,7 +36,7 @@ env:
   MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
   # Embeds debug info into every release build this workflow produces —
   # opt-level stays 3 (this doesn't become a debug build, which would change
-  # the very timing a race condition like REA-6154 depends on), but a crash's
+  # the very timing a race condition like this can depend on), but a crash's
   # core dump can now be symbolized. See
   # .github/actions/collect-core-dump/action.yml for why this exists and
   # where it's used below.

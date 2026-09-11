@@ -51,8 +51,8 @@ option(REACTOR_SDK_BUILD_EXAMPLES "Build the C++ SDK examples" ${PROJECT_IS_TOP_
 option(REACTOR_SDK_BUILD_INTEGRATION_TESTS "Build the C++ SDK integration tests (real FFI, real model)" OFF)
 
 # Same reasoning as REACTOR_SDK_BUILD_INTEGRATION_TESTS just above — off by
-# default, on only for `mise run test:cpp:endurance-tests` (REA-6088's C++
-# follow-up). These runs are minutes to hours, not seconds.
+# default, on only for `mise run test:cpp:endurance-tests`. These runs are
+# minutes to hours, not seconds.
 option(REACTOR_SDK_BUILD_ENDURANCE_TESTS "Build the C++ SDK endurance/leak tests (real FFI, real model)" OFF)
 
 # The device helpers, in a target of their own. On by default so they are built
