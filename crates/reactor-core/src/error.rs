@@ -188,6 +188,15 @@ pub enum CoreError {
     #[error("peer transport error: {0}")]
     Peer(String),
 
+    /// The peer connection was already torn down (a `Failed`/`Disconnected`/
+    /// `Closed` `connectionstatechange`) by the time an in-flight `connect()`/
+    /// `reconnect()` negotiation reached the point of calling into it. Reports
+    /// the real reason the transport went away, in place of the generic
+    /// "not prepared" a transport already closed underneath the negotiation
+    /// would otherwise raise.
+    #[error("connection disconnected: {0}")]
+    Disconnected(String),
+
     #[error("control request '{method}' failed ({code}): {message}")]
     ControlRequest {
         method: String,
@@ -260,6 +269,7 @@ impl CoreError {
             CoreError::TerminalSession(_) => codes::SESSION_TERMINAL,
             CoreError::MessageTooLarge { .. } => codes::MESSAGE_TOO_LARGE,
             CoreError::Peer(_) => codes::TRANSPORT_ERROR,
+            CoreError::Disconnected(_) => codes::DISCONNECTED,
             CoreError::Aborted => codes::ABORTED,
             // An argument (the preset track list) rejected here before anything
             // built from it was sent — same category as a rejected 4xx.
@@ -397,6 +407,7 @@ mod tests {
         assert!(CoreError::Timeout("connect".into()).recoverable());
         assert!(CoreError::Peer("ice failed".into()).recoverable());
         assert!(CoreError::Http("dns".into()).recoverable());
+        assert!(CoreError::Disconnected("peer connection state: Failed".into()).recoverable());
 
         assert!(!status(401).recoverable());
         assert!(!status(404).recoverable());
