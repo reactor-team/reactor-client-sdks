@@ -114,11 +114,18 @@ What neither this suite nor the C++ port can catch: a leak entirely inside
 never surface — the same "native-layer leak, out of scope for a
 binding-level suite" gap the Python README's own final section documents.
 
-## Reused from `IntegrationTests`
+## Reused from `TestSupport`
 
-`Helpers.swift`/`*ChurnTests.swift` depend on the `IntegrationTests` target
-directly (SwiftPM allows a test target to depend on another one) rather
-than re-deriving connection setup, pacing, or media fixtures —
-`IntegrationConfig.makeReactor`, `pacedConnect`, `withConnectedReactor`,
-`MediaFixtures.solidBGRAFrame` all come from there unchanged. See that
-suite's own README for what those do and why.
+`Helpers.swift`/`*ChurnTests.swift` depend on `TestSupport`
+(`sdks/swift/TestSupport/`) rather than re-deriving connection setup,
+pacing, or media fixtures — `IntegrationConfig.makeReactor`,
+`pacedConnect`, `withConnectedReactor`, `MediaFixtures.solidBGRAFrame` all
+come from there unchanged, the same target `IntegrationTests` itself
+depends on for the same fixtures. A plain library target, not a test
+target: `xcodebuild`'s package-graph resolution (unlike plain `swift
+build`/`swift test`) refuses a *test* target depending on another *test*
+target, which is what this suite depending on `IntegrationTests` directly
+did at first, briefly breaking the `swift-integration-tests-ios-simulator`
+CI job — see `TestSupport/Fixtures.swift`'s own header comment for the
+full account. See `IntegrationTests`' own README for what these fixtures
+do and why.
