@@ -2131,6 +2131,73 @@ mod tests {
         assert_eq!(error.details.code, "BAD_COMMAND");
     }
 
+    /// A momentary ICE blip — `RTCPeerConnectionState` flickers to
+    /// `disconnected` and recovers to `connected` a moment later, which real
+    /// WebRTC stacks do routinely under ordinary network jitter — must not
+    /// kill the session or fail whatever command was in flight.
+    ///
+    /// `on_peer_connection_state` currently treats `Disconnected` exactly
+    /// like `Failed`/`Closed`, with no debounce: it reports a fatal
+    /// `DISCONNECTED` error and tears the session down the instant the state
+    /// is observed, even if `Connected` follows a moment later. That is the
+    /// root cause behind the `"peer connection state: Disconnected"` errors
+    /// seen in production for fast-h3 / h3-reference-turbo-realtime sessions
+    /// of every duration — including many that die within milliseconds of
+    /// connecting, right as their first command goes out.
+    ///
+    /// This test currently FAILS, reproducing the bug: the in-flight command
+    /// is rejected with `DISCONNECTED` before the immediate reconnect and the
+    /// eventual reply ever reach it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_momentary_ice_disconnect_does_not_kill_an_in_flight_command() {
+        let reactor = make_reactor();
+        reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+
+        let r = reactor.clone();
+        let call = tokio::spawn(async move { r.send_command("get_state", json!({}), None).await });
+
+        // Give the call a moment to register with the DataCorrelator.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        // The peer connection flickers to `disconnected` and immediately
+        // recovers — exactly what the WebRTC spec expects for a brief
+        // network hiccup, and what real browsers/libwebrtc do constantly.
+        reactor
+            .handle_peer_event(PeerEvent::ConnectionStateChanged(
+                PeerConnectionState::Disconnected,
+            ))
+            .await;
+        reactor
+            .handle_peer_event(PeerEvent::ConnectionStateChanged(
+                PeerConnectionState::Connected,
+            ))
+            .await;
+
+        let bytes = encode_data_response(
+            "data_1",
+            data_server_message::Payload::Message(ModelMessage {
+                r#type: "get_state_reply".into(),
+                data: value_to_struct(json!({"brightness": 1.0})),
+            }),
+        );
+        reactor.on_data_message(&bytes);
+
+        let result = tokio::time::timeout(Duration::from_millis(300), call)
+            .await
+            .expect("send_command should resolve")
+            .unwrap();
+        assert_eq!(
+            result.ok(),
+            Some(Some(json!({"type": "get_state_reply", "data": {"brightness": 1.0}}))),
+            "a momentary disconnect that immediately recovers must not fail the in-flight command"
+        );
+        assert_eq!(
+            reactor.status(),
+            ReactorStatus::Ready,
+            "the session must still be usable after a transient ICE blip that self-healed"
+        );
+    }
+
     /// A timeout cancels the pending correlation so a late reply is not
     /// delivered to a dropped receiver.
     #[tokio::test]
