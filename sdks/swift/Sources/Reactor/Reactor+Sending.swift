@@ -133,6 +133,16 @@ extension Reactor {
     ) throws {
         let handle = try requirePushable(track: name, kind: .audio, method: "pushFrame")
 
+        guard [8000, 16000, 24000, 32000, 44100, 48000].contains(sampleRate),
+            channels == 1 || channels == 2
+        else {
+            throw ReactorError(
+                .badRequest,
+                "audio requires 8000, 16000, 24000, 32000, 44100 or 48000 Hz "
+                    + "and 1 or 2 channels; got \(sampleRate) Hz and \(channels) channels.",
+                operation: "pushFrame")
+        }
+
         guard channels > 0, samples.count % Int(channels) == 0 else {
             throw ReactorError(
                 .badRequest,
@@ -363,6 +373,7 @@ extension Track {
     /// WebRTC resamples locally. Pace pushes at the capture rate. Partial 10 ms
     /// blocks are buffered and discarded on format change or disconnect.
     /// Local audio tracks still share the synthetic capture device.
+    /// Unsupported rates or channel counts throw a `badRequest` error.
     public func pushFrame(
         _ samples: [Int16],
         sampleRate: UInt32 = 48000,

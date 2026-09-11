@@ -278,6 +278,7 @@ class Track {
   ///
   /// Capture rates: 8000, 16000, 24000, 32000, 44100 or 48000 Hz; mono or stereo.
   /// WebRTC resamples locally. `pcm.size` must divide evenly by `channels`.
+  /// Throws `BadRequestError` for unsupported rates or channel counts.
   /// Pace pushes at the capture rate. Partial 10 ms blocks are buffered and
   /// discarded on format change or disconnect. Local audio tracks share a device.
   void push_frame(Samples pcm, std::uint32_t sample_rate = 48'000, std::uint32_t channels = 1);
