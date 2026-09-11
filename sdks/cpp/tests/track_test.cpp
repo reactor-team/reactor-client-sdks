@@ -1173,7 +1173,7 @@ TEST_CASE("audio push preserves every supported capture format") {
   input.publish().get();
   for (const auto rate : {8'000U, 16'000U, 24'000U, 32'000U, 44'100U, 48'000U}) {
     for (const auto channels : {1U, 2U}) {
-      const std::vector<std::int16_t> pcm(rate / 100 * channels, 7);
+      const std::vector<std::int16_t> pcm(static_cast<std::size_t>(rate) / 100 * channels, 7);
       input.push_frame(reactor::Samples{pcm.data(), pcm.size()}, rate, channels);
       const auto& pushed = fixture.session.audio_pushes.back();
       CHECK(pushed.sample_rate == rate);
