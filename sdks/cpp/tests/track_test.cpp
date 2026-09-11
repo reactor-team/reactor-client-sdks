@@ -1166,6 +1166,41 @@ TEST_CASE("audio push_frame defaults and sending lifecycle are enforced") {
   CHECK(fixture.session.audio_pushes.size() == 1);
 }
 
+TEST_CASE("audio push preserves every supported capture format") {
+  Connected fixture;
+  fixture.session.redeclare(R"([{"name":"input_audio","kind":"audio","direction":"sendonly"}])");
+  auto input = fixture.client.track("input_audio");
+  input.publish().get();
+  for (const auto rate : {8'000U, 16'000U, 24'000U, 32'000U, 44'100U, 48'000U}) {
+    for (const auto channels : {1U, 2U}) {
+      const std::vector<std::int16_t> pcm(static_cast<std::size_t>(rate) / 100 * channels, 7);
+      input.push_frame(reactor::Samples{pcm.data(), pcm.size()}, rate, channels);
+      const auto& pushed = fixture.session.audio_pushes.back();
+      CHECK(pushed.sample_rate == rate);
+      CHECK(pushed.channels == channels);
+      CHECK(pushed.samples_per_channel == rate / 100);
+    }
+  }
+  CHECK(fixture.session.audio_pushes.size() == 12);
+}
+
+TEST_CASE("unsupported audio formats throw before reaching the FFI") {
+  Connected fixture;
+  fixture.session.redeclare(R"([{"name":"input_audio","kind":"audio","direction":"sendonly"}])");
+  auto input = fixture.client.track("input_audio");
+  input.publish().get();
+  // Divisible by both two and three so the PCM shape cannot mask the format error.
+  const std::vector<std::int16_t> pcm(960, 7);
+  const reactor::Samples samples{pcm.data(), pcm.size()};
+  for (const auto rate : {0U, 11'025U, 96'000U}) {
+    CHECK_THROWS_AS(input.push_frame(samples, rate, 1), reactor::BadRequestError);
+  }
+  for (const auto channels : {0U, 3U}) {
+    CHECK_THROWS_AS(input.push_frame(samples, 48'000, channels), reactor::BadRequestError);
+  }
+  CHECK(fixture.session.audio_pushes.empty());
+}
+
 TEST_CASE("pausing and resuming reach the session") {
   Connected fixture;
   auto video = fixture.client.track("main_video");

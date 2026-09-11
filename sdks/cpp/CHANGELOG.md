@@ -8,6 +8,19 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-09-10
+
+### Fixed
+
+- `Track::push_frame()` now preserves the PCM capture rate and channel count through
+  the shared FFI instead of treating every buffer as 48 kHz mono. Supports
+  8, 16, 24, 32, 44.1 and 48 kHz input in mono or stereo, with local WebRTC
+  resampling. Arbitrary chunks are assembled into 10 ms blocks; format changes
+  and disconnect discard partial blocks (REA-6193).
+- Unsupported capture rates and channel counts now raise a bad-request error
+  in the SDK before reaching the FFI, instead of returning successfully while
+  the native layer drops the audio.
+
 ## [2.0.1] - 2026-09-09
 
 ### Added

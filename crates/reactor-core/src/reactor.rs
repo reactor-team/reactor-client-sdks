@@ -974,8 +974,16 @@ impl Reactor {
         );
     }
 
-    pub fn push_audio_frame(&self, track_name: &str, data: &[i16]) {
-        self.peer.push_audio_frame(track_name, data);
+    /// Push interleaved PCM with its capture format, before transport resampling.
+    pub fn push_audio_frame(
+        &self,
+        track_name: &str,
+        data: &[i16],
+        sample_rate: u32,
+        num_channels: u32,
+    ) {
+        self.peer
+            .push_audio_frame(track_name, data, sample_rate, num_channels);
     }
 
     pub async fn pause_track(&self, name: &str) -> Result<(), CoreError> {

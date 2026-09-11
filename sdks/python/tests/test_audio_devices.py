@@ -411,15 +411,26 @@ class TestMicrophone:
         assert lib.pushed == [(b"mic", 960, 480, 48_000, 1)]
         assert mic.blocks_sent == 1
 
+    @pytest.mark.parametrize("rate", [8000, 16000, 24000, 32000, 44100, 48000])
+    @pytest.mark.parametrize("channels", [1, 2])
     def test_the_rate_and_channels_are_the_caller_s(
-        self, sd: _FakeSoundDevice, reactor: tuple[Reactor, _FakeLib]
+        self, sd: _FakeSoundDevice, reactor: tuple[Reactor, _FakeLib], rate: int, channels: int
     ) -> None:
         client, lib = reactor
-        Microphone(client.track("mic"), sample_rate=16_000, channels=2).start()
+        Microphone(client.track("mic"), sample_rate=rate, channels=channels).start()
 
-        assert sd.input.kwargs["blocksize"] == 160
-        sd.input.capture(bytes(160 * 2 * BYTES_PER_SAMPLE))
-        assert lib.pushed[0][3:] == (16_000, 2)
+        assert sd.input.kwargs["blocksize"] == rate // 100
+        sd.input.capture(bytes(rate // 100 * channels * BYTES_PER_SAMPLE))
+        assert lib.pushed[0][3:] == (rate, channels)
+
+    @pytest.mark.parametrize("rate,channels", [(0, 1), (96000, 1), (48000, 0), (48000, 3)])
+    def test_unsupported_capture_format_is_refused_before_opening(
+        self, sd: _FakeSoundDevice, reactor: tuple[Reactor, _FakeLib], rate: int, channels: int
+    ) -> None:
+        client, _ = reactor
+        with pytest.raises(ValueError, match="audio requires"):
+            Microphone(client.track("mic"), sample_rate=rate, channels=channels)
+        assert sd.input is None
 
     def test_stop_closes_the_device_and_is_idempotent(
         self, sd: _FakeSoundDevice, reactor: tuple[Reactor, _FakeLib]

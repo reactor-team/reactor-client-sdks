@@ -214,6 +214,48 @@ struct SendingTests {
 
     // MARK: - The happy path
 
+    @Test("unsupported audio formats fail before reaching the library")
+    func unsupportedAudioFormatIsRefused() async throws {
+        let fake = FakeLibrary()
+        declaringSession(fake)
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+        let mic = try client.track("mic")
+        try await publish(mic, on: fake)
+
+        let formats: [(UInt32, UInt32)] = [(0, 1), (11025, 1), (96000, 1), (48000, 0), (48000, 3)]
+        for (rate, channels) in formats {
+            do {
+                // Divisible by three: the channel-format guard must reject this.
+                try mic.pushFrame([1, -1, 2, -2, 3, -3], sampleRate: rate, channels: channels)
+                Issue.record(
+                    "unsupported audio format was accepted: \(rate) Hz, \(channels) channels")
+            } catch let error as ReactorError {
+                #expect(error.code == .badRequest)
+            }
+        }
+        #expect(fake.pushedAudio.isEmpty)
+    }
+
+    @Test(
+        "all supported capture formats reach the library",
+        arguments: [8000, 16000, 24000, 32000, 44100, 48000], [1, 2])
+    func supportedAudioFormats(rate: UInt32, channels: UInt32) async throws {
+        let fake = FakeLibrary()
+        declaringSession(fake)
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+        let mic = try client.track("mic")
+        try await publish(mic, on: fake)
+        let samples = [Int16](repeating: 7, count: Int(rate / 100 * channels))
+        try mic.pushFrame(samples, sampleRate: rate, channels: channels)
+        let pushed = try #require(fake.pushedAudio.first)
+        #expect(pushed.samples == samples)
+        #expect(pushed.samplesPerChannel == rate / 100)
+        #expect(pushed.sampleRate == rate)
+        #expect(pushed.channels == channels)
+    }
+
     @Test("a published track pushes pixels, the tag and the capture time")
     func publishedTrackPushes() async throws {
         let fake = FakeLibrary()

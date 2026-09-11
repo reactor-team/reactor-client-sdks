@@ -142,10 +142,17 @@ camera.push_frame(frame)                          # numpy array: shape carries t
 camera.push_frame(bgra, width=640, height=480)    # bytes: size spelled out
 camera.push_frame(frame, user_data=b"seq=1")      # tag the frame's metadata
 camera.push_frame(frame, capture_time_us=t)        # stamp when it was captured
-camera.push_frame(pcm, sample_rate=48000)         # audio track: interleaved i16 PCM
+mic = await reactor.track("mic").publish()
+mic.push_frame(pcm, sample_rate=16000)            # audio track: interleaved i16 PCM
 
 camera.unpublish()
 ```
+
+Audio accepts 8, 16, 24, 32, 44.1 and 48 kHz PCM, with `num_channels=1` (mono)
+or `2` (stereo). WebRTC resamples locally to the negotiated send format. Pace
+pushes at the capture rate; arbitrary chunks are buffered into 10 ms blocks.
+A format change or disconnect discards any partial block. Local audio tracks
+still share one synthetic capture device.
 
 Several cameras capturing one moment are one moment: push them with the same
 `capture_time_us` and that is what the far end reads, instead of the microseconds

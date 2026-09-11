@@ -842,8 +842,13 @@ void ClientImpl::push_audio(const std::string& name, Samples pcm, std::uint32_t 
         "\" carries video, not audio. Use push_frame() with Bytes, width and height for it."};
   }
   require_published(name);
-  if (channels == 0) {
-    throw BadRequestError{"channels must be at least 1"};
+  const bool supported_rate = sample_rate == 8'000 || sample_rate == 16'000 ||
+                              sample_rate == 24'000 || sample_rate == 32'000 ||
+                              sample_rate == 44'100 || sample_rate == 48'000;
+  if (!supported_rate || (channels != 1 && channels != 2)) {
+    throw BadRequestError{
+        "audio requires 8000, 16000, 24000, 32000, 44100 or 48000 Hz and 1 or 2 channels; got " +
+        std::to_string(sample_rate) + " Hz and " + std::to_string(channels) + " channels."};
   }
   if (pcm.data == nullptr || pcm.size == 0 || pcm.size % channels != 0) {
     throw BadRequestError{
