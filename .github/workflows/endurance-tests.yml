@@ -1,4 +1,4 @@
-# Manual-only (REA-6088): endurance/leak suites are long, noisier than a
+# Manual-only: endurance/leak suites are long, noisier than a
 # correctness assertion (a growth trend, not a single right-or-wrong call),
 # and not meant to gate a PR or a release — see
 # sdks/python/endurance-tests/README.md. workflow_dispatch only, run by hand

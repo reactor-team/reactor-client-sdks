@@ -1,7 +1,7 @@
 # Swift SDK endurance/leak tests
 
-REA-6088's Swift follow-up. Real `Reactor` clients — real FFI, real WebRTC —
-against a real model in production (`reactor/echo` by default), the same
+Real `Reactor` clients — real FFI, real WebRTC — against a real model in
+production (`reactor/echo` by default), the same
 "nothing mocked" approach as `sdks/swift/IntegrationTests/` (see that suite's
 own README for the fuller rationale, most of which applies unchanged here)
 and as `sdks/python/endurance-tests/`/`sdks/cpp/endurance-tests/`, which this

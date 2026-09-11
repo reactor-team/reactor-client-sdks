@@ -285,7 +285,7 @@ case "${1:-}" in
         swift_bin="$TOOL"
         resolve_ffi_library
         collect_link_flags
-        # REA-6088's Swift follow-up: real FFI, real WebRTC, against a real
+        # The endurance/leak suite: real FFI, real WebRTC, against a real
         # model in production, run for minutes to hours rather than
         # seconds. Needs INTEGRATION_TESTS_REACTOR_API_KEY (or
         # REACTOR_LOCAL=1) and, to actually loop for a while,

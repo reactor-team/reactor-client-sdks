@@ -277,10 +277,10 @@ func assertNeverGrows(_ samples: [Sample], _ get: (Sample) -> Int, name: String)
 /// (`pacedConnect`), retrying the *whole* attempt up to `maxAttempts` times
 /// with a fixed delay, before letting the last failure propagate.
 ///
-/// Written after a real CI run (REA-6154's investigation) lost ~20 minutes
-/// of a Python endurance run's accumulated trend to one coordinator-side
-/// blip — the token-exchange endpoint answering a single, isolated 503,
-/// confirmed via Grafana as a one-off rather than a real outage. An
+/// Written after a real CI run lost ~20 minutes of a Python endurance
+/// run's accumulated trend to one coordinator-side blip — the
+/// token-exchange endpoint answering a single, isolated 503, confirmed
+/// via Grafana as a one-off rather than a real outage. An
 /// endurance run is long and unattended specifically so a human doesn't
 /// have to babysit it; failing the whole run over a handful of seconds of
 /// transient unavailability defeats that.

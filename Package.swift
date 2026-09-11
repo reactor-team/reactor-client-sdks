@@ -265,7 +265,7 @@ let package = Package(
             // through `swift test` after xcodebuild had already accepted it.
             linkerSettings: [.unsafeFlags(["-Xlinker", "-ObjC"])]
         ),
-        // REA-6088's Swift follow-up. Real FFI, real WebRTC, against
+        // The Swift SDK's endurance/leak suite. Real FFI, real WebRTC, against
         // reactor/echo in production, watching resource usage for growth
         // across a long-lived session and repeated connect/disconnect
         // cycles — not part of the fast, hermetic suites above, and not
