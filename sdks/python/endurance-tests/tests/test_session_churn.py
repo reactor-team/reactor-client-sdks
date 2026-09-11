@@ -37,6 +37,11 @@ TRACK_NAME = "webcam"
 
 
 async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
+    # The `reactor` fixture connects once via plain paced_connect(), not
+    # connect_with_retries() — unlike test_lifecycle_churn.py, this scenario
+    # only ever connects once, at the very start, so a transient
+    # coordinator-side blip has one narrow window to land in rather than
+    # hundreds of chances over the run.
     sampler = ResourceSampler()
     frame = solid_rgb_frame(WIDTH, HEIGHT, (30, 150, 90))
     tracemalloc.start()

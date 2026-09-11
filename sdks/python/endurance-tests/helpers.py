@@ -56,6 +56,43 @@ reactor_factory = _integration_conftest.reactor_factory
 reactor = _integration_conftest.reactor
 
 
+async def connect_with_retries(
+    client: Any, *, max_attempts: int = 5, retry_delay_s: float = 5.0
+) -> None:
+    """`await paced_connect(client)`, retrying up to `max_attempts` times with
+    a fixed delay between attempts, before letting the last failure
+    propagate.
+
+    Written after a real CI run lost ~20 minutes of accumulated
+    trend to one coordinator-side blip — the token-exchange endpoint
+    answering a single, isolated 503 ("Token authorization is unavailable"),
+    confirmed via Grafana as a one-off rather than a real outage. An
+    endurance run is long and unattended specifically so a human doesn't
+    have to babysit it; failing the whole run over a handful of seconds of
+    transient unavailability defeats that. Retrying on a *non*-transient
+    failure (a genuinely invalid key) just costs a few extra fast attempts
+    before still failing with the same error — an acceptable trade for not
+    losing hours of data to something that clears itself up in seconds.
+
+    Catches both `ReactorError` (the native-layer/protocol errors) and
+    `AuthError` (the pure-Python token-exchange path in `reactor_sdk._auth`,
+    which is what actually raised for the 503 above) — imported here, not at
+    module scope, for the same "loadable before reactor_sdk is installed"
+    reason the rest of this module defers its `reactor_sdk` imports.
+    """
+    from reactor_sdk._auth import AuthError
+    from reactor_sdk.errors import ReactorError
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            await paced_connect(client)
+            return
+        except (ReactorError, AuthError):
+            if attempt >= max_attempts:
+                raise
+            await asyncio.sleep(retry_delay_s)
+
+
 async def pump_until_frame_received(
     track: Any, frame: Any, received: list[Any], *, timeout: float = 2.0, fps: float = 30.0
 ) -> bool:

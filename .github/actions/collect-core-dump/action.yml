@@ -1,0 +1,79 @@
+name: Collect crash diagnostics
+description: >
+  On a native crash (SIGSEGV et al.), find the core dump the failing step
+  left behind, print a symbolized backtrace into the job log, and upload the
+  core + binary as artifacts for offline debugging. Best-effort: a step that
+  failed for any *other* reason (an assertion, a timeout) leaves no core
+  file, and this quietly does nothing rather than failing the job a second
+  time over its own absence.
+
+# Why this exists
+# ───────────────
+# The endurance suites run for minutes to hours against a real model and
+# have already hit at least one real native SIGSEGV in CI that never
+# reproduced locally — with no debug symbols and no core dump, all that
+# crash left behind was faulthandler's plain Python-frame dump. This exists
+# so the *next* crash, wherever it happens, leaves a real backtrace and a
+# core file behind automatically, without anyone having to notice, re-run
+# with extra instrumentation, and hope it reproduces again.
+#
+# Linux-only (core(5)/procfs), which is fine — every job that calls this runs
+# on ubuntu-latest.
+inputs:
+  binary-path:
+    description: >
+      Path (relative to the repo root) to the executable that was actually
+      running when the crash happened — the Python venv's interpreter, or
+      the compiled C++ test binary. gdb needs this to resolve symbols; the
+      core file alone has none of its own.
+    required: true
+  search-dir:
+    description: >
+      Directory to look for `core.*` in — wherever the crashing process's
+      cwd was, since that's where a bare (non-absolute) core_pattern writes
+      it. Searched non-recursively; the caller's own working directory
+      convention (a mise task's `dir`, or the repo root) determines this.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Find and symbolize a core dump, if one exists
+      shell: bash
+      run: |
+        set -uo pipefail  # not -e: "no core found" is a valid, quiet outcome
+
+        core_file="$(ls -t "${{ inputs.search-dir }}"/core.* 2>/dev/null | head -1)"
+        if [ -z "$core_file" ]; then
+          echo "No core.* file under ${{ inputs.search-dir }} — this failure left no core dump (not a native crash, or core dumps weren't enabled for it)."
+          exit 0
+        fi
+        echo "Found core dump: $core_file"
+
+        if [ ! -x "${{ inputs.binary-path }}" ]; then
+          echo "::warning::binary-path '${{ inputs.binary-path }}' does not exist or is not executable — cannot symbolize $core_file."
+          exit 0
+        fi
+
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq gdb >/dev/null
+
+        echo "::group::gdb backtrace (all threads)"
+        gdb -q -batch \
+          -ex "thread apply all bt full" \
+          -ex "info sharedlibrary" \
+          -ex quit \
+          "${{ inputs.binary-path }}" "$core_file" || true
+        echo "::endgroup::"
+
+        echo "CORE_DUMP_PATH=$core_file" >> "$GITHUB_ENV"
+
+    - name: Upload core dump + binary
+      if: env.CORE_DUMP_PATH != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: crash-diagnostics-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          ${{ env.CORE_DUMP_PATH }}
+          ${{ inputs.binary-path }}
+        retention-days: 14
+        if-no-files-found: warn
