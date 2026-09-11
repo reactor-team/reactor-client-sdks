@@ -29,6 +29,9 @@ dedicated track.
 - **[C++](sdks/cpp/README.md)** — C++17, over the same native core
 - **[Swift](sdks/swift/README.md)** — macOS and iOS, via Swift Package Manager
 
+The [Kotlin SDK](sdks/kotlin/README.md) for desktop JVM and Android is under
+development. Its scaffold is not yet a usable client or a published package.
+
 ## Documentation
 
 - 📚 **[Full documentation](https://docs.reactor.inc/overview)** — platform
