@@ -35,3 +35,9 @@ node_modules/
 # clangd's index, written wherever it finds a compile_commands.json — which is
 # any directory, hence the leading **.
 **/.cache/clangd/
+
+# Kotlin / Gradle local build and SDK state
+/sdks/kotlin/**/build/
+/sdks/kotlin/.gradle/
+/sdks/kotlin/.kotlin/
+/sdks/kotlin/local.properties

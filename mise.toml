@@ -38,6 +38,8 @@ monorepo_root = true
 # laptop and a runner.
 cmake = "4.4.2"
 ninja = "1.13.2"
+# Kotlin/Android build JDK. Gradle itself is pinned by sdks/kotlin/gradlew.
+java = "temurin-17.0.16+8"
 # wasm-pack builds crates/reactor-wasm into a loadable JS package.
 "cargo:wasm-pack" = "0.15.0"
 uv          = "0.11.31"
@@ -195,7 +197,7 @@ run = [
 description = "[Testing] Every test suite (Rust + Python + JS + C++ + Swift)"
 # test:swift skips itself off a machine with a Swift toolchain rather than
 # failing, so this stays runnable on Linux. See the Swift SDK section below.
-depends = ["test:rust", "test:python", "test:js", "test:cpp", "test:swift"]
+depends = ["test:rust", "test:python", "test:js", "test:cpp", "test:swift", "test:kotlin"]
 
 # ── JS SDK ────────────────────────────────────────────────────────────────────
 # Node/npm aren't in [tools] above yet — every task here just shells out to
@@ -492,6 +494,7 @@ depends = [
     "lint:js",
     "lint:cpp",
     "lint:swift",
+    "lint:kotlin",
     "lint:abi",
     "lint:error-codes",
     "lint:shell",
@@ -513,3 +516,29 @@ run = "hk install --mise"
 [tasks.uninstall-hooks]
 description = "[Setup] Remove hk-managed git hooks"
 run = "hk uninstall"
+
+# ── Kotlin SDK ───────────────────────────────────────────────────────────────
+
+[tasks."lint:kotlin"]
+description = "[Quality] Kotlin formatting and Android lint"
+run = "bash scripts/kotlin.sh lint"
+
+[tasks."fmt:kotlin"]
+description = "[Format] Format Kotlin sources and Gradle scripts"
+run = "bash scripts/kotlin.sh format"
+
+[tasks."build:kotlin"]
+description = "[Build] Shared/JVM JARs, Android AAR and instrumentation APK"
+run = "bash scripts/kotlin.sh build"
+
+[tasks."test:kotlin"]
+description = "[Testing] Shared/JVM and Android host unit tests"
+run = "bash scripts/kotlin.sh test"
+
+[tasks."test:kotlin:android"]
+description = "[Testing] Android instrumentation tests on a connected device"
+run = "bash scripts/kotlin.sh android-test"
+
+[tasks."test:kotlin:ci"]
+description = "[Testing] Kotlin CI path filters and required-check wiring"
+run = "uv run scripts/check-kotlin-ci.py"
