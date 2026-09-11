@@ -26,6 +26,9 @@ dedicated track.
 - **[Python](sdks/python/README.md)** — `pip install reactor-sdk`
 - **[C++](sdks/cpp/README.md)** — C++17, over the same native core
 
+The [Kotlin SDK](sdks/kotlin/README.md) for desktop JVM and Android is under
+development. Its scaffold is not yet a usable client or a published package.
+
 ## Documentation
 
 - 📚 **[Full documentation](https://docs.reactor.inc/overview)** — platform

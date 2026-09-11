@@ -150,3 +150,11 @@ any prefix, including `swift-v1.0.0`, fails to resolve at all. See
 Open a [GitHub issue](https://github.com/reactor-team/reactor-client-sdks/issues)
 with as much detail as you can: platform, SDK language and version, and —
 for a bug — a minimal repro.
+
+## Kotlin SDK development
+
+See [the Kotlin setup](sdks/kotlin/README.md#development) for the pinned JDK,
+Gradle wrapper and Android SDK requirements. Run `mise run lint:kotlin`,
+`mise run build:kotlin`, and `mise run test:kotlin` before submitting Kotlin
+changes. `mise run test:kotlin:android` additionally requires a connected device
+or emulator. The initial scaffold has no native client API.
