@@ -16,3 +16,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "reactor-kotlin"
 include(":reactor-core", ":reactor-jvm", ":reactor-android")
+
+// Diagnostic APK only; never published as part of the SDK.
+include(":native-probe")

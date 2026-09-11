@@ -115,6 +115,9 @@ jobs:
               - 'sdks/kotlin/**'
               - 'scripts/kotlin.sh'
               - 'scripts/check-kotlin-ci.py'
+              - 'scripts/kotlin-native.sh'
+              - 'scripts/check-kotlin-native.py'
+              - 'scripts/test-kotlin-native.py'
             cpp:
               - *shared
               - *core
@@ -176,6 +179,7 @@ jobs:
           version: ${{ env.MISE_VERSION }}
       - run: hk validate
       - run: mise run test:kotlin:ci
+      - run: mise run test:kotlin:native-checks
       - name: ABI parity (lib.rs / reactor_ffi.h / _ffi.py / sdks/cpp / sdks/swift)
         run: mise run lint:abi
       - name: Error-code parity (error.rs / errors.ts / errors.py / errors.hpp)
