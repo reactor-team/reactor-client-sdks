@@ -1,6 +1,7 @@
 import ExampleSupport
 import Foundation
 import Reactor
+import TestSupport
 import Testing
 
 /// Scenario 05, scripted: two clients on one session, the second adopting it by

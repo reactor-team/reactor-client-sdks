@@ -28,7 +28,7 @@ export REACTOR_SWIFT_DEV=1
 FORMAT_CONFIG="$REPO_ROOT/sdks/swift/.swift-format"
 
 usage() {
-    echo "usage: ${0##*/} <format|lint|build|build-ios|test|integration-tests|integration-tests-ios-simulator|run <example> [args...]>" >&2
+    echo "usage: ${0##*/} <format|lint|build|build-ios|test|integration-tests|integration-tests-ios-simulator|endurance-tests|run <example> [args...]>" >&2
     exit 2
 }
 
@@ -261,11 +261,13 @@ case "${1:-}" in
         swift_bin="$TOOL"
         resolve_ffi_library
         collect_link_flags
-        # IntegrationTests is real FFI against a real model in production — not
-        # part of this fast, hermetic FakeLibrary suite. --skip by target name,
-        # the same separation sdks/python/integration-tests/ and
-        # sdks/js/integration-tests/ keep from their own unit suites.
-        "$swift_bin" test --package-path "$REPO_ROOT" --skip IntegrationTests "${link_flags[@]}"
+        # IntegrationTests and EnduranceTests are both real FFI against a real
+        # model in production — neither is part of this fast, hermetic
+        # FakeLibrary suite. --skip by target name, the same separation
+        # sdks/python/integration-tests/ and sdks/js/integration-tests/ keep
+        # from their own unit suites.
+        "$swift_bin" test --package-path "$REPO_ROOT" --skip IntegrationTests \
+            --skip EnduranceTests "${link_flags[@]}"
         ;;
     integration-tests)
         resolve_tool swift
@@ -276,6 +278,22 @@ case "${1:-}" in
         # production. Needs INTEGRATION_TESTS_REACTOR_API_KEY (or
         # REACTOR_LOCAL=1) — see IntegrationTests/Fixtures.swift.
         "$swift_bin" test --package-path "$REPO_ROOT" --filter IntegrationTests \
+            "${link_flags[@]}"
+        ;;
+    endurance-tests)
+        resolve_tool swift
+        swift_bin="$TOOL"
+        resolve_ffi_library
+        collect_link_flags
+        # The endurance/leak suite: real FFI, real WebRTC, against a real
+        # model in production, run for minutes to hours rather than
+        # seconds. Needs INTEGRATION_TESTS_REACTOR_API_KEY (or
+        # REACTOR_LOCAL=1) and, to actually loop for a while,
+        # ENDURANCE_DURATION_SECONDS — see EnduranceTests/Helpers.swift's
+        # own docs. macOS only, deliberately (see
+        # EnduranceTests/README.md) — no iOS Simulator variant, unlike
+        # integration-tests.
+        "$swift_bin" test --package-path "$REPO_ROOT" --filter EnduranceTests \
             "${link_flags[@]}"
         ;;
     integration-tests-ios-simulator)
@@ -329,19 +347,28 @@ case "${1:-}" in
             echo "swift.sh: build-for-testing produced no .xctestrun file." >&2
             exit 1
         fi
-        # IntegrationTests is TestTargets index 0 — the only target this whole
-        # invocation was scoped to build via -only-testing above. Inject
-        # whichever of this suite's env vars are actually set: the Simulator
-        # process inherits none of this shell's environment otherwise, so
-        # REACTOR_LOCAL/REACTOR_API_URL need the same treatment the API key
-        # already got, or local mode silently falls through to requiring a key
-        # inside the test process even after passing the check above.
+        # Not just TestTargets index 0: that assumption held while
+        # IntegrationTests was the package's only test target, but
+        # EnduranceTests now exists as a second one in the same scheme —
+        # -only-testing:IntegrationTests above restricts which target
+        # actually *runs*, not how many entries build-for-testing's own
+        # .xctestrun lists, so a hardcoded index 0 can silently inject into
+        # the wrong target's environment (found the hard way: real CI
+        # runs on this PR started failing every IntegrationTests case on
+        # a missing API key once EnduranceTests existed). Inject into
+        # every TestTargets entry instead — harmless for one that never
+        # runs, no worse than the single-target case for the one that does.
+        target_indices="$(plutil -convert json -o - "$xctestrun" \
+            | jq -r '.TestConfigurations[0].TestTargets | keys[]')"
         for var in INTEGRATION_TESTS_REACTOR_API_KEY REACTOR_LOCAL REACTOR_API_URL; do
             value="$(eval "printf '%s' \"\${$var:-}\"")"
             [ -n "$value" ] || continue
-            /usr/libexec/PlistBuddy -c \
-                "Add :TestConfigurations:0:TestTargets:0:EnvironmentVariables:$var string $value" \
-                "$xctestrun"
+            while IFS= read -r idx; do
+                [ -n "$idx" ] || continue
+                /usr/libexec/PlistBuddy -c \
+                    "Add :TestConfigurations:0:TestTargets:$idx:EnvironmentVariables:$var string $value" \
+                    "$xctestrun"
+            done <<<"$target_indices"
         done
 
         "$xcodebuild_bin" test-without-building \

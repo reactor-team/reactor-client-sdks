@@ -1,7 +1,7 @@
 import Foundation
 import Reactor
 
-/// Shared fixtures for the Swift SDK integration suite.
+/// Shared fixtures for the Swift SDK's real-FFI test suites.
 ///
 /// Real `Reactor` clients — real FFI, real WebRTC — against a real model in
 /// production (`reactor/echo` by default). Nothing here is mocked; that's the
@@ -10,16 +10,34 @@ import Reactor
 /// interval, same shape — so pointing one suite at a local runtime instead of
 /// production reads the same way as pointing any other.
 ///
-/// Lives outside `sdks/swift/Tests/`, and is never picked up by `swift.sh test`
-/// (the mocked-`FakeLibrary` unit suite) — only `swift.sh integration-tests`
-/// filters it in. Same separation `sdks/js/integration-tests/` and
+/// A plain library target (`TestSupport`), not a test target: both
+/// `IntegrationTests` and `EnduranceTests` depend on it for connection
+/// setup, pacing, and media fixtures rather than each re-deriving their own
+/// — but `xcodebuild`'s package-graph resolution (unlike plain `swift
+/// build`/`swift test`) refuses a *test* target depending on another *test*
+/// target ("Target 'EnduranceTests' depends on a test target
+/// 'IntegrationTests'"), which briefly broke `swift-integration-tests-ios-
+/// simulator` in CI when this lived inside `IntegrationTests` itself and
+/// `EnduranceTests` depended on that target directly. A shared plain target
+/// is what actually works everywhere `swift build`, `swift test`, and
+/// `xcodebuild` all resolve this manifest.
+///
+/// Never picked up by `swift.sh test` (the mocked-`FakeLibrary` unit suite)
+/// on its own — nothing in it is a `@Test` — but its two dependents are each
+/// excluded from that suite explicitly (`--skip IntegrationTests --skip
+/// EnduranceTests`), the same separation `sdks/js/integration-tests/` and
 /// `sdks/python/integration-tests/` keep from their own unit suites.
-enum IntegrationConfig {
+///
+/// Every symbol below that `IntegrationTests`/`EnduranceTests` reference is
+/// `package`, not `internal` — the access level for exactly this: shared
+/// within the package, not part of this SDK's public surface the way
+/// anything in `Sources/` is.
+package enum IntegrationConfig {
 
     /// Same names as `sdks/js/integration-tests/harness/src/config.ts` and
     /// `sdks/python/integration-tests/conftest.py`.
     static let apiURL = value("REACTOR_API_URL") ?? Reactor.defaultAPIURL
-    static let local = value("REACTOR_LOCAL") == "1"
+    package static let local = value("REACTOR_LOCAL") == "1"
 
     /// A separate key from `REACTOR_API_KEY` (which the examples use): the
     /// integration suite's own quota-bearing key, so a contributor running the
@@ -42,7 +60,7 @@ enum IntegrationConfig {
     /// helios, **nothing arrives on `main_video` until something has been
     /// pushed into `webcam`** (`echo_model.py`'s `run()` skips a tick with
     /// nothing to read).
-    static let defaultModel = "reactor/echo"
+    package static let defaultModel = "reactor/echo"
 
     /// The API key this suite runs with, or a clear failure naming the fix —
     /// never a crash, so one test's missing key fails that test rather than the
@@ -63,7 +81,7 @@ enum IntegrationConfig {
     /// coordinator only accepts the token that *created* a session for a second
     /// connection to adopt it by id, not a fresh one minted per client, so a
     /// joiner needs the creator's own token, not its own key.
-    static func makeReactor(
+    package static func makeReactor(
         model: String = defaultModel, jwt: String? = nil
     ) async throws
         -> Reactor
@@ -86,7 +104,7 @@ enum IntegrationConfig {
 
     /// Mint one token from this suite's key, for a caller that needs to hand the
     /// *same* token to more than one `Reactor` (session adoption).
-    static func mintJWT(model: String = defaultModel) async throws -> String {
+    package static func mintJWT(model: String = defaultModel) async throws -> String {
         try await Reactor.fetchJWT(
             apiKey: requiredAPIKey(), apiURL: apiURL,
             options: .init(models: [model]), local: local)
@@ -100,9 +118,9 @@ enum IntegrationConfig {
 
 /// Something this suite's setup could not do — a missing key, mostly. Distinct
 /// from `ReactorError`, which is a *session* refusing something.
-struct IntegrationTestSetupError: Error, CustomStringConvertible {
-    let description: String
-    init(_ description: String) { self.description = description }
+package struct IntegrationTestSetupError: Error, CustomStringConvertible {
+    package let description: String
+    package init(_ description: String) { self.description = description }
 }
 
 // MARK: - Session-creation pacing
@@ -158,7 +176,7 @@ actor SessionPacer {
 /// Playwright's `retries: 1` (not filtered by error type, so it already
 /// absorbs this) — this is Swift's equivalent, written by hand because `swift
 /// test` has no rerun-on-failure flag.
-func pacedConnect(
+package func pacedConnect(
     _ reactor: Reactor, sessionID: String? = nil, connectionID: UInt32? = nil
 ) async throws {
     let maxAttempts = 4
@@ -189,7 +207,7 @@ func pacedConnect(
 /// reason the `sdk-from-ffi` skill puts it in a `finally` in every example: a
 /// creator that goes away without disconnecting orphans the session, and the
 /// next run cannot start until it clears.
-func withConnectedReactor<Result>(
+package func withConnectedReactor<Result>(
     model: String = IntegrationConfig.defaultModel,
     jwt: String? = nil,
     sessionID: String? = nil,
@@ -216,7 +234,7 @@ func withConnectedReactor<Result>(
 /// on the library's media delivery thread rather than through the event queue —
 /// the same reason Python's `wait_until` polls a plain counter instead of using
 /// an `asyncio.Event`.
-func waitUntil(
+package func waitUntil(
     timeout: Duration = .seconds(10), interval: Duration = .milliseconds(100),
     _ predicate: () -> Bool
 ) async throws {

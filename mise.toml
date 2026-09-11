@@ -175,7 +175,7 @@ run = [
 [tasks."test:python:endurance-tests"]
 description = "[Testing] Python SDK endurance/leak tests — repeated churn against a live model, watching RSS/CPU/handle counts for growth (needs INTEGRATION_TESTS_REACTOR_API_KEY)"
 dir = "sdks/python"
-# Manual-only (REA-6088): not a dependency of `test`/`test:python`, and not
+# Manual-only: not a dependency of `test`/`test:python`, and not
 # wired into ci.yml the way integration-tests is — these are long (minutes to
 # hours, via ENDURANCE_DURATION_SECONDS), noisier by nature (a growth trend,
 # not a single correctness assertion), and not meant to gate every PR.
@@ -412,6 +412,16 @@ run = "scripts/swift.sh test"
 [tasks."test:swift:integration-tests"]
 description = "[Testing] Swift SDK integration tests (real FFI, real model) on macOS"
 run = "scripts/swift.sh integration-tests"
+
+[tasks."test:swift:endurance-tests"]
+description = "[Testing] Swift SDK endurance/leak tests — repeated churn against a live model, watching RSS/CPU/thread/fd counts for growth (needs INTEGRATION_TESTS_REACTOR_API_KEY)"
+# Mirrors test:python:endurance-tests/test:cpp:endurance-tests' own
+# reasoning (see sdks/swift/EnduranceTests/README.md): long (minutes to
+# hours, via ENDURANCE_DURATION_SECONDS), noisier by nature than a
+# correctness assertion, and not meant to gate every PR — not a
+# dependency of `test`/`test:swift`, not wired into ci.yml. macOS only,
+# deliberately — no iOS Simulator variant.
+run = "scripts/swift.sh endurance-tests"
 
 [tasks."test:swift:integration-tests:ios-simulator"]
 description = "[Testing] The same suite, run on an iOS Simulator destination via xcodebuild"

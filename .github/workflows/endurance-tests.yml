@@ -1,4 +1,4 @@
-# Manual-only (REA-6088): endurance/leak suites are long, noisier than a
+# Manual-only: endurance/leak suites are long, noisier than a
 # correctness assertion (a growth trend, not a single right-or-wrong call),
 # and not meant to gate a PR or a release — see
 # sdks/python/endurance-tests/README.md. workflow_dispatch only, run by hand
@@ -6,9 +6,10 @@
 # graduates to a schedule trigger, a deliberate follow-up not done here.
 #
 # One job per SDK, each gated on the `sdk` input rather than a single
-# combined job: only Python has a suite today (sdks/python/endurance-tests/),
-# and adding JS/C++/Swift later is meant to be "add a choice + a job", not a
-# restructure of this file.
+# combined job: python and swift have suites today
+# (sdks/python/endurance-tests/, sdks/swift/EnduranceTests/), and adding
+# JS/C++ later is meant to be "add a choice + a job", not a restructure of
+# this file.
 name: Endurance tests
 
 on:
@@ -19,6 +20,7 @@ on:
         type: choice
         options:
           - python
+          - swift
         default: python
       duration_minutes:
         description: "How long each scenario loops for, in minutes"
@@ -107,3 +109,42 @@ jobs:
           export ENDURANCE_DURATION_SECONDS=$((10#$DURATION_MINUTES * 60))
           echo "Running for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s) per scenario"
           mise run test:python:endurance-tests
+
+  swift:
+    name: Swift SDK endurance tests
+    needs: setup
+    if: inputs.sdk == 'swift'
+    # macOS only, deliberately — no iOS Simulator variant, unlike
+    # swift-integration-tests/swift-integration-tests-ios-simulator in
+    # ci.yml. See sdks/swift/EnduranceTests/README.md for why: the leak this
+    # suite hunts lives in the native FFI/WebRTC layer every binding shares,
+    # not in anything iOS-simulator-specific.
+    runs-on: macos-latest
+    timeout-minutes: ${{ fromJSON(needs.setup.outputs.timeout_minutes) }}
+    env:
+      REACTOR_REQUIRE_SWIFT: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+          cache-shared-key: reactor-swift-${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Build libreactor_ffi (the library the tests link)
+        run: mise run build:ffi
+      - name: Endurance tests (real FFI client, real model)
+        env:
+          # Same dedicated secret ci.yml's swift-integration-tests (and
+          # every other binding's integration-tests job) already uses.
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+          DURATION_MINUTES: ${{ inputs.duration_minutes }}
+        # Same `10#` base-10 guard as the `python`/`setup` jobs' identical
+        # conversion — see the `setup` job's own comment for why this
+        # happens in shell rather than in the `env:` block above.
+        run: |
+          export ENDURANCE_DURATION_SECONDS=$((10#$DURATION_MINUTES * 60))
+          echo "Running for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s) per scenario"
+          mise run test:swift:endurance-tests

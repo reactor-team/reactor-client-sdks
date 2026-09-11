@@ -3,6 +3,7 @@ import ExampleSupport
 import Foundation
 import ImageIO
 import Reactor
+import TestSupport
 import Testing
 import UniformTypeIdentifiers
 
