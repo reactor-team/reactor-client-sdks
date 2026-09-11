@@ -86,18 +86,21 @@ TEST_CASE("remove() waits out a delivery already in flight on another thread") {
   dispatcher.join();
 }
 
-// A per-thread exemption in remove() — "don't wait for an invoke() this
-// thread is already inside" — is enough to fix the case above, but not
-// enough on its own: two threads, each mid-callback on a *different*
-// Handlers instance, each removing a subscription the *other*'s callback
-// belongs to, would each look like a safe-to-wait-for outsider to the
-// other's remove(). Both would then wait for the other's invoke() to finish,
-// and neither can, because each is itself the thing blocking the other.
+// Excluding a thread's own in-flight invocation from its own remove() call
+// (the case above) is not enough on its own: two threads, each mid-callback
+// on a *different* Handlers instance, each removing a subscription the
+// *other*'s callback belongs to, would each be waiting for the other's
+// invoke() to finish — and neither can, because each is itself the thing
+// blocking the other via its own remove() call.
 //
-// remove() closes this by never waiting at all when the calling thread is
-// nested inside any callback, not just this list's own — see its own
-// comment. This test exercises exactly the cycle above; before that fix, it
-// deadlocks instead of finishing.
+// remove() closes this with a small cross-instance registry (see
+// blocked_on_threads()'s own comment): before waiting on a thread, it checks
+// whether that thread is already, transitively, waiting on this one — and if
+// so, leaves it out of the wait instead of closing the cycle. Whichever side
+// loses the race to register first is the one that skips waiting; the other
+// genuinely waits, so the cycle breaks without dropping the guarantee on
+// both sides at once. This test exercises exactly the cycle above; before
+// that fix, it deadlocks instead of finishing.
 //
 // Plain std::thread, not std::async/std::future: a future from
 // std::launch::async blocks in its *destructor* until the task finishes, so
@@ -285,4 +288,68 @@ TEST_CASE("remove() does not wait for invoke() copies that start after it erases
   call_two.detach();  // Never finishes by design; nothing here waits for it.
 
   REQUIRE(remove_done);
+}
+
+// The fix for the two-instance cycle above must not become a blanket "skip
+// the wait whenever the calling thread is inside any callback" — that would
+// bring back the original bug for the far more common shape: a callback on
+// one Handlers instance removes a subscription on an *unrelated* instance,
+// while some other, perfectly ordinary thread (not itself blocked on
+// anything, not part of any cycle) is mid-delivery holding a stale copy of
+// the handler being removed. There is no deadlock risk there at all, so
+// remove() must still wait.
+//
+// Deterministic, same shape as the very first test above: a blocking handler
+// holds `handlers`'s invoke() open on its own thread until this test races
+// remove() against it — except this time, remove() is called from inside a
+// callback on a second, unrelated Handlers instance, to exercise exactly the
+// "nested in some other callback" shortcut a too-broad fix would take.
+TEST_CASE(
+    "remove() still waits for an unrelated thread's delivery when called from inside another "
+    "callback") {
+  Handlers<int> handlers;
+  Handlers<int> other;
+
+  std::mutex gate;
+  std::condition_variable gate_cv;
+  bool blocker_entered = false;
+  bool release_blocker = false;
+
+  handlers.add([&](int) {
+    {
+      const std::lock_guard<std::mutex> lock(gate);
+      blocker_entered = true;
+    }
+    gate_cv.notify_all();
+    std::unique_lock<std::mutex> lock(gate);
+    gate_cv.wait(lock, [&] { return release_blocker; });
+  });
+
+  std::vector<std::string> names;
+  const std::uint64_t id = handlers.add([&](int) { names.push_back("delivered"); });
+
+  std::thread dispatcher([&] { handlers.invoke(1); });
+  {
+    std::unique_lock<std::mutex> lock(gate);
+    gate_cv.wait(lock, [&] { return blocker_entered; });
+  }
+
+  {
+    const std::lock_guard<std::mutex> lock(gate);
+    release_blocker = true;
+  }
+  gate_cv.notify_all();
+
+  // The call under test is nested inside `other`'s callback, not `handlers`'s
+  // own — `other` shares nothing with `handlers` or with the dispatching
+  // thread above. A fix that exempts "any nesting" would let this return
+  // before the dispatching thread's stale copy has actually called `id`'s
+  // handler; the fix under test must wait anyway.
+  other.add([&](int) { handlers.remove(id); });
+  other.invoke(1);
+
+  CHECK(names.size() == 1);
+  CHECK(names.front() == "delivered");
+
+  dispatcher.join();
 }

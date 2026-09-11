@@ -7,6 +7,9 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -14,39 +17,58 @@
 
 namespace reactor::detail {
 
-/// How many `Handlers<...>::invoke()` calls — of any specialization, not just
-/// one — the calling thread is presently nested inside.
+/// Cross-instance bookkeeping for `Handlers<...>::remove()`'s wait, so two
+/// removals on two different `Handlers` instances (different `Args...`
+/// included — this is deliberately not a class template member) can tell
+/// whether waiting for each other would deadlock.
 ///
-/// A function-local `static thread_local`, not a namespace-scope variable:
-/// still exactly one instance per thread, shared across every translation
-/// unit that includes this header (inline function, C++17), but without
-/// exposing a global for anything else to reach into.
-///
-/// Shared across every `Handlers<...>` instantiation on purpose: two different
-/// handler lists (say, the video handlers for one track and the status
-/// handlers) can each have a thread inside a callback that destroys a
-/// subscription belonging to the *other* list. Per-instance bookkeeping alone
-/// cannot see that — each side would look, to its own `remove()`, like an
-/// unrelated, safe-to-wait-for-outsider thread — and the two would wait on
-/// each other forever. This is checked instead: a thread already inside any
-/// callback never blocks in `remove()`, full stop — see `remove()`'s comment.
-inline int& invoke_nesting_depth() {
-  static thread_local int depth = 0;
-  return depth;
+/// `remove()` records, for the calling thread, exactly which *other* threads'
+/// in-flight `invoke()` calls it is about to wait for. Before doing so, it
+/// checks whether any of those threads is transitively waiting (through this
+/// same map) on the calling thread — if so, waiting for it here would close a
+/// cycle neither side can ever break, so that one thread is left out of the
+/// wait instead. See `remove()`'s own comment for what that costs.
+inline std::mutex& blocking_registry_mutex() {
+  static std::mutex mutex;
+  return mutex;
 }
 
-/// RAII around `invoke_nesting_depth()`, so a handler that throws still
-/// leaves it correct. (`invoke()` itself never lets a handler's exception
-/// escape it — see its own comment — but this does not depend on that.)
-class InvokeNestingGuard {
- public:
-  InvokeNestingGuard() { ++invoke_nesting_depth(); }
-  ~InvokeNestingGuard() { --invoke_nesting_depth(); }
-  InvokeNestingGuard(const InvokeNestingGuard&) = delete;
-  InvokeNestingGuard& operator=(const InvokeNestingGuard&) = delete;
-  InvokeNestingGuard(InvokeNestingGuard&&) = delete;
-  InvokeNestingGuard& operator=(InvokeNestingGuard&&) = delete;
-};
+inline std::unordered_map<std::thread::id, std::unordered_set<std::thread::id>>&
+blocked_on_threads() {
+  static std::unordered_map<std::thread::id, std::unordered_set<std::thread::id>> map;
+  return map;
+}
+
+/// Whether `target` is reachable from `start` by following "this thread is
+/// presently waiting on that thread" edges recorded in `blocked_on_threads()`
+/// — including `start == target` itself, a degenerate one-node cycle (the
+/// shape a thread waiting on its own in-flight invocation takes). Caller must
+/// already hold `blocking_registry_mutex()`.
+inline bool reaches(std::thread::id start, std::thread::id target) {
+  if (start == target) {
+    return true;
+  }
+  std::unordered_set<std::thread::id> visited;
+  std::vector<std::thread::id> stack{start};
+  while (!stack.empty()) {
+    const std::thread::id current = stack.back();
+    stack.pop_back();
+    if (!visited.insert(current).second) {
+      continue;
+    }
+    if (current == target) {
+      return true;
+    }
+    const auto it = blocked_on_threads().find(current);
+    if (it == blocked_on_threads().end()) {
+      continue;
+    }
+    for (const std::thread::id next : it->second) {
+      stack.push_back(next);
+    }
+  }
+  return false;
+}
 
 template <typename... Args>
 class Handlers {
@@ -72,34 +94,39 @@ class Handlers {
   /// handler's captures (the ordinary shape: a `Subscription` member going out
   /// of scope right before the object it belongs to) would be destroying them
   /// out from under a delivery already on its way in. So this also waits for
-  /// every `invoke()` call already in flight on another thread to finish
-  /// before returning — after that, no copy containing this handler still
-  /// exists anywhere.
+  /// every `invoke()` call already in flight — on any *other* thread — to
+  /// finish before returning, one thread at a time: `started_by_thread_` is
+  /// snapshotted here, and the wait is over exactly those threads' counts
+  /// reaching their snapshotted value in `finished_by_thread_`, so an
+  /// invocation that starts afterward (on any thread, including this one)
+  /// never has to be waited for.
   ///
-  /// Not waited for: a thread already inside some callback when it calls
-  /// this.
+  /// This thread's own outstanding count is always excluded from that
+  /// snapshot before waiting — the self-removal case `invoke()`'s own comment
+  /// describes (a handler dropping its own subscription) would otherwise wait
+  /// for this thread to finish what it is presently doing, forever.
   ///
-  /// The self-removal case `invoke()`'s own comment describes — a handler
-  /// dropping its own subscription — is one instance of this: waiting here
-  /// would wait for this thread to finish what it is presently doing,
-  /// forever. But it is not the only one a per-thread exemption would need to
-  /// cover: two threads each inside a callback, each destroying a
-  /// subscription the *other*'s already-taken copy still holds, would
-  /// otherwise each wait for the other's `invoke()` to finish — and neither
-  /// can, because each is blocked on this very wait. Skipping the wait
-  /// whenever the caller is nested inside *any* callback, not just checking
-  /// whether it is this list's own, avoids that cycle: a thread that is not
-  /// itself running a callback can never be the other half of one.
+  /// The same reasoning extends across threads: two threads, each mid-callback
+  /// on (possibly different) `Handlers` instances, each removing a
+  /// subscription the *other*'s already-taken copy holds, would otherwise each
+  /// wait for the other's `invoke()` to finish — and neither can, because each
+  /// is itself the thing blocking the other. `blocked_on_threads()` (shared
+  /// across every instance and instantiation, for the same reason
+  /// `invoke_nesting_depth()` used to be) catches exactly this: before
+  /// waiting on a thread, this checks whether that thread is already,
+  /// transitively, waiting on this one — and if so, leaves it out.
   ///
-  /// The tradeoff this leaves: a callback that removes a *different*
-  /// callback's subscription and destroys its captures immediately after
-  /// keeps the original race for that one case. That is narrower than it
-  /// sounds — it requires two callbacks in flight on two different threads at
-  /// once, which most callers of this class never do — and it is the price of
-  /// not deadlocking the far more common shape this fix targets: a
-  /// `Subscription` member going out of scope on a thread that is not itself
-  /// mid-callback, ordinary destructor teardown included.
+  /// The tradeoff that leaves: in that specific cyclic shape, one of the two
+  /// removals — whichever loses the race to register first — returns without
+  /// having waited for the other's in-flight copy. That is narrower than it
+  /// sounds: it takes two threads genuinely blocked on each other to trigger,
+  /// and the *other* side of the pair still waits for real, so the cycle is
+  /// broken rather than either side's guarantee being dropped wholesale. Any
+  /// invocation on a thread that is not itself waiting on this one — the
+  /// overwhelmingly common case, including an unrelated thread just delivering
+  /// normally — is always waited for.
   void remove(std::uint64_t id) {
+    const std::thread::id self = std::this_thread::get_id();
     std::unique_lock<std::mutex> lock(mutex_);
     for (auto it = handlers_.begin(); it != handlers_.end(); ++it) {
       if (it->first == id) {
@@ -107,19 +134,45 @@ class Handlers {
         break;
       }
     }
-    if (invoke_nesting_depth() > 0) {
-      return;
+    std::unordered_map<std::thread::id, std::uint64_t> target = started_by_thread_;
+    lock.unlock();
+
+    {
+      const std::lock_guard<std::mutex> registry_lock(blocking_registry_mutex());
+      for (auto it = target.begin(); it != target.end();) {
+        if (reaches(it->first, self)) {
+          it = target.erase(it);
+        } else {
+          ++it;
+        }
+      }
+      if (target.empty()) {
+        return;
+      }
+      std::unordered_set<std::thread::id> waiting_for;
+      waiting_for.reserve(target.size());
+      for (const auto& [thread_id, count] : target) {
+        (void)count;
+        waiting_for.insert(thread_id);
+      }
+      blocked_on_threads()[self] = std::move(waiting_for);
     }
-    // Only invocations that had already taken their snapshot as of this exact
-    // point can possibly still hold the handler just erased above — not any
-    // that start afterward, which read `handlers_` after the erase and so
-    // never see it. `started_` at this instant is that boundary: waiting for
-    // `finished_` to reach it (not for it to reach whatever `started_` climbs
-    // to later) is what keeps this from blocking forever under continuous or
-    // overlapping delivery, which keeps incrementing `started_` the whole time
-    // this waits.
-    const std::uint64_t target = started_;
-    idle_.wait(lock, [this, target] { return finished_ >= target; });
+
+    lock.lock();
+    idle_.wait(lock, [this, &target] {
+      for (const auto& [thread_id, count] : target) {
+        const auto it = finished_by_thread_.find(thread_id);
+        const std::uint64_t finished = it == finished_by_thread_.end() ? 0 : it->second;
+        if (finished < count) {
+          return false;
+        }
+      }
+      return true;
+    });
+    lock.unlock();
+
+    const std::lock_guard<std::mutex> registry_lock(blocking_registry_mutex());
+    blocked_on_threads().erase(self);
   }
 
   /// Call every handler with `args`.
@@ -137,17 +190,17 @@ class Handlers {
   /// does and a single forward cannot.
   template <typename... Called>
   void invoke(Called&&... args) const {  // NOLINT(cppcoreguidelines-missing-std-forward)
+    const std::thread::id self = std::this_thread::get_id();
     std::vector<std::pair<std::uint64_t, Handler>> snapshot;
     {
       const std::lock_guard<std::mutex> lock(mutex_);
       snapshot = handlers_;
       // Marks this copy as started *before* the lock that guards `handlers_`
       // is released, so a `remove()` that acquires that lock next reads a
-      // `started_` that already counts this copy — the ordering `remove()`'s
-      // own comment relies on.
-      ++started_;
+      // `started_by_thread_` that already counts this copy — the ordering
+      // `remove()`'s own comment relies on.
+      ++started_by_thread_[self];
     }
-    const InvokeNestingGuard nesting_guard;
     for (const auto& [id, handler] : snapshot) {
       (void)id;
       // Per handler, so one caller's bug does not silence the others registered
@@ -169,7 +222,7 @@ class Handlers {
     }
     {
       const std::lock_guard<std::mutex> lock(mutex_);
-      ++finished_;
+      ++finished_by_thread_[self];
     }
     // Outside the lock: a `remove()` waiting in `idle_.wait` re-acquires it
     // itself, and there is nothing left for it to see here.
@@ -184,13 +237,14 @@ class Handlers {
  private:
   mutable std::mutex mutex_;
   mutable std::condition_variable idle_;
-  /// How many `invoke()` copies have been taken, and how many have finished
-  /// calling every handler in theirs — see `remove()`'s own comment on why
-  /// `remove()` only ever waits for `finished_` to catch up to a `started_`
-  /// captured at erase time, not to reach whatever `started_` is by the time
-  /// it is checked.
-  mutable std::uint64_t started_ = 0;
-  mutable std::uint64_t finished_ = 0;
+  /// Per thread, how many `invoke()` copies it has taken, and how many of its
+  /// own it has finished calling every handler in — see `remove()`'s own
+  /// comment on why `remove()` only ever waits for a given thread's
+  /// `finished_by_thread_` to catch up to a `started_by_thread_` captured at
+  /// erase time, not to reach whatever that thread's count is by the time it
+  /// is checked, and why its own thread's count is never waited for at all.
+  mutable std::unordered_map<std::thread::id, std::uint64_t> started_by_thread_;
+  mutable std::unordered_map<std::thread::id, std::uint64_t> finished_by_thread_;
   std::uint64_t next_id_ = 1;
   std::vector<std::pair<std::uint64_t, Handler>> handlers_;
 };
