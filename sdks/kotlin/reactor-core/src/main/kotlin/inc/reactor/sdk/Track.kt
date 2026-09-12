@@ -6,6 +6,13 @@ enum class TrackKind { VIDEO, AUDIO }
 
 enum class TrackDirection { SENDONLY, RECVONLY }
 
+enum class PublicationState { UNPUBLISHED, PUBLISHING, PUBLISHED }
+
+/** The engine clock, in microseconds. Read once for all video tracks in one capture. */
+fun timeMicros(): Long =
+    inc.reactor.sdk.internal.NativeAbi
+        .timeMicros()
+
 sealed interface MediaFrame
 
 /** Owned BGRA pixels. Metadata timestamps use the sender's clock, never local/Unix time. */
@@ -19,7 +26,9 @@ data class VideoFrame(
 ) : MediaFrame {
     init {
         require(width > 0 && height > 0 && width.toLong() * height <= Int.MAX_VALUE / 4) { "BGRA dimensions exceed the JVM buffer limit" }
-        require(pixels.size.toLong() == width.toLong() * height * 4) { "BGRA pixels must contain width * height * 4 bytes" }
+        require(pixels.size.toLong() == width.toLong() * height * 4) {
+            "BGRA length ${pixels.size} must equal ${width.toLong() * height * 4} bytes for ${width}x$height"
+        }
     }
 }
 
@@ -73,6 +82,53 @@ class Track internal constructor(
     fun onFrame(handler: (MediaFrame) -> Unit): AutoCloseable {
         require(direction == TrackDirection.RECVONLY) { "Track '$name' is sendonly; only recvonly tracks receive frames" }
         return client().receive(this, handler)
+    }
+
+    val publicationState: PublicationState get() = client().publicationState(this)
+    val published: Boolean get() = publicationState == PublicationState.PUBLISHED
+
+    suspend fun publish(): Track {
+        requireSend("publish")
+        client().publish(this)
+        return this
+    }
+
+    fun unpublish() {
+        requireSend("unpublish")
+        client().unpublish(this)
+    }
+
+    /** BGRA with optional metadata; captureTimeMicros must come from timeMicros(). */
+    fun pushFrame(
+        frame: VideoFrame,
+        captureTimeMicros: Long? = null,
+    ) {
+        requireSend("pushFrame")
+        require(kind == TrackKind.VIDEO) { "Track '$name' is audio; push an AudioFrame" }
+        require(captureTimeMicros == null || captureTimeMicros >= 0) { "Capture time must be nonnegative engine microseconds" }
+        client().push(this, frame, captureTimeMicros)
+    }
+
+    /** Pace interleaved PCM at its capture rate. Audio has no metadata or capture-time argument. */
+    fun pushFrame(frame: AudioFrame) {
+        requireSend("pushFrame")
+        require(kind == TrackKind.AUDIO) { "Track '$name' is video; push a VideoFrame" }
+        require(frame.sampleRate in setOf(8000, 16000, 24000, 32000, 44100, 48000) && frame.channels in 1..2) {
+            "Audio requires 8000/16000/24000/32000/44100/48000 Hz and one or two channels"
+        }
+        client().push(this, frame)
+    }
+
+    suspend fun setBitrate(
+        minBps: Int = -1,
+        maxBps: Int = -1,
+    ) {
+        requireSend("setBitrate")
+        client().trackBitrate(this, minBps, maxBps)
+    }
+
+    private fun requireSend(operation: String) {
+        require(direction == TrackDirection.SENDONLY) { "Track '$name' is recvonly; $operation requires a sendonly track" }
     }
 
     suspend fun pause() = client().trackOperation(this, 3)
