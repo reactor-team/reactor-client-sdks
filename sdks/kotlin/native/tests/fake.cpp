@@ -578,3 +578,65 @@ Java_inc_reactor_sdk_internal_UploadTest_waitForUpload(JNIEnv*, jobject) {
   std::unique_lock<std::mutex> lock(upload_mutex);
   return upload_cv.wait_for(lock, std::chrono::seconds(5), [] { return upload_started; });
 }
+
+// Clip fields mirror crates/reactor-core/src/recording.rs Clip; timing is in media seconds.
+namespace {
+const char* clip_fixture = R"({"session_id":"session","kind":"clip","start_marker":1.25,"end_marker":4.5,"now_marker":5.0,"predicted_ready_at_ms":123456.75,"playlist_url":"https://example.test/clip.m3u8"})";
+struct DownloadAnswer { reactor_completion_fn fn; reactor_progress_fn progress; void* userdata; std::string path; };
+std::mutex download_mutex;
+std::condition_variable download_cv;
+std::vector<DownloadAnswer> downloads_pending;
+int recording_mode = 0;
+bool download_started = false;
+double download_timeout = 0;
+std::string download_token;
+void recording_answer(reactor_completion_fn fn, void* ud) {
+  std::thread worker([=] {
+    if (recording_mode == 2) fn(0, nullptr, R"({"code":"BAD_REQUEST","message":"Recording refused"})", ud);
+    else fn(1, recording_mode == 3 ? R"({"kind":"clip"})" : clip_fixture, nullptr, ud);
+  }); worker.join();
+}
+}
+extern "C" void reactor_request_clip(ReactorHandle*, double, reactor_completion_fn fn, void* ud) { recording_answer(fn, ud); }
+extern "C" void reactor_request_recording(ReactorHandle*, reactor_completion_fn fn, void* ud) { recording_answer(fn, ud); }
+extern "C" void reactor_download_clip(ReactorHandle*, const char*, const char* jwt, const char* path,
+    double, double timeout, int, reactor_progress_fn progress, reactor_completion_fn fn, void* ud) {
+  std::lock_guard<std::mutex> lock(download_mutex);
+  download_timeout = timeout; download_token = jwt ? jwt : "";
+  downloads_pending.push_back({fn, progress, ud, path}); download_started = true; download_cv.notify_all();
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_RecordingTest_configure(JNIEnv*, jobject, jint mode) {
+  std::lock_guard<std::mutex> lock(download_mutex);
+  lifecycle_mode = 0; recording_mode = mode; download_started = false;
+}
+extern "C" JNIEXPORT jboolean JNICALL
+Java_inc_reactor_sdk_internal_RecordingTest_waitForDownload(JNIEnv*, jobject) {
+  std::unique_lock<std::mutex> lock(download_mutex);
+  return download_cv.wait_for(lock, std::chrono::seconds(5), [] { return download_started; });
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_RecordingTest_progress(JNIEnv*, jobject) {
+  std::lock_guard<std::mutex> lock(download_mutex);
+  std::thread worker([] { for (auto& d : downloads_pending) if (d.progress) d.progress(1, 3, d.userdata); }); worker.join();
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_RecordingTest_finishDownloads(JNIEnv*, jobject) {
+  std::vector<DownloadAnswer> pending;
+  { std::lock_guard<std::mutex> lock(download_mutex); pending.swap(downloads_pending); }
+  for (auto& d : pending) {
+    std::thread worker([&] {
+      if (d.progress) d.progress(3, 3, d.userdata);
+      std::ofstream output(std::filesystem::u8path(d.path), std::ios::binary);
+      if (!output) { d.fn(0, nullptr, R"({"code":"BAD_REQUEST","message":"Cannot write download output"})", d.userdata); return; }
+      output << "init|one|two"; output.close();
+      auto result = std::string("{\"path\":") + json_quote(d.path) + ",\"bytes\":12,\"segments\":3}";
+      if (recording_mode == 2) d.fn(0, nullptr, R"({"code":"BAD_REQUEST","message":"Download refused"})", d.userdata);
+      else d.fn(1, recording_mode == 3 ? R"({"bytes":"12"})" : result.c_str(), nullptr, d.userdata);
+    }); worker.join();
+  }
+}
+extern "C" JNIEXPORT jdouble JNICALL
+Java_inc_reactor_sdk_internal_RecordingTest_timeout(JNIEnv*, jobject) { return download_timeout; }
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_inc_reactor_sdk_internal_RecordingTest_token(JNIEnv* env, jobject) { return reactor_jni::text(env, download_token.c_str()); }

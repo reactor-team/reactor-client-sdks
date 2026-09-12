@@ -80,7 +80,7 @@ class Reactor(
     private val apiUrl: String = "https://api.reactor.inc",
     private val local: Boolean = false,
     eventDispatcher: CoroutineDispatcher = Dispatchers.Default,
-    onHandlerFailure: (Throwable) -> Unit = { System.err.println("Reactor event handler failed: $it") },
+    private val onHandlerFailure: (Throwable) -> Unit = { System.err.println("Reactor event handler failed: $it") },
 ) {
     private val events = ControlEvents(eventDispatcher, onHandlerFailure)
     private val trackState = TrackState(onHandlerFailure)
@@ -195,11 +195,12 @@ class Reactor(
     ) = awaitResult({
         require(it is JsonObject) { "Expected a completion object" }
         Unit
-    }, onCompletion, start)
+    }, onCompletion, start = start)
 
     internal suspend fun <T> awaitResult(
         decode: (JsonElement?) -> T,
         onCompletion: ((Boolean) -> Unit)? = null,
+        onProgress: ((DownloadProgress) -> Unit)? = null,
         start: (Long, Any) -> Unit,
     ): T {
         val current =
@@ -212,12 +213,51 @@ class Reactor(
                 try {
                     requireOpen()
                     check(operations === current) { "Native handle changed before starting operation" }
-                    start(handle, current.receiver(id, onCompletion))
+                    start(handle, current.receiver(id, onCompletion, onProgress, onHandlerFailure))
                 } catch (failure: Throwable) {
-                    current.receivers.remove(id)
+                    current.receivers.remove(id)?.stopProgress()
                     onCompletion?.invoke(false)
                     throw failure
                 }
+            }
+        }
+    }
+
+    suspend fun requestClip(durationSeconds: Double): Clip {
+        require(durationSeconds.isFinite() && durationSeconds > 0) { "Clip duration must be finite and positive" }
+        return awaitResult(::clip) { native, receiver -> NativeClient.recording(native, false, durationSeconds, receiver) }
+    }
+
+    /** Request the recording covering the session up to now. */
+    suspend fun requestRecording(): Clip = awaitResult(::clip) { native, receiver -> NativeClient.recording(native, true, 0.0, receiver) }
+
+    /** Output belongs to the caller. Native work can continue writing after cancellation or close.
+     * Progress is conflated on a background dispatcher; slow or throwing handlers cannot block native work.
+     * Negative/infinite timeout follows session lifetime; NaN is rejected.
+     */
+    suspend fun download(
+        clip: Clip,
+        output: java.io.File,
+        readyTimeoutSeconds: Double = -1.0,
+        onProgress: ((DownloadProgress) -> Unit)? = null,
+    ): DownloadResult {
+        require(!readyTimeoutSeconds.isNaN()) { "Readiness timeout cannot be NaN; use a negative value for session-aware waiting" }
+        require(clip.playlistUrl.isNotBlank() && '\u0000' !in clip.playlistUrl) { "Playlist URL is required and cannot contain NUL" }
+        require('\u0000' !in output.path && !output.path.startsWith("content:")) {
+            "Download to a filesystem file, then copy completed output to a content URI"
+        }
+        return withContext(Dispatchers.IO) {
+            awaitResult(::downloadResult, onProgress = onProgress) { native, receiver ->
+                NativeClient.download(
+                    native,
+                    clip.playlistUrl.encodeToByteArray(),
+                    token?.encodeToByteArray(),
+                    output.absolutePath.encodeToByteArray(),
+                    clip.predictedReadyAtMillis,
+                    readyTimeoutSeconds,
+                    local,
+                    receiver,
+                )
             }
         }
     }
@@ -459,14 +499,17 @@ internal class Operations : AutoCloseable {
     fun receiver(
         id: Long,
         onCompletion: ((Boolean) -> Unit)? = null,
+        onProgress: ((DownloadProgress) -> Unit)? = null,
+        onFailure: (Throwable) -> Unit = {},
     ): CompletionReceiver =
-        CompletionReceiver(this, id, onCompletion).also {
+        CompletionReceiver(this, id, onCompletion, onProgress, onFailure).also {
             receivers[id] =
                 it
         }
 
     override fun close() {
         registry.close()
+        receivers.values.forEach { it.stopProgress() }
         receivers.clear()
     }
 }
@@ -475,12 +518,40 @@ internal class CompletionReceiver(
     private val owner: Operations,
     private val id: Long,
     private val onCompletion: ((Boolean) -> Unit)? = null,
+    onProgress: ((DownloadProgress) -> Unit)? = null,
+    private val onFailure: (Throwable) -> Unit = {},
 ) {
+    private val progress =
+        onProgress?.let { handler ->
+            kotlinx.coroutines.channels.Channel<DownloadProgress>(kotlinx.coroutines.channels.Channel.CONFLATED).also { channel ->
+                completionScope.launch {
+                    for (value in channel) {
+                        if (owner.registry.isPending(id)) {
+                            try {
+                                handler(value)
+                            } catch (failure: Throwable) {
+                                runCatching { onFailure(failure) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+    fun stopProgress() {
+        progress?.cancel()
+    }
+
     fun accept(
         ok: Int,
         result: ByteArray?,
         error: ByteArray?,
     ) {
+        if (ok == 2) {
+            runCatching { downloadProgress(Json.parseToJsonElement(requireNotNull(result).decodeToString(throwOnInvalidSequence = true))) }
+                .onSuccess { progress?.trySend(it) }
+            return
+        }
         val failure =
             if (ok == 0 && error == null) {
                 """{"code":"DECODE_FAILED","message":"Native failure without an error payload"}""".encodeToByteArray()
@@ -491,6 +562,7 @@ internal class CompletionReceiver(
         // It could call close while destroy is waiting for this callback.
         completionScope.launch {
             if (!owner.receivers.remove(id, this@CompletionReceiver)) return@launch
+            stopProgress()
             val validSuccess =
                 failure == null &&
                     runCatching {
