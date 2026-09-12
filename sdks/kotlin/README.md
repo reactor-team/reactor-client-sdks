@@ -69,3 +69,7 @@ The reproducible Android cross-build and artifact preflight are documented in
 to reactor-webrtc 0.17.2 (upstream PR #86). The report includes the reproducible
 arm64 JNI lifecycle test and its diagnostic override. These artifacts are not
 packaged in the SDK.
+
+The internal [JNI boundary primitives](docs/0003-jni-boundary.md) have JVM and
+Android fake-library tests. `test:kotlin` additionally needs a C++17 compiler on
+Linux/macOS. Run `mise run test:kotlin:jni:android` for the arm64 device tests.
