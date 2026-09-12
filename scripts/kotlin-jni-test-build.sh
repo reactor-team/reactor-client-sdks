@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+: "${JAVA_HOME:?Set JAVA_HOME to JDK 17}"
+output="$repo_root/sdks/kotlin/reactor-core/build/jni-test"
+mkdir -p "$output"
+case "$(uname -s)" in
+  Darwin) platform=darwin; library=libreactor_jni_test.dylib ;;
+  Linux) platform=linux; library=libreactor_jni_test.so ;;
+  *) echo 'JNI boundary tests currently require macOS or Linux' >&2; exit 1 ;;
+esac
+python3 "$repo_root/scripts/kotlin-jni-headers.py" "$JAVA_HOME/bin/javap" \
+  "$repo_root/sdks/kotlin/reactor-core/build/classes/kotlin/main" inc.reactor.sdk.internal.NativeAbi \
+  "$repo_root/sdks/kotlin/reactor-core/build/classes/kotlin/test" inc.reactor.sdk.internal.NativeBoundaryTest \
+  > "$output/jni_generated.h"
+"${CXX:-c++}" -std=c++17 -shared -fPIC -pthread -Wall -Wextra -Werror \
+  -I "$output" -I "$JAVA_HOME/include" -I "$JAVA_HOME/include/$platform" \
+  -I "$repo_root/crates/reactor-ffi/include" -I "$repo_root/sdks/kotlin/native/include" \
+  "$repo_root/sdks/kotlin/native/src/abi.cpp" "$repo_root/sdks/kotlin/native/tests/fake.cpp" \
+  -o "$output/$library"

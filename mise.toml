@@ -558,3 +558,7 @@ run = "python3 scripts/test-kotlin-native.py"
 [tasks."test:kotlin:native:android"]
 description = "[Testing] JNI load and synthetic client lifecycle on an arm64 Android device"
 run = "bash scripts/kotlin-native.sh android-test"
+
+[tasks."test:kotlin:jni:android"]
+description = "[Testing] JNI ownership and foreign-thread callbacks on Android arm64"
+run = "bash scripts/kotlin-jni-android-test.sh"
