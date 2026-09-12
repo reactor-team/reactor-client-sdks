@@ -20,6 +20,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import java.util.concurrent.ConcurrentHashMap
@@ -191,17 +192,23 @@ class Reactor(
     private suspend fun awaitOperation(
         onCompletion: ((Boolean) -> Unit)? = null,
         start: (Long, Any) -> Unit,
-    ) {
+    ) = awaitResult({
+        require(it is JsonObject) { "Expected a completion object" }
+        Unit
+    }, onCompletion, start)
+
+    internal suspend fun <T> awaitResult(
+        decode: (JsonElement?) -> T,
+        onCompletion: ((Boolean) -> Unit)? = null,
+        start: (Long, Any) -> Unit,
+    ): T {
         val current =
             synchronized(lease) {
                 requireOpen()
                 if (handle == 0L) throw InvalidStateError(ErrorDetails("INVALID_STATE", "Call connect before this operation"))
                 operations
             }
-        current.registry.await({
-            require(it is JsonObject) { "Expected a completion object" }
-            Unit
-        }) { id ->
+        return current.registry.await(decode) { id ->
             synchronized(lease) {
                 try {
                     requireOpen()
@@ -215,6 +222,34 @@ class Reactor(
             }
         }
     }
+
+    /** The native completion is the correlated reply; no event listener is needed. */
+    suspend fun sendCommand(
+        name: String,
+        arguments: JsonObject = JsonObject(emptyMap()),
+    ): CommandReply? {
+        require(name.isNotBlank() && '\u0000' !in name) { "Command name must be nonempty and contain no NUL" }
+        val args = arguments.toString().encodeToByteArray()
+        return awaitResult(::commandReply) { native, receiver ->
+            NativeClient.query(native, 0, name.encodeToByteArray(), args, receiver)
+        }
+    }
+
+    suspend fun requestSchema(): JsonObject =
+        awaitResult({ it as? JsonObject ?: error("Expected a schema document") }) { native, receiver ->
+            NativeClient.query(native, 1, null, null, receiver)
+        }
+
+    suspend fun getStats(): ConnectionStats =
+        awaitResult(::connectionStats) { native, receiver ->
+            NativeClient.query(native, 2, null, null, receiver)
+        }
+
+    /** Unsolicited application messages, delivered on the configured control dispatcher. */
+    fun onMessage(handler: (JsonObject) -> Unit): AutoCloseable = onEvent { if (it is ControlEvent.Message) handler(it.payload) }
+
+    fun onRuntimeMessage(handler: (JsonObject) -> Unit): AutoCloseable =
+        onEvent { if (it is ControlEvent.RuntimeMessage) handler(it.payload) }
 
     /** Connection-wide bounds. Before connect, remember them for the first peer connection. */
     suspend fun setBitrate(
