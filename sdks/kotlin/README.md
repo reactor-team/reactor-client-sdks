@@ -73,3 +73,7 @@ packaged in the SDK.
 The internal [JNI boundary primitives](docs/0003-jni-boundary.md) have JVM and
 Android fake-library tests. `test:kotlin` additionally needs a C++17 compiler on
 Linux/macOS. Run `mise run test:kotlin:jni:android` for the arm64 device tests.
+
+[Errors and coroutine completions](docs/0004-errors-and-completions.md) define the
+shared error hierarchy and internal operation registry. The public client API
+and its native handle lifecycle are not yet available.
