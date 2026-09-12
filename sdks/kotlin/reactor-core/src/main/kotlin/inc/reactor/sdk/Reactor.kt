@@ -204,8 +204,7 @@ class Reactor(
     ): T {
         val current =
             synchronized(lease) {
-                requireOpen()
-                if (handle == 0L) throw InvalidStateError(ErrorDetails("INVALID_STATE", "Call connect before this operation"))
+                requireHandle()
                 operations
             }
         return current.registry.await(decode) { id ->
@@ -227,22 +226,33 @@ class Reactor(
     suspend fun sendCommand(
         name: String,
         arguments: JsonObject = JsonObject(emptyMap()),
+        uploads: Map<String, FileRef> = emptyMap(),
     ): CommandReply? {
         require(name.isNotBlank() && '\u0000' !in name) { "Command name must be nonempty and contain no NUL" }
+        require(uploads.keys.all { it.isNotBlank() }) { "Upload parameter names must be nonempty" }
+        require(arguments.keys.intersect(uploads.keys).isEmpty()) { "Pass each parameter as either JSON arguments or an upload reference" }
         val args = arguments.toString().encodeToByteArray()
+        val references =
+            uploads.takeIf { it.isNotEmpty() }?.let {
+                JsonObject(
+                    it.mapValues { entry ->
+                        entry.value.toJson()
+                    },
+                ).toString().encodeToByteArray()
+            }
         return awaitResult(::commandReply) { native, receiver ->
-            NativeClient.query(native, 0, name.encodeToByteArray(), args, receiver)
+            NativeClient.query(native, 0, name.encodeToByteArray(), args, references, receiver)
         }
     }
 
     suspend fun requestSchema(): JsonObject =
         awaitResult({ it as? JsonObject ?: error("Expected a schema document") }) { native, receiver ->
-            NativeClient.query(native, 1, null, null, receiver)
+            NativeClient.query(native, 1, null, null, null, receiver)
         }
 
     suspend fun getStats(): ConnectionStats =
         awaitResult(::connectionStats) { native, receiver ->
-            NativeClient.query(native, 2, null, null, receiver)
+            NativeClient.query(native, 2, null, null, null, receiver)
         }
 
     /** Unsolicited application messages, delivered on the configured control dispatcher. */
@@ -417,6 +427,12 @@ class Reactor(
         validateTrack(track)
         runOperation(kind, track.name)
     }
+
+    internal fun requireHandle() =
+        synchronized(lease) {
+            requireOpen()
+            if (handle == 0L) throw InvalidStateError(ErrorDetails("INVALID_STATE", "Call connect before this operation"))
+        }
 
     private fun requireOpen() {
         if (closed) throw InvalidStateError(ErrorDetails("INVALID_STATE", "Client is closed; create a new Reactor"))

@@ -77,6 +77,7 @@ val testJniSanitizer by tasks.registering(Test::class) {
         includeTestsMatching("inc.reactor.sdk.internal.MediaReceiveTest")
         includeTestsMatching("inc.reactor.sdk.internal.MediaSendTest")
         includeTestsMatching("inc.reactor.sdk.internal.CommandTest")
+        includeTestsMatching("inc.reactor.sdk.internal.UploadTest")
     }
     jvmArgs("-Xcheck:jni")
     systemProperty(
