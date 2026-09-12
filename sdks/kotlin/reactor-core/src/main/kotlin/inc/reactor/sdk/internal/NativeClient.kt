@@ -9,6 +9,7 @@ internal object NativeClient {
         local: Boolean,
         version: ByteArray,
         events: Any,
+        media: Any?,
     ): Long
 
     external fun destroy(handle: Long): Int
@@ -20,6 +21,10 @@ internal object NativeClient {
         connection: Long,
         receiver: Any,
     )
+
+    external fun tracks(handle: Long): ByteArray
+
+    external fun paused(handle: Long): ByteArray
 
     external fun status(handle: Long): ByteArray
 
