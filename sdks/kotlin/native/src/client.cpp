@@ -105,7 +105,7 @@ Java_inc_reactor_sdk_internal_NativeClient_start(JNIEnv* env, jobject, jlong val
     jbyteArray session, jlong connection, jobject receiver) {
   try {
     auto* state = client(value);
-    if (kind < 0 || kind > 4) throw std::invalid_argument("Unknown lifecycle operation");
+    if (kind < 0 || kind > 5) throw std::invalid_argument("Unknown lifecycle operation");
     if (connection < -1 || connection > UINT32_MAX) throw std::invalid_argument("Connection ID out of range");
     auto sid = optional(env, session);
     uint32_t cid = static_cast<uint32_t>(connection);
@@ -119,7 +119,8 @@ Java_inc_reactor_sdk_internal_NativeClient_start(JNIEnv* env, jobject, jlong val
     else if (kind == 1) reactor_reconnect(state->handle, complete, operation);
     else if (kind == 2) reactor_disconnect(state->handle, complete, operation);
     else if (kind == 3) reactor_pause_track(state->handle, pointer(sid), complete, operation);
-    else reactor_resume_track(state->handle, pointer(sid), complete, operation);
+    else if (kind == 4) reactor_resume_track(state->handle, pointer(sid), complete, operation);
+    else reactor_publish_track(state->handle, pointer(sid), complete, operation);
   } catch (const std::exception& error) { failure(env, error); }
 }
 
@@ -155,4 +156,77 @@ extern "C" JNIEXPORT jbyteArray JNICALL
 Java_inc_reactor_sdk_internal_NativeClient_paused(JNIEnv* env, jobject, jlong value) {
   try { return reactor_jni::ownedText(env, reactor_paused_tracks(client(value)->handle)); }
   catch (const std::exception& error) { failure(env, error); return nullptr; }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_inc_reactor_sdk_internal_NativeClient_unpublish(JNIEnv* env, jobject, jlong value, jbyteArray name) {
+  try {
+    auto n = reactor_jni::inputText(env, name);
+    return reactor_jni::ownedText(env, reactor_unpublish_track(client(value)->handle, n.data()));
+  } catch (const std::exception& error) { failure(env, error); return nullptr; }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_NativeClient_bitrate(JNIEnv* env, jobject, jlong value, jbyteArray name,
+    jint min, jint start, jint max, jobject receiver) {
+  try {
+    if (min < -1 || start < -1 || max < -1) throw std::invalid_argument("Bitrate bounds must be >= -1");
+    auto* state = client(value);
+    auto n = optional(env, name);
+    auto owned = std::make_unique<Operation>(state, env, receiver);
+    auto* operation = owned.get();
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->pending.emplace(operation, std::move(owned));
+    }
+    if (name) reactor_set_track_bitrate(state->handle, n.data(), min, max, complete, operation);
+    else reactor_set_bitrate(state->handle, min, start, max, complete, operation);
+  } catch (const std::exception& error) { failure(env, error); }
+}
+
+namespace {
+std::vector<uint8_t> inputBytes(JNIEnv* env, jbyteArray input) {
+  if (!input) return {};
+  auto size = env->GetArrayLength(input);
+  std::vector<uint8_t> copy(static_cast<size_t>(size));
+  if (size) env->GetByteArrayRegion(input, 0, size, reinterpret_cast<jbyte*>(copy.data()));
+  if (env->ExceptionCheck()) throw std::runtime_error("Cannot copy media bytes");
+  return copy;
+}
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_NativeClient_pushVideo(JNIEnv* env, jobject, jlong value, jbyteArray name,
+    jbyteArray pixels, jint width, jint height, jbyteArray metadata, jlong capture) {
+  try {
+    // Check sizes before copying or calling a permissive FFI that cannot inspect array length.
+    const int64_t count = static_cast<int64_t>(width) * height;
+    if (!pixels || width <= 0 || height <= 0 || count > INT32_MAX / 4 ||
+        env->GetArrayLength(pixels) != count * 4 || capture < -1)
+      throw std::invalid_argument("Invalid BGRA dimensions, byte length or capture time");
+    auto n = reactor_jni::inputText(env, name);
+    auto p = inputBytes(env, pixels), m = inputBytes(env, metadata);
+    auto* handle = client(value)->handle;
+    if (capture >= 0) reactor_push_video_frame_with_metadata_at(handle, n.data(), p.data(), width, height,
+        m.empty() ? nullptr : m.data(), static_cast<uint32_t>(m.size()), capture);
+    else if (metadata) reactor_push_video_frame_with_metadata(handle, n.data(), p.data(), width, height,
+        m.empty() ? nullptr : m.data(), static_cast<uint32_t>(m.size()));
+    else reactor_push_video_frame(handle, n.data(), p.data(), width, height);
+  } catch (const std::exception& error) { failure(env, error); }
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_NativeClient_pushAudio(JNIEnv* env, jobject, jlong value, jbyteArray name,
+    jshortArray samples, jint rate, jint channels) {
+  try {
+    const bool valid_rate = rate == 8000 || rate == 16000 || rate == 24000 || rate == 32000 || rate == 44100 || rate == 48000;
+    if (!samples || !valid_rate || channels < 1 || channels > 2)
+      throw std::invalid_argument("Unsupported PCM sample rate or channel count");
+    auto count = env->GetArrayLength(samples);
+    if (count % channels) throw std::invalid_argument("PCM requires complete interleaved samples");
+    auto n = reactor_jni::inputText(env, name);
+    std::vector<int16_t> pcm(static_cast<size_t>(count));
+    if (count) env->GetShortArrayRegion(samples, 0, count, pcm.data());
+    if (env->ExceptionCheck()) throw std::runtime_error("Cannot copy PCM samples");
+    // Empty pushes contain no media. Never manufacture a pointer for the FFI.
+    if (count) reactor_push_audio_frame(client(value)->handle, n.data(), pcm.data(), count / channels, rate, channels);
+  } catch (const std::exception& error) { failure(env, error); }
 }

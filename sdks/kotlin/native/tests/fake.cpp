@@ -126,6 +126,7 @@ struct ReactorHandle {
 namespace {
 int lifecycle_mode = 0;
 bool media_enabled = false;
+bool send_enabled = false;
 bool invalidate_tracks = false;
 bool orphan_next_destroy = false;
 int destroyed = 0;
@@ -153,6 +154,7 @@ extern "C" ReactorHandle* reactor_create_with_adm(const char*, const char*, cons
   ++created;
   live = new ReactorHandle{*callbacks, "", "disconnected", "[]", "[]"};
   if (media_enabled) live->tracks = R"([{"name":"z-video","kind":"video","direction":"recvonly"},{"name":"a-audio","kind":"audio","direction":"recvonly"},{"name":"input","kind":"video","direction":"sendonly"}])";
+  if (send_enabled) live->tracks.insert(live->tracks.size() - 1, R"(,{"name":"mic","kind":"audio","direction":"sendonly"})");
   return live;
 }
 extern "C" int reactor_destroy(ReactorHandle* handle) {
@@ -211,7 +213,7 @@ extern "C" char* reactor_session_id(ReactorHandle* handle) {
 }
 extern "C" JNIEXPORT void JNICALL
 Java_inc_reactor_sdk_internal_LifecycleTest_resetFake(JNIEnv*, jobject, jint mode) {
-  media_enabled = false; invalidate_tracks = false; orphan_next_destroy = false;
+  media_enabled = false; send_enabled = false; invalidate_tracks = false; orphan_next_destroy = false;
   lifecycle_mode = mode; destroyed = 0; created = 0; adopted_connection = 0;
   started = false; released = false;
 }
@@ -309,4 +311,102 @@ Java_inc_reactor_sdk_internal_MediaReceiveTest_emitOld(JNIEnv*, jobject) {
   });
   worker.join();
   orphan_callbacks = {};
+}
+
+namespace {
+int publish_mode = 0;
+bool unpublish_failure = false;
+reactor_completion_fn publish_completion = nullptr;
+void* publish_userdata = nullptr;
+std::vector<uint8_t> pushed_video;
+std::vector<int16_t> pushed_audio;
+jlong send_values[15]{};
+void video_sent(const char* name, const uint8_t* data, uint32_t width, uint32_t height,
+                const uint8_t* metadata, uint32_t size, int64_t capture, int mode) {
+  if (std::strcmp(name, "input")) std::abort();
+  ++send_values[0]; send_values[1] = width; send_values[2] = height; send_values[3] = capture; send_values[4] = mode;
+  pushed_video.assign(data, data + width * height * 4);
+  if (size) pushed_video.insert(pushed_video.end(), metadata, metadata + size);
+}
+void bitrate_sent(const char* name, int min, int start, int max, reactor_completion_fn fn, void* ud) {
+  ++send_values[8]; send_values[9] = min; send_values[10] = start; send_values[11] = max; send_values[12] = name ? 1 : 0;
+  done(fn, ud);
+}
+}
+extern "C" void reactor_publish_track(ReactorHandle*, const char*, reactor_completion_fn fn, void* ud) {
+  ++send_values[13];
+  if (publish_mode == 1) { publish_completion = fn; publish_userdata = ud; return; }
+  std::thread worker([=] {
+    if (publish_mode == 2) fn(0, nullptr, R"({"code":"INVALID_STATE","message":"Publish refused"})", ud);
+    else fn(1, publish_mode == 3 ? "[]" : "{}", nullptr, ud);
+  });
+  worker.join();
+}
+extern "C" char* reactor_unpublish_track(ReactorHandle*, const char*) {
+  ++send_values[14];
+  return unpublish_failure ? ::strdup(R"({"code":"INVALID_STATE","message":"Retry unpublish"})") : nullptr;
+}
+extern "C" void reactor_set_bitrate(ReactorHandle*, int32_t min, int32_t start, int32_t max, reactor_completion_fn fn, void* ud) {
+  bitrate_sent(nullptr, min, start, max, fn, ud);
+}
+extern "C" void reactor_set_track_bitrate(ReactorHandle*, const char* name, int32_t min, int32_t max, reactor_completion_fn fn, void* ud) {
+  bitrate_sent(name, min, -1, max, fn, ud);
+}
+extern "C" void reactor_push_video_frame(ReactorHandle*, const char* name, const uint8_t* data, uint32_t width, uint32_t height) {
+  video_sent(name, data, width, height, nullptr, 0, -1, 0);
+}
+extern "C" void reactor_push_video_frame_with_metadata(ReactorHandle*, const char* name, const uint8_t* data, uint32_t width, uint32_t height,
+    const uint8_t* metadata, uint32_t size) {
+  video_sent(name, data, width, height, metadata, size, -1, 1);
+}
+extern "C" void reactor_push_video_frame_with_metadata_at(ReactorHandle*, const char* name, const uint8_t* data, uint32_t width, uint32_t height,
+    const uint8_t* metadata, uint32_t size, int64_t capture) {
+  video_sent(name, data, width, height, metadata, size, capture, 2);
+}
+extern "C" void reactor_push_audio_frame(ReactorHandle*, const char* name, const int16_t* samples, uint32_t count, uint32_t rate, uint32_t channels) {
+  if (std::strcmp(name, "mic")) std::abort();
+  pushed_audio.assign(samples, samples + count * channels);
+  send_values[5] = count; send_values[6] = rate; send_values[7] = channels;
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_MediaSendTest_resetSend(JNIEnv*, jobject) {
+  Java_inc_reactor_sdk_internal_LifecycleTest_resetFake(nullptr, nullptr, 0);
+  media_enabled = true; send_enabled = true; publish_mode = 0; unpublish_failure = false;
+  publish_completion = nullptr; publish_userdata = nullptr;
+  std::memset(send_values, 0, sizeof(send_values)); pushed_video.clear(); pushed_audio.clear();
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_MediaSendTest_configure(JNIEnv*, jobject, jint mode, jboolean fail) {
+  publish_mode = mode; unpublish_failure = fail;
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_MediaSendTest_finishPublish(JNIEnv*, jobject) {
+  auto fn = publish_completion; auto ud = publish_userdata;
+  publish_completion = nullptr; publish_userdata = nullptr;
+  if (fn) done(fn, ud);
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_MediaSendTest_cycleStatus(JNIEnv*, jobject) {
+  auto cb = live->callbacks;
+  std::thread worker([=] {
+    live->status = "waiting"; cb.on_status("waiting", cb.userdata);
+    live->status = "ready"; cb.on_status("ready", cb.userdata);
+  });
+  worker.join();
+}
+extern "C" JNIEXPORT jlongArray JNICALL
+Java_inc_reactor_sdk_internal_MediaSendTest_values(JNIEnv* env, jobject) {
+  auto result = env->NewLongArray(15);
+  if (result) env->SetLongArrayRegion(result, 0, 15, send_values);
+  return result;
+}
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_inc_reactor_sdk_internal_MediaSendTest_videoBytes(JNIEnv* env, jobject) {
+  return reactor_jni::bytes(env, pushed_video.data(), pushed_video.size());
+}
+extern "C" JNIEXPORT jshortArray JNICALL
+Java_inc_reactor_sdk_internal_MediaSendTest_audioSamples(JNIEnv* env, jobject) {
+  auto result = env->NewShortArray(static_cast<jsize>(pushed_audio.size()));
+  if (result && !pushed_audio.empty()) env->SetShortArrayRegion(result, 0, static_cast<jsize>(pushed_audio.size()), pushed_audio.data());
+  return result;
 }

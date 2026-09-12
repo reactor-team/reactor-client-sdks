@@ -7,6 +7,7 @@ import inc.reactor.sdk.internal.HandleCallbacks
 import inc.reactor.sdk.internal.NativeClient
 import inc.reactor.sdk.internal.SDK_VERSION
 import inc.reactor.sdk.internal.TrackState
+import inc.reactor.sdk.internal.decodeError
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -89,6 +90,7 @@ class Reactor(
     private var handle = 0L
     private var token: String? = null
     private var operations = Operations()
+    private var bitrateBounds: Triple<Int, Int, Int>? = null
     private val shutdown = CompletableDeferred<Unit>()
 
     init {
@@ -142,6 +144,7 @@ class Reactor(
                 }
             }
         }
+        bitrateBounds?.let { setNativeBitrate(null, it.first, it.second, it.third) }
         runOperation(0, sessionId, connectionId)
     }
 
@@ -182,22 +185,146 @@ class Reactor(
         session: String? = null,
         connection: Long? = null,
     ) {
+        awaitOperation { native, receiver -> NativeClient.start(native, kind, session?.encodeToByteArray(), connection ?: -1, receiver) }
+    }
+
+    private suspend fun awaitOperation(
+        onCompletion: ((Boolean) -> Unit)? = null,
+        start: (Long, Any) -> Unit,
+    ) {
         val current =
             synchronized(lease) {
                 requireOpen()
                 if (handle == 0L) throw InvalidStateError(ErrorDetails("INVALID_STATE", "Call connect before this operation"))
                 operations
             }
-        current.registry.await({ Unit }) { id ->
+        current.registry.await({
+            require(it is JsonObject) { "Expected a completion object" }
+            Unit
+        }) { id ->
             synchronized(lease) {
-                requireOpen()
-                val receiver = current.receiver(id)
                 try {
-                    NativeClient.start(handle, kind, session?.encodeToByteArray(), connection ?: -1, receiver)
+                    requireOpen()
+                    check(operations === current) { "Native handle changed before starting operation" }
+                    start(handle, current.receiver(id, onCompletion))
                 } catch (failure: Throwable) {
                     current.receivers.remove(id)
+                    onCompletion?.invoke(false)
                     throw failure
                 }
+            }
+        }
+    }
+
+    /** Connection-wide bounds. Before connect, remember them for the first peer connection. */
+    suspend fun setBitrate(
+        minBps: Int = -1,
+        startBps: Int = -1,
+        maxBps: Int = -1,
+    ) = lifecycle.withLock {
+        validateBitrate(minBps, startBps, maxBps)
+        val exists =
+            synchronized(lease) {
+                requireOpen()
+                handle != 0L
+            }
+        if (exists) setNativeBitrate(null, minBps, startBps, maxBps)
+        bitrateBounds = Triple(minBps, startBps, maxBps)
+    }
+
+    internal suspend fun trackBitrate(
+        track: Track,
+        min: Int,
+        max: Int,
+    ) {
+        validateBitrate(min, max)
+        validateTrack(track)
+        setNativeBitrate(track.name, min, -1, max)
+    }
+
+    private suspend fun setNativeBitrate(
+        name: String?,
+        min: Int,
+        start: Int,
+        max: Int,
+    ) = awaitOperation { native, receiver -> NativeClient.bitrate(native, name?.encodeToByteArray(), min, start, max, receiver) }
+
+    private fun validateBitrate(vararg bounds: Int) {
+        require(bounds.all { it >= -1 }) { "Bitrate bounds must be nonnegative or -1 for the WebRTC default" }
+    }
+
+    internal fun publicationState(track: Track): PublicationState {
+        synchronized(lease) { requireOpen() }
+        return trackState.publicationState(Declaration(track.name, track.kind, track.direction))
+    }
+
+    internal suspend fun publish(track: Track) {
+        val state = trackState // Callback must not retain Reactor or Track.
+        val attempt = state.beginPublish(validateTrack(track)) ?: return
+        try {
+            awaitOperation({ success -> state.finishPublish(attempt, success) }) { native, receiver ->
+                NativeClient.start(native, 5, track.name.encodeToByteArray(), -1, receiver)
+            }
+        } catch (failure: kotlinx.coroutines.CancellationException) {
+            // Cancellation removes the awaiter, not the in-flight native publish.
+            throw failure
+        } catch (failure: Throwable) {
+            state.finishPublish(attempt, false)
+            throw failure
+        }
+        if (state.publication(attempt.declaration) !== attempt) {
+            throw InvalidStateError(ErrorDetails("INVALID_STATE", "Connection changed while publishing; publish again after reconnect"))
+        }
+    }
+
+    internal fun unpublish(track: Track) {
+        val declaration = validateTrack(track)
+        synchronized(lease) {
+            requireOpen()
+            val attempt = trackState.publication(declaration) ?: return
+            trackState.requirePublished(declaration)
+            val error = NativeClient.unpublish(handle, track.name.encodeToByteArray())
+            if (error != null) {
+                val decoded =
+                    try {
+                        Json.parseToJsonElement(error.decodeToString(throwOnInvalidSequence = true))
+                    } catch (failure: Exception) {
+                        throw DecodeFailedError(ErrorDetails("DECODE_FAILED", "Invalid unpublish error: ${failure.message}"))
+                    }
+                throw decodeError(decoded)
+            }
+            trackState.finishPublish(attempt, false)
+        }
+    }
+
+    internal fun push(
+        track: Track,
+        frame: MediaFrame,
+        captureTime: Long? = null,
+    ) {
+        val declaration = validateTrack(track)
+        synchronized(lease) {
+            requireOpen()
+            trackState.requirePublished(declaration)
+            when (frame) {
+                is VideoFrame ->
+                    NativeClient.pushVideo(
+                        handle,
+                        track.name.encodeToByteArray(),
+                        frame.pixels,
+                        frame.width,
+                        frame.height,
+                        frame.userData,
+                        captureTime ?: -1,
+                    )
+                is AudioFrame ->
+                    NativeClient.pushAudio(
+                        handle,
+                        track.name.encodeToByteArray(),
+                        frame.samples,
+                        frame.sampleRate,
+                        frame.channels,
+                    )
             }
         }
     }
@@ -278,7 +405,14 @@ internal class Operations : AutoCloseable {
     val registry = CompletionRegistry()
     val receivers = ConcurrentHashMap<Long, CompletionReceiver>()
 
-    fun receiver(id: Long): CompletionReceiver = CompletionReceiver(this, id).also { receivers[id] = it }
+    fun receiver(
+        id: Long,
+        onCompletion: ((Boolean) -> Unit)? = null,
+    ): CompletionReceiver =
+        CompletionReceiver(this, id, onCompletion).also {
+            receivers[id] =
+                it
+        }
 
     override fun close() {
         registry.close()
@@ -289,6 +423,7 @@ internal class Operations : AutoCloseable {
 internal class CompletionReceiver(
     private val owner: Operations,
     private val id: Long,
+    private val onCompletion: ((Boolean) -> Unit)? = null,
 ) {
     fun accept(
         ok: Int,
@@ -304,8 +439,14 @@ internal class CompletionReceiver(
         // Never resume an Unconfined continuation on the native callback thread.
         // It could call close while destroy is waiting for this callback.
         completionScope.launch {
+            if (!owner.receivers.remove(id, this@CompletionReceiver)) return@launch
+            val validSuccess =
+                failure == null &&
+                    runCatching {
+                        Json.parseToJsonElement(requireNotNull(result).decodeToString(throwOnInvalidSequence = true)) is JsonObject
+                    }.getOrDefault(false)
+            onCompletion?.invoke(validSuccess)
             owner.registry.complete(id, result, failure)
-            owner.receivers.remove(id)
         }
     }
 }
