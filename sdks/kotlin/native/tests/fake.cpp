@@ -80,3 +80,34 @@ Java_inc_reactor_sdk_internal_NativeBoundaryTest_lateCallback(JNIEnv* env, jobje
     reactor_jni::fail(env, "java/lang/IllegalStateException", error.what());
   }
 }
+
+namespace {
+reactor_completion_fn auth_completion = nullptr;
+void* auth_userdata = nullptr;
+}
+extern "C" void reactor_fetch_jwt(const char*, const char*, const char*, int,
+                                    reactor_completion_fn completion, void* userdata) {
+  auth_completion = completion;
+  auth_userdata = userdata;
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_NativeBoundaryTest_startAuth(JNIEnv* env, jobject, jobject receiver) {
+  try {
+    auto ticket = std::make_unique<reactor_jni::Ticket>(env, receiver);
+    reactor_fetch_jwt("https://example.invalid", "fake-key", nullptr, 0,
+                     reactor_jni::completeDetached, ticket.get());
+    (void)ticket.release();
+  } catch (const std::exception& error) {
+    reactor_jni::fail(env, "java/lang/IllegalStateException", error.what());
+  }
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_NativeBoundaryTest_finishAuth(JNIEnv*, jobject) {
+  auto completion = auth_completion;
+  auto userdata = auth_userdata;
+  auth_completion = nullptr;
+  auth_userdata = nullptr;
+  if (!completion) return;
+  std::thread worker([=] { completion(1, "{\"jwt\":\"fake\"}", nullptr, userdata); });
+  worker.join();
+}
