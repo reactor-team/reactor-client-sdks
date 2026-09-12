@@ -1,7 +1,7 @@
 # Reactor Kotlin SDK
 
 Work in progress: client lifecycle, authentication and control events are available
-for development builds. Media and published binary packages are still pending. Implementation follows
+for development builds. Sending media and published binary packages are still pending. Implementation follows
 [the Kotlin SDK project](https://linear.app/reactor-team/project/kotlin-sdk-64a4e3f8a9ff)
 as a stack of focused PRs, starting with REA-6219.
 
@@ -82,4 +82,10 @@ shared error hierarchy and internal operation registry used by the client lifecy
 The shared module now exposes `Reactor`, token-provider authentication, control events,
 and suspending shutdown. See [client lifecycle](docs/0005-client-lifecycle.md) for usage,
 threading, explicit library loading and JNI verification commands. The stack consumes
-reactor-webrtc 0.17.2 from crates.io. Media and distribution remain later slices.
+reactor-webrtc 0.17.2 from crates.io. Sending media and distribution remain later slices.
+
+## Receiving media
+
+[Tracks and receiving media](docs/0006-receiving-media.md) describes ordered track lists,
+inline BGRA/PCM handlers, retained buffers and metadata, pause/resume, and subscription
+removal. Rebuild the development JNI library when updating this stack.
