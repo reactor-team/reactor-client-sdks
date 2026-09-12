@@ -111,3 +111,133 @@ Java_inc_reactor_sdk_internal_NativeBoundaryTest_finishAuth(JNIEnv*, jobject) {
   std::thread worker([=] { completion(1, "{\"jwt\":\"fake\"}", nullptr, userdata); });
   worker.join();
 }
+
+// Exercises the production client.cpp entrypoints against real callback pointers.
+#include <condition_variable>
+#include <mutex>
+#include <string>
+struct ReactorHandle {
+  ReactorCallbacks callbacks;
+  std::string session;
+  const char* status = "disconnected";
+};
+namespace {
+int lifecycle_mode = 0;
+int destroyed = 0;
+int created = 0;
+uint32_t adopted_connection = 0;
+std::string identity;
+std::string supplied_token;
+ReactorHandle* live = nullptr;
+ReactorCallbacks orphan_callbacks{};
+reactor_completion_fn pending_completion = nullptr;
+void* pending_userdata = nullptr;
+std::mutex start_mutex;
+std::condition_variable start_cv;
+bool started = false, released = false;
+void done(reactor_completion_fn fn, void* ud) {
+  std::thread worker([=] { fn(1, "{}", nullptr, ud); });
+  worker.join();
+}
+}
+extern "C" ReactorHandle* reactor_create_with_adm(const char*, const char*, const char* jwt, int,
+    const ReactorCallbacks* callbacks, int adm, const char* version, const char* type) {
+  if (adm != 0 || !version || !type || std::strcmp(type, "kotlin")) return nullptr;
+  identity = std::string(type) + "/" + version;
+  supplied_token = jwt ? jwt : "";
+  ++created;
+  live = new ReactorHandle{*callbacks, "", "disconnected"};
+  return live;
+}
+extern "C" int reactor_destroy(ReactorHandle* handle) {
+  ++destroyed;
+  if (lifecycle_mode == 1) orphan_callbacks = handle->callbacks;
+  else { pending_completion = nullptr; pending_userdata = nullptr; }
+  delete handle;
+  live = nullptr;
+  return lifecycle_mode == 1 ? -1 : 0;
+}
+extern "C" void reactor_connect(ReactorHandle* handle, const char* session, const uint32_t* connection,
+    reactor_completion_fn completion, void* userdata) {
+  handle->session = session ? session : "created-session";
+  adopted_connection = connection ? *connection : 0;
+  handle->status = "ready";
+  if (lifecycle_mode == 3) {
+    std::unique_lock<std::mutex> lock(start_mutex);
+    started = true;
+    start_cv.notify_all();
+    start_cv.wait(lock, [] { return released; });
+  }
+  auto callbacks = handle->callbacks;
+  std::thread worker([=] {
+    callbacks.on_status("ready", callbacks.userdata);
+    callbacks.on_session_id(handle->session.c_str(), callbacks.userdata);
+    callbacks.on_capabilities("{\"tracks\":[]}", callbacks.userdata);
+    callbacks.on_runtime_message("{\"type\":\"test\"}", callbacks.userdata);
+  });
+  worker.join();
+  if (lifecycle_mode == 1 || lifecycle_mode == 2) {
+    pending_completion = completion;
+    pending_userdata = userdata;
+  } else done(completion, userdata);
+}
+extern "C" void reactor_reconnect(ReactorHandle* handle, reactor_completion_fn completion, void* userdata) {
+  if (handle->session.empty()) {
+    std::thread worker([=] { completion(0, nullptr, "{\"code\":\"INVALID_STATE\",\"message\":\"No session\"}", userdata); });
+    worker.join();
+  } else done(completion, userdata);
+}
+extern "C" void reactor_disconnect(ReactorHandle* handle, reactor_completion_fn completion, void* userdata) {
+  handle->session.clear();
+  handle->status = "disconnected";
+  auto cb = handle->callbacks;
+  std::thread worker([=] { cb.on_session_id(nullptr, cb.userdata); cb.on_status("disconnected", cb.userdata); });
+  worker.join();
+  done(completion, userdata);
+}
+extern "C" const char* reactor_status(ReactorHandle* handle) { return handle->status; }
+extern "C" char* reactor_session_id(ReactorHandle* handle) {
+  return handle->session.empty() ? nullptr : ::strdup(handle->session.c_str());
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_LifecycleTest_resetFake(JNIEnv*, jobject, jint mode) {
+  lifecycle_mode = mode; destroyed = 0; created = 0; adopted_connection = 0;
+  started = false; released = false;
+}
+extern "C" JNIEXPORT jint JNICALL
+Java_inc_reactor_sdk_internal_LifecycleTest_destroyCount(JNIEnv*, jobject) { return destroyed; }
+extern "C" JNIEXPORT jint JNICALL
+Java_inc_reactor_sdk_internal_LifecycleTest_createCount(JNIEnv*, jobject) { return created; }
+extern "C" JNIEXPORT jlong JNICALL
+Java_inc_reactor_sdk_internal_LifecycleTest_connectionId(JNIEnv*, jobject) { return adopted_connection; }
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_inc_reactor_sdk_internal_LifecycleTest_clientIdentity(JNIEnv* env, jobject) { return reactor_jni::text(env, identity.c_str()); }
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_inc_reactor_sdk_internal_LifecycleTest_clientToken(JNIEnv* env, jobject) { return reactor_jni::text(env, supplied_token.c_str()); }
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_LifecycleTest_finishLate(JNIEnv*, jobject) {
+  auto fn = pending_completion; auto ud = pending_userdata;
+  pending_completion = nullptr; pending_userdata = nullptr;
+  std::thread worker([=] {
+    if (orphan_callbacks.on_status) orphan_callbacks.on_status("ready", orphan_callbacks.userdata);
+    if (fn) fn(1, "{}", nullptr, ud);
+  });
+  worker.join();
+  orphan_callbacks = {};
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_LifecycleTest_waitForStart(JNIEnv*, jobject) {
+  std::unique_lock<std::mutex> lock(start_mutex);
+  start_cv.wait(lock, [] { return started; });
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_LifecycleTest_releaseStart(JNIEnv*, jobject) {
+  std::lock_guard<std::mutex> lock(start_mutex);
+  released = true; start_cv.notify_all();
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_LifecycleTest_emitStatus(JNIEnv*, jobject) {
+  auto cb = live->callbacks;
+  std::thread worker([=] { cb.on_status("ready", cb.userdata); });
+  worker.join();
+}

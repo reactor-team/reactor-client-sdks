@@ -562,3 +562,19 @@ run = "bash scripts/kotlin-native.sh android-test"
 [tasks."test:kotlin:jni:android"]
 description = "[Testing] JNI ownership and foreign-thread callbacks on Android arm64"
 run = "bash scripts/kotlin-jni-android-test.sh"
+
+[tasks."build:kotlin:jni:host"]
+description = "Build the Kotlin JNI bridge against the desktop FFI"
+run = "bash scripts/kotlin-jni-build.sh host"
+
+[tasks."build:kotlin:jni:android"]
+description = "Build the Kotlin JNI bridge against the Android arm64 FFI"
+run = "bash scripts/kotlin-jni-build.sh android"
+
+[tasks."test:kotlin:jni:asan"]
+description = "Run Kotlin JNI lifetime tests with AddressSanitizer (Linux)"
+run = "bash scripts/kotlin.sh test :reactor-core:testJniSanitizer"
+
+[tasks."test:kotlin:jni:real"]
+description = "Smoke-test the desktop JNI bridge against the real FFI"
+run = "bash scripts/kotlin.sh test :reactor-core:testRealNative"

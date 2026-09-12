@@ -62,5 +62,6 @@ if [[ "$mode" == android-test ]]; then
   python3 scripts/check-kotlin-native.py --elf-only \
     "$probe_dir/jniLibs/arm64-v8a/libreactor_probe.so"
   cd "$repo_root/sdks/kotlin"
-  ./gradlew --no-daemon :native-probe:connectedDebugAndroidTest
+  ./gradlew --no-daemon :native-probe:connectedDebugAndroidTest \
+    -Pandroid.testInstrumentationRunnerArguments.class=inc.reactor.sdk.probe.NativeProbeTest
 fi

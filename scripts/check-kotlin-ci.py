@@ -42,6 +42,7 @@ for path in [
     "scripts/kotlin-jni-test-build.sh",
     "scripts/kotlin-jni-headers.py",
     "scripts/kotlin-jni-android-test.sh",
+    "scripts/kotlin-jni-build.sh",
     "scripts/check-kotlin-native.py",
     "scripts/test-kotlin-native.py",
     "crates/reactor-ffi/include/reactor_ffi.h",
