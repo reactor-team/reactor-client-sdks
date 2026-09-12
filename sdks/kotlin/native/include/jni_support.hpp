@@ -133,4 +133,11 @@ inline void releaseAfterDestroy(std::unique_ptr<Ticket> ticket, int result) {
   if (result != 0) (void)ticket.release();
 }
 
+// fetch_jwt and download_clip complete independently of a client handle.
+// Transfer a heap ticket to the FFI and release it only in this completion.
+inline void completeDetached(int ok, const char* result, const char* error, void* userdata) noexcept {
+  std::unique_ptr<Ticket> ticket(static_cast<Ticket*>(userdata));
+  ticket->deliver(ok, result, error, error ? std::strlen(error) : 0);
+}
+
 }  // namespace reactor_jni
