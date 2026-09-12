@@ -20,6 +20,7 @@ android {
     }
     sourceSets["androidTest"].java.srcDirs(
         "../reactor-core/src/main/kotlin",
+        "../reactor-core/build/generated/sdkVersion",
         "../reactor-core/src/test/kotlin",
     )
     sourceSets["main"].jniLibs.srcDir(layout.buildDirectory.dir("native/jniLibs"))
@@ -31,4 +32,8 @@ dependencies {
     androidTestImplementation(libs.serialization.json)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.junit)
+}
+
+tasks.matching { it.name.contains("AndroidTest") || it.name.contains("Ktlint") }.configureEach {
+    dependsOn(":reactor-core:generateSdkVersion")
 }

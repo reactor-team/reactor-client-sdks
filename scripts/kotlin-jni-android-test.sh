@@ -17,8 +17,8 @@ compiler="$ANDROID_HOME/ndk/29.0.14206865/toolchains/llvm/prebuilt/$host_tag/bin
   -Wl,-z,max-page-size=16384 \
   -I "$repo_root/sdks/kotlin/reactor-core/build/jni-test" \
   -I "$repo_root/crates/reactor-ffi/include" -I "$repo_root/sdks/kotlin/native/include" \
-  "$repo_root/sdks/kotlin/native/src/abi.cpp" "$repo_root/sdks/kotlin/native/tests/fake.cpp" \
+  "$repo_root/sdks/kotlin/native/src/client.cpp" "$repo_root/sdks/kotlin/native/src/abi.cpp" "$repo_root/sdks/kotlin/native/tests/fake.cpp" \
   -o "$output/libreactor_jni_test.so"
 python3 "$repo_root/scripts/check-kotlin-native.py" --elf-only "$output/libreactor_jni_test.so"
 ./gradlew --no-daemon :native-probe:connectedDebugAndroidTest \
-  -Pandroid.testInstrumentationRunnerArguments.class=inc.reactor.sdk.internal.NativeBoundaryTest
+  -Pandroid.testInstrumentationRunnerArguments.class=inc.reactor.sdk.internal.NativeBoundaryTest,inc.reactor.sdk.internal.LifecycleTest
