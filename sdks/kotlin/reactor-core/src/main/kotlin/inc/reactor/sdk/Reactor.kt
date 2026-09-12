@@ -2,8 +2,11 @@ package inc.reactor.sdk
 
 import inc.reactor.sdk.internal.CompletionRegistry
 import inc.reactor.sdk.internal.ControlEvents
+import inc.reactor.sdk.internal.Declaration
+import inc.reactor.sdk.internal.HandleCallbacks
 import inc.reactor.sdk.internal.NativeClient
 import inc.reactor.sdk.internal.SDK_VERSION
+import inc.reactor.sdk.internal.TrackState
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -14,7 +17,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.util.concurrent.ConcurrentHashMap
 
 /** Fetch short-lived credentials from your application's backend. Called before each connect. */
@@ -35,6 +41,11 @@ enum class ReactorStatus {
 }
 
 sealed interface ControlEvent {
+    data class TrackReceived(
+        val name: String,
+        val mid: String?,
+    ) : ControlEvent
+
     data class StatusChanged(
         val status: ReactorStatus,
     ) : ControlEvent
@@ -70,6 +81,8 @@ class Reactor(
     onHandlerFailure: (Throwable) -> Unit = { System.err.println("Reactor event handler failed: $it") },
 ) {
     private val events = ControlEvents(eventDispatcher, onHandlerFailure)
+    private val trackState = TrackState(onHandlerFailure)
+    private var handleCallbacks: HandleCallbacks? = null
     private val lease = Any()
     private val lifecycle = Mutex()
     private var closed = false
@@ -113,6 +126,7 @@ class Reactor(
                 requireOpen()
                 if (handle != 0L && token != nextToken) destroyHandle()
                 if (handle == 0L) {
+                    handleCallbacks = HandleCallbacks(trackState, events, trackState.beginHandle())
                     handle =
                         NativeClient.create(
                             apiUrl.encodeToByteArray(),
@@ -120,7 +134,8 @@ class Reactor(
                             nextToken?.encodeToByteArray(),
                             local,
                             SDK_VERSION.encodeToByteArray(),
-                            events,
+                            requireNotNull(handleCallbacks),
+                            requireNotNull(handleCallbacks),
                         )
                     check(handle != 0L) { "Native client creation failed" }
                     token = nextToken
@@ -151,6 +166,7 @@ class Reactor(
                 }
             if (first) {
                 events.close()
+                trackState.stop()
                 try {
                     withContext(Dispatchers.IO) { synchronized(lease) { destroyHandle() } }
                     shutdown.complete(Unit)
@@ -186,6 +202,60 @@ class Reactor(
         }
     }
 
+    val tracks: TrackList
+        get() {
+            val entries =
+                trackState.snapshot {
+                    synchronized(lease) {
+                        requireOpen()
+                        if (handle == 0L) "[]".encodeToByteArray() else NativeClient.tracks(handle)
+                    }
+                }
+            return TrackList(entries.map { Track(this, it.name, it.kind, it.direction) })
+        }
+
+    fun track(name: String): Track {
+        val values = tracks
+        return values.firstOrNull { it.name == name }
+            ?: throw IllegalArgumentException("Unknown track '$name'. Declared tracks: ${values.joinToString { it.name }}")
+    }
+
+    internal fun validateTrack(track: Track): Declaration {
+        val current = track(track.name)
+        require(current.kind == track.kind && current.direction == track.direction) {
+            "Track '${track.name}' changed; refresh it from Reactor.tracks"
+        }
+        return Declaration(current.name, current.kind, current.direction)
+    }
+
+    internal fun trackMid(track: Track): String? {
+        validateTrack(track)
+        return trackState.mid(track.name)
+    }
+
+    internal fun trackPaused(track: Track): Boolean {
+        validateTrack(track)
+        val value =
+            synchronized(lease) {
+                requireOpen()
+                NativeClient.paused(handle)
+            }
+        return (Json.parseToJsonElement(value.decodeToString()) as JsonArray).any { (it as JsonPrimitive).content == track.name }
+    }
+
+    internal fun receive(
+        track: Track,
+        handler: (MediaFrame) -> Unit,
+    ): AutoCloseable = trackState.subscribe(validateTrack(track), handler)
+
+    internal suspend fun trackOperation(
+        track: Track,
+        kind: Int,
+    ) {
+        validateTrack(track)
+        runOperation(kind, track.name)
+    }
+
     private fun requireOpen() {
         if (closed) throw InvalidStateError(ErrorDetails("INVALID_STATE", "Client is closed; create a new Reactor"))
     }
@@ -198,6 +268,8 @@ class Reactor(
             handle = 0
             NativeClient.destroy(previous) // JNI retains orphan callback state on -1.
         }
+        handleCallbacks = null
+        trackState.beginHandle()
         operations = Operations()
     }
 }

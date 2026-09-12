@@ -8,3 +8,10 @@
 -keepclassmembers class inc.reactor.sdk.CompletionReceiver {
     public void accept(int, byte[], byte[]);
 }
+
+-keepclassmembers class inc.reactor.sdk.internal.HandleCallbacks {
+    public void accept(int, byte[], byte[]);
+    public void video(byte[], byte[], int, int, long, long, byte[]);
+    public void audio(byte[], short[], int, int);
+    public void diagnostic(byte[]);
+}
