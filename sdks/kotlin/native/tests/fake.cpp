@@ -137,6 +137,7 @@ std::string supplied_token;
 ReactorHandle* live = nullptr;
 ReactorCallbacks orphan_callbacks{};
 void clear_queries();
+void clear_uploads();
 reactor_completion_fn pending_completion = nullptr;
 void* pending_userdata = nullptr;
 std::mutex start_mutex;
@@ -163,7 +164,7 @@ extern "C" int reactor_destroy(ReactorHandle* handle) {
   const bool orphaned = lifecycle_mode == 1 || orphan_next_destroy;
   orphan_next_destroy = false;
   if (orphaned) orphan_callbacks = handle->callbacks;
-  else { pending_completion = nullptr; pending_userdata = nullptr; clear_queries(); }
+  else { pending_completion = nullptr; pending_userdata = nullptr; clear_queries(); clear_uploads(); }
   delete handle;
   live = nullptr;
   return orphaned ? -1 : 0;
@@ -422,6 +423,7 @@ struct QueryAnswer {
   bool failure;
 };
 int query_mode = 0;
+std::string command_uploads;
 bool custom_query = false, custom_absent = false;
 std::string custom_payload;
 std::vector<QueryAnswer> queries;
@@ -443,7 +445,8 @@ void query_result(reactor_completion_fn fn, void* ud, std::string payload) {
   if (query_mode == 1) queries.push_back(std::move(value)); else answer(std::move(value));
 }
 }
-extern "C" void reactor_send_command(ReactorHandle*, const char*, const char* args, const char*, reactor_completion_fn fn, void* ud) {
+extern "C" void reactor_send_command(ReactorHandle*, const char*, const char* args, const char* uploads, reactor_completion_fn fn, void* ud) {
+  command_uploads = uploads ? uploads : "{}";
   query_result(fn, ud, std::string(R"({"type":"reply","data":)") + (args ? args : "{}") + "}");
 }
 extern "C" void reactor_request_schema(ReactorHandle*, reactor_completion_fn fn, void* ud) {
@@ -483,3 +486,95 @@ Java_inc_reactor_sdk_internal_CommandTest_emitMessage(JNIEnv*, jobject, jboolean
 }
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_inc_reactor_sdk_internal_CommandTest_statsFixture(JNIEnv* env, jobject) { return reactor_jni::text(env, stats_fixture); }
+
+#include <fstream>
+#include <filesystem>
+namespace {
+struct UploadAnswer {
+  reactor_completion_fn fn;
+  void* userdata;
+  std::string path, name, mime;
+  std::vector<uint8_t> bytes;
+};
+int upload_mode = 0;
+std::vector<UploadAnswer> uploads_pending;
+std::mutex upload_mutex;
+std::condition_variable upload_cv;
+bool upload_started = false;
+std::string last_upload_path;
+std::vector<uint8_t> last_upload_bytes;
+void clear_uploads() { std::lock_guard<std::mutex> lock(upload_mutex); uploads_pending.clear(); }
+std::string json_quote(const std::string& value) {
+  std::string out = "\"";
+  for (unsigned char c : value) {
+    if (c == '\\' || c == '"') out += '\\';
+    if (c < 32) { char escaped[7]; std::snprintf(escaped, sizeof(escaped), "\\u%04x", c); out += escaped; }
+    else out += static_cast<char>(c);
+  }
+  return out + "\"";
+}
+void finish_upload(UploadAnswer value) {
+  std::thread worker([&] {
+    size_t count = value.bytes.size();
+    if (!value.path.empty()) {
+      std::ifstream input(std::filesystem::u8path(value.path), std::ios::binary);
+      if (!input) { value.fn(0, nullptr, R"({"code":"NOT_FOUND","message":"Staged upload vanished before native read"})", value.userdata); return; }
+      char block[65536]; count = 0;
+      while (input.read(block, sizeof(block)) || input.gcount()) count += static_cast<size_t>(input.gcount());
+    }
+    if (upload_mode == 2) { value.fn(0, nullptr, R"({"code":"BAD_REQUEST","message":"Upload refused"})", value.userdata); return; }
+    auto body = std::string(R"({"upload_id":"uploaded","name":)") + json_quote(value.name) + ",\"mime_type\":" + json_quote(value.mime) + ",\"size\":" + std::to_string(count) + "}";
+    value.fn(1, upload_mode == 3 ? R"({"upload_id":"missing-fields"})" : body.c_str(), nullptr, value.userdata);
+  });
+  worker.join();
+}
+void start_upload(UploadAnswer value) {
+  {
+    std::lock_guard<std::mutex> lock(upload_mutex);
+    upload_started = true;
+    if (upload_mode == 1) uploads_pending.push_back(std::move(value));
+    upload_cv.notify_all();
+  }
+  if (upload_mode != 1) finish_upload(std::move(value));
+}
+}
+extern "C" void reactor_upload_file(ReactorHandle*, const char* path, reactor_completion_fn fn, void* ud) {
+  last_upload_path = path;
+  auto p = std::filesystem::u8path(path);
+  auto mime = p.extension() == ".png" ? "image/png" : "application/octet-stream";
+  start_upload(UploadAnswer{fn, ud, path, p.filename().u8string(), mime, {}});
+}
+extern "C" void reactor_upload_bytes(ReactorHandle*, const uint8_t* data, size_t size, const char* name, const char* mime, reactor_completion_fn fn, void* ud) {
+  std::vector<uint8_t> copy;
+  if (size) copy.assign(data, data + size);
+  last_upload_bytes = copy;
+  start_upload(UploadAnswer{fn, ud, "", name, mime, std::move(copy)});
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_UploadTest_configureUpload(JNIEnv*, jobject, jint mode) {
+  std::lock_guard<std::mutex> lock(upload_mutex);
+  lifecycle_mode = 0; query_mode = 0; custom_query = false; upload_mode = mode; upload_started = false;
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_UploadTest_finishUploads(JNIEnv*, jobject) {
+  std::vector<UploadAnswer> pending;
+  { std::lock_guard<std::mutex> lock(upload_mutex); pending.swap(uploads_pending); }
+  for (auto& value : pending) finish_upload(std::move(value));
+}
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_inc_reactor_sdk_internal_UploadTest_lastPath(JNIEnv* env, jobject) { return reactor_jni::text(env, last_upload_path.c_str()); }
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_inc_reactor_sdk_internal_UploadTest_sentBytes(JNIEnv* env, jobject) {
+  const uint8_t empty = 0;
+  return reactor_jni::bytes(env, last_upload_bytes.empty() ? &empty : last_upload_bytes.data(), last_upload_bytes.size());
+}
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_inc_reactor_sdk_internal_UploadTest_commandUploads(JNIEnv* env, jobject) { return reactor_jni::text(env, command_uploads.c_str()); }
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_UploadTest_orphanNextDestroy(JNIEnv*, jobject) { orphan_next_destroy = true; }
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_inc_reactor_sdk_internal_UploadTest_waitForUpload(JNIEnv*, jobject) {
+  std::unique_lock<std::mutex> lock(upload_mutex);
+  return upload_cv.wait_for(lock, std::chrono::seconds(5), [] { return upload_started; });
+}
