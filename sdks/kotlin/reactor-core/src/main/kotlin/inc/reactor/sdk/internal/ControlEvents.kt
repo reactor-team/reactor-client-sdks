@@ -76,11 +76,16 @@ internal class ControlEvents(
                     3 -> ControlEvent.RuntimeMessage(objectValue())
                     4 -> ControlEvent.CapabilitiesChanged(objectValue())
                     5 -> ControlEvent.SessionChanged(value)
+                    6 -> ControlEvent.TrackReceived(requireNotNull(value), data?.decodeToString(throwOnInvalidSequence = true))
                     else -> error("Unknown control event $kind")
                 }
             } catch (failure: Exception) {
                 ControlEvent.Error(DecodeFailedError(ErrorDetails("DECODE_FAILED", "Invalid control event: ${failure.message}")))
             }
+        emit(event)
+    }
+
+    fun emit(event: ControlEvent) {
         queue.trySend(event)
     }
 

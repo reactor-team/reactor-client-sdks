@@ -120,9 +120,14 @@ struct ReactorHandle {
   ReactorCallbacks callbacks;
   std::string session;
   const char* status = "disconnected";
+  std::string tracks = "[]";
+  std::string paused = "[]";
 };
 namespace {
 int lifecycle_mode = 0;
+bool media_enabled = false;
+bool invalidate_tracks = false;
+bool orphan_next_destroy = false;
 int destroyed = 0;
 int created = 0;
 uint32_t adopted_connection = 0;
@@ -146,16 +151,19 @@ extern "C" ReactorHandle* reactor_create_with_adm(const char*, const char*, cons
   identity = std::string(type) + "/" + version;
   supplied_token = jwt ? jwt : "";
   ++created;
-  live = new ReactorHandle{*callbacks, "", "disconnected"};
+  live = new ReactorHandle{*callbacks, "", "disconnected", "[]", "[]"};
+  if (media_enabled) live->tracks = R"([{"name":"z-video","kind":"video","direction":"recvonly"},{"name":"a-audio","kind":"audio","direction":"recvonly"},{"name":"input","kind":"video","direction":"sendonly"}])";
   return live;
 }
 extern "C" int reactor_destroy(ReactorHandle* handle) {
   ++destroyed;
-  if (lifecycle_mode == 1) orphan_callbacks = handle->callbacks;
+  const bool orphaned = lifecycle_mode == 1 || orphan_next_destroy;
+  orphan_next_destroy = false;
+  if (orphaned) orphan_callbacks = handle->callbacks;
   else { pending_completion = nullptr; pending_userdata = nullptr; }
   delete handle;
   live = nullptr;
-  return lifecycle_mode == 1 ? -1 : 0;
+  return orphaned ? -1 : 0;
 }
 extern "C" void reactor_connect(ReactorHandle* handle, const char* session, const uint32_t* connection,
     reactor_completion_fn completion, void* userdata) {
@@ -172,7 +180,9 @@ extern "C" void reactor_connect(ReactorHandle* handle, const char* session, cons
   std::thread worker([=] {
     callbacks.on_status("ready", callbacks.userdata);
     callbacks.on_session_id(handle->session.c_str(), callbacks.userdata);
-    callbacks.on_capabilities("{\"tracks\":[]}", callbacks.userdata);
+    auto caps = std::string("{\"tracks\":") + handle->tracks + "}";
+    callbacks.on_capabilities(caps.c_str(), callbacks.userdata);
+    if (media_enabled) callbacks.on_track("z-video", "video-mid", callbacks.userdata);
     callbacks.on_runtime_message("{\"type\":\"test\"}", callbacks.userdata);
   });
   worker.join();
@@ -201,6 +211,7 @@ extern "C" char* reactor_session_id(ReactorHandle* handle) {
 }
 extern "C" JNIEXPORT void JNICALL
 Java_inc_reactor_sdk_internal_LifecycleTest_resetFake(JNIEnv*, jobject, jint mode) {
+  media_enabled = false; invalidate_tracks = false; orphan_next_destroy = false;
   lifecycle_mode = mode; destroyed = 0; created = 0; adopted_connection = 0;
   started = false; released = false;
 }
@@ -240,4 +251,62 @@ Java_inc_reactor_sdk_internal_LifecycleTest_emitStatus(JNIEnv*, jobject) {
   auto cb = live->callbacks;
   std::thread worker([=] { cb.on_status("ready", cb.userdata); });
   worker.join();
+}
+
+extern "C" char* reactor_tracks(ReactorHandle* handle) {
+  auto previous = handle->tracks;
+  if (invalidate_tracks) {
+    invalidate_tracks = false;
+    handle->tracks = R"([{"name":"fresh","kind":"audio","direction":"recvonly"}])";
+    auto caps = std::string("{\"tracks\":") + handle->tracks + "}";
+    auto cb = handle->callbacks;
+    std::thread worker([&] { cb.on_capabilities(caps.c_str(), cb.userdata); });
+    worker.join();
+  }
+  return ::strdup(previous.c_str());
+}
+extern "C" char* reactor_paused_tracks(ReactorHandle* handle) { return ::strdup(handle->paused.c_str()); }
+extern "C" void reactor_pause_track(ReactorHandle* handle, const char* name, reactor_completion_fn fn, void* ud) {
+  handle->paused = std::string("[\"") + name + "\"]"; done(fn, ud);
+}
+extern "C" void reactor_resume_track(ReactorHandle* handle, const char*, reactor_completion_fn fn, void* ud) {
+  handle->paused = "[]"; done(fn, ud);
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_MediaReceiveTest_resetMedia(JNIEnv*, jobject) {
+  Java_inc_reactor_sdk_internal_LifecycleTest_resetFake(nullptr, nullptr, 0);
+  media_enabled = true;
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_MediaReceiveTest_invalidateOnRead(JNIEnv*, jobject) { invalidate_tracks = true; }
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_MediaReceiveTest_emit(JNIEnv*, jobject, jint kind) {
+  auto cb = live->callbacks;
+  std::thread worker([=] {
+    uint8_t pixels[] = {1, 2, 3, 255};
+    uint8_t metadata[] = {0, 128, 255};
+    int16_t samples[] = {-32768, 10, 300, 32767};
+    if (kind == 0 || kind == 2) cb.on_frame(kind == 2 ? "missing" : "z-video", pixels, 1, 1, UINT64_MAX, UINT64_C(0x8000000000000000), metadata, 3, cb.userdata);
+    else if (kind == 1) cb.on_audio("a-audio", samples, 4, 44100, 2, cb.userdata);
+    else if (kind == 3) cb.on_frame("z-video", pixels, UINT32_MAX, UINT32_MAX, 0, 0, nullptr, 0, cb.userdata);
+    else cb.on_audio("a-audio", samples, 3, 44100, 2, cb.userdata);
+    std::memset(pixels, 0, sizeof(pixels));
+    std::memset(metadata, 0, sizeof(metadata));
+    std::memset(samples, 0, sizeof(samples));
+  });
+  worker.join();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_MediaReceiveTest_orphanNextDestroy(JNIEnv*, jobject) { orphan_next_destroy = true; }
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_MediaReceiveTest_emitOld(JNIEnv*, jobject) {
+  auto cb = orphan_callbacks;
+  std::thread worker([=] {
+    uint8_t pixel[] = {1, 2, 3, 4};
+    cb.on_capabilities(R"({"tracks":[{"name":"stale","kind":"video","direction":"recvonly"}]})", cb.userdata);
+    cb.on_frame("z-video", pixel, 1, 1, 1, 1, nullptr, 0, cb.userdata);
+  });
+  worker.join();
+  orphan_callbacks = {};
 }

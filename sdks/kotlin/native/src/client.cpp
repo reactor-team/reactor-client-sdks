@@ -1,5 +1,6 @@
 #include "jni_generated.h"
 #include "jni_support.hpp"
+#include "jni_media.hpp"
 #include <mutex>
 #include <unordered_map>
 
@@ -14,9 +15,12 @@ struct Operation {
 struct Client {
   ReactorHandle* handle = nullptr;
   Ticket events;
+  std::unique_ptr<reactor_jni::MediaTicket> media;
   std::mutex mutex;
   std::unordered_map<Operation*, std::unique_ptr<Operation>> pending;
-  Client(JNIEnv* env, jobject receiver) : events(env, receiver) {}
+  Client(JNIEnv* env, jobject receiver, jobject media_receiver) : events(env, receiver) {
+    if (media_receiver) media = std::make_unique<reactor_jni::MediaTicket>(env, media_receiver);
+  }
 };
 Client* client(jlong value) {
   if (!value) throw std::invalid_argument("Client is closed");
@@ -42,6 +46,16 @@ void complete(int ok, const char* result, const char* error, void* userdata) noe
 template<int kind> void event(const char* value, void* userdata) noexcept {
   static_cast<Client*>(userdata)->events.deliver(kind, value, nullptr, 0);
 }
+void track(const char* name, const char* mid, void* userdata) noexcept {
+  static_cast<Client*>(userdata)->events.deliver(6, name, mid, mid ? std::strlen(mid) : 0);
+}
+void video(const char* name, const uint8_t* pixels, uint32_t width, uint32_t height,
+           uint64_t id, uint64_t timestamp, const uint8_t* metadata, uint32_t size, void* userdata) noexcept {
+  static_cast<Client*>(userdata)->media->video(name, pixels, width, height, id, timestamp, metadata, size);
+}
+void audio(const char* name, const int16_t* samples, uint32_t count, uint32_t rate, uint32_t channels, void* userdata) noexcept {
+  static_cast<Client*>(userdata)->media->audio(name, samples, count, rate, channels);
+}
 void failure(JNIEnv* env, const std::exception& error) {
   reactor_jni::fail(env, "java/lang/IllegalStateException", error.what());
 }
@@ -49,7 +63,7 @@ void failure(JNIEnv* env, const std::exception& error) {
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_inc_reactor_sdk_internal_NativeClient_create(JNIEnv* env, jobject, jbyteArray url, jbyteArray model,
-    jbyteArray token, jboolean local, jbyteArray version, jobject receiver) {
+    jbyteArray token, jboolean local, jbyteArray version, jobject receiver, jobject media_receiver) {
   try {
     if (reactor_abi_version() != REACTOR_ABI_VERSION) {
       reactor_jni::fail(env, "java/lang/UnsatisfiedLinkError", "Reactor FFI ABI mismatch");
@@ -57,7 +71,7 @@ Java_inc_reactor_sdk_internal_NativeClient_create(JNIEnv* env, jobject, jbyteArr
     }
     auto u = reactor_jni::inputText(env, url), m = reactor_jni::inputText(env, model);
     auto t = optional(env, token), v = reactor_jni::inputText(env, version);
-    auto state = std::make_unique<Client>(env, receiver);
+    auto state = std::make_unique<Client>(env, receiver, media_receiver);
     ReactorCallbacks callbacks{};
     callbacks.on_status = event<0>;
     callbacks.on_error = event<1>;
@@ -65,6 +79,8 @@ Java_inc_reactor_sdk_internal_NativeClient_create(JNIEnv* env, jobject, jbyteArr
     callbacks.on_runtime_message = event<3>;
     callbacks.on_capabilities = event<4>;
     callbacks.on_session_id = event<5>;
+    callbacks.on_track = track;
+    if (state->media) { callbacks.on_frame = video; callbacks.on_audio = audio; }
     callbacks.userdata = state.get();
     state->handle = reactor_create_with_adm(u.data(), m.data(), pointer(t), local,
         &callbacks, 0, v.data(), "kotlin");
@@ -89,7 +105,7 @@ Java_inc_reactor_sdk_internal_NativeClient_start(JNIEnv* env, jobject, jlong val
     jbyteArray session, jlong connection, jobject receiver) {
   try {
     auto* state = client(value);
-    if (kind < 0 || kind > 2) throw std::invalid_argument("Unknown lifecycle operation");
+    if (kind < 0 || kind > 4) throw std::invalid_argument("Unknown lifecycle operation");
     if (connection < -1 || connection > UINT32_MAX) throw std::invalid_argument("Connection ID out of range");
     auto sid = optional(env, session);
     uint32_t cid = static_cast<uint32_t>(connection);
@@ -101,7 +117,9 @@ Java_inc_reactor_sdk_internal_NativeClient_start(JNIEnv* env, jobject, jlong val
     }
     if (kind == 0) reactor_connect(state->handle, pointer(sid), connection < 0 ? nullptr : &cid, complete, operation);
     else if (kind == 1) reactor_reconnect(state->handle, complete, operation);
-    else reactor_disconnect(state->handle, complete, operation);
+    else if (kind == 2) reactor_disconnect(state->handle, complete, operation);
+    else if (kind == 3) reactor_pause_track(state->handle, pointer(sid), complete, operation);
+    else reactor_resume_track(state->handle, pointer(sid), complete, operation);
   } catch (const std::exception& error) { failure(env, error); }
 }
 
@@ -126,4 +144,15 @@ Java_inc_reactor_sdk_internal_NativeClient_authenticate(JNIEnv* env, jobject, jb
     auto* raw = ticket.release();
     reactor_fetch_jwt(u.data(), k.data(), o.data(), local, reactor_jni::completeDetached, raw);
   } catch (const std::exception& error) { failure(env, error); }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_inc_reactor_sdk_internal_NativeClient_tracks(JNIEnv* env, jobject, jlong value) {
+  try { return reactor_jni::ownedText(env, reactor_tracks(client(value)->handle)); }
+  catch (const std::exception& error) { failure(env, error); return nullptr; }
+}
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_inc_reactor_sdk_internal_NativeClient_paused(JNIEnv* env, jobject, jlong value) {
+  try { return reactor_jni::ownedText(env, reactor_paused_tracks(client(value)->handle)); }
+  catch (const std::exception& error) { failure(env, error); return nullptr; }
 }
