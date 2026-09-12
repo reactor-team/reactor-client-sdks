@@ -1,0 +1,129 @@
+#include "jni_generated.h"
+#include "jni_support.hpp"
+#include <mutex>
+#include <unordered_map>
+
+namespace {
+using reactor_jni::Ticket;
+struct Client;
+struct Operation {
+  Client* owner;
+  Ticket ticket;
+  Operation(Client* owner, JNIEnv* env, jobject receiver) : owner(owner), ticket(env, receiver) {}
+};
+struct Client {
+  ReactorHandle* handle = nullptr;
+  Ticket events;
+  std::mutex mutex;
+  std::unordered_map<Operation*, std::unique_ptr<Operation>> pending;
+  Client(JNIEnv* env, jobject receiver) : events(env, receiver) {}
+};
+Client* client(jlong value) {
+  if (!value) throw std::invalid_argument("Client is closed");
+  return reinterpret_cast<Client*>(static_cast<intptr_t>(value));
+}
+std::vector<char> optional(JNIEnv* env, jbyteArray value) {
+  return value ? reactor_jni::inputText(env, value) : std::vector<char>{};
+}
+const char* pointer(const std::vector<char>& value) { return value.empty() ? nullptr : value.data(); }
+void complete(int ok, const char* result, const char* error, void* userdata) noexcept {
+  auto* operation = static_cast<Operation*>(userdata);
+  std::unique_ptr<Operation> owned;
+  {
+    std::lock_guard<std::mutex> lock(operation->owner->mutex);
+    auto& pending = operation->owner->pending;
+    auto found = pending.find(operation);
+    if (found == pending.end()) return;
+    owned = std::move(found->second);
+    pending.erase(found);
+  }
+  owned->ticket.deliver(ok, result, error, error ? std::strlen(error) : 0);
+}
+template<int kind> void event(const char* value, void* userdata) noexcept {
+  static_cast<Client*>(userdata)->events.deliver(kind, value, nullptr, 0);
+}
+void failure(JNIEnv* env, const std::exception& error) {
+  reactor_jni::fail(env, "java/lang/IllegalStateException", error.what());
+}
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_inc_reactor_sdk_internal_NativeClient_create(JNIEnv* env, jobject, jbyteArray url, jbyteArray model,
+    jbyteArray token, jboolean local, jbyteArray version, jobject receiver) {
+  try {
+    if (reactor_abi_version() != REACTOR_ABI_VERSION) {
+      reactor_jni::fail(env, "java/lang/UnsatisfiedLinkError", "Reactor FFI ABI mismatch");
+      return 0;
+    }
+    auto u = reactor_jni::inputText(env, url), m = reactor_jni::inputText(env, model);
+    auto t = optional(env, token), v = reactor_jni::inputText(env, version);
+    auto state = std::make_unique<Client>(env, receiver);
+    ReactorCallbacks callbacks{};
+    callbacks.on_status = event<0>;
+    callbacks.on_error = event<1>;
+    callbacks.on_message = event<2>;
+    callbacks.on_runtime_message = event<3>;
+    callbacks.on_capabilities = event<4>;
+    callbacks.on_session_id = event<5>;
+    callbacks.userdata = state.get();
+    state->handle = reactor_create_with_adm(u.data(), m.data(), pointer(t), local,
+        &callbacks, 0, v.data(), "kotlin");
+    if (!state->handle) throw std::runtime_error("Native client creation failed");
+    return static_cast<jlong>(reinterpret_cast<intptr_t>(state.release()));
+  } catch (const std::exception& error) { failure(env, error); return 0; }
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_inc_reactor_sdk_internal_NativeClient_destroy(JNIEnv* env, jobject, jlong value) {
+  try {
+    std::unique_ptr<Client> state(client(value));
+    // No callback mutex held: destroy waits for callbacks that acquire it.
+    int result = reactor_destroy(state->handle);
+    if (result != 0) (void)state.release(); // consumed handle, still-live callback state
+    return result;
+  } catch (const std::exception& error) { failure(env, error); return -1; }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_NativeClient_start(JNIEnv* env, jobject, jlong value, jint kind,
+    jbyteArray session, jlong connection, jobject receiver) {
+  try {
+    auto* state = client(value);
+    if (kind < 0 || kind > 2) throw std::invalid_argument("Unknown lifecycle operation");
+    if (connection < -1 || connection > UINT32_MAX) throw std::invalid_argument("Connection ID out of range");
+    auto sid = optional(env, session);
+    uint32_t cid = static_cast<uint32_t>(connection);
+    auto owned = std::make_unique<Operation>(state, env, receiver);
+    auto* operation = owned.get();
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->pending.emplace(operation, std::move(owned));
+    }
+    if (kind == 0) reactor_connect(state->handle, pointer(sid), connection < 0 ? nullptr : &cid, complete, operation);
+    else if (kind == 1) reactor_reconnect(state->handle, complete, operation);
+    else reactor_disconnect(state->handle, complete, operation);
+  } catch (const std::exception& error) { failure(env, error); }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_inc_reactor_sdk_internal_NativeClient_status(JNIEnv* env, jobject, jlong value) {
+  try { return reactor_jni::text(env, reactor_status(client(value)->handle)); }
+  catch (const std::exception& error) { failure(env, error); return nullptr; }
+}
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_inc_reactor_sdk_internal_NativeClient_session(JNIEnv* env, jobject, jlong value) {
+  try { return reactor_jni::ownedText(env, reactor_session_id(client(value)->handle)); }
+  catch (const std::exception& error) { failure(env, error); return nullptr; }
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_NativeClient_authenticate(JNIEnv* env, jobject, jbyteArray url,
+    jbyteArray key, jbyteArray options, jboolean local, jobject receiver) {
+  try {
+    auto u = reactor_jni::inputText(env, url), k = reactor_jni::inputText(env, key);
+    auto o = reactor_jni::inputText(env, options);
+    auto ticket = std::make_unique<Ticket>(env, receiver);
+    // Ownership transfers before the call, including if a completion is immediate.
+    auto* raw = ticket.release();
+    reactor_fetch_jwt(u.data(), k.data(), o.data(), local, reactor_jni::completeDetached, raw);
+  } catch (const std::exception& error) { failure(env, error); }
+}

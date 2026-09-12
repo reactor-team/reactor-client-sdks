@@ -1,7 +1,7 @@
 # Reactor Kotlin SDK
 
-Work in progress: the Gradle modules and test runners are in place. This scaffold
-is not yet a usable Reactor client or a published package. Implementation follows
+Work in progress: client lifecycle, authentication and control events are available
+for development builds. Media and published binary packages are still pending. Implementation follows
 [the Kotlin SDK project](https://linear.app/reactor-team/project/kotlin-sdk-64a4e3f8a9ff)
 as a stack of focused PRs, starting with REA-6219.
 
@@ -11,7 +11,7 @@ as a stack of focused PRs, starting with REA-6219.
 - `reactor-jvm`: desktop distribution; exposes the shared module transitively.
 - `reactor-android`: Android AAR; exposes the same shared module transitively.
 
-The JNI bridge will include the canonical
+The JNI bridge includes the canonical
 [C header](../../../crates/reactor-ffi/include/reactor_ffi.h).
 Protocol and WebRTC stay in Rust. Device adapters will be separate optional modules.
 
@@ -65,9 +65,9 @@ See [the architecture decision](docs/0001-jvm-and-android.md).
 ## Native bootstrap progress
 
 The reproducible Android cross-build and artifact preflight are documented in
-[the K02 probe report](docs/0002-native-probe.md). The official p7 JAR now loads; the C++ vtable ABI fix is included through a temporary immutable git pin
-to reactor-webrtc 0.17.2 (upstream PR #86). The report includes the reproducible
-arm64 JNI lifecycle test and its diagnostic override. These artifacts are not
+[the K02 probe report](docs/0002-native-probe.md). The official p7 JAR now loads; the C++ vtable ABI fix is included in the published
+reactor-webrtc 0.17.2 release. The report includes the reproducible
+arm64 JNI lifecycle test. These artifacts are not
 packaged in the SDK.
 
 The internal [JNI boundary primitives](docs/0003-jni-boundary.md) have JVM and
@@ -75,5 +75,11 @@ Android fake-library tests. `test:kotlin` additionally needs a C++17 compiler on
 Linux/macOS. Run `mise run test:kotlin:jni:android` for the arm64 device tests.
 
 [Errors and coroutine completions](docs/0004-errors-and-completions.md) define the
-shared error hierarchy and internal operation registry. The public client API
-and its native handle lifecycle are not yet available.
+shared error hierarchy and internal operation registry used by the client lifecycle.
+
+## Client lifecycle
+
+The shared module now exposes `Reactor`, token-provider authentication, control events,
+and suspending shutdown. See [client lifecycle](docs/0005-client-lifecycle.md) for usage,
+threading, explicit library loading and JNI verification commands. The stack consumes
+reactor-webrtc 0.17.2 from crates.io. Media and distribution remain later slices.
