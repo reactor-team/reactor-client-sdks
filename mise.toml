@@ -542,3 +542,19 @@ run = "bash scripts/kotlin.sh android-test"
 [tasks."test:kotlin:ci"]
 description = "[Testing] Kotlin CI path filters and required-check wiring"
 run = "uv run scripts/check-kotlin-ci.py"
+
+[tasks."build:kotlin:native:host"]
+description = "[Build] Host FFI for the Kotlin native probe"
+run = "bash scripts/kotlin-native.sh host"
+
+[tasks."build:kotlin:native:android"]
+description = "[Build] Android arm64 FFI and preflight (blocked by REA-6249)"
+run = "bash scripts/kotlin-native.sh android"
+
+[tasks."test:kotlin:native-checks"]
+description = "[Testing] Native Android artifact validation regressions"
+run = "python3 scripts/test-kotlin-native.py"
+
+[tasks."test:kotlin:native:android"]
+description = "[Testing] JNI load and synthetic client lifecycle on an arm64 Android device"
+run = "bash scripts/kotlin-native.sh android-test"

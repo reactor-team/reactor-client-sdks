@@ -61,3 +61,11 @@ Versions start at `0.0.0-SNAPSHOT`; the v1 bump is the final PR in the stack.
 
 Licensed under the repository's [Apache-2.0 license](../../../LICENSE).
 See [the architecture decision](docs/0001-jvm-and-android.md).
+
+## Native bootstrap progress
+
+The reproducible Android cross-build and artifact preflight are documented in
+[the K02 probe report](docs/0002-native-probe.md). The official p7 JAR now loads; the C++ vtable ABI fix is included through a temporary immutable git pin
+to reactor-webrtc 0.17.2 (upstream PR #86). The report includes the reproducible
+arm64 JNI lifecycle test and its diagnostic override. These artifacts are not
+packaged in the SDK.
