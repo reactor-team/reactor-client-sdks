@@ -20,6 +20,7 @@ python3 "$repo_root/scripts/kotlin-jni-headers.py" "$JAVA_HOME/bin/javap" \
   "$repo_root/sdks/kotlin/reactor-core/build/classes/kotlin/test" inc.reactor.sdk.internal.LifecycleTest \
   "$repo_root/sdks/kotlin/reactor-core/build/classes/kotlin/test" inc.reactor.sdk.internal.MediaReceiveTest \
   "$repo_root/sdks/kotlin/reactor-core/build/classes/kotlin/test" inc.reactor.sdk.internal.MediaSendTest \
+  "$repo_root/sdks/kotlin/reactor-core/build/classes/kotlin/test" inc.reactor.sdk.internal.CommandTest \
   > "$output/jni_generated.h"
 "${CXX:-c++}" "${flags[@]}" -std=c++17 -shared -fPIC -pthread -Wall -Wextra -Werror \
   -I "$output" -I "$JAVA_HOME/include" -I "$JAVA_HOME/include/$platform" \
