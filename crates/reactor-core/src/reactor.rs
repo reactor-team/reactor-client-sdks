@@ -69,6 +69,12 @@ pub struct ReactorOptions {
     pub ready_timeout: Duration,
     pub control_request_timeout: Duration,
     pub clip_request_timeout: Duration,
+    /// How long a `Disconnected` peer connection state is given to recover
+    /// (self-heal back to `Connected`) before it's treated as a fatal
+    /// disconnect. `disconnected` is transient by the WebRTC spec — an ICE
+    /// consent-check miss that real browsers/engines routinely recover from
+    /// within seconds — unlike `Failed`/`Closed`, which stay immediate.
+    pub disconnect_grace_period: Duration,
     pub session_poll: PollConfig,
     pub sdp_poll: PollConfig,
     /// When the caller already knows the model's track list ahead of time,
@@ -103,6 +109,7 @@ impl ReactorOptions {
             ready_timeout: Duration::from_secs(30),
             control_request_timeout: Duration::from_secs(10),
             clip_request_timeout: Duration::from_secs(10),
+            disconnect_grace_period: Duration::from_secs(10),
             session_poll: PollConfig::session(),
             sdp_poll: PollConfig::sdp(),
             preset_tracks: None,
@@ -158,6 +165,17 @@ struct State {
     /// Incremented on every `connect()` / `reconnect()`.  Each `run_heartbeat`
     /// instance captures the epoch at spawn time and exits when it changes.
     heartbeat_epoch: u64,
+    /// Incremented on every `Disconnected` and every `Connected` peer
+    /// connection state, plus every `connect()`/`reconnect()`. A pending
+    /// `run_disconnect_watchdog` check captures this at the moment
+    /// `Disconnected` fires and only finalizes the fatal disconnect if it's
+    /// unchanged once the grace period elapses.
+    disconnect_epoch: u64,
+    /// Set by `run_disconnect_watchdog` while it's waiting for the next
+    /// `Disconnected` to watch; fired (and cleared) by `on_peer_connection_state`.
+    /// Cleared by `teardown()` too, so an abandoned watchdog wakes and exits
+    /// instead of waiting forever on a session that already tore down.
+    disconnect_notify: Option<oneshot::Sender<()>>,
     /// Effective values for the current connection: the [`ReactorOptions`]
     /// defaults unless the last `connect()` overrode them.
     auto_resume_tracks: bool,
@@ -295,6 +313,7 @@ impl Reactor {
             state.closing = false;
             state.status = ReactorStatus::Connecting;
             state.heartbeat_epoch = state.heartbeat_epoch.wrapping_add(1);
+            state.disconnect_epoch = state.disconnect_epoch.wrapping_add(1);
             if let Some(auto_resume) = connect_options.auto_resume_tracks {
                 state.auto_resume_tracks = auto_resume;
             }
@@ -445,6 +464,7 @@ impl Reactor {
             state.ice_ready = false;
             state.status = ReactorStatus::Connecting;
             state.heartbeat_epoch = state.heartbeat_epoch.wrapping_add(1);
+            state.disconnect_epoch = state.disconnect_epoch.wrapping_add(1);
             sid
         };
         self.dispatcher
@@ -565,6 +585,9 @@ impl Reactor {
             let mut state = self.state.lock().unwrap();
             state.closing = true;
             state.ready_gate = None;
+            // Wakes an idle run_disconnect_watchdog (if any) so it exits
+            // instead of waiting forever on a session that just tore down.
+            state.disconnect_notify = None;
             let terminate = !recoverable && state.created_session;
             (terminate, state.session_id.clone())
         };
@@ -689,11 +712,27 @@ impl Reactor {
             PeerConnectionState::Connected => {
                 let mut state = self.state.lock().unwrap();
                 state.peer_connected = true;
+                // Cancels any run_disconnect_watchdog check armed by a
+                // `Disconnected` this recovers from.
+                state.disconnect_epoch = state.disconnect_epoch.wrapping_add(1);
                 Self::check_ready_locked(&mut state);
             }
-            PeerConnectionState::Failed
-            | PeerConnectionState::Disconnected
-            | PeerConnectionState::Closed => {
+            PeerConnectionState::Disconnected => {
+                // Transient per the WebRTC spec (an ICE consent-check miss
+                // real engines routinely recover from within seconds) —
+                // unlike Failed/Closed below, this alone must not be fatal.
+                // Bump the epoch and wake run_disconnect_watchdog, which
+                // enforces `disconnect_grace_period` before treating it as
+                // one; a `Connected` in the meantime cancels it above.
+                let mut state = self.state.lock().unwrap();
+                if !state.closing && state.status != ReactorStatus::Disconnected {
+                    state.disconnect_epoch = state.disconnect_epoch.wrapping_add(1);
+                    if let Some(notify) = state.disconnect_notify.take() {
+                        let _ = notify.send(());
+                    }
+                }
+            }
+            PeerConnectionState::Failed | PeerConnectionState::Closed => {
                 let should_report = {
                     let state = self.state.lock().unwrap();
                     !state.closing && state.status != ReactorStatus::Disconnected
@@ -708,6 +747,52 @@ impl Reactor {
                 }
             }
             PeerConnectionState::New | PeerConnectionState::Connecting => {}
+        }
+    }
+
+    /// Enforces `ReactorOptions::disconnect_grace_period` for a `Disconnected`
+    /// peer connection state — see `on_peer_connection_state`. Callers spawn
+    /// this once per connection, same lifecycle as [`Self::run_heartbeat`]: it
+    /// exits on its own once `teardown()` clears `disconnect_notify` (a
+    /// caller-initiated `disconnect()`, or a `Failed`/`Closed` finalizing
+    /// first) or a new `connect()`/`reconnect()` bumps `disconnect_epoch`.
+    pub async fn run_disconnect_watchdog(&self) {
+        loop {
+            let rx = {
+                let mut state = self.state.lock().unwrap();
+                if state.closing {
+                    return;
+                }
+                let (tx, rx) = oneshot::channel();
+                state.disconnect_notify = Some(tx);
+                rx
+            };
+            // Waits for the next Disconnected. Resolves to `Err` only when
+            // `teardown()` drops the sender without ever firing it — i.e.
+            // the session ended some other way while idle; nothing left to
+            // watch.
+            if rx.await.is_err() {
+                return;
+            }
+            let (epoch, grace_period) = {
+                let state = self.state.lock().unwrap();
+                (state.disconnect_epoch, self.options.disconnect_grace_period)
+            };
+            self.platform.sleep(grace_period).await;
+            let should_finalize = {
+                let state = self.state.lock().unwrap();
+                !state.closing
+                    && state.status != ReactorStatus::Disconnected
+                    && state.disconnect_epoch == epoch
+            };
+            if should_finalize {
+                self.emit_error(ErrorDetails::new(
+                    codes::DISCONNECTED,
+                    "peer connection state: Disconnected".to_string(),
+                    true,
+                ));
+                self.teardown(true, true).await;
+            }
         }
     }
 
@@ -2136,18 +2221,17 @@ mod tests {
     /// WebRTC stacks do routinely under ordinary network jitter — must not
     /// kill the session or fail whatever command was in flight.
     ///
-    /// `on_peer_connection_state` currently treats `Disconnected` exactly
-    /// like `Failed`/`Closed`, with no debounce: it reports a fatal
-    /// `DISCONNECTED` error and tears the session down the instant the state
-    /// is observed, even if `Connected` follows a moment later. That is the
-    /// root cause behind the `"peer connection state: Disconnected"` errors
-    /// seen in production for fast-h3 / h3-reference-turbo-realtime sessions
-    /// of every duration — including many that die within milliseconds of
-    /// connecting, right as their first command goes out.
-    ///
-    /// This test currently FAILS, reproducing the bug: the in-flight command
-    /// is rejected with `DISCONNECTED` before the immediate reconnect and the
-    /// eventual reply ever reach it.
+    /// `on_peer_connection_state` used to treat `Disconnected` exactly like
+    /// `Failed`/`Closed`, with no debounce: it reported a fatal `DISCONNECTED`
+    /// error and tore the session down the instant the state was observed,
+    /// even when `Connected` followed a moment later. That was the root
+    /// cause behind the `"peer connection state: Disconnected"` errors seen
+    /// in production for fast-h3 / h3-reference-turbo-realtime sessions of
+    /// every duration — including many that died within milliseconds of
+    /// connecting, right as their first command went out. See
+    /// [`disconnected_that_never_recovers_eventually_tears_down`] for the
+    /// other half: a disconnect that does *not* recover still ends the
+    /// session, just after `disconnect_grace_period` instead of instantly.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_momentary_ice_disconnect_does_not_kill_an_in_flight_command() {
         let reactor = make_reactor();
@@ -2188,13 +2272,59 @@ mod tests {
             .unwrap();
         assert_eq!(
             result.ok(),
-            Some(Some(json!({"type": "get_state_reply", "data": {"brightness": 1.0}}))),
+            Some(Some(
+                json!({"type": "get_state_reply", "data": {"brightness": 1.0}})
+            )),
             "a momentary disconnect that immediately recovers must not fail the in-flight command"
         );
         assert_eq!(
             reactor.status(),
             ReactorStatus::Ready,
             "the session must still be usable after a transient ICE blip that self-healed"
+        );
+    }
+
+    /// The other half of the fix above: a `Disconnected` that does *not*
+    /// recover must still end the session — just after
+    /// `disconnect_grace_period`, via `run_disconnect_watchdog`, instead of
+    /// instantly. Without this half, giving `Disconnected` a grace period
+    /// would leave a genuinely dead connection hanging forever instead of
+    /// ever surfacing a fatal error.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn disconnected_that_never_recovers_eventually_tears_down() {
+        let mut opts = ReactorOptions::new("http://localhost", "test-model");
+        opts.disconnect_grace_period = Duration::from_millis(20);
+        let reactor = make_reactor_opts(opts);
+        reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+
+        let r = reactor.clone();
+        let watchdog = tokio::spawn(async move { r.run_disconnect_watchdog().await });
+
+        // Give the watchdog a moment to arm its first wait before the event fires.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        reactor
+            .handle_peer_event(PeerEvent::ConnectionStateChanged(
+                PeerConnectionState::Disconnected,
+            ))
+            .await;
+
+        // No Connected ever follows — the watchdog should wake, sleep the
+        // grace period, and finalize.
+        let result = tokio::time::timeout(Duration::from_millis(300), watchdog).await;
+        assert!(
+            result.is_ok(),
+            "run_disconnect_watchdog should finalize and exit once the grace period elapses"
+        );
+
+        let error = reactor
+            .last_error()
+            .expect("a disconnect that never recovers must surface a fatal DISCONNECTED error");
+        assert_eq!(error.details.code, codes::DISCONNECTED);
+        assert_eq!(
+            reactor.status(),
+            ReactorStatus::Disconnected,
+            "the session must be torn down once the grace period elapses without recovery"
         );
     }
 

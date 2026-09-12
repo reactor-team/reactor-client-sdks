@@ -1186,6 +1186,8 @@ pub unsafe extern "C" fn reactor_connect(
             .await?;
             let r2 = r.clone();
             spawn_tracked(&tasks, async move { r2.run_heartbeat().await });
+            let r3 = r.clone();
+            spawn_tracked(&tasks, async move { r3.run_disconnect_watchdog().await });
             Ok(None)
         }
     );
@@ -1237,6 +1239,8 @@ pub unsafe extern "C" fn reactor_reconnect(
             r.reconnect(None).await?;
             let r2 = r.clone();
             spawn_tracked(&tasks, async move { r2.run_heartbeat().await });
+            let r3 = r.clone();
+            spawn_tracked(&tasks, async move { r3.run_disconnect_watchdog().await });
             Ok(None)
         }
     );

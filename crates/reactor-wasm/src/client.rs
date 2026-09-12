@@ -355,7 +355,7 @@ impl ReactorClient {
             .connect(options.into())
             .await
             .map_err(|e| error_value(&e.details(Some("connect"))))?;
-        self.start_heartbeat();
+        self.start_connection_tasks();
         Ok(())
     }
 
@@ -381,7 +381,7 @@ impl ReactorClient {
             .reconnect(options.max_attempts)
             .await
             .map_err(|e| error_value(&e.details(Some("reconnect"))))?;
-        self.start_heartbeat();
+        self.start_connection_tasks();
         Ok(())
     }
 
@@ -702,13 +702,19 @@ impl ReactorClient {
 }
 
 impl ReactorClient {
-    /// Keep the session alive for as long as it is ready. The core's loop exits
-    /// on its own when the connection ends or another connect starts, so this is
-    /// spawn-and-forget rather than something to cancel.
-    fn start_heartbeat(&self) {
+    /// Keep the session alive for as long as it is ready, and enforce the
+    /// disconnect grace period for a transient `Disconnected` peer connection
+    /// state. Both core loops exit on their own when the connection ends or
+    /// another connect starts, so this is spawn-and-forget rather than
+    /// something to cancel.
+    fn start_connection_tasks(&self) {
         let reactor = self.reactor.clone();
         spawn_until_shutdown(self.shutdown.clone(), async move {
             reactor.run_heartbeat().await
+        });
+        let reactor = self.reactor.clone();
+        spawn_until_shutdown(self.shutdown.clone(), async move {
+            reactor.run_disconnect_watchdog().await
         });
     }
 
