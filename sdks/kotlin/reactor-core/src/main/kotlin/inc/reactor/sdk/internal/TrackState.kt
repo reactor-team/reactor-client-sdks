@@ -4,7 +4,9 @@ import inc.reactor.sdk.AudioFrame
 import inc.reactor.sdk.ControlEvent
 import inc.reactor.sdk.DecodeFailedError
 import inc.reactor.sdk.ErrorDetails
+import inc.reactor.sdk.InvalidStateError
 import inc.reactor.sdk.MediaFrame
+import inc.reactor.sdk.PublicationState
 import inc.reactor.sdk.TrackDirection
 import inc.reactor.sdk.TrackKind
 import inc.reactor.sdk.VideoFrame
@@ -41,6 +43,12 @@ internal fun declarations(value: JsonArray): List<Declaration> {
         }
     require(result.map { it.name }.distinct().size == result.size) { "Duplicate track names" }
     return result
+}
+
+internal class Publication(
+    val declaration: Declaration,
+) {
+    var state = PublicationState.PUBLISHING
 }
 
 private val mediaDeliveryDepth = ThreadLocal.withInitial { 0 }
@@ -97,12 +105,16 @@ internal class TrackState(
     private var epoch = 0L
     private var revision = 0L
     private var declared = emptyList<Declaration>()
+    private var ready = false
+    private val publications = mutableMapOf<String, Publication>()
     private val mids = mutableMapOf<String, String?>()
     private val handlers = mutableMapOf<String, MutableList<FrameHandler>>()
     private val reported = mutableSetOf<String>()
 
     fun beginHandle(): Long =
         synchronized(lock) {
+            ready = false
+            publications.clear()
             epoch++
             revision++
             declared = emptyList()
@@ -134,7 +146,9 @@ internal class TrackState(
             if (epoch != expected) return
             when (kind) {
                 0 -> {
-                    if (text?.decodeToString() != "ready") {
+                    ready = text?.decodeToString() == "ready"
+                    if (!ready) {
+                        publications.clear()
                         revision++
                         declared = emptyList()
                         mids.clear()
@@ -143,6 +157,7 @@ internal class TrackState(
                 4 -> {
                     revision++
                     declared = requireNotNull(parsed)
+                    publications.entries.removeAll { it.value.declaration !in declared }
                 }
                 6 ->
                     mids[requireNotNull(text).decodeToString(throwOnInvalidSequence = true)] =
@@ -158,11 +173,56 @@ internal class TrackState(
             // A callback may have replaced declarations while the FFI snapshot was copied/decoded.
             if (revision == generation) {
                 declared = parsed
+                publications.entries.removeAll { it.value.declaration !in declared }
                 revision++
             }
             declared.toList()
         }
     }
+
+    fun publication(declaration: Declaration): Publication? =
+        synchronized(lock) {
+            publications[declaration.name]?.takeIf { it.declaration == declaration }
+        }
+
+    fun publicationState(declaration: Declaration): PublicationState =
+        synchronized(lock) {
+            publication(declaration)?.state ?: PublicationState.UNPUBLISHED
+        }
+
+    fun beginPublish(declaration: Declaration): Publication? =
+        synchronized(lock) {
+            requireReady()
+            require(declaration in declared) { "Track changed; refresh Reactor.tracks" }
+            val current = publications[declaration.name]
+            if (current?.state == PublicationState.PUBLISHED) return null
+            if (current != null) invalidState("Publish already pending for '${declaration.name}'; await it before publishing again")
+            Publication(declaration).also { publications[declaration.name] = it }
+        }
+
+    fun finishPublish(
+        publication: Publication,
+        success: Boolean,
+    ) = synchronized(lock) {
+        // Identity guards connection resets, changed declarations and later attempts.
+        if (publications[publication.declaration.name] === publication) {
+            if (success) publication.state = PublicationState.PUBLISHED else publications.remove(publication.declaration.name)
+        }
+    }
+
+    fun requirePublished(declaration: Declaration) =
+        synchronized(lock) {
+            requireReady()
+            if (publicationState(declaration) != PublicationState.PUBLISHED) {
+                invalidState("Track '${declaration.name}' is not published; await publish() and publish again after reconnect")
+            }
+        }
+
+    private fun requireReady() {
+        if (!ready) invalidState("Connection is not ready; await connect and publish again after reconnect")
+    }
+
+    private fun invalidState(message: String): Nothing = throw InvalidStateError(ErrorDetails("INVALID_STATE", message))
 
     fun mid(name: String): String? = synchronized(lock) { mids[name] }
 
