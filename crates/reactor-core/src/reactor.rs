@@ -109,7 +109,7 @@ impl ReactorOptions {
             ready_timeout: Duration::from_secs(30),
             control_request_timeout: Duration::from_secs(10),
             clip_request_timeout: Duration::from_secs(10),
-            disconnect_grace_period: Duration::from_secs(10),
+            disconnect_grace_period: Duration::from_secs(30),
             session_poll: PollConfig::session(),
             sdp_poll: PollConfig::sdp(),
             preset_tracks: None,

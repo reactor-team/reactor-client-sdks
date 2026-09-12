@@ -13,7 +13,7 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 - A transient WebRTC `disconnected` peer connection state — a brief network
   blip the engine often recovers from on its own within seconds — no longer
-  ends the session immediately. It now gets a 10-second grace period to
+  ends the session immediately. It now gets a 30-second grace period to
   recover before being treated as a fatal disconnect; `failed`/`closed` stay
   immediate, since those are genuinely terminal. Previously, any interruption,
   even one that resolved itself a moment later, tore the session down and
