@@ -53,7 +53,10 @@ val testRealNative by tasks.registering(Test::class) {
     dependsOn(tasks.testClasses)
     testClassesDirs = tasks.test.get().testClassesDirs
     classpath = tasks.test.get().classpath
-    filter { includeTestsMatching("inc.reactor.sdk.internal.RealNativeLifecycleTest") }
+    filter {
+        includeTestsMatching("inc.reactor.sdk.internal.RealNativeLifecycleTest")
+        includeTestsMatching("inc.reactor.sdk.internal.RealNativeDownloadTest")
+    }
     jvmArgs("-Xcheck:jni")
     systemProperty("reactor.jni.real.directory", rootProject.file("../../target/kotlin-jni/host").absolutePath)
 }
@@ -78,6 +81,7 @@ val testJniSanitizer by tasks.registering(Test::class) {
         includeTestsMatching("inc.reactor.sdk.internal.MediaSendTest")
         includeTestsMatching("inc.reactor.sdk.internal.CommandTest")
         includeTestsMatching("inc.reactor.sdk.internal.UploadTest")
+        includeTestsMatching("inc.reactor.sdk.internal.RecordingTest")
     }
     jvmArgs("-Xcheck:jni")
     systemProperty(
