@@ -93,3 +93,6 @@ removal. Rebuild the development JNI library when updating this stack.
 Publishing, typed BGRA/PCM pushes, metadata, engine capture times and bitrate controls are
 available on the same Track API. See [Sending media](docs/0007-sending-media.md) for the
 publication lifecycle, validation and cancellation behavior.
+
+Correlated commands, schemas, unsolicited messages and typed connection statistics are
+available; see [Commands and statistics](docs/0008-commands-and-statistics.md).
