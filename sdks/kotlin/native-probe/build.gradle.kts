@@ -19,14 +19,16 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     sourceSets["androidTest"].java.srcDirs(
-        "../reactor-core/src/main/kotlin/inc/reactor/sdk/internal",
-        "../reactor-core/src/test/kotlin/inc/reactor/sdk/internal",
+        "../reactor-core/src/main/kotlin",
+        "../reactor-core/src/test/kotlin",
     )
     sourceSets["main"].jniLibs.srcDir(layout.buildDirectory.dir("native/jniLibs"))
 }
 
 dependencies {
     implementation(files(layout.buildDirectory.file("native/libwebrtc.jar")))
+    androidTestImplementation(libs.coroutines)
+    androidTestImplementation(libs.serialization.json)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.junit)
 }

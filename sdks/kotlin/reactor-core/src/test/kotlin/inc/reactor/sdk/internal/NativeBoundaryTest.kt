@@ -1,5 +1,8 @@
 package inc.reactor.sdk.internal
 
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -13,6 +16,10 @@ class NativeBoundaryTest {
         val library = System.getProperty("reactor.jni.test.library")
         if (library == null) System.loadLibrary("reactor_jni_test") else System.load(library)
     }
+
+    private external fun startAuth(receiver: Receiver)
+
+    private external fun finishAuth()
 
     private external fun setAbi(value: Int)
 
@@ -31,6 +38,7 @@ class NativeBoundaryTest {
 
     class Receiver(
         private val throwing: Boolean = false,
+        private val onResult: ((ByteArray?, ByteArray?) -> Unit)? = null,
     ) {
         var count = 0
         var message: ByteArray? = null
@@ -43,6 +51,7 @@ class NativeBoundaryTest {
             data: ByteArray?,
         ) {
             count++
+            onResult?.invoke(text, data)
             message = text
             payload = data
             if (throwing && count == 1) error("handler failure")
@@ -56,6 +65,27 @@ class NativeBoundaryTest {
         assertEquals(1, receiver.count)
         assertEquals("after destroy", receiver.message!!.toString(Charsets.UTF_8))
     }
+
+    @Test
+    fun authTicketOutlivesCancelledAwaiter() =
+        runBlocking {
+            val registry = CompletionRegistry()
+            var id = 0L
+            val receiver = Receiver(onResult = { result, error -> registry.complete(id, result, error) })
+            val task =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    registry.await({ it }) {
+                        id = it
+                        startAuth(receiver)
+                    }
+                }
+            task.cancel()
+            task.join()
+            registry.close()
+            finishAuth()
+            assertEquals(0, registry.pendingCount)
+            assertEquals(1, receiver.count)
+        }
 
     @Test
     fun checksHeaderAbiAndPreservesInt64() {
