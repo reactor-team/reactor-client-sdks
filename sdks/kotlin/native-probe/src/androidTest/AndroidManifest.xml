@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <provider
+            android:name="inc.reactor.sdk.internal.TestUploadProvider"
+            android:authorities="inc.reactor.sdk.probe.test.upload"
+            android:exported="false" />
+    </application>
+</manifest>

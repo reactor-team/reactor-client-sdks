@@ -27,6 +27,22 @@ internal object NativeClient {
         operation: Int,
         name: ByteArray?,
         arguments: ByteArray?,
+        uploads: ByteArray?,
+        receiver: Any,
+    )
+
+    external fun uploadFile(
+        handle: Long,
+        path: ByteArray,
+        staged: Boolean,
+        receiver: Any,
+    )
+
+    external fun uploadBytes(
+        handle: Long,
+        bytes: ByteArray,
+        name: ByteArray,
+        mimeType: ByteArray,
         receiver: Any,
     )
 
