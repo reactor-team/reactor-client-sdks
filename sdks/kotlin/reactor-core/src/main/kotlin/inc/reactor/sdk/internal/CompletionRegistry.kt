@@ -115,6 +115,8 @@ internal class CompletionRegistry : AutoCloseable {
         }
     }
 
+    fun isPending(id: Long): Boolean = synchronized(lock) { entries.containsKey(id) }
+
     val pendingCount: Int get() = synchronized(lock) { entries.size }
 
     suspend fun <T> await(

@@ -110,6 +110,12 @@ class TestUploadProvider : ContentProvider() {
         mode: String,
     ): ParcelFileDescriptor {
         if (uri.lastPathSegment == "denied") throw SecurityException("Read access revoked")
+        if (uri.lastPathSegment == "destination") {
+            return ParcelFileDescriptor.open(
+                File(requireNotNull(context).cacheDir, "content-destination.mp4"),
+                ParcelFileDescriptor.MODE_WRITE_ONLY or ParcelFileDescriptor.MODE_CREATE or ParcelFileDescriptor.MODE_TRUNCATE,
+            )
+        }
         return ParcelFileDescriptor.open(File(requireNotNull(context).cacheDir, "content-source.bin"), ParcelFileDescriptor.MODE_READ_ONLY)
     }
 }
