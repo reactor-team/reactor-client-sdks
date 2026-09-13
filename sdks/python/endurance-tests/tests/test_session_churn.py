@@ -13,7 +13,10 @@ completions) that a coarser connect/close cycle wouldn't surface as clearly.
 
 from __future__ import annotations
 
+import dataclasses
+import sys
 import tracemalloc
+from pathlib import Path
 
 from helpers import (
     ENDURANCE_DURATION_SECONDS,
@@ -24,6 +27,16 @@ from helpers import (
     cpu_deltas,
     pump_until_frame_received,
     solid_rgb_frame,
+)
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from report import (  # noqa: E402
+    LiveReporter,
+    MetricResult,
+    RunResult,
+    git_commit_sha,
+    now_iso,
+    write_reports,
 )
 
 from reactor_sdk import Reactor
@@ -38,11 +51,16 @@ TRACK_NAME = "webcam"
 
 async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
     sampler = ResourceSampler()
+    live = LiveReporter("session-churn", ENDURANCE_DURATION_SECONDS)
     frame = solid_rgb_frame(WIDTH, HEIGHT, (30, 150, 90))
     tracemalloc.start()
     mid_snapshot = None
     final_snapshot = None
+    tracemalloc_top: list[str] | None = None
     iteration = 0
+    errors = 0
+    metrics: list[MetricResult] = []
+    started_at = now_iso()
 
     try:
         while not sampler.deadline_reached():
@@ -95,107 +113,172 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
             )
 
             sampler.sample(cycle=iteration)
+            live.update(
+                sampler.samples,
+                errors=errors,
+                extra={"Pending": str(len(reactor._pending_completions))},
+            )
             elapsed = sampler.samples[-1].elapsed_s
             if mid_snapshot is None and elapsed >= ENDURANCE_DURATION_SECONDS * 0.3:
                 mid_snapshot = tracemalloc.take_snapshot()
             iteration += 1
 
         final_snapshot = tracemalloc.take_snapshot()
+
+        assert iteration >= 3, (
+            f"only completed {iteration} iteration(s) — raise ENDURANCE_DURATION_SECONDS "
+            "to get enough data for a trend"
+        )
+
+        # live_clients should stay exactly flat, but not at 0 — the `reactor`
+        # fixture's one client is connected for the whole test, so its baseline
+        # is 1, not 0.
+        metrics.append(assert_never_grows(sampler.samples, field="live_clients"))
+        # Always-zero, not never-grows: orphaned callbacks come only from clients
+        # that have already closed, so the invariant is 0 regardless of how many
+        # clients are live. assert_never_grows would only flag growth *past*
+        # whatever the first sample happened to be, so a leak already present at
+        # cycle 0 (fixture setup, an earlier test) would pass silently forever.
+        metrics.append(assert_always_zero(sampler.samples, field="orphaned_callbacks"))
+        metrics.append(
+            assert_no_sustained_growth(
+                [s.rss_bytes / 1e6 for s in sampler.samples],
+                name="rss",
+                unit="MB",
+                max_growth_ratio=0.15,
+                min_absolute_delta=5.0,
+            )
+        )
+        metrics.append(
+            assert_no_sustained_growth(
+                cpu_deltas(sampler.samples),
+                name="cpu_s_per_cycle",
+                unit="s",
+                max_growth_ratio=0.5,
+                min_absolute_delta=0.05,
+            )
+        )
+        # Same trend check, on the % reading instead of the raw seconds — see
+        # Sample.cpu_percent's own docstring for why the two can disagree.
+        metrics.append(
+            assert_no_sustained_growth(
+                [s.cpu_percent for s in sampler.samples],
+                name="cpu_percent",
+                unit="%",
+                max_growth_ratio=0.5,
+                min_absolute_delta=5.0,
+            )
+        )
+        # Trend-based, not "never past the start" like test_lifecycle_churn.py's:
+        # one long-lived session can legitimately grow a thread or two / open a
+        # few fds during warm-up (a connection pool, a worker thread spinning up)
+        # and then plateau — same reasoning as RSS/CPU above, just with small
+        # integers instead of bytes/seconds. `use_median` and the wider floor —
+        # see test_lifecycle_churn.py's own comment on the identical call — guard
+        # against the same one-cycle double-counted-thread artifact skewing a
+        # short run's small comparison windows.
+        metrics.append(
+            assert_no_sustained_growth(
+                [float(s.num_threads) for s in sampler.samples],
+                name="num_threads",
+                unit="count",
+                max_growth_ratio=0.15,
+                min_absolute_delta=4,
+                use_median=True,
+            )
+        )
+        metrics.append(
+            assert_no_sustained_growth(
+                [float(s.num_fds) for s in sampler.samples],
+                name="num_fds",
+                unit="count",
+                max_growth_ratio=0.15,
+                min_absolute_delta=3,
+            )
+        )
+
+        # Diagnostic always, hard-asserted only against a generous floor:
+        # tracemalloc diffs are known-noisy (one-time caches, string interning),
+        # and this suite runs manually for now, so a human reads the report
+        # rather than a nightly job trusting a tight auto-threshold.
+        if mid_snapshot is not None:
+            diff = final_snapshot.compare_to(mid_snapshot, "lineno")
+            print("\ntracemalloc top growth (~30% mark → end):")
+            for stat in diff[:10]:
+                print(f"  {stat}")
+            tracemalloc_top = [str(stat) for stat in diff[:10]]
+            # Max, not diff[0]: compare_to() sorts by *absolute* size_diff, so a
+            # large negative (freed) entry can sort first and mask a smaller-in-
+            # magnitude but still-over-the-floor positive (grown) entry elsewhere
+            # in the list.
+            biggest = max((stat.size_diff for stat in diff), default=0)
+            tracemalloc_is_leak = biggest >= 5_000_000
+            print(
+                f"[tracemalloc] {'LEAK?' if tracemalloc_is_leak else 'ok'}: biggest "
+                f"single-traceback growth was {biggest / 1e6:.2f} MB — "
+                + (
+                    "over the 5 MB floor, see the breakdown above for where"
+                    if tracemalloc_is_leak
+                    else "under the 5 MB floor treated as noise (one-time caches, "
+                    "string interning — see README.md)"
+                )
+            )
+            metrics.append(
+                MetricResult(
+                    name="tracemalloc_max_growth",
+                    start=0,
+                    end=biggest / 1e6,
+                    change=biggest / 1e6,
+                    unit="MB",
+                    status="fail" if tracemalloc_is_leak else "ok",
+                    detail="a single allocation site grew past the diagnostic floor"
+                    if tracemalloc_is_leak
+                    else "under the 5 MB floor, treated as noise",
+                    threshold="< 5 MB (diagnostic)",
+                )
+            )
     finally:
         # Stopping tracemalloc unconditionally matters as much as the report
         # below: an in-loop assertion failure above (a real leak) would
         # otherwise leave tracemalloc tracing every allocation for the rest
         # of this pytest process, skewing RSS/CPU for whatever runs next.
         tracemalloc.stop()
-        # Same reasoning as test_lifecycle_churn.py's own finally: a
-        # transient failure mid-run shouldn't cost the whole accumulated
-        # trend, which is the one thing a soak test actually exists to show.
         if sampler.samples:
-            sampler.print_report()
-
-    assert iteration >= 3, (
-        f"only completed {iteration} iteration(s) — raise ENDURANCE_DURATION_SECONDS "
-        "to get enough data for a trend"
-    )
-
-    # live_clients should stay exactly flat, but not at 0 — the `reactor`
-    # fixture's one client is connected for the whole test, so its baseline
-    # is 1, not 0.
-    assert_never_grows(sampler.samples, field="live_clients")
-    # Always-zero, not never-grows: orphaned callbacks come only from clients
-    # that have already closed, so the invariant is 0 regardless of how many
-    # clients are live. assert_never_grows would only flag growth *past*
-    # whatever the first sample happened to be, so a leak already present at
-    # cycle 0 (fixture setup, an earlier test) would pass silently forever.
-    assert_always_zero(sampler.samples, field="orphaned_callbacks")
-    assert_no_sustained_growth(
-        [s.rss_bytes for s in sampler.samples],
-        name="rss_bytes",
-        max_growth_ratio=0.15,
-        min_absolute_delta=5_000_000,
-    )
-    assert_no_sustained_growth(
-        cpu_deltas(sampler.samples),
-        name="cpu_s_per_cycle",
-        max_growth_ratio=0.5,
-        min_absolute_delta=0.05,
-    )
-    # Same trend check, on the % reading instead of the raw seconds — see
-    # Sample.cpu_percent's own docstring for why the two can disagree.
-    assert_no_sustained_growth(
-        [s.cpu_percent for s in sampler.samples],
-        name="cpu_percent",
-        max_growth_ratio=0.5,
-        min_absolute_delta=5.0,
-    )
-    # Trend-based, not "never past the start" like test_lifecycle_churn.py's:
-    # one long-lived session can legitimately grow a thread or two / open a
-    # few fds during warm-up (a connection pool, a worker thread spinning up)
-    # and then plateau — same reasoning as RSS/CPU above, just with small
-    # integers instead of bytes/seconds. `use_median` and the wider floor —
-    # see test_lifecycle_churn.py's own comment on the identical call — guard
-    # against the same one-cycle double-counted-thread artifact skewing a
-    # short run's small comparison windows.
-    assert_no_sustained_growth(
-        [float(s.num_threads) for s in sampler.samples],
-        name="num_threads",
-        max_growth_ratio=0.15,
-        min_absolute_delta=4,
-        use_median=True,
-    )
-    assert_no_sustained_growth(
-        [float(s.num_fds) for s in sampler.samples],
-        name="num_fds",
-        max_growth_ratio=0.15,
-        min_absolute_delta=3,
-    )
-
-    # Diagnostic always, hard-asserted only against a generous floor:
-    # tracemalloc diffs are known-noisy (one-time caches, string interning),
-    # and this suite runs manually for now, so a human reads the report
-    # rather than a nightly job trusting a tight auto-threshold.
-    if mid_snapshot is not None:
-        diff = final_snapshot.compare_to(mid_snapshot, "lineno")
-        print("\ntracemalloc top growth (~30% mark → end):")
-        for stat in diff[:10]:
-            print(f"  {stat}")
-        # Max, not diff[0]: compare_to() sorts by *absolute* size_diff, so a
-        # large negative (freed) entry can sort first and mask a smaller-in-
-        # magnitude but still-over-the-floor positive (grown) entry elsewhere
-        # in the list.
-        biggest = max((stat.size_diff for stat in diff), default=0)
-        is_leak = biggest >= 5_000_000
-        print(
-            f"[tracemalloc] {'LEAK?' if is_leak else 'ok'}: biggest single-traceback "
-            f"growth was {biggest / 1e6:.2f} MB — "
-            + (
-                "over the 5 MB floor, see the breakdown above for where"
-                if is_leak
-                else "under the 5 MB floor treated as noise (one-time caches, "
-                "string interning — see README.md)"
+            # Same `extra={"Pending": ...}` as every in-loop update() call
+            # above — reactor is still connected here (this scenario never
+            # disconnects it), so the final forced block can report the same
+            # field instead of silently dropping it.
+            live.update(
+                sampler.samples,
+                errors=errors,
+                extra={"Pending": str(len(reactor._pending_completions))},
+                force=True,
             )
+
+        exc_type, exc_val, _ = sys.exc_info()
+        run_error = f"{exc_type.__name__}: {exc_val}" if exc_type is not None else None
+        failed = [m for m in metrics if m.status == "fail"]
+        status = "ERROR" if run_error else ("FAIL" if failed else "PASS")
+        result = RunResult(
+            test_name="session-churn",
+            sdk="Python",
+            status=status,
+            duration_s=ENDURANCE_DURATION_SECONDS,
+            elapsed_s=sampler.samples[-1].elapsed_s if sampler.samples else 0.0,
+            iterations=iteration,
+            started_at=started_at,
+            ended_at=now_iso(),
+            metrics=metrics,
+            errors=errors,
+            commit_sha=git_commit_sha(),
+            run_error=run_error,
+            tracemalloc_top=tracemalloc_top,
+            samples=[dataclasses.asdict(s) for s in sampler.samples],
         )
-        assert not is_leak, (
-            f"a single allocation site grew {biggest / 1e6:.1f} MB between the "
-            "run's ~30% mark and its end — see the top-10 breakdown above"
+        write_reports(result)
+
+    if failed:
+        names = ", ".join(m.name for m in failed)
+        raise AssertionError(
+            f"endurance test detected a failure in: {names} — see the report for details"
         )

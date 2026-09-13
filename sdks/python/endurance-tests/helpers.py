@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import psutil
+from report import ENDURANCE_VERBOSE, MetricResult
 
 # Reuse integration-tests/conftest.py's real-FFI plumbing (new_reactor,
 # paced_connect, solid_rgb_frame, the reactor/reactor_factory fixtures)
@@ -119,6 +120,22 @@ class Sample:
     num_fds: int
 
 
+_TABLE_HEADER = (
+    f"\n{'cycle':>6} {'elapsed_s':>10} {'ram_mb':>8} {'cpu_s_per_cycle':>15} "
+    f"{'cpu_percent':>11} {'live_clients':>12} {'orphaned_cbs':>12} "
+    f"{'num_threads':>11} {'num_fds':>7}"
+)
+
+
+def _format_row(s: Sample, cpu_per_cycle: float | None) -> str:
+    cpu_str = f"{cpu_per_cycle:>15.3f}" if cpu_per_cycle is not None else f"{'—':>15}"
+    return (
+        f"{s.cycle:>6} {s.elapsed_s:>10.1f} {s.rss_bytes / 1e6:>8.2f} "
+        f"{cpu_str} {s.cpu_percent:>10.1f}% {s.live_clients:>12} "
+        f"{s.orphaned_callbacks:>12} {s.num_threads:>11} {s.num_fds:>7}"
+    )
+
+
 class ResourceSampler:
     """Samples process-wide resource usage plus the SDK's own handle-bookkeeping
     once per cycle of an endurance loop, against a shared wall-clock deadline.
@@ -170,6 +187,11 @@ class ResourceSampler:
             num_fds=self._process.num_fds(),
         )
         self.samples.append(s)
+        if ENDURANCE_VERBOSE:
+            # The debug path: one detailed row per cycle, live, instead of
+            # the default compact LiveReporter block (report.py) — see
+            # print_live_row()'s own docstring.
+            self.print_live_row(s)
         return s
 
     # The report table's columns, in plain language — read this before reading
@@ -203,7 +225,29 @@ class ResourceSampler:
     #                   normal; should not keep climbing.
     #   num_fds         open file descriptors (sockets, mainly — every WebRTC
     #                   connection needs some). Should not keep climbing.
+    def print_live_row(self, s: Sample) -> None:
+        """One detailed row for `s`, printed immediately — the
+        `ENDURANCE_VERBOSE=1` debug path (report.py's `LiveReporter` handles
+        the default compact path instead). Prints the header once, on the
+        first sample, rather than buffering the whole table for a final
+        dump — see `print_report()`'s own docstring for why a per-cycle
+        cumulative CPU value isn't what's printed here either.
+        """
+        if len(self.samples) == 1:
+            print(_TABLE_HEADER)
+        cpu_per_cycle = None
+        if len(self.samples) > 1:
+            cpu_per_cycle = s.cpu_s - self.samples[-2].cpu_s
+        print(_format_row(s, cpu_per_cycle))
+
     def print_report(self) -> None:
+        """Full recap table, one row per sample — kept for ad-hoc/manual use
+        (e.g. a REPL) rather than called by the tests themselves: under
+        `ENDURANCE_VERBOSE=1` every row already printed live via
+        `print_live_row()` above as it happened, and under the default
+        compact mode a full raw dump defeats the point of `LiveReporter`'s
+        summaries. Reuses the same row formatting as `print_live_row()`.
+        """
         # Per-cycle CPU (cpu_deltas), not the raw cumulative Sample.cpu_s: the
         # latter is psutil's total process CPU time since start, so it climbs
         # every row by construction — printing it invites reading "always
@@ -211,18 +255,10 @@ class ResourceSampler:
         # single cycle is getting more expensive. See cpu_deltas()'s own
         # docstring; the first cycle has no prior sample to diff against.
         deltas = cpu_deltas(self.samples)
-        print(
-            f"\n{'cycle':>6} {'elapsed_s':>10} {'ram_mb':>8} {'cpu_s_per_cycle':>15} "
-            f"{'cpu_percent':>11} {'live_clients':>12} {'orphaned_cbs':>12} "
-            f"{'num_threads':>11} {'num_fds':>7}"
-        )
+        print(_TABLE_HEADER)
         for i, s in enumerate(self.samples):
-            cpu_per_cycle = f"{deltas[i - 1]:>15.3f}" if i > 0 else f"{'—':>15}"
-            print(
-                f"{s.cycle:>6} {s.elapsed_s:>10.1f} {s.rss_bytes / 1e6:>8.2f} "
-                f"{cpu_per_cycle} {s.cpu_percent:>10.1f}% {s.live_clients:>12} "
-                f"{s.orphaned_callbacks:>12} {s.num_threads:>11} {s.num_fds:>7}"
-            )
+            cpu_per_cycle = deltas[i - 1] if i > 0 else None
+            print(_format_row(s, cpu_per_cycle))
 
 
 # ── trend assertions ─────────────────────────────────────────────────────────
@@ -251,7 +287,8 @@ def assert_no_sustained_growth(
     min_absolute_delta: float = 0.0,
     warmup_fraction: float = 0.2,
     use_median: bool = False,
-) -> None:
+    unit: str = "",
+) -> MetricResult:
     """Fail if `values`'s mean over the run's last third exceeds its mean over
     the first third (after dropping `warmup_fraction` to let one-time costs —
     import caches, connection setup, allocator warm-up — settle) by more than
@@ -278,6 +315,13 @@ def assert_no_sustained_growth(
 
     Always prints one line verdict, pass or fail — not just on failure — so a
     clean run still says *why* each signal looked fine, not just silence.
+
+    Returns a `MetricResult` (status "ok"/"fail") rather than raising: the
+    caller collects one from every check so a full report table can be built
+    even when one of them fails, instead of stopping at the first failure.
+    `n < 6` (not enough samples for a first-third/last-third split at all)
+    still raises directly — that's a test misconfiguration
+    (ENDURANCE_DURATION_SECONDS too short), not a metric to report on.
     """
     n = len(values)
     if n < 6:
@@ -309,20 +353,30 @@ def assert_no_sustained_growth(
         reason = f"under the {max_growth_ratio:.0%} growth threshold"
     print(f"[{name}] {'LEAK?' if is_leak else 'ok'}: {trend} — {reason}")
 
-    if is_leak:
-        raise AssertionError(f"{name} grew {ratio:.0%} across the run ({trend}) — {reason}")
+    return MetricResult(
+        name=name,
+        start=first_mean,
+        end=last_mean,
+        change=delta,
+        unit=unit,
+        status="fail" if is_leak else "ok",
+        detail=reason,
+        threshold=f"> {max_growth_ratio:.0%} growth (min {min_absolute_delta:,.3g})",
+    )
 
 
-def assert_always_zero(samples: list[Sample], *, field: str) -> None:
+def assert_always_zero(samples: list[Sample], *, field: str, unit: str = "count") -> MetricResult:
     """Fail if `field` was ever nonzero, on *any* cycle — for a count that
     should return to exactly 0 every time (e.g. live client handles right
     after `close()`), a trend isn't the right test: a leak on cycle 3 that
     happens to get cleaned up by cycle 40 is still a real bug.
 
     Always prints one line verdict, pass or fail — see
-    `assert_no_sustained_growth`'s own docstring for why.
+    `assert_no_sustained_growth`'s own docstring for why it returns a
+    `MetricResult` instead of raising directly.
     """
     bad = [(s.cycle, getattr(s, field)) for s in samples if getattr(s, field) != 0]
+    last_value = getattr(samples[-1], field)
     if bad:
         cycle, value = bad[0]
         reason = (
@@ -330,21 +384,63 @@ def assert_always_zero(samples: list[Sample], *, field: str) -> None:
             f"{value}) — a handle leaked mid-run"
         )
         print(f"[{field}] LEAK?: {reason}")
-        raise AssertionError(f"{field} was {reason}")
-    print(f"[{field}] ok: stayed at exactly 0 across all {len(samples)} cycles")
+        return MetricResult(
+            name=field,
+            start=0,
+            end=last_value,
+            change=last_value,
+            unit=unit,
+            status="fail",
+            detail=reason,
+            threshold="always 0",
+            first_bad_cycle=cycle,
+        )
+    reason = f"stayed at exactly 0 across all {len(samples)} cycles"
+    print(f"[{field}] ok: {reason}")
+    return MetricResult(
+        name=field,
+        start=0,
+        end=last_value,
+        change=last_value,
+        unit=unit,
+        status="ok",
+        detail=reason,
+        threshold="always 0",
+    )
 
 
-def assert_never_grows(samples: list[Sample], *, field: str) -> None:
+def assert_never_grows(samples: list[Sample], *, field: str, unit: str = "count") -> MetricResult:
     """Fail if `field`'s peak ever exceeds its starting value — for a count
     that's expected to stay flat across the whole run (not necessarily 0).
 
     Always prints one line verdict, pass or fail — see
-    `assert_no_sustained_growth`'s own docstring for why.
+    `assert_no_sustained_growth`'s own docstring for why it returns a
+    `MetricResult` instead of raising directly.
     """
     baseline = getattr(samples[0], field)
     peak = max(getattr(s, field) for s in samples)
     if peak > baseline:
         reason = f"grew from {baseline} to {peak} during the run"
         print(f"[{field}] LEAK?: {reason}")
-        raise AssertionError(f"{field} {reason}")
-    print(f"[{field}] ok: never exceeded its starting value ({baseline}; peak seen was {peak})")
+        return MetricResult(
+            name=field,
+            start=baseline,
+            end=peak,
+            change=peak - baseline,
+            unit=unit,
+            status="fail",
+            detail=reason,
+            threshold=f"never above {baseline}",
+        )
+    reason = f"never exceeded its starting value ({baseline}; peak seen was {peak})"
+    print(f"[{field}] ok: {reason}")
+    return MetricResult(
+        name=field,
+        start=baseline,
+        end=peak,
+        change=peak - baseline,
+        unit=unit,
+        status="ok",
+        detail=reason,
+        threshold=f"never above {baseline}",
+    )

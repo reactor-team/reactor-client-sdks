@@ -26,7 +26,14 @@ on:
         default: "5"
 
 concurrency:
-  group: endurance-tests-${{ github.ref }}
+  # Global, not per-ref: every scenario here runs against the same real,
+  # shared `reactor/echo` backend/API key (see the `python` job's own
+  # comment) rather than an isolated per-branch environment, so two manual
+  # runs on different branches at once would compete for the same quota and
+  # make both runs' RSS/CPU/timing trends noisier — worse for a suite whose
+  # whole point is reading a trend. workflow_dispatch is manual and
+  # infrequent, so serializing globally costs effectively nothing.
+  group: endurance-tests
   cancel-in-progress: false
 
 env:
@@ -107,3 +114,34 @@ jobs:
           export ENDURANCE_DURATION_SECONDS=$((10#$DURATION_MINUTES * 60))
           echo "Running for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s) per scenario"
           mise run test:python:endurance-tests
+
+      # `if: always()` on both of the following: a threshold violation or a
+      # test error should still leave a readable Job Summary and a
+      # downloadable artifact behind — see sdks/python/endurance-tests/
+      # report.py's own module docstring. Each scenario writes its own
+      # report in a `finally` block regardless of pass/fail, so these files
+      # exist even when the step above failed (unless the failure happened
+      # in fixture setup, before any report could be written — e.g. a
+      # connection error before the first sample).
+      - name: Publish results to the job summary
+        if: always()
+        working-directory: sdks/python
+        run: |
+          shopt -s nullglob
+          reports=(endurance-results/*-report.md)
+          if [ ${#reports[@]} -eq 0 ]; then
+            echo "No endurance-results/*-report.md files were written — the run likely failed before any scenario produced one (see the job log)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            for report in "${reports[@]}"; do
+              cat "$report" >> "$GITHUB_STEP_SUMMARY"
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+            done
+          fi
+
+      - name: Upload endurance test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: endurance-test-results
+          path: sdks/python/endurance-results/
+          if-no-files-found: warn
