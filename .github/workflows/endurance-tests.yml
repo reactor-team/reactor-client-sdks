@@ -98,6 +98,15 @@ jobs:
           version: ${{ env.MISE_VERSION }}
       - name: Install clang for the libwebrtc C++ glue
         uses: ./.github/actions/setup-libwebrtc-cxx
+      # A separate, named step — not left folded into the "Endurance tests"
+      # step below — so the job log reads as "Build reactor-ffi" then "Run
+      # the suite" instead of a wall of cargo compile output under a step
+      # named for the test run. `mise run test:python:endurance-tests` (used
+      # below and by anyone running this suite locally, per its own README)
+      # does this same `cargo build` itself — already up to date by the time
+      # it runs here, so it's a fast no-op rather than a second real build.
+      - name: Build reactor-ffi (release)
+        run: cargo build -p reactor-ffi --release
       - name: Endurance tests (real FFI client, real model)
         env:
           # Same dedicated secret ci.yml's python-integration-tests (and every
