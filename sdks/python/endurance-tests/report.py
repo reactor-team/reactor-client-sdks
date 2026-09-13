@@ -156,11 +156,68 @@ class RunResult:
     # _conclusion_lines(): the two are reported differently on purpose.
     run_error: str | None = None
     tracemalloc_top: list[str] | None = None
+    # A handful of evenly-spaced snapshots across the run (see
+    # compute_checkpoints()) — computed automatically by write_reports() from
+    # `samples` when left as None, not meant to be set directly.
+    checkpoints: list[dict[str, Any]] | None = None
     samples: list[dict[str, Any]] = dataclasses.field(default_factory=list)
 
     @property
     def emoji(self) -> str:
         return {"PASS": "🟢", "FAIL": "🔴", "ERROR": "🟠"}.get(self.status, "⚪")
+
+
+def compute_checkpoints(samples: list[dict[str, Any]], *, n: int = 5) -> list[dict[str, Any]]:
+    """`n` evenly-spaced snapshots across `samples` (by index, not by time —
+    sampling is already roughly evenly spaced in wall-clock time since each
+    cycle takes comparable work).
+
+    Exists because the trend assertions in helpers.py (and the report's own
+    Results table) only ever compare the *mean of the first third* to the
+    *mean of the last third* — that's the right check for "did this end up
+    somewhere worse than it started", but it collapses the actual shape of
+    a metric over time into two numbers. A metric that ramped for one middle
+    stretch and plateaued (a buffer/pool growing once to its steady-state
+    size, then holding) reads identically in that table to one that climbed
+    steadily the whole run — and those mean very different things for
+    whether something is actually still leaking. This is the smallest
+    addition that lets a report (or an agent reading the JSON) tell those
+    apart without reaching for the full `samples` list and writing a
+    bucketing script by hand.
+    """
+    if not samples:
+        return []
+    last_idx = len(samples) - 1
+    checkpoints = []
+    for i in range(n):
+        pct = (i / (n - 1)) if n > 1 else 0.0
+        s = samples[round(pct * last_idx)]
+        checkpoints.append(
+            {
+                "pct": round(pct * 100),
+                "cycle": s.get("cycle"),
+                "elapsed_s": s.get("elapsed_s"),
+                "rss_mb": s["rss_bytes"] / 1e6 if "rss_bytes" in s else None,
+                "num_threads": s.get("num_threads"),
+                "num_fds": s.get("num_fds"),
+                "cpu_percent": s.get("cpu_percent"),
+            }
+        )
+    return checkpoints
+
+
+def _timeline_rows(checkpoints: list[dict[str, Any]]) -> list[tuple[str, str, str, str, str]]:
+    rows = []
+    for c in checkpoints:
+        at = f"{c['pct']}%"
+        if c.get("elapsed_s") is not None:
+            at += f" ({format_duration(c['elapsed_s'])})"
+        rss = f"{c['rss_mb']:,.1f} MB" if c.get("rss_mb") is not None else "—"
+        threads = str(c["num_threads"]) if c.get("num_threads") is not None else "—"
+        fds = str(c["num_fds"]) if c.get("num_fds") is not None else "—"
+        cpu = f"{c['cpu_percent']:.1f}%" if c.get("cpu_percent") is not None else "—"
+        rows.append((at, rss, threads, fds, cpu))
+    return rows
 
 
 def _conclusion_lines(result: RunResult) -> list[str]:
@@ -225,6 +282,19 @@ def _conclusion_lines(result: RunResult) -> list[str]:
     return lines
 
 
+def _checkpoints_for(result: RunResult) -> list[dict[str, Any]]:
+    """`result.checkpoints` if already computed (write_reports() does this
+    before serializing to JSON), else computed on the fly from
+    `result.samples` — so render_markdown()/render_text() called directly
+    (as the tests do, and as anything reading a RunResult without going
+    through write_reports() would) still show the Timeline section rather
+    than silently omitting it.
+    """
+    if result.checkpoints is not None:
+        return result.checkpoints
+    return compute_checkpoints(result.samples)
+
+
 def render_markdown(result: RunResult) -> str:
     lines: list[str] = []
     lines.append(f"# {result.emoji} Endurance Test Report — {result.test_name}")
@@ -252,6 +322,20 @@ def render_markdown(result: RunResult) -> str:
             f"| Errors | {result.errors} | {result.errors} | — | "
             f"{'🟢' if result.errors == 0 else '🟡'} |"
         )
+        lines.append("")
+
+    checkpoints = _checkpoints_for(result)
+    if checkpoints:
+        # The Results table above only compares first-third vs last-third
+        # means — see compute_checkpoints()'s own docstring for why that can
+        # read as "steady climb" when the real shape is e.g. flat, then one
+        # ramp, then flat again. This shows the actual shape.
+        lines.append("## Timeline")
+        lines.append("")
+        lines.append("| At | RSS | Threads | FDs | CPU% |")
+        lines.append("|---|---:|---:|---:|---:|")
+        for at, rss, threads, fds, cpu in _timeline_rows(checkpoints):
+            lines.append(f"| {at} | {rss} | {threads} | {fds} | {cpu} |")
         lines.append("")
 
     lines.append("## Conclusion")
@@ -307,6 +391,16 @@ def render_text(result: RunResult) -> str:
         )
         lines.append("")
 
+    checkpoints = _checkpoints_for(result)
+    if checkpoints:
+        lines.append("Timeline")
+        lines.append("--------")
+        for at, rss, threads, fds, cpu in _timeline_rows(checkpoints):
+            lines.append(
+                f"  {at:<14} RSS {rss:>10}  threads {threads:>4}  fds {fds:>4}  cpu {cpu:>6}"
+            )
+        lines.append("")
+
     lines.append("Conclusion")
     lines.append("----------")
     lines.append(f"{result.status}")
@@ -331,7 +425,14 @@ def write_reports(result: RunResult, out_dir: Path = DEFAULT_OUTPUT_DIR) -> dict
     """Writes `{test_name}.json` / `{test_name}-report.md` / `{test_name}-
     summary.txt` under `out_dir`, all three derived from the same
     `RunResult` — see the module docstring for why that matters.
+
+    Fills in `result.checkpoints` from `result.samples` first, when not
+    already set — callers (the tests) only need to hand over the raw
+    samples they already collect; they don't need to know
+    `compute_checkpoints()` exists.
     """
+    if result.checkpoints is None and result.samples:
+        result.checkpoints = compute_checkpoints(result.samples)
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = {
         "json": out_dir / f"{result.test_name}.json",

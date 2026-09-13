@@ -16,11 +16,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "endurance-tests"))
 
 from report import (  # noqa: E402
     MetricResult,
     RunResult,
+    compute_checkpoints,
     render_markdown,
     render_text,
     write_reports,
@@ -222,6 +225,95 @@ class TestMissingOptionalDiagnostics:
         result.metrics = []
         render_markdown(result)
         render_text(result)
+
+    def test_no_samples_means_no_timeline_and_does_not_crash(self) -> None:
+        result = _passing_result()
+        assert result.samples == []
+        md = render_markdown(result)
+        text = render_text(result)
+        assert "## Timeline" not in md
+        assert "Timeline\n--------" not in text
+
+
+def _flat_ramp_flat_samples(n: int = 100) -> list[dict]:
+    """RSS flat for the first ~40%, ramps for the middle ~40%, flat again for
+    the last ~20% — the exact shape the real CI run that motivated
+    compute_checkpoints() showed (see PR discussion): a first-third-vs-
+    last-third trend check correctly flags growth here, but reading only
+    that average makes it look like a steady climb the whole run, when the
+    metric was actually flat most of the time with one ramp in the middle.
+    """
+    samples = []
+    for i in range(n):
+        pct = i / (n - 1)
+        if pct < 0.3:
+            rss = 110.0
+        elif pct < 0.6:
+            rss = 110.0 + (pct - 0.3) / 0.3 * 18.0
+        else:
+            rss = 128.0
+        samples.append(
+            {
+                "cycle": i,
+                "elapsed_s": pct * 300,
+                "rss_bytes": rss * 1e6,
+                "num_threads": 23,
+                "num_fds": 22,
+                "cpu_percent": 3.6,
+            }
+        )
+    return samples
+
+
+class TestTimeline:
+    def test_compute_checkpoints_returns_requested_count(self) -> None:
+        checkpoints = compute_checkpoints(_flat_ramp_flat_samples(), n=5)
+        assert len(checkpoints) == 5
+        assert checkpoints[0]["pct"] == 0
+        assert checkpoints[-1]["pct"] == 100
+
+    def test_compute_checkpoints_on_empty_samples_returns_empty(self) -> None:
+        assert compute_checkpoints([]) == []
+
+    def test_checkpoints_reveal_plateau_then_ramp_then_plateau(self) -> None:
+        # The whole point: a shape a first-third/last-third average alone
+        # would flatten into "steady climb" is visible here as flat, then a
+        # jump, then flat again.
+        checkpoints = compute_checkpoints(_flat_ramp_flat_samples(), n=5)
+        rss_by_pct = {c["pct"]: c["rss_mb"] for c in checkpoints}
+        assert rss_by_pct[0] == pytest.approx(110.0, abs=0.5)
+        assert rss_by_pct[25] == pytest.approx(110.0, abs=0.5)
+        assert rss_by_pct[50] < rss_by_pct[75]
+        assert rss_by_pct[75] == pytest.approx(128.0, abs=0.5)
+        assert rss_by_pct[100] == pytest.approx(128.0, abs=0.5)
+
+    def test_timeline_section_appears_in_markdown_and_text(self) -> None:
+        result = _passing_result()
+        result.samples = _flat_ramp_flat_samples()
+        md = render_markdown(result)
+        text = render_text(result)
+        assert "## Timeline" in md
+        assert "Timeline\n--------" in text
+        assert "110.0 MB" in md
+        assert "128.0 MB" in md
+
+    def test_write_reports_computes_checkpoints_from_samples(self, tmp_path: Path) -> None:
+        result = _passing_result()
+        result.samples = _flat_ramp_flat_samples()
+        assert result.checkpoints is None
+        write_reports(result, out_dir=tmp_path)
+        assert result.checkpoints is not None
+        assert len(result.checkpoints) == 5
+
+    def test_written_json_contains_checkpoints(self, tmp_path: Path) -> None:
+        import json
+
+        result = _passing_result()
+        result.samples = _flat_ramp_flat_samples()
+        paths = write_reports(result, out_dir=tmp_path)
+        data = json.loads(paths["json"].read_text())
+        assert len(data["checkpoints"]) == 5
+        assert data["checkpoints"][0]["pct"] == 0
 
 
 class TestJsonOutput:
