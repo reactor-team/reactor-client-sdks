@@ -23,6 +23,7 @@ android {
         "../reactor-core/build/generated/sdkVersion",
         "../reactor-core/src/test/kotlin",
         "../reactor-android/src/main/kotlin",
+        "../reactor-android-media/src/main/kotlin",
     )
     sourceSets["main"].jniLibs.srcDir(layout.buildDirectory.dir("native/jniLibs"))
 }
@@ -30,6 +31,8 @@ android {
 dependencies {
     implementation(files(layout.buildDirectory.file("native/libwebrtc.jar")))
     androidTestImplementation(libs.coroutines)
+    androidTestImplementation(libs.coroutines.android)
+    androidTestImplementation(libs.lifecycle.runtime)
     androidTestImplementation(libs.serialization.json)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.junit)
