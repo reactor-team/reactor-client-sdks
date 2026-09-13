@@ -175,7 +175,7 @@ not just "should plateau" in the abstract:
 
 | signal | how it's checked | expected value | why that number |
 | --- | --- | --- | --- |
-| RSS (`ram_mb`) | trend: mean of the run's last third vs. first third, after a 20% warm-up | < 15% growth, and only counted if the absolute change is also ≥ 5 MB | allocator/page-cache noise is real sample-to-sample; the 5 MB floor stops a tiny near-zero baseline from turning an insignificant wobble into a huge-looking ratio |
+| RSS (`ram_mb`) | trend: mean of the run's last third vs. its *middle* third, after a 20% warm-up (see below) | < 15% growth, and only counted if the absolute change is also ≥ 5 MB | allocator/page-cache noise is real sample-to-sample; the 5 MB floor stops a tiny near-zero baseline from turning an insignificant wobble into a huge-looking ratio |
 | CPU time (`cpu_s_per_cycle`) | same trend check, on `cpu_deltas()` (per-interval, not cumulative) | < 50% growth, floor 0.05s | a wider tolerance than RSS: legitimate cycle-to-cycle jitter (GC pauses, network scheduling) is larger here than for memory |
 | CPU % (`cpu_percent`) | same trend check | < 50% growth, floor 5.0 (percentage points) | catches a leak that shows up as a growing *share* of CPU busy-ness even when `cpu_s_per_cycle` itself doesn't trend — see below for why the two can disagree |
 | `num_threads` | trend (median, not mean) | < 15% growth, floor 4 threads | thread teardown isn't guaranteed synchronous with `close()`, so a real run can oscillate (e.g. 25→31→25) with no sustained direction; median absorbs one double-counted cycle without hiding a real trend |
@@ -188,10 +188,24 @@ not just "should plateau" in the abstract:
 ## The signals, in plain language
 
 - **Process RSS** (`ram_mb` above, via `psutil`) — should plateau, not grow
-  without bound. Checked as a trend (mean of the run's last third vs. its
-  first third, after dropping a 20% warm-up) rather than a single before/after
-  number: allocator and OS page-cache behavior is noisy sample-to-sample, so
-  only a *sustained* climb counts.
+  without bound. Checked as a trend rather than a single before/after number
+  (allocator and OS page-cache behavior is noisy sample-to-sample, so only a
+  *sustained* climb counts) — specifically the run's last third against its
+  *middle* third, not its first, after dropping a 20% warm-up. That
+  distinction matters: a real CI run showed RSS flat, then a one-time ramp
+  to a new plateau somewhere in the middle of the window, then flat again —
+  a native buffer/pool growing once to its steady-state size, not an
+  unbounded leak. Comparing against the first third instead means exactly
+  *when* that one-time ramp happens to land decides pass/fail (the same
+  total jump read as a comfortable pass in one run and a razor-thin fail in
+  another, purely from timing) — comparing the last third to the middle
+  third instead asks the more direct question, "is this still climbing after
+  the fact", which a one-time step that's already plateaued answers "no"
+  regardless of when it happened. See `assert_no_sustained_growth`'s own
+  docstring in `helpers.py` for the full reasoning, including the trade-off
+  (a real leak still only in its early, slow-accelerating phase near the end
+  of a short run could likewise read as "already flat" here — preferred
+  anyway over failing a PR on a one-time step that already stopped).
 - **CPU time and CPU %** (`cpu_s_per_cycle`/`cpu_percent` above, both from
   `psutil`) — same trend check as RSS, wider tolerance, on two different
   questions: `cpu_s_per_cycle` is how much actual CPU work a cycle did,

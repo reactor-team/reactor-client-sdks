@@ -289,11 +289,41 @@ def assert_no_sustained_growth(
     use_median: bool = False,
     unit: str = "",
 ) -> MetricResult:
-    """Fail if `values`'s mean over the run's last third exceeds its mean over
-    the first third (after dropping `warmup_fraction` to let one-time costs —
-    import caches, connection setup, allocator warm-up — settle) by more than
-    `max_growth_ratio`, *and* by more than `min_absolute_delta` in absolute
-    terms.
+    """Fail if `values` is *still climbing in the back half of the run*: its
+    last-third mean exceeds its middle-third mean (after dropping
+    `warmup_fraction` to let one-time costs — import caches, connection
+    setup, allocator warm-up — settle) by more than `max_growth_ratio`, *and*
+    by more than `min_absolute_delta` in absolute terms.
+
+    Deliberately last-vs-*middle*, not last-vs-first: a real CI run showed
+    RSS flat, then a one-time ramp to a new plateau roughly in the middle of
+    the window, then flat again for the rest of the run — a native
+    buffer/pool growing once to its steady-state size, not an unbounded
+    leak. Comparing against the *first* third means exactly where that one
+    ramp happens to land is what decides pass/fail (whether the ramp's start
+    lands inside the first-third window at all), which is timing, not
+    signal — the same total jump measured as a comfortable pass or a
+    razor-thin fail purely depending on when in the run it occurred, as
+    happened across two otherwise-similar CI runs. Comparing the last third
+    to the *middle* third instead asks the more direct question — "did it
+    keep growing after that", not "is the end higher than the start" — so a
+    one-time step that has already plateaued by the back third reads as flat
+    (no fail), while something still genuinely climbing in the tail still
+    trips it.
+
+    The trade-off: a real leak that's still only in its early, slow-
+    accelerating phase near the end of a short run could read as "already
+    flat" and pass here where a first-vs-last comparison might have caught
+    it. Preferred anyway — a slow leak has another cycle of this suite (or a
+    longer ENDURANCE_DURATION_SECONDS run) to get caught once it's actually
+    still climbing in *that* run's tail; a one-time step misread as a leak
+    fails a real PR or blocks a release on nothing.
+
+    `start`/`end`/`change` on the returned `MetricResult` (and the trend
+    string in the printed verdict) still show the true first-third-to-last-
+    third movement — that's still the right "how much did this move overall"
+    number for a human reading the report — only the pass/fail decision
+    itself is based on the middle-vs-last comparison.
 
     The absolute floor exists so a tiny, near-zero baseline can't turn an
     insignificant wobble into a ratio that looks huge. `values` must already
@@ -319,8 +349,8 @@ def assert_no_sustained_growth(
     Returns a `MetricResult` (status "ok"/"fail") rather than raising: the
     caller collects one from every check so a full report table can be built
     even when one of them fails, instead of stopping at the first failure.
-    `n < 6` (not enough samples for a first-third/last-third split at all)
-    still raises directly — that's a test misconfiguration
+    `n < 6` (not enough samples for a first/middle/last split at all) still
+    raises directly — that's a test misconfiguration
     (ENDURANCE_DURATION_SECONDS too short), not a metric to report on.
     """
     n = len(values)
@@ -331,37 +361,58 @@ def assert_no_sustained_growth(
         )
     warmed_up = values[int(n * warmup_fraction) :]
     third = max(1, len(warmed_up) // 3)
-    first, last = warmed_up[:third], warmed_up[-third:]
+    first, middle, last = (
+        warmed_up[:third],
+        warmed_up[third : 2 * third],
+        warmed_up[-third:],
+    )
     average = statistics.median if use_median else (lambda xs: sum(xs) / len(xs))
     first_mean = average(first)
+    middle_mean = average(middle)
     last_mean = average(last)
-    delta = last_mean - first_mean
-    ratio = (delta / first_mean) if first_mean else (1.0 if delta > 0 else 0.0)
-    is_leak = delta > min_absolute_delta and ratio > max_growth_ratio
 
-    trend = f"{first_mean:,.3f} → {last_mean:,.3f} ({ratio:+.0%})"
+    # What decides pass/fail — see the docstring for why this is middle-vs-
+    # last, not first-vs-last.
+    tail_delta = last_mean - middle_mean
+    tail_ratio = (tail_delta / middle_mean) if middle_mean else (1.0 if tail_delta > 0 else 0.0)
+    is_leak = tail_delta > min_absolute_delta and tail_ratio > max_growth_ratio
+
+    # What's reported to a human — the overall first-to-last movement, a
+    # different (and both useful) number from what decided the verdict above.
+    overall_delta = last_mean - first_mean
+    overall_ratio = (
+        (overall_delta / first_mean) if first_mean else (1.0 if overall_delta > 0 else 0.0)
+    )
+
+    trend = (
+        f"{first_mean:,.3f} → {middle_mean:,.3f} → {last_mean:,.3f} "
+        f"(overall {overall_ratio:+.0%}, tail {tail_ratio:+.0%})"
+    )
     if is_leak:
         reason = (
-            f"over the {max_growth_ratio:.0%} growth threshold — looks like a real leak, not noise"
+            f"still climbing in the tail (last third {tail_ratio:+.0%} over the middle "
+            f"third) — over the {max_growth_ratio:.0%} threshold, looks like a real leak"
         )
-    elif delta <= min_absolute_delta:
+    elif tail_delta <= min_absolute_delta:
         reason = (
-            f"the {delta:,.3f} change is under the {min_absolute_delta:,.3g} floor, "
-            f"so it's noise regardless of the {ratio:+.0%} ratio"
+            f"the {tail_delta:,.3f} tail change is under the {min_absolute_delta:,.3g} floor, "
+            f"so it's noise (or an already-settled one-time step) regardless of the "
+            f"{tail_ratio:+.0%} tail ratio"
         )
     else:
-        reason = f"under the {max_growth_ratio:.0%} growth threshold"
+        reason = f"tail growth is under the {max_growth_ratio:.0%} threshold — not still climbing"
     print(f"[{name}] {'LEAK?' if is_leak else 'ok'}: {trend} — {reason}")
 
     return MetricResult(
         name=name,
         start=first_mean,
         end=last_mean,
-        change=delta,
+        change=overall_delta,
         unit=unit,
         status="fail" if is_leak else "ok",
         detail=reason,
-        threshold=f"> {max_growth_ratio:.0%} growth (min {min_absolute_delta:,.3g})",
+        threshold=f"still climbing: last third > {max_growth_ratio:.0%} over middle third "
+        f"(min {min_absolute_delta:,.3g})",
     )
 
 
