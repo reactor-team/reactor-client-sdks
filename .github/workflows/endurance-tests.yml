@@ -134,6 +134,12 @@ jobs:
         # the same `10#` base-10 guard as `setup`, since duration_minutes is
         # free-form user input and could just as easily be "08" here.
         run: |
+          # pipefail is NOT a given here: this step renders as
+          # `shell: /usr/bin/bash -e {0}` in this repo (no pipefail), and the
+          # gdb|tee pipeline downstream then reports tee's exit code — a real
+          # SIGSEGV under gdb (139) once showed up as a green run because of
+          # exactly that (run 34888100192). Set it explicitly.
+          set -eo pipefail
           export ENDURANCE_DURATION_SECONDS=$((10#$DURATION_MINUTES * 60))
           echo "Running for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s) per scenario"
           cd sdks/python
@@ -189,8 +195,9 @@ jobs:
           # tee, not a silent redirect: the job log keeps pytest's live
           # reporting exactly as before, while the copy under /tmp lets the
           # "Save native crash diagnostics" step below lift the backtrace
-          # into the results artifact if the suite died on a signal.
-          # (pipefail in the run shell propagates gdb's exit code past tee.)
+          # into the results artifact if the suite died on a signal. gdb's
+          # exit code survives tee thanks to the explicit pipefail at the top
+          # of this run block — see there for why it cannot be relied on.
           gdb -batch -x /tmp/pytest-under-gdb.cmds \
             --args .venv/bin/python -m pytest endurance-tests/tests -v -s \
             2>&1 | tee /tmp/pytest-gdb.log
@@ -198,7 +205,7 @@ jobs:
       # If the suite died on a native signal, gdb's captured output (tee'd to
       # /tmp/pytest-gdb.log above) is the only place the faulting Rust/
       # libwebrtc thread's stack exists — faulthandler cannot see it. Lift
-      # everything from "Program received signal" onward into a JSON in
+      # everything from the "received signal" line onward into a JSON in
       # endurance-results/, which the upload step below already drops into
       # the run artifact: anyone (human or agent) who hits this crash months
       # later gets the backtrace, the run metadata and reading instructions
@@ -220,7 +227,12 @@ jobs:
           # pytest's live reporter sprays ANSI escapes all over the log —
           # strip them or the JSON is unreadable.
           text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
-          m = re.search(r"Program received signal (\w+)", text)
+          # Two shapes: main-thread stops print "Program received signal
+          # SIGSEGV, ...", stops on any other thread print 'Thread 1979
+          # "reactor-on-audi" received signal SIGSEGV, ...' — a regex looking
+          # only for the first shape silently wrote nothing for run
+          # 34888100192's crash. Both contain "received signal SIG...".
+          m = re.search(r"received signal (SIG[A-Z]+)", text)
           if not m:
               print("no native signal found in the gdb log — nothing to save")
           else:
@@ -233,8 +245,8 @@ jobs:
                       "model). The test step ran pytest as gdb's direct inferior; "
                       "when the process died on a signal, gdb stopped at it and "
                       "dumped every thread's native backtrace — that dump is "
-                      "'gdb_output_from_crash' below. How to read it: the 'Program "
-                      "received signal' line names the signal and is immediately "
+                      "'gdb_output_from_crash' below. How to read it: the "
+                      "'received signal' line names the signal and is immediately "
                       "followed by the faulting thread's stack, then come the other "
                       "threads ('Thread N ...' blocks, `thread apply all bt 30`). "
                       "Look for reactor_ffi / reactor_webrtc / libwebrtc frames in "
