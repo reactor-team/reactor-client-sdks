@@ -162,13 +162,21 @@ jobs:
           # ceremony would.
           # apt-get update first: the image's snapshot index goes stale fast,
           # installs against it 404 on moved archives (libc6-dbg, in this
-          # job's first attempt).
+          # job's first attempt). The `set print/disable` lines after
+          # pagination/confirm keep a green run's log free of gdb noise —
+          # one "[Thread 0x... exited]" per thread (tokio + libwebrtc spawn
+          # them constantly) and the ASLR warning from the ptrace sandbox
+          # would otherwise drown pytest's output. A single trailing
+          # "[Inferior 1 ... exited normally]" survives — gdb prints it
+          # unconditionally at inferior exit; one line is not worth chasing.
           sudo apt-get update -qq
           sudo apt-get install -y -qq gdb
           printf '%s\n' \
             'set pagination off' \
             'set confirm off' \
             'set disable-randomization off' \
+            'set print thread-events off' \
+            'set print inferior-events off' \
             'run' \
             'if $_isvoid($_exitcode)' \
             '  thread apply all bt 30' \
