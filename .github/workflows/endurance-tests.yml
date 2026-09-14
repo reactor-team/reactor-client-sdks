@@ -127,6 +127,16 @@ jobs:
           # other binding's integration-tests job) already uses.
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
           DURATION_MINUTES: ${{ inputs.duration_minutes }}
+          # Debugging the flaky native segfault (crashing thread has "<no
+          # Python frame>", so Python's own faulthandler dump is all we ever
+          # got) seen in 5-minute session-churn runs — RUST_LOG surfaces
+          # FFI-side warnings right before the crash, and MALLOC_PERTURB_
+          # has glibc scribble freed blocks so a latent use-after-free
+          # segfaults at the read instead of silently corrupting and
+          # crashing much later (or not at all). Neither changes the suite's
+          # behaviour; the gdb wrapper below is what captures the backtrace.
+          RUST_LOG: info
+          MALLOC_PERTURB_: "165"
         # The conversion happens here, in shell, rather than in the `env:`
         # block above: GitHub Actions expressions have no arithmetic operators
         # at all (see the `setup` job's comment), but the input is a plain
@@ -136,7 +146,39 @@ jobs:
         run: |
           export ENDURANCE_DURATION_SECONDS=$((10#$DURATION_MINUTES * 60))
           echo "Running for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s) per scenario"
-          mise run test:python:endurance-tests
+          cd sdks/python
+          # Materialise .venv the same way `mise run test:python:endurance-
+          # tests` would (cargo build already ran as its own step above — it
+          # is the task's other half) so the next line can start python
+          # directly. The mise task itself is *not* run here on purpose:
+          # pytest must be gdb's own inferior, and gdb does not follow its
+          # inferior's children — `mise run`/`uv run` spawn python as a
+          # grandchild whose segfault gdb would never see.
+          uv run --group dev --locked python -c "import reactor_sdk"
+          # pytest under gdb: on a native crash gdb stops at the signal and
+          # `thread apply all bt` finally gives the segfaulting Rust/libwebrtc
+          # thread's stack, the thing faulthandler's "<no Python frame>" dump
+          # cannot show. The if/else keeps the step's exit code honest:
+          # $_exitcode is void only when the inferior was killed by a signal
+          # (crash → 139, red), otherwise it is pytest's own exit code
+          # (test failure → 1, green run → 0). Written as a script file
+          # rather than chained `-ex` args — an if-block split across -ex
+          # arguments does not parse reliably (verified on ubuntu-24.04's
+          # gdb: it silently takes the crash branch on normal exits).
+          printf '%s\n' \
+            'set pagination off' \
+            'set confirm off' \
+            'run' \
+            'if $_isvoid($_exitcode)' \
+            '  thread apply all bt 30' \
+            '  quit 139' \
+            'else' \
+            '  quit $_exitcode' \
+            'end' \
+            'quit 200' \
+            > /tmp/pytest-under-gdb.cmds
+          gdb -batch -x /tmp/pytest-under-gdb.cmds \
+            --args .venv/bin/python -m pytest endurance-tests/tests -v -s
 
       # `if: always()` on both of the following: a threshold violation or a
       # test error should still leave a readable Job Summary and a
