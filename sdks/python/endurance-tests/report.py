@@ -16,6 +16,7 @@ import dataclasses
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -148,7 +149,12 @@ class RunResult:
     started_at: str
     ended_at: str
     metrics: list[MetricResult]
-    errors: int = 0
+    # None means this scenario doesn't count anything as a "transient error"
+    # in the first place (nothing in its loop swallows/retries a failure) —
+    # left unset rather than defaulted to 0, so the report doesn't render a
+    # measurement that was never actually taken. See _conclusion_lines() and
+    # the Errors row in render_markdown()/render_text().
+    errors: int | None = None
     commit_sha: str | None = None
     # Set only when the test raised before/without any metric failing (an
     # unhandled exception, an insufficient-samples guard, a fixture error) —
@@ -246,11 +252,12 @@ def _conclusion_lines(result: RunResult) -> list[str]:
                     f"({_format_value(m.start, m.unit)} → {_format_value(m.end, m.unit)}) "
                     "and remained stable."
                 )
-        lines.append(
-            "No test errors occurred."
-            if not result.errors
-            else f"{result.errors} transient error(s) occurred but did not affect the result."
-        )
+        if result.errors is not None:
+            lines.append(
+                "No test errors occurred."
+                if not result.errors
+                else f"{result.errors} transient error(s) occurred but did not affect the result."
+            )
         return lines
 
     # FAIL
@@ -318,10 +325,11 @@ def render_markdown(result: RunResult) -> str:
         lines.append("|---|---:|---:|---:|---|")
         for m in result.metrics:
             lines.append(m.row_markdown())
-        lines.append(
-            f"| Errors | {result.errors} | {result.errors} | — | "
-            f"{'🟢' if result.errors == 0 else '🟡'} |"
-        )
+        if result.errors is not None:
+            lines.append(
+                f"| Errors | {result.errors} | {result.errors} | — | "
+                f"{'🟢' if result.errors == 0 else '🟡'} |"
+            )
         lines.append("")
 
     checkpoints = _checkpoints_for(result)
@@ -385,10 +393,11 @@ def render_text(result: RunResult) -> str:
         lines.append("-------")
         for m in result.metrics:
             lines.append(m.row_text())
-        lines.append(
-            f"  {'Errors':<20} {result.errors:>12} {'':<12} {'':>10}  "
-            + ("🟢" if result.errors == 0 else "🟡")
-        )
+        if result.errors is not None:
+            lines.append(
+                f"  {'Errors':<20} {result.errors:>12} {'':<12} {'':>10}  "
+                + ("🟢" if result.errors == 0 else "🟡")
+            )
         lines.append("")
 
     checkpoints = _checkpoints_for(result)
@@ -445,6 +454,64 @@ def write_reports(result: RunResult, out_dir: Path = DEFAULT_OUTPUT_DIR) -> dict
     return paths
 
 
+def finish_run(
+    *,
+    test_name: str,
+    sdk: str,
+    duration_s: float,
+    started_at: str,
+    samples: list[Any],
+    metrics: list[MetricResult],
+    iterations: int,
+    errors: int | None = None,
+    tracemalloc_top: list[str] | None = None,
+    out_dir: Path = DEFAULT_OUTPUT_DIR,
+) -> RunResult:
+    """Builds the `RunResult` for one scenario's `finally` block and writes
+    its reports — the `sys.exc_info() -> status -> RunResult -> write_reports()`
+    sequence every scenario needs at the end of its run, in one place instead
+    of copied verbatim into each `tests/test_*.py` (which used to drift
+    against each other as fields were added — e.g. only one of the two had
+    `tracemalloc_top`).
+
+    Must be called from inside the `finally` block itself: relies on
+    `sys.exc_info()` still reflecting the exception being handled (if any) —
+    that's what tells an unhandled exception (`run_error`, status "ERROR")
+    apart from a metric that actually crossed its threshold (status "FAIL").
+
+    `write_reports()` is called inside a try/except here on purpose: if
+    writing the report itself raises (disk full, a field that turns out not
+    to be JSON-serialisable), printing and moving on keeps whatever
+    exception the *test* raised — the actual failure — as what pytest
+    reports, instead of a reporting-layer bug masking it.
+    """
+    exc_type, exc_val, _ = sys.exc_info()
+    run_error = f"{exc_type.__name__}: {exc_val}" if exc_type is not None else None
+    failed = [m for m in metrics if m.status == "fail"]
+    status = "ERROR" if run_error else ("FAIL" if failed else "PASS")
+    result = RunResult(
+        test_name=test_name,
+        sdk=sdk,
+        status=status,
+        duration_s=duration_s,
+        elapsed_s=samples[-1].elapsed_s if samples else 0.0,
+        iterations=iterations,
+        started_at=started_at,
+        ended_at=now_iso(),
+        metrics=metrics,
+        errors=errors,
+        commit_sha=git_commit_sha(),
+        run_error=run_error,
+        tracemalloc_top=tracemalloc_top,
+        samples=[dataclasses.asdict(s) for s in samples],
+    )
+    try:
+        write_reports(result, out_dir)
+    except Exception as e:
+        print(f"[finish_run] write_reports() failed, continuing: {e!r}")
+    return result
+
+
 class LiveReporter:
     """Prints a periodic, human-scale status block during a long endurance
     run so a GitHub Actions log stays legible instead of accumulating one row
@@ -466,7 +533,7 @@ class LiveReporter:
         self,
         samples: list[Any],
         *,
-        errors: int = 0,
+        errors: int | None = None,
         extra: dict[str, str] | None = None,
         force: bool = False,
     ) -> None:
@@ -479,7 +546,9 @@ class LiveReporter:
         self._printed_once = True
         print(self._format(samples, errors=errors, extra=extra))
 
-    def _format(self, samples: list[Any], *, errors: int, extra: dict[str, str] | None) -> str:
+    def _format(
+        self, samples: list[Any], *, errors: int | None, extra: dict[str, str] | None
+    ) -> str:
         first, last = samples[0], samples[-1]
         elapsed = last.elapsed_s
         pct = min(100, int(elapsed / self.duration_s * 100)) if self.duration_s else 0
@@ -497,7 +566,10 @@ class LiveReporter:
             f"Progress       {pct}%",
             "",
             f"Iterations     {last.cycle + 1:,}",
-            f"Errors         {errors}",
+        ]
+        if errors is not None:
+            lines.append(f"Errors         {errors}")
+        lines += [
             "",
             "Resources",
             f"  RSS           {rss_start_mb:,.0f} MB → {rss_now_mb:,.0f} MB   "
@@ -509,7 +581,7 @@ class LiveReporter:
         if extra:
             for key, value in extra.items():
                 lines.append(f"  {key:<13} {value}")
-        status = "\U0001f7e2 Healthy" if errors == 0 else "\U0001f7e1 Errors detected"
+        status = "\U0001f7e1 Errors detected" if errors else "\U0001f7e2 Healthy"
         lines.append("")
         lines.append(f"Status         {status}")
         lines.append(bar)

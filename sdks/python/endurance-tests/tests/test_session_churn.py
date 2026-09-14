@@ -13,7 +13,6 @@ completions) that a coarser connect/close cycle wouldn't surface as clearly.
 
 from __future__ import annotations
 
-import dataclasses
 import sys
 import tracemalloc
 from pathlib import Path
@@ -30,14 +29,7 @@ from helpers import (
 )
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from report import (  # noqa: E402
-    LiveReporter,
-    MetricResult,
-    RunResult,
-    git_commit_sha,
-    now_iso,
-    write_reports,
-)
+from report import LiveReporter, MetricResult, finish_run, now_iso  # noqa: E402
 
 from reactor_sdk import Reactor
 
@@ -58,9 +50,26 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
     final_snapshot = None
     tracemalloc_top: list[str] | None = None
     iteration = 0
-    errors = 0
+    # No `errors` counter here, unlike test_lifecycle_churn.py: nothing in
+    # this loop catches and retries a transient failure (there's no
+    # `except Exception: pass` to count) — the report's Errors row/live
+    # status is left unset (None) rather than a hardcoded-looking 0 that
+    # never actually measured anything. See report.py's RunResult.errors.
     metrics: list[MetricResult] = []
     started_at = now_iso()
+
+    # Set on the first in-loop invariant violation below (pending completions
+    # or an orphaned frame handler) — breaks the loop, since a corrupted
+    # invariant makes further iterations' trend data unreliable, and skips
+    # the post-loop trend metrics/tracemalloc diagnostics that assume a
+    # normally-completed run. Deliberately *not* left to raise: an
+    # AssertionError propagating out of the loop would land in `finish_run()`
+    # as `run_error` (status "ERROR"), and _conclusion_lines() reports ERROR
+    # as "not a detected leak — looks like a test error or infrastructure
+    # problem" — exactly backwards for these two, which *are* leak checks.
+    # Recording a normal "fail" MetricResult instead keeps the status "FAIL"
+    # and the conclusion accurate.
+    invariant_violated = False
 
     try:
         while not sampler.deadline_reached():
@@ -99,23 +108,54 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
             # completion before this line runs, so nothing should still be
             # sitting in the pending-completions map between iterations. If
             # something is, that's a leaked awaitable, not noise.
-            assert len(reactor._pending_completions) == 0, (
-                f"{len(reactor._pending_completions)} pending completion(s) left "
-                f"over after iteration {iteration} — a send_command reply was "
-                "never settled"
-            )
+            pending = len(reactor._pending_completions)
+            if pending != 0:
+                metrics.append(
+                    MetricResult(
+                        name="pending_completions",
+                        start=0,
+                        end=pending,
+                        change=pending,
+                        unit="count",
+                        status="fail",
+                        detail=(
+                            f"{pending} pending completion(s) left over after "
+                            f"iteration {iteration} — a send_command reply was "
+                            "never settled"
+                        ),
+                        threshold="always 0",
+                        first_bad_cycle=iteration,
+                    )
+                )
+                invariant_violated = True
+                break
             # Same reasoning, for the receive side: off_frame() above should have
             # popped this iteration's handler back out, every time.
-            assert len(main_video._adapters) == 0, (
-                f"{len(main_video._adapters)} frame handler(s) left registered on "
-                f"main_video after iteration {iteration} — off_frame() didn't clean "
-                "up"
-            )
+            adapters = len(main_video._adapters)
+            if adapters != 0:
+                metrics.append(
+                    MetricResult(
+                        name="orphaned_frame_handlers",
+                        start=0,
+                        end=adapters,
+                        change=adapters,
+                        unit="count",
+                        status="fail",
+                        detail=(
+                            f"{adapters} frame handler(s) left registered on "
+                            f"main_video after iteration {iteration} — off_frame() "
+                            "didn't clean up"
+                        ),
+                        threshold="always 0",
+                        first_bad_cycle=iteration,
+                    )
+                )
+                invariant_violated = True
+                break
 
             sampler.sample(cycle=iteration)
             live.update(
                 sampler.samples,
-                errors=errors,
                 extra={"Pending": str(len(reactor._pending_completions))},
             )
             elapsed = sampler.samples[-1].elapsed_s
@@ -125,77 +165,84 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
 
         final_snapshot = tracemalloc.take_snapshot()
 
-        assert iteration >= 3, (
-            f"only completed {iteration} iteration(s) — raise ENDURANCE_DURATION_SECONDS "
-            "to get enough data for a trend"
-        )
+        # Skipped once an in-loop invariant check above has already recorded
+        # a "fail" and broken out: `iteration` may be too small for a
+        # meaningful trend at that point, and there's already a clear reason
+        # for the run's status — no need for the min-iteration guard or the
+        # other metrics to also weigh in.
+        if not invariant_violated:
+            assert iteration >= 3, (
+                f"only completed {iteration} iteration(s) — raise ENDURANCE_DURATION_SECONDS "
+                "to get enough data for a trend"
+            )
 
-        # live_clients should stay exactly flat, but not at 0 — the `reactor`
-        # fixture's one client is connected for the whole test, so its baseline
-        # is 1, not 0.
-        metrics.append(assert_never_grows(sampler.samples, field="live_clients"))
-        # Always-zero, not never-grows: orphaned callbacks come only from clients
-        # that have already closed, so the invariant is 0 regardless of how many
-        # clients are live. assert_never_grows would only flag growth *past*
-        # whatever the first sample happened to be, so a leak already present at
-        # cycle 0 (fixture setup, an earlier test) would pass silently forever.
-        metrics.append(assert_always_zero(sampler.samples, field="orphaned_callbacks"))
-        metrics.append(
-            assert_no_sustained_growth(
-                [s.rss_bytes / 1e6 for s in sampler.samples],
-                name="rss",
-                unit="MB",
-                max_growth_ratio=0.15,
-                min_absolute_delta=5.0,
+            # live_clients should stay exactly flat, but not at 0 — the `reactor`
+            # fixture's one client is connected for the whole test, so its baseline
+            # is 1, not 0.
+            metrics.append(assert_never_grows(sampler.samples, field="live_clients"))
+            # Always-zero, not never-grows: orphaned callbacks come only from
+            # clients that have already closed, so the invariant is 0 regardless
+            # of how many clients are live. assert_never_grows would only flag
+            # growth *past* whatever the first sample happened to be, so a leak
+            # already present at cycle 0 (fixture setup, an earlier test) would
+            # pass silently forever.
+            metrics.append(assert_always_zero(sampler.samples, field="orphaned_callbacks"))
+            metrics.append(
+                assert_no_sustained_growth(
+                    [s.rss_bytes / 1e6 for s in sampler.samples],
+                    name="rss",
+                    unit="MB",
+                    max_growth_ratio=0.15,
+                    min_absolute_delta=5.0,
+                )
             )
-        )
-        metrics.append(
-            assert_no_sustained_growth(
-                cpu_deltas(sampler.samples),
-                name="cpu_s_per_cycle",
-                unit="s",
-                max_growth_ratio=0.5,
-                min_absolute_delta=0.05,
+            metrics.append(
+                assert_no_sustained_growth(
+                    cpu_deltas(sampler.samples),
+                    name="cpu_s_per_cycle",
+                    unit="s",
+                    max_growth_ratio=0.5,
+                    min_absolute_delta=0.05,
+                )
             )
-        )
-        # Same trend check, on the % reading instead of the raw seconds — see
-        # Sample.cpu_percent's own docstring for why the two can disagree.
-        metrics.append(
-            assert_no_sustained_growth(
-                [s.cpu_percent for s in sampler.samples],
-                name="cpu_percent",
-                unit="%",
-                max_growth_ratio=0.5,
-                min_absolute_delta=5.0,
+            # Same trend check, on the % reading instead of the raw seconds — see
+            # Sample.cpu_percent's own docstring for why the two can disagree.
+            metrics.append(
+                assert_no_sustained_growth(
+                    [s.cpu_percent for s in sampler.samples],
+                    name="cpu_percent",
+                    unit="%",
+                    max_growth_ratio=0.5,
+                    min_absolute_delta=5.0,
+                )
             )
-        )
-        # Trend-based, not "never past the start" like test_lifecycle_churn.py's:
-        # one long-lived session can legitimately grow a thread or two / open a
-        # few fds during warm-up (a connection pool, a worker thread spinning up)
-        # and then plateau — same reasoning as RSS/CPU above, just with small
-        # integers instead of bytes/seconds. `use_median` and the wider floor —
-        # see test_lifecycle_churn.py's own comment on the identical call — guard
-        # against the same one-cycle double-counted-thread artifact skewing a
-        # short run's small comparison windows.
-        metrics.append(
-            assert_no_sustained_growth(
-                [float(s.num_threads) for s in sampler.samples],
-                name="num_threads",
-                unit="count",
-                max_growth_ratio=0.15,
-                min_absolute_delta=4,
-                use_median=True,
+            # Trend-based, not "never past the start" like test_lifecycle_churn.py's:
+            # one long-lived session can legitimately grow a thread or two / open a
+            # few fds during warm-up (a connection pool, a worker thread spinning up)
+            # and then plateau — same reasoning as RSS/CPU above, just with small
+            # integers instead of bytes/seconds. `use_median` and the wider floor —
+            # see test_lifecycle_churn.py's own comment on the identical call — guard
+            # against the same one-cycle double-counted-thread artifact skewing a
+            # short run's small comparison windows.
+            metrics.append(
+                assert_no_sustained_growth(
+                    [float(s.num_threads) for s in sampler.samples],
+                    name="num_threads",
+                    unit="count",
+                    max_growth_ratio=0.15,
+                    min_absolute_delta=4,
+                    use_median=True,
+                )
             )
-        )
-        metrics.append(
-            assert_no_sustained_growth(
-                [float(s.num_fds) for s in sampler.samples],
-                name="num_fds",
-                unit="count",
-                max_growth_ratio=0.15,
-                min_absolute_delta=3,
+            metrics.append(
+                assert_no_sustained_growth(
+                    [float(s.num_fds) for s in sampler.samples],
+                    name="num_fds",
+                    unit="count",
+                    max_growth_ratio=0.15,
+                    min_absolute_delta=3,
+                )
             )
-        )
 
         # Diagnostic always, hard-asserted only against a generous floor:
         # tracemalloc diffs are known-noisy (one-time caches, string interning),
@@ -250,35 +297,23 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
             # field instead of silently dropping it.
             live.update(
                 sampler.samples,
-                errors=errors,
                 extra={"Pending": str(len(reactor._pending_completions))},
                 force=True,
             )
 
-        exc_type, exc_val, _ = sys.exc_info()
-        run_error = f"{exc_type.__name__}: {exc_val}" if exc_type is not None else None
-        failed = [m for m in metrics if m.status == "fail"]
-        status = "ERROR" if run_error else ("FAIL" if failed else "PASS")
-        result = RunResult(
+        result = finish_run(
             test_name="session-churn",
             sdk="Python",
-            status=status,
             duration_s=ENDURANCE_DURATION_SECONDS,
-            elapsed_s=sampler.samples[-1].elapsed_s if sampler.samples else 0.0,
-            iterations=iteration,
             started_at=started_at,
-            ended_at=now_iso(),
+            samples=sampler.samples,
             metrics=metrics,
-            errors=errors,
-            commit_sha=git_commit_sha(),
-            run_error=run_error,
+            iterations=iteration,
             tracemalloc_top=tracemalloc_top,
-            samples=[dataclasses.asdict(s) for s in sampler.samples],
         )
-        write_reports(result)
 
-    if failed:
-        names = ", ".join(m.name for m in failed)
+    if result.status == "FAIL":
+        names = ", ".join(m.name for m in metrics if m.status == "fail")
         raise AssertionError(
             f"endurance test detected a failure in: {names} — see the report for details"
         )

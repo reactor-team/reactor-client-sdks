@@ -20,10 +20,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "endurance-tests"))
 
+import report as report_module  # noqa: E402
 from report import (  # noqa: E402
     MetricResult,
     RunResult,
     compute_checkpoints,
+    finish_run,
     render_markdown,
     render_text,
     write_reports,
@@ -375,3 +377,150 @@ class TestMarkdownTextConsistency:
         md_lines = [line.strip("_") for line in md_conclusion.splitlines()[-3:]]
         text_lines = text_conclusion.splitlines()[-3:]
         assert md_lines == text_lines
+
+
+class TestErrorsField:
+    """`RunResult.errors` is `int | None`, not defaulted to 0 — a scenario
+    that never actually counts anything (test_session_churn.py: nothing in
+    its loop catches/retries a failure) leaves it unset rather than render a
+    hardcoded-looking "Errors 0" that was never really measured. See
+    report.py's own comment on the field and _conclusion_lines().
+    """
+
+    def test_errors_none_omits_the_row_in_markdown_and_text(self) -> None:
+        result = _passing_result()
+        result.errors = None
+        md = render_markdown(result)
+        text = render_text(result)
+        assert "Errors" not in md
+        assert "Errors" not in text
+
+    def test_errors_none_omits_the_conclusion_sentence(self) -> None:
+        result = _passing_result()
+        result.errors = None
+        md = render_markdown(result)
+        conclusion = md.split("## Conclusion", 1)[1]
+        assert "test errors occurred" not in conclusion
+        assert "transient error" not in conclusion
+
+    def test_errors_zero_is_still_shown_as_a_real_measurement(self) -> None:
+        result = _passing_result()
+        result.errors = 0
+        md = render_markdown(result)
+        assert "| Errors | 0 | 0 |" in md
+        conclusion = md.split("## Conclusion", 1)[1]
+        assert "No test errors occurred." in conclusion
+
+    def test_errors_nonzero_is_reported(self) -> None:
+        result = _passing_result()
+        result.errors = 3
+        md = render_markdown(result)
+        conclusion = md.split("## Conclusion", 1)[1]
+        assert "3 transient error(s) occurred" in conclusion
+
+
+class TestFinishRun:
+    """finish_run() — the exc_info() -> status -> RunResult -> write_reports()
+    sequence every scenario's `finally` block needs, deduplicated into one
+    place (was previously copied into both test_lifecycle_churn.py and
+    test_session_churn.py, and had already drifted: only one had
+    tracemalloc_top).
+    """
+
+    def test_pass_when_no_metric_failed_and_nothing_raised(self, tmp_path: Path) -> None:
+        result = finish_run(
+            test_name="lifecycle-churn",
+            sdk="Python",
+            duration_s=300,
+            started_at="2026-09-13T10:00:00+00:00",
+            samples=[],
+            metrics=[_ok_metric("rss", 1.0, 1.0)],
+            iterations=5,
+            out_dir=tmp_path,
+        )
+        assert result.status == "PASS"
+        assert result.run_error is None
+
+    def test_fail_when_a_metric_failed_and_nothing_raised(self, tmp_path: Path) -> None:
+        result = finish_run(
+            test_name="lifecycle-churn",
+            sdk="Python",
+            duration_s=300,
+            started_at="2026-09-13T10:00:00+00:00",
+            samples=[],
+            metrics=[_fail_metric("rss", 1.0, 2.0)],
+            iterations=5,
+            out_dir=tmp_path,
+        )
+        assert result.status == "FAIL"
+        assert result.run_error is None
+
+    def test_error_when_an_exception_is_in_flight_regardless_of_metrics(
+        self, tmp_path: Path
+    ) -> None:
+        # finish_run() must be called from inside a `finally` block to see
+        # the in-flight exception via sys.exc_info() — reproduced here the
+        # same way.
+        try:
+            try:
+                raise RuntimeError("boom")
+            finally:
+                result = finish_run(
+                    test_name="lifecycle-churn",
+                    sdk="Python",
+                    duration_s=300,
+                    started_at="2026-09-13T10:00:00+00:00",
+                    samples=[],
+                    metrics=[],
+                    iterations=1,
+                    out_dir=tmp_path,
+                )
+        except RuntimeError:
+            pass
+        assert result.status == "ERROR"
+        assert result.run_error == "RuntimeError: boom"
+
+    def test_writes_reports_to_out_dir(self, tmp_path: Path) -> None:
+        finish_run(
+            test_name="lifecycle-churn",
+            sdk="Python",
+            duration_s=300,
+            started_at="2026-09-13T10:00:00+00:00",
+            samples=[],
+            metrics=[_ok_metric("rss", 1.0, 1.0)],
+            iterations=5,
+            out_dir=tmp_path,
+        )
+        assert (tmp_path / "lifecycle-churn.json").exists()
+        assert (tmp_path / "lifecycle-churn-report.md").exists()
+
+    def test_write_reports_failure_does_not_mask_the_original_test_exception(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Regression: write_reports() raising inside the `finally` block used
+        # to replace the test's own exception in pytest's output — a report-
+        # writing bug (disk full, a non-serialisable field) would hide the
+        # actual failure. finish_run() must swallow it instead.
+        def _raise(*_args: object, **_kwargs: object) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(report_module, "write_reports", _raise)
+        try:
+            try:
+                raise RuntimeError("the real failure")
+            finally:
+                result = finish_run(
+                    test_name="lifecycle-churn",
+                    sdk="Python",
+                    duration_s=300,
+                    started_at="2026-09-13T10:00:00+00:00",
+                    samples=[],
+                    metrics=[],
+                    iterations=1,
+                    out_dir=tmp_path,
+                )
+        except RuntimeError as e:
+            assert str(e) == "the real failure"
+        else:
+            pytest.fail("the original RuntimeError should have propagated")
+        assert result.status == "ERROR"

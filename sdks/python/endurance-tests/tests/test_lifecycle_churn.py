@@ -13,7 +13,6 @@ takes the per-operation paths.
 
 from __future__ import annotations
 
-import dataclasses
 import gc
 import sys
 from pathlib import Path
@@ -32,14 +31,7 @@ from helpers import (
 )
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from report import (  # noqa: E402
-    LiveReporter,
-    MetricResult,
-    RunResult,
-    git_commit_sha,
-    now_iso,
-    write_reports,
-)
+from report import LiveReporter, MetricResult, finish_run, now_iso  # noqa: E402
 
 WIDTH, HEIGHT = 64, 64
 
@@ -95,7 +87,13 @@ async def test_lifecycle_churn_leaves_no_leftover_handles_or_growth() -> None:
                     try:
                         await client.disconnect()
                     except Exception:
-                        pass
+                        # Counted, not just swallowed: close() below still runs
+                        # regardless (this is a best-effort disconnect, not a
+                        # thing worth failing a multi-hour run over), but a
+                        # disconnect() that's failing on some cycles is itself
+                        # a signal worth surfacing in the report rather than a
+                        # hardcoded-looking "Errors 0" that never moves.
+                        errors += 1
             finally:
                 client.close()
 
@@ -185,29 +183,19 @@ async def test_lifecycle_churn_leaves_no_leftover_handles_or_growth() -> None:
         if sampler.samples:
             live.update(sampler.samples, errors=errors, force=True)
 
-        exc_type, exc_val, _ = sys.exc_info()
-        run_error = f"{exc_type.__name__}: {exc_val}" if exc_type is not None else None
-        failed = [m for m in metrics if m.status == "fail"]
-        status = "ERROR" if run_error else ("FAIL" if failed else "PASS")
-        result = RunResult(
+        result = finish_run(
             test_name="lifecycle-churn",
             sdk="Python",
-            status=status,
             duration_s=ENDURANCE_DURATION_SECONDS,
-            elapsed_s=sampler.samples[-1].elapsed_s if sampler.samples else 0.0,
-            iterations=cycle,
             started_at=started_at,
-            ended_at=now_iso(),
+            samples=sampler.samples,
             metrics=metrics,
+            iterations=cycle,
             errors=errors,
-            commit_sha=git_commit_sha(),
-            run_error=run_error,
-            samples=[dataclasses.asdict(s) for s in sampler.samples],
         )
-        write_reports(result)
 
-    if failed:
-        names = ", ".join(m.name for m in failed)
+    if result.status == "FAIL":
+        names = ", ".join(m.name for m in metrics if m.status == "fail")
         raise AssertionError(
             f"endurance test detected a failure in: {names} — see the report for details"
         )
