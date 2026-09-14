@@ -455,6 +455,52 @@ frame is in flight.
 
 ---
 
+## Endurance suites run under a debugger, or a native crash is undebuggable
+
+The intermittent segfault an endurance suite exists to hunt dies on a Rust/libwebrtc thread,
+so the language runtime's own crash reporting never shows the one stack that matters
+(faulthandler prints `<no Python frame>`; swift-testing records nothing at all — the process
+simply dies). Run the suite's process as the debugger's **direct inferior** from day one — a
+debugger does not follow its inferior's grandchildren, so wrapping `mise run`/`uv run`/
+`swift test` captures nothing — and on the stop, dump *every* thread's backtrace. Then a
+separate `if: failure()` step lifts the dump into the suite's results artifact as a
+`native-crash-diagnostics.json` (ANSI-stripped, capped, carrying the signal, run URL/SHA, a
+reproduce command, and written reading instructions in its own `what_is_this_file`).
+
+On Linux (Python job) this is gdb running pytest: script written to a file with `printf` and
+`-x` (an `if` block split across chained `-ex` args silently misbehaves), exit code kept
+honest by `if $_isvoid($_exitcode)` / `quit 139` / `else` / `quit $_exitcode` — `$_exitcode`
+is void exactly when the inferior died on a signal. On macOS (Swift job) it is lldb, and the
+macOS specifics are the trap:
+
+- **The inferior is `swiftpm-testing-helper`, not the test bundle.** On macOS the
+  `<Package>PackageTests.xctest` product is a Mach-O *bundle* — `cannot execute binary
+  file`. What `swift test` actually spawns is the toolchain's helper executable (watch a
+  live run's `ps` to see it), at `$(dirname $(xcrun --find swift))/../libexec/swift/pm/
+  swiftpm-testing-helper`; it dlopens the bundle and runs in-process, so debugging it *is*
+  debugging the tests. Invoke it with `swift test`'s exact arguments:
+  `--test-bundle-path <bundle-binary> --filter <ModuleName> <bundle-binary>
+  --testing-library swift-testing` (the bundle path really appears twice; the filter
+  matches the full test ID `<Module>.<Suite>/<test>`, so the module name selects the
+  whole target).
+- **Set `DYLD_FRAMEWORK_PATH`/`DYLD_LIBRARY_PATH` via lldb's `target.env-vars`, not the
+  environment.** The bundle @rpath-links `Testing.framework` from the Xcode platform's
+  Developer dir; `swift test` papers over that with DYLD_* env vars, but SIP strips DYLD_*
+  when a restricted binary (lldb) is spawned, so inheritance silently loses them and the
+  helper dies dlopening the bundle. Non-DYLD vars (API keys, durations) inherit fine.
+- **lldb never propagates the inferior's exit code**, and the quiet mode a clean log wants
+  (`-b -Q`) also suppresses the `Process N exited with status = N` line people parse. Have
+  the lldb script print its own marker after `run` — a one-line `script import lldb; ...`
+  emitting `ENDURANCE_INFERIOR_STATE: exited exit_status=<n>` vs `...: stopped` — and let
+  the run block translate: normal exit passes the code through, `stopped` means a native
+  fault and exits 139. The crash's all-thread backtrace comes from a stop-hook
+  (`target stop-hook add -o ... -o "thread backtrace all"`); it also fires once at launch
+  (dyld entry SIGSTOP), so both the live log and the diagnostics step take the *last*
+  banner, and the fault is named by the faulting thread's `stop reason = EXC_BAD_ACCESS`
+  line — macOS's analogue of gdb's `Program received signal SIGSEGV`.
+
+---
+
 ## CI carries the binding, one job per language
 
 Wire the SDK into CI as its own job, scoped to its own paths. One job per binding, so a

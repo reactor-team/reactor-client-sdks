@@ -11,6 +11,15 @@
 # JS/C++ later is meant to be "add a choice + a job", not a restructure of
 # this file.
 name: Endurance tests
+# Overrides the run's display name in the Actions tab/list (otherwise just
+# "Endurance tests" for every run, indistinguishable at a glance) with which
+# SDK it's actually running. `inputs.sdk` is the raw choice value (lowercase,
+# e.g. "python") — mapped to a display name per SDK since GitHub Actions
+# expressions have no string-capitalize function; extend this ternary chain
+# alongside `inputs.sdk`'s own `options:` list below when adding a new SDK
+# (an SDK not yet mapped here falls back to showing its raw option value).
+run-name: >-
+  Endurance tests: ${{ inputs.sdk == 'python' && 'Python' || inputs.sdk == 'swift' && 'Swift' || inputs.sdk }} SDK
 
 on:
   workflow_dispatch:
@@ -76,11 +85,12 @@ jobs:
     needs: setup
     if: inputs.sdk == 'python'
     runs-on: ubuntu-latest
-    # The two scenarios run sequentially, each for duration_minutes, so the
-    # job needs at least 2x that plus setup (toolchain install, clang,
-    # build) — a fixed timeout would silently kill any multi-hour
-    # duration_minutes run partway through the second scenario. Computed in
-    # the `setup` job above, not inline here (see its comment for why).
+    # The two scenarios (endurance-tests/tests/*.py) run sequentially, each
+    # for duration_minutes, so the job needs at least 2x that plus setup
+    # (toolchain install, clang, build) — a fixed timeout would silently
+    # kill any multi-hour duration_minutes run partway through a later
+    # scenario. Computed in the `setup` job above, not inline here (see its
+    # comment for why).
     timeout-minutes: ${{ fromJSON(needs.setup.outputs.timeout_minutes) }}
     steps:
       - uses: actions/checkout@v7
@@ -93,6 +103,15 @@ jobs:
           version: ${{ env.MISE_VERSION }}
       - name: Install clang for the libwebrtc C++ glue
         uses: ./.github/actions/setup-libwebrtc-cxx
+      # A separate, named step — not left folded into the "Endurance tests"
+      # step below — so the job log reads as "Build reactor-ffi" then "Run
+      # the suite" instead of a wall of cargo compile output under a step
+      # named for the test run. `mise run test:python:endurance-tests` (used
+      # below and by anyone running this suite locally, per its own README)
+      # does this same `cargo build` itself — already up to date by the time
+      # it runs here, so it's a fast no-op rather than a second real build.
+      - name: Build reactor-ffi (release)
+        run: cargo build -p reactor-ffi --release
       - name: Endurance tests (real FFI client, real model)
         env:
           # Same dedicated secret ci.yml's python-integration-tests (and every
@@ -108,7 +127,165 @@ jobs:
         run: |
           export ENDURANCE_DURATION_SECONDS=$((10#$DURATION_MINUTES * 60))
           echo "Running for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s) per scenario"
-          mise run test:python:endurance-tests
+          cd sdks/python
+          # Materialise .venv the same way `mise run test:python:endurance-
+          # tests` would (cargo build already ran as its own step above — it
+          # is the task's other half) so the next line can start python
+          # directly. The mise task itself is *not* run here on purpose:
+          # pytest must be gdb's own inferior, and gdb does not follow its
+          # inferior's children — `mise run`/`uv run` spawn python as a
+          # grandchild whose segfault gdb would never see.
+          uv run --group dev --locked python -c "import reactor_sdk"
+          # pytest under gdb: on a native crash gdb stops at the signal and
+          # `thread apply all bt` finally gives the segfaulting Rust/libwebrtc
+          # thread's stack, the thing faulthandler's "<no Python frame>" dump
+          # cannot show. The if/else keeps the step's exit code honest:
+          # $_exitcode is void only when the inferior was killed by a signal
+          # (crash → 139, red), otherwise it is pytest's own exit code
+          # (test failure → 1, green run → 0). Written as a script file
+          # rather than chained `-ex` args — an if-block split across -ex
+          # arguments does not parse reliably (verified on ubuntu-24.04's
+          # gdb: it silently takes the crash branch on normal exits).
+          # gdb is not in the ubuntu-latest image. apt's floating gdb is fine
+          # here — unlike clang (pinned in mise because it compiles the
+          # libwebrtc glue), this is a debug-only wrapper around pytest,
+          # never a build input; the ~20s install costs less than the pinning
+          # ceremony would.
+          # apt-get update first: the image's snapshot index goes stale fast,
+          # installs against it 404 on moved archives (libc6-dbg, in this
+          # job's first attempt). The `set print/disable` lines after
+          # pagination/confirm keep a green run's log free of gdb noise —
+          # one "[Thread 0x... exited]" per thread (tokio + libwebrtc spawn
+          # them constantly) and the ASLR warning from the ptrace sandbox
+          # would otherwise drown pytest's output. A single trailing
+          # "[Inferior 1 ... exited normally]" survives — gdb prints it
+          # unconditionally at inferior exit; one line is not worth chasing.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdb
+          printf '%s\n' \
+            'set pagination off' \
+            'set confirm off' \
+            'set disable-randomization off' \
+            'set print thread-events off' \
+            'set print inferior-events off' \
+            'run' \
+            'if $_isvoid($_exitcode)' \
+            '  thread apply all bt 30' \
+            '  quit 139' \
+            'else' \
+            '  quit $_exitcode' \
+            'end' \
+            'quit 200' \
+            > /tmp/pytest-under-gdb.cmds
+          # tee, not a silent redirect: the job log keeps pytest's live
+          # reporting exactly as before, while the copy under /tmp lets the
+          # "Save native crash diagnostics" step below lift the backtrace
+          # into the results artifact if the suite died on a signal.
+          # (pipefail in the run shell propagates gdb's exit code past tee.)
+          gdb -batch -x /tmp/pytest-under-gdb.cmds \
+            --args .venv/bin/python -m pytest endurance-tests/tests -v -s \
+            2>&1 | tee /tmp/pytest-gdb.log
+
+      # If the suite died on a native signal, gdb's captured output (tee'd to
+      # /tmp/pytest-gdb.log above) is the only place the faulting Rust/
+      # libwebrtc thread's stack exists — faulthandler cannot see it. Lift
+      # everything from "Program received signal" onward into a JSON in
+      # endurance-results/, which the upload step below already drops into
+      # the run artifact: anyone (human or agent) who hits this crash months
+      # later gets the backtrace, the run metadata and reading instructions
+      # in one file, without re-deriving the gdb setup. Runs only on failure,
+      # and writes nothing when the failure wasn't a native crash (a test
+      # assertion, a build error) so the artifact stays unchanged otherwise.
+      - name: Save native crash diagnostics to the results artifact
+        if: failure()
+        run: |
+          python3 - <<'PYEOF'
+          import datetime
+          import json
+          import os
+          import pathlib
+          import re
+
+          gdb_log = pathlib.Path("/tmp/pytest-gdb.log")
+          text = gdb_log.read_text(errors="replace") if gdb_log.exists() else ""
+          # pytest's live reporter sprays ANSI escapes all over the log —
+          # strip them or the JSON is unreadable.
+          text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+          m = re.search(r"Program received signal (\w+)", text)
+          if not m:
+              print("no native signal found in the gdb log — nothing to save")
+          else:
+              repo = os.environ.get("GITHUB_REPOSITORY", "")
+              payload = {
+                  "what_is_this_file": (
+                      "Native crash diagnostics from the Python SDK endurance suite "
+                      "(sdks/python/endurance-tests, pytest running the real ctypes "
+                      "FFI client from crates/reactor-ffi against a live reactor "
+                      "model). The test step ran pytest as gdb's direct inferior; "
+                      "when the process died on a signal, gdb stopped at it and "
+                      "dumped every thread's native backtrace — that dump is "
+                      "'gdb_output_from_crash' below. How to read it: the 'Program "
+                      "received signal' line names the signal and is immediately "
+                      "followed by the faulting thread's stack, then come the other "
+                      "threads ('Thread N ...' blocks, `thread apply all bt 30`). "
+                      "Look for reactor_ffi / reactor_webrtc / libwebrtc frames in "
+                      "the faulting thread — Python-level state for the same moment "
+                      "is in the GitHub Actions job log (faulthandler's 'Fatal "
+                      "Python error' dump), and so is the full pytest output if this "
+                      "dump is truncated."
+                  ),
+                  "signal": m.group(1),
+                  "captured_at_utc": datetime.datetime.now(
+                      datetime.timezone.utc
+                  ).isoformat(timespec="seconds"),
+                  "repository": repo,
+                  "ref": os.environ.get("GITHUB_REF_NAME", ""),
+                  "head_sha": os.environ.get("GITHUB_SHA", ""),
+                  "workflow_run": (
+                      f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}"
+                      f"/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
+                  ),
+                  "reproduce": (
+                      "gh workflow run endurance-tests.yml "
+                      f"--repo {repo or '<org>/<repo>'} --ref <branch> "
+                      "-f sdk=python -f duration_minutes=5"
+                  ),
+                  "gdb_output_from_crash": text[m.start() :][:500_000],
+              }
+              out = pathlib.Path("sdks/python/endurance-results")
+              out.mkdir(parents=True, exist_ok=True)
+              dest = out / "native-crash-diagnostics.json"
+              dest.write_text(json.dumps(payload, indent=2))
+              print(f"native crash diagnostics ({m.group(1)}) written to {dest}")
+          PYEOF
+
+      # `if: always()` on both of the following: a suite failure should still
+      # leave a readable Job Summary and a downloadable artifact behind. The
+      # publish step below reports gracefully when no *-report.md exists (this
+      # branch's suite predates report.py — only on-crash diagnostics land in
+      # endurance-results/ here).
+      - name: Publish results to the job summary
+        if: always()
+        working-directory: sdks/python
+        run: |
+          shopt -s nullglob
+          reports=(endurance-results/*-report.md)
+          if [ ${#reports[@]} -eq 0 ]; then
+            echo "No endurance-results/*-report.md files were written — the run likely failed before any scenario produced one (see the job log)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            for report in "${reports[@]}"; do
+              cat "$report" >> "$GITHUB_STEP_SUMMARY"
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+            done
+          fi
+
+      - name: Upload endurance test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: endurance-test-results
+          path: sdks/python/endurance-results/
+          if-no-files-found: warn
 
   swift:
     name: Swift SDK endurance tests
@@ -147,4 +324,192 @@ jobs:
         run: |
           export ENDURANCE_DURATION_SECONDS=$((10#$DURATION_MINUTES * 60))
           echo "Running for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s) per scenario"
-          mise run test:swift:endurance-tests
+          # REACTOR_SWIFT_DEV matters here for the same reason scripts/
+          # swift.sh exports it: without it, Package.swift treats this as a
+          # consumer build and downloads the *released* XCFramework instead
+          # of linking the libreactor_ffi this job just built from source —
+          # the one thing the suite exists to exercise.
+          export REACTOR_SWIFT_DEV=1
+          # The suite runs under lldb so a native crash yields every thread's
+          # backtrace (the exact Rust/libwebrtc stack this suite hunts), the
+          # same reasoning as the `python` job's gdb recipe — see its own
+          # comments. Two things make that harder on macOS than on Linux:
+          #
+          # 1. lldb only follows its own inferior, and `swift test` spawns
+          #    the tests as a grandchild — worse, the test product itself is
+          #    a Mach-O *bundle* that cannot be exec'd at all. What `swift
+          #    test` actually runs is the toolchain's swiftpm-testing-helper
+          #    executable, which dlopens the bundle and runs in-process
+          #    (verified by watching a live `swift test` run's process
+          #    tree). So the helper is lldb's direct inferior here, invoked
+          #    with the exact arguments `swift test` passes it — including
+          #    the bundle path twice and `--testing-library swift-testing`.
+          #    `--filter EnduranceTests` matches on the full test ID
+          #    (`<ModuleName>.<Suite>/<test>`), and every scenario lives in
+          #    the EnduranceTests module, so this is exactly the set
+          #    `mise run test:swift:endurance-tests` runs, minus Integration-
+          #    Tests/ReactorTests.
+          # 2. The bundle @rpath-links Testing.framework, which lives under
+          #    the Xcode platform's Developer dir — swift test papers over
+          #    this by setting DYLD_FRAMEWORK_PATH/DYLD_LIBRARY_PATH on the
+          #    helper. SIP strips DYLD_* when the shell spawns a restricted
+          #    binary like lldb, so plain inheritance silently loses them
+          #    (the helper then dies dlopening the bundle); setting them via
+          #    lldb's own `target.env-vars` is what actually reaches the
+          #    inferior (both verified locally). Ordinary env vars —
+          #    INTEGRATION_TESTS_REACTOR_API_KEY, ENDURANCE_DURATION_SECONDS
+          #    — do inherit through lldb untouched.
+          swift build --build-tests \
+            -Xlinker "$PWD/target/release/libreactor_ffi.dylib" \
+            -Xlinker -rpath -Xlinker "$PWD/target/release"
+          bin_path="$(swift build --show-bin-path)"
+          xctest_bundle="$(find "$bin_path" -maxdepth 1 -name '*PackageTests.xctest' | head -1)"
+          xctest_bin="$xctest_bundle/Contents/MacOS/$(basename "$xctest_bundle" .xctest)"
+          swift_bin="$(xcrun --find swift)"
+          testing_helper="$(cd "$(dirname "$swift_bin")/../libexec/swift/pm" && pwd)/swiftpm-testing-helper"
+          developer_dir="$(xcode-select -p)"
+          # The lldb driver script, mirroring the gdb one in the `python`
+          # job. `lldb -batch` does not propagate the inferior's exit code
+          # (it exits 0 however the run went), and its printed
+          # "Process N exited with status = N" line — the usual parse target
+          # — is suppressed by `-Q`, so the script prints its own machine-
+          # readable marker after `run`: `ENDURANCE_INFERIOR_STATE: exited
+          # exit_status=<n>` on any normal exit (green or test failure) vs
+          # `...: stopped` when lldb is still holding the process at a
+          # fault. The stop-hook dumps ALL thread backtraces at any stop —
+          # including launch (one harmless dyld-start frame, matching the
+          # one surviving gdb line the `python` job's comments describe) —
+          # so a green run's log is test output plus a handful of lldb
+          # lines; a crash gets the bannered backtrace block the diagnostics
+          # step below looks for.
+          printf '%s\n' \
+            'settings set auto-confirm true' \
+            "settings set target.env-vars DYLD_FRAMEWORK_PATH=$developer_dir/Platforms/MacOSX.platform/Developer/Library/Frameworks:$developer_dir/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks DYLD_LIBRARY_PATH=$developer_dir/Platforms/MacOSX.platform/Developer/usr/lib" \
+            'target stop-hook add -o "script print(\"ENDURANCE_CRASH_BACKTRACE_BEGIN\")" -o "thread backtrace all"' \
+            'run' \
+            'script import lldb; p = lldb.debugger.GetSelectedTarget().process; print("ENDURANCE_INFERIOR_STATE: %s exit_status=%d" % (lldb.SBDebugger.StateAsCString(p.GetState()), p.GetExitStatus()))' \
+            'quit' \
+            > /tmp/swift-under-lldb.cmds
+          # tee, not a silent redirect: same plumbing as the `python` job —
+          # the job log keeps the suite's live output while the /tmp copy
+          # feeds both the exit-code parsing right below and the crash-
+          # diagnostics step. (pipefail in the run shell propagates lldb's
+          # own exit status past tee, not that it carries anything — it is
+          # always 0.)
+          lldb -b -Q -s /tmp/swift-under-lldb.cmds -- \
+            "$testing_helper" \
+            --test-bundle-path "$xctest_bin" --filter EnduranceTests \
+            "$xctest_bin" --testing-library swift-testing \
+            2>&1 | tee /tmp/swift-endurance-lldb.log
+          # Propagate the inferior's outcome, parsed from the marker the
+          # lldb script printed: green or test-failure exit codes pass
+          # through unchanged (a failed assertion fails the step as 1, not
+          # as a misleading 139 "crash"), a stopped process means lldb
+          # caught a native fault and is reported as 139, matching the gdb
+          # recipe's convention.
+          state="$(sed -n 's/^ENDURANCE_INFERIOR_STATE: //p' /tmp/swift-endurance-lldb.log | tail -1)"
+          case "$state" in
+            "exited exit_status="*) exit "${state#exited exit_status=}" ;;
+            stopped*)
+              echo "lldb is holding the test process at a native fault (see the backtrace above) — treating as a crash (139)."
+              exit 139
+              ;;
+            *)
+              echo "::error::no ENDURANCE_INFERIOR_STATE marker in the lldb log — the recipe above failed before the tests even ran."
+              exit 1
+              ;;
+          esac
+
+      # The swift counterpart of the `python` job's diagnostics step, keyed
+      # off lldb's vocabulary instead of gdb's: no "Program received signal"
+      # here — the crash block starts at ENDURANCE_CRASH_BACKTRACE_BEGIN
+      # (printed by the stop-hook, which also fires once at launch, hence
+      # rfind — the *last* banner is the crash's) and the fault is named by
+      # the faulting thread's "stop reason = EXC_BAD_ACCESS ..." line.
+      # Written to sdks/swift/endurance-results/ (the Swift suite prints its
+      # report table to stdout rather than writing report files like the
+      # Python suite's report.py, so this JSON is the only file the
+      # directory ever holds) and picked up by the upload step below.
+      - name: Save native crash diagnostics to the results artifact
+        if: failure()
+        run: |
+          python3 - <<'PYEOF'
+          import datetime
+          import json
+          import os
+          import pathlib
+          import re
+
+          lldb_log = pathlib.Path("/tmp/swift-endurance-lldb.log")
+          text = lldb_log.read_text(errors="replace") if lldb_log.exists() else ""
+          text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+          if "ENDURANCE_INFERIOR_STATE: stopped" not in text:
+              print("no native crash found in the lldb log — nothing to save")
+          else:
+              # The stop-hook also fires at launch (SIGSTOP at dyld start),
+              # so rfind, not find: the last banner is the crash's.
+              start = text.rfind("ENDURANCE_CRASH_BACKTRACE_BEGIN")
+              dump = (text[start:] if start != -1 else text)[:500_000]
+              # Negative lookahead: the dump can still open with the
+              # launch stop's "stop reason = signal SIGSTOP" if the banner
+              # was never printed (e.g. the recipe broke mid-run) — that is
+              # lldb's entry stop, never the fault.
+              m = re.search(r"stop reason = (?!signal SIGSTOP\b)(.+)", dump)
+              signal = m.group(1).strip() if m else "unknown — see dump"
+              repo = os.environ.get("GITHUB_REPOSITORY", "")
+              payload = {
+                  "what_is_this_file": (
+                      "Native crash diagnostics from the Swift SDK endurance suite "
+                      "(sdks/swift/EnduranceTests, swift-testing running the real "
+                      "FFI client from crates/reactor-ffi against a live reactor "
+                      "model). The test step built the package's test bundle and ran "
+                      "the toolchain's swiftpm-testing-helper (what `swift test` "
+                      "spawns, which dlopens the bundle and runs in-process) as "
+                      "lldb's direct inferior; when the process hit a native fault, "
+                      "lldb stopped at it and a stop-hook dumped every thread's "
+                      "backtrace — that dump is 'debugger_output_from_crash' below. "
+                      "How to read it: each 'thread #N' block is one thread; the "
+                      "faulting one carries 'stop reason = EXC_BAD_ACCESS ...' (or a "
+                      "Swift runtime fatal error), and frame #0 under it is the "
+                      "instruction that died. Look for reactor_ffi / reactor_webrtc / "
+                      "libwebrtc frames there — the suite's own output for the same "
+                      "moment is in the GitHub Actions job log (it is tee'd there "
+                      "live), and is the place to look if this dump is truncated."
+                  ),
+                  "signal": signal,
+                  "captured_at_utc": datetime.datetime.now(
+                      datetime.timezone.utc
+                  ).isoformat(timespec="seconds"),
+                  "repository": repo,
+                  "ref": os.environ.get("GITHUB_REF_NAME", ""),
+                  "head_sha": os.environ.get("GITHUB_SHA", ""),
+                  "workflow_run": (
+                      f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}"
+                      f"/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
+                  ),
+                  "reproduce": (
+                      "gh workflow run endurance-tests.yml "
+                      f"--repo {repo or '<org>/<repo>'} --ref <branch> "
+                      "-f sdk=swift -f duration_minutes=5"
+                  ),
+                  "debugger_output_from_crash": dump,
+              }
+              out = pathlib.Path("sdks/swift/endurance-results")
+              out.mkdir(parents=True, exist_ok=True)
+              dest = out / "native-crash-diagnostics.json"
+              dest.write_text(json.dumps(payload, indent=2))
+              print(f"native crash diagnostics ({signal}) written to {dest}")
+          PYEOF
+
+      # `if: always()`, same reasoning as the `python` job's upload step: the
+      # failed run is the one whose diagnostics you need most. The Swift
+      # suite writes no *-report.md (its table is printed, not saved), so on
+      # a run without a native crash this directory may be empty — hence
+      # `warn`, not `error`.
+      - name: Upload endurance test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: endurance-test-results-swift
+          path: sdks/swift/endurance-results/
+          if-no-files-found: warn
