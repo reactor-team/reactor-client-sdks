@@ -430,16 +430,21 @@ def assert_always_zero(samples: list[Sample], *, field: str, unit: str = "count"
     last_value = getattr(samples[-1], field)
     if bad:
         cycle, value = bad[0]
+        peak_value = max(v for _, v in bad)
         reason = (
             f"nonzero on {len(bad)}/{len(samples)} cycles (first at cycle {cycle}: "
-            f"{value}) — a handle leaked mid-run"
+            f"{value}, peak {peak_value}) — a handle leaked mid-run"
         )
         print(f"[{field}] LEAK?: {reason}")
         return MetricResult(
             name=field,
             start=0,
-            end=last_value,
-            change=last_value,
+            # Report the peak, not the final sample: if `field` already
+            # settled back to 0 by the last cycle, `last_value` would render
+            # as "went from 0 to 0 (+0)" in the Markdown/text reports (which
+            # don't include `detail`) and hide the mid-run leak entirely.
+            end=peak_value,
+            change=peak_value,
             unit=unit,
             status="fail",
             detail=reason,
