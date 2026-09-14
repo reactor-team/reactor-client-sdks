@@ -170,6 +170,10 @@ jobs:
           # libwebrtc glue), this is a debug-only wrapper around pytest,
           # never a build input; the ~20s install costs less than the pinning
           # ceremony would.
+          # apt-get update first: the image's snapshot index goes stale fast,
+          # installs against it 404 on moved archives (libc6-dbg, in this
+          # job's first attempt).
+          sudo apt-get update -qq
           sudo apt-get install -y -qq gdb
           printf '%s\n' \
             'set pagination off' \
