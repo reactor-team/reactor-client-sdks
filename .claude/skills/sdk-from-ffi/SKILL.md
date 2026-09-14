@@ -608,6 +608,32 @@ backend/quota and two runs racing it at once makes both runs' trends noisier —
 point of the suite. A `run-name:` that names which SDK the run is for, since every run
 otherwise shows the same generic workflow name in the Actions list.
 
+**Run the suite under gdb from day one — a native crash in a managed-language suite is
+undebuggable otherwise.** The intermittent segfault this suite hunts dies on a Rust/libwebrtc
+thread, so all faulthandler ever prints is `Fatal Python error: Segmentation fault` and
+`Current thread ... <no Python frame>` — the one thread whose stack matters is the one whose
+stack you never get. Wrap pytest as gdb's *direct* inferior
+(`gdb -batch -x pytest-under-gdb.cmds --args .venv/bin/python -m pytest ...`), never via
+`mise run`/`uv run`: gdb does not follow spawned grandchildren, so wrapping the task runner
+captures nothing. Traps, each hit for real while wiring this: gdb is not in the ubuntu-latest
+image (apt-install it, `apt-get update` first — the image's snapshot index goes stale and 404s
+on moved archives); an `if` block split across chained `-ex` args silently takes the crash
+branch even on clean exits, so write the script to a file with `printf` and `-x` instead
+(verified against ubuntu-24.04's gdb); keep the step's exit code honest with
+`if $_isvoid($_exitcode)` / `quit 139` / `else` / `quit $_exitcode` — `$_exitcode` is void
+exactly when the inferior died on a signal, so a crash is 139, a test failure is pytest's own
+code, and green stays green; and `tee` gdb's output (pipefail is already on in run shells) so
+the live log keeps the progress reporting while the copy at `/tmp/pytest-gdb.log` feeds the
+next step. Then a separate `if: failure()` step lifts everything from
+`Program received signal` onward into `endurance-results/native-crash-diagnostics.json` —
+ANSI-stripped, capped, carrying the signal, run URL/SHA, a reproduce command, and written
+instructions for reading the dump — so it rides the artifact zip the suite already uploads and
+whoever debugs the crash months later, human or agent, starts from the faulting thread's stack
+instead of re-deriving this whole setup (the JSON's own `what_is_this_file` field says all of
+this in-file). Crash-accelerating env (`MALLOC_PERTURB_=165`, `RUST_LOG=info`) belongs on a
+*hunting* branch only, not in the committed workflow: the suite's whole value is measuring
+normal conditions, and an allocator that scribbles freed blocks is not one.
+
 ---
 
 ## CI carries the binding, one job per language
