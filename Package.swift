@@ -265,6 +265,25 @@ let package = Package(
             // through `swift test` after xcodebuild had already accepted it.
             linkerSettings: [.unsafeFlags(["-Xlinker", "-ObjC"])]
         ),
+        // The endurance/leak suite's reporting layer: duration handling,
+        // resource sampling, the trend/count assertions, and the JSON/
+        // Markdown/text report rendering — see
+        // sdks/swift/EnduranceReporting/Trends.swift and Report.swift's own
+        // doc comments. A plain library target with **no** dependency on
+        // `Reactor`/`CReactorFFI`, unlike every target below it: mirrors
+        // `sdks/python/endurance-tests/trends.py`+`report.py` being
+        // importable without a built `reactor_sdk`, so this layer's own
+        // unit tests (`EnduranceReportingTests` below) need no live service
+        // or native library either.
+        .target(
+            name: "EnduranceReporting",
+            path: "sdks/swift/EnduranceReporting"
+        ),
+        .testTarget(
+            name: "EnduranceReportingTests",
+            dependencies: ["EnduranceReporting"],
+            path: "sdks/swift/EnduranceReportingTests"
+        ),
         // The Swift SDK's endurance/leak suite. Real FFI, real WebRTC, against
         // reactor/echo in production, watching resource usage for growth
         // across a long-lived session and repeated connect/disconnect
@@ -274,10 +293,12 @@ let package = Package(
         // `withConnectedReactor`, `pacedConnect`, `MediaFixtures` rather
         // than re-deriving connection setup, pacing, and media fixtures —
         // the same reasoning `sdks/python/endurance-tests/helpers.py` gives
-        // for importing straight from `../integration-tests/conftest.py`.
+        // for importing straight from `../integration-tests/conftest.py` —
+        // and on `EnduranceReporting` for everything that doesn't need a
+        // live `Reactor` (see that target's own comment above).
         .testTarget(
             name: "EnduranceTests",
-            dependencies: ["Reactor", "ExampleSupport", "TestSupport"],
+            dependencies: ["Reactor", "ExampleSupport", "TestSupport", "EnduranceReporting"],
             path: "sdks/swift/EnduranceTests",
             linkerSettings: [.unsafeFlags(["-Xlinker", "-ObjC"])]
         ),

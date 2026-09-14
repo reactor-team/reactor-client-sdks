@@ -1,3 +1,4 @@
+import EnduranceReporting
 import Foundation
 import Reactor
 import TestSupport
@@ -7,7 +8,7 @@ import Testing
 /// `sdks/python/endurance-tests/tests/test_session_churn.py` and
 /// `sdks/cpp/endurance-tests/test_session_churn.cpp`.
 ///
-/// Manual-only for now (see ../README.md). Run with:
+/// Run with:
 ///
 ///     ENDURANCE_DURATION_SECONDS=3600 mise run test:swift:endurance-tests
 ///
@@ -24,11 +25,20 @@ extension EnduranceTests {
     // LifecycleChurnTests.swift's fresh-object-per-cycle shape.
     private static let sessionChurnTrackName = "webcam"
 
+    private static let sessionChurnDescription =
+        "One long-lived session (connects once): repeated publish, push_frame, command, "
+        + "unpublish cycles against it. No reconnect overhead, so it packs far more "
+        + "iterations per run than lifecycle-churn."
+
     @Test("Session churn: has no sustained resource growth")
     func hasNoSustainedResourceGrowth() async throws {
         let sampler = ResourceSampler()
+        let live = LiveReporter(
+            testName: "session-churn", durationS: EnduranceConfig.durationSeconds)
         let frame = MediaFixtures.solidBGRAFrame(width: 64, height: 64, color: (30, 150, 90))
         var iteration = 0
+        var metrics: [MetricResult] = []
+        let startedAt = nowISO()
         var pending: (any Error)?
 
         // `withConnectedReactor` connects once via plain `pacedConnect`, not
@@ -68,6 +78,7 @@ extension EnduranceTests {
                     subscription.cancel()
 
                     sampler.sample(cycle: iteration)
+                    live.update(sampler.samples)
                     iteration += 1
                 }
             }
@@ -79,36 +90,27 @@ extension EnduranceTests {
             pending = error
         }
 
-        if !sampler.samples.isEmpty {
-            sampler.printReport()
+        if pending == nil {
+            if iteration >= 3 {
+                do {
+                    metrics = try standardResourceMetrics(sampler.samples)
+                } catch {
+                    pending = error
+                }
+            } else {
+                pending = EnduranceAssertionError(
+                    "only completed \(iteration) iteration(s) — raise "
+                        + "ENDURANCE_DURATION_SECONDS to get enough data for a trend")
+            }
         }
+
+        try finishAndCheck(
+            testName: "session-churn", sdk: "Swift", description: Self.sessionChurnDescription,
+            sdkVersion: ReactorSDK.version, durationS: EnduranceConfig.durationSeconds,
+            startedAt: startedAt, samples: sampler.samples, live: live, metrics: metrics,
+            iterations: iteration, runError: pending.map { "\(type(of: $0)): \($0)" })
         if let pending {
             throw pending
         }
-
-        #expect(iteration >= 3)
-
-        // Trend-based, not exact — see LifecycleChurnTests.swift's own
-        // comment on its identical num_fds check for why.
-        try assertNoSustainedGrowth(
-            sampler.samples.map { Double($0.numFDs) }, name: "num_fds", maxGrowthRatio: 0.15,
-            minAbsoluteDelta: 3, useMedian: true)
-        try assertNoSustainedGrowth(
-            sampler.samples.map { Double($0.rssBytes) }, name: "rss_bytes", maxGrowthRatio: 0.15,
-            minAbsoluteDelta: 5_000_000)
-        try assertNoSustainedGrowth(
-            cpuDeltas(sampler.samples), name: "cpu_s_per_cycle", maxGrowthRatio: 0.5,
-            minAbsoluteDelta: 0.05)
-        try assertNoSustainedGrowth(
-            sampler.samples.map(\.cpuPercent), name: "cpu_percent", maxGrowthRatio: 0.5,
-            minAbsoluteDelta: 5)
-        // Same reasoning as LifecycleChurnTests.swift's own identical call:
-        // one long-lived session can legitimately grow a thread or two
-        // during warm-up and then plateau, so this is trend-based (with the
-        // wider median-backed window), not a strict "never past the first
-        // sample" check.
-        try assertNoSustainedGrowth(
-            sampler.samples.map { Double($0.numThreads) }, name: "num_threads",
-            maxGrowthRatio: 0.15, minAbsoluteDelta: 4, useMedian: true)
     }
 }

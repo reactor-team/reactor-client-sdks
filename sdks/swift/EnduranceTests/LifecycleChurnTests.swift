@@ -1,3 +1,4 @@
+import EnduranceReporting
 import Foundation
 import Reactor
 import TestSupport
@@ -7,7 +8,7 @@ import Testing
 /// `sdks/python/endurance-tests/tests/test_lifecycle_churn.py` and
 /// `sdks/cpp/endurance-tests/test_lifecycle_churn.cpp`.
 ///
-/// Manual-only for now (see ../README.md). Run with:
+/// Run with:
 ///
 ///     ENDURANCE_DURATION_SECONDS=3600 mise run test:swift:endurance-tests
 ///
@@ -17,11 +18,25 @@ import Testing
 /// session, which only ever takes the per-operation paths.
 extension EnduranceTests {
 
+    private static let lifecycleChurnDescription =
+        "Fresh Reactor per cycle: connect, publish, push frames, send a command, disconnect, "
+        + "close. Exercises the whole native-handle lifecycle."
+
     @Test("Lifecycle churn: leaves no leftover threads/fds or resource growth")
     func leavesNoLeftoverResourcesOrGrowth() async throws {
         let sampler = ResourceSampler()
+        let live = LiveReporter(
+            testName: "lifecycle-churn", durationS: EnduranceConfig.durationSeconds)
         let frame = MediaFixtures.solidBGRAFrame(width: 64, height: 64, color: (200, 80, 40))
         var cycle = 0
+        // Counts a disconnect() that failed on an otherwise-normal cycle —
+        // the one thing this scenario retries-and-swallows rather than
+        // failing the whole run over. Mirrors Python's identical counter;
+        // every other scenario in this suite leaves `errors` `nil` (see
+        // RunResult.errors' own doc) since nothing in their loops does this.
+        var errors = 0
+        var metrics: [MetricResult] = []
+        let startedAt = nowISO()
         var pending: (any Error)?
 
         do {
@@ -66,7 +81,17 @@ extension EnduranceTests {
                     _ = try await reactor.sendCommand("set_intensity", ["intensity": 0.5])
                     try webcam.unpublish()
 
-                    try? await reactor.disconnect()
+                    // Counted, not just swallowed: `close()` below still
+                    // runs regardless (this is a best-effort disconnect,
+                    // not worth failing a multi-hour run over), but a
+                    // disconnect() that's failing on some cycles is itself
+                    // a signal worth surfacing in the report rather than a
+                    // hardcoded-looking "Errors 0" that never moves.
+                    do {
+                        try await reactor.disconnect()
+                    } catch {
+                        errors += 1
+                    }
                     // `withExtendedLifetime` guarantees ARC has not already
                     // deallocated `subscription` (which would cancel it) by
                     // this point despite no further use above — Swift does
@@ -85,54 +110,50 @@ extension EnduranceTests {
                 }
 
                 sampler.sample(cycle: cycle)
+                live.update(sampler.samples, errors: errors)
                 cycle += 1
             }
         } catch {
             // A transient failure (a rate limit, a network hiccup) would
             // otherwise abort this test before the report below ever
-            // prints — losing the whole run's accumulated trend to one
+            // writes — losing the whole run's accumulated trend to one
             // hiccup defeats a soak test more than the hiccup itself.
             pending = error
         }
 
-        if !sampler.samples.isEmpty {
-            sampler.printReport()
+        if pending == nil {
+            if cycle >= 3 {
+                // baseline-zero would be the Python equivalent's
+                // `live_clients_baseline_zero` — no such signal exists on
+                // this binding (see ../README.md's "known scope gap").
+                // fdsExact: socket/fd teardown proved synchronous with
+                // disconnect()/close() returning, so num_fds gets the
+                // strict "never past its starting value" check instead of
+                // a trend.
+                do {
+                    metrics = try standardResourceMetrics(sampler.samples, fdsExact: true)
+                } catch {
+                    pending = error
+                }
+            } else {
+                pending = EnduranceAssertionError(
+                    "only completed \(cycle) cycle(s) — raise ENDURANCE_DURATION_SECONDS to "
+                        + "get enough data for a trend")
+            }
         }
+
+        try finishAndCheck(
+            testName: "lifecycle-churn", sdk: "Swift", description: Self.lifecycleChurnDescription,
+            sdkVersion: ReactorSDK.version, durationS: EnduranceConfig.durationSeconds,
+            startedAt: startedAt, samples: sampler.samples, live: live, metrics: metrics,
+            iterations: cycle, errors: errors,
+            runError: pending.map { "\(type(of: $0)): \($0)" })
+        // `finishAndCheck` only throws for a "FAIL" status (a metric that
+        // crossed its threshold) — an unhandled error from the loop itself
+        // (status "ERROR") is recorded in the report but not re-thrown by
+        // it, so this test still has to fail on its own account.
         if let pending {
             throw pending
         }
-
-        #expect(cycle >= 3)
-
-        // Trend-based, not exact: real runs of the C++ port (which shares
-        // this exact scenario shape) showed num_fds take one isolated step
-        // on a single cycle — either during this process's very first
-        // cycle (some shared resource finishing its warm-up) or on a run's
-        // very last cycle (that sample catching the previous cycle's own
-        // teardown still in flight) — neither a per-cycle leak, which would
-        // keep climbing sample over sample rather than step once. See
-        // helpers.hpp's identical comment in the C++ port for the full
-        // account; Swift's own runs haven't been checked for the exact
-        // same artifact, but there's no reason to expect this binding's
-        // teardown timing to be any more synchronous than that one's.
-        try assertNoSustainedGrowth(
-            sampler.samples.map { Double($0.numFDs) }, name: "num_fds", maxGrowthRatio: 0.15,
-            minAbsoluteDelta: 3, useMedian: true)
-        try assertNoSustainedGrowth(
-            sampler.samples.map { Double($0.rssBytes) }, name: "rss_bytes", maxGrowthRatio: 0.15,
-            minAbsoluteDelta: 5_000_000)
-        try assertNoSustainedGrowth(
-            cpuDeltas(sampler.samples), name: "cpu_s_per_cycle", maxGrowthRatio: 0.5,
-            minAbsoluteDelta: 0.05)
-        try assertNoSustainedGrowth(
-            sampler.samples.map(\.cpuPercent), name: "cpu_percent", maxGrowthRatio: 0.5,
-            minAbsoluteDelta: 5)
-        // Trend-based, wider median-backed window: native thread teardown
-        // isn't guaranteed synchronous with `close()` the way it would be
-        // for a purely reference-counted resource, so some cycles catch a
-        // previous cycle's worker mid-exit.
-        try assertNoSustainedGrowth(
-            sampler.samples.map { Double($0.numThreads) }, name: "num_threads",
-            maxGrowthRatio: 0.15, minAbsoluteDelta: 4, useMedian: true)
     }
 }

@@ -21,10 +21,12 @@ node_modules/
 /sdks/js/integration-tests/test-results/
 /sdks/js/integration-tests/playwright-report/
 
-# Python SDK endurance-tests: JSON/Markdown/text reports written by each
-# scenario's own run (see sdks/python/endurance-tests/report.py) — local/CI
-# output, not something to commit.
+# Python/Swift SDK endurance-tests: JSON/Markdown/text reports written by
+# each scenario's own run (see sdks/python/endurance-tests/report.py and
+# sdks/swift/EnduranceReporting/Report.swift) — local/CI output, not
+# something to commit.
 /sdks/python/endurance-results/
+/sdks/swift/endurance-results/
 
 # C++ SDK build tree (cmake -B sdks/cpp/build)
 /sdks/cpp/build/
