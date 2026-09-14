@@ -1,6 +1,12 @@
-"""Endurance-loop plumbing: duration handling, resource sampling, and the
-trend/count assertions built on top of it. See ../README.md for the full
-design rationale and what each measured signal means.
+"""Endurance-loop plumbing: duration handling and resource sampling. See
+../README.md for the full design rationale and what each measured signal
+means.
+
+The trend/count assertions themselves (`assert_no_sustained_growth`,
+`assert_always_zero`, `assert_never_grows`, `cpu_deltas`, and the `Sample`
+they operate on) live in trends.py, not here, and are only re-imported below
+for `tests/*.py` to keep importing them from this module — see trends.py's
+own docstring for why.
 
 Deliberately a plain module, not part of conftest.py: `conftest.py` here and
 `../integration-tests/conftest.py` are both literally named `conftest.py`,
@@ -16,20 +22,27 @@ import from, not `conftest`.
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import importlib.util
-import os
-import statistics
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
 import psutil
+from report import ENDURANCE_VERBOSE
+from trends import (  # noqa: F401
+    ENDURANCE_DURATION_SECONDS,
+    Sample,
+    assert_always_zero,
+    assert_never_grows,
+    assert_no_sustained_growth,
+    cpu_deltas,
+)
 
 # Reuse integration-tests/conftest.py's real-FFI plumbing (new_reactor,
-# paced_connect, solid_rgb_frame, the reactor/reactor_factory fixtures)
-# instead of re-deriving it. Imported by explicit file path, under a
+# paced_connect, solid_rgb_frame, sine_wave_samples, the reactor/
+# reactor_factory fixtures) instead of re-deriving it. Imported by explicit
+# file path, under a
 # qualified module name — not a sys.path-based `import conftest` — for the
 # same reason this module isn't itself named conftest.py; see the module
 # docstring above.
@@ -46,6 +59,7 @@ _spec.loader.exec_module(_integration_conftest)
 new_reactor = _integration_conftest.new_reactor
 paced_connect = _integration_conftest.paced_connect
 solid_rgb_frame = _integration_conftest.solid_rgb_frame
+sine_wave_samples = _integration_conftest.sine_wave_samples
 # Re-exported pytest fixtures, picked up from here by conftest.py (pytest
 # discovers fixtures by scanning a conftest.py's module-level names for the
 # fixture marker, regardless of which module originally defined the
@@ -87,36 +101,26 @@ async def pump_until_frame_received(
 # check today and as a long unattended nightly run later (REA-6088 built this
 # manual-only; scheduling it is a deliberate follow-up). Short default so it
 # "just works" without configuration — a real leak hunt overrides it directly.
-ENDURANCE_DURATION_SECONDS = float(os.environ.get("ENDURANCE_DURATION_SECONDS", "300"))
+#
+# Re-exported from trends.py (its own single source of truth — see that
+# module's docstring for why the trend/count assertions and the `Sample`
+# they operate on live there instead of here) rather than redefined, so
+# there's exactly one env var read either way.
+
+_TABLE_HEADER = (
+    f"\n{'cycle':>6} {'elapsed_s':>10} {'ram_mb':>8} {'cpu_s_per_cycle':>15} "
+    f"{'cpu_percent':>11} {'live_clients':>12} {'orphaned_cbs':>12} "
+    f"{'num_threads':>11} {'num_fds':>7}"
+)
 
 
-@dataclasses.dataclass
-class Sample:
-    cycle: int
-    elapsed_s: float
-    rss_bytes: int
-    cpu_s: float
-    # % of one CPU core busy since the *previous* sample (psutil's own
-    # interval-based cpu_percent(), not an instantaneous reading) — a
-    # different question from cpu_s (derived into cpu_deltas() below): that
-    # one is "how much actual CPU work did this cycle do", this is "how busy
-    # was the CPU relative to how long the cycle took". A cycle that's mostly
-    # waiting on the network can do the same CPU work in more wall-clock time
-    # and show a *lower* percentage even with identical cpu_s — the two can
-    # disagree, and that disagreement itself is informative. Can exceed 100%
-    # if more than one native thread is genuinely busy at once; that's
-    # expected, not a bug, given this SDK's multi-threaded Rust runtime.
-    cpu_percent: float
-    live_clients: int
-    orphaned_callbacks: int
-    # OS-level, not SDK-level — a leaked native thread (the Rust runtime not
-    # joining a worker) or a leaked socket/fd (a WebRTC connection not fully
-    # torn down) is a classic class of bug in networking code that RSS alone
-    # can miss for a while: a few thousand small, live allocations (thread
-    # stacks, socket buffers) don't always show up as a dramatic RSS jump
-    # before something else (an FD or thread ceiling) fails first.
-    num_threads: int
-    num_fds: int
+def _format_row(s: Sample, cpu_per_cycle: float | None) -> str:
+    cpu_str = f"{cpu_per_cycle:>15.3f}" if cpu_per_cycle is not None else f"{'—':>15}"
+    return (
+        f"{s.cycle:>6} {s.elapsed_s:>10.1f} {s.rss_bytes / 1e6:>8.2f} "
+        f"{cpu_str} {s.cpu_percent:>10.1f}% {s.live_clients:>12} "
+        f"{s.orphaned_callbacks:>12} {s.num_threads:>11} {s.num_fds:>7}"
+    )
 
 
 class ResourceSampler:
@@ -170,6 +174,11 @@ class ResourceSampler:
             num_fds=self._process.num_fds(),
         )
         self.samples.append(s)
+        if ENDURANCE_VERBOSE:
+            # The debug path: one detailed row per cycle, live, instead of
+            # the default compact LiveReporter block (report.py) — see
+            # print_live_row()'s own docstring.
+            self.print_live_row(s)
         return s
 
     # The report table's columns, in plain language — read this before reading
@@ -203,7 +212,29 @@ class ResourceSampler:
     #                   normal; should not keep climbing.
     #   num_fds         open file descriptors (sockets, mainly — every WebRTC
     #                   connection needs some). Should not keep climbing.
+    def print_live_row(self, s: Sample) -> None:
+        """One detailed row for `s`, printed immediately — the
+        `ENDURANCE_VERBOSE=1` debug path (report.py's `LiveReporter` handles
+        the default compact path instead). Prints the header once, on the
+        first sample, rather than buffering the whole table for a final
+        dump — see `print_report()`'s own docstring for why a per-cycle
+        cumulative CPU value isn't what's printed here either.
+        """
+        if len(self.samples) == 1:
+            print(_TABLE_HEADER)
+        cpu_per_cycle = None
+        if len(self.samples) > 1:
+            cpu_per_cycle = s.cpu_s - self.samples[-2].cpu_s
+        print(_format_row(s, cpu_per_cycle))
+
     def print_report(self) -> None:
+        """Full recap table, one row per sample — kept for ad-hoc/manual use
+        (e.g. a REPL) rather than called by the tests themselves: under
+        `ENDURANCE_VERBOSE=1` every row already printed live via
+        `print_live_row()` above as it happened, and under the default
+        compact mode a full raw dump defeats the point of `LiveReporter`'s
+        summaries. Reuses the same row formatting as `print_live_row()`.
+        """
         # Per-cycle CPU (cpu_deltas), not the raw cumulative Sample.cpu_s: the
         # latter is psutil's total process CPU time since start, so it climbs
         # every row by construction — printing it invites reading "always
@@ -211,140 +242,7 @@ class ResourceSampler:
         # single cycle is getting more expensive. See cpu_deltas()'s own
         # docstring; the first cycle has no prior sample to diff against.
         deltas = cpu_deltas(self.samples)
-        print(
-            f"\n{'cycle':>6} {'elapsed_s':>10} {'ram_mb':>8} {'cpu_s_per_cycle':>15} "
-            f"{'cpu_percent':>11} {'live_clients':>12} {'orphaned_cbs':>12} "
-            f"{'num_threads':>11} {'num_fds':>7}"
-        )
+        print(_TABLE_HEADER)
         for i, s in enumerate(self.samples):
-            cpu_per_cycle = f"{deltas[i - 1]:>15.3f}" if i > 0 else f"{'—':>15}"
-            print(
-                f"{s.cycle:>6} {s.elapsed_s:>10.1f} {s.rss_bytes / 1e6:>8.2f} "
-                f"{cpu_per_cycle} {s.cpu_percent:>10.1f}% {s.live_clients:>12} "
-                f"{s.orphaned_callbacks:>12} {s.num_threads:>11} {s.num_fds:>7}"
-            )
-
-
-# ── trend assertions ─────────────────────────────────────────────────────────
-
-
-def cpu_deltas(samples: list[Sample]) -> list[float]:
-    """Per-interval CPU consumption, derived from `Sample.cpu_s`.
-
-    `cpu_s` itself is `psutil`'s cumulative process CPU time since the
-    process started — monotonically non-decreasing by construction, so a
-    trend check on the raw values would always report growth regardless of
-    whether anything is actually getting more expensive (the same mistake as
-    using `resource.getrusage().ru_maxrss` for memory — see `ResourceSampler`'s
-    own docstring). Diffing consecutive samples reframes it as CPU spent
-    *per interval*, which is what can actually flag a cycle getting slower
-    over the course of a run.
-    """
-    return [b.cpu_s - a.cpu_s for a, b in zip(samples, samples[1:])]
-
-
-def assert_no_sustained_growth(
-    values: list[float],
-    *,
-    name: str,
-    max_growth_ratio: float,
-    min_absolute_delta: float = 0.0,
-    warmup_fraction: float = 0.2,
-    use_median: bool = False,
-) -> None:
-    """Fail if `values`'s mean over the run's last third exceeds its mean over
-    the first third (after dropping `warmup_fraction` to let one-time costs —
-    import caches, connection setup, allocator warm-up — settle) by more than
-    `max_growth_ratio`, *and* by more than `min_absolute_delta` in absolute
-    terms.
-
-    The absolute floor exists so a tiny, near-zero baseline can't turn an
-    insignificant wobble into a ratio that looks huge. `values` must already
-    be a *non-cumulative* measurement (raw RSS is fine as-is; CPU needs
-    `cpu_deltas()` first — see its docstring). Not meant for exact-count
-    fields (`live_clients`, `orphaned_callbacks`) — those are deterministic
-    counts, not noisy measurements; use `assert_always_zero`/`assert_never_grows`
-    for them instead.
-
-    `use_median=True` swaps the mean for a median within each window —
-    `num_threads` specifically has a documented one-cycle artifact (a cycle
-    that catches the previous cycle's native thread teardown still in
-    flight, briefly double-counting), and on a short run the "third" window
-    can be small enough (as few as 2-3 samples) that a single such cycle
-    landing in the last window skews its *mean* enough to misread as a
-    sustained trend. A median shrugs off one outlier as long as it isn't the
-    majority of the window; a real, sustained leak still moves the median
-    just as surely as the mean.
-
-    Always prints one line verdict, pass or fail — not just on failure — so a
-    clean run still says *why* each signal looked fine, not just silence.
-    """
-    n = len(values)
-    if n < 6:
-        raise AssertionError(
-            f"only {n} {name} sample(s) collected in {ENDURANCE_DURATION_SECONDS}s — "
-            "raise ENDURANCE_DURATION_SECONDS to get enough data for a trend"
-        )
-    warmed_up = values[int(n * warmup_fraction) :]
-    third = max(1, len(warmed_up) // 3)
-    first, last = warmed_up[:third], warmed_up[-third:]
-    average = statistics.median if use_median else (lambda xs: sum(xs) / len(xs))
-    first_mean = average(first)
-    last_mean = average(last)
-    delta = last_mean - first_mean
-    ratio = (delta / first_mean) if first_mean else (1.0 if delta > 0 else 0.0)
-    is_leak = delta > min_absolute_delta and ratio > max_growth_ratio
-
-    trend = f"{first_mean:,.3f} → {last_mean:,.3f} ({ratio:+.0%})"
-    if is_leak:
-        reason = (
-            f"over the {max_growth_ratio:.0%} growth threshold — looks like a real leak, not noise"
-        )
-    elif delta <= min_absolute_delta:
-        reason = (
-            f"the {delta:,.3f} change is under the {min_absolute_delta:,.3g} floor, "
-            f"so it's noise regardless of the {ratio:+.0%} ratio"
-        )
-    else:
-        reason = f"under the {max_growth_ratio:.0%} growth threshold"
-    print(f"[{name}] {'LEAK?' if is_leak else 'ok'}: {trend} — {reason}")
-
-    if is_leak:
-        raise AssertionError(f"{name} grew {ratio:.0%} across the run ({trend}) — {reason}")
-
-
-def assert_always_zero(samples: list[Sample], *, field: str) -> None:
-    """Fail if `field` was ever nonzero, on *any* cycle — for a count that
-    should return to exactly 0 every time (e.g. live client handles right
-    after `close()`), a trend isn't the right test: a leak on cycle 3 that
-    happens to get cleaned up by cycle 40 is still a real bug.
-
-    Always prints one line verdict, pass or fail — see
-    `assert_no_sustained_growth`'s own docstring for why.
-    """
-    bad = [(s.cycle, getattr(s, field)) for s in samples if getattr(s, field) != 0]
-    if bad:
-        cycle, value = bad[0]
-        reason = (
-            f"nonzero on {len(bad)}/{len(samples)} cycles (first at cycle {cycle}: "
-            f"{value}) — a handle leaked mid-run"
-        )
-        print(f"[{field}] LEAK?: {reason}")
-        raise AssertionError(f"{field} was {reason}")
-    print(f"[{field}] ok: stayed at exactly 0 across all {len(samples)} cycles")
-
-
-def assert_never_grows(samples: list[Sample], *, field: str) -> None:
-    """Fail if `field`'s peak ever exceeds its starting value — for a count
-    that's expected to stay flat across the whole run (not necessarily 0).
-
-    Always prints one line verdict, pass or fail — see
-    `assert_no_sustained_growth`'s own docstring for why.
-    """
-    baseline = getattr(samples[0], field)
-    peak = max(getattr(s, field) for s in samples)
-    if peak > baseline:
-        reason = f"grew from {baseline} to {peak} during the run"
-        print(f"[{field}] LEAK?: {reason}")
-        raise AssertionError(f"{field} {reason}")
-    print(f"[{field}] ok: never exceeded its starting value ({baseline}; peak seen was {peak})")
+            cpu_per_cycle = deltas[i - 1] if i > 0 else None
+            print(_format_row(s, cpu_per_cycle))

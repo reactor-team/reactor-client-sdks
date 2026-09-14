@@ -25,7 +25,14 @@ ENDURANCE_DURATION_SECONDS=3600 uv run --group dev pytest endurance-tests/tests 
 `test`/`test:python` — these runs are long, inherently noisier than a
 correctness assertion (a growth *trend*, not a single right-or-wrong call),
 and not meant to gate a PR or a release. Scheduling this on a nightly cadence
-is a deliberate next step, not built here.
+is a deliberate next step, not built here. It *is* wired into its own
+`endurance-tests.yml` GitHub Actions workflow, run by hand from the Actions
+tab (`workflow_dispatch`) — see "Live output, reports, and artifacts" below
+for what that run leaves behind.
+
+By default this prints a compact status block every 30s instead of a row per
+cycle — set `ENDURANCE_VERBOSE=1` for the old detailed per-cycle table
+instead. See the next section.
 
 ## Duration, not iteration count
 
@@ -49,11 +56,161 @@ and will handle a future scheduled run too, without changes.
   scenario for per-operation leaks (frame buffers, `Track` objects, pending
   command completions) a coarser connect/close cycle wouldn't surface as
   clearly.
+- **`test_publish_churn.py`** — one long-lived session, many publish/unpublish
+  cycles on a single sendonly slot, with no frames and no command in between.
+  Isolates the publish/unpublish path itself from session-churn's broader
+  mix, so a leak specific to that pair reads as its own signal rather than
+  being folded into a trend several different operations are contributing to.
+- **`test_pause_resume_churn.py`** — one long-lived session, many pause/resume
+  cycles on a recvonly track. Same isolation reasoning as publish-churn,
+  applied to `Track.pause()`/`resume()` instead.
+- **`test_video_publish_steady.py`** / **`test_audio_publish_steady.py`** —
+  publish once (video or audio) and hold it, continuously streaming for the
+  whole run — no pause, no unpublish, no reconnect. The opposite shape from
+  every scenario above: those are all *churn* (repeatedly doing and undoing
+  something to surface a leak in that operation); these two are steady-state,
+  the shape a real long call actually takes, so a leak tied to elapsed
+  streaming time or frame/chunk count rather than to churn count still gets
+  caught. Kept as two separate scenarios, not one parameterized over both —
+  audio and video share nothing below `push_frame()` (separate adapters,
+  separate encoder/decoder threads in the native runtime), so a leak in one
+  is not evidence about the other.
 
-## Reading the printed table
+**Adding a new scenario**: write a loop that does the one thing you want to
+isolate, then call `trends.standard_resource_metrics(sampler.samples)` for
+the RSS/CPU/thread/fd checks every scenario shares, and
+`report.finish_and_check(...)` in your `finally` block for the report-writing
+and raise-on-`FAIL` boilerplate — see any file in `tests/` for the shape.
+Neither call needs its own new scenario-specific invariant (a scenario that
+has one, like session-churn's `pending_completions` check, still checks that
+itself, in its own loop) — they only exist to keep the generic resource
+accounting from being copied into every new file.
 
-Every scenario ends by printing one row per cycle. In plain language, left to
-right:
+## Live output, reports, and artifacts
+
+A multi-hour run printing one row per cycle (the original behavior) makes a
+GitHub Actions log unreadable long before it's useful — so what prints live,
+what gets kept for later, and what summarizes the result are now three
+separate things:
+
+- **Live output (default): a compact status block, not a row per cycle.**
+  Reprinted roughly every 30s (`ENDURANCE_LIVE_INTERVAL_SECONDS`, default
+  `30`) — enough that opening the job while it's running always shows
+  something recent, without scrolling a huge log for an hour-plus run:
+
+  ```text
+  ──────────────────────────────────────────────
+  🚀 Endurance Test — session-churn
+  ──────────────────────────────────────────────
+
+  Duration       2h 00m
+  Elapsed        1h 23m
+  Progress       69%
+
+  Iterations     1,842
+  Errors         0
+
+  Resources
+    RSS           284 MB → 291 MB   (+7 MB)
+    CPU           avg 18.4%
+    Threads       14 → 14
+    File desc.    23 → 23
+    Pending       0
+
+  Status         🟢 Healthy
+  ──────────────────────────────────────────────
+  ```
+
+  "Healthy" here only means no errors have surfaced yet during the run — the
+  pass/fail *verdict* against each metric's threshold is only known once the
+  run ends (see below); this block is answering "is it still running and
+  does it look OK so far", not pre-empting the final result.
+
+- **`ENDURANCE_VERBOSE=1`: the detailed per-cycle table, live.** The debug
+  path — for a short manual run where you want to watch every cycle as it
+  happens, not a periodic summary. See "Reading the per-cycle table" below
+  for what the columns mean. (This replaces the old behavior of buffering
+  every row and dumping the whole table once at the end — same information,
+  printed as it happens instead of after the fact.)
+
+- **Every scenario's full sample history, always, regardless of the above:**
+  written to `sdks/python/endurance-results/` when the scenario ends (pass,
+  fail, *or* error — see the `finally` block in each `tests/*.py` file),
+  three files per scenario:
+
+  ```text
+  endurance-results/
+    session-churn.json           # every sample, every metric's start/end/
+                                  # threshold, tracemalloc diagnostics — the
+                                  # source of truth for post-run debugging
+    session-churn-report.md      # human-readable: table + a plain-language
+                                  # conclusion, meant for the GitHub Actions
+                                  # Job Summary or pasting into a PR/Slack
+    session-churn-summary.txt    # the same report, no Markdown — for
+                                  # downloading and opening in a terminal/editor
+    lifecycle-churn.json
+    lifecycle-churn-report.md
+    lifecycle-churn-summary.txt
+    publish-churn.json
+    publish-churn-report.md
+    publish-churn-summary.txt
+    pause-resume-churn.json
+    pause-resume-churn-report.md
+    pause-resume-churn-summary.txt
+    video-publish-steady.json
+    video-publish-steady-report.md
+    video-publish-steady-summary.txt
+    audio-publish-steady.json
+    audio-publish-steady-report.md
+    audio-publish-steady-summary.txt
+  ```
+
+  All three come from the same in-memory result (`report.py`'s `RunResult`),
+  so `.md` and `.txt` can never say something different from what's in the
+  `.json` — there's exactly one place the numbers are computed.
+
+- **The GitHub Actions workflow publishes `*-report.md` to the Job
+  Summary** (`$GITHUB_STEP_SUMMARY`) and uploads all of
+  `endurance-results/` as the `endurance-test-results` artifact — both
+  steps run with `if: always()`, specifically so a failed run still leaves
+  a readable summary and a downloadable artifact instead of just a wall of
+  pytest traceback. Opening a failed workflow run should answer "what
+  failed and by how much" without reading the job log line by line.
+
+- **A run's status is one of three, not just pass/fail** — `PASS` (every
+  metric stayed within its threshold), `FAIL` (a metric's threshold check in
+  `helpers.py` — `assert_no_sustained_growth`/`assert_always_zero`/
+  `assert_never_grows` — failed), or `ERROR` (the run never got far enough
+  to evaluate a metric at all: an unhandled exception, a live-service error
+  like a rate limit or a fixture failure, an `ENDURANCE_DURATION_SECONDS`
+  too short to collect enough samples). The report's conclusion is written
+  differently for each — an `ERROR` explicitly says it isn't a leak
+  verdict, since no metric ran to completion to judge.
+
+## Reading the Results table
+
+Each `*-report.md`/`-summary.txt`'s "Results" table has five columns:
+`Start | Mid | End | Δ (Mid→End) | Status`. `Start`/`Mid`/`End` are the
+mean (or median — see `assert_no_sustained_growth`) of the first, middle,
+and last third of the run, after dropping warm-up — not raw first/last
+samples.
+
+`Start`→`End` alone can look like growth on a perfectly healthy run: a
+buffer or connection pool reaching its steady-state size shows up as a
+one-time step early on, which moves `End` up relative to `Start` without
+being a leak. The pass/fail verdict is actually decided by `Mid`→`End` (the
+`Δ (Mid→End)` column) — did it keep climbing in the back half, or did it
+plateau — which is the same comparison `assert_no_sustained_growth` makes
+internally (see its docstring in `trends.py`). Reading `Δ (Mid→End)` ≈ 0
+is what "no leak" looks like in this table, even when `Start`→`End` shows a
+real jump. `Mid` (and `Δ (Mid→End)`) render as `—` for the exact
+always-zero/never-grows checks (`live_clients`, `orphaned_cbs`, ...), which
+have no middle-third concept.
+
+## Reading the per-cycle table
+
+Under `ENDURANCE_VERBOSE=1` (or in the raw JSON's `samples`), every cycle is
+one row. In plain language, left to right:
 
 | column            | what it is                                                                                          | what "bad" looks like                          |
 | ----------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
@@ -62,22 +219,54 @@ right:
 | `ram_mb`          | physical RAM the whole process is using right now — not just the SDK, everything in this one process   | keeps climbing, never plateaus                  |
 | `cpu_s_per_cycle` | CPU time *this one cycle* burned (not a running total)                                                | keeps getting bigger cycle to cycle             |
 | `cpu_percent`     | % of one CPU core busy since the previous row (like Activity Monitor/htop's own number) — can read over 100% if more than one native thread is genuinely busy at once, that's normal | keeps getting bigger cycle to cycle |
-| `live_clients`    | how many `Reactor` clients still have an open native connection right now                              | higher than expected (0 in lifecycle-churn, 1 in session-churn) |
+| `live_clients`    | how many `Reactor` clients still have an open native connection right now                              | higher than expected (0 in lifecycle-churn, 1 in every other scenario — each of which keeps one long-lived session for the whole run) |
 | `orphaned_cbs`    | frame/event callbacks the SDK couldn't confirm were safe to free when a client closed                  | anything above 0, ever                          |
 | `num_threads`     | OS-level threads this process currently has (mostly the native Rust runtime's)                         | keeps climbing (some early wobble is normal)    |
 | `num_fds`         | open file descriptors — sockets, mainly, since every WebRTC connection needs some                      | keeps climbing                                  |
 
 This table (with the same wording) also lives as a comment directly above
-`ResourceSampler.print_report()` in `helpers.py` — keep both in sync if either
-changes.
+`ResourceSampler.print_live_row()` in `helpers.py` — keep both in sync if
+either changes.
 
-## The signals, and what "leak" means for each
+## The signals, what they mean, and the value we expect
+
+Every signal below is checked against a concrete threshold in `tests/*.py`
+(the same numbers show up as each metric's `threshold` in the JSON/report) —
+not just "should plateau" in the abstract:
+
+| signal | how it's checked | expected value | why that number |
+| --- | --- | --- | --- |
+| RSS (`ram_mb`) | trend: mean of the run's last third vs. its *middle* third, after a 20% warm-up (see below) | < 15% growth, and only counted if the absolute change is also ≥ 5 MB | allocator/page-cache noise is real sample-to-sample; the 5 MB floor stops a tiny near-zero baseline from turning an insignificant wobble into a huge-looking ratio |
+| CPU time (`cpu_s_per_cycle`) | same trend check, on `cpu_deltas()` (per-interval, not cumulative) | < 50% growth, floor 0.05s | a wider tolerance than RSS: legitimate cycle-to-cycle jitter (GC pauses, network scheduling) is larger here than for memory |
+| CPU % (`cpu_percent`) | same trend check | < 50% growth, floor 5.0 (percentage points) | catches a leak that shows up as a growing *share* of CPU busy-ness even when `cpu_s_per_cycle` itself doesn't trend — see below for why the two can disagree |
+| `num_threads` | trend (median, not mean) | < 15% growth, floor 4 threads | thread teardown isn't guaranteed synchronous with `close()`, so a real run can oscillate (e.g. 25→31→25) with no sustained direction; median absorbs one double-counted cycle without hiding a real trend |
+| `num_fds` | **exact**: never above its starting value (lifecycle-churn) or trend (every other scenario) | 0 growth past baseline (lifecycle-churn); < 15% growth, floor 3 (elsewhere) | fd teardown *is* synchronous with `disconnect()`/`close()` returning, so lifecycle-churn — a fresh client every cycle — can hold it to an exact bound; a long-lived session can legitimately open a few more during warm-up (a connection pool, a worker thread), so the other scenarios get the same trend treatment as RSS/CPU instead |
+| `live_clients` | **exact**: always 0 (lifecycle-churn) or never above baseline (every other scenario) | 0 after every lifecycle-churn cycle; flat at 1 elsewhere | a count, not a noisy measurement — a leak on cycle 3 that clears by cycle 40 is still a real bug, so this isn't a trend check |
+| `orphaned_cbs` | **exact**: always 0 | 0, every cycle, every scenario | comes only from clients that already closed — `assert_never_grows` would only flag growth *past* the first sample, letting a leak already present at cycle 0 pass silently forever |
+| `Track._adapters` / `Reactor._pending_completions` (session-churn only) | **exact**: 0 between iterations | 0 | every `send_command` is awaited to completion and every `on_frame` has a matching `off_frame` before the next iteration starts — anything left over is a leaked awaitable or handler, not noise |
+| tracemalloc top single-traceback growth | diagnostic, hard floor | < 5 MB | `tracemalloc` diffs are known-noisy from one-time caches and string interning; this is a "definitely real" floor, not a tight auto-threshold, since a human reads the top-10 breakdown rather than a nightly job trusting a narrow number |
+
+## The signals, in plain language
 
 - **Process RSS** (`ram_mb` above, via `psutil`) — should plateau, not grow
-  without bound. Checked as a trend (mean of the run's last third vs. its
-  first third, after dropping a 20% warm-up) rather than a single before/after
-  number: allocator and OS page-cache behavior is noisy sample-to-sample, so
-  only a *sustained* climb counts.
+  without bound. Checked as a trend rather than a single before/after number
+  (allocator and OS page-cache behavior is noisy sample-to-sample, so only a
+  *sustained* climb counts) — specifically the run's last third against its
+  *middle* third, not its first, after dropping a 20% warm-up. That
+  distinction matters: a real CI run showed RSS flat, then a one-time ramp
+  to a new plateau somewhere in the middle of the window, then flat again —
+  a native buffer/pool growing once to its steady-state size, not an
+  unbounded leak. Comparing against the first third instead means exactly
+  *when* that one-time ramp happens to land decides pass/fail (the same
+  total jump read as a comfortable pass in one run and a razor-thin fail in
+  another, purely from timing) — comparing the last third to the middle
+  third instead asks the more direct question, "is this still climbing after
+  the fact", which a one-time step that's already plateaued answers "no"
+  regardless of when it happened. See `assert_no_sustained_growth`'s own
+  docstring in `helpers.py` for the full reasoning, including the trade-off
+  (a real leak still only in its early, slow-accelerating phase near the end
+  of a short run could likewise read as "already flat" here — preferred
+  anyway over failing a PR on a one-time step that already stopped).
 - **CPU time and CPU %** (`cpu_s_per_cycle`/`cpu_percent` above, both from
   `psutil`) — same trend check as RSS, wider tolerance, on two different
   questions: `cpu_s_per_cycle` is how much actual CPU work a cycle did,
@@ -106,8 +295,9 @@ changes.
   RSS/CPU these are exact integers, not noisy measurements, so they get a
   plain assertion instead of a trend: `_LIVE_CLIENTS` must be **exactly 0**
   after every single lifecycle-churn cycle (a leak on cycle 3 that happens to
-  clear by cycle 40 is still a real bug), and `_ORPHANED_CALLBACKS` must
-  **never grow** past its starting value in either scenario.
+  clear by cycle 40 is still a real bug; every other scenario checks it never
+  exceeds its baseline of 1 instead), and `_ORPHANED_CALLBACKS` must stay
+  **exactly 0** throughout, in every scenario.
 - **The receive path** — both scenarios also subscribe to `main_video` via
   `on_frame`/`off_frame` (`Track._adapters`), not just publish/push frames:
   `test_lifecycle_churn.py` registers once per client and lets `close()` tear

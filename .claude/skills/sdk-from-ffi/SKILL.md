@@ -455,6 +455,192 @@ frame is in flight.
 
 ---
 
+## Endurance and leak tests, past what unit tests reach
+
+Unit tests and the seven scenarios are both short-lived — they cannot see a handle, a
+callback, or an OS resource that leaks a little on every cycle. This suite runs the binding
+for minutes to hours instead and watches whether the numbers keep climbing. Python's
+(`sdks/python/endurance-tests/`) is the reference; port it file-for-file rather than
+redesigning it, the way the object model and the seven scenarios get ported.
+
+Several scenario shapes, all needed, because each finds leaks the others cannot:
+
+- **`test_lifecycle_churn`** — a fresh client per full connect → publish → subscribe →
+  command → unpublish → disconnect → close cycle. The one that exercises the native handle's
+  whole lifetime (create/destroy), so a leak tied to *tearing down* a client only shows up
+  here.
+- **`test_session_churn`** — one client, connected once, that repeats
+  publish → subscribe/unsubscribe → command → unpublish many times without ever
+  disconnecting. The one for a leak in a single *operation*, which a coarser connect/close
+  cycle dilutes into noise.
+- **One scenario per operation pair worth isolating** (`test_publish_churn`:
+  publish → unpublish, nothing else in the loop; `test_pause_resume_churn`: pause → resume on
+  a recvonly track, nothing else) — session-churn already mixes publish/frame/command/unpublish
+  every cycle, which means a leak specific to just one of those operations shows up as a small
+  contribution to a trend several operations are all feeding, not a clear signal on its own.
+  Splitting it into its own scenario turns "some metric drifted a little in the broad mix" into
+  "publish-churn failed, pause-resume-churn passed" — the report itself names the culprit.
+  Cheap to add: same fixture, same metrics, just a narrower loop body — add one per
+  operation you'd want isolated, not just the two above. These also run *far* more iterations
+  per minute than session-churn (no frame-pump wait, no command round trip beyond the
+  operation itself), so they reach a stable trend faster too. **This is not hypothetical** — the
+  first real CI run of `test_pause_resume_churn` against production found a genuine, linear,
+  no-plateau RSS climb (+50% over 5 minutes) that `test_publish_churn` (same run, same process,
+  same fixture) did not show at all. Folded into `session-churn`'s broad mix, that signal would
+  have been diluted into "RSS grew a bit, inconclusive" instead of naming pause/resume outright.
+- **`test_video_publish_steady` / `test_audio_publish_steady`** — the opposite shape from every
+  scenario above: publish once (video or audio) and hold it, streaming continuously for the
+  whole run, no pause/unpublish/reconnect at all. Every other scenario here is *churn*
+  (repeatedly doing and undoing something); a leak tied to *elapsed streaming time or frame/
+  chunk count* rather than to churn count would not necessarily show up in a churn scenario even
+  run forever, so this steady-state shape is a distinct, necessary fourth category, not a
+  variant of the others. Keep audio and video as separate scenarios, not one parameterized over
+  both — they share nothing below `push_frame()` (separate adapters, separate encoder/decoder
+  threads in the native runtime), so a leak in one is not evidence about the other, and a report
+  that names `audio-publish-steady` specifically is more useful than one that says
+  `media-publish-steady[audio]`.
+
+**Extensible by design, not by accident**: factor the two things every scenario repeats —
+the RSS/CPU/thread/fd/handle-count checks at the end of the loop, and the `finally`-block
+report-writing/raise-on-`FAIL` sequence — into two shared calls (Python:
+`trends.standard_resource_metrics(samples, live_clients_baseline_zero=..., fds_exact=...)` and
+`report.finish_and_check(...)`) that every scenario file calls instead of repeating. A sixth
+scenario file should be "write the loop body that does the one thing you want to isolate, call
+these two," not another ~150-line copy with a different middle. A scenario's *own* invariant
+(session-churn's `pending_completions` check, publish-churn's `track.published` check,
+pause-resume-churn's `paused_tracks` check) still lives in that scenario's own loop — it is
+specific to what that scenario exercises, not generic resource accounting, so it does not
+belong in the shared helpers.
+
+Track RSS, CPU as **two separate questions** (work actually done — from a delta between
+samples, never a raw cumulative counter, which "grows" by construction and proves nothing —
+and OS-reported busy-percent, which can read over 100% with multiple native threads), thread
+count, and fd/handle count. Add whatever your language exposes for live-object or
+orphaned-callback counts (Python's `_LIVE_CLIENTS`/`_ORPHANED_CALLBACKS`) if it has an
+equivalent; note in your README if it does not, rather than silently having a smaller suite.
+Fds were exact in Python but took an off-by-one step around a single cycle boundary in a
+native (non-GC) binding — if your language sees the same, use the trend-based check
+(`assert_no_sustained_growth`) instead of an exact-count one, the way threads already do.
+
+**A leak already present on the very first cycle needs `assert_always_zero`, not a
+baseline-relative "never grows".** A trend check compares against the baseline it first
+sees, so a value that is already leaking on cycle 0 becomes the accepted normal and the
+check passes forever. Anything that should start at zero and stay there — orphaned
+callbacks, for one — gets the absolute check.
+
+**Sustained growth is last-third vs *middle*-third, not vs first-third.** A one-time
+ramp to a new steady-state (a buffer or pool growing once, not an unbounded leak) can land
+anywhere in the run; comparing last-third to first-third makes *where the ramp happened to
+fall* the thing that decides pass/fail, not whether growth continued after it. Comparing
+last-third to middle-third asks "did it keep growing after that" instead, so a ramp that has
+already plateaued by the back third reads as flat. Full reasoning and the accepted
+trade-off (a real leak still in its early, slow-accelerating phase near the end of a short
+run can misread as flat) belongs in `assert_no_sustained_growth`'s own docstring in
+`helpers.py` — read it there, don't re-derive it. This was found by two otherwise-similar
+CI runs producing opposite verdicts on the same total growth; do not assume your first
+green run means the check is well-calibrated.
+
+**A `Timeline` of a handful of evenly-spaced checkpoints across the run, in every report,**
+is what actually shows *why* — flat, one-time ramp, or still climbing — instead of collapsing
+a whole run into two or three numbers nobody can picture the shape of. Compute it from the
+samples you already collected; it costs nothing extra to gather.
+
+**Put the midpoint in the Results table itself, not only in the Timeline.** Each metric's
+`start`/`end` are already the first-third/last-third means (post-warmup, not raw first/last
+samples — see above), so `start → end` alone routinely reads as real growth on a perfectly
+healthy run: a buffer or pool reaching its steady-state size is a one-time step early on that
+moves `end` up relative to `start` without ever being a leak. Add the middle-third mean
+(`mid`, the same number the pass/fail check already computes internally) as its own column,
+plus the `mid → end` delta — that delta is the actual quantity the verdict is based on, so
+showing it directly is what lets a reader conclude "flat from the midpoint on, so not a leak"
+from the table alone, without reading the surrounding prose or reaching for the Timeline. A
+report a human skims in 10 seconds should not need the full checkpoint list to answer "is this
+actually still climbing".
+
+**A report needs to say what it is, on its own — it gets read standalone,** in a GitHub
+Actions Job Summary or a downloaded artifact, days after the run and without the source open
+next to it. Two fields worth carrying for that: a one-line, hand-written `description` of what
+the scenario's loop actually does (rendered right under the title) — the `test_name` slug
+alone (`publish-churn`) does not say "no frames, no commands" or distinguish it from
+session-churn's broader mix, and that distinction is the whole point once you have more than
+two or three scenarios; and the SDK version under test (`reactor_sdk.__version__` or
+equivalent), rendered above the commit SHA — the commit says what code ran, the version says
+what a human comparing reports across releases actually wants to filter on. Neither belongs in
+the reporting module itself if it would need importing your binding's own package (see the
+FFI-free constraint below) — take them as plain string parameters from the scenario, the same
+way `sdk`/`test_name` already are.
+
+**Reporting: one shared in-memory result, three renderings, written regardless of outcome.**
+A single result object (Python's `RunResult`, built by `report.py`) renders to JSON, Markdown,
+and plain text, so the three formats cannot drift apart the way hand-written duplicates
+would. Write all three to disk even when a scenario fails or errors — a report that only
+appears on success is useless for the run you actually need to debug. Keep this module free
+of your binding's own import chain (`report.py` deliberately does not import `helpers.py`) so
+its own unit tests need no live service or built native library.
+
+**Live output: a compact status block by default, not a row dumped per cycle.** Reprint one
+block in place on an interval (Python: every 30s) so a long run's log stays readable; gate the
+old per-cycle table behind an opt-in env var (`ENDURANCE_VERBOSE=1`) for when you actually
+want the detail, and stream it live rather than only at the end — a run that gets killed
+partway should still have shown something.
+
+**Destruction-order bugs are a second, independent finding here — in both C++ and Swift,**
+neither one copying the other. A stack-local client destroyed before a stack-local
+subscription (C++ destroys locals in reverse declaration order; Swift ARC releases on
+whichever scope drops the last reference) unregisters the handler before the client closes,
+silently skipping the one thing the cycle exists to exercise: does close() clean up a still-
+registered handler. Fix it by controlling the moment explicitly (an owning pointer you
+`.reset()`/an explicit `withExtendedLifetime`) rather than relying on declaration order to
+line up with teardown order. Wrap each cycle's body so a mid-cycle failure still
+disconnects/closes before the error propagates — the same shape the *Refuse; do not fail
+quietly* invariant requires elsewhere.
+
+**CI wiring**: `workflow_dispatch` only (this suite is long, noisy, and reads a trend rather
+than a single right-or-wrong answer — it does not gate a PR or a release the way the seven
+scenarios and integration-tests do), one job per SDK gated on a `sdk` choice input so adding
+a language later is "add a choice plus a job," not a restructure. `if: always()` on both the
+job-summary step (render every `*-report.md` the scenarios produced into
+`$GITHUB_STEP_SUMMARY`, so a failed run's shape is visible without downloading anything) and
+the `actions/upload-artifact` step (upload `endurance-results/` even on failure — that's the
+run you need most). `concurrency` global rather than per-ref (`group: endurance-tests`,
+`cancel-in-progress: false`), because every scenario runs against one real shared
+backend/quota and two runs racing it at once makes both runs' trends noisier — the whole
+point of the suite. A `run-name:` that names which SDK the run is for, since every run
+otherwise shows the same generic workflow name in the Actions list.
+
+**Run the suite under gdb from day one — a native crash in a managed-language suite is
+undebuggable otherwise.** The intermittent segfault this suite hunts dies on a Rust/libwebrtc
+thread, so all faulthandler ever prints is `Fatal Python error: Segmentation fault` and
+`Current thread ... <no Python frame>` — the one thread whose stack matters is the one whose
+stack you never get. Wrap pytest as gdb's *direct* inferior
+(`gdb -batch -x pytest-under-gdb.cmds --args .venv/bin/python -m pytest ...`), never via
+`mise run`/`uv run`: gdb does not follow spawned grandchildren, so wrapping the task runner
+captures nothing. Traps, each hit for real while wiring this: gdb is not in the ubuntu-latest
+image (apt-install it, `apt-get update` first — the image's snapshot index goes stale and 404s
+on moved archives); an `if` block split across chained `-ex` args silently takes the crash
+branch even on clean exits, so write the script to a file with `printf` and `-x` instead
+(verified against ubuntu-24.04's gdb); keep the step's exit code honest with
+`if $_isvoid($_exitcode)` / `quit 139` / `else` / `quit $_exitcode` — `$_exitcode` is void
+exactly when the inferior died on a signal, so a crash is 139, a test failure is pytest's own
+code, and green stays green; and `tee` gdb's output, but only after `set -eo pipefail` at
+the top of the run block: this repo's workflow `run` steps render as `bash -e` with no
+pipefail (actions' own steps have it; yours do not), and without it the pipeline reports
+tee's exit code — a caught SIGSEGV has already surfaced once as a green run (34888100192),
+skipping the failure-gated diagnostics step entirely. Then a separate `if: failure()` step
+lifts everything from the `received signal` line — both of gdb's stop shapes, `Program
+received signal` (main thread) and `Thread N "name" received signal` (any other thread),
+because the crash this setup hunts lands on an FFI host thread — onward into
+`endurance-results/native-crash-diagnostics.json` —
+ANSI-stripped, capped, carrying the signal, run URL/SHA, a reproduce command, and written
+instructions for reading the dump — so it rides the artifact zip the suite already uploads and
+whoever debugs the crash months later, human or agent, starts from the faulting thread's stack
+instead of re-deriving this whole setup (the JSON's own `what_is_this_file` field says all of
+this in-file). Crash-accelerating env (`MALLOC_PERTURB_=165`, `RUST_LOG=info`) belongs on a
+*hunting* branch only, not in the committed workflow: the suite's whole value is measuring
+normal conditions, and an allocator that scribbles freed blocks is not one.
+
+---
+
 ## CI carries the binding, one job per language
 
 Wire the SDK into CI as its own job, scoped to its own paths. One job per binding, so a

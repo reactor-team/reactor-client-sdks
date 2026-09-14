@@ -14,26 +14,41 @@ takes the per-operation paths.
 from __future__ import annotations
 
 import gc
+import sys
+from pathlib import Path
 
 from helpers import (
+    ENDURANCE_DURATION_SECONDS,
     ResourceSampler,
-    assert_always_zero,
-    assert_never_grows,
-    assert_no_sustained_growth,
-    cpu_deltas,
     new_reactor,
     paced_connect,
     pump_until_frame_received,
     solid_rgb_frame,
 )
+from trends import standard_resource_metrics
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from report import LiveReporter, MetricResult, finish_and_check, now_iso  # noqa: E402
+
+import reactor_sdk
 
 WIDTH, HEIGHT = 64, 64
+
+DESCRIPTION = (
+    "Fresh Reactor per cycle: connect, publish, push frames, send a command, "
+    "disconnect, close. Exercises the whole native-handle lifecycle "
+    "(_create_handle/_destroy_handle)."
+)
 
 
 async def test_lifecycle_churn_leaves_no_leftover_handles_or_growth() -> None:
     sampler = ResourceSampler()
+    live = LiveReporter("lifecycle-churn", ENDURANCE_DURATION_SECONDS)
     frame = solid_rgb_frame(WIDTH, HEIGHT, (200, 80, 40))
     cycle = 0
+    errors = 0
+    metrics: list[MetricResult] = []
+    started_at = now_iso()
 
     try:
         while not sampler.deadline_reached():
@@ -77,7 +92,13 @@ async def test_lifecycle_churn_leaves_no_leftover_handles_or_growth() -> None:
                     try:
                         await client.disconnect()
                     except Exception:
-                        pass
+                        # Counted, not just swallowed: close() below still runs
+                        # regardless (this is a best-effort disconnect, not a
+                        # thing worth failing a multi-hour run over), but a
+                        # disconnect() that's failing on some cycles is itself
+                        # a signal worth surfacing in the report rather than a
+                        # hardcoded-looking "Errors 0" that never moves.
+                        errors += 1
             finally:
                 client.close()
 
@@ -88,73 +109,35 @@ async def test_lifecycle_churn_leaves_no_leftover_handles_or_growth() -> None:
             # feels like waiting.
             gc.collect()
             sampler.sample(cycle=cycle)
+            live.update(sampler.samples, errors=errors)
             cycle += 1
+
+        assert cycle >= 3, (
+            f"only completed {cycle} cycle(s) — raise ENDURANCE_DURATION_SECONDS to "
+            "get enough data for a trend"
+        )
+
+        # baseline-zero: this scenario starts with no clients. fds_exact: socket/fd
+        # teardown proved synchronous with disconnect()/close() returning in a real
+        # run (constant every single cycle), so num_fds gets the strict "never past
+        # its starting value" check instead of a trend — see
+        # standard_resource_metrics()'s own docstring for both parameters.
+        metrics.extend(
+            standard_resource_metrics(
+                sampler.samples, live_clients_baseline_zero=True, fds_exact=True
+            )
+        )
     finally:
-        # A transient failure (a RateLimitedError, a network hiccup) inside
-        # the loop above would otherwise abort the test before this ever
-        # runs — losing the whole run's accumulated RSS/CPU/handle-count
-        # trend to one hiccup defeats a soak test more than the hiccup
-        # itself. Whatever was collected up to the failure still prints.
-        if sampler.samples:
-            sampler.print_report()
-
-    assert cycle >= 3, (
-        f"only completed {cycle} cycle(s) — raise ENDURANCE_DURATION_SECONDS to "
-        "get enough data for a trend"
-    )
-
-    assert_always_zero(sampler.samples, field="live_clients")
-    # Always-zero, not never-grows: this scenario starts with no clients, and
-    # the documented invariant (helpers.py's column guide, README.md) is that
-    # orphaned callbacks are always 0 — a leak already present on cycle 0
-    # would slip past assert_never_grows, which only flags growth *past*
-    # whatever the first sample happened to be.
-    assert_always_zero(sampler.samples, field="orphaned_callbacks")
-    # num_fds, unlike num_threads just below, proved rock-solid across a real
-    # run (constant every single cycle) — socket/fd teardown is synchronous
-    # with disconnect()/close() returning, so the strict "never past its
-    # starting value" check orphaned_callbacks/live_clients also get is the
-    # right one here too, not a trend.
-    assert_never_grows(sampler.samples, field="num_fds")
-    assert_no_sustained_growth(
-        [s.rss_bytes for s in sampler.samples],
-        name="rss_bytes",
-        max_growth_ratio=0.15,
-        min_absolute_delta=5_000_000,
-    )
-    assert_no_sustained_growth(
-        cpu_deltas(sampler.samples),
-        name="cpu_s_per_cycle",
-        max_growth_ratio=0.5,
-        min_absolute_delta=0.05,
-    )
-    # Same trend check, on the % reading instead of the raw seconds — the two
-    # answer different questions (see Sample.cpu_percent's own docstring), so
-    # a leak that shows up as a growing *proportion* of the CPU being busy,
-    # even without cpu_s_per_cycle itself trending, would still get caught.
-    assert_no_sustained_growth(
-        [s.cpu_percent for s in sampler.samples],
-        name="cpu_percent",
-        max_growth_ratio=0.5,
-        min_absolute_delta=5.0,
-    )
-    # Trend-based, not exact like num_fds above: a real run showed
-    # num_threads oscillating (25, 31, 25, 24, 24, 25, 31, 30, 25, 25) with no
-    # sustained direction — native thread teardown isn't guaranteed
-    # synchronous with close()/gc.collect() the way an fd close() or a Python
-    # object's collection is, so some cycles still catch a previous cycle's
-    # worker mid-exit. A strict "never past the first sample" check flags
-    # that timing noise as a false leak; a trend survives it the same way it
-    # already does for RSS/CPU. `use_median` and the wider floor exist
-    # because a *short* run's "last third" window can be just 2-3 samples —
-    # small enough that one of those double-counted cycles alone swings a
-    # plain mean past the threshold (observed on a real 90s run: 25→30,
-    # +20%, on a healthy process). See assert_no_sustained_growth's own
-    # docstring for why median fixes this without hiding a real leak.
-    assert_no_sustained_growth(
-        [float(s.num_threads) for s in sampler.samples],
-        name="num_threads",
-        max_growth_ratio=0.15,
-        min_absolute_delta=4,
-        use_median=True,
-    )
+        finish_and_check(
+            test_name="lifecycle-churn",
+            sdk="Python",
+            description=DESCRIPTION,
+            sdk_version=reactor_sdk.__version__,
+            duration_s=ENDURANCE_DURATION_SECONDS,
+            started_at=started_at,
+            sampler=sampler,
+            live=live,
+            metrics=metrics,
+            iterations=cycle,
+            errors=errors,
+        )
