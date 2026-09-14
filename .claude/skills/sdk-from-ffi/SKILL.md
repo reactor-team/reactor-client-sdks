@@ -483,7 +483,34 @@ Several scenario shapes, all needed, because each finds leaks the others cannot:
   Cheap to add: same fixture, same metrics, just a narrower loop body — add one per
   operation you'd want isolated, not just the two above. These also run *far* more iterations
   per minute than session-churn (no frame-pump wait, no command round trip beyond the
-  operation itself), so they reach a stable trend faster too.
+  operation itself), so they reach a stable trend faster too. **This is not hypothetical** — the
+  first real CI run of `test_pause_resume_churn` against production found a genuine, linear,
+  no-plateau RSS climb (+50% over 5 minutes) that `test_publish_churn` (same run, same process,
+  same fixture) did not show at all. Folded into `session-churn`'s broad mix, that signal would
+  have been diluted into "RSS grew a bit, inconclusive" instead of naming pause/resume outright.
+- **`test_video_publish_steady` / `test_audio_publish_steady`** — the opposite shape from every
+  scenario above: publish once (video or audio) and hold it, streaming continuously for the
+  whole run, no pause/unpublish/reconnect at all. Every other scenario here is *churn*
+  (repeatedly doing and undoing something); a leak tied to *elapsed streaming time or frame/
+  chunk count* rather than to churn count would not necessarily show up in a churn scenario even
+  run forever, so this steady-state shape is a distinct, necessary fourth category, not a
+  variant of the others. Keep audio and video as separate scenarios, not one parameterized over
+  both — they share nothing below `push_frame()` (separate adapters, separate encoder/decoder
+  threads in the native runtime), so a leak in one is not evidence about the other, and a report
+  that names `audio-publish-steady` specifically is more useful than one that says
+  `media-publish-steady[audio]`.
+
+**Extensible by design, not by accident**: factor the two things every scenario repeats —
+the RSS/CPU/thread/fd/handle-count checks at the end of the loop, and the `finally`-block
+report-writing/raise-on-`FAIL` sequence — into two shared calls (Python:
+`trends.standard_resource_metrics(samples, live_clients_baseline_zero=..., fds_exact=...)` and
+`report.finish_and_check(...)`) that every scenario file calls instead of repeating. A sixth
+scenario file should be "write the loop body that does the one thing you want to isolate, call
+these two," not another ~150-line copy with a different middle. A scenario's *own* invariant
+(session-churn's `pending_completions` check, publish-churn's `track.published` check,
+pause-resume-churn's `paused_tracks` check) still lives in that scenario's own loop — it is
+specific to what that scenario exercises, not generic resource accounting, so it does not
+belong in the shared helpers.
 
 Track RSS, CPU as **two separate questions** (work actually done — from a delta between
 samples, never a raw cumulative counter, which "grows" by construction and proves nothing —
