@@ -60,6 +60,14 @@ on:
           - runner
           - uv-latest
         default: runner
+      dump_python_only:
+        description: >-
+          Skip the tests; just upload the runner's exact python3.12 binary as
+          an artifact (crash-symbolization aid, REA-6154/REA-6309). Not
+          removable from the dispatch form without deleting the workflow on
+          the default branch, hence piggybacked here.
+        type: boolean
+        default: false
 
 concurrency:
   # Global, not per-ref: every scenario here runs against the same real,
@@ -78,6 +86,34 @@ env:
   MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
 
 jobs:
+  # Crash-hunt aid (REA-6154/REA-6309): the SIGSEGV backtraces show stripped
+  # python3.12 frames whose addresses match no 3.12.3-1ubuntu0.N build
+  # published on archive.ubuntu.com/launchpad. Upload the runner's exact
+  # binary so the faulting addresses can be symbolized offline instead of
+  # re-crashing CI with heavier instrumentation.
+  dump-python:
+    name: Dump runner python3.12 binary
+    if: inputs.dump_python_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Collect
+        run: |
+          set -x
+          dpkg -l 'python3.12*' 'libpython3.12*' 2>/dev/null || true
+          readlink -f /usr/bin/python3 /usr/bin/python3.12 || true
+          /usr/bin/python3 --version
+          apt-cache policy python3.12-minimal || true
+          mkdir -p sdks/python/endurance-results/runner-python
+          cp -L /usr/bin/python3.12 sdks/python/endurance-results/runner-python/ || true
+          cp /usr/lib/python3.12/lib-dynload/_ctypes.cpython-312-x86_64-linux-gnu.so \
+            sdks/python/endurance-results/runner-python/ || true
+          ls -la sdks/python/endurance-results/runner-python/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: runner-python-binaries
+          path: sdks/python/endurance-results/runner-python/
+          retention-days: 7
   # A separate job, not an expression on the `python` job's own timeout-minutes:
   # GitHub Actions expressions have no arithmetic operators (`*`/`+` aren't part
   # of the expression grammar at all, unlike `needs`/`inputs` context access,
@@ -88,6 +124,7 @@ jobs:
   # timeout is evaluated).
   setup:
     name: Compute job timeout
+    if: '!inputs.dump_python_only'
     runs-on: ubuntu-latest
     outputs:
       timeout_minutes: ${{ steps.compute.outputs.timeout_minutes }}
@@ -119,7 +156,7 @@ jobs:
   python:
     name: Python SDK endurance tests
     needs: setup
-    if: inputs.sdk == 'python'
+    if: inputs.sdk == 'python' && !inputs.dump_python_only
     runs-on: ubuntu-latest
     # The six scenarios (endurance-tests/tests/*.py) run sequentially, each
     # for duration_minutes, so the job needs at least 4x that plus setup
