@@ -463,7 +463,7 @@ for minutes to hours instead and watches whether the numbers keep climbing. Pyth
 (`sdks/python/endurance-tests/`) is the reference; port it file-for-file rather than
 redesigning it, the way the object model and the seven scenarios get ported.
 
-Two scenario shapes, both needed, because each finds leaks the other cannot:
+Several scenario shapes, all needed, because each finds leaks the others cannot:
 
 - **`test_lifecycle_churn`** — a fresh client per full connect → publish → subscribe →
   command → unpublish → disconnect → close cycle. The one that exercises the native handle's
@@ -473,6 +473,17 @@ Two scenario shapes, both needed, because each finds leaks the other cannot:
   publish → subscribe/unsubscribe → command → unpublish many times without ever
   disconnecting. The one for a leak in a single *operation*, which a coarser connect/close
   cycle dilutes into noise.
+- **One scenario per operation pair worth isolating** (`test_publish_churn`:
+  publish → unpublish, nothing else in the loop; `test_pause_resume_churn`: pause → resume on
+  a recvonly track, nothing else) — session-churn already mixes publish/frame/command/unpublish
+  every cycle, which means a leak specific to just one of those operations shows up as a small
+  contribution to a trend several operations are all feeding, not a clear signal on its own.
+  Splitting it into its own scenario turns "some metric drifted a little in the broad mix" into
+  "publish-churn failed, pause-resume-churn passed" — the report itself names the culprit.
+  Cheap to add: same fixture, same metrics, just a narrower loop body — add one per
+  operation you'd want isolated, not just the two above. These also run *far* more iterations
+  per minute than session-churn (no frame-pump wait, no command round trip beyond the
+  operation itself), so they reach a stable trend faster too.
 
 Track RSS, CPU as **two separate questions** (work actually done — from a delta between
 samples, never a raw cumulative counter, which "grows" by construction and proves nothing —
@@ -506,6 +517,31 @@ green run means the check is well-calibrated.
 is what actually shows *why* — flat, one-time ramp, or still climbing — instead of collapsing
 a whole run into two or three numbers nobody can picture the shape of. Compute it from the
 samples you already collected; it costs nothing extra to gather.
+
+**Put the midpoint in the Results table itself, not only in the Timeline.** Each metric's
+`start`/`end` are already the first-third/last-third means (post-warmup, not raw first/last
+samples — see above), so `start → end` alone routinely reads as real growth on a perfectly
+healthy run: a buffer or pool reaching its steady-state size is a one-time step early on that
+moves `end` up relative to `start` without ever being a leak. Add the middle-third mean
+(`mid`, the same number the pass/fail check already computes internally) as its own column,
+plus the `mid → end` delta — that delta is the actual quantity the verdict is based on, so
+showing it directly is what lets a reader conclude "flat from the midpoint on, so not a leak"
+from the table alone, without reading the surrounding prose or reaching for the Timeline. A
+report a human skims in 10 seconds should not need the full checkpoint list to answer "is this
+actually still climbing".
+
+**A report needs to say what it is, on its own — it gets read standalone,** in a GitHub
+Actions Job Summary or a downloaded artifact, days after the run and without the source open
+next to it. Two fields worth carrying for that: a one-line, hand-written `description` of what
+the scenario's loop actually does (rendered right under the title) — the `test_name` slug
+alone (`publish-churn`) does not say "no frames, no commands" or distinguish it from
+session-churn's broader mix, and that distinction is the whole point once you have more than
+two or three scenarios; and the SDK version under test (`reactor_sdk.__version__` or
+equivalent), rendered above the commit SHA — the commit says what code ran, the version says
+what a human comparing reports across releases actually wants to filter on. Neither belongs in
+the reporting module itself if it would need importing your binding's own package (see the
+FFI-free constraint below) — take them as plain string parameters from the scenario, the same
+way `sdk`/`test_name` already are.
 
 **Reporting: one shared in-memory result, three renderings, written regardless of outcome.**
 A single result object (Python's `RunResult`, built by `report.py`) renders to JSON, Markdown,
