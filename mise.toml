@@ -316,8 +316,17 @@ run = """
 # which buries the real output under thousands of errors from inside libstdc++.
 # A git pathspec glob matches across '/', hence the exclusion rather than a
 # narrower pattern.
+#
+# ':(glob)' on the src pathspec is load-bearing, not decoration: without it,
+# git's default pathspec matching does not give '**' its usual "any depth,
+# including zero" meaning, so 'src/**/*.cpp' silently matched only .cpp files
+# in a *subdirectory* of src/ (audio/, detail/) and skipped every .cpp file
+# sitting directly in src/ itself — track.cpp and reactor.cpp among them,
+# unlinted for as long as this task has existed. Confirmed with
+# `git ls-files` directly: adding ':(glob)' is what makes the direct children
+# show up.
 git ls-files --cached --others --exclude-standard \
-    'sdks/cpp/src/**/*.cpp' 'sdks/cpp/tests/*.cpp' ':(exclude)sdks/cpp/tests/package/*' \
+    ':(glob)sdks/cpp/src/**/*.cpp' 'sdks/cpp/tests/*.cpp' ':(exclude)sdks/cpp/tests/package/*' \
   | xargs -r scripts/clang-tidy-cpp.sh sdks/cpp/build
 """
 

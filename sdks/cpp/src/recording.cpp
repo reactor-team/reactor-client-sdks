@@ -12,6 +12,10 @@
 
 namespace reactor {
 
+// By value, not const&: an exported symbol whose ABI the released shared
+// library depends on -- see Reactor::send_command's own comment in
+// reactor.hpp.
+// NOLINTNEXTLINE(performance-unnecessary-value-param)
 std::future<void> Clip::download(std::string path, DownloadOptions options) const {
   auto op = std::make_unique<detail::PendingDownload>();
   op->operation = "download_clip";
@@ -99,7 +103,7 @@ void PendingDownload::progress_trampoline(std::uint32_t done, std::uint32_t tota
     if (self && self->on_progress) {
       self->on_progress(done, total);
     }
-  } catch (...) {
+  } catch (...) {  // NOLINT(bugprone-empty-catch)
     // Called from Rust, like every other trampoline here. A progress handler that
     // throws must not take the download — or the process — with it.
   }
@@ -207,6 +211,11 @@ void ClientImpl::begin_download(std::unique_ptr<Pending> op, const std::string& 
     // Shared, and watched rather than tracked: `reactor_download_clip`'s callbacks
     // outlive the handle they were given, so the pending map — whose contents
     // teardown frees — is the one place this must not live.
+    // Not a dynamic_cast: `op` is exactly the PendingDownload begin_download's own
+    // caller allocated a few lines up (through the base-typed unique_ptr the
+    // pending map deals in) — the dynamic type is a static invariant here, not
+    // something to verify at runtime.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-static-cast-downcast)
     std::shared_ptr<PendingDownload> download{static_cast<PendingDownload*>(op.release())};
     download->owner = weak_from_this();
     const bool wants_progress = static_cast<bool>(download->on_progress);

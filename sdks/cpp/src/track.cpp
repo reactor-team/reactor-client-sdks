@@ -411,12 +411,32 @@ Subscription ClientImpl::add_video_handler(const std::string& name,
     const std::lock_guard<std::mutex> lock(media_mutex_);
     id = video_handlers_[name].add(std::move(handler));
   }
+  // `name` is captured by copy, not reference: this outlives the call that
+  // created it, so a reference into `add_video_handler`'s own parameter would
+  // dangle. clang-tidy flags the copy as an exception that could, in principle,
+  // escape a callable that must not throw — true of any std::string copy, and
+  // std::length_error is the only way that ever actually happens, which a track
+  // name never gets close to.
+  // NOLINTNEXTLINE(bugprone-exception-escape)
   return Subscription{[weak = weak_from_this(), name, id] {
     if (const auto self = weak.lock()) {
-      const std::lock_guard<std::mutex> lock(self->media_mutex_);
-      const auto entry = self->video_handlers_.find(name);
-      if (entry != self->video_handlers_.end()) {
-        entry->second.remove(id);
+      // Not held across remove(): remove() can now block waiting for an
+      // in-flight invoke() to finish (see its own comment), and a video
+      // callback that reaches back into this client for anything guarded by
+      // media_mutex_ would deadlock against this lock still being held here.
+      // Safe to look the list up and drop the lock first, same as
+      // deliver_video's own comment: entries are only ever added, so the
+      // object found here outlives the lookup.
+      Handlers<const VideoFrame&>* handlers = nullptr;
+      {
+        const std::lock_guard<std::mutex> lock(self->media_mutex_);
+        const auto entry = self->video_handlers_.find(name);
+        if (entry != self->video_handlers_.end()) {
+          handlers = &entry->second;
+        }
+      }
+      if (handlers != nullptr) {
+        handlers->remove(id);
       }
     }
   }};
@@ -434,12 +454,22 @@ Subscription ClientImpl::add_audio_handler(const std::string& name,
     const std::lock_guard<std::mutex> lock(media_mutex_);
     id = audio_handlers_[name].add(std::move(handler));
   }
+  // See add_video_handler's own comment on the capture and the NOLINT.
+  // NOLINTNEXTLINE(bugprone-exception-escape)
   return Subscription{[weak = weak_from_this(), name, id] {
     if (const auto self = weak.lock()) {
-      const std::lock_guard<std::mutex> lock(self->media_mutex_);
-      const auto entry = self->audio_handlers_.find(name);
-      if (entry != self->audio_handlers_.end()) {
-        entry->second.remove(id);
+      // See add_video_handler's own comment: not held across remove(), for
+      // the same reason.
+      Handlers<const AudioFrame&>* handlers = nullptr;
+      {
+        const std::lock_guard<std::mutex> lock(self->media_mutex_);
+        const auto entry = self->audio_handlers_.find(name);
+        if (entry != self->audio_handlers_.end()) {
+          handlers = &entry->second;
+        }
+      }
+      if (handlers != nullptr) {
+        handlers->remove(id);
       }
     }
   }};
@@ -655,6 +685,9 @@ void ClientImpl::begin_publish(std::unique_ptr<Pending> op, const std::string& n
     }
 
     auto* raw = track_pending(std::move(op));
+    // See add_video_handler's own comment on capturing `name` by copy across a
+    // completion boundary, and on the NOLINT.
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     raw->on_success = [weak = weak_from_this(), name] {
       if (const auto self = weak.lock()) {
         const std::lock_guard<std::mutex> lock(self->media_mutex_);
@@ -662,6 +695,7 @@ void ClientImpl::begin_publish(std::unique_ptr<Pending> op, const std::string& n
         self->published_.insert(name);
       }
     };
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     raw->on_failure = [weak = weak_from_this(), name] {
       if (const auto self = weak.lock()) {
         const std::lock_guard<std::mutex> lock(self->media_mutex_);
@@ -842,8 +876,13 @@ void ClientImpl::push_audio(const std::string& name, Samples pcm, std::uint32_t 
         "\" carries video, not audio. Use push_frame() with Bytes, width and height for it."};
   }
   require_published(name);
-  if (channels == 0) {
-    throw BadRequestError{"channels must be at least 1"};
+  const bool supported_rate = sample_rate == 8'000 || sample_rate == 16'000 ||
+                              sample_rate == 24'000 || sample_rate == 32'000 ||
+                              sample_rate == 44'100 || sample_rate == 48'000;
+  if (!supported_rate || (channels != 1 && channels != 2)) {
+    throw BadRequestError{
+        "audio requires 8000, 16000, 24000, 32000, 44100 or 48000 Hz and 1 or 2 channels; got " +
+        std::to_string(sample_rate) + " Hz and " + std::to_string(channels) + " channels."};
   }
   if (pcm.data == nullptr || pcm.size == 0 || pcm.size % channels != 0) {
     throw BadRequestError{

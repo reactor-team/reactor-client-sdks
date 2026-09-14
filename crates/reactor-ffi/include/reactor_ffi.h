@@ -809,10 +809,16 @@ void reactor_push_video_frame_with_metadata_at(
  *   track_name          — name of the sendonly audio track
  *   data                — interleaved i16 PCM samples (little-endian)
  *   samples_per_channel — number of samples per channel in this call
- *   sample_rate         — must match the source (48000)
- *   num_channels        — must match the source (1 = mono)
+ *   sample_rate         — capture rate: 8000, 16000, 24000, 32000, 44100 or 48000 Hz
+ *   num_channels        — 1 (mono) or 2 (stereo)
  * No-op if handle is NULL, track_name is NULL, data is NULL, or the named
- * track has no attached audio source.
+ * track has no attached audio source. Unsupported formats are logged and dropped.
+ * data must contain samples_per_channel * num_channels readable i16 values.
+ *
+ * Arbitrary chunk sizes are assembled into 10 ms blocks, then WebRTC resamples
+ * to the negotiated send format. Pace pushes at the capture rate. A format
+ * change discards any buffered partial block; disconnect discards all tails.
+ * The synthetic audio device is still shared by all local audio tracks.
  */
 void reactor_push_audio_frame(
     ReactorHandle  *handle,

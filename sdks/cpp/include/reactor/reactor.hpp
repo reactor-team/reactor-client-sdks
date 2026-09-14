@@ -223,6 +223,13 @@ class Reactor {
   /// The Python SDK finds a `FileRef` sitting in the arguments and pulls it out;
   /// C++ has no way to recognise one inside a `Json`, so it is named here instead.
   /// Explicit costs a few characters and cannot silently miss one.
+  //
+  // By value, not const&, despite clang-tidy's own preference: these are
+  // exported symbols, and changing a parameter's type changes the mangled
+  // name. A host that upgrades this shared library without recompiling its
+  // own binary would fail to resolve `send_command` at the next launch --
+  // for the same released version number, since nothing here bumps it.
+  // NOLINTNEXTLINE(performance-unnecessary-value-param)
   std::future<std::optional<Json>> send_command(std::string command, Json args = Json::object(),
                                                 std::map<std::string, FileRef> uploads = {});
 
@@ -236,6 +243,9 @@ class Reactor {
   ///
   /// Needs a ready session — the upload is created against it. `NotFoundError`
   /// when the path does not exist.
+  // See send_command's own comment on staying by-value: an exported symbol,
+  // and the mangled name changes with the parameter type.
+  // NOLINTNEXTLINE(performance-unnecessary-value-param)
   std::future<FileRef> upload_file(std::string path);
 
   /// Upload bytes the caller already holds.
@@ -243,6 +253,7 @@ class Reactor {
   /// The same result as `upload_file`, for a caller with the bytes rather than a
   /// path — a frame just rendered, a buffer just decoded. `data` is borrowed for
   /// the call only.
+  // NOLINTNEXTLINE(performance-unnecessary-value-param)
   std::future<FileRef> upload_bytes(Bytes data, std::string name, std::string mime_type);
 
   /// Ask for a clip of the last `duration_seconds` of the session.

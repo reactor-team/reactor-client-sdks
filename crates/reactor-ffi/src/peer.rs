@@ -30,6 +30,8 @@ use reactor_webrtc::{
     Transceiver, TransceiverDirection, VideoFrame, VideoTrack,
 };
 
+use crate::audio_input::AudioInput;
+
 fn peer_err(e: impl std::fmt::Display) -> CoreError {
     CoreError::Peer(e.to_string())
 }
@@ -280,6 +282,7 @@ struct PeerState {
     transceivers: Vec<Arc<Transceiver>>,
     local_tracks: HashMap<String, LocalTrack>,
     recv_tracks: Arc<Mutex<Vec<RemoteTrack>>>,
+    audio_inputs: Arc<Mutex<HashMap<String, AudioInput>>>,
 }
 
 /// Bitrate bounds outlive the peer connection they were applied to.
@@ -650,6 +653,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             s.transceivers = transceivers;
             s.local_tracks = local_tracks;
             s.recv_tracks = recv_tracks;
+            s.audio_inputs = Arc::default();
         }
 
         Ok(PreparedOffer {
@@ -812,17 +816,34 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         Ok(())
     }
 
-    fn push_audio_frame(&self, track_name: &str, data: &[i16]) {
+    fn push_audio_frame(
+        &self,
+        track_name: &str,
+        data: &[i16],
+        sample_rate: u32,
+        num_channels: u32,
+    ) {
         // The guard covers the lookup only. The factory push does not need it, and
         // holding a lock across a libwebrtc call is the shape that deadlocks.
-        {
+        let inputs = {
             let s = self.state.lock().unwrap();
-            if !s.local_tracks.contains_key(track_name) {
+            if !matches!(s.local_tracks.get(track_name), Some(LocalTrack::Audio(_))) {
                 warn!("[peer] push_audio_frame: no audio source for track '{track_name}'");
                 return;
             }
-        }
-        self.factory.push_audio_frame(data, 48_000, 1);
+            s.audio_inputs.clone()
+        };
+        // Serialize the shared ADM feed, without holding the peer-state lock
+        // across a WebRTC call. Each named input retains at most one partial
+        // 10 ms block; routing is still the factory's shared synthetic device.
+        inputs
+            .lock()
+            .unwrap()
+            .entry(track_name.to_owned())
+            .or_default()
+            .push(data, sample_rate, num_channels, |pcm, rate, channels| {
+                self.factory.push_audio_frame(pcm, rate, channels);
+            });
     }
 
     // The two video pushes below do hold the guard across the libwebrtc call,
@@ -886,6 +907,10 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "audio_tests.rs"]
+mod audio_tests;
 
 #[cfg(test)]
 mod tests {

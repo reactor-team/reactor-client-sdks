@@ -9,6 +9,18 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-09-10
+
+### Fixed
+
+- `Track.push_frame()` now preserves the PCM capture rate and channel count through
+  the shared FFI instead of treating every buffer as 48 kHz mono. Supports
+  8, 16, 24, 32, 44.1 and 48 kHz input in mono or stereo, with local WebRTC
+  resampling. Arbitrary chunks are assembled into 10 ms blocks; format changes
+  and disconnect discard partial blocks (REA-6193).
+- Unsupported microphone formats are rejected before opening the device, and
+  audio pushes reject PCM lengths that disagree with their sample metadata.
+
 ## [1.5.0] - 2026-09-09
 
 ### Added

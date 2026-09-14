@@ -50,7 +50,7 @@ import PackageDescription
 // changing its value — so the directive below has to stay even after
 // release-swift.yml fills this in, not just while it reads `nil`.
 // swift-format-ignore
-let releasedFFI: (url: String, checksum: String)? = (url: "https://github.com/reactor-team/reactor-client-sdks/releases/download/v1.0.0/ReactorFFI.xcframework.zip", checksum: "c32afda714324f1a74641723f82dad34f3bd14a09dd809d72c21cb18e0e4e026")
+let releasedFFI: (url: String, checksum: String)? = (url: "https://github.com/reactor-team/reactor-client-sdks/releases/download/v1.0.1/ReactorFFI.xcframework.zip", checksum: "7f7ffcd2d62749ab5366b84d103e0a6068759483d37260c866e05f80cfceed73")
 
 let ffiTarget: Target = {
     if let archive = Context.environment["REACTOR_XCFRAMEWORK"] {

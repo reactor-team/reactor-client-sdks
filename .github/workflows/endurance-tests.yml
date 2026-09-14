@@ -37,7 +37,14 @@ on:
         default: "5"
 
 concurrency:
-  group: endurance-tests-${{ github.ref }}
+  # Global, not per-ref: every scenario here runs against the same real,
+  # shared `reactor/echo` backend/API key (see the `python` job's own
+  # comment) rather than an isolated per-branch environment, so two manual
+  # runs on different branches at once would compete for the same quota and
+  # make both runs' RSS/CPU/timing trends noisier — worse for a suite whose
+  # whole point is reading a trend. workflow_dispatch is manual and
+  # infrequent, so serializing globally costs effectively nothing.
+  group: endurance-tests
   cancel-in-progress: false
 
 env:
@@ -49,11 +56,11 @@ jobs:
   # A separate job, not an expression on the `python` job's own timeout-minutes:
   # GitHub Actions expressions have no arithmetic operators (`*`/`+` aren't part
   # of the expression grammar at all, unlike `needs`/`inputs` context access,
-  # which *is* supported there) — the multiply-by-two-plus-setup-buffer math
-  # has to happen in a shell step instead, and `timeout-minutes` can only take
-  # a literal or a `needs.<job>.outputs.*` expression, never one of its own
-  # steps' outputs (those don't exist yet when the job's own timeout is
-  # evaluated).
+  # which *is* supported there) — the multiply-by-scenario-count-plus-setup-
+  # buffer math has to happen in a shell step instead, and `timeout-minutes`
+  # can only take a literal or a `needs.<job>.outputs.*` expression, never one
+  # of its own steps' outputs (those don't exist yet when the job's own
+  # timeout is evaluated).
   setup:
     name: Compute job timeout
     runs-on: ubuntu-latest
@@ -64,6 +71,13 @@ jobs:
         id: compute
         env:
           DURATION_MINUTES: ${{ inputs.duration_minutes }}
+          # Number of scenarios in sdks/python/endurance-tests/tests/*.py and
+          # sdks/swift/EnduranceTests/*Tests.swift alike (both suites are kept
+          # at the same scenario count on purpose — see
+          # sdks/swift/EnduranceTests/README.md) — bump this alongside adding
+          # or removing a scenario file in either suite, not the `python`/
+          # `swift` jobs' own comments alone.
+          SCENARIO_COUNT: 6
         # `10#` forces base-10 parsing: bash's arithmetic context otherwise
         # treats a leading-zero numeral (e.g. "08") as octal and errors out.
         # GitHub Actions hard-caps a job's timeout-minutes at 360, so a
@@ -71,10 +85,10 @@ jobs:
         # get silently killed mid-run — fail fast here instead, with the
         # largest duration_minutes that still fits.
         run: |
-          timeout_minutes=$((10#$DURATION_MINUTES * 2 + 30))
+          timeout_minutes=$((10#$DURATION_MINUTES * SCENARIO_COUNT + 30))
           max_timeout_minutes=360
           if (( timeout_minutes > max_timeout_minutes )); then
-            max_duration_minutes=$(( (max_timeout_minutes - 30) / 2 ))
+            max_duration_minutes=$(( (max_timeout_minutes - 30) / SCENARIO_COUNT ))
             echo "::error::duration_minutes=$DURATION_MINUTES needs a ${timeout_minutes}-minute job timeout, but GitHub Actions caps job timeouts at ${max_timeout_minutes} minutes. Use duration_minutes <= ${max_duration_minutes}."
             exit 1
           fi
@@ -85,8 +99,8 @@ jobs:
     needs: setup
     if: inputs.sdk == 'python'
     runs-on: ubuntu-latest
-    # The two scenarios (endurance-tests/tests/*.py) run sequentially, each
-    # for duration_minutes, so the job needs at least 2x that plus setup
+    # The six scenarios (endurance-tests/tests/*.py) run sequentially, each
+    # for duration_minutes, so the job needs at least 4x that plus setup
     # (toolchain install, clang, build) — a fixed timeout would silently
     # kill any multi-hour duration_minutes run partway through a later
     # scenario. Computed in the `setup` job above, not inline here (see its
@@ -218,8 +232,11 @@ jobs:
           # pytest's live reporter sprays ANSI escapes all over the log —
           # strip them or the JSON is unreadable.
           text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
-          # Both stop shapes match: "Program received signal" (main thread) and
-          # 'Thread 1979 "reactor-on-audi" received signal' (any other thread).
+          # Two shapes: main-thread stops print "Program received signal
+          # SIGSEGV, ...", stops on any other thread print 'Thread 1979
+          # "reactor-on-audi" received signal SIGSEGV, ...' — a regex looking
+          # only for the first shape silently wrote nothing for run
+          # 34888100192's crash. Both contain "received signal SIG...".
           m = re.search(r"received signal (SIG[A-Z]+)", text)
           if not m:
               print("no native signal found in the gdb log — nothing to save")
@@ -268,11 +285,14 @@ jobs:
               print(f"native crash diagnostics ({m.group(1)}) written to {dest}")
           PYEOF
 
-      # `if: always()` on both of the following: a suite failure should still
-      # leave a readable Job Summary and a downloadable artifact behind. The
-      # publish step below reports gracefully when no *-report.md exists (this
-      # branch's suite predates report.py — only on-crash diagnostics land in
-      # endurance-results/ here).
+      # `if: always()` on both of the following: a threshold violation or a
+      # test error should still leave a readable Job Summary and a
+      # downloadable artifact behind — see sdks/python/endurance-tests/
+      # report.py's own module docstring. Each scenario writes its own
+      # report in a `finally` block regardless of pass/fail, so these files
+      # exist even when the step above failed (unless the failure happened
+      # in fixture setup, before any report could be written — e.g. a
+      # connection error before the first sample).
       - name: Publish results to the job summary
         if: always()
         working-directory: sdks/python
@@ -511,11 +531,27 @@ jobs:
               print(f"native crash diagnostics ({signal}) written to {dest}")
           PYEOF
 
-      # `if: always()`, same reasoning as the `python` job's upload step: the
-      # failed run is the one whose diagnostics you need most. The Swift
-      # suite writes no *-report.md (its table is printed, not saved), so on
-      # a run without a native crash this directory may be empty — hence
-      # `warn`, not `error`.
+      # Same reasoning as the `python` job's identical step — see its own
+      # comment. Swift's report.finish_and_check() equivalent
+      # (Helpers.swift) writes the same three files
+      # (`<scenario>.json`/`-report.md`/`-summary.txt`) into
+      # sdks/swift/endurance-results/, so this step is byte-for-byte the
+      # same shape as the python job's, just a different working-directory.
+      - name: Publish results to the job summary
+        if: always()
+        working-directory: sdks/swift
+        run: |
+          shopt -s nullglob
+          reports=(endurance-results/*-report.md)
+          if [ ${#reports[@]} -eq 0 ]; then
+            echo "No endurance-results/*-report.md files were written — the run likely failed before any scenario produced one (see the job log)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            for report in "${reports[@]}"; do
+              cat "$report" >> "$GITHUB_STEP_SUMMARY"
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+            done
+          fi
+
       - name: Upload endurance test results
         if: always()
         uses: actions/upload-artifact@v7

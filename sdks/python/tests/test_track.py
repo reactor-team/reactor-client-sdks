@@ -497,15 +497,37 @@ class TestPushFrame:
 
         assert captured["audio"][0] == ("mic", b"\x00\x00" * 480, 480, 48000, 1)
 
+    @pytest.mark.parametrize("sample_rate", [8000, 16000, 24000, 32000, 44100, 48000])
+    @pytest.mark.parametrize("channels", [1, 2])
     def test_audio_sample_count_accounts_for_channels(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, sample_rate: int, channels: int
     ) -> None:
         reactor, _ = _connected(monkeypatch)
         captured = self._captured(reactor)
 
-        reactor.track("mic").push_frame(b"\x00\x00" * 480, num_channels=2)
+        reactor.track("mic").push_frame(
+            b"\x00\x00" * 480, sample_rate=sample_rate, num_channels=channels
+        )
 
-        assert captured["audio"][0][2] == 240
+        assert captured["audio"][0][2:] == (480 // channels, sample_rate, channels)
+
+    @pytest.mark.parametrize("sample_rate,channels", [(0, 1), (96000, 1), (48000, 0), (48000, 3)])
+    def test_invalid_audio_format_is_refused(self, monkeypatch, sample_rate, channels) -> None:
+        reactor, _ = _connected(monkeypatch)
+        captured = self._captured(reactor)
+        with pytest.raises(ValueError, match="audio requires"):
+            reactor.track("mic").push_frame(
+                b"\x00\x00", sample_rate=sample_rate, num_channels=channels
+            )
+        assert "audio" not in captured
+
+    @pytest.mark.parametrize(
+        "pcm,samples,channels", [(b"\x00", None, 1), (b"\x00\x00", None, 2), (b"\x00\x00", 2, 1)]
+    )
+    def test_audio_buffer_must_match_its_format(self, monkeypatch, pcm, samples, channels) -> None:
+        reactor, _ = _connected(monkeypatch)
+        with pytest.raises(ValueError, match="PCM length"):
+            reactor.track("mic").push_frame(pcm, samples_per_channel=samples, num_channels=channels)
 
     def test_an_int16_array_is_accepted_as_pcm(self, monkeypatch: pytest.MonkeyPatch) -> None:
         reactor, _ = _connected(monkeypatch)

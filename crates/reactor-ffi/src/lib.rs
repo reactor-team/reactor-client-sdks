@@ -38,6 +38,7 @@
 //!   buffer). Media frames are copied out of libwebrtc's buffers to make that
 //!   hand-off possible.
 
+mod audio_input;
 mod callbacks;
 mod http;
 mod peer;
@@ -1972,30 +1973,45 @@ pub unsafe extern "C" fn reactor_push_video_frame_with_metadata_at(
 /// Push interleaved i16 PCM into a named sendonly audio track. No-op when the
 /// track has no attached audio source.
 ///
-/// `sample_rate` is currently ignored and the source is driven at 48 kHz mono
-/// regardless of `num_channels`, which only sizes the input slice.
+/// Supported rates are 8000, 16000, 24000, 32000, 44100 and 48000 Hz, with one
+/// or two channels. Invalid formats are dropped. The native transport buffers
+/// partial 10 ms blocks and lets WebRTC resample to the negotiated send format.
 ///
 /// # Safety
 ///
-/// `track_name` must be a NUL-terminated C string, and `data` must point to at
-/// least `samples_per_channel * num_channels` readable `i16`s. The length is not
-/// passed; a short buffer is read out of bounds.
+/// `track_name` must be a NUL-terminated C string. For supported formats, `data`
+/// must point to at least `samples_per_channel * num_channels` readable `i16`s.
+/// The length is not passed; a short buffer is read out of bounds. Unsupported
+/// formats are rejected before reading `data`.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_push_audio_frame(
     handle: *mut ReactorHandle,
     track_name: *const c_char,
     data: *const i16,
     samples_per_channel: u32,
-    _sample_rate: u32,
+    sample_rate: u32,
     num_channels: u32,
 ) {
     if handle.is_null() || track_name.is_null() || data.is_null() {
         return;
     }
+    if !audio_input::supported_format(sample_rate, num_channels) {
+        log::warn!("reactor_push_audio_frame: unsupported format {sample_rate} Hz, {num_channels} channels");
+        return;
+    }
+    // Validate before constructing a slice: channel counts come from foreign
+    // callers, and multiplying two u32 values could otherwise wrap.
+    let Some(n) = (samples_per_channel as usize).checked_mul(num_channels as usize) else {
+        return;
+    };
+    if n > isize::MAX as usize / std::mem::size_of::<i16>() {
+        return;
+    }
     let name = CStr::from_ptr(track_name).to_string_lossy();
-    let n = (samples_per_channel * num_channels) as usize;
     let slice = std::slice::from_raw_parts(data, n);
-    (*handle).reactor.push_audio_frame(&name, slice);
+    (*handle)
+        .reactor
+        .push_audio_frame(&name, slice, sample_rate, num_channels);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

@@ -79,6 +79,14 @@ VIDEO_FRAME_HANDLER_ARGUMENTS = ("frame", "frame_id", "timestamp_us", "user_data
 AUDIO_FRAME_HANDLER_ARGUMENTS = ("frame", "sample_rate", "num_channels")
 
 
+def _validate_audio_format(sample_rate: int, channels: int) -> None:
+    if sample_rate not in (8000, 16000, 24000, 32000, 44100, 48000) or channels not in (1, 2):
+        raise ValueError(
+            "audio requires 8000, 16000, 24000, 32000, 44100 or 48000 Hz "
+            f"and 1 or 2 channels; got {sample_rate} Hz and {channels} channels"
+        )
+
+
 class TrackList(list["Track"]):
     """The tracks a session declares — a plain list, with filters that chain.
 
@@ -334,6 +342,12 @@ class Track:
 
             mic.push_frame(pcm, sample_rate=48000, num_channels=1)
 
+        Audio supports 8000, 16000, 24000, 32000, 44100 and 48000 Hz, with one
+        or two channels. WebRTC resamples locally to the negotiated send format.
+        Pace pushes at the capture rate. Partial 10 ms blocks are buffered; a
+        format change or disconnect discards the partial block. Local audio
+        tracks still share the synthetic capture device.
+
         An argument the track's kind has no use for is refused rather than ignored —
         but only where ignoring it would throw away what the caller meant. Passing
         `sample_rate` to a video track is merely redundant and is let through;
@@ -358,10 +372,13 @@ class Track:
                     f"counts the samples handed to it, so the feed's own continuity "
                     f"is the clock. Only video frames can be stamped."
                 )
+            _validate_audio_format(sample_rate, num_channels)
             pcm = data.tobytes() if _is_array(data) else bytes(data)
             if samples_per_channel is None:
                 # i16 samples, interleaved across channels: two bytes each.
-                samples_per_channel = len(pcm) // 2 // max(1, num_channels)
+                samples_per_channel = len(pcm) // 2 // num_channels
+            if samples_per_channel < 0 or len(pcm) != samples_per_channel * num_channels * 2:
+                raise ValueError("audio PCM length must match samples_per_channel and num_channels")
             reactor._push_audio_frame(
                 self._name, pcm, samples_per_channel, sample_rate, num_channels
             )

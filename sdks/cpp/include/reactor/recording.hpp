@@ -76,6 +76,10 @@ class Clip {
   /// path fails immediately; a download that fails part-way leaves nothing behind,
   /// because a truncated clip opens, plays some of itself, and gives no reason to
   /// suspect the download.
+  // By value, not const&, despite clang-tidy's own preference: an exported
+  // symbol, and changing a parameter's type changes the mangled name -- see
+  // Reactor::send_command's own comment in reactor.hpp.
+  // NOLINTNEXTLINE(performance-unnecessary-value-param)
   std::future<void> download(std::string path, DownloadOptions options = {}) const;
 
  private:
