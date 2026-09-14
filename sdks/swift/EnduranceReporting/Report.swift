@@ -53,27 +53,42 @@ package func nowISO() -> String {
 /// GitHub Actions run) first, falling back to `git rev-parse HEAD` for a
 /// local run — never throws, since a missing commit SHA is fine to just
 /// omit.
+///
+/// The `git rev-parse` fallback is macOS-only (`#if os(macOS)`), not just
+/// `canImport(Darwin)`: `Foundation.Process` does not exist on iOS at all
+/// (no subprocess spawning on that platform), and this whole target is
+/// compiled — never run, but compiled — for the iOS Simulator too, as part
+/// of the same package graph `swift-integration-tests-ios-simulator`
+/// resolves for `IntegrationTests` (this suite itself stays macOS-only; see
+/// ../EnduranceTests/README.md). Missing this gate is a build failure on
+/// every iOS Simulator CI run, not just a runtime no-op, since `EnduranceTests`
+/// only ever *runs* on macOS but still has to *build* everywhere the package
+/// does.
 package func gitCommitSHA() -> String? {
     if let sha = ProcessInfo.processInfo.environment["GITHUB_SHA"], !sha.isEmpty {
         return sha
     }
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    process.arguments = ["git", "rev-parse", "HEAD"]
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-    do {
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let sha = String(data: data, encoding: .utf8)?.trimmingCharacters(
-            in: .whitespacesAndNewlines)
-        return (sha?.isEmpty ?? true) ? nil : sha
-    } catch {
+    #if os(macOS)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["git", "rev-parse", "HEAD"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return nil }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let sha = String(data: data, encoding: .utf8)?.trimmingCharacters(
+                in: .whitespacesAndNewlines)
+            return (sha?.isEmpty ?? true) ? nil : sha
+        } catch {
+            return nil
+        }
+    #else
         return nil
-    }
+    #endif
 }
 
 package func formatDuration(_ seconds: Double) -> String {
