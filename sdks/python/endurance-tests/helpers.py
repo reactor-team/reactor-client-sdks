@@ -40,8 +40,9 @@ from trends import (  # noqa: F401
 )
 
 # Reuse integration-tests/conftest.py's real-FFI plumbing (new_reactor,
-# paced_connect, solid_rgb_frame, the reactor/reactor_factory fixtures)
-# instead of re-deriving it. Imported by explicit file path, under a
+# paced_connect, solid_rgb_frame, sine_wave_samples, the reactor/
+# reactor_factory fixtures) instead of re-deriving it. Imported by explicit
+# file path, under a
 # qualified module name — not a sys.path-based `import conftest` — for the
 # same reason this module isn't itself named conftest.py; see the module
 # docstring above.
@@ -58,6 +59,7 @@ _spec.loader.exec_module(_integration_conftest)
 new_reactor = _integration_conftest.new_reactor
 paced_connect = _integration_conftest.paced_connect
 solid_rgb_frame = _integration_conftest.solid_rgb_frame
+sine_wave_samples = _integration_conftest.sine_wave_samples
 # Re-exported pytest fixtures, picked up from here by conftest.py (pytest
 # discovers fixtures by scanning a conftest.py's module-level names for the
 # fixture marker, regardless of which module originally defined the

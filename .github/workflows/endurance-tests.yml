@@ -72,7 +72,7 @@ jobs:
           # Number of scenarios in endurance-tests/tests/*.py, run sequentially
           # by the same `pytest` invocation — bump this alongside adding or
           # removing a scenario file, not the `python` job's own comment alone.
-          SCENARIO_COUNT: 4
+          SCENARIO_COUNT: 6
         # `10#` forces base-10 parsing: bash's arithmetic context otherwise
         # treats a leading-zero numeral (e.g. "08") as octal and errors out.
         # GitHub Actions hard-caps a job's timeout-minutes at 360, so a
@@ -94,7 +94,7 @@ jobs:
     needs: setup
     if: inputs.sdk == 'python'
     runs-on: ubuntu-latest
-    # The four scenarios (endurance-tests/tests/*.py) run sequentially, each
+    # The six scenarios (endurance-tests/tests/*.py) run sequentially, each
     # for duration_minutes, so the job needs at least 4x that plus setup
     # (toolchain install, clang, build) — a fixed timeout would silently
     # kill any multi-hour duration_minutes run partway through a later
