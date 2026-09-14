@@ -455,6 +455,98 @@ frame is in flight.
 
 ---
 
+## Endurance and leak tests, past what unit tests reach
+
+Unit tests and the seven scenarios are both short-lived — they cannot see a handle, a
+callback, or an OS resource that leaks a little on every cycle. This suite runs the binding
+for minutes to hours instead and watches whether the numbers keep climbing. Python's
+(`sdks/python/endurance-tests/`) is the reference; port it file-for-file rather than
+redesigning it, the way the object model and the seven scenarios get ported.
+
+Two scenario shapes, both needed, because each finds leaks the other cannot:
+
+- **`test_lifecycle_churn`** — a fresh client per full connect → publish → subscribe →
+  command → unpublish → disconnect → close cycle. The one that exercises the native handle's
+  whole lifetime (create/destroy), so a leak tied to *tearing down* a client only shows up
+  here.
+- **`test_session_churn`** — one client, connected once, that repeats
+  publish → subscribe/unsubscribe → command → unpublish many times without ever
+  disconnecting. The one for a leak in a single *operation*, which a coarser connect/close
+  cycle dilutes into noise.
+
+Track RSS, CPU as **two separate questions** (work actually done — from a delta between
+samples, never a raw cumulative counter, which "grows" by construction and proves nothing —
+and OS-reported busy-percent, which can read over 100% with multiple native threads), thread
+count, and fd/handle count. Add whatever your language exposes for live-object or
+orphaned-callback counts (Python's `_LIVE_CLIENTS`/`_ORPHANED_CALLBACKS`) if it has an
+equivalent; note in your README if it does not, rather than silently having a smaller suite.
+Fds were exact in Python but took an off-by-one step around a single cycle boundary in a
+native (non-GC) binding — if your language sees the same, use the trend-based check
+(`assert_no_sustained_growth`) instead of an exact-count one, the way threads already do.
+
+**A leak already present on the very first cycle needs `assert_always_zero`, not a
+baseline-relative "never grows".** A trend check compares against the baseline it first
+sees, so a value that is already leaking on cycle 0 becomes the accepted normal and the
+check passes forever. Anything that should start at zero and stay there — orphaned
+callbacks, for one — gets the absolute check.
+
+**Sustained growth is last-third vs *middle*-third, not vs first-third.** A one-time
+ramp to a new steady-state (a buffer or pool growing once, not an unbounded leak) can land
+anywhere in the run; comparing last-third to first-third makes *where the ramp happened to
+fall* the thing that decides pass/fail, not whether growth continued after it. Comparing
+last-third to middle-third asks "did it keep growing after that" instead, so a ramp that has
+already plateaued by the back third reads as flat. Full reasoning and the accepted
+trade-off (a real leak still in its early, slow-accelerating phase near the end of a short
+run can misread as flat) belongs in `assert_no_sustained_growth`'s own docstring in
+`helpers.py` — read it there, don't re-derive it. This was found by two otherwise-similar
+CI runs producing opposite verdicts on the same total growth; do not assume your first
+green run means the check is well-calibrated.
+
+**A `Timeline` of a handful of evenly-spaced checkpoints across the run, in every report,**
+is what actually shows *why* — flat, one-time ramp, or still climbing — instead of collapsing
+a whole run into two or three numbers nobody can picture the shape of. Compute it from the
+samples you already collected; it costs nothing extra to gather.
+
+**Reporting: one shared in-memory result, three renderings, written regardless of outcome.**
+A single result object (Python's `RunResult`, built by `report.py`) renders to JSON, Markdown,
+and plain text, so the three formats cannot drift apart the way hand-written duplicates
+would. Write all three to disk even when a scenario fails or errors — a report that only
+appears on success is useless for the run you actually need to debug. Keep this module free
+of your binding's own import chain (`report.py` deliberately does not import `helpers.py`) so
+its own unit tests need no live service or built native library.
+
+**Live output: a compact status block by default, not a row dumped per cycle.** Reprint one
+block in place on an interval (Python: every 30s) so a long run's log stays readable; gate the
+old per-cycle table behind an opt-in env var (`ENDURANCE_VERBOSE=1`) for when you actually
+want the detail, and stream it live rather than only at the end — a run that gets killed
+partway should still have shown something.
+
+**Destruction-order bugs are a second, independent finding here — in both C++ and Swift,**
+neither one copying the other. A stack-local client destroyed before a stack-local
+subscription (C++ destroys locals in reverse declaration order; Swift ARC releases on
+whichever scope drops the last reference) unregisters the handler before the client closes,
+silently skipping the one thing the cycle exists to exercise: does close() clean up a still-
+registered handler. Fix it by controlling the moment explicitly (an owning pointer you
+`.reset()`/an explicit `withExtendedLifetime`) rather than relying on declaration order to
+line up with teardown order. Wrap each cycle's body so a mid-cycle failure still
+disconnects/closes before the error propagates — the same shape the *Refuse; do not fail
+quietly* invariant requires elsewhere.
+
+**CI wiring**: `workflow_dispatch` only (this suite is long, noisy, and reads a trend rather
+than a single right-or-wrong answer — it does not gate a PR or a release the way the seven
+scenarios and integration-tests do), one job per SDK gated on a `sdk` choice input so adding
+a language later is "add a choice plus a job," not a restructure. `if: always()` on both the
+job-summary step (render every `*-report.md` the scenarios produced into
+`$GITHUB_STEP_SUMMARY`, so a failed run's shape is visible without downloading anything) and
+the `actions/upload-artifact` step (upload `endurance-results/` even on failure — that's the
+run you need most). `concurrency` global rather than per-ref (`group: endurance-tests`,
+`cancel-in-progress: false`), because every scenario runs against one real shared
+backend/quota and two runs racing it at once makes both runs' trends noisier — the whole
+point of the suite. A `run-name:` that names which SDK the run is for, since every run
+otherwise shows the same generic workflow name in the Actions list.
+
+---
+
 ## CI carries the binding, one job per language
 
 Wire the SDK into CI as its own job, scoped to its own paths. One job per binding, so a
