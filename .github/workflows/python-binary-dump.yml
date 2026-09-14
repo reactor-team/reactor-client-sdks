@@ -1,0 +1,39 @@
+# One-shot diagnostic (REA-6154/REA-6309): upload the runner's exact CPython
+# binaries so a crash's bare gdb addresses can be symbolized offline.
+#
+# Why: the endurance-test SIGSEGV backtraces show stripped python3.12 frames
+# ("0x61128f in ?? ()"). The faulting addresses are stable across runner
+# images, but they don't match ANY 3.12.3-1ubuntu0.N build published on
+# archive.ubuntu.com/launchpad, so which exact binary the runner ships is
+# itself the open question. Grab the binary, its .dynsym-relevant neighbors
+# and the package provenance, and symbolize at leisure — much cheaper than
+# re-crashing CI with heavier instrumentation. Manual-only workflow; delete
+# this file once the hunt is done.
+name: Dump runner Python binaries
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  dump:
+    name: Dump /usr/bin/python3.12 + provenance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect
+        run: |
+          set -x
+          dpkg -l 'python3.12*' 'libpython3.12*' 2>/dev/null || true
+          readlink -f /usr/bin/python3 /usr/bin/python3.12 || true
+          /usr/bin/python3 --version
+          apt-cache policy python3.12-minimal || true
+          grep -rh '^deb ' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null | sort -u || true
+          mkdir -p /tmp/pybin
+          cp -L /usr/bin/python3.12 /tmp/pybin/ 2>/dev/null || true
+          cp /usr/lib/python3.12/lib-dynload/_ctypes.cpython-312-x86_64-linux-gnu.so /tmp/pybin/ 2>/dev/null || true
+          cp -L $(/usr/bin/python3 -c 'import sysconfig; print(sysconfig.get_config_var("LIBPL") + "/" + sysconfig.get_config_var("LDLIBRARY"))' 2>/dev/null) /tmp/pybin/ 2>/dev/null || true
+          ls -la /tmp/pybin/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: runner-python-binaries
+          path: /tmp/pybin/
+          retention-days: 7
