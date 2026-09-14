@@ -573,6 +573,60 @@ def finish_run(
     return result
 
 
+def finish_and_check(
+    *,
+    test_name: str,
+    sdk: str,
+    description: str,
+    sdk_version: str | None,
+    duration_s: float,
+    started_at: str,
+    sampler: Any,
+    live: Any,
+    metrics: list[MetricResult],
+    iterations: int,
+    errors: int | None = None,
+    tracemalloc_top: list[str] | None = None,
+    extra: dict[str, str] | None = None,
+    out_dir: Path = DEFAULT_OUTPUT_DIR,
+) -> None:
+    """The `finally`-block boilerplate every scenario needs at the end of its
+    loop — force one last `LiveReporter` update, call `finish_run()`, then
+    raise if the run's status came back "FAIL" — in one place instead of
+    copied into each `tests/test_*.py`.
+
+    Call this as the last thing in a scenario's `finally` block, in place of
+    the `live.update(..., force=True)` / `finish_run(...)` / `if result.status
+    == "FAIL": raise ...` sequence. `sampler`/`live` are a `helpers.ResourceSampler`
+    / `LiveReporter` (typed `Any` here to keep this module's own import chain
+    FFI-free — see the module docstring). `extra` forwards to that final
+    `live.update()` call, for a scenario that reports its own extra field
+    (session-churn's `Pending`) throughout the run and wants the same field on
+    the last, forced print too.
+    """
+    if sampler.samples:
+        live.update(sampler.samples, errors=errors, extra=extra, force=True)
+    result = finish_run(
+        test_name=test_name,
+        sdk=sdk,
+        duration_s=duration_s,
+        started_at=started_at,
+        samples=sampler.samples,
+        metrics=metrics,
+        iterations=iterations,
+        errors=errors,
+        tracemalloc_top=tracemalloc_top,
+        sdk_version=sdk_version,
+        description=description,
+        out_dir=out_dir,
+    )
+    if result.status == "FAIL":
+        names = ", ".join(m.name for m in metrics if m.status == "fail")
+        raise AssertionError(
+            f"endurance test detected a failure in: {names} — see the report for details"
+        )
+
+
 class LiveReporter:
     """Prints a periodic, human-scale status block during a long endurance
     run so a GitHub Actions log stays legible instead of accumulating one row

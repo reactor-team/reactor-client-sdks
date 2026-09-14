@@ -64,6 +64,27 @@ and will handle a future scheduled run too, without changes.
 - **`test_pause_resume_churn.py`** — one long-lived session, many pause/resume
   cycles on a recvonly track. Same isolation reasoning as publish-churn,
   applied to `Track.pause()`/`resume()` instead.
+- **`test_video_publish_steady.py`** / **`test_audio_publish_steady.py`** —
+  publish once (video or audio) and hold it, continuously streaming for the
+  whole run — no pause, no unpublish, no reconnect. The opposite shape from
+  every scenario above: those are all *churn* (repeatedly doing and undoing
+  something to surface a leak in that operation); these two are steady-state,
+  the shape a real long call actually takes, so a leak tied to elapsed
+  streaming time or frame/chunk count rather than to churn count still gets
+  caught. Kept as two separate scenarios, not one parameterized over both —
+  audio and video share nothing below `push_frame()` (separate adapters,
+  separate encoder/decoder threads in the native runtime), so a leak in one
+  is not evidence about the other.
+
+**Adding a new scenario**: write a loop that does the one thing you want to
+isolate, then call `trends.standard_resource_metrics(sampler.samples)` for
+the RSS/CPU/thread/fd checks every scenario shares, and
+`report.finish_and_check(...)` in your `finally` block for the report-writing
+and raise-on-`FAIL` boilerplate — see any file in `tests/` for the shape.
+Neither call needs its own new scenario-specific invariant (a scenario that
+has one, like session-churn's `pending_completions` check, still checks that
+itself, in its own loop) — they only exist to keep the generic resource
+accounting from being copied into every new file.
 
 ## Live output, reports, and artifacts
 
@@ -136,6 +157,12 @@ separate things:
     pause-resume-churn.json
     pause-resume-churn-report.md
     pause-resume-churn-summary.txt
+    video-publish-steady.json
+    video-publish-steady-report.md
+    video-publish-steady-summary.txt
+    audio-publish-steady.json
+    audio-publish-steady-report.md
+    audio-publish-steady-summary.txt
   ```
 
   All three come from the same in-memory result (`report.py`'s `RunResult`),
@@ -215,7 +242,7 @@ not just "should plateau" in the abstract:
 | `num_threads` | trend (median, not mean) | < 15% growth, floor 4 threads | thread teardown isn't guaranteed synchronous with `close()`, so a real run can oscillate (e.g. 25→31→25) with no sustained direction; median absorbs one double-counted cycle without hiding a real trend |
 | `num_fds` | **exact**: never above its starting value (lifecycle-churn) or trend (every other scenario) | 0 growth past baseline (lifecycle-churn); < 15% growth, floor 3 (elsewhere) | fd teardown *is* synchronous with `disconnect()`/`close()` returning, so lifecycle-churn — a fresh client every cycle — can hold it to an exact bound; a long-lived session can legitimately open a few more during warm-up (a connection pool, a worker thread), so the other scenarios get the same trend treatment as RSS/CPU instead |
 | `live_clients` | **exact**: always 0 (lifecycle-churn) or never above baseline (every other scenario) | 0 after every lifecycle-churn cycle; flat at 1 elsewhere | a count, not a noisy measurement — a leak on cycle 3 that clears by cycle 40 is still a real bug, so this isn't a trend check |
-| `orphaned_cbs` | **exact**: always 0 | 0, every cycle, both scenarios | comes only from clients that already closed — `assert_never_grows` would only flag growth *past* the first sample, letting a leak already present at cycle 0 pass silently forever |
+| `orphaned_cbs` | **exact**: always 0 | 0, every cycle, every scenario | comes only from clients that already closed — `assert_never_grows` would only flag growth *past* the first sample, letting a leak already present at cycle 0 pass silently forever |
 | `Track._adapters` / `Reactor._pending_completions` (session-churn only) | **exact**: 0 between iterations | 0 | every `send_command` is awaited to completion and every `on_frame` has a matching `off_frame` before the next iteration starts — anything left over is a leaked awaitable or handler, not noise |
 | tracemalloc top single-traceback growth | diagnostic, hard floor | < 5 MB | `tracemalloc` diffs are known-noisy from one-time caches and string interning; this is a "definitely real" floor, not a tight auto-threshold, since a human reads the top-10 breakdown rather than a nightly job trusting a narrow number |
 
@@ -268,8 +295,9 @@ not just "should plateau" in the abstract:
   RSS/CPU these are exact integers, not noisy measurements, so they get a
   plain assertion instead of a trend: `_LIVE_CLIENTS` must be **exactly 0**
   after every single lifecycle-churn cycle (a leak on cycle 3 that happens to
-  clear by cycle 40 is still a real bug), and `_ORPHANED_CALLBACKS` must
-  **never grow** past its starting value in either scenario.
+  clear by cycle 40 is still a real bug; every other scenario checks it never
+  exceeds its baseline of 1 instead), and `_ORPHANED_CALLBACKS` must stay
+  **exactly 0** throughout, in every scenario.
 - **The receive path** — both scenarios also subscribe to `main_video` via
   `on_frame`/`off_frame` (`Track._adapters`), not just publish/push frames:
   `test_lifecycle_churn.py` registers once per client and lets `close()` tear

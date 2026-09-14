@@ -290,3 +290,98 @@ def assert_never_grows(samples: list[Sample], *, field: str, unit: str = "count"
         detail=reason,
         threshold=f"never above {baseline}",
     )
+
+
+def standard_resource_metrics(
+    samples: list[Sample],
+    *,
+    live_clients_baseline_zero: bool = False,
+    fds_exact: bool = False,
+) -> list[MetricResult]:
+    """The RSS/CPU/thread/fd/handle checks every scenario in this suite runs
+    at the end of its loop — live_clients, orphaned_callbacks, rss,
+    cpu_s_per_cycle, cpu_percent, num_threads, num_fds — with the same
+    thresholds every scenario has already converged on independently.
+    Extracted so a new scenario is "write the loop body, call this," not
+    another copy of this same ~40-line block: see ../README.md's "Adding a
+    new scenario" and the sdk-from-ffi skill's "Endurance and leak tests"
+    section for the shape this is meant to support.
+
+    `live_clients_baseline_zero`: True for a scenario that starts with no
+    connected client (a fresh `Reactor` per cycle, e.g. lifecycle-churn) —
+    `live_clients` must be **exactly** 0 after every cycle
+    (`assert_always_zero`). False (the default) for a scenario built around
+    one long-lived session connected once by the `reactor` fixture — its
+    baseline is 1, and `live_clients` must never exceed that
+    (`assert_never_grows`).
+
+    `fds_exact`: True when fd teardown is synchronous with this scenario's
+    own cycle boundary (only lifecycle-churn's disconnect()/close() per
+    cycle proved this in practice) — `num_fds` must never exceed its
+    starting value (`assert_never_grows`). False (the default) for anything
+    that can legitimately open a few more during warm-up and then plateau
+    (a connection pool, a worker thread) — `num_fds` gets the same
+    trend-based check as RSS/CPU instead.
+
+    A scenario with its own extra invariants (session-churn's
+    `pending_completions`/`Track._adapters`, publish-churn's `track.published`,
+    pause-resume-churn's `reactor.paused_tracks`) still checks those itself,
+    in its own loop — they are specific to what that scenario exercises, not
+    generic resource accounting, so they do not belong here.
+    """
+    metrics: list[MetricResult] = []
+    if live_clients_baseline_zero:
+        metrics.append(assert_always_zero(samples, field="live_clients"))
+    else:
+        metrics.append(assert_never_grows(samples, field="live_clients"))
+    metrics.append(assert_always_zero(samples, field="orphaned_callbacks"))
+    if fds_exact:
+        metrics.append(assert_never_grows(samples, field="num_fds"))
+    metrics.append(
+        assert_no_sustained_growth(
+            [s.rss_bytes / 1e6 for s in samples],
+            name="rss",
+            unit="MB",
+            max_growth_ratio=0.15,
+            min_absolute_delta=5.0,
+        )
+    )
+    metrics.append(
+        assert_no_sustained_growth(
+            cpu_deltas(samples),
+            name="cpu_s_per_cycle",
+            unit="s",
+            max_growth_ratio=0.5,
+            min_absolute_delta=0.05,
+        )
+    )
+    metrics.append(
+        assert_no_sustained_growth(
+            [s.cpu_percent for s in samples],
+            name="cpu_percent",
+            unit="%",
+            max_growth_ratio=0.5,
+            min_absolute_delta=5.0,
+        )
+    )
+    metrics.append(
+        assert_no_sustained_growth(
+            [float(s.num_threads) for s in samples],
+            name="num_threads",
+            unit="count",
+            max_growth_ratio=0.15,
+            min_absolute_delta=4,
+            use_median=True,
+        )
+    )
+    if not fds_exact:
+        metrics.append(
+            assert_no_sustained_growth(
+                [float(s.num_fds) for s in samples],
+                name="num_fds",
+                unit="count",
+                max_growth_ratio=0.15,
+                min_absolute_delta=3,
+            )
+        )
+    return metrics

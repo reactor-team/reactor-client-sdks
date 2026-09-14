@@ -17,17 +17,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from helpers import (
-    ENDURANCE_DURATION_SECONDS,
-    ResourceSampler,
-    assert_always_zero,
-    assert_never_grows,
-    assert_no_sustained_growth,
-    cpu_deltas,
-)
+from helpers import ENDURANCE_DURATION_SECONDS, ResourceSampler
+from trends import standard_resource_metrics
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from report import LiveReporter, MetricResult, finish_run, now_iso  # noqa: E402
+from report import LiveReporter, MetricResult, finish_and_check, now_iso  # noqa: E402
 
 import reactor_sdk
 from reactor_sdk import Reactor
@@ -36,6 +30,12 @@ from reactor_sdk import Reactor
 # test_lifecycle_churn.py/test_session_churn.py already subscribe to for
 # on_frame, chosen here for the same reason: no need to invent a name.
 TRACK_NAME = "main_video"
+
+DESCRIPTION = (
+    "One long-lived session: repeated pause/resume on a recvonly track. No "
+    "frames, no commands, no reconnect — isolates Track.pause()/resume() as "
+    "its own signal."
+)
 
 
 async def test_pause_resume_churn_has_no_sustained_growth(reactor: Reactor) -> None:
@@ -94,79 +94,19 @@ async def test_pause_resume_churn_has_no_sustained_growth(reactor: Reactor) -> N
                 f"only completed {iteration} iteration(s) — raise ENDURANCE_DURATION_SECONDS "
                 "to get enough data for a trend"
             )
-
             # The fixture's one client is connected for the whole test, so the
-            # baseline is 1, not 0 — same reasoning as the other two scenarios.
-            metrics.append(assert_never_grows(sampler.samples, field="live_clients"))
-            metrics.append(assert_always_zero(sampler.samples, field="orphaned_callbacks"))
-            metrics.append(
-                assert_no_sustained_growth(
-                    [s.rss_bytes / 1e6 for s in sampler.samples],
-                    name="rss",
-                    unit="MB",
-                    max_growth_ratio=0.15,
-                    min_absolute_delta=5.0,
-                )
-            )
-            metrics.append(
-                assert_no_sustained_growth(
-                    cpu_deltas(sampler.samples),
-                    name="cpu_s_per_cycle",
-                    unit="s",
-                    max_growth_ratio=0.5,
-                    min_absolute_delta=0.05,
-                )
-            )
-            metrics.append(
-                assert_no_sustained_growth(
-                    [s.cpu_percent for s in sampler.samples],
-                    name="cpu_percent",
-                    unit="%",
-                    max_growth_ratio=0.5,
-                    min_absolute_delta=5.0,
-                )
-            )
-            metrics.append(
-                assert_no_sustained_growth(
-                    [float(s.num_threads) for s in sampler.samples],
-                    name="num_threads",
-                    unit="count",
-                    max_growth_ratio=0.15,
-                    min_absolute_delta=4,
-                    use_median=True,
-                )
-            )
-            metrics.append(
-                assert_no_sustained_growth(
-                    [float(s.num_fds) for s in sampler.samples],
-                    name="num_fds",
-                    unit="count",
-                    max_growth_ratio=0.15,
-                    min_absolute_delta=3,
-                )
-            )
+            # baseline is 1, not 0 — same reasoning as the other scenarios.
+            metrics.extend(standard_resource_metrics(sampler.samples))
     finally:
-        if sampler.samples:
-            live.update(sampler.samples, force=True)
-
-        result = finish_run(
+        finish_and_check(
             test_name="pause-resume-churn",
             sdk="Python",
+            description=DESCRIPTION,
+            sdk_version=reactor_sdk.__version__,
             duration_s=ENDURANCE_DURATION_SECONDS,
             started_at=started_at,
-            samples=sampler.samples,
+            sampler=sampler,
+            live=live,
             metrics=metrics,
             iterations=iteration,
-            sdk_version=reactor_sdk.__version__,
-            description=(
-                "One long-lived session: repeated pause/resume on a recvonly "
-                "track. No frames, no commands, no reconnect — isolates "
-                "Track.pause()/resume() as its own signal."
-            ),
-        )
-
-    if result.status == "FAIL":
-        names = ", ".join(m.name for m in metrics if m.status == "fail")
-        raise AssertionError(
-            f"endurance test detected a failure in: {names} — see the report for details"
         )

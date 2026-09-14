@@ -20,16 +20,13 @@ from pathlib import Path
 from helpers import (
     ENDURANCE_DURATION_SECONDS,
     ResourceSampler,
-    assert_always_zero,
-    assert_never_grows,
-    assert_no_sustained_growth,
-    cpu_deltas,
     pump_until_frame_received,
     solid_rgb_frame,
 )
+from trends import standard_resource_metrics
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from report import LiveReporter, MetricResult, finish_run, now_iso  # noqa: E402
+from report import LiveReporter, MetricResult, finish_and_check, now_iso  # noqa: E402
 
 import reactor_sdk
 from reactor_sdk import Reactor
@@ -40,6 +37,12 @@ WIDTH, HEIGHT = 64, 64
 # handle, which is why this scenario republishes the same "webcam" slot every
 # iteration instead of test_lifecycle_churn.py's fresh-object-per-cycle shape.
 TRACK_NAME = "webcam"
+
+DESCRIPTION = (
+    "One long-lived session (connects once): repeated publish, push_frame, "
+    "command, unpublish cycles against it. No reconnect overhead, so it packs "
+    "far more iterations per run than lifecycle-churn."
+)
 
 
 async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
@@ -177,73 +180,10 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
                 "to get enough data for a trend"
             )
 
-            # live_clients should stay exactly flat, but not at 0 — the `reactor`
-            # fixture's one client is connected for the whole test, so its baseline
-            # is 1, not 0.
-            metrics.append(assert_never_grows(sampler.samples, field="live_clients"))
-            # Always-zero, not never-grows: orphaned callbacks come only from
-            # clients that have already closed, so the invariant is 0 regardless
-            # of how many clients are live. assert_never_grows would only flag
-            # growth *past* whatever the first sample happened to be, so a leak
-            # already present at cycle 0 (fixture setup, an earlier test) would
-            # pass silently forever.
-            metrics.append(assert_always_zero(sampler.samples, field="orphaned_callbacks"))
-            metrics.append(
-                assert_no_sustained_growth(
-                    [s.rss_bytes / 1e6 for s in sampler.samples],
-                    name="rss",
-                    unit="MB",
-                    max_growth_ratio=0.15,
-                    min_absolute_delta=5.0,
-                )
-            )
-            metrics.append(
-                assert_no_sustained_growth(
-                    cpu_deltas(sampler.samples),
-                    name="cpu_s_per_cycle",
-                    unit="s",
-                    max_growth_ratio=0.5,
-                    min_absolute_delta=0.05,
-                )
-            )
-            # Same trend check, on the % reading instead of the raw seconds — see
-            # Sample.cpu_percent's own docstring for why the two can disagree.
-            metrics.append(
-                assert_no_sustained_growth(
-                    [s.cpu_percent for s in sampler.samples],
-                    name="cpu_percent",
-                    unit="%",
-                    max_growth_ratio=0.5,
-                    min_absolute_delta=5.0,
-                )
-            )
-            # Trend-based, not "never past the start" like test_lifecycle_churn.py's:
-            # one long-lived session can legitimately grow a thread or two / open a
-            # few fds during warm-up (a connection pool, a worker thread spinning up)
-            # and then plateau — same reasoning as RSS/CPU above, just with small
-            # integers instead of bytes/seconds. `use_median` and the wider floor —
-            # see test_lifecycle_churn.py's own comment on the identical call — guard
-            # against the same one-cycle double-counted-thread artifact skewing a
-            # short run's small comparison windows.
-            metrics.append(
-                assert_no_sustained_growth(
-                    [float(s.num_threads) for s in sampler.samples],
-                    name="num_threads",
-                    unit="count",
-                    max_growth_ratio=0.15,
-                    min_absolute_delta=4,
-                    use_median=True,
-                )
-            )
-            metrics.append(
-                assert_no_sustained_growth(
-                    [float(s.num_fds) for s in sampler.samples],
-                    name="num_fds",
-                    unit="count",
-                    max_growth_ratio=0.15,
-                    min_absolute_delta=3,
-                )
-            )
+            # live_clients baseline is 1, not 0 — the `reactor` fixture's one
+            # client is connected for the whole test. See
+            # standard_resource_metrics()'s own docstring for both parameters.
+            metrics.extend(standard_resource_metrics(sampler.samples))
 
         # Diagnostic always, hard-asserted only against a generous floor:
         # tracemalloc diffs are known-noisy (one-time caches, string interning),
@@ -291,37 +231,20 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
         # otherwise leave tracemalloc tracing every allocation for the rest
         # of this pytest process, skewing RSS/CPU for whatever runs next.
         tracemalloc.stop()
-        if sampler.samples:
-            # Same `extra={"Pending": ...}` as every in-loop update() call
-            # above — reactor is still connected here (this scenario never
-            # disconnects it), so the final forced block can report the same
-            # field instead of silently dropping it.
-            live.update(
-                sampler.samples,
-                extra={"Pending": str(len(reactor._pending_completions))},
-                force=True,
-            )
-
-        result = finish_run(
+        finish_and_check(
             test_name="session-churn",
             sdk="Python",
+            description=DESCRIPTION,
+            sdk_version=reactor_sdk.__version__,
             duration_s=ENDURANCE_DURATION_SECONDS,
             started_at=started_at,
-            samples=sampler.samples,
+            sampler=sampler,
+            live=live,
             metrics=metrics,
             iterations=iteration,
             tracemalloc_top=tracemalloc_top,
-            sdk_version=reactor_sdk.__version__,
-            description=(
-                "One long-lived session (connects once): repeated publish, "
-                "push_frame, command, unpublish cycles against it. No reconnect "
-                "overhead, so it packs far more iterations per run than "
-                "lifecycle-churn."
-            ),
-        )
-
-    if result.status == "FAIL":
-        names = ", ".join(m.name for m in metrics if m.status == "fail")
-        raise AssertionError(
-            f"endurance test detected a failure in: {names} — see the report for details"
+            # Same field as every in-loop update() call above — reactor is
+            # still connected here (this scenario never disconnects it), so
+            # the final forced print can report it too instead of dropping it.
+            extra={"Pending": str(len(reactor._pending_completions))},
         )
