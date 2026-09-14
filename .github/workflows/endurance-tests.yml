@@ -165,6 +165,12 @@ jobs:
           # rather than chained `-ex` args — an if-block split across -ex
           # arguments does not parse reliably (verified on ubuntu-24.04's
           # gdb: it silently takes the crash branch on normal exits).
+          # gdb is not in the ubuntu-latest image. apt's floating gdb is fine
+          # here — unlike clang (pinned in mise because it compiles the
+          # libwebrtc glue), this is a debug-only wrapper around pytest,
+          # never a build input; the ~20s install costs less than the pinning
+          # ceremony would.
+          sudo apt-get install -y -qq gdb
           printf '%s\n' \
             'set pagination off' \
             'set confirm off' \
