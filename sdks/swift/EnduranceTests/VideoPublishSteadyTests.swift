@@ -69,7 +69,14 @@ extension EnduranceTests {
                     // second of ENDURANCE_DURATION_SECONDS, rather than one
                     // per push_frame() call.
                     for _ in 0..<Self.videoPublishSteadyFPS {
-                        try? track.pushFrame(
+                        // Not `try?`: silently dropping a push failure here
+                        // would let this cycle (and the run) keep sampling
+                        // and eventually PASS against an idle publisher
+                        // instead of the sustained streaming path this
+                        // scenario exists to exercise (caught by Codex
+                        // review on PR #171) — propagate it so the outer
+                        // `catch` records it as a real run failure instead.
+                        try track.pushFrame(
                             frame, width: UInt32(Self.videoPublishSteadyWidth),
                             height: UInt32(Self.videoPublishSteadyHeight))
                         try await Task.sleep(

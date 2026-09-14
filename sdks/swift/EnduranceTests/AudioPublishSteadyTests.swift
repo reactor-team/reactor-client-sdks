@@ -67,7 +67,12 @@ extension EnduranceTests {
                     // shape: keeps the sample count bounded to roughly one
                     // per second rather than one per push_frame() call.
                     for _ in 0..<Self.audioPublishSteadyFPS {
-                        try? track.pushFrame(
+                        // Not `try?` — same reasoning as
+                        // VideoPublishSteadyTests.swift's identical fix
+                        // (Codex review on PR #171): a swallowed push
+                        // failure would let this scenario keep sampling and
+                        // eventually PASS against an idle publisher.
+                        try track.pushFrame(
                             tone, sampleRate: UInt32(Self.audioPublishSteadySampleRate),
                             channels: Self.audioPublishSteadyChannels)
                         try await Task.sleep(
