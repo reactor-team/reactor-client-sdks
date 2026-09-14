@@ -202,6 +202,7 @@ def assert_no_sustained_growth(
         detail=reason,
         threshold=f"still climbing: last third > {max_growth_ratio:.0%} over middle third "
         f"(min {min_absolute_delta:,.3g})",
+        mid=middle_mean,
     )
 
 

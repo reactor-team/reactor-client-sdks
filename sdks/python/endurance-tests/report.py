@@ -113,6 +113,18 @@ class MetricResult:
     # Left None rather than guessed, per the "don't claim a root cause the
     # data doesn't support" rule.
     first_bad_cycle: int | None = None
+    # The run's middle-third mean — the same number assert_no_sustained_growth
+    # (trends.py) already computes and decides pass/fail from (last third vs.
+    # middle third, not vs. start), but previously only lived in that
+    # function's printed verdict, not the report. None for the exact
+    # always-zero/never-grows checks, which have no middle-third concept.
+    # Exists so a reader of the table doesn't have to mentally reconstruct
+    # "the middle-to-end move" from `start`/`end` alone: `start` here is
+    # already post-warmup and often *itself* well below `end` by design (see
+    # `mid_change`/`row_markdown` below) — showing `mid` directly is what
+    # makes "flat from the midpoint on, so not a leak" legible in the table
+    # instead of requiring the surrounding prose.
+    mid: float | None = None
 
     @property
     def emoji(self) -> str:
@@ -122,19 +134,38 @@ class MetricResult:
     def status_label(self) -> str:
         return "Stable" if self.status == "ok" else "FAILED"
 
+    @property
+    def mid_change(self) -> float | None:
+        """Change from the midpoint to the end — the actual quantity a trend
+        check's pass/fail is based on (see assert_no_sustained_growth), as
+        opposed to `change` (start-to-end), which can look like meaningful
+        growth even on a healthy run: a one-time warm-up ramp (a buffer/pool
+        reaching its steady-state size) moves `start`→`end` but not
+        `mid`→`end`. None when `mid` itself is None.
+        """
+        return None if self.mid is None else self.end - self.mid
+
     def row_markdown(self) -> str:
+        mid_str = _format_value(self.mid, self.unit) if self.mid is not None else "—"
+        mid_change_str = (
+            _format_delta(self.mid_change, self.unit) if self.mid_change is not None else "—"
+        )
         return (
-            f"| {self.name} | {_format_value(self.start, self.unit)} | "
-            f"{_format_value(self.end, self.unit)} | {_format_delta(self.change, self.unit)} | "
+            f"| {self.name} | {_format_value(self.start, self.unit)} | {mid_str} | "
+            f"{_format_value(self.end, self.unit)} | {mid_change_str} | "
             f"{self.emoji} {self.status_label} |"
         )
 
     def row_text(self) -> str:
+        mid_str = _format_value(self.mid, self.unit) if self.mid is not None else "—"
         end_str = _format_value(self.end, self.unit)
-        delta_str = _format_delta(self.change, self.unit)
+        mid_change_str = (
+            _format_delta(self.mid_change, self.unit) if self.mid_change is not None else "—"
+        )
         return (
             f"  {self.name:<20} {_format_value(self.start, self.unit):>12} -> "
-            f"{end_str:<12} {delta_str:>10}  {self.emoji} {self.status_label}"
+            f"{mid_str:>12} -> {end_str:<12} {mid_change_str:>10}  "
+            f"{self.emoji} {self.status_label}"
         )
 
 
@@ -149,12 +180,29 @@ class RunResult:
     started_at: str
     ended_at: str
     metrics: list[MetricResult]
+    # A one-line, plain-language statement of what this scenario actually
+    # does (e.g. "Repeated publish/unpublish on one sendonly slot — no
+    # frames, no commands."). Rendered right under the title. Exists because
+    # the report is what a human (or a future agent) reads standalone in a
+    # GitHub Actions Job Summary or a downloaded artifact — without this, the
+    # only clue to what a scenario exercises is its `test_name` slug, and
+    # telling e.g. publish-churn apart from session-churn's broader mix
+    # means going back to the source or ../README.md. Optional (left None
+    # renders nothing) rather than derived from `test_name`, since a good
+    # one-liner needs the same judgment a docstring does.
+    description: str | None = None
     # None means this scenario doesn't count anything as a "transient error"
     # in the first place (nothing in its loop swallows/retries a failure) —
     # left unset rather than defaulted to 0, so the report doesn't render a
     # measurement that was never actually taken. See _conclusion_lines() and
     # the Errors row in render_markdown()/render_text().
     errors: int | None = None
+    # The `reactor_sdk` version under test (`reactor_sdk.__version__`) — not
+    # computed here, since this module deliberately never imports reactor_sdk
+    # (see the module docstring: that's what keeps ../tests/
+    # test_endurance_report.py FFI-free). Passed in by finish_run()'s caller,
+    # which already imports reactor_sdk for the scenario itself.
+    sdk_version: str | None = None
     commit_sha: str | None = None
     # Set only when the test raised before/without any metric failing (an
     # unhandled exception, an insufficient-samples guard, a fixture error) —
@@ -306,11 +354,16 @@ def render_markdown(result: RunResult) -> str:
     lines: list[str] = []
     lines.append(f"# {result.emoji} Endurance Test Report — {result.test_name}")
     lines.append("")
+    if result.description:
+        lines.append(result.description)
+        lines.append("")
     lines.append(
         f"{result.sdk} SDK · {format_duration(result.elapsed_s)} · "
         f"{result.iterations:,} iterations · **{result.status}**"
     )
     lines.append("")
+    if result.sdk_version:
+        lines.append(f"- **SDK version:** `{result.sdk_version}`")
     if result.commit_sha:
         lines.append(f"- **Commit:** `{result.commit_sha[:12]}`")
     lines.append(f"- **Started:** {result.started_at}")
@@ -321,13 +374,13 @@ def render_markdown(result: RunResult) -> str:
     if result.metrics:
         lines.append("## Results")
         lines.append("")
-        lines.append("| Metric | Start | End | Change | Status |")
-        lines.append("|---|---:|---:|---:|---|")
+        lines.append("| Metric | Start | Mid | End | Δ (Mid→End) | Status |")
+        lines.append("|---|---:|---:|---:|---:|---|")
         for m in result.metrics:
             lines.append(m.row_markdown())
         if result.errors is not None:
             lines.append(
-                f"| Errors | {result.errors} | {result.errors} | — | "
+                f"| Errors | {result.errors} | — | {result.errors} | — | "
                 f"{'🟢' if result.errors == 0 else '🟡'} |"
             )
         lines.append("")
@@ -376,10 +429,14 @@ def render_markdown(result: RunResult) -> str:
 def render_text(result: RunResult) -> str:
     lines: list[str] = []
     lines.append(f"Endurance Test Report — {result.test_name}")
+    if result.description:
+        lines.append(result.description)
     lines.append(f"{result.sdk} SDK")
     lines.append(result.status)
     lines.append(f"Duration: {format_duration(result.elapsed_s)}")
     lines.append("")
+    if result.sdk_version:
+        lines.append(f"SDK version:    {result.sdk_version}")
     if result.commit_sha:
         lines.append(f"Commit:         {result.commit_sha[:12]}")
     lines.append(f"Started:        {result.started_at}")
@@ -395,7 +452,7 @@ def render_text(result: RunResult) -> str:
             lines.append(m.row_text())
         if result.errors is not None:
             lines.append(
-                f"  {'Errors':<20} {result.errors:>12} {'':<12} {'':>10}  "
+                f"  {'Errors':<20} {result.errors:>12} {'':>12} {'':<12} {'':>10}  "
                 + ("🟢" if result.errors == 0 else "🟡")
             )
         lines.append("")
@@ -465,6 +522,8 @@ def finish_run(
     iterations: int,
     errors: int | None = None,
     tracemalloc_top: list[str] | None = None,
+    sdk_version: str | None = None,
+    description: str | None = None,
     out_dir: Path = DEFAULT_OUTPUT_DIR,
 ) -> RunResult:
     """Builds the `RunResult` for one scenario's `finally` block and writes
@@ -500,6 +559,8 @@ def finish_run(
         ended_at=now_iso(),
         metrics=metrics,
         errors=errors,
+        sdk_version=sdk_version,
+        description=description,
         commit_sha=git_commit_sha(),
         run_error=run_error,
         tracemalloc_top=tracemalloc_top,

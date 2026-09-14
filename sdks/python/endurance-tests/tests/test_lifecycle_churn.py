@@ -33,6 +33,8 @@ from helpers import (
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from report import LiveReporter, MetricResult, finish_run, now_iso  # noqa: E402
 
+import reactor_sdk
+
 WIDTH, HEIGHT = 64, 64
 
 
@@ -192,6 +194,12 @@ async def test_lifecycle_churn_leaves_no_leftover_handles_or_growth() -> None:
             metrics=metrics,
             iterations=cycle,
             errors=errors,
+            sdk_version=reactor_sdk.__version__,
+            description=(
+                "Fresh Reactor per cycle: connect, publish, push frames, send a "
+                "command, disconnect, close. Exercises the whole native-handle "
+                "lifecycle (_create_handle/_destroy_handle)."
+            ),
         )
 
     if result.status == "FAIL":

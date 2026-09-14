@@ -31,6 +31,7 @@ from helpers import (
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from report import LiveReporter, MetricResult, finish_run, now_iso  # noqa: E402
 
+import reactor_sdk
 from reactor_sdk import Reactor
 
 WIDTH, HEIGHT = 64, 64
@@ -310,6 +311,13 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
             metrics=metrics,
             iterations=iteration,
             tracemalloc_top=tracemalloc_top,
+            sdk_version=reactor_sdk.__version__,
+            description=(
+                "One long-lived session (connects once): repeated publish, "
+                "push_frame, command, unpublish cycles against it. No reconnect "
+                "overhead, so it packs far more iterations per run than "
+                "lifecycle-churn."
+            ),
         )
 
     if result.status == "FAIL":

@@ -407,7 +407,7 @@ class TestErrorsField:
         result = _passing_result()
         result.errors = 0
         md = render_markdown(result)
-        assert "| Errors | 0 | 0 |" in md
+        assert "| Errors | 0 | — | 0 |" in md
         conclusion = md.split("## Conclusion", 1)[1]
         assert "No test errors occurred." in conclusion
 

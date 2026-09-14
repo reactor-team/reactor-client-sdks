@@ -56,6 +56,14 @@ and will handle a future scheduled run too, without changes.
   scenario for per-operation leaks (frame buffers, `Track` objects, pending
   command completions) a coarser connect/close cycle wouldn't surface as
   clearly.
+- **`test_publish_churn.py`** — one long-lived session, many publish/unpublish
+  cycles on a single sendonly slot, with no frames and no command in between.
+  Isolates the publish/unpublish path itself from session-churn's broader
+  mix, so a leak specific to that pair reads as its own signal rather than
+  being folded into a trend several different operations are contributing to.
+- **`test_pause_resume_churn.py`** — one long-lived session, many pause/resume
+  cycles on a recvonly track. Same isolation reasoning as publish-churn,
+  applied to `Track.pause()`/`resume()` instead.
 
 ## Live output, reports, and artifacts
 
@@ -122,6 +130,12 @@ separate things:
     lifecycle-churn.json
     lifecycle-churn-report.md
     lifecycle-churn-summary.txt
+    publish-churn.json
+    publish-churn-report.md
+    publish-churn-summary.txt
+    pause-resume-churn.json
+    pause-resume-churn-report.md
+    pause-resume-churn-summary.txt
   ```
 
   All three come from the same in-memory result (`report.py`'s `RunResult`),
@@ -146,6 +160,26 @@ separate things:
   differently for each — an `ERROR` explicitly says it isn't a leak
   verdict, since no metric ran to completion to judge.
 
+## Reading the Results table
+
+Each `*-report.md`/`-summary.txt`'s "Results" table has five columns:
+`Start | Mid | End | Δ (Mid→End) | Status`. `Start`/`Mid`/`End` are the
+mean (or median — see `assert_no_sustained_growth`) of the first, middle,
+and last third of the run, after dropping warm-up — not raw first/last
+samples.
+
+`Start`→`End` alone can look like growth on a perfectly healthy run: a
+buffer or connection pool reaching its steady-state size shows up as a
+one-time step early on, which moves `End` up relative to `Start` without
+being a leak. The pass/fail verdict is actually decided by `Mid`→`End` (the
+`Δ (Mid→End)` column) — did it keep climbing in the back half, or did it
+plateau — which is the same comparison `assert_no_sustained_growth` makes
+internally (see its docstring in `trends.py`). Reading `Δ (Mid→End)` ≈ 0
+is what "no leak" looks like in this table, even when `Start`→`End` shows a
+real jump. `Mid` (and `Δ (Mid→End)`) render as `—` for the exact
+always-zero/never-grows checks (`live_clients`, `orphaned_cbs`, ...), which
+have no middle-third concept.
+
 ## Reading the per-cycle table
 
 Under `ENDURANCE_VERBOSE=1` (or in the raw JSON's `samples`), every cycle is
@@ -158,7 +192,7 @@ one row. In plain language, left to right:
 | `ram_mb`          | physical RAM the whole process is using right now — not just the SDK, everything in this one process   | keeps climbing, never plateaus                  |
 | `cpu_s_per_cycle` | CPU time *this one cycle* burned (not a running total)                                                | keeps getting bigger cycle to cycle             |
 | `cpu_percent`     | % of one CPU core busy since the previous row (like Activity Monitor/htop's own number) — can read over 100% if more than one native thread is genuinely busy at once, that's normal | keeps getting bigger cycle to cycle |
-| `live_clients`    | how many `Reactor` clients still have an open native connection right now                              | higher than expected (0 in lifecycle-churn, 1 in session-churn) |
+| `live_clients`    | how many `Reactor` clients still have an open native connection right now                              | higher than expected (0 in lifecycle-churn, 1 in every other scenario — each of which keeps one long-lived session for the whole run) |
 | `orphaned_cbs`    | frame/event callbacks the SDK couldn't confirm were safe to free when a client closed                  | anything above 0, ever                          |
 | `num_threads`     | OS-level threads this process currently has (mostly the native Rust runtime's)                         | keeps climbing (some early wobble is normal)    |
 | `num_fds`         | open file descriptors — sockets, mainly, since every WebRTC connection needs some                      | keeps climbing                                  |
@@ -179,8 +213,8 @@ not just "should plateau" in the abstract:
 | CPU time (`cpu_s_per_cycle`) | same trend check, on `cpu_deltas()` (per-interval, not cumulative) | < 50% growth, floor 0.05s | a wider tolerance than RSS: legitimate cycle-to-cycle jitter (GC pauses, network scheduling) is larger here than for memory |
 | CPU % (`cpu_percent`) | same trend check | < 50% growth, floor 5.0 (percentage points) | catches a leak that shows up as a growing *share* of CPU busy-ness even when `cpu_s_per_cycle` itself doesn't trend — see below for why the two can disagree |
 | `num_threads` | trend (median, not mean) | < 15% growth, floor 4 threads | thread teardown isn't guaranteed synchronous with `close()`, so a real run can oscillate (e.g. 25→31→25) with no sustained direction; median absorbs one double-counted cycle without hiding a real trend |
-| `num_fds` | **exact**: never above its starting value (lifecycle-churn) or trend (session-churn) | 0 growth past baseline (lifecycle-churn); < 15% growth, floor 3 (session-churn) | fd teardown *is* synchronous with `disconnect()`/`close()` returning, so lifecycle-churn — a fresh client every cycle — can hold it to an exact bound; session-churn's one long-lived session can legitimately open a few more during warm-up (a connection pool, a worker thread), so it gets the same trend treatment as RSS/CPU instead |
-| `live_clients` | **exact**: always 0 (lifecycle-churn) or never above baseline (session-churn) | 0 after every lifecycle-churn cycle; flat at 1 for session-churn's whole run | a count, not a noisy measurement — a leak on cycle 3 that clears by cycle 40 is still a real bug, so this isn't a trend check |
+| `num_fds` | **exact**: never above its starting value (lifecycle-churn) or trend (every other scenario) | 0 growth past baseline (lifecycle-churn); < 15% growth, floor 3 (elsewhere) | fd teardown *is* synchronous with `disconnect()`/`close()` returning, so lifecycle-churn — a fresh client every cycle — can hold it to an exact bound; a long-lived session can legitimately open a few more during warm-up (a connection pool, a worker thread), so the other scenarios get the same trend treatment as RSS/CPU instead |
+| `live_clients` | **exact**: always 0 (lifecycle-churn) or never above baseline (every other scenario) | 0 after every lifecycle-churn cycle; flat at 1 elsewhere | a count, not a noisy measurement — a leak on cycle 3 that clears by cycle 40 is still a real bug, so this isn't a trend check |
 | `orphaned_cbs` | **exact**: always 0 | 0, every cycle, both scenarios | comes only from clients that already closed — `assert_never_grows` would only flag growth *past* the first sample, letting a leak already present at cycle 0 pass silently forever |
 | `Track._adapters` / `Reactor._pending_completions` (session-churn only) | **exact**: 0 between iterations | 0 | every `send_command` is awaited to completion and every `on_frame` has a matching `off_frame` before the next iteration starts — anything left over is a leaked awaitable or handler, not noise |
 | tracemalloc top single-traceback growth | diagnostic, hard floor | < 5 MB | `tracemalloc` diffs are known-noisy from one-time caches and string interning; this is a "definitely real" floor, not a tight auto-threshold, since a human reads the top-10 breakdown rather than a nightly job trusting a narrow number |
