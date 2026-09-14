@@ -10,6 +10,15 @@
 # and adding JS/C++/Swift later is meant to be "add a choice + a job", not a
 # restructure of this file.
 name: Endurance tests
+# Overrides the run's display name in the Actions tab/list (otherwise just
+# "Endurance tests" for every run, indistinguishable at a glance) with which
+# SDK it's actually running. `inputs.sdk` is the raw choice value (lowercase,
+# e.g. "python") — mapped to a display name per SDK since GitHub Actions
+# expressions have no string-capitalize function; extend this ternary chain
+# alongside `inputs.sdk`'s own `options:` list above when adding a new SDK
+# (an SDK not yet mapped here falls back to showing its raw option value).
+run-name: >-
+  Endurance tests: ${{ inputs.sdk == 'python' && 'Python' || inputs.sdk }} SDK
 
 on:
   workflow_dispatch:
