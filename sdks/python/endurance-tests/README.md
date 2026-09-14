@@ -133,6 +133,12 @@ separate things:
   every row and dumping the whole table once at the end — same information,
   printed as it happens instead of after the fact.)
 
+- **`ENDURANCE_TRACEMALLOC=0`: session-churn without `tracemalloc`.** A
+  diagnostic switch for the REA-6154/REA-6309 SIGSEGV hunt, not a leak-check
+  feature: session-churn is the only scenario that traces allocations, and
+  the only one that has ever segfaulted on CI. Default is on (set); the
+  workflow's `tracemalloc` dispatch input turns it off for an A/B run.
+
 - **Every scenario's full sample history, always, regardless of the above:**
   written to `sdks/python/endurance-results/` when the scenario ends (pass,
   fail, *or* error — see the `finally` block in each `tests/*.py` file),

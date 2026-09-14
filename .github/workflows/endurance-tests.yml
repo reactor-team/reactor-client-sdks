@@ -33,6 +33,33 @@ on:
         description: "How long each scenario loops for, in minutes"
         type: string
         default: "5"
+      # Three diagnostic inputs for the REA-6154/REA-6309 SIGSEGV hunt (the
+      # intermittent native crash in test_session_churn.py on the runner's
+      # system CPython 3.12.3). Defaults leave every run exactly as before;
+      # they exist so the crash can be A/B'd from the Actions tab without
+      # editing the file per experiment.
+      only_scenario:
+        description: >-
+          Run a single scenario file from endurance-tests/tests/ (e.g.
+          "test_session_churn.py") instead of the whole suite
+        type: string
+        default: ""
+      tracemalloc:
+        description: >-
+          Trace allocations in session-churn (ENDURANCE_TRACEMALLOC). Crash
+          suspect #1 — turn off to A/B the crash against it
+        type: boolean
+        default: true
+      python:
+        description: >-
+          Which CPython runs the suite: the runner image's system python
+          (3.12.3, the one that crashes) or uv's latest managed 3.12 (which
+          carries the candidate upstream fixes)
+        type: choice
+        options:
+          - runner
+          - uv-latest
+        default: runner
 
 concurrency:
   # Global, not per-ref: every scenario here runs against the same real,
@@ -121,12 +148,27 @@ jobs:
       # it runs here, so it's a fast no-op rather than a second real build.
       - name: Build reactor-ffi (release)
         run: cargo build -p reactor-ffi --release
+      # REA-6154/REA-6309 experiment: the SIGSEGV only ever happened on the
+      # runner image's frozen system CPython 3.12.3. uv's latest managed 3.12
+      # carries 18 months of upstream patch fixes (including the tracemalloc
+      # race gh-128679, fixed in 3.12.9); `uv run --group dev --locked` below
+      # then builds .venv on it instead of /usr/bin/python3. Skipped entirely
+      # for python=runner, which keeps uv's found-a-system-interpreter path.
+      - name: Install latest managed CPython 3.12 via uv
+        if: inputs.python == 'uv-latest'
+        run: |
+          uv python install 3.12
+          echo "UV_PYTHON=3.12" >> "$GITHUB_ENV"
+          echo "UV_PYTHON_PREFERENCE=only-managed" >> "$GITHUB_ENV"
       - name: Endurance tests (real FFI client, real model)
         env:
           # Same dedicated secret ci.yml's python-integration-tests (and every
           # other binding's integration-tests job) already uses.
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
           DURATION_MINUTES: ${{ inputs.duration_minutes }}
+          # The crash A/B switches — see the inputs' own comments above.
+          ENDURANCE_TRACEMALLOC: ${{ inputs.tracemalloc }}
+          ONLY_SCENARIO: ${{ inputs.only_scenario }}
         # The conversion happens here, in shell, rather than in the `env:`
         # block above: GitHub Actions expressions have no arithmetic operators
         # at all (see the `setup` job's comment), but the input is a plain
@@ -143,6 +185,13 @@ jobs:
           export ENDURANCE_DURATION_SECONDS=$((10#$DURATION_MINUTES * 60))
           echo "Running for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s) per scenario"
           cd sdks/python
+          # One scenario file or the whole suite (see the only_scenario input).
+          if [ -n "$ONLY_SCENARIO" ]; then
+            PYTEST_TARGET="endurance-tests/tests/$ONLY_SCENARIO"
+          else
+            PYTEST_TARGET="endurance-tests/tests"
+          fi
+          echo "Pytest target: $PYTEST_TARGET"
           # Materialise .venv the same way `mise run test:python:endurance-
           # tests` would (cargo build already ran as its own step above — it
           # is the task's other half) so the next line can start python
@@ -150,7 +199,10 @@ jobs:
           # pytest must be gdb's own inferior, and gdb does not follow its
           # inferior's children — `mise run`/`uv run` spawn python as a
           # grandchild whose segfault gdb would never see.
-          uv run --group dev --locked python -c "import reactor_sdk"
+          # The version print matters for the crash hunt: proof of whether
+          # this run went on the runner's 3.12.3 or uv's managed 3.12 (the
+          # `python` input) is one log line instead of an assumption.
+          uv run --group dev --locked python -c "import reactor_sdk, sys; print('CPython:', sys.version)"
           # pytest under gdb: on a native crash gdb stops at the signal and
           # `thread apply all bt` finally gives the segfaulting Rust/libwebrtc
           # thread's stack, the thing faulthandler's "<no Python frame>" dump
@@ -199,7 +251,7 @@ jobs:
           # exit code survives tee thanks to the explicit pipefail at the top
           # of this run block — see there for why it cannot be relied on.
           gdb -batch -x /tmp/pytest-under-gdb.cmds \
-            --args .venv/bin/python -m pytest endurance-tests/tests -v -s \
+            --args .venv/bin/python -m pytest "$PYTEST_TARGET" -v -s \
             2>&1 | tee /tmp/pytest-gdb.log
 
       # If the suite died on a native signal, gdb's captured output (tee'd to

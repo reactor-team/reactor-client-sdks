@@ -13,6 +13,7 @@ completions) that a coarser connect/close cycle wouldn't surface as clearly.
 
 from __future__ import annotations
 
+import os
 import sys
 import tracemalloc
 from pathlib import Path
@@ -44,12 +45,28 @@ DESCRIPTION = (
     "far more iterations per run than lifecycle-churn."
 )
 
+#: ENDURANCE_TRACEMALLOC=0/1 (default 1) — a diagnostic switch for REA-6154/
+#: REA-6309, not a leak-check feature. This is the only scenario that traces
+#: every allocation, and the only one that has ever segfaulted on CI: the
+#: faulting thread is always mid-callback inside CPython, and the teardown
+#: crashes landed exactly while the main thread ran tracemalloc.stop(), which
+#: races the audio callback thread's traced allocations (the gh-128679 class,
+#: fixed upstream in CPython 3.12.9). The endurance workflow exposes this flag
+#: as a dispatch input to A/B the crash against it. Default stays ON so the
+#: suite's leak diagnostics are unchanged unless someone is hunting the crash.
+TRACEMALLOC_ENABLED = os.environ.get("ENDURANCE_TRACEMALLOC", "1").lower() not in (
+    "0",
+    "false",
+    "no",
+)
+
 
 async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
     sampler = ResourceSampler()
     live = LiveReporter("session-churn", ENDURANCE_DURATION_SECONDS)
     frame = solid_rgb_frame(WIDTH, HEIGHT, (30, 150, 90))
-    tracemalloc.start()
+    if TRACEMALLOC_ENABLED:
+        tracemalloc.start()
     mid_snapshot = None
     final_snapshot = None
     tracemalloc_top: list[str] | None = None
@@ -163,11 +180,16 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
                 extra={"Pending": str(len(reactor._pending_completions))},
             )
             elapsed = sampler.samples[-1].elapsed_s
-            if mid_snapshot is None and elapsed >= ENDURANCE_DURATION_SECONDS * 0.3:
+            if (
+                TRACEMALLOC_ENABLED
+                and mid_snapshot is None
+                and elapsed >= ENDURANCE_DURATION_SECONDS * 0.3
+            ):
                 mid_snapshot = tracemalloc.take_snapshot()
             iteration += 1
 
-        final_snapshot = tracemalloc.take_snapshot()
+        if TRACEMALLOC_ENABLED:
+            final_snapshot = tracemalloc.take_snapshot()
 
         # Skipped once an in-loop invariant check above has already recorded
         # a "fail" and broken out: `iteration` may be too small for a
@@ -226,11 +248,15 @@ async def test_session_churn_has_no_sustained_growth(reactor: Reactor) -> None:
                 )
             )
     finally:
-        # Stopping tracemalloc unconditionally matters as much as the report
-        # below: an in-loop assertion failure above (a real leak) would
-        # otherwise leave tracemalloc tracing every allocation for the rest
-        # of this pytest process, skewing RSS/CPU for whatever runs next.
-        tracemalloc.stop()
+        # Stopping tracemalloc matters as much as the report below: an
+        # in-loop assertion failure above (a real leak) would otherwise leave
+        # tracemalloc tracing every allocation for the rest of this pytest
+        # process, skewing RSS/CPU for whatever runs next. Only stop what was
+        # started — with TRACEMALLOC_ENABLED off there is nothing to stop,
+        # and calling stop() anyway would trip CPython's "tracemalloc not
+        # enabled" path for no reason.
+        if TRACEMALLOC_ENABLED:
+            tracemalloc.stop()
         finish_and_check(
             test_name="session-churn",
             sdk="Python",
