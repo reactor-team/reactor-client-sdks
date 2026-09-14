@@ -622,10 +622,15 @@ branch even on clean exits, so write the script to a file with `printf` and `-x`
 (verified against ubuntu-24.04's gdb); keep the step's exit code honest with
 `if $_isvoid($_exitcode)` / `quit 139` / `else` / `quit $_exitcode` — `$_exitcode` is void
 exactly when the inferior died on a signal, so a crash is 139, a test failure is pytest's own
-code, and green stays green; and `tee` gdb's output (pipefail is already on in run shells) so
-the live log keeps the progress reporting while the copy at `/tmp/pytest-gdb.log` feeds the
-next step. Then a separate `if: failure()` step lifts everything from
-`Program received signal` onward into `endurance-results/native-crash-diagnostics.json` —
+code, and green stays green; and `tee` gdb's output, but only after `set -eo pipefail` at
+the top of the run block: this repo's workflow `run` steps render as `bash -e` with no
+pipefail (actions' own steps have it; yours do not), and without it the pipeline reports
+tee's exit code — a caught SIGSEGV has already surfaced once as a green run (34888100192),
+skipping the failure-gated diagnostics step entirely. Then a separate `if: failure()` step
+lifts everything from the `received signal` line — both of gdb's stop shapes, `Program
+received signal` (main thread) and `Thread N "name" received signal` (any other thread),
+because the crash this setup hunts lands on an FFI host thread — onward into
+`endurance-results/native-crash-diagnostics.json` —
 ANSI-stripped, capped, carrying the signal, run URL/SHA, a reproduce command, and written
 instructions for reading the dump — so it rides the artifact zip the suite already uploads and
 whoever debugs the crash months later, human or agent, starts from the faulting thread's stack
