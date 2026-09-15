@@ -1,0 +1,93 @@
+# Rehearsal only. No registry credentials, tag creation, or remote publishing job.
+# K15 must add the live integration gate before any publishing path is introduced.
+name: Release Kotlin SDK (rehearsal)
+on:
+  push:
+    branches: [main]
+    paths: ['sdks/kotlin/gradle.properties']
+  pull_request:
+    paths:
+      - 'sdks/kotlin/distribution/**'
+      - 'sdks/kotlin/native/**'
+      - 'sdks/kotlin/**/build.gradle.kts'
+      - 'sdks/kotlin/reactor-core/src/main/kotlin/inc/reactor/sdk/ReactorNative.kt'
+      - 'scripts/*kotlin*distribution*'
+      - 'scripts/kotlin-release-*'
+      - 'scripts/build-manylinux-kotlin.sh'
+      - '.github/workflows/release-kotlin.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: kotlin-rehearsal-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  detect-version:
+    runs-on: ubuntu-latest
+    outputs:
+      bumped: ${{ steps.version.outputs.bumped }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: version
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: python3 scripts/kotlin-release-version.py
+  desktop:
+    needs: detect-version
+    if: github.event_name != 'push' || needs.detect-version.outputs.bumped == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            os: macos-latest
+            floor: '11.0'
+          - platform: macos-x64
+            os: macos-15-intel
+            floor: '13.0'
+          - platform: linux-x64
+            os: ubuntu-latest
+            container: quay.io/pypa/manylinux_2_34_x86_64
+          - platform: linux-arm64
+            os: ubuntu-24.04-arm
+            container: quay.io/pypa/manylinux_2_34_aarch64
+          - platform: windows-x64
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        if: matrix.container == ''
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        if: matrix.container == ''
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Stage and consume desktop Maven artifacts
+        if: matrix.container == ''
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.floor }}
+          RUSTFLAGS: ${{ runner.os == 'Windows' && '-C target-feature=+crt-static' || '' }}
+          PLATFORM: ${{ matrix.platform }}
+        run: bash scripts/kotlin-distribution-ci.sh "$PLATFORM"
+      - name: Build and consume at the glibc 2.34 floor
+        if: matrix.container != ''
+        env:
+          IMAGE: ${{ matrix.container }}
+          PLATFORM: ${{ matrix.platform }}
+        run: docker run --rm -v "$PWD:/io" "$IMAGE" bash /io/scripts/build-manylinux-kotlin.sh "$PLATFORM"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: kotlin-maven-${{ matrix.platform }}
+          path: dist/kotlin/
+          if-no-files-found: error
+  publishing-disabled:
+    needs: detect-version
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'Local rehearsal only. Maven namespace, signing, Android distribution and the live integration gate must be verified before release.'

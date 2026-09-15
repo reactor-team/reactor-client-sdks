@@ -1,3 +1,6 @@
+import org.gradle.api.publish.maven.MavenPublication
+import org.gradle.api.publish.maven.tasks.PublishToMavenRepository
+
 plugins {
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.kotlin.android) apply false
@@ -24,5 +27,53 @@ subprojects {
     tasks.withType<Test>().configureEach {
         useJUnit()
         testLogging { events("failed", "skipped") }
+    }
+}
+
+// Local rehearsal only. There is deliberately no remote repository or publishing credential.
+subprojects {
+    if (name != "native-probe") {
+        apply(plugin = "maven-publish")
+        val manualJar = tasks.register<Jar>("manualJar") {
+            archiveClassifier.set("javadoc")
+            from(rootProject.file("docs"))
+            from(rootProject.file("README.md"))
+            from(rootProject.file("distribution/index.html"))
+        }
+        extensions.configure<PublishingExtension> {
+            repositories {
+                maven {
+                    name = "staging"
+                    url = uri(providers.gradleProperty("reactorStagingRepository").orElse(rootProject.layout.buildDirectory.dir("staging").map { it.asFile.absolutePath }).get())
+                }
+            }
+        }
+        val sdkProject = this
+        gradle.projectsEvaluated {
+            sdkProject.extensions.configure<PublishingExtension> {
+                publications.create<MavenPublication>("sdk") {
+                    from(sdkProject.components[if (sdkProject.plugins.hasPlugin("com.android.library")) "release" else "java"])
+                    artifact(manualJar)
+                }
+                publications.withType<MavenPublication>().configureEach {
+                    pom {
+                        name.set("Reactor Kotlin SDK — $artifactId")
+                        description.set("Kotlin bindings for Reactor, for desktop JVM and Android")
+                        url.set("https://github.com/reactor-team/reactor-client-sdks")
+                        licenses { license { name.set("Apache License 2.0"); url.set("https://www.apache.org/licenses/LICENSE-2.0") } }
+                        developers { developer { id.set("reactor-team"); name.set("Reactor Team"); email.set("support@reactor.inc") } }
+                        scm { url.set("https://github.com/reactor-team/reactor-client-sdks"); connection.set("scm:git:https://github.com/reactor-team/reactor-client-sdks.git") }
+                    }
+                }
+            }
+        }
+        tasks.withType<PublishToMavenRepository>().configureEach {
+            doFirst {
+                check(repository.url.scheme == "file") { "Kotlin publishing is limited to local rehearsal until the live integration gate is wired" }
+            }
+        }
+        tasks.withType<Jar>().configureEach {
+            from(rootProject.file("../../LICENSE")) { into("META-INF") }
+        }
     }
 }

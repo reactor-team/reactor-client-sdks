@@ -585,7 +585,7 @@ run = "bash scripts/kotlin-native.sh android"
 
 [tasks."test:kotlin:native-checks"]
 description = "[Testing] Native Android artifact validation regressions"
-run = "python3 scripts/test-kotlin-native.py"
+run = "python3 scripts/test-kotlin-native.py && python3 scripts/test-kotlin-distribution.py"
 
 [tasks."test:kotlin:native:android"]
 description = "[Testing] JNI load and synthetic client lifecycle on an arm64 Android device"
@@ -610,3 +610,7 @@ run = "bash scripts/kotlin.sh test :reactor-core:testJniSanitizer"
 [tasks."test:kotlin:jni:real"]
 description = "Smoke-test the desktop JNI bridge against the real FFI"
 run = "bash scripts/kotlin.sh test :reactor-core:testRealNative"
+
+[tasks."test:kotlin:distribution"]
+description = "[Testing] Build and consume staged Kotlin desktop artifacts (pass platform)"
+run = "bash scripts/kotlin-distribution-ci.sh"
