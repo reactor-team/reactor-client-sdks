@@ -7,12 +7,13 @@ import { defineConfig } from '@playwright/test';
 // coordinator, model — actually runs.
 //
 // No `retries` here (defaults to 0): a transient failure — a session-creation
-// rate limit, the shared capacity pool, a session/SDP poll timing out — gets
-// retried in CI via scripts/retry.sh wrapping this whole suite, the same way
-// for every SDK, not a Playwright-specific config scoped to just this one.
-// See the sdk-from-ffi skill's "Integration-test retries" section before
-// adding a `retries` value back — a genuine regression still fails
-// deterministically on every attempt either way.
+// rate limit, the shared capacity pool, a session/SDP poll timing out — is
+// retried by mise's own test:js:integration-tests task (see mise.toml),
+// which wraps just the `npx playwright test` invocation in scripts/retry.sh
+// — the same mechanism for every SDK, not a Playwright-specific config
+// scoped to just this one. See the sdk-from-ffi skill's "Integration-test
+// retries" section before adding a `retries` value back — a genuine
+// regression still fails deterministically on every attempt either way.
 export default defineConfig({
   testDir: './tests',
   timeout: 60_000,

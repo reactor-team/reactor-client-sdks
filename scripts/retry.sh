@@ -2,12 +2,19 @@
 # Retries "$@" up to 4 times total (1 initial attempt + 3 retries) with a
 # fixed 2s/4s/8s backoff between attempts.
 #
-# Used to absorb transient CI failures shared across every SDK's
-# integration-tests job — reactor/echo session-creation rate limits, its
+# Used to absorb transient failures shared across every SDK's
+# integration-tests suite — reactor/echo session-creation rate limits, its
 # shared capacity pool being briefly exhausted, a session or SDP answer not
 # ready within its own poll budget — without masking a real regression: a
-# genuine bug fails deterministically on every attempt and still fails the
-# job in the end.
+# genuine bug fails deterministically on every attempt and still fails in
+# the end.
+#
+# Called from inside each `test:<lang>:integration-tests` mise task (or,
+# for Swift, from within scripts/swift.sh), wrapping only the actual
+# test-invocation line — never a build/cmake/cargo step ahead of it. That
+# makes the task itself retry everywhere it's invoked (ci.yml, every
+# release-<lang>.yml, and a contributor running it locally) with nothing
+# for any caller to remember to wrap on its own.
 #
 # Deliberately NOT scoped to a specific error type or exception class. This
 # repo's four SDKs each surface failures through a different test framework
