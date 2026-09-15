@@ -898,8 +898,8 @@ ships without one.
   old `--only-rerun RateLimitedError` caught only the rate-limit case, missing the capacity
   and timeout ones, and Swift's own connect-retry comment claimed to cover capacity when
   its code didn't. One script, unscoped by exception type, called from exactly one place
-  per binding. If `scripts/retry.sh`'s policy (4 attempts, 2s/4s/8s backoff) ever needs to
-  change, change it there; don't add a parallel mechanism next to it.
+  per binding. If `scripts/retry.sh`'s policy (4 attempts, 15s/30s/60s backoff) ever needs
+  to change, change it there; don't add a parallel mechanism next to it.
 
 ---
 

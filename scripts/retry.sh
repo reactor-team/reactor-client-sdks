@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Retries "$@" up to 4 times total (1 initial attempt + 3 retries) with a
-# fixed 2s/4s/8s backoff between attempts.
+# fixed 15s/30s/60s backoff between attempts.
 #
 # Used to absorb transient failures shared across every SDK's
 # integration-tests suite — reactor/echo session-creation rate limits, its
@@ -35,7 +35,7 @@ if [ "$#" -eq 0 ]; then
   exit 1
 fi
 
-delays=(2 4 8)
+delays=(15 30 60)
 attempt=1
 until "$@"; do
   if (( attempt > ${#delays[@]} )); then
