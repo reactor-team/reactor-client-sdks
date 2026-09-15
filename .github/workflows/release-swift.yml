@@ -388,7 +388,7 @@ jobs:
       - name: Swift SDK integration tests (real FFI, real model)
         env:
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
-        run: mise run test:swift:integration-tests
+        run: scripts/retry.sh mise run test:swift:integration-tests
 
   swift-integration-tests-ios-simulator:
     name: Swift SDK integration tests (iOS Simulator, the archive this run built)
@@ -431,7 +431,7 @@ jobs:
         env:
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
           REACTOR_XCFRAMEWORK: target/xcframework/ReactorFFI.xcframework
-        run: scripts/swift.sh integration-tests-ios-simulator
+        run: scripts/retry.sh scripts/swift.sh integration-tests-ios-simulator
 
   # ── 2. Commit the checksum onto the PR, and stage the release ──────────────
   #

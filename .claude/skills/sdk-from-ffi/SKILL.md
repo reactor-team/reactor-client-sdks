@@ -856,10 +856,14 @@ ships without one.
 - **Integration-test retries: one flat rule, `scripts/retry.sh`, no per-language exception.**
   A live model's shared session-creation quota, its capacity pool, or a session/SDP poll can
   all fail transiently without any bug in your binding — that's what an integration-tests
-  suite is exposed to that a unit test never is. Wire your `ci.yml` step for this suite as
-  `run: scripts/retry.sh mise run test:<lang>:integration-tests` (see the existing four
-  jobs), not a framework-specific retry (`pytest-rerunfailures`, Playwright's `retries`,
-  Catch2/swift-testing have neither). This has already drifted once — Python's old
+  suite is exposed to that a unit test never is. Wire the step that invokes this suite as
+  `run: scripts/retry.sh mise run test:<lang>:integration-tests`, in **both** places it
+  runs per the previous bullet — `ci.yml` *and* `release-<lang>.yml` (see the existing
+  jobs in each) — not a framework-specific retry (`pytest-rerunfailures`, Playwright's
+  `retries`, Catch2/swift-testing have neither). A release workflow invoking the same mise
+  task directly, unwrapped, silently loses the exact same retry coverage `ci.yml` has —
+  caught by Codex review on PR #193 after the first pass only wrapped `ci.yml`. This has
+  already drifted once before that too — Python's old
   `--only-rerun RateLimitedError` caught only the rate-limit case, missing the capacity and
   timeout ones, and Swift's own connect-retry comment claimed to cover capacity when its
   code didn't — which is why the rule now lives in one script, unscoped by exception type,
