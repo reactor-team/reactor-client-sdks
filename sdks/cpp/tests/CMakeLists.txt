@@ -21,6 +21,18 @@ set(REACTOR_TEST_SOURCES
   stats_test.cpp
   track_test.cpp
   smoke_test.cpp
+  # The endurance-tests suite's reporting/trend modules, pulled in by source
+  # rather than a separate library target: both are deliberately free of any
+  # FFI/native-library dependency (see ../endurance-tests/report.hpp's own
+  # top comment), so they need nothing ../endurance-tests/ itself needs
+  # (REACTOR_SDK_BUILD_ENDURANCE_TESTS, a real API key) to be unit-tested —
+  # same reasoning as sdks/python/tests/test_endurance_report.py and
+  # test_trends.py living in the fast unit suite rather than beside the
+  # endurance suite they describe.
+  ../endurance-tests/report.cpp
+  ../endurance-tests/trends.cpp
+  report_test.cpp
+  trends_test.cpp
 )
 
 # The device helpers are an optional target, so their tests come and go with it.
@@ -42,6 +54,11 @@ target_include_directories(
   PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../src"
     "${REACTOR_FFI_INCLUDE_DIR}"
+    # So report_test.cpp/trends_test.cpp can `#include "report.hpp"` /
+    # `#include "trends.hpp"` the same way ../endurance-tests/*.cpp itself
+    # does, rather than a relative "../endurance-tests/report.hpp" in every
+    # test file.
+    "${CMAKE_CURRENT_SOURCE_DIR}/../endurance-tests"
 )
 
 target_link_libraries(reactor_sdk_tests PRIVATE reactor::sdk Catch2::Catch2WithMain)
