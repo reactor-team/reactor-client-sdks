@@ -91,3 +91,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo 'Local rehearsal only. Maven namespace, signing, Android distribution and the live integration gate must be verified before release.'
+
+  live-integration:
+    name: Kotlin SDK live integration gate
+    needs: [detect-version, desktop]
+    if: github.event_name == 'push' && needs.detect-version.outputs.bumped == 'true'
+    runs-on: ubuntu-latest
+    env:
+      REACTOR_MODEL: ${{ vars.KOTLIN_INTEGRATION_MODEL }}
+      REACTOR_TOKEN: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: '17' }
+      - name: Require provisioned live environment
+        run: |
+          test -n "$REACTOR_MODEL" || { echo '::error::KOTLIN_INTEGRATION_MODEL is not configured'; exit 1; }
+          test -n "$REACTOR_TOKEN" || { echo '::error::INTEGRATION_TESTS_REACTOR_API_KEY is not configured'; exit 1; }
+      - run: cargo build --locked -p reactor-ffi --release
+      - run: python3 scripts/kotlin-release-build.py
+      - name: Run Kotlin production gate
+        env:
+          REACTOR_NATIVE_DIR: ${{ github.workspace }}/target/kotlin-release/lib
+        run: bash scripts/kotlin-live-integration.sh
