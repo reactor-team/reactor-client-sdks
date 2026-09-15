@@ -59,10 +59,22 @@ package enum EnduranceConfig {
         ProcessInfo.processInfo.environment["ENDURANCE_DURATION_SECONDS"]
             .flatMap(Double.init) ?? 300
     }
+
+    /// How often `ResourceSampler.sample()` actually records a new `Sample`,
+    /// at most — see that method's own comment for why. Mirrors
+    /// `sdks/python/endurance-tests/helpers.py`'s
+    /// `ENDURANCE_SAMPLE_INTERVAL_SECONDS` and
+    /// `sdks/cpp/endurance-tests/helpers.cpp`'s
+    /// `endurance_sample_interval_seconds()`.
+    package static var sampleIntervalSeconds: Double {
+        ProcessInfo.processInfo.environment["ENDURANCE_SAMPLE_INTERVAL_SECONDS"]
+            .flatMap(Double.init) ?? 0.1
+    }
 }
 
-/// Samples process-wide resource usage once per cycle of an endurance loop,
-/// against a shared wall-clock deadline. Mirrors
+/// Samples process-wide resource usage at most once per
+/// `EnduranceConfig.sampleIntervalSeconds` of an endurance loop, against a
+/// shared wall-clock deadline. Mirrors
 /// `sdks/python/endurance-tests/helpers.py`'s `ResourceSampler` (minus the
 /// two `reactor_sdk`-internal fields — see the module doc above) and
 /// `sdks/cpp/endurance-tests/helpers.hpp`'s.
@@ -71,6 +83,10 @@ package final class ResourceSampler {
     private let start = ContinuousClock.now
     private let duration: Duration
     package private(set) var samples: [Sample] = []
+    /// `nil`, not some sentinel `Instant`: the first call to `sample()` must
+    /// always record (there is nothing yet to return in its place) — see
+    /// `sample()`'s own check.
+    private var lastSampleAt: ContinuousClock.Instant?
 
     package init(durationSeconds: Double = EnduranceConfig.durationSeconds) {
         duration = .seconds(durationSeconds)
@@ -80,8 +96,33 @@ package final class ResourceSampler {
         start.duration(to: .now) >= duration
     }
 
+    /// Throttled to at most one real sample per
+    /// `EnduranceConfig.sampleIntervalSeconds` — exists because a scenario
+    /// with no network wait at all (e.g. pause-resume-churn:
+    /// `PauseResumeChurnTests.swift`, no frames, no commands, no reconnect —
+    /// `Track.pause()`/`resume()` round-trip through the FFI alone) iterates
+    /// far faster than a network-bound scenario, and this method used to
+    /// append one `Sample` per call unconditionally — the retained array
+    /// itself then became the dominant cost the resource trend was supposed
+    /// to be measuring instead of the SDK, the same false "RSS leak" the
+    /// Python suite hit and fixed the same way (see
+    /// `sdks/python/endurance-tests/helpers.py`'s
+    /// `ENDURANCE_SAMPLE_INTERVAL_SECONDS`) and the C++ suite ported
+    /// (`sdks/cpp/endurance-tests/helpers.cpp`'s
+    /// `endurance_sample_interval_seconds()`). `samples` is never empty past
+    /// the first call, so this only ever short-circuits from the second call
+    /// on — the very first sample is always taken, unconditionally,
+    /// regardless of the interval.
     @discardableResult
     package func sample(cycle: Int) -> Sample {
+        let now = ContinuousClock.now
+        if let last = lastSampleAt,
+            last.duration(to: now) < .seconds(EnduranceConfig.sampleIntervalSeconds)
+        {
+            return samples[samples.count - 1]
+        }
+        lastSampleAt = now
+
         let elapsedS = start.duration(to: .now) / .seconds(1)
         var s = Sample(
             cycle: cycle, elapsedS: elapsedS, rssBytes: Self.readRSSBytes(),
