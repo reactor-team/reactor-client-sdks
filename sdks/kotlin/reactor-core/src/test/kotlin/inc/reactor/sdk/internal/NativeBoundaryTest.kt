@@ -1,8 +1,10 @@
 package inc.reactor.sdk.internal
 
+import inc.reactor.sdk.DevelopmentAuth
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -57,6 +59,17 @@ class NativeBoundaryTest {
             if (throwing && count == 1) error("handler failure")
         }
     }
+
+    @Test
+    fun developmentHelperUsesDetachedCompletion() =
+        runBlocking {
+            val result =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    DevelopmentAuth.fetchJwt("development-key", JsonObject(emptyMap()))
+                }
+            finishAuth()
+            assertEquals("fake", result.await())
+        }
 
     @Test
     fun failedDestroyRetainsCallbackTicket() {

@@ -119,6 +119,7 @@ jobs:
               - 'scripts/kotlin-jni-test-build.sh'
               - 'scripts/kotlin-jni-headers.py'
               - 'scripts/kotlin-jni-android-test.sh'
+              - 'scripts/kotlin-jni-build.sh'
               - 'scripts/check-kotlin-native.py'
               - 'scripts/test-kotlin-native.py'
             cpp:
@@ -763,6 +764,7 @@ jobs:
       - run: mise run lint:kotlin
       - run: mise run build:kotlin
       - run: mise run test:kotlin
+      - run: mise run test:kotlin:jni:asan
 
   kotlin-android:
     name: Kotlin SDK (Android instrumentation scaffold)
