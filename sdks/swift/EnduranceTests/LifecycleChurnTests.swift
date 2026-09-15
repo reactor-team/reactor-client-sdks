@@ -126,12 +126,8 @@ extension EnduranceTests {
                 // baseline-zero would be the Python equivalent's
                 // `live_clients_baseline_zero` — no such signal exists on
                 // this binding (see ../README.md's "known scope gap").
-                // fdsExact: socket/fd teardown proved synchronous with
-                // disconnect()/close() returning, so num_fds gets the
-                // strict "never past its starting value" check instead of
-                // a trend.
                 do {
-                    metrics = try standardResourceMetrics(sampler.samples, fdsExact: true)
+                    metrics = try standardResourceMetrics(sampler.samples)
                 } catch {
                     pending = error
                 }

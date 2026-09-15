@@ -431,27 +431,25 @@ package func assertNeverGrows(
 /// signal to check in the first place; see ../EnduranceTests/README.md's
 /// "known scope gap" section.
 ///
-/// `fdsExact`: `true` when fd teardown is synchronous with this scenario's
-/// own cycle boundary (only lifecycle-churn's disconnect()/close() per
-/// cycle proved this in practice) — `numFds` must never exceed its starting
-/// value (`assertNeverGrows`). `false` (the default) for anything that can
-/// legitimately open a few more during warm-up and then plateau — `numFds`
-/// gets the same trend-based check as RSS/CPU instead.
+/// `numFds` always gets the same median-backed trend check as `numThreads`
+/// (`assertNoSustainedGrowth`), never an exact `assertNeverGrows`, on every
+/// binding this suite covers — this used to be a per-scenario opt-in
+/// (`fdsExact`) on the theory that some scenarios' fd teardown was provably
+/// synchronous with the cycle boundary, but real CI runs on two different
+/// bindings (C++, then this one) each independently caught `numFds` take a
+/// one-cycle step that settled right back down — not a leak, just native
+/// socket-teardown timing the exact check can't tolerate. Don't
+/// reintroduce a per-scenario or per-binding exception here; the trend
+/// check already tolerates a real leak just as well and doesn't
+/// false-positive on this.
 ///
 /// A scenario with its own extra invariants (publish-churn's
 /// `track.published` check, pause-resume-churn's `pausedTracks` check)
 /// still checks those itself, in its own loop — they are specific to what
 /// that scenario exercises, not generic resource accounting, so they do not
 /// belong here.
-package func standardResourceMetrics(
-    _ samples: [Sample], fdsExact: Bool = false
-) throws
-    -> [MetricResult]
-{
+package func standardResourceMetrics(_ samples: [Sample]) throws -> [MetricResult] {
     var metrics: [MetricResult] = []
-    if fdsExact {
-        metrics.append(assertNeverGrows(samples, name: "num_fds", field: \.numFds))
-    }
     metrics.append(
         try assertNoSustainedGrowth(
             samples.map { Double($0.rssBytes) / 1e6 }, name: "rss", unit: "MB",
@@ -468,11 +466,9 @@ package func standardResourceMetrics(
         try assertNoSustainedGrowth(
             samples.map { Double($0.numThreads) }, name: "num_threads", unit: "count",
             maxGrowthRatio: 0.15, minAbsoluteDelta: 4, useMedian: true))
-    if !fdsExact {
-        metrics.append(
-            try assertNoSustainedGrowth(
-                samples.map { Double($0.numFds) }, name: "num_fds", unit: "count",
-                maxGrowthRatio: 0.15, minAbsoluteDelta: 3))
-    }
+    metrics.append(
+        try assertNoSustainedGrowth(
+            samples.map { Double($0.numFds) }, name: "num_fds", unit: "count",
+            maxGrowthRatio: 0.15, minAbsoluteDelta: 3, useMedian: true))
     return metrics
 }

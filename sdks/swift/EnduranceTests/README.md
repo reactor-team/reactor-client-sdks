@@ -82,7 +82,7 @@ any code changes.
   is not evidence about the other.
 
 **Adding a new scenario**: write a loop that does the one thing you want to
-isolate, then call `standardResourceMetrics(samples:fdsExact:)` (in
+isolate, then call `standardResourceMetrics(samples:)` (in
 `EnduranceReporting/Trends.swift`) for the RSS/CPU/thread/fd checks every
 scenario shares, and `finishAndCheck(...)` (in
 `EnduranceReporting/Report.swift`) in your end-of-scenario cleanup for the
