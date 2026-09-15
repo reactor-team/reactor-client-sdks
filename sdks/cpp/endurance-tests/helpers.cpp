@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -104,6 +105,11 @@ const char* kLiveRowHeader =
 
 }  // namespace
 
+double endurance_sample_interval_seconds() {
+  const char* raw = std::getenv("ENDURANCE_SAMPLE_INTERVAL_SECONDS");
+  return raw != nullptr ? std::stod(raw) : 0.1;
+}
+
 ResourceSampler::ResourceSampler(double duration_s)
     : start_s_(monotonic_now_s()), duration_s_(duration_s) {}
 
@@ -112,6 +118,26 @@ bool ResourceSampler::deadline_reached() const {
 }
 
 const Sample& ResourceSampler::sample(int cycle) {
+  // Throttled to at most one real sample per endurance_sample_interval_
+  // seconds(). Exists because a scenario with no network wait at all (e.g.
+  // pause-resume-churn: no frames, no commands, no reconnect — Track::pause()/
+  // resume() round-trip through the FFI alone) iterates far faster than a
+  // network-bound scenario, and this method used to append one `Sample`
+  // per call unconditionally — the retained vector itself, and the /proc
+  // reads behind every entry, then became the dominant cost the resource
+  // trend was supposed to be measuring instead of the SDK, mirroring the
+  // same false "RSS leak" the Python suite hit and fixed the same way (see
+  // sdks/python/endurance-tests/helpers.py's ENDURANCE_SAMPLE_INTERVAL_
+  // SECONDS). `samples_` is never empty past the first call, so this only
+  // ever short-circuits from the second call on — the very first sample is
+  // always taken, unconditionally, regardless of the interval.
+  const double now = monotonic_now_s();
+  if (last_sample_at_s_.has_value() &&
+      (now - *last_sample_at_s_) < endurance_sample_interval_seconds()) {
+    return samples_.back();
+  }
+  last_sample_at_s_ = now;
+
   const ProcStat stat = read_proc_stat();
   Sample s;
   s.cycle = cycle;

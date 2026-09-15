@@ -18,6 +18,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <reactor/reactor.hpp>
 #include <string>
 #include <vector>
@@ -27,17 +28,25 @@
 
 namespace endurance {
 
-/// Samples process-wide resource usage once per cycle of an endurance loop,
-/// against a shared wall-clock deadline.
+/// How often `ResourceSampler::sample()` actually records a new `Sample`, at
+/// most — see that method's own comment for why this exists. Reads
+/// `ENDURANCE_SAMPLE_INTERVAL_SECONDS`, defaulting to 0.1 (seconds).
+double endurance_sample_interval_seconds();
+
+/// Samples process-wide resource usage at most once per
+/// `endurance_sample_interval_seconds()` of an endurance loop, against a
+/// shared wall-clock deadline.
 class ResourceSampler {
  public:
   explicit ResourceSampler(double duration_s = endurance_duration_seconds());
 
   bool deadline_reached() const;
 
-  /// Takes one reading and appends it to `samples()`. Under
-  /// `ENDURANCE_VERBOSE=1`, also prints it immediately as one row of the
-  /// detailed per-cycle table (see `print_live_row()`) — the debug path;
+  /// Takes one reading and appends it to `samples()`, unless less than
+  /// `endurance_sample_interval_seconds()` has passed since the last one was
+  /// recorded — see the .cpp definition for why. Under `ENDURANCE_VERBOSE=1`,
+  /// a recorded reading also prints immediately as one row of the detailed
+  /// per-cycle table (see `print_live_row()`) — the debug path;
   /// `report::LiveReporter` handles the default compact path instead, and a
   /// scenario's own loop is what calls it, not this method.
   const Sample& sample(int cycle);
@@ -83,6 +92,10 @@ class ResourceSampler {
   double start_s_;
   double duration_s_;
   std::vector<Sample> samples_;
+  // std::nullopt, not 0.0: the first call to sample() must always record
+  // (there is nothing yet to return in its place) — see sample()'s own
+  // definition.
+  std::optional<double> last_sample_at_s_;
 };
 
 /// Connects `client` (via `integration::paced_connect`), retrying up to
