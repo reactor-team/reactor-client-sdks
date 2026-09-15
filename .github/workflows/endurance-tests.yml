@@ -44,6 +44,18 @@ concurrency:
   # make both runs' RSS/CPU/timing trends noisier — worse for a suite whose
   # whole point is reading a trend. workflow_dispatch is manual and
   # infrequent, so serializing globally costs effectively nothing.
+  #
+  # This only serializes separate *runs*, not the swift job's own scenario
+  # matrix inside one run — those already run as separate macOS runners, each
+  # its own process, so `EnduranceTests.swift`'s `.serialized` trait (which
+  # only matters for a single-process run covering more than one scenario,
+  # e.g. a local `mise run test:swift:endurance-tests`) is a no-op here, not
+  # a bottleneck. Each scenario paces its own session creation independently
+  # (`makeAndConnectWithRetries` in Helpers.swift), the same self-pacing that
+  # lets ci.yml run every SDK's integration suite concurrently instead of
+  # chained (see that change's own commit message) — a handful of scenario
+  # jobs doing the same is a smaller version of the same bet. Watch the first
+  # real dispatch for 429s before trusting this blindly.
   group: endurance-tests
   cancel-in-progress: false
 
@@ -62,21 +74,26 @@ jobs:
   # of its own steps' outputs (those don't exist yet when the job's own
   # timeout is evaluated).
   setup:
-    name: Compute job timeout
+    name: Compute job timeouts and swift scenario matrix
     runs-on: ubuntu-latest
     outputs:
       timeout_minutes: ${{ steps.compute.outputs.timeout_minutes }}
+      swift_timeout_minutes: ${{ steps.compute-swift.outputs.timeout_minutes }}
+      swift_scenarios: ${{ steps.swift-scenarios.outputs.scenarios }}
     steps:
+      # Needed by "Discover swift endurance scenarios" below, which reads
+      # sdks/swift/EnduranceTests/ off the checkout.
+      - uses: actions/checkout@v7
       - name: Compute timeout-minutes from duration_minutes
         id: compute
         env:
           DURATION_MINUTES: ${{ inputs.duration_minutes }}
-          # Number of scenarios in sdks/python/endurance-tests/tests/*.py and
-          # sdks/swift/EnduranceTests/*Tests.swift alike (both suites are kept
-          # at the same scenario count on purpose — see
-          # sdks/swift/EnduranceTests/README.md) — bump this alongside adding
-          # or removing a scenario file in either suite, not the `python`/
-          # `swift` jobs' own comments alone.
+          # Number of scenarios the Python endurance-tests suite runs
+          # sequentially in one pytest invocation (endurance-tests/tests/*.py)
+          # — bump this alongside adding or removing a scenario file there.
+          # The swift job below is matrixed one scenario per job instead (see
+          # "Compute swift job timeout-minutes" and "Discover swift endurance
+          # scenarios" below), so it needs no equivalent count here.
           SCENARIO_COUNT: 6
         # `10#` forces base-10 parsing: bash's arithmetic context otherwise
         # treats a leading-zero numeral (e.g. "08") as octal and errors out.
@@ -93,6 +110,58 @@ jobs:
             exit 1
           fi
           echo "timeout_minutes=$timeout_minutes" >> "$GITHUB_OUTPUT"
+      # Unlike the python job above, swift is matrixed one scenario per job
+      # (see the `swift` job below) — each matrix job runs exactly one
+      # scenario for duration_minutes, not every scenario back to back, so
+      # this needs no scenario-count multiplier, only a buffer for the job's
+      # own setup (toolchain install, build).
+      - name: Compute swift job timeout-minutes from duration_minutes
+        id: compute-swift
+        env:
+          DURATION_MINUTES: ${{ inputs.duration_minutes }}
+        run: |
+          timeout_minutes=$((10#$DURATION_MINUTES + 30))
+          max_timeout_minutes=360
+          if (( timeout_minutes > max_timeout_minutes )); then
+            max_duration_minutes=$((max_timeout_minutes - 30))
+            echo "::error::duration_minutes=$DURATION_MINUTES needs a ${timeout_minutes}-minute job timeout, but GitHub Actions caps job timeouts at ${max_timeout_minutes} minutes. Use duration_minutes <= ${max_duration_minutes}."
+            exit 1
+          fi
+          echo "timeout_minutes=$timeout_minutes" >> "$GITHUB_OUTPUT"
+      # One matrix entry per sdks/swift/EnduranceTests/*Tests.swift file
+      # (excluding EnduranceTests.swift itself, which only declares the
+      # shared `.serialized` suite — see that file's own doc comment — and
+      # carries no `@Test` of its own), discovered here rather than
+      # hand-listed in the `swift` job below — a scenario file added later
+      # shows up in the matrix for free, the same low-ceremony bar the
+      # top-of-file comment already sets for adding an SDK. Swift Testing's
+      # `--filter` matches by test ID (`<Suite>/<function>`), not by file
+      # name or the `@Test` macro's own display string, so each matrix entry
+      # carries both a human-readable `id` (the file's own name, PascalCase
+      # -> snake_case, for job names/artifact names) and the actual
+      # `@Test` function's name (`test`, for `--filter`) — extracted by
+      # `grep`, not hand-maintained, so the two can never drift apart.
+      # `jq -s -c .` (slurp) combines the one-JSON-object-per-file lines this
+      # loop prints into the single compact JSON array `strategy.matrix`
+      # needs (`fromJSON` below).
+      - name: Discover swift endurance scenarios
+        id: swift-scenarios
+        run: |
+          scenarios=$(
+            for f in sdks/swift/EnduranceTests/*Tests.swift; do
+              base=$(basename "$f" .swift)
+              [ "$base" = "EnduranceTests" ] && continue
+              id=$(echo "$base" | sed 's/Tests$//' | sed -E 's/([a-z0-9])([A-Z])/\1_\2/g' | tr '[:upper:]' '[:lower:]')
+              test=$(grep -oE 'func [A-Za-z0-9_]+\(\) async throws' "$f" | head -1 | sed -E 's/func ([A-Za-z0-9_]+).*/\1/')
+              if [ -z "$test" ]; then
+                echo "::error::no '@Test func ... async throws' found in $f — cannot build its --filter entry."
+                exit 1
+              fi
+              jq -n -c --arg id "$id" --arg test "$test" '{id: $id, test: $test}'
+            done | jq -s -c .
+          )
+          echo "Discovered swift scenarios: $scenarios"
+          echo "scenarios=$scenarios" >> "$GITHUB_OUTPUT"
 
   python:
     name: Python SDK endurance tests
@@ -317,7 +386,7 @@ jobs:
           if-no-files-found: warn
 
   swift:
-    name: Swift SDK endurance tests
+    name: Swift SDK endurance tests (${{ matrix.scenario.id }})
     needs: setup
     if: inputs.sdk == 'swift'
     # macOS only, deliberately — no iOS Simulator variant, unlike
@@ -326,7 +395,20 @@ jobs:
     # suite hunts lives in the native FFI/WebRTC layer every binding shares,
     # not in anything iOS-simulator-specific.
     runs-on: macos-latest
-    timeout-minutes: ${{ fromJSON(needs.setup.outputs.timeout_minutes) }}
+    strategy:
+      # One runner per scenario, all running at once — see the concurrency
+      # block's own comment for why that's fine against the shared backend.
+      # fail-fast: false so one scenario failing (a real leak, a flaky
+      # connect) doesn't cancel the others mid-run; each scenario's result
+      # and report stand on their own.
+      fail-fast: false
+      matrix:
+        scenario: ${{ fromJSON(needs.setup.outputs.swift_scenarios) }}
+    # Each matrix job now runs exactly one scenario for duration_minutes, so
+    # the job needs a bit over 1x that plus setup (toolchain install, build)
+    # — computed in the `setup` job above (its own comment has why this
+    # differs from the `python` job's timeout).
+    timeout-minutes: ${{ fromJSON(needs.setup.outputs.swift_timeout_minutes) }}
     env:
       REACTOR_REQUIRE_SWIFT: "1"
     steps:
@@ -352,7 +434,7 @@ jobs:
         # happens in shell rather than in the `env:` block above.
         run: |
           export ENDURANCE_DURATION_SECONDS=$((10#$DURATION_MINUTES * 60))
-          echo "Running for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s) per scenario"
+          echo "Running ${{ matrix.scenario.id }} for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s)"
           # REACTOR_SWIFT_DEV matters here for the same reason scripts/
           # swift.sh exports it: without it, Package.swift treats this as a
           # consumer build and downloads the *released* XCFramework instead
@@ -373,11 +455,12 @@ jobs:
           #    tree). So the helper is lldb's direct inferior here, invoked
           #    with the exact arguments `swift test` passes it — including
           #    the bundle path twice and `--testing-library swift-testing`.
-          #    `--filter EnduranceTests` matches on the full test ID
-          #    (`<ModuleName>.<Suite>/<test>`), and every scenario lives in
-          #    the EnduranceTests module, so this is exactly the set
-          #    `mise run test:swift:endurance-tests` runs, minus Integration-
-          #    Tests/ReactorTests.
+          #    `--filter` matches on the full test ID (`<ModuleName>.<Suite>/
+          #    <test>`) — `matrix.scenario.test` below is one scenario's
+          #    actual `@Test` function name (see the `setup` job's "Discover
+          #    swift endurance scenarios" step), verified unique across the
+          #    whole package, so this narrows the shared bundle down to just
+          #    that one scenario instead of the whole EnduranceTests module.
           # 2. The bundle @rpath-links Testing.framework, which lives under
           #    the Xcode platform's Developer dir — swift test papers over
           #    this by setting DYLD_FRAMEWORK_PATH/DYLD_LIBRARY_PATH on the
@@ -428,7 +511,7 @@ jobs:
           # the marker just below instead.
           lldb -b -Q -s /tmp/swift-under-lldb.cmds -- \
             "$testing_helper" \
-            --test-bundle-path "$xctest_bin" --filter EnduranceTests \
+            --test-bundle-path "$xctest_bin" --filter "${{ matrix.scenario.test }}" \
             "$xctest_bin" --testing-library swift-testing \
             2>&1 | tee /tmp/swift-endurance-lldb.log
           # Propagate the inferior's outcome, parsed from the marker the
@@ -462,6 +545,8 @@ jobs:
       # directory ever holds) and picked up by the upload step below.
       - name: Save native crash diagnostics to the results artifact
         if: failure()
+        env:
+          ENDURANCE_SCENARIO: ${{ matrix.scenario.id }}
         run: |
           python3 - <<'PYEOF'
           import datetime
@@ -517,10 +602,12 @@ jobs:
                       f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}"
                       f"/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
                   ),
+                  "scenario": os.environ.get("ENDURANCE_SCENARIO", ""),
                   "reproduce": (
                       "gh workflow run endurance-tests.yml "
                       f"--repo {repo or '<org>/<repo>'} --ref <branch> "
                       "-f sdk=swift -f duration_minutes=5"
+                      " # re-runs every scenario in parallel, this one included"
                   ),
                   "debugger_output_from_crash": dump,
               }
@@ -556,6 +643,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: endurance-test-results-swift
+          # Scenario-suffixed: actions/upload-artifact rejects two uploads
+          # with the same name in one run, and every matrix job would
+          # otherwise collide on "endurance-test-results-swift". One zip per
+          # scenario instead of one combined zip.
+          name: endurance-test-results-swift-${{ matrix.scenario.id }}
           path: sdks/swift/endurance-results/
           if-no-files-found: warn
