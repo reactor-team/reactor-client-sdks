@@ -549,7 +549,7 @@ Several scenario shapes, all needed, because each finds leaks the others cannot:
 **Extensible by design, not by accident**: factor the two things every scenario repeats —
 the RSS/CPU/thread/fd/handle-count checks at the end of the loop, and the `finally`-block
 report-writing/raise-on-`FAIL` sequence — into two shared calls (Python:
-`trends.standard_resource_metrics(samples, live_clients_baseline_zero=..., fds_exact=...)` and
+`trends.standard_resource_metrics(samples, live_clients_baseline_zero=...)` and
 `report.finish_and_check(...)`) that every scenario file calls instead of repeating. A sixth
 scenario file should be "write the loop body that does the one thing you want to isolate, call
 these two," not another ~150-line copy with a different middle. A scenario's *own* invariant
@@ -564,9 +564,27 @@ and OS-reported busy-percent, which can read over 100% with multiple native thre
 count, and fd/handle count. Add whatever your language exposes for live-object or
 orphaned-callback counts (Python's `_LIVE_CLIENTS`/`_ORPHANED_CALLBACKS`) if it has an
 equivalent; note in your README if it does not, rather than silently having a smaller suite.
-Fds were exact in Python but took an off-by-one step around a single cycle boundary in a
-native (non-GC) binding — if your language sees the same, use the trend-based check
-(`assert_no_sustained_growth`) instead of an exact-count one, the way threads already do.
+
+**`num_fds` always gets the trend-based check (`assert_no_sustained_growth`, with
+`use_median=true`, exactly like `num_threads`), never an exact `assert_never_grows`/
+`assertNeverGrows` — one rule, no per-scenario or per-language exception.** This used to be
+a per-scenario opt-in (Python's `fds_exact`, Swift's `fdsExact`) on the theory that some
+scenario's fd teardown was provably synchronous with its own cycle boundary, validated by
+that binding's own real runs. It wasn't a stable theory: Python's lifecycle-churn validated
+`fds_exact=True` across its own runs, but real CI runs on C++ and then Swift's *own*
+lifecycle-churn — the identical scenario, same shared native FFI/WebRTC layer — each
+independently caught `num_fds` take a one-cycle step (e.g. 13 -> 15) that settled right back
+down before the run ended, not a leak, just native socket-teardown timing landing a sample
+mid-flight. Two out of three bindings falsified the "provably synchronous" premise the third
+one's own validation seemed to support — that is the whole reason this is a flat, no-exceptions
+rule now rather than "validate it for your own binding first": a check that a leak can pass on
+one binding and fail falsely on another because of that binding's own real-run history isn't
+one worth keeping a language-specific escape hatch for. `assert_no_sustained_growth`'s
+median-backed trend already tolerates that same one-cycle blip (see `num_threads`'s identical
+reasoning below) without giving up on catching a real leak — there is no scenario where the
+exact check would catch something the trend check misses. Do not add the parameter back for a
+new scenario or a new binding, however tempting a "well *this* teardown really is synchronous"
+argument looks — it has already looked that way twice and been wrong both times.
 
 **A leak already present on the very first cycle needs `assert_always_zero`, not a
 baseline-relative "never grows".** A trend check compares against the baseline it first
@@ -644,15 +662,46 @@ quietly* invariant requires elsewhere.
 **CI wiring**: `workflow_dispatch` only (this suite is long, noisy, and reads a trend rather
 than a single right-or-wrong answer — it does not gate a PR or a release the way the seven
 scenarios and integration-tests do), one job per SDK gated on a `sdk` choice input so adding
-a language later is "add a choice plus a job," not a restructure. `if: always()` on both the
-job-summary step (render every `*-report.md` the scenarios produced into
+a language later is "add a choice plus a job," not a restructure.
+
+**Matrix one job per scenario, discovered rather than hand-listed.** Scenarios used to run
+sequentially inside a single SDK job — fine with two of them, a liability once a suite grows
+past three or four (duration_minutes × scenario_count, past an hour on a 20-minute
+duration_minutes run with six scenarios). A `setup` job globs the scenario test files
+(`find endurance-tests/tests -name 'test_*.py'`, piped through `jq -R -s -c 'split("\n") |
+map(select(length > 0))'` into the compact JSON array `strategy.matrix` needs) and the SDK's
+own job matrixes over that output (`fromJSON(needs.setup.outputs.scenarios)`) instead of a
+hand-maintained list or count — adding a scenario file is then "add the file," full stop, not
+also bumping a separate `SCENARIO_COUNT` elsewhere in the workflow, a manual-sync step the
+scenario count previously needed (harmless so far, but exactly the kind of thing that goes
+stale silently). `fail-fast: false` on the matrix, so one scenario's real
+leak or flaky connect doesn't cancel the others mid-run. Each matrix job's own `timeout-minutes`
+only needs to cover *one* scenario's duration_minutes plus setup, not every scenario's — a
+smaller, simpler number than the old sequential math, computed the same way (see the workflow's
+own comment on why this can't be a `${{ }}` expression: GitHub Actions has no arithmetic
+operators). `actions/upload-artifact` needs a scenario-suffixed `name:` (`endurance-test-
+results-${{ matrix.scenario }}`) — two matrix jobs uploading the same artifact name in one run
+is a hard error, not a merge — so this trades the old single combined zip for one per scenario;
+fine as long as whoever consumes them expects that. The job-summary step needs no change at
+all: GitHub renders per-job `$GITHUB_STEP_SUMMARY` writes as separate sections on the run's one
+Summary page, in job order, so matrixing already gives the same "every scenario's report is
+readable from the Summary page" property the old single job had, just split by scenario
+instead of concatenated top to bottom in one job's summary.
+
+`if: always()` on both the job-summary step (render the scenario's own `*-report.md` into
 `$GITHUB_STEP_SUMMARY`, so a failed run's shape is visible without downloading anything) and
 the `actions/upload-artifact` step (upload `endurance-results/` even on failure — that's the
 run you need most). `concurrency` global rather than per-ref (`group: endurance-tests`,
 `cancel-in-progress: false`), because every scenario runs against one real shared
-backend/quota and two runs racing it at once makes both runs' trends noisier — the whole
-point of the suite. A `run-name:` that names which SDK the run is for, since every run
-otherwise shows the same generic workflow name in the Actions list.
+backend/quota and two *runs* racing it at once makes both runs' trends noisier — the whole
+point of the suite; this only serializes separate runs, not the scenario matrix inside one
+run, which is the whole point of matrixing it. Each scenario process paces its own session
+creation independently (the same `paced_connect` integration-tests/conftest.py already has,
+comfortably under quota per-process), so N scenarios running at once is a smaller version of
+the bet ci.yml's integration-test jobs already made running every SDK concurrently instead of
+chained — watch the first real dispatch of a newly-matrixed suite for 429s before assuming
+that bet holds here too, same as that change did. A `run-name:` that names which SDK the run
+is for, since every run otherwise shows the same generic workflow name in the Actions list.
 
 **Run the suite under gdb from day one — a native crash in a managed-language suite is
 undebuggable otherwise.** The intermittent segfault this suite hunts dies on a Rust/libwebrtc
