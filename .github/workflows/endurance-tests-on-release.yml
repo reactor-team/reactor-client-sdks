@@ -1,0 +1,138 @@
+# Runs the matching SDK's endurance suite whenever that SDK actually ships a
+# release, for a duration set by the RELEASE_ENDURANCE_DURATION_MINUTES repo
+# variable (120 minutes if unset — see the `env:` block below). Not on every
+# push to a release-*.yml workflow,
+# which also runs (and completes "successfully") for a pull-request build or
+# a dry-run workflow_dispatch that publishes nothing. `workflow_run` only
+# tells us the named workflow finished; it carries no output from the run it
+# watched, so this checks the specific completed run's own "release" job
+# (each release-*.yml's job that actually calls `gh release create`/
+# `gh release edit --draft=false`) via the API instead of trusting the
+# top-level conclusion alone.
+#
+# One job per release workflow, each gated on `github.event.workflow_run.name`
+# rather than a single combined job, mirroring endurance-tests.yml's own
+# one-job-per-SDK shape — adding a fourth SDK here later is "add a job", not
+# a restructure of this file.
+name: Endurance tests after release
+
+on:
+  workflow_run:
+    workflows:
+      - "Release Python SDK"
+      - "Release C++ SDK"
+      - "Release Swift SDK"
+    types: [completed]
+    # Restricts to the branch the release actually happened on. A
+    # pull_request build of a release-*.yml workflow runs against the PR's
+    # own branch, not main, so this alone already excludes those — the
+    # per-job "did it release" check below is what excludes a same-branch
+    # dry run (workflow_dispatch with dry_run=true).
+    branches: [main]
+
+# How long each scenario loops for once dispatched below — every SDK, every
+# release, the same duration. Not an `inputs:` here: workflow_run carries no
+# inputs of its own to expose one through. Comes from a repo variable
+# (Settings -> Secrets and variables -> Actions -> Variables) rather than a
+# literal, so it can be tuned without editing this file — same pattern
+# release-python.yml's PUBLISH_TO_PYPI and release-cpp.yml's
+# PUBLISH_CPP_RELEASE already use. `||` is GitHub Actions' logical-or
+# operator (real arithmetic isn't part of expression syntax, but this is),
+# so an unset/empty variable falls back to 120 rather than dispatching with
+# an empty duration_minutes.
+env:
+  RELEASE_ENDURANCE_DURATION_MINUTES: ${{ vars.RELEASE_ENDURANCE_DURATION_MINUTES || '120' }}
+
+jobs:
+  python:
+    name: Dispatch Python SDK endurance tests
+    if: >-
+      github.event.workflow_run.name == 'Release Python SDK' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Check whether this run actually published a release
+        id: released
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs" --paginate \
+            --jq '[.jobs[] | select(.name == "Publish GitHub release")] | last | .conclusion // "missing"')
+          echo "release job conclusion: $conclusion"
+          echo "released=$([ "$conclusion" = "success" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch the Python endurance suite (2h)
+        if: steps.released.outputs.released == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run endurance-tests.yml --ref main \
+            -f sdk=python \
+            -f duration_minutes="$RELEASE_ENDURANCE_DURATION_MINUTES"
+
+  cpp:
+    name: Dispatch C++ SDK endurance tests
+    if: >-
+      github.event.workflow_run.name == 'Release C++ SDK' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Check whether this run actually published a release
+        id: released
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs" --paginate \
+            --jq '[.jobs[] | select(.name == "Release")] | last | .conclusion // "missing"')
+          echo "release job conclusion: $conclusion"
+          echo "released=$([ "$conclusion" = "success" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch the C++ endurance suite (2h)
+        if: steps.released.outputs.released == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run endurance-tests.yml --ref main \
+            -f sdk=cpp \
+            -f duration_minutes="$RELEASE_ENDURANCE_DURATION_MINUTES"
+
+  swift:
+    name: Dispatch Swift SDK endurance tests
+    if: >-
+      github.event.workflow_run.name == 'Release Swift SDK' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Check whether this run actually published a release
+        id: released
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs" --paginate \
+            --jq '[.jobs[] | select(.name == "Publish the GitHub release")] | last | .conclusion // "missing"')
+          echo "release job conclusion: $conclusion"
+          echo "released=$([ "$conclusion" = "success" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch the Swift endurance suite (2h)
+        if: steps.released.outputs.released == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run endurance-tests.yml --ref main \
+            -f sdk=swift \
+            -f duration_minutes="$RELEASE_ENDURANCE_DURATION_MINUTES"
