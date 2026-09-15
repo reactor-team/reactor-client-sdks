@@ -421,7 +421,7 @@ jobs:
       - name: Integration tests (real FFI client, real model)
         env:
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
-        run: mise run test:python:integration-tests
+        run: scripts/retry.sh mise run test:python:integration-tests
 
   # ── 2. GitHub release ───────────────────────────────────────────────────────
   release:

@@ -214,7 +214,7 @@ jobs:
           # A dedicated secret, not the general REACTOR_API_KEY examples use —
           # this key exists only to run this suite.
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
-        run: mise run test:js:integration-tests
+        run: scripts/retry.sh mise run test:js:integration-tests
 
   # ── 2. GitHub release ───────────────────────────────────────────────────────
   release:
