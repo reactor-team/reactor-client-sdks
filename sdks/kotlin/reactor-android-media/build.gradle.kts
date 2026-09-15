@@ -6,6 +6,7 @@ plugins {
 kotlin { jvmToolchain(17) }
 
 android {
+    publishing { singleVariant("release") { withSourcesJar() } }
     namespace = "inc.reactor.sdk.android.media"
     compileSdk = 35
     buildToolsVersion = "35.0.0"
