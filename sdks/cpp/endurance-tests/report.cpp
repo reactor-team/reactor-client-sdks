@@ -9,6 +9,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <ios>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -527,16 +528,25 @@ ReportPaths write_reports(RunResult& result, const std::string& out_dir) {
   paths.markdown = out_dir + "/" + result.test_name + "-report.md";
   paths.text = out_dir + "/" + result.test_name + "-summary.txt";
 
+  // ofstream never throws on its own — a failed open, a disk-full write, or
+  // any other stream error just sets failbit/badbit and finish_run()'s own
+  // catch around write_reports() (see below) would never see it, silently
+  // leaving a missing or truncated report where it thinks one was written.
+  // Enabling exceptions turns any of those into the same std::ios_base::
+  // failure path finish_run() already reports through.
   {
     std::ofstream f(paths.json);
+    f.exceptions(std::ios::failbit | std::ios::badbit);
     f << run_result_to_json(result).dump(2);
   }
   {
     std::ofstream f(paths.markdown);
+    f.exceptions(std::ios::failbit | std::ios::badbit);
     f << render_markdown(result);
   }
   {
     std::ofstream f(paths.text);
+    f.exceptions(std::ios::failbit | std::ios::badbit);
     f << render_text(result);
   }
   return paths;
