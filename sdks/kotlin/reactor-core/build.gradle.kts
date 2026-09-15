@@ -61,6 +61,16 @@ val testRealNative by tasks.registering(Test::class) {
     systemProperty("reactor.jni.real.directory", rootProject.file("../../target/kotlin-jni/host").absolutePath)
 }
 
+val testLiveIntegration by tasks.registering(Test::class) {
+    description = "Run the production Kotlin SDK gate against the configured model"
+    dependsOn(tasks.testClasses)
+    testClassesDirs = tasks.test.get().testClassesDirs
+    classpath = tasks.test.get().classpath
+    filter { includeTestsMatching("inc.reactor.sdk.LiveIntegrationTest") }
+    jvmArgs("-Xcheck:jni")
+    systemProperty("reactor.native.disableExtraction", "true")
+}
+
 val buildJniSanitizer by tasks.registering(Exec::class) {
     dependsOn(tasks.compileTestKotlin)
     environment("JNI_TEST_OUTPUT", "jni-asan")
