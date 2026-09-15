@@ -43,6 +43,15 @@ concurrency:
   # make both runs' RSS/CPU/timing trends noisier — worse for a suite whose
   # whole point is reading a trend. workflow_dispatch is manual and
   # infrequent, so serializing globally costs effectively nothing.
+  #
+  # This only serializes separate *runs*, not the cpp job's own scenario
+  # matrix inside one run — those already run concurrently against each
+  # other. Each scenario paces its own session creation independently
+  # (fixtures.cpp's paced_connect), the same self-pacing that lets ci.yml
+  # run every SDK's integration suite concurrently instead of chained (see
+  # that change's own commit message) — a handful of scenario jobs doing the
+  # same is a smaller version of the same bet. Watch the first real dispatch
+  # for 429s before trusting this blindly.
   group: endurance-tests
   cancel-in-progress: false
 
@@ -67,22 +76,26 @@ jobs:
   # `needs.<job>.outputs.*` expression, never one of its own steps' outputs
   # (those don't exist yet when the job's own timeout is evaluated).
   setup:
-    name: Compute job timeout
+    name: Compute job timeouts and cpp scenario matrix
     runs-on: ubuntu-latest
     outputs:
       timeout_minutes: ${{ steps.compute.outputs.timeout_minutes }}
+      cpp_timeout_minutes: ${{ steps.compute-cpp.outputs.timeout_minutes }}
+      cpp_scenarios: ${{ steps.cpp-scenarios.outputs.scenarios }}
     steps:
+      # Needed by "Discover cpp endurance scenarios" below, which reads
+      # sdks/cpp/endurance-tests/ off the checkout.
+      - uses: actions/checkout@v7
       - name: Compute timeout-minutes from duration_minutes
         id: compute
         env:
           DURATION_MINUTES: ${{ inputs.duration_minutes }}
-          # Number of scenarios each SDK's endurance-tests suite runs
-          # sequentially in one process (Python: endurance-tests/tests/*.py
-          # under one pytest invocation; C++: one TEST_CASE per scenario file
-          # under one Catch2 binary) — both are at 6 today. This one shared
-          # value has to cover whichever job actually runs, so bump it
-          # alongside adding or removing a scenario file in *either* SDK, not
-          # just the job whose comment you're looking at.
+          # Number of scenarios the Python endurance-tests suite runs
+          # sequentially in one pytest invocation (endurance-tests/tests/*.py)
+          # — bump this alongside adding or removing a scenario file there.
+          # The cpp job below is matrixed one scenario per job instead (see
+          # "Compute cpp job timeout-minutes" and "Discover cpp endurance
+          # scenarios" below), so it needs no equivalent count here.
           SCENARIO_COUNT: 6
         # `10#` forces base-10 parsing: bash's arithmetic context otherwise
         # treats a leading-zero numeral (e.g. "08") as octal and errors out.
@@ -99,6 +112,50 @@ jobs:
             exit 1
           fi
           echo "timeout_minutes=$timeout_minutes" >> "$GITHUB_OUTPUT"
+      # Unlike the python job above, cpp is matrixed one scenario per job
+      # (see the `cpp` job below) — each matrix job runs exactly one scenario
+      # for duration_minutes, not every scenario back to back, so this needs
+      # no scenario-count multiplier, only a buffer for the job's own setup
+      # (toolchain install, clang, build).
+      - name: Compute cpp job timeout-minutes from duration_minutes
+        id: compute-cpp
+        env:
+          DURATION_MINUTES: ${{ inputs.duration_minutes }}
+        run: |
+          timeout_minutes=$((10#$DURATION_MINUTES + 30))
+          max_timeout_minutes=360
+          if (( timeout_minutes > max_timeout_minutes )); then
+            max_duration_minutes=$((max_timeout_minutes - 30))
+            echo "::error::duration_minutes=$DURATION_MINUTES needs a ${timeout_minutes}-minute job timeout, but GitHub Actions caps job timeouts at ${max_timeout_minutes} minutes. Use duration_minutes <= ${max_duration_minutes}."
+            exit 1
+          fi
+          echo "timeout_minutes=$timeout_minutes" >> "$GITHUB_OUTPUT"
+      # One matrix entry per endurance-tests/test_*.cpp file, discovered here
+      # rather than hand-listed in the `cpp` job below — a scenario file
+      # added later shows up in the matrix for free, the same low-ceremony
+      # bar the top-of-file comment already sets for adding an SDK. Every
+      # scenario still links into the one reactor_sdk_endurance_tests binary
+      # (see CMakeLists.txt) rather than a binary per scenario, so the `cpp`
+      # job's run step selects one via a Catch2 tag filter instead — each
+      # scenario file's TEST_CASE carries a matching tag (e.g.
+      # test_pause_resume_churn.cpp -> "[pause_resume_churn]"). `jq -R -s -c
+      # 'split("\n") | map(select(length > 0))'` turns find's newline-
+      # separated stdout into the compact JSON array `strategy.matrix` needs
+      # (fromJSON below) — `-s` (slurp) is what lets `split("\n")` see the
+      # whole output as one string instead of one line at a time, and the
+      # `select` drops the trailing empty element that split leaves after the
+      # last newline.
+      - name: Discover cpp endurance scenarios
+        id: cpp-scenarios
+        run: |
+          scenarios=$(
+            find sdks/cpp/endurance-tests -maxdepth 1 -name 'test_*.cpp' -printf '%f\n' \
+              | sed -e 's/^test_//' -e 's/\.cpp$//' \
+              | sort \
+              | jq -R -s -c 'split("\n") | map(select(length > 0))'
+          )
+          echo "Discovered cpp scenarios: $scenarios"
+          echo "scenarios=$scenarios" >> "$GITHUB_OUTPUT"
 
   python:
     name: Python SDK endurance tests
@@ -326,14 +383,24 @@ jobs:
           if-no-files-found: warn
 
   cpp:
-    name: C++ SDK endurance tests
+    name: C++ SDK endurance tests (${{ matrix.scenario }})
     needs: setup
     if: inputs.sdk == 'cpp'
     runs-on: ubuntu-latest
-    # The six scenarios (endurance-tests/*.cpp, one TEST_CASE each) run
-    # sequentially in the one Catch2 binary, same reasoning as the `python`
-    # job's identical timeout-minutes — computed in the `setup` job above.
-    timeout-minutes: ${{ fromJSON(needs.setup.outputs.timeout_minutes) }}
+    strategy:
+      # One runner per scenario, all running at once — see the concurrency
+      # block's own comment for why that's fine against the shared backend.
+      # fail-fast: false so one scenario failing (a real leak, a flaky
+      # connect) doesn't cancel the others mid-run; each scenario's result
+      # and report stand on their own.
+      fail-fast: false
+      matrix:
+        scenario: ${{ fromJSON(needs.setup.outputs.cpp_scenarios) }}
+    # Each matrix job now runs exactly one scenario for duration_minutes, so
+    # the job needs a bit over 1x that plus setup (toolchain install, clang,
+    # build) — computed in the `setup` job above (its own comment has why
+    # this differs from the `python` job's timeout).
+    timeout-minutes: ${{ fromJSON(needs.setup.outputs.cpp_timeout_minutes) }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -396,7 +463,7 @@ jobs:
           # exactly that (run 34888100192). Set it explicitly.
           set -eo pipefail
           export ENDURANCE_DURATION_SECONDS=$((10#$DURATION_MINUTES * 60))
-          echo "Running for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s) per scenario"
+          echo "Running ${{ matrix.scenario }} for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s)"
           sudo apt-get update -qq
           sudo apt-get install -y -qq gdb
           printf '%s\n' \
@@ -420,8 +487,16 @@ jobs:
           # into the results artifact if the suite died on a signal. gdb's
           # exit code survives tee thanks to the explicit pipefail at the top
           # of this run block — see there for why it cannot be relied on.
+          #
+          # "[${{ matrix.scenario }}]" is a Catch2 tag filter, not a test
+          # name: every scenario links into this one binary (CMakeLists.txt),
+          # and each scenario file's TEST_CASE carries a tag matching its
+          # discovered scenario id (see the `setup` job's "Discover cpp
+          # endurance scenarios" step) — this is what makes one matrix job
+          # run only its own scenario instead of all six.
           gdb -batch -x /tmp/cpp-endurance-under-gdb.cmds \
             --args sdks/cpp/build-endurance-tests/endurance-tests/reactor_sdk_endurance_tests \
+            "[${{ matrix.scenario }}]" \
             2>&1 | tee /tmp/cpp-endurance-gdb.log
 
       # Same recipe as the python job's step of the same name — see its
@@ -433,6 +508,8 @@ jobs:
       # failed before any scenario wrote anything at all.
       - name: Save native crash diagnostics to the results artifact
         if: failure()
+        env:
+          ENDURANCE_SCENARIO: ${{ matrix.scenario }}
         run: |
           python3 - <<'PYEOF'
           import datetime
@@ -482,10 +559,12 @@ jobs:
                       f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}"
                       f"/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
                   ),
+                  "scenario": os.environ.get("ENDURANCE_SCENARIO", ""),
                   "reproduce": (
                       "gh workflow run endurance-tests.yml "
                       f"--repo {repo or '<org>/<repo>'} --ref <branch> "
                       "-f sdk=cpp -f duration_minutes=5"
+                      " # re-runs every scenario in parallel, this one included"
                   ),
                   "gdb_output_from_crash": text[m.start() :][:500_000],
               }
@@ -516,6 +595,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: endurance-test-results-cpp
+          # Scenario-suffixed: actions/upload-artifact rejects two uploads
+          # with the same name in one run, and every matrix job would
+          # otherwise collide on "endurance-test-results-cpp". One zip per
+          # scenario instead of one combined zip — each still self-contained
+          # (JSON/Markdown/text report, plus native-crash-diagnostics.json
+          # when relevant).
+          name: endurance-test-results-cpp-${{ matrix.scenario }}
           path: sdks/cpp/endurance-results/
           if-no-files-found: warn
