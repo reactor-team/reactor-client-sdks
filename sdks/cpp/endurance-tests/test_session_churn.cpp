@@ -55,11 +55,11 @@ TEST_CASE("session churn has no sustained resource growth") {
   // block below like any other failure in this run, or finish_and_check()
   // below never runs and this scenario silently writes no report at all —
   // caught by actually running this suite with no API key configured.
-  std::optional<integration::ConnectedReactor> reactor_holder;
+  std::optional<integration::ConnectedReactor> client_holder;
 
   try {
-    reactor_holder.emplace();
-    auto& reactor = *reactor_holder;
+    client_holder.emplace();
+    auto& reactor = *client_holder;
     while (!sampler.deadline_reached()) {
       // Registered and torn down every iteration — unlike
       // test_lifecycle_churn.cpp, which registers once per client and lets

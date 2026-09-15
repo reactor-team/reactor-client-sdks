@@ -57,13 +57,13 @@ TEST_CASE("steady audio publish has no sustained resource growth") {
   // here — same reasoning as test_video_publish_steady.cpp's identical
   // comment: a connect failure has to reach the catch block below or
   // finish_and_check() never runs.
-  std::optional<integration::ConnectedReactor> reactor_holder;
+  std::optional<integration::ConnectedReactor> client_holder;
   std::optional<reactor::Track> track;
   double phase = 0.0;
 
   try {
-    reactor_holder.emplace();
-    auto& reactor = *reactor_holder;
+    client_holder.emplace();
+    auto& reactor = *client_holder;
     track = reactor->track(TRACK_NAME);
     track->publish().get();
 

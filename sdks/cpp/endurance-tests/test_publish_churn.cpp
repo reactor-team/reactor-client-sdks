@@ -52,7 +52,7 @@ TEST_CASE("publish/unpublish churn has no sustained resource growth") {
   // failure in this run, or finish_and_check() never runs and this scenario
   // silently writes no report at all — caught by actually running this
   // suite with no API key configured.
-  std::optional<integration::ConnectedReactor> reactor_holder;
+  std::optional<integration::ConnectedReactor> client_holder;
 
   // Set on the first in-loop invariant violation below — breaks the loop
   // (further iterations' trend data would be unreliable against a corrupted
@@ -63,8 +63,8 @@ TEST_CASE("publish/unpublish churn has no sustained resource growth") {
   bool invariant_violated = false;
 
   try {
-    reactor_holder.emplace();
-    auto& reactor = *reactor_holder;
+    client_holder.emplace();
+    auto& reactor = *client_holder;
     while (!sampler.deadline_reached()) {
       auto track = reactor->track(TRACK_NAME);
       track.publish().get();

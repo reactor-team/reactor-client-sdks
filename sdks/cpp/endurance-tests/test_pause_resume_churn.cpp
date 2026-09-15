@@ -53,15 +53,15 @@ TEST_CASE("pause/resume churn has no sustained resource growth") {
   // any other failure in this run, or finish_and_check() never runs and
   // this scenario silently writes no report at all — caught by actually
   // running this suite with no API key configured.
-  std::optional<integration::ConnectedReactor> reactor_holder;
+  std::optional<integration::ConnectedReactor> client_holder;
   std::optional<reactor::Track> track;
 
   // Same reasoning as test_publish_churn.cpp's own flag.
   bool invariant_violated = false;
 
   try {
-    reactor_holder.emplace();
-    auto& reactor = *reactor_holder;
+    client_holder.emplace();
+    auto& reactor = *client_holder;
     // Resolved once, up front: kind()/direction() are local, synchronous
     // lookups against the session's already-declared capabilities (see
     // Reactor::track()), so this is safe outside the loop rather than on

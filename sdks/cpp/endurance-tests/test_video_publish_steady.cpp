@@ -61,14 +61,14 @@ TEST_CASE("steady video publish has no sustained resource growth") {
   // failure in this run, or finish_and_check() never runs and this
   // scenario silently writes no report at all — caught by actually running
   // this suite with no API key configured.
-  std::optional<integration::ConnectedReactor> reactor_holder;
+  std::optional<integration::ConnectedReactor> client_holder;
   // Empty until publish() below succeeds — guards the unpublish() at the end
   // against a publish that never got that far.
   std::optional<reactor::Track> track;
 
   try {
-    reactor_holder.emplace();
-    auto& reactor = *reactor_holder;
+    client_holder.emplace();
+    auto& reactor = *client_holder;
     track = reactor->track(TRACK_NAME);
     track->publish().get();
 
