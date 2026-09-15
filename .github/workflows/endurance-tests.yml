@@ -170,6 +170,20 @@ jobs:
       # it runs here, so it's a fast no-op rather than a second real build.
       - name: Build reactor-ffi (release)
         run: cargo build -p reactor-ffi --release
+      # The intermittent native SIGSEGV this suite has hit only ever showed up
+      # on the runner image's frozen system CPython (3.12.3) — root-caused to
+      # a tracemalloc/ctypes-callback race on native threads, upstream
+      # CPython issue gh-128679, fixed in 3.12.9. Installing uv's own managed
+      # 3.12 here (not the runner's `/usr/bin/python3`) means `uv run --group
+      # dev --locked` below builds .venv on an interpreter that already has
+      # the fix, instead of the one known to crash. Deliberately "latest
+      # 3.12", not a pinned patch version, so this keeps picking up upstream
+      # fixes; 3.12.9 is only the floor this needs to clear.
+      - name: Install managed CPython 3.12 via uv
+        run: |
+          uv python install 3.12
+          echo "UV_PYTHON=3.12" >> "$GITHUB_ENV"
+          echo "UV_PYTHON_PREFERENCE=only-managed" >> "$GITHUB_ENV"
       - name: Endurance tests (real FFI client, real model)
         env:
           # Same dedicated secret ci.yml's python-integration-tests (and every
