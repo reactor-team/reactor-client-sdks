@@ -31,6 +31,24 @@ internal object NativeClient {
         receiver: Any,
     )
 
+    external fun recording(
+        handle: Long,
+        fullSession: Boolean,
+        durationSeconds: Double,
+        receiver: Any,
+    )
+
+    external fun download(
+        handle: Long,
+        playlistUrl: ByteArray,
+        token: ByteArray?,
+        output: ByteArray,
+        predictedReadyAtMillis: Double,
+        readyTimeoutSeconds: Double,
+        local: Boolean,
+        receiver: Any,
+    )
+
     external fun uploadFile(
         handle: Long,
         path: ByteArray,
