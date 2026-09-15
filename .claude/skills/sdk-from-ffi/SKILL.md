@@ -503,7 +503,7 @@ Several scenario shapes, all needed, because each finds leaks the others cannot:
 **Extensible by design, not by accident**: factor the two things every scenario repeats —
 the RSS/CPU/thread/fd/handle-count checks at the end of the loop, and the `finally`-block
 report-writing/raise-on-`FAIL` sequence — into two shared calls (Python:
-`trends.standard_resource_metrics(samples, live_clients_baseline_zero=..., fds_exact=...)` and
+`trends.standard_resource_metrics(samples, live_clients_baseline_zero=...)` and
 `report.finish_and_check(...)`) that every scenario file calls instead of repeating. A sixth
 scenario file should be "write the loop body that does the one thing you want to isolate, call
 these two," not another ~150-line copy with a different middle. A scenario's *own* invariant
@@ -518,9 +518,27 @@ and OS-reported busy-percent, which can read over 100% with multiple native thre
 count, and fd/handle count. Add whatever your language exposes for live-object or
 orphaned-callback counts (Python's `_LIVE_CLIENTS`/`_ORPHANED_CALLBACKS`) if it has an
 equivalent; note in your README if it does not, rather than silently having a smaller suite.
-Fds were exact in Python but took an off-by-one step around a single cycle boundary in a
-native (non-GC) binding — if your language sees the same, use the trend-based check
-(`assert_no_sustained_growth`) instead of an exact-count one, the way threads already do.
+
+**`num_fds` always gets the trend-based check (`assert_no_sustained_growth`, with
+`use_median=true`, exactly like `num_threads`), never an exact `assert_never_grows`/
+`assertNeverGrows` — one rule, no per-scenario or per-language exception.** This used to be
+a per-scenario opt-in (Python's `fds_exact`, Swift's `fdsExact`) on the theory that some
+scenario's fd teardown was provably synchronous with its own cycle boundary, validated by
+that binding's own real runs. It wasn't a stable theory: Python's lifecycle-churn validated
+`fds_exact=True` across its own runs, but real CI runs on C++ and then Swift's *own*
+lifecycle-churn — the identical scenario, same shared native FFI/WebRTC layer — each
+independently caught `num_fds` take a one-cycle step (e.g. 13 -> 15) that settled right back
+down before the run ended, not a leak, just native socket-teardown timing landing a sample
+mid-flight. Two out of three bindings falsified the "provably synchronous" premise the third
+one's own validation seemed to support — that is the whole reason this is a flat, no-exceptions
+rule now rather than "validate it for your own binding first": a check that a leak can pass on
+one binding and fail falsely on another because of that binding's own real-run history isn't
+one worth keeping a language-specific escape hatch for. `assert_no_sustained_growth`'s
+median-backed trend already tolerates that same one-cycle blip (see `num_threads`'s identical
+reasoning below) without giving up on catching a real leak — there is no scenario where the
+exact check would catch something the trend check misses. Do not add the parameter back for a
+new scenario or a new binding, however tempting a "well *this* teardown really is synchronous"
+argument looks — it has already looked that way twice and been wrong both times.
 
 **A leak already present on the very first cycle needs `assert_always_zero`, not a
 baseline-relative "never grows".** A trend check compares against the baseline it first
