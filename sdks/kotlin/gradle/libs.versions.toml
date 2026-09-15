@@ -8,6 +8,10 @@ androidx-test-runner = "1.6.2"
 androidx-test-junit = "1.2.1"
 
 [libraries]
+androidx-test-core = { module = "androidx.test:core", version = "1.6.1" }
+lifecycle-common = { module = "androidx.lifecycle:lifecycle-common", version = "2.8.7" }
+lifecycle-runtime = { module = "androidx.lifecycle:lifecycle-runtime", version = "2.8.7" }
+coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version = "1.10.2" }
 coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version = "1.10.2" }
 serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version = "1.9.0" }
 junit = { module = "junit:junit", version.ref = "junit" }

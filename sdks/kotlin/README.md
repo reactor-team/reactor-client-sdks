@@ -104,3 +104,5 @@ cancellation and cache limits.
 See [clips and recordings](docs/0010-recordings.md) for downloads, progress and Android output ownership.
 
 Optional [desktop media helpers](docs/0011-desktop-media.md) live in `reactor-desktop`, separate from core and Android.
+
+Optional [Android media/lifecycle adapters](docs/0012-android-media.md) live in `reactor-android-media`, with application-owned permissions and foreground cleanup.
