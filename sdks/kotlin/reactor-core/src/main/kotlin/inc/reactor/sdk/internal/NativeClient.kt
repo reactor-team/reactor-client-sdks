@@ -22,6 +22,38 @@ internal object NativeClient {
         receiver: Any,
     )
 
+    external fun unpublish(
+        handle: Long,
+        name: ByteArray,
+    ): ByteArray?
+
+    external fun bitrate(
+        handle: Long,
+        name: ByteArray?,
+        min: Int,
+        start: Int,
+        max: Int,
+        receiver: Any,
+    )
+
+    external fun pushVideo(
+        handle: Long,
+        name: ByteArray,
+        pixels: ByteArray,
+        width: Int,
+        height: Int,
+        metadata: ByteArray?,
+        captureTime: Long,
+    )
+
+    external fun pushAudio(
+        handle: Long,
+        name: ByteArray,
+        samples: ShortArray,
+        rate: Int,
+        channels: Int,
+    )
+
     external fun tracks(handle: Long): ByteArray
 
     external fun paused(handle: Long): ByteArray
