@@ -155,11 +155,15 @@ extension Reactor {
         let name = frame.trackName
         let handlers = state.withLock { Array(($0.videoHandlers[name] ?? [:]).values) }
         guard !handlers.isEmpty else {
-            // A frame for a track nobody is listening to — or one the transceiver
-            // could not match to a declaration, which arrives with an empty name.
-            // Dropped, and said out loud, because silence here is the failure
-            // mode this SDK exists to avoid.
-            Log.media.debug("dropping a frame for unhandled track '\(name)'")
+            // A frame for a track nobody is listening to is the ordinary case —
+            // every scenario/handler that only cares about some tracks produces
+            // this on every other one — and stays silent, matching the Python
+            // binding's `_fire_on_track`. Only an empty name, the transceiver
+            // failing to match any declaration, is the exceptional case worth
+            // saying out loud.
+            if name.isEmpty {
+                Log.media.debug("a frame arrived with no track name; dropping it")
+            }
             return
         }
         for handler in handlers { handler(frame) }
@@ -167,9 +171,12 @@ extension Reactor {
 
     /// Hand an audio frame to this track's handlers, on the library's thread.
     func deliver(audio frame: AudioFrame) {
-        let handlers = state.withLock { Array(($0.audioHandlers[frame.trackName] ?? [:]).values) }
+        let name = frame.trackName
+        let handlers = state.withLock { Array(($0.audioHandlers[name] ?? [:]).values) }
         guard !handlers.isEmpty else {
-            Log.media.debug("dropping audio for unhandled track '\(frame.trackName)'")
+            if name.isEmpty {
+                Log.media.debug("an audio frame arrived with no track name; dropping it")
+            }
             return
         }
         for handler in handlers { handler(frame) }

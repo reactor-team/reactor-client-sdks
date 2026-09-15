@@ -1,6 +1,7 @@
 import ExampleSupport
 import Foundation
 import Reactor
+import TestSupport
 import Testing
 
 /// Scenario 01, scripted: connect, send the model's first command, read the

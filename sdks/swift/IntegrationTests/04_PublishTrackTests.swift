@@ -1,6 +1,7 @@
 import ExampleSupport
 import Foundation
 import Reactor
+import TestSupport
 import Testing
 
 /// Scenario 04, scripted: publish a track and push frames into it. Mirrors

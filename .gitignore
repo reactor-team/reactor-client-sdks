@@ -21,10 +21,15 @@ node_modules/
 /sdks/js/integration-tests/test-results/
 /sdks/js/integration-tests/playwright-report/
 
-# Python SDK endurance-tests: JSON/Markdown/text reports written by each
-# scenario's own run (see sdks/python/endurance-tests/report.py) — local/CI
-# output, not something to commit.
+# Python/C++/Swift SDK endurance-tests: JSON/Markdown/text reports (and, on
+# a failure, the Endurance tests workflow's crash-diagnostics JSON) written
+# by each scenario's own run — see sdks/python/endurance-tests/report.py,
+# sdks/cpp/endurance-tests/report.hpp and
+# sdks/swift/EnduranceReporting/Report.swift. Local/CI output, never
+# something to commit.
 /sdks/python/endurance-results/
+/sdks/cpp/endurance-results/
+/sdks/swift/endurance-results/
 
 # C++ SDK build tree (cmake -B sdks/cpp/build)
 /sdks/cpp/build/
@@ -34,11 +39,6 @@ node_modules/
 /sdks/cpp/build-integration-tests/
 # Same reasoning, for the endurance suite (mise run test:cpp:endurance-tests).
 /sdks/cpp/build-endurance-tests/
-# Endurance suites' results dirs — the Endurance tests workflow's crash
-# diagnostics JSON (and per-scenario reports, where a suite writes them) land
-# here; CI artifacts, never committed.
-/sdks/python/endurance-results/
-/sdks/cpp/endurance-results/
 # Swift SDK: SwiftPM's build tree and per-user state. The manifest is at the
 # repository root, so these land there too.
 /.build/

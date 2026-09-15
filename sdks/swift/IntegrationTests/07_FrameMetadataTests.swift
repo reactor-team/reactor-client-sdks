@@ -1,6 +1,7 @@
 import ExampleSupport
 import Foundation
 import Reactor
+import TestSupport
 import Testing
 
 /// Scenario 07, scripted: read the per-frame trailer — frame id, sender

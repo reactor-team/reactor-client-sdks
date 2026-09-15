@@ -225,13 +225,25 @@ let package = Package(
             dependencies: ["Reactor", "CReactorFFI"],
             path: "sdks/swift/Tests/ReactorTests"
         ),
+        // Connection setup, pacing, and media fixtures shared by
+        // `IntegrationTests` and `EnduranceTests` below — a plain library
+        // target, not a test target, specifically so both can depend on it:
+        // see TestSupport/Fixtures.swift's own header comment for why a
+        // *test*-target-on-*test*-target dependency (which `swift build`/
+        // `swift test` do support) briefly broke `xcodebuild`'s package
+        // resolution for the iOS Simulator job instead.
+        .target(
+            name: "TestSupport",
+            dependencies: ["Reactor"],
+            path: "sdks/swift/TestSupport"
+        ),
         // Real FFI, real WebRTC, against a real model in production — not part
         // of the fast, hermetic FakeLibrary-based suites above. `swift.sh test`
         // skips this target explicitly; `swift.sh integration-tests` filters in
-        // only this one. See IntegrationTests/Fixtures.swift.
+        // only this one. See TestSupport/Fixtures.swift.
         .testTarget(
             name: "IntegrationTests",
-            dependencies: ["Reactor", "ExampleSupport"],
+            dependencies: ["Reactor", "ExampleSupport", "TestSupport"],
             path: "sdks/swift/IntegrationTests",
             // -ObjC, not declared on the Reactor target itself: a static
             // library carries none of its build's flags (see that target's own
@@ -251,6 +263,43 @@ let package = Package(
             // test` driver (unlike xcodebuild) rejects an unrecognised raw
             // token in linkerSettings — found by running this exact target
             // through `swift test` after xcodebuild had already accepted it.
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-ObjC"])]
+        ),
+        // The endurance/leak suite's reporting layer: duration handling,
+        // resource sampling, the trend/count assertions, and the JSON/
+        // Markdown/text report rendering — see
+        // sdks/swift/EnduranceReporting/Trends.swift and Report.swift's own
+        // doc comments. A plain library target with **no** dependency on
+        // `Reactor`/`CReactorFFI`, unlike every target below it: mirrors
+        // `sdks/python/endurance-tests/trends.py`+`report.py` being
+        // importable without a built `reactor_sdk`, so this layer's own
+        // unit tests (`EnduranceReportingTests` below) need no live service
+        // or native library either.
+        .target(
+            name: "EnduranceReporting",
+            path: "sdks/swift/EnduranceReporting"
+        ),
+        .testTarget(
+            name: "EnduranceReportingTests",
+            dependencies: ["EnduranceReporting"],
+            path: "sdks/swift/EnduranceReportingTests"
+        ),
+        // The Swift SDK's endurance/leak suite. Real FFI, real WebRTC, against
+        // reactor/echo in production, watching resource usage for growth
+        // across a long-lived session and repeated connect/disconnect
+        // cycles — not part of the fast, hermetic suites above, and not
+        // filtered in by `swift.sh integration-tests` either. Depends on
+        // `TestSupport` (see that target's own comment above) for
+        // `withConnectedReactor`, `pacedConnect`, `MediaFixtures` rather
+        // than re-deriving connection setup, pacing, and media fixtures —
+        // the same reasoning `sdks/python/endurance-tests/helpers.py` gives
+        // for importing straight from `../integration-tests/conftest.py` —
+        // and on `EnduranceReporting` for everything that doesn't need a
+        // live `Reactor` (see that target's own comment above).
+        .testTarget(
+            name: "EnduranceTests",
+            dependencies: ["Reactor", "ExampleSupport", "TestSupport", "EnduranceReporting"],
+            path: "sdks/swift/EnduranceTests",
             linkerSettings: [.unsafeFlags(["-Xlinker", "-ObjC"])]
         ),
     ]
