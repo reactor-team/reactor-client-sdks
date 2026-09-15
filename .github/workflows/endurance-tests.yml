@@ -6,9 +6,9 @@
 # graduates to a schedule trigger, a deliberate follow-up not done here.
 #
 # One job per SDK, each gated on the `sdk` input rather than a single
-# combined job: only Python has a suite today (sdks/python/endurance-tests/),
-# and adding JS/C++/Swift later is meant to be "add a choice + a job", not a
-# restructure of this file.
+# combined job: python and cpp have suites today (sdks/python/endurance-tests/,
+# sdks/cpp/endurance-tests/), and adding JS/Swift later is meant to be "add a
+# choice + a job", not a restructure of this file.
 name: Endurance tests
 # Overrides the run's display name in the Actions tab/list (otherwise just
 # "Endurance tests" for every run, indistinguishable at a glance) with which
@@ -18,7 +18,7 @@ name: Endurance tests
 # alongside `inputs.sdk`'s own `options:` list above when adding a new SDK
 # (an SDK not yet mapped here falls back to showing its raw option value).
 run-name: >-
-  Endurance tests: ${{ inputs.sdk == 'python' && 'Python' || inputs.sdk }} SDK
+  Endurance tests: ${{ inputs.sdk == 'python' && 'Python' || inputs.sdk == 'cpp' && 'C++' || inputs.sdk }} SDK
 
 on:
   workflow_dispatch:
@@ -28,6 +28,7 @@ on:
         type: choice
         options:
           - python
+          - cpp
         default: python
       duration_minutes:
         description: "How long each scenario loops for, in minutes"
@@ -49,16 +50,22 @@ env:
   MISE_VERSION: "2026.8.8"    # pinned; must be >= mise.toml min_version
   MISE_LOCKED: "1"            # install/run only mise.lock versions; never float
   MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
+  # Deliberately no CARGO_PROFILE_RELEASE_DEBUG here, though it would put
+  # file/line info into a crash's gdb backtrace: an endurance suite's value
+  # is measuring the exact binaries every SDK's other CI ships, and all
+  # SDKs' endurance workflows must produce the same backtrace quality so a
+  # crash JSON from one job is comparable to another's. Debug info belongs
+  # on a hunting branch only — flip it there, not here.
 
 jobs:
-  # A separate job, not an expression on the `python` job's own timeout-minutes:
-  # GitHub Actions expressions have no arithmetic operators (`*`/`+` aren't part
-  # of the expression grammar at all, unlike `needs`/`inputs` context access,
-  # which *is* supported there) — the multiply-by-scenario-count-plus-setup-
-  # buffer math has to happen in a shell step instead, and `timeout-minutes`
-  # can only take a literal or a `needs.<job>.outputs.*` expression, never one
-  # of its own steps' outputs (those don't exist yet when the job's own
-  # timeout is evaluated).
+  # A separate job, not an expression on the `python`/`cpp` jobs' own
+  # timeout-minutes: GitHub Actions expressions have no arithmetic operators
+  # (`*`/`+` aren't part of the expression grammar at all, unlike `needs`/
+  # `inputs` context access, which *is* supported there) — the multiply-by-
+  # scenario-count-plus-setup-buffer math has to happen in a shell step
+  # instead, and `timeout-minutes` can only take a literal or a
+  # `needs.<job>.outputs.*` expression, never one of its own steps' outputs
+  # (those don't exist yet when the job's own timeout is evaluated).
   setup:
     name: Compute job timeout
     runs-on: ubuntu-latest
@@ -69,9 +76,13 @@ jobs:
         id: compute
         env:
           DURATION_MINUTES: ${{ inputs.duration_minutes }}
-          # Number of scenarios in endurance-tests/tests/*.py, run sequentially
-          # by the same `pytest` invocation — bump this alongside adding or
-          # removing a scenario file, not the `python` job's own comment alone.
+          # Number of scenarios each SDK's endurance-tests suite runs
+          # sequentially in one process (Python: endurance-tests/tests/*.py
+          # under one pytest invocation; C++: one TEST_CASE per scenario file
+          # under one Catch2 binary) — both are at 6 today. This one shared
+          # value has to cover whichever job actually runs, so bump it
+          # alongside adding or removing a scenario file in *either* SDK, not
+          # just the job whose comment you're looking at.
           SCENARIO_COUNT: 6
         # `10#` forces base-10 parsing: bash's arithmetic context otherwise
         # treats a leading-zero numeral (e.g. "08") as octal and errors out.
@@ -287,7 +298,10 @@ jobs:
       # report in a `finally` block regardless of pass/fail, so these files
       # exist even when the step above failed (unless the failure happened
       # in fixture setup, before any report could be written — e.g. a
-      # connection error before the first sample).
+      # connection error before the first sample). The C++ `cpp` job below
+      # writes the same shape of report files, via this same repo's
+      # sdks/cpp/endurance-tests/report.cpp — the fallback below still
+      # covers a run that failed before any scenario got that far.
       - name: Publish results to the job summary
         if: always()
         working-directory: sdks/python
@@ -307,6 +321,201 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: endurance-test-results
+          name: endurance-test-results-python
           path: sdks/python/endurance-results/
+          if-no-files-found: warn
+
+  cpp:
+    name: C++ SDK endurance tests
+    needs: setup
+    if: inputs.sdk == 'cpp'
+    runs-on: ubuntu-latest
+    # The six scenarios (endurance-tests/*.cpp, one TEST_CASE each) run
+    # sequentially in the one Catch2 binary, same reasoning as the `python`
+    # job's identical timeout-minutes — computed in the `setup` job above.
+    timeout-minutes: ${{ fromJSON(needs.setup.outputs.timeout_minutes) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Cache CMake FetchContent dependencies (Catch2)
+        uses: actions/cache@v4
+        with:
+          path: sdks/cpp/build-endurance-tests/_deps
+          key: cpp-endurance-deps-${{ hashFiles('sdks/cpp/CMakeLists.txt', 'sdks/cpp/endurance-tests/CMakeLists.txt') }}
+      - name: Install clang for the libwebrtc C++ glue
+        uses: ./.github/actions/setup-libwebrtc-cxx
+      - name: Build libreactor_ffi (the library the SDK links)
+        run: mise run build:ffi
+      # Same two-compiler split as ci.yml's `cpp`/`cpp-integration-tests`
+      # jobs: the conda clang++ just built libreactor_ffi's libwebrtc glue,
+      # but the SDK itself (and this suite) must link against the runner's
+      # own glibc.
+      - name: Use the platform clang for the SDK itself
+        run: |
+          set -euo pipefail
+          if [ ! -x /usr/bin/clang++ ]; then
+            echo "::error::/usr/bin/clang++ is missing on this runner image."
+            exit 1
+          fi
+          echo "CXX=/usr/bin/clang++" >> "$GITHUB_ENV"
+      # The two build lines of `mise run test:cpp:endurance-tests` verbatim
+      # (mise.toml), as their own step. The task itself is deliberately NOT
+      # run below for the same reason the python job materialises .venv and
+      # then starts python directly: the test binary must be gdb's *own*
+      # inferior, and gdb does not follow children its inferior spawns —
+      # `mise run`'s cmake/shim layers would make the binary a grandchild
+      # whose segfault gdb never sees.
+      - name: Build the endurance suite (the mise task's build half)
+        run: |
+          cmake -S sdks/cpp -B sdks/cpp/build-endurance-tests -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DREACTOR_SDK_BUILD_TESTS=OFF -DREACTOR_SDK_BUILD_EXAMPLES=OFF -DREACTOR_SDK_BUILD_ENDURANCE_TESTS=ON -DREACTOR_SDK_BUILD_AUDIO=OFF
+          cmake --build sdks/cpp/build-endurance-tests
+      - name: Endurance tests (real FFI client, real model)
+        env:
+          # Same dedicated secret every other binding's endurance/integration
+          # job uses.
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+          DURATION_MINUTES: ${{ inputs.duration_minutes }}
+        # See the `python` job's identical step for both the `10#` guard and
+        # the full gdb rationale — same command-file recipe, same reasoning,
+        # only the inferior differs. The binary needs no arguments (Catch2
+        # WithMain runs every scenario off argv[0] alone), takes its duration
+        # from ENDURANCE_DURATION_SECONDS and its key from the env above, and
+        # reads only /proc/self — cwd-independent, but run from the repo root
+        # anyway, matching the mise task (which sets no `dir`).
+        run: |
+          # pipefail is NOT a given here: this step renders as
+          # `shell: /usr/bin/bash -e {0}` in this repo (no pipefail), and the
+          # gdb|tee pipeline downstream then reports tee's exit code — a real
+          # SIGSEGV under gdb (139) once showed up as a green run because of
+          # exactly that (run 34888100192). Set it explicitly.
+          set -eo pipefail
+          export ENDURANCE_DURATION_SECONDS=$((10#$DURATION_MINUTES * 60))
+          echo "Running for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s) per scenario"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdb
+          printf '%s\n' \
+            'set pagination off' \
+            'set confirm off' \
+            'set disable-randomization off' \
+            'set print thread-events off' \
+            'set print inferior-events off' \
+            'run' \
+            'if $_isvoid($_exitcode)' \
+            '  thread apply all bt 30' \
+            '  quit 139' \
+            'else' \
+            '  quit $_exitcode' \
+            'end' \
+            'quit 200' \
+            > /tmp/cpp-endurance-under-gdb.cmds
+          # tee, not a silent redirect: the job log keeps Catch2's live
+          # reporting exactly as before, while the copy under /tmp lets the
+          # "Save native crash diagnostics" step below lift the backtrace
+          # into the results artifact if the suite died on a signal. gdb's
+          # exit code survives tee thanks to the explicit pipefail at the top
+          # of this run block — see there for why it cannot be relied on.
+          gdb -batch -x /tmp/cpp-endurance-under-gdb.cmds \
+            --args sdks/cpp/build-endurance-tests/endurance-tests/reactor_sdk_endurance_tests \
+            2>&1 | tee /tmp/cpp-endurance-gdb.log
+
+      # Same recipe as the python job's step of the same name — see its
+      # comment. Each scenario already writes its own JSON/Markdown/text
+      # report to sdks/cpp/endurance-results/ regardless of pass/fail/error
+      # (see sdks/cpp/endurance-tests/report.hpp), so this step only adds the
+      # native-crash JSON alongside those when the failure was an actual
+      # signal — the upload step's if-no-files-found: warn covers a run that
+      # failed before any scenario wrote anything at all.
+      - name: Save native crash diagnostics to the results artifact
+        if: failure()
+        run: |
+          python3 - <<'PYEOF'
+          import datetime
+          import json
+          import os
+          import pathlib
+          import re
+
+          gdb_log = pathlib.Path("/tmp/cpp-endurance-gdb.log")
+          text = gdb_log.read_text(errors="replace") if gdb_log.exists() else ""
+          # Catch2 and the SDK's own logging can spray ANSI escapes all over
+          # the log — strip them or the JSON is unreadable.
+          text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+          # Both stop shapes match: "Program received signal" (main thread) and
+          # 'Thread 1979 "reactor-on-audi" received signal' (any other thread).
+          m = re.search(r"received signal (SIG[A-Z]+)", text)
+          if not m:
+              print("no native signal found in the gdb log — nothing to save")
+          else:
+              repo = os.environ.get("GITHUB_REPOSITORY", "")
+              payload = {
+                  "what_is_this_file": (
+                      "Native crash diagnostics from the C++ SDK endurance suite "
+                      "(sdks/cpp/endurance-tests, the Catch2 binary "
+                      "reactor_sdk_endurance_tests linking reactor::sdk against the "
+                      "real libreactor_ffi, real WebRTC, a live reactor model). The "
+                      "test step ran the binary as gdb's direct inferior; when the "
+                      "process died on a signal, gdb stopped at it and dumped every "
+                      "thread's native backtrace — that dump is "
+                      "'gdb_output_from_crash' below. How to read it: the 'Program "
+                      "received signal' line names the signal and is immediately "
+                      "followed by the faulting thread's stack, then come the other "
+                      "threads ('Thread N ...' blocks, `thread apply all bt 30`). "
+                      "Look for reactor_ffi / reactor_webrtc / libwebrtc frames in "
+                      "the faulting thread — the full Catch2 output for the same "
+                      "moment (each scenario's per-cycle resource table) is in the "
+                      "GitHub Actions job log if this dump is truncated."
+                  ),
+                  "signal": m.group(1),
+                  "captured_at_utc": datetime.datetime.now(
+                      datetime.timezone.utc
+                  ).isoformat(timespec="seconds"),
+                  "repository": repo,
+                  "ref": os.environ.get("GITHUB_REF_NAME", ""),
+                  "head_sha": os.environ.get("GITHUB_SHA", ""),
+                  "workflow_run": (
+                      f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}"
+                      f"/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
+                  ),
+                  "reproduce": (
+                      "gh workflow run endurance-tests.yml "
+                      f"--repo {repo or '<org>/<repo>'} --ref <branch> "
+                      "-f sdk=cpp -f duration_minutes=5"
+                  ),
+                  "gdb_output_from_crash": text[m.start() :][:500_000],
+              }
+              out = pathlib.Path("sdks/cpp/endurance-results")
+              out.mkdir(parents=True, exist_ok=True)
+              dest = out / "native-crash-diagnostics.json"
+              dest.write_text(json.dumps(payload, indent=2))
+              print(f"native crash diagnostics ({m.group(1)}) written to {dest}")
+          PYEOF
+
+      # Same recipe as the python job's identical step — see its comment.
+      - name: Publish results to the job summary
+        if: always()
+        working-directory: sdks/cpp
+        run: |
+          shopt -s nullglob
+          reports=(endurance-results/*-report.md)
+          if [ ${#reports[@]} -eq 0 ]; then
+            echo "No endurance-results/*-report.md files were written — the run likely failed before any scenario produced one (see the job log)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            for report in "${reports[@]}"; do
+              cat "$report" >> "$GITHUB_STEP_SUMMARY"
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+            done
+          fi
+
+      - name: Upload endurance test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: endurance-test-results-cpp
+          path: sdks/cpp/endurance-results/
           if-no-files-found: warn
