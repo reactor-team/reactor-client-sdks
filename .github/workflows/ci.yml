@@ -39,6 +39,7 @@ jobs:
       python: ${{ steps.filter.outputs.python }}
       js: ${{ steps.filter.outputs.js }}
       cpp: ${{ steps.filter.outputs.cpp }}
+      kotlin: ${{ steps.filter.outputs.kotlin }}
       swift: ${{ steps.effective.outputs.swift }}
       swift_package: ${{ steps.effective.outputs.swift_package }}
     steps:
@@ -108,6 +109,12 @@ jobs:
               - *shared
               - *core
               - 'sdks/js/**'
+            kotlin:
+              - *shared
+              - *core
+              - 'sdks/kotlin/**'
+              - 'scripts/kotlin.sh'
+              - 'scripts/check-kotlin-ci.py'
             cpp:
               - *shared
               - *core
@@ -168,6 +175,7 @@ jobs:
         with:
           version: ${{ env.MISE_VERSION }}
       - run: hk validate
+      - run: mise run test:kotlin:ci
       - name: ABI parity (lib.rs / reactor_ffi.h / _ffi.py / sdks/cpp / sdks/swift)
         run: mise run lint:abi
       - name: Error-code parity (error.rs / errors.ts / errors.py / errors.hpp)
@@ -733,6 +741,47 @@ jobs:
       # builds and runs again.
       - run: mise run test:swift:package
 
+  kotlin:
+    name: Kotlin SDK (JVM + Android)
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.kotlin == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Install Android build packages
+        run: '"${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"'
+      - run: mise run lint:kotlin
+      - run: mise run build:kotlin
+      - run: mise run test:kotlin
+
+  kotlin-android:
+    name: Kotlin SDK (Android instrumentation scaffold)
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.kotlin == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      # This exercises the Android test runner, not a native ABI. K02 adds
+      # arm64 device coverage once the WebRTC bootstrap has been proved.
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: default
+          disable-animations: true
+          script: mise run test:kotlin:android
+
   ci-complete:
     name: CI Complete
     needs:
@@ -745,6 +794,8 @@ jobs:
         js,
         js-integration-tests,
         cpp,
+        kotlin,
+        kotlin-android,
         cpp-integration-tests,
         swift,
         swift-integration-tests,
@@ -767,6 +818,8 @@ jobs:
                    "${{ needs.js.result }}" \
                    "${{ needs.js-integration-tests.result }}" \
                    "${{ needs.cpp.result }}" \
+                   "${{ needs.kotlin.result }}" \
+                   "${{ needs.kotlin-android.result }}" \
                    "${{ needs.cpp-integration-tests.result }}" \
                    "${{ needs.swift.result }}" \
                    "${{ needs.swift-integration-tests.result }}" \
