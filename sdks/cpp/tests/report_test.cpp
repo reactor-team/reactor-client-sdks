@@ -285,7 +285,7 @@ TEST_CASE("write_reports computes checkpoints from samples") {
                    ("endurance-report-test-" + std::to_string(std::random_device{}()));
   write_reports(r, tmp.string());
   REQUIRE(r.checkpoints.has_value());
-  CHECK(r.checkpoints->size() == 5);
+  CHECK(r.checkpoints.value().size() == 5);  // NOLINT(bugprone-unchecked-optional-access)
   std::filesystem::remove_all(tmp);
 }
 
@@ -442,7 +442,7 @@ TEST_CASE("finish_run: ERROR when a pending exception is passed, regardless of m
   const auto result = finish_run(args);
   CHECK(result.status == "ERROR");
   REQUIRE(result.run_error.has_value());
-  CHECK(*result.run_error == "boom");
+  CHECK(result.run_error.value() == "boom");  // NOLINT(bugprone-unchecked-optional-access)
   std::filesystem::remove_all(tmp);
 }
 
@@ -494,6 +494,7 @@ TEST_CASE("finish_run: a write_reports failure does not mask the original run_er
   const auto result = finish_run(args);
   CHECK(result.status == "ERROR");
   REQUIRE(result.run_error.has_value());
-  CHECK(*result.run_error == "the real failure");
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+  CHECK(result.run_error.value() == "the real failure");
   std::filesystem::remove(blocking_file);
 }

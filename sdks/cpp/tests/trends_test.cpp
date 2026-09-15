@@ -3,6 +3,8 @@
 // involved — mirrors sdks/python/tests/test_trends.py.
 #include "trends.hpp"
 
+#include <array>
+
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
@@ -31,9 +33,10 @@ Sample make_sample(int cycle, double cpu_s = 0.0, long num_threads = 20, long nu
 
 TEST_CASE("cpu_deltas diffs consecutive cumulative values") {
   std::vector<Sample> samples;
-  double values[] = {0.0, 0.5, 1.2, 1.4};
+  samples.reserve(4);
+  const std::array<double, 4> values = {0.0, 0.5, 1.2, 1.4};
   for (int i = 0; i < 4; ++i) {
-    samples.push_back(make_sample(i, values[i]));
+    samples.push_back(make_sample(i, values.at(static_cast<std::size_t>(i))));
   }
   const auto deltas = cpu_deltas(samples);
   REQUIRE(deltas.size() == 3);
@@ -64,6 +67,7 @@ TEST_CASE("assert_no_sustained_growth: still climbing in the tail fails") {
   // Genuinely still trending up in the last third relative to the middle
   // third, well past both the ratio and absolute floors.
   std::vector<double> values;
+  values.reserve(30);
   for (int i = 0; i < 30; ++i) {
     values.push_back(100.0 + static_cast<double>(i) * 5.0);
   }
@@ -111,8 +115,8 @@ TEST_CASE("assert_no_sustained_growth: use_median ignores a single outlier cycle
   // A one-cycle double-counted-thread/fd artifact landing in the last
   // window shouldn't by itself read as a sustained trend.
   std::vector<double> values(12, 25.0);
-  const double tail[] = {25.0, 25.0, 31.0, 25.0, 25.0, 25.0};
-  values.insert(values.end(), std::begin(tail), std::end(tail));
+  const std::array<double, 6> tail = {25.0, 25.0, 31.0, 25.0, 25.0, 25.0};
+  values.insert(values.end(), tail.begin(), tail.end());
   const auto result = assert_no_sustained_growth(values, "num_threads", 0.15, 4.0, 0.2,
                                                  /*use_median=*/true, "count");
   CHECK(result.status == "ok");
@@ -120,6 +124,7 @@ TEST_CASE("assert_no_sustained_growth: use_median ignores a single outlier cycle
 
 TEST_CASE("assert_always_zero: stays zero passes") {
   std::vector<Sample> samples;
+  samples.reserve(10);
   for (int i = 0; i < 10; ++i) {
     samples.push_back(make_sample(i));
   }
@@ -131,16 +136,18 @@ TEST_CASE("assert_always_zero: nonzero mid-run fails even if it settles back to 
   // Regression: a leak on cycle 3 that happens to get cleaned up by the
   // final cycle is still a real bug — must not read as "ok" just because
   // the last sample is 0.
-  const long values[] = {0, 0, 0, 2, 0, 0};
+  const std::array<long, 6> values = {0, 0, 0, 2, 0, 0};
   std::vector<Sample> samples;
+  samples.reserve(6);
   for (int i = 0; i < 6; ++i) {
     samples.push_back(make_sample(i));
   }
-  const auto result =
-      assert_always_zero(samples, [&](const Sample& s) { return values[s.cycle]; }, "orphaned");
+  const auto result = assert_always_zero(
+      samples, [&](const Sample& s) { return values.at(static_cast<std::size_t>(s.cycle)); },
+      "orphaned");
   CHECK(result.status == "fail");
   REQUIRE(result.first_bad_cycle.has_value());
-  CHECK(*result.first_bad_cycle == 3);
+  CHECK(result.first_bad_cycle.value() == 3);  // NOLINT(bugprone-unchecked-optional-access)
 }
 
 TEST_CASE("assert_always_zero: reports the peak, not the final sample") {
@@ -148,13 +155,15 @@ TEST_CASE("assert_always_zero: reports the peak, not the final sample") {
   // *final* sample's value for end/change would render "went from 0 to 0
   // (+0)" whenever the count had already settled back to 0 by the last
   // cycle — hiding the leaked value entirely.
-  const long values[] = {0, 0, 5, 3, 0, 0};
+  const std::array<long, 6> values = {0, 0, 5, 3, 0, 0};
   std::vector<Sample> samples;
+  samples.reserve(6);
   for (int i = 0; i < 6; ++i) {
     samples.push_back(make_sample(i));
   }
-  const auto result =
-      assert_always_zero(samples, [&](const Sample& s) { return values[s.cycle]; }, "orphaned");
+  const auto result = assert_always_zero(
+      samples, [&](const Sample& s) { return values.at(static_cast<std::size_t>(s.cycle)); },
+      "orphaned");
   CHECK(result.status == "fail");
   CHECK(result.end == 5);
   CHECK(result.change == 5);
@@ -163,6 +172,7 @@ TEST_CASE("assert_always_zero: reports the peak, not the final sample") {
 
 TEST_CASE("assert_never_grows: flat at baseline passes") {
   std::vector<Sample> samples;
+  samples.reserve(10);
   for (int i = 0; i < 10; ++i) {
     samples.push_back(make_sample(i));
   }
@@ -172,13 +182,15 @@ TEST_CASE("assert_never_grows: flat at baseline passes") {
 }
 
 TEST_CASE("assert_never_grows: growth past the starting value fails") {
-  const long values[] = {1, 1, 1, 2, 1};
+  const std::array<long, 5> values = {1, 1, 1, 2, 1};
   std::vector<Sample> samples;
+  samples.reserve(5);
   for (int i = 0; i < 5; ++i) {
     samples.push_back(make_sample(i));
   }
-  const auto result =
-      assert_never_grows(samples, [&](const Sample& s) { return values[s.cycle]; }, "live_clients");
+  const auto result = assert_never_grows(
+      samples, [&](const Sample& s) { return values.at(static_cast<std::size_t>(s.cycle)); },
+      "live_clients");
   CHECK(result.status == "fail");
   CHECK(result.start == 1);
   CHECK(result.end == 2);
@@ -186,6 +198,7 @@ TEST_CASE("assert_never_grows: growth past the starting value fails") {
 
 TEST_CASE("standard_resource_metrics returns the shared five checks") {
   std::vector<Sample> samples;
+  samples.reserve(30);
   for (int i = 0; i < 30; ++i) {
     samples.push_back(make_sample(i, /*cpu_s=*/static_cast<double>(i) * 0.01));
   }
