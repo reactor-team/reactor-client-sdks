@@ -230,3 +230,23 @@ Java_inc_reactor_sdk_internal_NativeClient_pushAudio(JNIEnv* env, jobject, jlong
     if (count) reactor_push_audio_frame(client(value)->handle, n.data(), pcm.data(), count / channels, rate, channels);
   } catch (const std::exception& error) { failure(env, error); }
 }
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_NativeClient_query(JNIEnv* env, jobject, jlong value, jint kind,
+    jbyteArray name, jbyteArray arguments, jobject receiver) {
+  try {
+    if (kind < 0 || kind > 2) throw std::invalid_argument("Unknown query operation");
+    auto* state = client(value);
+    auto n = kind == 0 ? reactor_jni::inputText(env, name) : std::vector<char>{};
+    auto args = optional(env, arguments);
+    auto owned = std::make_unique<Operation>(state, env, receiver);
+    auto* operation = owned.get();
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->pending.emplace(operation, std::move(owned));
+    }
+    if (kind == 0) reactor_send_command(state->handle, n.data(), pointer(args), nullptr, complete, operation);
+    else if (kind == 1) reactor_request_schema(state->handle, complete, operation);
+    else reactor_get_stats(state->handle, complete, operation);
+  } catch (const std::exception& error) { failure(env, error); }
+}
