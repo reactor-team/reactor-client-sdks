@@ -336,7 +336,7 @@ jobs:
           # A dedicated secret, not the general REACTOR_API_KEY examples use —
           # this key exists only to run this suite (shared with js-integration-tests).
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
-        run: scripts/retry.sh mise run test:python:integration-tests
+        run: mise run test:python:integration-tests
 
   js:
     name: JS SDK + browser binding
@@ -451,7 +451,7 @@ jobs:
           # A dedicated secret, not the general REACTOR_API_KEY examples use —
           # this key exists only to run this suite.
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
-        run: scripts/retry.sh mise run test:js:integration-tests
+        run: mise run test:js:integration-tests
 
   cpp:
     name: C++ SDK
@@ -563,7 +563,7 @@ jobs:
           # this key exists only to run this suite (shared with
           # js-integration-tests/python-integration-tests).
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
-        run: scripts/retry.sh mise run test:cpp:integration-tests
+        run: mise run test:cpp:integration-tests
 
   swift-integration-tests:
     name: Swift SDK integration tests (real FFI, real model)
@@ -596,7 +596,7 @@ jobs:
         env:
           # Same dedicated secret js/python/cpp-integration-tests use.
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
-        run: scripts/retry.sh mise run test:swift:integration-tests
+        run: mise run test:swift:integration-tests
 
   swift-integration-tests-ios-simulator:
     name: Swift SDK integration tests (iOS Simulator, real FFI, real model)
@@ -644,7 +644,7 @@ jobs:
           # Relative to the package root, not absolute: SwiftPM requires that
           # for a local binaryTarget path and refuses an absolute one outright.
           REACTOR_XCFRAMEWORK: target/xcframework/ReactorFFI.xcframework
-        run: scripts/retry.sh mise run test:swift:integration-tests:ios-simulator
+        run: mise run test:swift:integration-tests:ios-simulator
 
   swift:
     name: Swift SDK

@@ -277,8 +277,15 @@ case "${1:-}" in
         # The macOS run: real FFI, real WebRTC, against a real model in
         # production. Needs INTEGRATION_TESTS_REACTOR_API_KEY (or
         # REACTOR_LOCAL=1) — see IntegrationTests/Fixtures.swift.
-        "$swift_bin" test --package-path "$REPO_ROOT" --filter IntegrationTests \
-            "${link_flags[@]}"
+        #
+        # scripts/retry.sh wraps this whole invocation: `swift test`
+        # rebuilds incrementally (fast, no-op if nothing changed), so a
+        # retry on a transient live-model failure never re-pays for a full
+        # build. Identically for every SDK — see the sdk-from-ffi skill's
+        # "Integration-test retries" section before adding a
+        # framework-specific retry back.
+        "$REPO_ROOT/scripts/retry.sh" "$swift_bin" test --package-path "$REPO_ROOT" \
+            --filter IntegrationTests "${link_flags[@]}"
         ;;
     endurance-tests)
         resolve_tool swift
@@ -371,7 +378,12 @@ case "${1:-}" in
             done <<<"$target_indices"
         done
 
-        "$xcodebuild_bin" test-without-building \
+        # scripts/retry.sh wraps only this run step, not build-for-testing
+        # above it — a transient live-model failure shouldn't re-pay for a
+        # Simulator build. Identically for every SDK — see the sdk-from-ffi
+        # skill's "Integration-test retries" section before adding a
+        # framework-specific retry back.
+        "$REPO_ROOT/scripts/retry.sh" "$xcodebuild_bin" test-without-building \
             -xctestrun "$xctestrun" \
             -destination "$SIMULATOR_DESTINATION" \
             -only-testing:IntegrationTests
