@@ -131,7 +131,19 @@ TEST_CASE("lifecycle churn leaves no leftover threads/fds or resource growth") {
       // sample catching the *previous* cycle's own socket teardown still in
       // flight) — neither a per-cycle leak, which would keep climbing
       // sample over sample rather than step once.
-      metrics = endurance::standard_resource_metrics(sampler.samples());
+      //
+      // `cycle < 3` above is a floor on completed cycles, not on the sample
+      // count each metric actually needs — cpu_deltas() alone drops one
+      // value relative to the raw samples, so a run landing at exactly 3-6
+      // cycles can still be short of what assert_no_sustained_growth
+      // requires and throw here. Caught the same way the run loop's own
+      // failures are, so a short run still gets an ERROR report instead of
+      // an uncaught exception skipping finish_and_check entirely.
+      try {
+        metrics = endurance::standard_resource_metrics(sampler.samples());
+      } catch (...) {
+        pending = std::current_exception();
+      }
     }
   }
 

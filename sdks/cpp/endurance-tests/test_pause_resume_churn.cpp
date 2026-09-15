@@ -110,8 +110,21 @@ TEST_CASE("pause/resume churn has no sustained resource growth") {
     } else {
       // The fixture's one client is connected for the whole test — same
       // reasoning as the other long-lived-session scenarios.
-      const auto shared = endurance::standard_resource_metrics(sampler.samples());
-      metrics.insert(metrics.end(), shared.begin(), shared.end());
+      //
+      // `iteration < 3` above is a floor on completed iterations, not on
+      // the sample count each metric actually needs — cpu_deltas() alone
+      // drops one value relative to the raw samples, so a run landing at
+      // exactly 3-6 iterations can still be short of what
+      // assert_no_sustained_growth requires and throw here. Caught the
+      // same way the run loop's own failures are, so a short run still
+      // gets an ERROR report instead of an uncaught exception skipping
+      // finish_and_check entirely.
+      try {
+        const auto shared = endurance::standard_resource_metrics(sampler.samples());
+        metrics.insert(metrics.end(), shared.begin(), shared.end());
+      } catch (...) {
+        pending = std::current_exception();
+      }
     }
   }
 

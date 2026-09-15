@@ -108,7 +108,20 @@ TEST_CASE("session churn has no sustained resource growth") {
       // .get()'d (as every call above does) or its destructor blocks until
       // the operation completes, so there is no "still pending after the
       // loop moved on" state possible in the first place.
-      metrics = endurance::standard_resource_metrics(sampler.samples());
+      //
+      // `iteration < 3` above is a floor on completed iterations, not on
+      // the sample count each metric actually needs — cpu_deltas() alone
+      // drops one value relative to the raw samples, so a run landing at
+      // exactly 3-6 iterations can still be short of what
+      // assert_no_sustained_growth requires and throw here. Caught the
+      // same way the run loop's own failures are, so a short run still
+      // gets an ERROR report instead of an uncaught exception skipping
+      // finish_and_check entirely.
+      try {
+        metrics = endurance::standard_resource_metrics(sampler.samples());
+      } catch (...) {
+        pending = std::current_exception();
+      }
     }
   }
 

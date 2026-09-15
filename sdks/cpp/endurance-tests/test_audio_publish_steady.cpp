@@ -92,7 +92,18 @@ TEST_CASE("steady audio publish has no sustained resource growth") {
           " second(s) of streaming — raise ENDURANCE_DURATION_SECONDS to get enough data "
           "for a trend"));
     } else {
-      metrics = endurance::standard_resource_metrics(sampler.samples());
+      // `iteration < 3` above is a floor on completed seconds, not on the
+      // sample count each metric actually needs — cpu_deltas() alone drops
+      // one value relative to the raw samples, so a run landing at exactly
+      // 3-6 seconds can still be short of what assert_no_sustained_growth
+      // requires and throw here. Caught the same way the run loop's own
+      // failures are, so a short run still gets an ERROR report instead of
+      // an uncaught exception skipping finish_and_check entirely.
+      try {
+        metrics = endurance::standard_resource_metrics(sampler.samples());
+      } catch (...) {
+        pending = std::current_exception();
+      }
     }
   }
 
