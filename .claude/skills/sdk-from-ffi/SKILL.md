@@ -873,6 +873,18 @@ ships without one.
   collision happened in practice (see `release-js.yml`'s and `release-python.yml`'s own
   notes on the step). Nothing publishes off a `pull_request` event anyway, so skipping it
   there loses no coverage.
+- **Integration-test retries: one flat rule, `scripts/retry.sh`, no per-language exception.**
+  A live model's shared session-creation quota, its capacity pool, or a session/SDP poll can
+  all fail transiently without any bug in your binding — that's what an integration-tests
+  suite is exposed to that a unit test never is. Wire your `ci.yml` step for this suite as
+  `run: scripts/retry.sh mise run test:<lang>:integration-tests` (see the existing four
+  jobs), not a framework-specific retry (`pytest-rerunfailures`, Playwright's `retries`,
+  Catch2/swift-testing have neither). This has already drifted once — Python's old
+  `--only-rerun RateLimitedError` caught only the rate-limit case, missing the capacity and
+  timeout ones, and Swift's own connect-retry comment claimed to cover capacity when its
+  code didn't — which is why the rule now lives in one script, unscoped by exception type,
+  instead of reinvented per binding. If `scripts/retry.sh`'s policy (4 attempts, 2s/4s/8s
+  backoff) ever needs to change, change it there; don't add a parallel mechanism next to it.
 
 ---
 
