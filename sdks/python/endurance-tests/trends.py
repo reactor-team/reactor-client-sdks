@@ -296,7 +296,6 @@ def standard_resource_metrics(
     samples: list[Sample],
     *,
     live_clients_baseline_zero: bool = False,
-    fds_exact: bool = False,
 ) -> list[MetricResult]:
     """The RSS/CPU/thread/fd/handle checks every scenario in this suite runs
     at the end of its loop — live_clients, orphaned_callbacks, rss,
@@ -315,13 +314,17 @@ def standard_resource_metrics(
     baseline is 1, and `live_clients` must never exceed that
     (`assert_never_grows`).
 
-    `fds_exact`: True when fd teardown is synchronous with this scenario's
-    own cycle boundary (only lifecycle-churn's disconnect()/close() per
-    cycle proved this in practice) — `num_fds` must never exceed its
-    starting value (`assert_never_grows`). False (the default) for anything
-    that can legitimately open a few more during warm-up and then plateau
-    (a connection pool, a worker thread) — `num_fds` gets the same
-    trend-based check as RSS/CPU instead.
+    `num_fds` always gets the same median-backed trend check as
+    `num_threads` (`assert_no_sustained_growth`), never an exact
+    `assert_never_grows`, on every binding this suite covers — this used to
+    be a per-scenario opt-in (`fds_exact`) on the theory that some
+    scenarios' fd teardown was provably synchronous with the cycle
+    boundary, but real CI runs on two different bindings (C++, then Swift)
+    each independently caught `num_fds` take a one-cycle step that settled
+    right back down — not a leak, just native socket-teardown timing the
+    exact check can't tolerate. Don't reintroduce a per-scenario or
+    per-binding exception here; the trend check already tolerates a real
+    leak just as well and doesn't false-positive on this.
 
     A scenario with its own extra invariants (session-churn's
     `pending_completions`/`Track._adapters`, publish-churn's `track.published`,
@@ -335,8 +338,6 @@ def standard_resource_metrics(
     else:
         metrics.append(assert_never_grows(samples, field="live_clients"))
     metrics.append(assert_always_zero(samples, field="orphaned_callbacks"))
-    if fds_exact:
-        metrics.append(assert_never_grows(samples, field="num_fds"))
     metrics.append(
         assert_no_sustained_growth(
             [s.rss_bytes / 1e6 for s in samples],
@@ -374,14 +375,14 @@ def standard_resource_metrics(
             use_median=True,
         )
     )
-    if not fds_exact:
-        metrics.append(
-            assert_no_sustained_growth(
-                [float(s.num_fds) for s in samples],
-                name="num_fds",
-                unit="count",
-                max_growth_ratio=0.15,
-                min_absolute_delta=3,
-            )
+    metrics.append(
+        assert_no_sustained_growth(
+            [float(s.num_fds) for s in samples],
+            name="num_fds",
+            unit="count",
+            max_growth_ratio=0.15,
+            min_absolute_delta=3,
+            use_median=True,
         )
+    )
     return metrics

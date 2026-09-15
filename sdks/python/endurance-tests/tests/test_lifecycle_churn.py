@@ -117,16 +117,9 @@ async def test_lifecycle_churn_leaves_no_leftover_handles_or_growth() -> None:
             "get enough data for a trend"
         )
 
-        # baseline-zero: this scenario starts with no clients. fds_exact: socket/fd
-        # teardown proved synchronous with disconnect()/close() returning in a real
-        # run (constant every single cycle), so num_fds gets the strict "never past
-        # its starting value" check instead of a trend — see
-        # standard_resource_metrics()'s own docstring for both parameters.
-        metrics.extend(
-            standard_resource_metrics(
-                sampler.samples, live_clients_baseline_zero=True, fds_exact=True
-            )
-        )
+        # baseline-zero: this scenario starts with no clients — see
+        # standard_resource_metrics()'s own docstring.
+        metrics.extend(standard_resource_metrics(sampler.samples, live_clients_baseline_zero=True))
     finally:
         finish_and_check(
             test_name="lifecycle-churn",

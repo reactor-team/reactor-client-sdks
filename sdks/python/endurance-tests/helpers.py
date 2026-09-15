@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import os
 import sys
 import time
 from pathlib import Path
@@ -123,9 +124,42 @@ def _format_row(s: Sample, cpu_per_cycle: float | None) -> str:
     )
 
 
+# How often `sample()` actually records a new `Sample`, at most — the floor
+# under `self.samples`'s growth regardless of how fast a scenario's own loop
+# spins. Exists because a scenario with no network wait at all (pause-resume-
+# churn: no frames, no commands, no reconnect) iterates hundreds of thousands
+# of times in a few minutes, and `sample()` used to build and retain one
+# `Sample` per call unconditionally — the retained list itself then became
+# the dominant source of RSS growth the trend check was measuring, a false
+# "leak" that was really this harness's own bookkeeping (confirmed via a
+# tracemalloc snapshot: `Sample(...)` here, not anything in reactor_sdk or
+# the FFI, was by far the largest live allocation site). 100ms keeps the
+# trend/Timeline data fine-grained on any human timescale — a leak that
+# opens and fully clears again within 100ms was never going to be legible in
+# a Timeline of 5 checkpoints either — while capping a 5-minute run to a few
+# thousand retained samples instead of several hundred thousand. Scenarios
+# whose own loop already takes longer than this per cycle (every network-
+# bound one) are unaffected: the "enough time has passed" branch is always
+# true for them, so this is a no-op there.
+#
+# Trade-off, stated plainly: `assert_always_zero`/`assert_never_grows` (see
+# trends.py) can now only see whatever `field` reads as at each retained
+# sample's moment, not truly every single cycle — a value that goes nonzero
+# and clears again entirely between two retained samples would be missed.
+# Accepted: every real finding this suite has produced so far (pause-resume-
+# churn's RSS growth, lifecycle-churn's SIGSEGV) was a sustained condition,
+# not a sub-100ms blip, and retaining true per-cycle history for an
+# unbounded-iteration-count scenario is what caused this bug in the first
+# place — something has to give.
+ENDURANCE_SAMPLE_INTERVAL_SECONDS = float(
+    os.environ.get("ENDURANCE_SAMPLE_INTERVAL_SECONDS", "0.1")
+)
+
+
 class ResourceSampler:
     """Samples process-wide resource usage plus the SDK's own handle-bookkeeping
-    once per cycle of an endurance loop, against a shared wall-clock deadline.
+    at most once per `ENDURANCE_SAMPLE_INTERVAL_SECONDS` of an endurance loop,
+    against a shared wall-clock deadline.
 
     One `psutil.Process()` for the current process: every scenario here runs
     in-process (no subprocess per SDK), so process RSS/CPU already reflects
@@ -137,6 +171,9 @@ class ResourceSampler:
         self._start = time.monotonic()
         self._duration_s = duration_s
         self.samples: list[Sample] = []
+        # None, not 0.0: the first call to sample() must always record (there
+        # is nothing yet to return in its place) — see sample()'s own check.
+        self._last_sample_at: float | None = None
         # psutil's own documented priming call: the *first* cpu_percent()
         # reading has no prior call to measure an interval against, so it's
         # meaningless (usually 0.0) — call it once now, throw the result
@@ -148,6 +185,18 @@ class ResourceSampler:
         return time.monotonic() - self._start >= self._duration_s
 
     def sample(self, *, cycle: int) -> Sample:
+        # Throttled to at most one real sample per ENDURANCE_SAMPLE_INTERVAL_
+        # SECONDS — see that constant's own docstring for why. `self.samples`
+        # is never empty past the first call, so this only ever short-
+        # circuits from the second call on; the very first sample is always
+        # taken, unconditionally, regardless of the interval.
+        now = time.monotonic()
+        if self._last_sample_at is not None and (
+            now - self._last_sample_at < ENDURANCE_SAMPLE_INTERVAL_SECONDS
+        ):
+            return self.samples[-1]
+        self._last_sample_at = now
+
         # Imported here, not at module scope: this reaches into reactor_sdk's
         # own internals (deliberately — see README.md), and importing lazily
         # keeps this module loadable even before reactor_sdk is installed
