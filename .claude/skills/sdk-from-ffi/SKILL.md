@@ -598,15 +598,46 @@ quietly* invariant requires elsewhere.
 **CI wiring**: `workflow_dispatch` only (this suite is long, noisy, and reads a trend rather
 than a single right-or-wrong answer — it does not gate a PR or a release the way the seven
 scenarios and integration-tests do), one job per SDK gated on a `sdk` choice input so adding
-a language later is "add a choice plus a job," not a restructure. `if: always()` on both the
-job-summary step (render every `*-report.md` the scenarios produced into
+a language later is "add a choice plus a job," not a restructure.
+
+**Matrix one job per scenario, discovered rather than hand-listed.** Scenarios used to run
+sequentially inside a single SDK job — fine with two of them, a liability once a suite grows
+past three or four (duration_minutes × scenario_count, past an hour on a 20-minute
+duration_minutes run with six scenarios). A `setup` job globs the scenario test files
+(`find endurance-tests/tests -name 'test_*.py'`, piped through `jq -R -s -c 'split("\n") |
+map(select(length > 0))'` into the compact JSON array `strategy.matrix` needs) and the SDK's
+own job matrixes over that output (`fromJSON(needs.setup.outputs.scenarios)`) instead of a
+hand-maintained list or count — adding a scenario file is then "add the file," full stop, not
+also bumping a separate `SCENARIO_COUNT` elsewhere in the workflow, a manual-sync step the
+scenario count previously needed (harmless so far, but exactly the kind of thing that goes
+stale silently). `fail-fast: false` on the matrix, so one scenario's real
+leak or flaky connect doesn't cancel the others mid-run. Each matrix job's own `timeout-minutes`
+only needs to cover *one* scenario's duration_minutes plus setup, not every scenario's — a
+smaller, simpler number than the old sequential math, computed the same way (see the workflow's
+own comment on why this can't be a `${{ }}` expression: GitHub Actions has no arithmetic
+operators). `actions/upload-artifact` needs a scenario-suffixed `name:` (`endurance-test-
+results-${{ matrix.scenario }}`) — two matrix jobs uploading the same artifact name in one run
+is a hard error, not a merge — so this trades the old single combined zip for one per scenario;
+fine as long as whoever consumes them expects that. The job-summary step needs no change at
+all: GitHub renders per-job `$GITHUB_STEP_SUMMARY` writes as separate sections on the run's one
+Summary page, in job order, so matrixing already gives the same "every scenario's report is
+readable from the Summary page" property the old single job had, just split by scenario
+instead of concatenated top to bottom in one job's summary.
+
+`if: always()` on both the job-summary step (render the scenario's own `*-report.md` into
 `$GITHUB_STEP_SUMMARY`, so a failed run's shape is visible without downloading anything) and
 the `actions/upload-artifact` step (upload `endurance-results/` even on failure — that's the
 run you need most). `concurrency` global rather than per-ref (`group: endurance-tests`,
 `cancel-in-progress: false`), because every scenario runs against one real shared
-backend/quota and two runs racing it at once makes both runs' trends noisier — the whole
-point of the suite. A `run-name:` that names which SDK the run is for, since every run
-otherwise shows the same generic workflow name in the Actions list.
+backend/quota and two *runs* racing it at once makes both runs' trends noisier — the whole
+point of the suite; this only serializes separate runs, not the scenario matrix inside one
+run, which is the whole point of matrixing it. Each scenario process paces its own session
+creation independently (the same `paced_connect` integration-tests/conftest.py already has,
+comfortably under quota per-process), so N scenarios running at once is a smaller version of
+the bet ci.yml's integration-test jobs already made running every SDK concurrently instead of
+chained — watch the first real dispatch of a newly-matrixed suite for 429s before assuming
+that bet holds here too, same as that change did. A `run-name:` that names which SDK the run
+is for, since every run otherwise shows the same generic workflow name in the Actions list.
 
 **Run the suite under gdb from day one — a native crash in a managed-language suite is
 undebuggable otherwise.** The intermittent segfault this suite hunts dies on a Rust/libwebrtc

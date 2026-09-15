@@ -9,6 +9,15 @@
 # combined job: only Python has a suite today (sdks/python/endurance-tests/),
 # and adding JS/C++/Swift later is meant to be "add a choice + a job", not a
 # restructure of this file.
+#
+# Within an SDK's job, one matrix run per scenario file
+# (endurance-tests/tests/test_*.py), discovered by the `setup` job rather
+# than hand-listed here — adding a 7th scenario is then "add the file," not
+# "also touch this workflow." They used to run sequentially inside one job
+# (duration_minutes * scenario_count, easily over an hour); matrixed, each
+# scenario gets its own runner and they all run at once, so the whole
+# dispatch takes about as long as the slowest single scenario instead of the
+# sum of all of them.
 name: Endurance tests
 # Overrides the run's display name in the Actions tab/list (otherwise just
 # "Endurance tests" for every run, indistinguishable at a glance) with which
@@ -42,6 +51,15 @@ concurrency:
   # make both runs' RSS/CPU/timing trends noisier — worse for a suite whose
   # whole point is reading a trend. workflow_dispatch is manual and
   # infrequent, so serializing globally costs effectively nothing.
+  #
+  # This only serializes separate *runs*, not the scenario matrix inside one
+  # run — those already run concurrently against each other. Each scenario
+  # paces its own session creation independently (integration-tests/
+  # conftest.py's paced_connect, ~86/min per process), the same self-pacing
+  # that let ci.yml run every SDK's integration suite concurrently instead
+  # of chained (see that change's own commit message) — a handful of
+  # scenario processes doing the same is a smaller version of the same bet.
+  # Watch the first real dispatch for 429s before trusting this blindly.
   group: endurance-tests
   cancel-in-progress: false
 
@@ -60,46 +78,77 @@ jobs:
   # of its own steps' outputs (those don't exist yet when the job's own
   # timeout is evaluated).
   setup:
-    name: Compute job timeout
+    name: Compute job timeout and scenario matrix
     runs-on: ubuntu-latest
     outputs:
       timeout_minutes: ${{ steps.compute.outputs.timeout_minutes }}
+      scenarios: ${{ steps.scenarios.outputs.scenarios }}
     steps:
+      - uses: actions/checkout@v7
       - name: Compute timeout-minutes from duration_minutes
         id: compute
         env:
           DURATION_MINUTES: ${{ inputs.duration_minutes }}
-          # Number of scenarios in endurance-tests/tests/*.py, run sequentially
-          # by the same `pytest` invocation — bump this alongside adding or
-          # removing a scenario file, not the `python` job's own comment alone.
-          SCENARIO_COUNT: 6
         # `10#` forces base-10 parsing: bash's arithmetic context otherwise
         # treats a leading-zero numeral (e.g. "08") as octal and errors out.
         # GitHub Actions hard-caps a job's timeout-minutes at 360, so a
         # duration_minutes large enough to exceed that would otherwise just
         # get silently killed mid-run — fail fast here instead, with the
         # largest duration_minutes that still fits.
+        #
+        # No scenario-count multiplier here any more: each matrix job below
+        # runs exactly one scenario for duration_minutes, not every scenario
+        # back to back, so the buffer only needs to cover this one job's own
+        # setup (toolchain install, clang, build).
         run: |
-          timeout_minutes=$((10#$DURATION_MINUTES * SCENARIO_COUNT + 30))
+          timeout_minutes=$((10#$DURATION_MINUTES + 30))
           max_timeout_minutes=360
           if (( timeout_minutes > max_timeout_minutes )); then
-            max_duration_minutes=$(( (max_timeout_minutes - 30) / SCENARIO_COUNT ))
+            max_duration_minutes=$((max_timeout_minutes - 30))
             echo "::error::duration_minutes=$DURATION_MINUTES needs a ${timeout_minutes}-minute job timeout, but GitHub Actions caps job timeouts at ${max_timeout_minutes} minutes. Use duration_minutes <= ${max_duration_minutes}."
             exit 1
           fi
           echo "timeout_minutes=$timeout_minutes" >> "$GITHUB_OUTPUT"
+      # One matrix entry per endurance-tests/tests/test_*.py file, discovered
+      # here rather than hand-listed in the `python` job below: a scenario
+      # file added later shows up in the matrix for free, the same
+      # low-ceremony bar the top-of-file comment already sets for adding an
+      # SDK. `jq -R -s -c 'split("\n") | map(select(length > 0))'` turns
+      # find's newline-separated stdout into the compact JSON array
+      # `strategy.matrix` needs (fromJSON below) — `-s` (slurp) is what lets
+      # `split("\n")` see the whole output as one string instead of one line
+      # at a time, and the `select` drops the trailing empty element that
+      # split leaves after the last newline.
+      - name: Discover endurance scenarios
+        id: scenarios
+        run: |
+          scenarios=$(
+            find sdks/python/endurance-tests/tests -maxdepth 1 -name 'test_*.py' -printf '%f\n' \
+              | sed -e 's/^test_//' -e 's/\.py$//' \
+              | sort \
+              | jq -R -s -c 'split("\n") | map(select(length > 0))'
+          )
+          echo "Discovered scenarios: $scenarios"
+          echo "scenarios=$scenarios" >> "$GITHUB_OUTPUT"
 
   python:
-    name: Python SDK endurance tests
+    name: Python SDK endurance tests (${{ matrix.scenario }})
     needs: setup
     if: inputs.sdk == 'python'
     runs-on: ubuntu-latest
-    # The six scenarios (endurance-tests/tests/*.py) run sequentially, each
-    # for duration_minutes, so the job needs at least 4x that plus setup
-    # (toolchain install, clang, build) — a fixed timeout would silently
-    # kill any multi-hour duration_minutes run partway through a later
-    # scenario. Computed in the `setup` job above, not inline here (see its
-    # comment for why).
+    strategy:
+      # One runner per scenario, all running at once — see the top-of-file
+      # comment for why. fail-fast: false so one scenario failing (a real
+      # leak, a flaky connect) doesn't cancel the others mid-run; each
+      # scenario's result and report stand on their own.
+      fail-fast: false
+      matrix:
+        scenario: ${{ fromJSON(needs.setup.outputs.scenarios) }}
+    # Each matrix job now runs exactly one scenario for duration_minutes, so
+    # the job needs a bit over 1x that plus setup (toolchain install, clang,
+    # build) — a fixed timeout would silently kill any multi-hour
+    # duration_minutes run partway through. Computed in the `setup` job
+    # above, not inline here (see its comment for why).
     timeout-minutes: ${{ fromJSON(needs.setup.outputs.timeout_minutes) }}
     steps:
       - uses: actions/checkout@v7
@@ -141,7 +190,7 @@ jobs:
           # exactly that (run 34888100192). Set it explicitly.
           set -eo pipefail
           export ENDURANCE_DURATION_SECONDS=$((10#$DURATION_MINUTES * 60))
-          echo "Running for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s) per scenario"
+          echo "Running ${{ matrix.scenario }} for ${DURATION_MINUTES} minute(s) (${ENDURANCE_DURATION_SECONDS}s)"
           cd sdks/python
           # Materialise .venv the same way `mise run test:python:endurance-
           # tests` would (cargo build already ran as its own step above — it
@@ -199,7 +248,7 @@ jobs:
           # exit code survives tee thanks to the explicit pipefail at the top
           # of this run block — see there for why it cannot be relied on.
           gdb -batch -x /tmp/pytest-under-gdb.cmds \
-            --args .venv/bin/python -m pytest endurance-tests/tests -v -s \
+            --args .venv/bin/python -m pytest "endurance-tests/tests/test_${{ matrix.scenario }}.py" -v -s \
             2>&1 | tee /tmp/pytest-gdb.log
 
       # If the suite died on a native signal, gdb's captured output (tee'd to
@@ -214,6 +263,8 @@ jobs:
       # assertion, a build error) so the artifact stays unchanged otherwise.
       - name: Save native crash diagnostics to the results artifact
         if: failure()
+        env:
+          ENDURANCE_SCENARIO: ${{ matrix.scenario }}
         run: |
           python3 - <<'PYEOF'
           import datetime
@@ -266,10 +317,12 @@ jobs:
                       f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}"
                       f"/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
                   ),
+                  "scenario": os.environ.get("ENDURANCE_SCENARIO", ""),
                   "reproduce": (
                       "gh workflow run endurance-tests.yml "
                       f"--repo {repo or '<org>/<repo>'} --ref <branch> "
                       "-f sdk=python -f duration_minutes=5"
+                      " # re-runs every scenario in parallel, this one included"
                   ),
                   "gdb_output_from_crash": text[m.start() :][:500_000],
               }
@@ -283,11 +336,20 @@ jobs:
       # `if: always()` on both of the following: a threshold violation or a
       # test error should still leave a readable Job Summary and a
       # downloadable artifact behind — see sdks/python/endurance-tests/
-      # report.py's own module docstring. Each scenario writes its own
-      # report in a `finally` block regardless of pass/fail, so these files
-      # exist even when the step above failed (unless the failure happened
-      # in fixture setup, before any report could be written — e.g. a
+      # report.py's own module docstring. The scenario writes its own report
+      # in a `finally` block regardless of pass/fail, so this file exists
+      # even when the step above failed (unless the failure happened in
+      # fixture setup, before any report could be written — e.g. a
       # connection error before the first sample).
+      #
+      # Each matrix job only ever writes the one report for its own
+      # scenario, but this still globs (rather than pointing at one known
+      # filename) so it doesn't need to know report.py's naming convention.
+      # GitHub Actions job summaries are per-job and concatenated in job
+      # order on the run's own Summary page, so every scenario still gets
+      # its own section there — the same content as the old single-job
+      # summary, just split by scenario instead of by position in one long
+      # page.
       - name: Publish results to the job summary
         if: always()
         working-directory: sdks/python
@@ -307,6 +369,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: endurance-test-results
+          # Scenario-suffixed: actions/upload-artifact rejects two uploads
+          # with the same name in one run, and every matrix job would
+          # otherwise collide on "endurance-test-results". One zip per
+          # scenario instead of one combined zip — each still self-contained
+          # (JSON/Markdown/text report, plus native-crash-diagnostics.json
+          # when relevant).
+          name: endurance-test-results-${{ matrix.scenario }}
           path: sdks/python/endurance-results/
           if-no-files-found: warn
