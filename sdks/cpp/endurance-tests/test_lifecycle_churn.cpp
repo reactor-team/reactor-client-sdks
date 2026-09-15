@@ -32,7 +32,8 @@ const char* const DESCRIPTION =
     "disconnect, destroy. Exercises the whole native-handle lifecycle.";
 }  // namespace
 
-TEST_CASE("lifecycle churn leaves no leftover threads/fds or resource growth") {
+TEST_CASE("lifecycle churn leaves no leftover threads/fds or resource growth",
+          "[lifecycle_churn]") {
   endurance::ResourceSampler sampler;
   endurance::LiveReporter live("lifecycle-churn", endurance::endurance_duration_seconds());
   const auto frame = integration::solid_bgra_frame(WIDTH, HEIGHT, 200, 80, 40);

@@ -40,7 +40,7 @@ const char* const DESCRIPTION =
     "far more iterations per run than lifecycle-churn.";
 }  // namespace
 
-TEST_CASE("session churn has no sustained resource growth") {
+TEST_CASE("session churn has no sustained resource growth", "[session_churn]") {
   endurance::ResourceSampler sampler;
   endurance::LiveReporter live("session-churn", endurance::endurance_duration_seconds());
   const auto frame = integration::solid_bgra_frame(WIDTH, HEIGHT, 30, 150, 90);

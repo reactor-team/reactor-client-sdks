@@ -47,7 +47,7 @@ const char* const DESCRIPTION =
     "other scenarios' repeated setup/teardown.";
 }  // namespace
 
-TEST_CASE("steady video publish has no sustained resource growth") {
+TEST_CASE("steady video publish has no sustained resource growth", "[video_publish_steady]") {
   endurance::ResourceSampler sampler;
   endurance::LiveReporter live("video-publish-steady", endurance::endurance_duration_seconds());
   const auto frame = integration::solid_bgra_frame(WIDTH, HEIGHT, 90, 140, 200);

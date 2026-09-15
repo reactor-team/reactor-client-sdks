@@ -40,7 +40,7 @@ const char* const DESCRIPTION =
     "its own signal.";
 }  // namespace
 
-TEST_CASE("pause/resume churn has no sustained resource growth") {
+TEST_CASE("pause/resume churn has no sustained resource growth", "[pause_resume_churn]") {
   endurance::ResourceSampler sampler;
   endurance::LiveReporter live("pause-resume-churn", endurance::endurance_duration_seconds());
   int iteration = 0;

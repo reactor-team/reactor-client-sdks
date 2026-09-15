@@ -39,7 +39,7 @@ const char* const DESCRIPTION =
     "path from session-churn's broader mix.";
 }  // namespace
 
-TEST_CASE("publish/unpublish churn has no sustained resource growth") {
+TEST_CASE("publish/unpublish churn has no sustained resource growth", "[publish_churn]") {
   endurance::ResourceSampler sampler;
   endurance::LiveReporter live("publish-churn", endurance::endurance_duration_seconds());
   int iteration = 0;

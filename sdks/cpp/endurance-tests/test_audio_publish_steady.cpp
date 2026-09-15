@@ -46,7 +46,7 @@ const char* const DESCRIPTION =
     "same steady-state shape as video-publish-steady.";
 }  // namespace
 
-TEST_CASE("steady audio publish has no sustained resource growth") {
+TEST_CASE("steady audio publish has no sustained resource growth", "[audio_publish_steady]") {
   endurance::ResourceSampler sampler;
   endurance::LiveReporter live("audio-publish-steady", endurance::endurance_duration_seconds());
   int iteration = 0;
