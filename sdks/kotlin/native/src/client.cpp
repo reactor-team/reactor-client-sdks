@@ -2,14 +2,27 @@
 #include "jni_support.hpp"
 #include "jni_media.hpp"
 #include <mutex>
+#include <filesystem>
+#include <cstdio>
 #include <unordered_map>
 
 namespace {
 using reactor_jni::Ticket;
 struct Client;
+struct StagedUpload {
+  std::filesystem::path path;
+  explicit StagedUpload(const std::vector<char>& value) : path(std::filesystem::u8path(value.data())) {}
+  ~StagedUpload() {
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    if (!error) std::filesystem::remove(path.parent_path(), error);
+    if (error) std::fputs("Reactor: unable to remove staged upload from application cache\n", stderr);
+  }
+};
 struct Operation {
   Client* owner;
   Ticket ticket;
+  std::unique_ptr<StagedUpload> staged;
   Operation(Client* owner, JNIEnv* env, jobject receiver) : owner(owner), ticket(env, receiver) {}
 };
 struct Client {
@@ -41,6 +54,7 @@ void complete(int ok, const char* result, const char* error, void* userdata) noe
     owned = std::move(found->second);
     pending.erase(found);
   }
+  owned->staged.reset(); // Upload has finished; remove private staging before settling the awaiter.
   owned->ticket.deliver(ok, result, error, error ? std::strlen(error) : 0);
 }
 template<int kind> void event(const char* value, void* userdata) noexcept {
@@ -233,20 +247,54 @@ Java_inc_reactor_sdk_internal_NativeClient_pushAudio(JNIEnv* env, jobject, jlong
 
 extern "C" JNIEXPORT void JNICALL
 Java_inc_reactor_sdk_internal_NativeClient_query(JNIEnv* env, jobject, jlong value, jint kind,
-    jbyteArray name, jbyteArray arguments, jobject receiver) {
+    jbyteArray name, jbyteArray arguments, jbyteArray uploads, jobject receiver) {
   try {
     if (kind < 0 || kind > 2) throw std::invalid_argument("Unknown query operation");
     auto* state = client(value);
     auto n = kind == 0 ? reactor_jni::inputText(env, name) : std::vector<char>{};
     auto args = optional(env, arguments);
+    auto refs = optional(env, uploads);
     auto owned = std::make_unique<Operation>(state, env, receiver);
     auto* operation = owned.get();
     {
       std::lock_guard<std::mutex> lock(state->mutex);
       state->pending.emplace(operation, std::move(owned));
     }
-    if (kind == 0) reactor_send_command(state->handle, n.data(), pointer(args), nullptr, complete, operation);
+    if (kind == 0) reactor_send_command(state->handle, n.data(), pointer(args), pointer(refs), complete, operation);
     else if (kind == 1) reactor_request_schema(state->handle, complete, operation);
     else reactor_get_stats(state->handle, complete, operation);
+  } catch (const std::exception& error) { failure(env, error); }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_NativeClient_uploadFile(JNIEnv* env, jobject, jlong value, jbyteArray path,
+    jboolean staged, jobject receiver) {
+  try {
+    auto* state = client(value);
+    auto p = reactor_jni::inputText(env, path);
+    auto owned = std::make_unique<Operation>(state, env, receiver);
+    if (staged) owned->staged = std::make_unique<StagedUpload>(p);
+    auto* operation = owned.get();
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->pending.emplace(operation, std::move(owned));
+    }
+    reactor_upload_file(state->handle, p.data(), complete, operation);
+  } catch (const std::exception& error) { failure(env, error); }
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_NativeClient_uploadBytes(JNIEnv* env, jobject, jlong value, jbyteArray bytes,
+    jbyteArray name, jbyteArray mime, jobject receiver) {
+  try {
+    auto* state = client(value);
+    auto n = reactor_jni::inputText(env, name), m = reactor_jni::inputText(env, mime);
+    auto data = inputBytes(env, bytes); // FFI borrows only until reactor_upload_bytes returns.
+    auto owned = std::make_unique<Operation>(state, env, receiver);
+    auto* operation = owned.get();
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->pending.emplace(operation, std::move(owned));
+    }
+    reactor_upload_bytes(state->handle, data.empty() ? nullptr : data.data(), data.size(), n.data(), m.data(), complete, operation);
   } catch (const std::exception& error) { failure(env, error); }
 }

@@ -21,4 +21,4 @@ compiler="$ANDROID_HOME/ndk/29.0.14206865/toolchains/llvm/prebuilt/$host_tag/bin
   -o "$output/libreactor_jni_test.so"
 python3 "$repo_root/scripts/check-kotlin-native.py" --elf-only "$output/libreactor_jni_test.so"
 ./gradlew --no-daemon :native-probe:connectedDebugAndroidTest \
-  -Pandroid.testInstrumentationRunnerArguments.class=inc.reactor.sdk.internal.NativeBoundaryTest,inc.reactor.sdk.internal.LifecycleTest,inc.reactor.sdk.internal.MediaReceiveTest,inc.reactor.sdk.internal.MediaSendTest,inc.reactor.sdk.internal.CommandTest
+  -Pandroid.testInstrumentationRunnerArguments.class=inc.reactor.sdk.internal.NativeBoundaryTest,inc.reactor.sdk.internal.LifecycleTest,inc.reactor.sdk.internal.MediaReceiveTest,inc.reactor.sdk.internal.MediaSendTest,inc.reactor.sdk.internal.CommandTest,inc.reactor.sdk.internal.UploadTest,inc.reactor.sdk.internal.ContentUploadTest
