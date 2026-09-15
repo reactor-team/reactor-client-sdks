@@ -91,9 +91,16 @@ jobs:
           RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
+          # Not the enclosing "Release" job's own conclusion: that job's
+          # PUBLISH_CPP_RELEASE kill switch (release-cpp.yml's "Check the
+          # kill switch" step) skips asset collection and "Create the
+          # release" without failing the job — so a run with the switch off
+          # reports "Release" as a plain success while publishing nothing.
+          # Checking the "Create the release" step itself distinguishes
+          # "ran and published" from "job succeeded, nothing published".
           conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs" --paginate \
-            --jq '[.jobs[] | select(.name == "Release")] | last | .conclusion // "missing"')
-          echo "release job conclusion: $conclusion"
+            --jq '[.jobs[] | select(.name == "Release") | .steps[]? | select(.name == "Create the release")] | last | .conclusion // "missing"')
+          echo "release step conclusion: $conclusion"
           echo "released=$([ "$conclusion" = "success" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - name: Dispatch the C++ endurance suite (2h)
