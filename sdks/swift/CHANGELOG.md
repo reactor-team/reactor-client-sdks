@@ -7,6 +7,20 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-15
+
+### Added
+
+- Connection setup now asks for the two WARP opt-ins, SNAP
+  (draft-hancke-tsvwg-snap) and SPED (draft-hancke-webrtc-sped), which together
+  take up to three round trips off the time to the first frame. The SDK sends
+  the offer, so it is the side that asks: the offer carries this side's SCTP
+  INIT parameters, letting the data channel skip the cookie exchange, and the
+  DTLS handshake rides inside the ICE binding requests instead of waiting for
+  ICE to settle. A server that does not answer them negotiates the ordinary
+  handshake, so nothing changes against one that has not been updated. Requires
+  reactor-webrtc 0.18.
+
 ## [1.0.1] - 2026-09-10
 
 ### Fixed

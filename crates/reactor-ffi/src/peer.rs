@@ -350,8 +350,11 @@ impl ReactorWebRtcPeerTransport {
 
     pub fn with_adm_mode(event_tx: UnboundedSender<PeerEvent>, mode: AdmMode) -> Self {
         info!("[peer] audio device module: {mode:?}");
+        // SPED is factory-wide: libwebrtc reads it from the engine's environment
+        // rather than per connection.
         let factory = PeerConnectionFactory::builder()
             .with_adm(mode)
+            .with_dtls_in_stun(true)
             .build()
             .expect("create PeerConnectionFactory");
         Self {
@@ -419,6 +422,37 @@ impl ReactorWebRtcPeerTransport {
     }
 }
 
+/// Build the configuration the offer is created with.
+///
+/// SNAP rides on the offer, so this is the side that asks for it: the offer
+/// carries this side's SCTP INIT parameters, and a server that mirrors them
+/// lets the data channel skip SCTP's cookie exchange. A server that does not
+/// negotiates the ordinary handshake. The DTLS half of the same saving is
+/// factory-wide — see `with_adm_mode`.
+fn offer_config(ice_servers: &[IceServer]) -> RtcConfiguration {
+    RtcConfiguration {
+        ice_servers: ice_servers
+            .iter()
+            .map(|s| RwIceServer {
+                urls: s.uris.clone(),
+                username: s
+                    .credentials
+                    .as_ref()
+                    .map(|c| c.username.clone())
+                    .unwrap_or_default(),
+                password: s
+                    .credentials
+                    .as_ref()
+                    .map(|c| c.password.clone())
+                    .unwrap_or_default(),
+            })
+            .collect(),
+        continual_gathering_policy: ContinualGatheringPolicy::GatherContinually,
+        sctp_snap: true,
+        ..Default::default()
+    }
+}
+
 #[async_trait]
 impl PeerTransport for ReactorWebRtcPeerTransport {
     async fn prepare(
@@ -426,26 +460,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         ice_servers: &[IceServer],
         tracks: &[TrackCapability],
     ) -> Result<PreparedOffer, CoreError> {
-        let config = RtcConfiguration {
-            ice_servers: ice_servers
-                .iter()
-                .map(|s| RwIceServer {
-                    urls: s.uris.clone(),
-                    username: s
-                        .credentials
-                        .as_ref()
-                        .map(|c| c.username.clone())
-                        .unwrap_or_default(),
-                    password: s
-                        .credentials
-                        .as_ref()
-                        .map(|c| c.password.clone())
-                        .unwrap_or_default(),
-                })
-                .collect(),
-            continual_gathering_policy: ContinualGatheringPolicy::GatherContinually,
-            ..Default::default()
-        };
+        let config = offer_config(ice_servers);
 
         let recv_tracks: Arc<Mutex<Vec<RemoteTrack>>> = Arc::new(Mutex::new(Vec::new()));
         let recv_name_mids: Arc<Mutex<Vec<(String, Option<String>)>>> =
@@ -1004,5 +1019,26 @@ mod tests {
     fn an_unrecognised_value_falls_back_to_synthetic() {
         assert_eq!(adm_mode_from_env(Some("platfrom")), AdmMode::Synthetic);
         assert_eq!(adm_mode_from_env(Some("")), AdmMode::Synthetic);
+    }
+
+    /// SNAP only saves anything if the offerer asks for it, and the SDK is the offerer.
+    #[test]
+    fn the_offer_asks_for_snap() {
+        assert!(offer_config(&[]).sctp_snap);
+    }
+
+    /// The ICE servers the caller supplied still reach the offer alongside the WARP flag.
+    #[test]
+    fn the_offer_carries_the_supplied_ice_servers() {
+        let config = offer_config(&[IceServer {
+            uris: vec!["turn:host:3478".to_string()],
+            credentials: None,
+        }]);
+        assert_eq!(config.ice_servers.len(), 1);
+        assert_eq!(
+            config.ice_servers[0].urls,
+            vec!["turn:host:3478".to_string()]
+        );
+        assert!(config.ice_servers[0].username.is_empty());
     }
 }
