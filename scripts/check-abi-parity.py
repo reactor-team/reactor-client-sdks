@@ -234,10 +234,29 @@ def main() -> int:
         for name in SWIFT_SILGEN.findall(text):
             swift_bound.setdefault(name, where)
 
+    kotlin_named: set[str] = set()
+    kotlin_problems: list[str] = []
+    for path in (REPO_ROOT / "sdks/kotlin/native").rglob("*"):
+        if path.suffix not in {".hpp", ".cpp"} or "tests" in path.parts:
+            continue
+        source = CPP_COMMENT.sub(" ", read(path))
+        names = set(HEADER_DECL.findall(source))
+        kotlin_named.update(names)
+        if names & FORBIDDEN:
+            kotlin_problems.append(f"{path}: use reactor_create_with_adm, never reactor_create")
+        # JNI entry points are definitions, not hand-written copies of the C ABI.
+        declarations = re.findall(
+            r'extern\s+"C"\s+(?!JNIEXPORT)[^;{}]*?\b(reactor_[a-z0-9_]+)\s*\(', source
+        )
+        if declarations or re.search(r'extern\s+"C"\s*{', source):
+            kotlin_problems.append(f"{path}: import reactor_ffi.h instead of redeclaring the ABI")
+
     if not rust:
         sys.exit("error: found no exported reactor_* functions — has lib.rs moved?")
 
-    problems: list[str] = []
+    problems: list[str] = kotlin_problems
+    if kotlin_named - rust:
+        problems.append(f"Kotlin JNI names unknown ABI symbols: {sorted(kotlin_named - rust)}")
 
     missing_from_header = sorted(rust - header)
     if missing_from_header:
@@ -314,7 +333,8 @@ def main() -> int:
     only_in_rust = sorted(rust - ctypes_decls)
     summary = (
         f"ABI parity OK — {len(rust)} exported functions, header in sync, "
-        f"{len(cpp_named)} named by the C++ SDK, {len(swift_named)} by the Swift SDK"
+        f"{len(cpp_named)} named by the C++ SDK, {len(swift_named)} by the Swift SDK, "
+        f"{len(kotlin_named)} by Kotlin JNI"
     )
     if only_in_rust:
         # Not an error: the Python SDK is free to bind a subset.
