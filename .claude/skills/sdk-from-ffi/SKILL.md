@@ -659,10 +659,30 @@ line up with teardown order. Wrap each cycle's body so a mid-cycle failure still
 disconnects/closes before the error propagates — the same shape the *Refuse; do not fail
 quietly* invariant requires elsewhere.
 
-**CI wiring**: `workflow_dispatch` only (this suite is long, noisy, and reads a trend rather
-than a single right-or-wrong answer — it does not gate a PR or a release the way the seven
-scenarios and integration-tests do), one job per SDK gated on a `sdk` choice input so adding
-a language later is "add a choice plus a job," not a restructure.
+**CI wiring**: `workflow_dispatch` is the direct entrypoint (this suite is long, noisy, and
+reads a trend rather than a single right-or-wrong answer — it does not *gate* a PR or a
+release the way the seven scenarios and integration-tests do), one job per SDK in
+`endurance-tests.yml` gated on a `sdk` choice input so adding a language later is "add a
+choice plus a job," not a restructure.
+
+**It also runs itself, automatically, after every real release** —
+`endurance-tests-on-release.yml` watches `release-<lang>.yml` via `workflow_run` and
+dispatches `endurance-tests.yml` for that language once the run's own release-publishing job
+(the one that actually calls `gh release create`/`gh release edit --draft=false` — its `name:`
+differs per language, e.g. Python's is "Publish GitHub release", C++'s is "Release") reports
+`conclusion == success`. Checking that job specifically, not the workflow's own top-level
+`conclusion`, is load-bearing: `release-<lang>.yml` also completes "successfully" for a
+pull-request build or a `dry_run` `workflow_dispatch`, neither of which publishes anything —
+trusting the top-level conclusion alone would dispatch an endurance run after every green PR
+build of the release workflow, not just an actual release. Duration comes from the
+`RELEASE_ENDURANCE_DURATION_MINUTES` repo variable (Settings → Secrets and variables →
+Actions → Variables), not a literal, so it can be retuned without a file edit — same pattern
+`release-python.yml`'s `PUBLISH_TO_PYPI`/`release-cpp.yml`'s `PUBLISH_CPP_RELEASE` kill
+switches use. **Wiring a new binding's endurance suite in means adding a job to this file
+too**, not just to `endurance-tests.yml`: add `"Release <Lang> SDK"` to the `workflows:` list,
+copy one of the existing per-SDK jobs, and point its API check at that SDK's own
+`release-<lang>.yml` release-job name (read it off that file — don't assume it matches another
+SDK's).
 
 **Matrix one job per scenario, discovered rather than hand-listed.** Scenarios used to run
 sequentially inside a single SDK job — fine with two of them, a liability once a suite grows
