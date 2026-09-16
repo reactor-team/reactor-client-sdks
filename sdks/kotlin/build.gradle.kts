@@ -6,6 +6,7 @@ plugins {
     alias(libs.plugins.kotlin.android) apply false
     alias(libs.plugins.android.library) apply false
     alias(libs.plugins.ktlint) apply false
+    alias(libs.plugins.dokka) apply false
 }
 
 allprojects {
@@ -34,11 +35,28 @@ subprojects {
 subprojects {
     if (name != "native-probe") {
         apply(plugin = "maven-publish")
-        val manualJar = tasks.register<Jar>("manualJar") {
-            archiveClassifier.set("javadoc")
+        apply(plugin = "org.jetbrains.dokka")
+
+        // Keep the site docs available to consumers as a separate archive. The javadoc classifier
+        // is reserved for Dokka output so Maven tooling and javadoc.io can render the API reference.
+        val manualDocsJar = tasks.register<Jar>("manualDocsJar") {
+            archiveClassifier.set("docs")
             from(rootProject.file("docs"))
             from(rootProject.file("README.md"))
             from(rootProject.file("distribution/index.html"))
+        }
+        val dokkaJavadocJar = tasks.register<Jar>("dokkaJavadocJar") {
+            archiveClassifier.set("javadoc")
+            val dokkaTask = tasks.named("dokkaGeneratePublicationJavadoc")
+            dependsOn(dokkaTask)
+            from(dokkaTask)
+        }
+        val dokkaHtmlJar = tasks.register<Jar>("dokkaHtmlJar") {
+            archiveClassifier.set("dokka")
+            val dokkaTask = tasks.named("dokkaGeneratePublicationHtml")
+            dependsOn(dokkaTask)
+            from(dokkaTask)
+        }
         }
         extensions.configure<PublishingExtension> {
             repositories {
@@ -53,7 +71,9 @@ subprojects {
             sdkProject.extensions.configure<PublishingExtension> {
                 publications.create<MavenPublication>("sdk") {
                     from(sdkProject.components[if (sdkProject.plugins.hasPlugin("com.android.library")) "release" else "java"])
-                    artifact(manualJar)
+                    artifact(manualDocsJar)
+                    artifact(dokkaJavadocJar)
+                    artifact(dokkaHtmlJar)
                 }
                 publications.withType<MavenPublication>().configureEach {
                     pom {

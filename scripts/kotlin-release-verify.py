@@ -24,12 +24,26 @@ def version(root: Path) -> str:
 def verify_consumers(repo: Path, artifact_root: Path, sdk_version: str) -> None:
     expected = [
         artifact_root / "inc/reactor/reactor-core" / sdk_version / f"reactor-core-{sdk_version}.pom",
+        artifact_root / "inc/reactor/reactor-jvm" / sdk_version / f"reactor-jvm-{sdk_version}.pom",
         artifact_root / "inc/reactor/reactor-desktop" / sdk_version / f"reactor-desktop-{sdk_version}.pom",
         artifact_root / "inc/reactor/reactor-android" / sdk_version / f"reactor-android-{sdk_version}.pom",
     ]
     missing = [str(path) for path in expected if not path.is_file()]
     if missing:
         raise ValueError("Missing published consumer metadata: " + ", ".join(missing))
+    for module in ("reactor-core", "reactor-jvm", "reactor-desktop", "reactor-android"):
+        directory = artifact_root / "inc/reactor" / module / sdk_version
+        sources = directory / f"{module}-{sdk_version}-sources.jar"
+        javadoc = directory / f"{module}-{sdk_version}-javadoc.jar"
+        dokka = directory / f"{module}-{sdk_version}-dokka.jar"
+        if not sources.is_file() or not javadoc.is_file() or not dokka.is_file():
+            raise ValueError(f"{module} must publish sources.jar, javadoc.jar, and dokka.jar")
+        with zipfile.ZipFile(javadoc) as archive:
+            if not any(name.endswith((".html", ".js")) for name in archive.namelist()):
+                raise ValueError(f"{module} javadoc.jar has no generated documentation")
+        with zipfile.ZipFile(dokka) as archive:
+            if not any(name.endswith((".html", ".js")) for name in archive.namelist()):
+                raise ValueError(f"{module} dokka.jar has no generated documentation")
     aars = list((artifact_root / "inc/reactor/reactor-android" / sdk_version).glob("*.aar"))
     if not aars:
         raise ValueError("Android publication has no AAR")

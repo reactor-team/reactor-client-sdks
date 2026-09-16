@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+import zipfile
 
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("verify", HERE / "kotlin-release-verify.py")
@@ -18,12 +19,16 @@ class ReleaseVerifyTest(unittest.TestCase):
             (root / "sdks/kotlin/gradle.properties").write_text("reactorVersion=1.2.3\n")
             (root / "sdks/kotlin/CHANGELOG.md").write_text("## [1.2.3]\n")
             maven = root / "maven/inc/reactor"
-            for module in ("reactor-core", "reactor-desktop", "reactor-android"):
+            for module in ("reactor-core", "reactor-jvm", "reactor-desktop", "reactor-android"):
                 directory = maven / module / "1.2.3"
                 directory.mkdir(parents=True)
                 (directory / f"{module}-1.2.3.pom").write_text("<project />")
+                (directory / f"{module}-1.2.3-sources.jar").write_bytes(b"sources")
+                for classifier in ("javadoc", "dokka"):
+                    with zipfile.ZipFile(directory / f"{module}-1.2.3-{classifier}.jar", "w") as archive:
+                        archive.writestr("index.html", "<html />")
             aar = maven / "reactor-android/1.2.3/reactor-android-1.2.3.aar"
-            with __import__("zipfile").ZipFile(aar, "w") as archive:
+            with zipfile.ZipFile(aar, "w") as archive:
                 for name in ("jni/arm64-v8a/libreactor_ffi.so", "jni/arm64-v8a/libreactor_jni.so", "assets/reactor/LICENSE", "assets/reactor/NOTICE"):
                     archive.writestr(name, "ok")
             self.assertEqual(verify.version(root), "1.2.3")

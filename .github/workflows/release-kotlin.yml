@@ -10,7 +10,7 @@ on:
       - 'sdks/kotlin/distribution/**'
       - 'sdks/kotlin/native/**'
       - 'sdks/kotlin/**/build.gradle.kts'
-      - 'sdks/kotlin/reactor-core/src/main/kotlin/inc/reactor/sdk/ReactorNative.kt'
+      - 'sdks/kotlin/reactor-core/src/main/kotlin/inc/reactor/sdk/NativeRuntime.kt'
       - 'scripts/*kotlin*distribution*'
       - 'scripts/kotlin-release-*'
       - 'scripts/build-manylinux-kotlin.sh'
