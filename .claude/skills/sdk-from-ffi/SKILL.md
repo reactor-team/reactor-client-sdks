@@ -873,6 +873,33 @@ ships without one.
   collision happened in practice (see `release-js.yml`'s and `release-python.yml`'s own
   notes on the step). Nothing publishes off a `pull_request` event anyway, so skipping it
   there loses no coverage.
+- **Integration-test retries: one flat rule, `scripts/retry.sh`, encapsulated in the task
+  itself, no per-language exception.** A live model's shared session-creation quota, its
+  capacity pool, or a session/SDP poll can all fail transiently without any bug in your
+  binding — that's what an integration-tests suite is exposed to that a unit test never is.
+  Wrap only the *actual test-invocation line* of your `test:<lang>:integration-tests` mise
+  task (Python/C++/JS: the last entry of its `run` array; Swift: inside
+  `scripts/swift.sh`'s `integration-tests`/`integration-tests-ios-simulator` cases, since
+  that task just delegates to the script) with `scripts/retry.sh` — never the build/cmake/
+  cargo steps ahead of it, so a retry never re-pays for a build that already succeeded.
+  This makes `mise run test:<lang>:integration-tests` itself retry, everywhere it's called
+  — `ci.yml`, every `release-<lang>.yml`, and a contributor running it locally — with
+  nothing for any caller to remember to wrap. A first pass wrapped the CI *workflow step*
+  instead (`run: scripts/retry.sh mise run test:<lang>:integration-tests`), which reviewer
+  feedback on PR #193 pushed back on for good reason: it left every direct caller of the
+  same mise task (all four `release-<lang>.yml` files) to independently remember to wrap
+  their own copy too — exactly the kind of drift this rule exists to prevent, and Codex
+  review on that same PR caught it happening within the same PR. Don't reintroduce that
+  shape; the task should be robust on its own, not depend on every caller remembering to
+  wrap it.
+
+  Not a framework-specific retry either (`pytest-rerunfailures`, Playwright's `retries`,
+  Catch2/swift-testing have neither) — that had already drifted once, separately: Python's
+  old `--only-rerun RateLimitedError` caught only the rate-limit case, missing the capacity
+  and timeout ones, and Swift's own connect-retry comment claimed to cover capacity when
+  its code didn't. One script, unscoped by exception type, called from exactly one place
+  per binding. If `scripts/retry.sh`'s policy (4 attempts, 15s/30s/60s backoff) ever needs
+  to change, change it there; don't add a parallel mechanism next to it.
 
 ---
 

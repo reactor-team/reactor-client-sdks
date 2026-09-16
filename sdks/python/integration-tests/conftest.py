@@ -81,14 +81,15 @@ def new_reactor(*, model_name: str = MODEL_NAME, jwt: str | None = None) -> Reac
 # reactor/echo's session-creation quota (sessions_per_minute) is enforced per
 # API key across the whole suite, not per test — confirmed against prod: this
 # suite alone, run in isolation, still tripped it (a burst of a few tests'
-# worth of connects lands within the same window). Reacting after a 429
-# (mise.toml's --reruns) is a safety net, not sufficient on its own when the
-# suite's average pace is already close to the limit. Pacing every session
-# creation through one process-wide gate keeps it under, deterministically.
-# 8.0s (~7.5/min) matched the old 10/min quota; now 100/min, so 0.7s
-# (~86/min) leaves real margin without being needlessly conservative —
-# a RateLimitedError still gets rerun (mise.toml's --reruns) as a second
-# line of defense.
+# worth of connects lands within the same window). Reacting after a 429 is a
+# safety net (see mise.toml's test:python:integration-tests task, which
+# wraps the pytest invocation itself in scripts/retry.sh — not pytest's own
+# --reruns, and not scoped to this exception, see that script's own
+# comment), not sufficient on its own when the suite's average pace is
+# already close to the limit. Pacing every session creation through one
+# process-wide gate keeps it under, deterministically. 8.0s (~7.5/min)
+# matched the old 10/min quota; now 100/min, so 0.7s (~86/min) leaves real
+# margin without being needlessly conservative.
 _SESSION_CREATE_INTERVAL = 0.7  # seconds; ~86/min, under the 100/min quota
 _session_create_lock = asyncio.Lock()
 _last_session_create_at = 0.0
