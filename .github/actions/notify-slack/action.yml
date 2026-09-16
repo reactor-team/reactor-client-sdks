@@ -14,6 +14,22 @@ inputs:
   message:
     description: Slack mrkdwn body (links, install command, etc.)
     required: true
+  run-url:
+    description: >-
+      Build log link. Defaults to this action's own run — override with the
+      watched run's URL when this runs from a workflow_run-triggered
+      workflow (e.g. `github.event.workflow_run.html_url`), otherwise the
+      link points at the small notifier run instead of the real build.
+    required: false
+    default: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  actor:
+    description: >-
+      "Triggered by" name. Defaults to this action's own run's actor —
+      override with the watched run's actor (e.g.
+      `github.event.workflow_run.actor.login`) for the same reason as
+      `run-url`.
+    required: false
+    default: ${{ github.actor }}
 
 runs:
   using: composite
@@ -24,8 +40,8 @@ runs:
         STATUS: ${{ inputs.status }}
         TITLE: ${{ inputs.title }}
         MESSAGE: ${{ inputs.message }}
-        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        ACTOR: ${{ github.actor }}
+        RUN_URL: ${{ inputs.run-url }}
+        ACTOR: ${{ inputs.actor }}
       run: |
         set -euo pipefail
 

@@ -66,6 +66,8 @@ jobs:
         uses: ./.github/actions/notify-slack
         with:
           webhook-url: ${{ secrets.SLACK_WEBHOOK_SDK_RELEASES }}
+          run-url: ${{ github.event.workflow_run.html_url }}
+          actor: ${{ github.event.workflow_run.actor.login }}
           status: success
           title: "JS SDK ${{ steps.version.outputs.version }} released"
           message: |
@@ -112,6 +114,8 @@ jobs:
         uses: ./.github/actions/notify-slack
         with:
           webhook-url: ${{ secrets.SLACK_WEBHOOK_SDK_RELEASES }}
+          run-url: ${{ github.event.workflow_run.html_url }}
+          actor: ${{ github.event.workflow_run.actor.login }}
           status: success
           title: "Python SDK ${{ steps.version.outputs.version }} released"
           message: |
@@ -164,6 +168,8 @@ jobs:
         uses: ./.github/actions/notify-slack
         with:
           webhook-url: ${{ secrets.SLACK_WEBHOOK_SDK_RELEASES }}
+          run-url: ${{ github.event.workflow_run.html_url }}
+          actor: ${{ github.event.workflow_run.actor.login }}
           status: success
           title: "C++ SDK ${{ steps.version.outputs.version }} released"
           message: |
@@ -209,6 +215,8 @@ jobs:
         uses: ./.github/actions/notify-slack
         with:
           webhook-url: ${{ secrets.SLACK_WEBHOOK_SDK_RELEASES }}
+          run-url: ${{ github.event.workflow_run.html_url }}
+          actor: ${{ github.event.workflow_run.actor.login }}
           status: success
           title: "Swift SDK ${{ steps.version.outputs.version }} released"
           message: |
