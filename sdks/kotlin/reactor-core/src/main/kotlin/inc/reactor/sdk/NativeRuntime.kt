@@ -6,7 +6,7 @@ import java.nio.file.Path
 import java.util.Locale
 
 /** Explicit process initialization; no network access or source builds occur here. */
-object ReactorNative {
+object NativeRuntime {
     private var initialized = false
     private var failure: Throwable? = null
 
@@ -49,7 +49,7 @@ object ReactorNative {
         for (name in nativeLibraries(platform)) {
             val resource = "/inc/reactor/natives/$platform/$name"
             val input =
-                ReactorNative::class.java.getResourceAsStream(resource)
+                NativeRuntime::class.java.getResourceAsStream(resource)
                     ?: error("Missing $resource; add inc.reactor:reactor-native-$platform at the SDK version")
             val file = directory.resolve(name)
             input.use { Files.copy(it, file) }

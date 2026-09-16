@@ -1,5 +1,5 @@
 import inc.reactor.sdk.Reactor
-import inc.reactor.sdk.ReactorNative
+import inc.reactor.sdk.NativeRuntime
 import inc.reactor.sdk.ReactorStatus
 import inc.reactor.sdk.timeMicros
 import kotlinx.coroutines.runBlocking
@@ -7,13 +7,13 @@ import kotlinx.coroutines.withTimeout
 
 fun main(args: Array<String>) {
     if (args.isNotEmpty()) {
-        val failure = runCatching { ReactorNative.initialize() }.exceptionOrNull()
+        val failure = runCatching { NativeRuntime.initialize() }.exceptionOrNull()
         check(failure is UnsatisfiedLinkError && failure.message.orEmpty().contains(args[0])) { "Unexpected native error: $failure" }
         println("Expected native error verified")
         return
     }
-    ReactorNative.initialize()
-    ReactorNative.initialize()
+    NativeRuntime.initialize()
+    NativeRuntime.initialize()
     check(timeMicros() > 0)
     runBlocking {
         repeat(3) {

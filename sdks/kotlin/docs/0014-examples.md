@@ -7,7 +7,7 @@ numbers and acceptance evidence so a parity report can compare the three
 consumers without comparing unrelated UI code.
 
 Desktop Kotlin uses `runBlocking` only at the command-line boundary and keeps
-the SDK API suspend-first. Desktop Java uses the JVM `JavaReactor` adapter, which
+the SDK API suspend-first. Desktop Java uses the JVM `Reactor` adapter, which
 owns a coroutine scope and exposes blocking methods for Java callers; it must
 never be invoked from an Android main thread. Android Kotlin launches work from
 an Activity or ViewModel scope, uses application-owned permissions, and routes

@@ -11,6 +11,9 @@ as a stack of focused PRs, starting with REA-6219.
 - `reactor-jvm`: desktop distribution; exposes the shared module transitively.
 - `reactor-android`: Android AAR; exposes the same shared module transitively.
 
+The shared native loader is `NativeRuntime`. Desktop Java uses `inc.reactor.sdk.jvm.Reactor`; the
+package name distinguishes it from the suspend-first `inc.reactor.sdk.Reactor` used by Kotlin.
+
 The JNI bridge includes the canonical
 [C header](../../../crates/reactor-ffi/include/reactor_ffi.h).
 Protocol and WebRTC stay in Rust. Device adapters will be separate optional modules.
