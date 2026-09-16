@@ -1,0 +1,216 @@
+# Posts a Slack notification to #sdk-releases whenever an SDK actually ships
+# a release (REA-5887). Mirrors endurance-tests-on-release.yml's own shape —
+# same workflow_run trigger, same "check the specific completed run's own
+# publish step via the API" technique, one job per release workflow — rather
+# than a job added to each release-*.yml directly: workflow_run carries no
+# output from the run it watched, so this checks the completed run's own
+# publish step/job (each release-*.yml's real "did it actually ship" gate)
+# instead of trusting the top-level conclusion alone, exactly like that
+# workflow already does. Adding a fifth release workflow later is "add a
+# job here", not a restructure of this file.
+name: Notify Slack on release
+
+on:
+  workflow_run:
+    workflows:
+      - "Release JS SDK"
+      - "Release Python SDK"
+      # `workflows:` matches as a glob pattern, not a literal string, so the
+      # `+`s must be escaped — see endurance-tests-on-release.yml's own
+      # comment and #197 (unescaped, GitHub can't parse the trigger at all,
+      # and this workflow silently never runs).
+      - 'Release C\+\+ SDK'
+      - "Release Swift SDK"
+    types: [completed]
+    # A pull_request build of a release-*.yml workflow runs against the PR's
+    # own branch, not main — restricting to main here already excludes those;
+    # the per-job "did it actually publish" check below is what excludes a
+    # same-branch dry run (workflow_dispatch with dry_run=true).
+    branches: [main]
+
+jobs:
+  js:
+    name: Notify #sdk-releases (JS)
+    if: >-
+      github.event.workflow_run.name == 'Release JS SDK' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check whether this run actually published to npm
+        id: released
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs" --paginate \
+            --jq '[.jobs[] | select(.name == "Publish to npm") | .steps[]? | select(.name == "Publish")] | last | .conclusion // "missing"')
+          echo "publish step conclusion: $conclusion"
+          echo "released=$([ "$conclusion" = "success" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Read the released version
+        if: steps.released.outputs.released == 'true'
+        id: version
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          VERSION=$(git show "${HEAD_SHA}:sdks/js/package.json" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - if: steps.released.outputs.released == 'true'
+        uses: ./.github/actions/notify-slack
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_SDK_RELEASES }}
+          status: success
+          title: "JS SDK ${{ steps.version.outputs.version }} released"
+          message: |
+            `npm install @reactor-team/js-sdk@${{ steps.version.outputs.version }}`
+            <https://github.com/${{ github.repository }}/releases/tag/js-v${{ steps.version.outputs.version }}|GitHub Release> • <https://www.npmjs.com/package/@reactor-team/js-sdk/v/${{ steps.version.outputs.version }}|npm>
+
+  python:
+    name: Notify #sdk-releases (Python)
+    if: >-
+      github.event.workflow_run.name == 'Release Python SDK' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check whether this run actually published to PyPI
+        id: released
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs" --paginate \
+            --jq '[.jobs[] | select(.name == "Publish to PyPI") | .steps[]? | select(.name == "Publish")] | last | .conclusion // "missing"')
+          echo "publish step conclusion: $conclusion"
+          echo "released=$([ "$conclusion" = "success" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Read the released version
+        if: steps.released.outputs.released == 'true'
+        id: version
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          VERSION=$(git show "${HEAD_SHA}:sdks/python/pyproject.toml" \
+            | awk '/^\[project\]/{f=1;next} /^\[/{f=0} f' \
+            | grep -m1 '^version' \
+            | sed -E 's/version[[:space:]]*=[[:space:]]*"([^"]+)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - if: steps.released.outputs.released == 'true'
+        uses: ./.github/actions/notify-slack
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_SDK_RELEASES }}
+          status: success
+          title: "Python SDK ${{ steps.version.outputs.version }} released"
+          message: |
+            `pip install reactor-sdk==${{ steps.version.outputs.version }}`
+            <https://github.com/${{ github.repository }}/releases/tag/python-v${{ steps.version.outputs.version }}|GitHub Release> • <https://pypi.org/project/reactor-sdk/${{ steps.version.outputs.version }}/|PyPI>
+
+  cpp:
+    name: Notify #sdk-releases (C++)
+    if: >-
+      github.event.workflow_run.name == 'Release C++ SDK' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check whether this run actually published a release
+        id: released
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        # Not the enclosing "Release" job's own conclusion: its
+        # PUBLISH_CPP_RELEASE kill switch skips asset collection and "Create
+        # the release" without failing the job — see
+        # endurance-tests-on-release.yml's identical check (and #192) for
+        # why the job's own conclusion is not a reliable "did it publish"
+        # signal here.
+        run: |
+          set -euo pipefail
+          conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs" --paginate \
+            --jq '[.jobs[] | select(.name == "Release") | .steps[]? | select(.name == "Create the release")] | last | .conclusion // "missing"')
+          echo "release step conclusion: $conclusion"
+          echo "released=$([ "$conclusion" = "success" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Read the released version
+        if: steps.released.outputs.released == 'true'
+        id: version
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          VERSION=$(git show "${HEAD_SHA}:sdks/cpp/CMakeLists.txt" \
+            | grep -A4 '^project(' \
+            | grep -m1 'VERSION' \
+            | sed -E 's/.*VERSION[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - if: steps.released.outputs.released == 'true'
+        uses: ./.github/actions/notify-slack
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_SDK_RELEASES }}
+          status: success
+          title: "C++ SDK ${{ steps.version.outputs.version }} released"
+          message: |
+            No package registry — grab the platform archive from the release.
+            <https://github.com/${{ github.repository }}/releases/tag/cpp-v${{ steps.version.outputs.version }}|GitHub Release>
+
+  swift:
+    name: Notify #sdk-releases (Swift)
+    if: >-
+      github.event.workflow_run.name == 'Release Swift SDK' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check whether this run actually published a release
+        id: released
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs" --paginate \
+            --jq '[.jobs[] | select(.name == "Publish the GitHub release")] | last | .conclusion // "missing"')
+          echo "release job conclusion: $conclusion"
+          echo "released=$([ "$conclusion" = "success" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Read the released version
+        if: steps.released.outputs.released == 'true'
+        id: version
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          VERSION=$(git show "${HEAD_SHA}:sdks/swift/Sources/Reactor/ReactorSDK.swift" \
+            | sed -n 's/.*public static let version = "\([^"]*\)".*/\1/p' \
+            | head -1)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - if: steps.released.outputs.released == 'true'
+        uses: ./.github/actions/notify-slack
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_SDK_RELEASES }}
+          status: success
+          title: "Swift SDK ${{ steps.version.outputs.version }} released"
+          message: |
+            `.package(url: "https://github.com/${{ github.repository }}", from: "${{ steps.version.outputs.version }}")`
+            <https://github.com/${{ github.repository }}/releases/tag/v${{ steps.version.outputs.version }}|GitHub Release>

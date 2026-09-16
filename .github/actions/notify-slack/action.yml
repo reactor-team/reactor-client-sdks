@@ -1,0 +1,63 @@
+name: Notify Slack
+description: Post a release or failure notification to a Slack Incoming Webhook.
+
+inputs:
+  webhook-url:
+    description: Slack Incoming Webhook URL
+    required: true
+  status:
+    description: "success or failure — picks the header emoji"
+    required: true
+  title:
+    description: Header line, e.g. "JS SDK 3.2.0 released"
+    required: true
+  message:
+    description: Slack mrkdwn body (links, install command, etc.)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        WEBHOOK_URL: ${{ inputs.webhook-url }}
+        STATUS: ${{ inputs.status }}
+        TITLE: ${{ inputs.title }}
+        MESSAGE: ${{ inputs.message }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        ACTOR: ${{ github.actor }}
+      run: |
+        set -euo pipefail
+
+        if [[ "$STATUS" == "success" ]]; then
+          EMOJI="✅"
+        else
+          EMOJI="🚨"
+        fi
+
+        PAYLOAD=$(jq -n \
+          --arg emoji "$EMOJI" \
+          --arg title "$TITLE" \
+          --arg message "$MESSAGE" \
+          --arg run_url "$RUN_URL" \
+          --arg actor "$ACTOR" \
+          '{
+              blocks: [
+                  {
+                      type: "header",
+                      text: { type: "plain_text", text: ($emoji + " " + $title), emoji: true }
+                  },
+                  {
+                      type: "section",
+                      text: { type: "mrkdwn", text: $message }
+                  },
+                  {
+                      type: "context",
+                      elements: [
+                          { type: "mrkdwn", text: ("Triggered by *" + $actor + "* • <" + $run_url + "|Build log>") }
+                      ]
+                  }
+              ]
+          }')
+
+        curl -sf -X POST -H 'Content-Type: application/json' --data "$PAYLOAD" "$WEBHOOK_URL" > /dev/null
