@@ -799,6 +799,26 @@ and building that needs a Rust toolchain plus a libwebrtc download.
   walks back to an older release that installs anywhere and leaves the user on a different
   API, silently. Document the floor pin (`reactor-sdk>=1.0`) and put the platform table in
   the README.
+- **No package registry means no registry badge — use a filtered GitHub release badge
+  instead.** A binding that ships via GitHub Releases (C++) or Swift Package Manager
+  (Swift) has nothing like npm/PyPI to point a version badge at, and this is a monorepo
+  with every SDK's tags in the same repo, so a plain `github/v/release` badge picks up
+  whichever SDK tagged most recently. Filter it to your tag family with shields.io's
+  `filter` query param instead:
+  `https://img.shields.io/github/v/release/reactor-team/reactor-client-sdks?filter=<pattern>&label=<lang>-sdk`.
+  Match `filter` to how you actually tag releases — `cpp-*` for C++'s prefixed
+  `cpp-vX.Y.Z` tags. Swift is the special case: SPM only resolves a tag that is bare
+  semver (`vX.Y.Z`, no prefix), so its release tags can't carry a `swift-` prefix the
+  way every other binding's do, and the badge has to filter on `v*` instead — verify
+  that pattern doesn't also catch another binding's tags before reusing it. Add the
+  badge to the root `README.md`'s badge row alongside the others, not just the
+  per-SDK one. **The badge's link target needs its own, different query.** GitHub's
+  release search (`/releases?q=...`) is not a plain substring match on the tag —
+  `q=v` finds nothing against tags like `v1.0.1`, and the failure mode isn't just
+  "too short" either (`q=cp` also finds nothing, while the 1-character `q=c` does).
+  Don't guess: link to a word from the release *title* (`q=Swift`, `q=cpp-` both
+  work here) and load the rendered page to confirm it actually lists something
+  before shipping the link.
 - **Resolve the library in a fixed order**, and document it: an env var override
   (`REACTOR_FFI_LIB`), then next to the installed package, then a build in an enclosing
   checkout. That is what makes "run the installed SDK against a local build" possible.
