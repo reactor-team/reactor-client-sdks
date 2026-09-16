@@ -10,7 +10,7 @@
 [![npm: js-sdk](https://img.shields.io/npm/v/@reactor-team/js-sdk.svg?label=js-sdk)](https://www.npmjs.com/package/@reactor-team/js-sdk)
 [![PyPI: reactor-sdk](https://img.shields.io/pypi/v/reactor-sdk.svg?label=reactor-sdk)](https://pypi.org/project/reactor-sdk/)
 [![GitHub release: cpp-sdk](https://img.shields.io/github/v/release/reactor-team/reactor-client-sdks?filter=cpp-*&label=cpp-sdk)](https://github.com/reactor-team/reactor-client-sdks/releases?q=cpp-)
-[![GitHub release: swift-sdk](https://img.shields.io/github/v/release/reactor-team/reactor-client-sdks?filter=v*&label=swift-sdk)](https://github.com/reactor-team/reactor-client-sdks/releases?q=v)
+[![GitHub release: swift-sdk](https://img.shields.io/github/v/release/reactor-team/reactor-client-sdks?filter=v*&label=swift-sdk)](https://github.com/reactor-team/reactor-client-sdks/releases?q=Swift)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 </div>
