@@ -704,7 +704,14 @@ a `title`, and a Slack-mrkdwn `message`, and don't invent a second way to post. 
 hit here (`#197`): `workflow_run.workflows:` matches each entry as a glob, so a language name
 containing regex-special characters (C++'s `+`) must be escaped (`'Release C\+\+ SDK'`) or
 GitHub silently fails to parse the trigger at all — copy the escaping convention from whichever
-existing entry needs it, don't assume a plain string is safe.
+existing entry needs it, don't assume a plain string is safe. Another: the action's "Build log"
+link and "Triggered by" name default to *its own* run/actor
+(`github.run_id`/`github.actor`) — correct for `endurance-tests.yml`'s in-run
+`notify-slack-failure` job, wrong for `notify-slack-on-release.yml`'s jobs, each a separate
+`workflow_run`-triggered run reporting on a *different* run. Those pass `run-url:
+${{ github.event.workflow_run.html_url }}` and `actor: ${{ github.event.workflow_run.actor.login
+}}` explicitly — do the same for a new SDK's job here, or its release notification's link opens
+the tiny notifier run instead of the actual build/publish.
 
 **Matrix one job per scenario, discovered rather than hand-listed.** Scenarios used to run
 sequentially inside a single SDK job — fine with two of them, a liability once a suite grows
