@@ -684,6 +684,35 @@ copy one of the existing per-SDK jobs, and point its API check at that SDK's own
 `release-<lang>.yml` release-job name (read it off that file — don't assume it matches another
 SDK's).
 
+**Both a real release and a failed endurance run post to Slack's `#sdk-releases` (REA-5887) —
+wire a new binding into both.** `notify-slack-on-release.yml` mirrors
+`endurance-tests-on-release.yml`'s own shape (same `workflow_run` trigger on `"Release <Lang>
+SDK"`, same "check the specific completed run's own publish step/job via `gh api`" technique,
+one job per release workflow) rather than a job added to `release-<lang>.yml` itself — add a job
+there too, pointing its API check at whichever job/step in `release-<lang>.yml` is the real "did
+it ship" gate (the package-registry publish step when the SDK has one, e.g. JS's/Python's
+`Publish to npm`/`Publish to PyPI` job's `Publish` step — not just `release-<lang>.yml`'s
+top-level conclusion, which is also "success" for a PR build or a `dry_run` dispatch that
+published nothing). It reads the shipped version straight from the repo at
+`github.event.workflow_run.head_sha` (`git show <sha>:<the file detect-version itself reads>`),
+not from a job output — `workflow_run` carries none from the run it watched. Separately,
+`endurance-tests.yml`'s own `notify-slack-failure` job needs the new SDK's job name added to its
+`needs:` list so a failed run of *that* suite also alerts, the same one-line extension its
+sibling `python`/`cpp`/`swift` jobs already get. Both notifications post through the shared
+`.github/actions/notify-slack` composite action — call it with `status: success` or `failure`,
+a `title`, and a Slack-mrkdwn `message`, and don't invent a second way to post. One trap already
+hit here (`#197`): `workflow_run.workflows:` matches each entry as a glob, so a language name
+containing regex-special characters (C++'s `+`) must be escaped (`'Release C\+\+ SDK'`) or
+GitHub silently fails to parse the trigger at all — copy the escaping convention from whichever
+existing entry needs it, don't assume a plain string is safe. Another: the action's "Build log"
+link and "Triggered by" name default to *its own* run/actor
+(`github.run_id`/`github.actor`) — correct for `endurance-tests.yml`'s in-run
+`notify-slack-failure` job, wrong for `notify-slack-on-release.yml`'s jobs, each a separate
+`workflow_run`-triggered run reporting on a *different* run. Those pass `run-url:
+${{ github.event.workflow_run.html_url }}` and `actor: ${{ github.event.workflow_run.actor.login
+}}` explicitly — do the same for a new SDK's job here, or its release notification's link opens
+the tiny notifier run instead of the actual build/publish.
+
 **Matrix one job per scenario, discovered rather than hand-listed.** Scenarios used to run
 sequentially inside a single SDK job — fine with two of them, a liability once a suite grows
 past three or four (duration_minutes × scenario_count, past an hour on a 20-minute

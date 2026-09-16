@@ -1000,3 +1000,29 @@ jobs:
           name: endurance-test-results-swift-${{ matrix.scenario.id }}
           path: sdks/swift/endurance-results/
           if-no-files-found: warn
+
+  # ── Slack notification on failure (REA-5887) ────────────────────────────────
+  #
+  # `needs: [setup, python, cpp, swift]` + `if: failure()`: whichever job the
+  # `sdk` input actually selected runs as a matrix (one runner per scenario,
+  # fail-fast: false), and a matrix job's own conclusion is already "failure"
+  # if any scenario failed — the other two SDKs' jobs are skipped (never
+  # "failure") by their own `if: inputs.sdk == '<sdk>'` gate, so listing all
+  # three here is safe: `failure()` only trips on the one that actually ran
+  # and lost a scenario. Add a fourth SDK's job here alongside its `python`/
+  # `cpp`/`swift`-shaped job above, per this file's own extension idiom.
+  notify-slack-failure:
+    name: "Notify #sdk-releases on failure"
+    needs: [setup, python, cpp, swift]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/notify-slack
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_SDK_RELEASES }}
+          status: failure
+          title: >-
+            ${{ inputs.sdk == 'python' && 'Python' || inputs.sdk == 'cpp' && 'C++' || inputs.sdk == 'swift' && 'Swift' || inputs.sdk }} SDK endurance tests FAILED
+          message: |
+            Ran for ${{ inputs.duration_minutes }} minute(s) per scenario.
