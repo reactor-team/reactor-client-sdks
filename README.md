@@ -25,6 +25,7 @@ dedicated track.
 - **[JavaScript](sdks/js/README.md)** — `npm install @reactor-team/js-sdk`
 - **[Python](sdks/python/README.md)** — `pip install reactor-sdk`
 - **[C++](sdks/cpp/README.md)** — C++17, over the same native core
+- **[Swift](sdks/swift/README.md)** — macOS and iOS, via Swift Package Manager
 
 ## Documentation
 
