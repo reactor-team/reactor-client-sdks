@@ -964,6 +964,9 @@ rest of the stack never lands. A rough order, each of these a PR:
       disconnecting orphans the session, and the next run cannot start until it clears.
 - [ ] README documents the platform table, the library resolution order, and rebuilding
       after `crates/` changes.
+- [ ] The repo root [`README.md`](../../../README.md)'s **Supported SDKs** list includes
+      your language — it is not generated from `sdks/`, so a new binding is invisible there
+      until someone adds the line by hand.
 - [ ] The SDK's own `lint:<lang>` / `test:<lang>` tasks are in `mise.toml`, and CI runs
       them in a job scoped to `sdks/<lang>/**` plus `crates/**`, listed in `ci-complete`.
 - [ ] A change to another SDK does not build yours, and a change to `crates/` does.
