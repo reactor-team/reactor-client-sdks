@@ -17,6 +17,12 @@ repository = "https://github.com/reactor-team/reactor-client-sdks"
 reactor-protocol = { path = "crates/reactor-protocol" }
 reactor-core     = { path = "crates/reactor-core" }
 reactor-wasm     = { path = "crates/reactor-wasm" }
+# 0.18: the WARP connection-setup opt-ins — `RtcConfiguration::sctp_snap` and
+# `PeerConnectionFactoryBuilder::with_dtls_in_stun`. The SDK is the offerer, so
+# it is the side that has to ask for both; a runtime that does not answer them
+# falls back to the ordinary handshake. 0.17 is additive (Android JNI
+# packaging).
+#
 # 0.16: Linux musl prebuilt selection and the libwebrtc p6 native build.
 #
 # 0.15: the stats report says which stream is which, and carries the candidate
@@ -30,7 +36,7 @@ reactor-wasm     = { path = "crates/reactor-wasm" }
 # instant the engine pushed the frame, and the field is named `capture_time_us`
 # for it (reactor-webrtc #64). 0.10 brought the outbound push that accepts a
 # capture time in the first place (#53); 0.11 is additive.
-reactor-webrtc   = "0.16.0"
+reactor-webrtc   = "0.18"
 
 serde       = { version = "1",   features = ["derive"] }
 serde_json  = "1"
