@@ -155,13 +155,13 @@ struct State {
     ice_ready: bool,
     paused_tracks: HashSet<String>,
     closing: bool,
-    /// The reason `on_peer_connection_state` tore the connection down, when
+    /// The state `on_peer_connection_state` tore the connection down for, when
     /// `closing` was set by that (a real `Failed`/`Disconnected`/`Closed`
     /// `connectionstatechange`) rather than by a caller's plain `disconnect()`.
     /// Reset alongside `closing` at the start of every `connect()`/
     /// `reconnect()`, so `finish_transport` never reports one connection
     /// attempt's teardown as the cause of a later one's.
-    teardown_reason: Option<String>,
+    teardown_reason: Option<PeerConnectionState>,
     /// Incremented on every `connect()` / `reconnect()`.  Each `run_heartbeat`
     /// instance captures the epoch at spawn time and exits when it changes.
     heartbeat_epoch: u64,
@@ -595,7 +595,9 @@ impl Reactor {
     /// error (e.g. `Aborted`), not get misreported as `Disconnected`.
     fn teardown_error(&self) -> Option<CoreError> {
         let state = self.state.lock().unwrap();
-        state.teardown_reason.clone().map(CoreError::Disconnected)
+        state
+            .teardown_reason
+            .map(|reason| CoreError::Disconnected(format!("peer connection state: {reason:?}")))
     }
 
     async fn teardown(&self, recoverable: bool, already_failing: bool) {
@@ -737,17 +739,16 @@ impl Reactor {
                     !state.closing && state.status != ReactorStatus::Disconnected
                 };
                 if should_report {
-                    let message = format!("peer connection state: {connection_state:?}");
                     self.emit_error(ErrorDetails::new(
                         codes::DISCONNECTED,
-                        message.clone(),
+                        format!("peer connection state: {connection_state:?}"),
                         true,
                     ));
                     // Recorded before teardown() sets `closing`, so a negotiation
                     // still in flight (see `finish_transport`) can report the real
                     // reason instead of calling into a transport this is about to
                     // close out from under it.
-                    self.state.lock().unwrap().teardown_reason = Some(message);
+                    self.state.lock().unwrap().teardown_reason = Some(connection_state);
                     self.teardown(true, true).await;
                 }
             }
