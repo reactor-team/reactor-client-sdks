@@ -18,9 +18,14 @@ name: Endurance tests after release
 
 on:
   workflow_run:
+    # `workflows:` matches as a glob pattern, not a literal string, so the
+    # `+`s in "Release C++ SDK" must be escaped — otherwise GitHub can't
+    # parse the trigger at all (fails silently: this workflow never runs,
+    # not even to no-op) and logs "Encountered an issue parsing workflow
+    # trigger(s)" against a synthetic "BuildFailed" run instead.
     workflows:
       - "Release Python SDK"
-      - "Release C++ SDK"
+      - 'Release C\+\+ SDK'
       - "Release Swift SDK"
     types: [completed]
     # Restricts to the branch the release actually happened on. A
