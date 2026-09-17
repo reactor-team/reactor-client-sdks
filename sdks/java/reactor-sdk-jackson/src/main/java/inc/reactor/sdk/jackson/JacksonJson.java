@@ -28,6 +28,8 @@ public final class JacksonJson {
     private JacksonJson() {}
 
     /**
+     * Converts a value to a Jackson node.
+     *
      * @param value the SDK's value
      * @return the same value as a Jackson node
      */
@@ -67,6 +69,8 @@ public final class JacksonJson {
     }
 
     /**
+     * Converts a Jackson node to a value.
+     *
      * @param node a Jackson node
      * @return the same value as the SDK's type
      */

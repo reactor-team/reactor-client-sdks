@@ -91,7 +91,11 @@ public final class Microphone implements AutoCloseable {
         thread.start();
     }
 
-    /** @return whether this microphone is capturing */
+    /**
+     * Whether this microphone is capturing.
+     *
+     * @return true while the reader thread is running
+     */
     public boolean isRunning() {
         return running.get();
     }

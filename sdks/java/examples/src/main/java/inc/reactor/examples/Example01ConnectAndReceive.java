@@ -34,6 +34,8 @@ public final class Example01ConnectAndReceive {
     private Example01ConnectAndReceive() {}
 
     /**
+     * Runs the example.
+     *
      * @param args ignored
      * @throws Exception when the run fails
      */

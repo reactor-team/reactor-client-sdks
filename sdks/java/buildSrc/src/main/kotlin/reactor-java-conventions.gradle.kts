@@ -105,9 +105,20 @@ java {
 
 tasks.withType<Javadoc>().configureEach {
     (options as StandardJavadocDocletOptions).apply {
-        // A broken @param fails a pull request rather than a release.
-        addBooleanOption("Xdoclint:all", true)
-        addStringOption("Xmaxwarns", "1")
+        // -Werror is what makes this a gate rather than a suggestion: doclint alone only warns,
+        // and a warning nobody fails on is a warning nobody reads.
+        //
+        // Everything except the `missing` group. The groups kept — reference, syntax, html —
+        // catch javadoc that is *wrong*: a @param naming a parameter that does not exist, a
+        // {@link} to a type that was renamed, markup that renders as garbage. Those produce
+        // broken documentation and nobody notices until it is published.
+        //
+        // `missing` is a different thing: it asks for a prose sentence beside every @return, and
+        // on an accessor whose @return already says the whole story the only way to satisfy it is
+        // filler. Turning it on today would add 110 sentences that say nothing. It is worth
+        // revisiting once the public API stops moving — before the first release, not during it.
+        addStringOption("Xdoclint:all,-missing", "-quiet")
+        addBooleanOption("Werror", true)
         encoding = "UTF-8"
     }
 }

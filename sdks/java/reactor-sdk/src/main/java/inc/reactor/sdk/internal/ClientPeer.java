@@ -114,6 +114,15 @@ public final class ClientPeer implements Runnable {
     final Events<JsonValue> capabilitiesEvents = new Events<>("capabilities");
     final Events<Optional<String>> sessionIdEvents = new Events<>("sessionId");
 
+    /**
+     * Clients that exist and have not been closed.
+     *
+     * <p>For the endurance suite, which watches whether a number that should come back to its
+     * starting point actually does. Python's suite keeps the same counter for the same reason.
+     */
+    private static final java.util.concurrent.atomic.AtomicInteger LIVE =
+            new java.util.concurrent.atomic.AtomicInteger();
+
     private final TrackRegistry tracks = new TrackRegistry();
     private final java.util.Map<String, PublishState> publishStates = new java.util.concurrent.ConcurrentHashMap<>();
     private final Set<ClipDownload> downloads = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -165,6 +174,7 @@ public final class ClientPeer implements Runnable {
         this.completions = new Completions(arena);
         this.dispatch = Dispatch.of(options.dispatcher());
         this.handle = createHandle(options);
+        LIVE.incrementAndGet();
     }
 
     /**
@@ -352,6 +362,7 @@ public final class ClientPeer implements Runnable {
         }
         completions.settleAll(
                 ReactorException.of(ErrorCode.ABORTED.code(), "the client was closed", null, "close", null));
+        LIVE.decrementAndGet();
         tracks.clear();
         synchronized (publishLock) {
             publishTokens.clear();
@@ -437,6 +448,16 @@ public final class ClientPeer implements Runnable {
             // caller was closing because of.
             return -1;
         }
+    }
+
+    /**
+     * How many clients exist and have not been closed.
+     *
+     * @return the count, which a run that creates and closes clients in a loop should bring back
+     *     to where it started
+     */
+    public static int liveClients() {
+        return LIVE.get();
     }
 
     /** Whether this peer has been closed. */

@@ -30,6 +30,7 @@ node_modules/
 /sdks/python/endurance-results/
 /sdks/cpp/endurance-results/
 /sdks/swift/endurance-results/
+/sdks/java/endurance-tests/endurance-results/
 
 # C++ SDK build tree (cmake -B sdks/cpp/build)
 /sdks/cpp/build/

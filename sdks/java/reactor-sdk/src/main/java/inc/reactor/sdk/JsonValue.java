@@ -32,7 +32,11 @@ import java.util.Optional;
  */
 public sealed interface JsonValue {
 
-    /** A JSON string. */
+    /**
+     * A JSON string.
+     *
+     * @param value the text
+     */
     record JsonString(String value) implements JsonValue {}
 
     /**
@@ -115,13 +119,21 @@ public sealed interface JsonValue {
         }
     }
 
-    /** {@code true} or {@code false}. */
+    /**
+     * {@code true} or {@code false}.
+     *
+     * @param value the flag
+     */
     record JsonBoolean(boolean value) implements JsonValue {}
 
     /** {@code null}. */
     record JsonNull() implements JsonValue {}
 
-    /** A JSON object. Keys keep the order they arrived in; a repeated key keeps the last value. */
+    /**
+     * A JSON object. Keys keep the order they arrived in; a repeated key keeps the last value.
+     *
+     * @param fields the object's fields
+     */
     record JsonObject(Map<String, JsonValue> fields) implements JsonValue {
 
         public JsonObject {
@@ -164,7 +176,11 @@ public sealed interface JsonValue {
         }
     }
 
-    /** A JSON array. */
+    /**
+     * A JSON array.
+     *
+     * @param items the values, in order
+     */
     record JsonArray(List<JsonValue> items) implements JsonValue {
 
         public JsonArray {

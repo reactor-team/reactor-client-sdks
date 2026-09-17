@@ -560,6 +560,15 @@ run = [
     "scripts/retry.sh gradle --project-dir sdks/java --console=plain :integration-tests:integrationTest",
 ]
 
+[tasks."test:java:endurance-tests"]
+description = "[Testing] Java SDK endurance tests — long-running leak and resource trends (manual only)"
+# Manual-only: not a dependency of `test`/`test:java`, and not wired into ci.yml. This reads a
+# trend over minutes to hours rather than a right-or-wrong answer, so it gates nothing — it runs
+# from workflow_dispatch and automatically after a real release.
+#
+# ENDURANCE_DURATION_MINUTES sets the length; ENDURANCE_VERBOSE=1 brings back the per-cycle rows.
+run = "gradle --project-dir sdks/java --console=plain :endurance-tests:enduranceTest"
+
 [tasks."example:java"]
 description = "[Examples] Run one numbered Java example, e.g. `mise run example:java 01`"
 # Needs REACTOR_API_KEY, and a native library: `mise run build:ffi` first, or set

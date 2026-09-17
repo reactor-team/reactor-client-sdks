@@ -17,7 +17,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * permanent leak, deliberately, because the alternative is a crash. Python keeps the same list for
  * the same reason and never empties it either.
  */
-final class OrphanedArenas {
+public final class OrphanedArenas {
 
     private static final List<Arena> ORPHANED = new CopyOnWriteArrayList<>();
 
@@ -41,7 +41,7 @@ final class OrphanedArenas {
      *
      * @return the count
      */
-    static int count() {
+    public static int count() {
         return ORPHANED.size();
     }
 }
