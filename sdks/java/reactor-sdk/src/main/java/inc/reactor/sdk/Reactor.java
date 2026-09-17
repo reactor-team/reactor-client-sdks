@@ -61,6 +61,18 @@ public final class Reactor implements AutoCloseable {
     }
 
     /**
+     * The peer underneath, for this SDK's own tests.
+     *
+     * <p>Package-private, and read by the test fixtures rather than by anything a consumer can
+     * reach.
+     *
+     * @return the peer
+     */
+    inc.reactor.sdk.internal.ClientPeer peer() {
+        return peer;
+    }
+
+    /**
      * Creates a client over a given library, for this SDK's own tests.
      *
      * <p>Package-private, and the only thing it changes is where the ABI comes from: everything

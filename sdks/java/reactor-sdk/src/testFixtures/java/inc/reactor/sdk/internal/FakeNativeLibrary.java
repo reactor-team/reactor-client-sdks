@@ -295,6 +295,17 @@ public final class FakeNativeLibrary implements AutoCloseable {
         videoFramesPushed++;
     }
 
+    /**
+     * Whether an async call is waiting to be settled.
+     *
+     * <p>A test on another thread cannot settle a call that has not arrived yet, and
+     * {@link #settleLastCall} throws rather than waiting for one. This is what a test polls.
+     *
+     * @return whether there is a completion outstanding
+     */
+    public boolean hasPendingCall() {
+        return lastCompletion != null;
+
     /** The completion stub of the last async call, so a test can settle calls out of order. */
     public MemorySegment lastCompletionStub() {
         return java.util.Objects.requireNonNull(lastCompletion, "no call is outstanding");

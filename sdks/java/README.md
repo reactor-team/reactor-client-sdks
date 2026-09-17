@@ -65,6 +65,53 @@ name the aggregate instead:
 | `reactor-sdk-platform` | POM-only: the SDK plus all five, for Maven |
 | `reactor-sdk-audio` | optional microphone and speaker helpers |
 | `reactor-sdk-jackson` | optional `JsonValue` / `JsonNode` adapters |
+| `reactor-sdk-kotlin` | optional Kotlin facade: `suspend` functions and flows |
+
+## From Kotlin
+
+`reactor-sdk-kotlin` is a facade over the same binding, not a second one. It holds
+no native symbol — `scripts/check-abi-parity.py` fails the build if one appears
+there — and every method forwards to the Java client underneath, which is what
+keeps the two from being able to disagree.
+
+```kotlin
+implementation("inc.reactor:reactor-sdk-kotlin:1.0.0")
+```
+
+```kotlin
+val jwt = ReactorClient.fetchJwt(apiUrl, apiKey)
+
+ReactorClient.open(reactorOptions(apiUrl, "reactor/helios") { jwt(jwt) }).use { client ->
+    client.connect()
+
+    client.sendCommand("set_prompt", JsonValue.`object`().put("prompt", prompt).build())
+    client.sendCommand("start")
+
+    client.track("main_video").onVideoFrame { frame ->
+        render(frame.toByteArray(), frame.width(), frame.height())
+    }
+
+    client.statusFlow().collect { println(it) }
+}
+```
+
+What it adds: `suspend` in place of every `CompletableFuture`, a `Flow` for each
+control event, `Dispatchers.Main.asReactorDispatcher()` for a UI toolkit's thread,
+tracks as a plain `List<ReactorTrack>` with `tracks["main_video"]`, and a builder
+block for the options.
+
+Two things it does **not** do. Frames stay a callback: they arrive on the FFI's
+delivery thread and blocking there is the backpressure — while a handler runs, the
+FFI keeps only the newest frame. A flow puts a channel in between, which turns a
+bounded frame drop into unbounded latency and memory. `videoFrames()` and
+`audioFrames()` exist for callers who want one anyway, conflated so they drop in
+the same shape the FFI already does, and their KDoc says so. And nullability needs
+no wrapper: the Java modules are `@NullMarked`, so Kotlin already sees which types
+can be null.
+
+Cancelling a coroutine that awaits one of these cancels **the await, not the
+operation** — the native call is already in flight and cannot be recalled. A
+command whose caller walked away still reached the model.
 
 The aggregate is POM-only, not a fat jar — the shape JavaCPP publishes as
 `opencv-platform`. `-uber` would mean a fat jar and `-all` means all *modules* of
@@ -130,6 +177,7 @@ mise exec java@temurin-22.0.2+9 -- \
 | `reactor-sdk-platform` | POM-only aggregate, for builds that cannot read Gradle Module Metadata |
 | `reactor-sdk-audio` | optional microphone and speaker helpers; nothing that opens audio hardware is on the mandatory import path |
 | `reactor-sdk-jackson` | optional interop between `JsonValue` and Jackson's `JsonNode` |
+| `reactor-sdk-kotlin` | optional Kotlin facade over the binding; holds no native symbol of its own |
 | `examples` | the numbered scenarios every Reactor SDK ships |
 | `integration-tests` | the live suite, against a real model |
 | `endurance-tests` | long-running leak and resource-trend scenarios |

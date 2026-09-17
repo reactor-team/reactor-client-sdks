@@ -225,6 +225,17 @@ def java_sources() -> list[Path]:
     )
 
 
+def kotlin_sources() -> list[Path]:
+    """Every Kotlin file under the Java SDK, tests and the one example included."""
+    if not JAVA_DIR.is_dir():
+        return []
+    return sorted(
+        path
+        for path in JAVA_DIR.glob("**/*.kt")
+        if "build" not in path.relative_to(JAVA_DIR).parts
+    )
+
+
 def parameter_count(parameters: str) -> int:
     """How many parameters a C parameter list declares. `void` is none."""
     stripped = parameters.strip()
@@ -325,6 +336,19 @@ def main() -> int:
             if name in FORBIDDEN:
                 java_forbidden.setdefault(name, where)
 
+    # The Kotlin facade must name no native symbol at all. It forwards to the Java
+    # binding and holds nothing of its own — that is what makes it cheap to keep
+    # correct, and the moment one of these appears there it has quietly become a
+    # second binding with its own copy of the ABI to keep in step.
+    kotlin_symbols: dict[str, str] = {}
+    for path in kotlin_sources():
+        text = read(path)
+        where = str(path.relative_to(REPO_ROOT))
+        for name in JAVA_SYMBOL.findall(text):
+            if name.isupper() or name.endswith("_fn") or name in JAVA_NON_FUNCTIONS:
+                continue
+            kotlin_symbols.setdefault(name, where)
+
     if not rust:
         sys.exit("error: found no exported reactor_* functions — has lib.rs moved?")
 
@@ -391,6 +415,17 @@ def main() -> int:
     if swift_forbidden:
         problems.append(forbidden_problem("Swift", swift_forbidden))
 
+    if kotlin_symbols:
+        problems.append(
+            "The Kotlin facade names native symbols:\n"
+            + "\n".join(
+                f"    {name}  ({where})" for name, where in sorted(kotlin_symbols.items())
+            )
+            + "\n        It is a facade over the Java binding, not a binding. A native\n"
+            "        symbol here means a second copy of the ABI to keep in step, which\n"
+            "        is the one property this module exists to keep."
+        )
+
     unknown_in_java = sorted(java_named - rust)
     if unknown_in_java:
         problems.append(
@@ -448,7 +483,8 @@ def main() -> int:
     summary = (
         f"ABI parity OK — {len(rust)} exported functions, header in sync, "
         f"{len(cpp_named)} named by the C++ SDK, {len(swift_named)} by the Swift SDK, "
-        f"{len(java_declared)} by the Java SDK (arity checked)"
+        f"{len(java_declared)} by the Java SDK (arity checked), "
+        f"none by the Kotlin facade ({len(kotlin_sources())} files checked)"
     )
     if only_in_rust:
         # Not an error: the Python SDK is free to bind a subset.
