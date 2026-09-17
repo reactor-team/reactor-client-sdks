@@ -6,7 +6,7 @@
 #
 #   * Five native libraries, each built on the platform it targets, staged into
 #     sdks/java/reactor-sdk-natives/natives/<token>/ and packaged as one classified
-#     artifact per platform.
+#     artifact per platform, and one jar carrying all five that reactor-sdk depends on.
 #   * Central refuses a jar coordinate without its -sources and -javadoc companions,
 #     so those are built by the ordinary `assemble` rather than by a release script.
 #
@@ -422,12 +422,12 @@ jobs:
           implementation("inc.reactor:reactor-sdk:${VERSION}")
           \`\`\`
 
-          Requires JDK 22 or newer. The native library for the host — Linux
-          (x86_64, aarch64), macOS (arm64, x86_64) or Windows (x86_64) — is
-          resolved automatically, so there is nothing to install by hand; a
-          Maven build that cannot read Gradle Module Metadata takes
-          \`inc.reactor:reactor-sdk-platform\` instead. See
-          \`sdks/java/README.md\` for the artifact table and
-          \`sdks/java/CHANGELOG.md\` for what changed.
+          Requires JDK 22 or newer. Every platform's native library — Linux
+          (x86_64, aarch64), macOS (arm64, x86_64) and Windows (x86_64) — comes
+          with it and the SDK loads the one it needs, so there is nothing to
+          install by hand and nothing to change when the code runs somewhere
+          else. A build that wants only one platform's library takes a
+          classifier instead; see \`sdks/java/README.md\` for that and for the
+          artifact table, and \`sdks/java/CHANGELOG.md\` for what changed.
           EOF
           )"
