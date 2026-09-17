@@ -12,7 +12,7 @@ class LiveIntegrationTest {
     fun connectCommandAndReceiveStatus() = runBlocking {
         val model = requireNotNull(System.getenv("REACTOR_MODEL")) { "REACTOR_MODEL is required" }
         val token = requireNotNull(System.getenv("REACTOR_TOKEN")) { "REACTOR_TOKEN is required" }
-        ReactorNative.initialize()
+        NativeRuntime.initialize()
         val client = Reactor(model, TokenProvider { token })
         try {
             client.connect()

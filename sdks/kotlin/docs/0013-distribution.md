@@ -25,7 +25,7 @@ implementation("inc.reactor:reactor-android:$version")
 implementation("inc.reactor:reactor-android-media:$version")
 ```
 
-Call `ReactorNative.initialize()` before constructing clients or using
+Call `NativeRuntime.initialize()` before constructing clients or using
 `timeMicros()`. Android applications should initialize off the main thread.
 Initialization is serialized and idempotent; ABI mismatch or a partially failed
 load is terminal until process restart. Android preloads WebRTC's Java class

@@ -4,7 +4,7 @@ import android.app.Activity
 import android.os.Bundle
 import android.widget.TextView
 import inc.reactor.sdk.Reactor
-import inc.reactor.sdk.ReactorNative
+import inc.reactor.sdk.NativeRuntime
 import inc.reactor.sdk.timeMicros
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -17,7 +17,7 @@ class MainActivity : Activity() {
         setContentView(result)
         Thread {
             val message = runCatching {
-                ReactorNative.initialize()
+                NativeRuntime.initialize()
                 check(timeMicros() > 0)
                 runBlocking {
                     repeat(3) {

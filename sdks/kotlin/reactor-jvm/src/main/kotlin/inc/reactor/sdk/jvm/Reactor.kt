@@ -6,7 +6,7 @@ import inc.reactor.sdk.uploadBytes
 import kotlinx.coroutines.runBlocking
 
 /** Small blocking facade for Java desktop examples; never use it on Android UI threads. */
-class JavaReactor(model: String, token: String) : AutoCloseable {
+class Reactor(model: String, token: String) : AutoCloseable {
     private val delegate = Reactor(model, TokenProvider { token })
 
     fun connect() = runBlocking { delegate.connect() }
