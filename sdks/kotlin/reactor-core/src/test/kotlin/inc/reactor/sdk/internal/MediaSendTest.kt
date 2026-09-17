@@ -26,7 +26,7 @@ class MediaSendTest {
         if (library == null) System.loadLibrary("reactor_jni_test") else System.load(library)
     }
 
-    private external fun resetSend()
+    external fun resetSend()
 
     private external fun configure(
         mode: Int,
@@ -37,9 +37,9 @@ class MediaSendTest {
 
     private external fun cycleStatus()
 
-    private external fun values(): LongArray
+    external fun values(): LongArray
 
-    private external fun videoBytes(): ByteArray
+    external fun videoBytes(): ByteArray
 
     private external fun audioSamples(): ShortArray
 
