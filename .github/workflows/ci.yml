@@ -518,7 +518,15 @@ jobs:
   java-integration-tests:
     name: Java SDK integration tests (real FFI, real model)
     needs: changes
-    if: github.event_name == 'push' || needs.changes.outputs.java == 'true'
+    # Same fork-PR reasoning as the other integration jobs: GitHub withholds repo
+    # secrets from a fork's pull_request runs, so INTEGRATION_TESTS_REACTOR_API_KEY
+    # would never be populated there. This suite deliberately *fails* rather than
+    # skips when the key is missing — a required check that goes green because a
+    # secret was absent is worse than one that fails — which means without this
+    # condition every external contribution fails here for a reason that has
+    # nothing to do with the contribution. Skipped for a fork, and still run for
+    # every same-repo PR and on push.
+    if: github.event_name == 'push' || (needs.changes.outputs.java == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
