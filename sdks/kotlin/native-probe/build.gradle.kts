@@ -18,6 +18,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    sourceSets["androidTest"].java.srcDirs(
+        "../reactor-core/src/main/kotlin/inc/reactor/sdk/internal",
+        "../reactor-core/src/test/kotlin/inc/reactor/sdk/internal",
+    )
     sourceSets["main"].jniLibs.srcDir(layout.buildDirectory.dir("native/jniLibs"))
 }
 
