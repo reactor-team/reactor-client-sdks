@@ -10,6 +10,32 @@
 #   * Central refuses a jar coordinate without its -sources and -javadoc companions,
 #     so those are built by the ordinary `assemble` rather than by a release script.
 #     The POM-only aggregate is exempt and has neither.
+#
+# What the `maven` environment has to hold before any of this publishes anything.
+# Only the release job below names that environment, so nothing else in this
+# repository can sign or upload:
+#
+#   MAVEN_GPG_PRIVATE_KEY   the armoured private key, whole block, BEGIN and END
+#                           lines included. Its *public* half must be on a
+#                           keyserver — keys.openpgp.org or keyserver.ubuntu.com —
+#                           because Central validates every signature against
+#                           them. A key that exists only on a laptop signs a
+#                           bundle that is then rejected, and the build cannot
+#                           warn about it: the rejection arrives from the Portal.
+#   MAVEN_GPG_PASSPHRASE    its passphrase
+#   MAVEN_CENTRAL_USERNAME  half of a Portal *user token*, generated at
+#   MAVEN_CENTRAL_PASSWORD  central.sonatype.com -> Account -> Generate User
+#                           Token. Not the account login: the upload below sends
+#                           base64("user:pass") as a bearer token, which is the
+#                           scheme the Portal expects and the login does not
+#                           satisfy.
+#   PUBLISH_JAVA_RELEASE    "true". Anything else stages and uploads nothing,
+#                           which is what makes merging safe before the rest of
+#                           this is in place.
+#
+# To check the credentials without publishing: workflow_dispatch with
+# dry_run=true. It stages and signs the real bundle, the unsigned-artifact guard
+# runs, and it stops before the upload.
 name: Release Java SDK
 
 on:
@@ -215,6 +241,14 @@ jobs:
     needs: [detect-version, integration-tests, natives]
     if: needs.detect-version.outputs.bumped == 'true'
     runs-on: ubuntu-latest
+    # The signing key, its passphrase, the Portal token and the kill switch all live in one
+    # environment rather than loose in the repository. Only a job that names it can read them, so
+    # this is the one job in this repository able to sign or upload anything — the live suite above
+    # keeps reading INTEGRATION_TESTS_REACTOR_API_KEY from the repository, untouched.
+    #
+    # It is also where a protection rule would go, if this should ever need an approval before it
+    # ships. Nothing here has to change for that.
+    environment: maven
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v4
