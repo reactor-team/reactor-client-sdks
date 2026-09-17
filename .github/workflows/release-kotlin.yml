@@ -92,6 +92,16 @@ jobs:
     steps:
       - run: echo 'Local rehearsal only. Maven namespace, signing, Android distribution and the live integration gate must be verified before release.'
 
+  release-verification:
+    name: Kotlin release metadata verification
+    needs: [detect-version, live-integration]
+    if: github.event_name == 'push' && needs.detect-version.outputs.bumped == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify release metadata
+        run: python3 scripts/kotlin-release-verify.py
+
   live-integration:
     name: Kotlin SDK live integration gate
     needs: [detect-version, desktop]
