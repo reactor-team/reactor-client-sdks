@@ -51,7 +51,7 @@ def main() -> None:
             "--no-daemon",
             f"-PstagedRepository={relocated}",
             f"-PsdkVersion={version}",
-            f"-PnativePlatform={args.platform}",
+            f"-PreactorDesktopPlatform={args.platform}",
         ]
         subprocess.run(
             [*command, ":desktop:run"], cwd=consumer, env=environment, check=True
