@@ -40,6 +40,7 @@ class RealNativeLifecycleTest {
                     true,
                     SDK_VERSION.encodeToByteArray(),
                     receiver,
+                    null,
                 )
             try {
                 assertEquals("disconnected", NativeClient.status(handle).decodeToString())
