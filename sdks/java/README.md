@@ -4,9 +4,10 @@ A Reactor client for desktop JVM applications, bound to `libreactor_ffi`
 through the [Foreign Function & Memory API][ffm] — no JNI, no JNA, and no
 native code of its own.
 
-> **Status: under construction.** This directory currently holds the build,
-> the toolchain contract and the CI job. The binding itself lands slice by
-> slice ([REA-6435][] onward) and nothing is published yet.
+> **Status: not published yet.** The binding is complete and all eight example
+> scenarios run against published production models; what remains before a first
+> release is the live integration suite, the endurance suite, and the version bump
+> that is itself the release switch.
 
 ## Requirements
 
@@ -36,6 +37,38 @@ access, and a future release will refuse them outright. Consumers pass:
 
 The module declares itself as `inc.reactor.sdk` precisely so this can be
 granted to one module rather than to everything.
+
+## What gets published
+
+One dependency line, and nothing configured:
+
+```kotlin
+implementation("inc.reactor:reactor-sdk:1.0.0")
+```
+
+Gradle resolves the native library for the host from this SDK's own variants — no
+plugin applied, no classifier written. Maven ignores that metadata, so Maven users
+name the aggregate instead:
+
+```xml
+<dependency>
+  <groupId>inc.reactor</groupId>
+  <artifactId>reactor-sdk-platform</artifactId>
+  <version>1.0.0</version>
+</dependency>
+```
+
+| Coordinate | What it carries |
+| --- | --- |
+| `reactor-sdk` | the binding, and the variants that resolve a native library |
+| `reactor-sdk-natives` (5 classifiers) | one native library each |
+| `reactor-sdk-platform` | POM-only: the SDK plus all five, for Maven |
+| `reactor-sdk-audio` | optional microphone and speaker helpers |
+| `reactor-sdk-jackson` | optional `JsonValue` / `JsonNode` adapters |
+
+The aggregate is POM-only, not a fat jar — the shape JavaCPP publishes as
+`opencv-platform`. `-uber` would mean a fat jar and `-all` means all *modules* of
+a library in this ecosystem, not all platforms.
 
 ## Finding the native library
 
@@ -93,7 +126,10 @@ mise exec java@temurin-22.0.2+9 -- \
 | Module | What it is |
 | --- | --- |
 | `reactor-sdk` | the binding and the public API |
+| `reactor-sdk-natives` | the native library, one classified artifact per platform |
+| `reactor-sdk-platform` | POM-only aggregate, for builds that cannot read Gradle Module Metadata |
 | `reactor-sdk-audio` | optional microphone and speaker helpers; nothing that opens audio hardware is on the mandatory import path |
+| `reactor-sdk-jackson` | optional interop between `JsonValue` and Jackson's `JsonNode` |
 | `examples` | the numbered scenarios every Reactor SDK ships |
 | `integration-tests` | the live suite, against a real model |
 | `endurance-tests` | long-running leak and resource-trend scenarios |

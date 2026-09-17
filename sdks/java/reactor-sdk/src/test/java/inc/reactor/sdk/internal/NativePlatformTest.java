@@ -61,6 +61,27 @@ final class NativePlatformTest {
     }
 
     @Test
+    @DisplayName("a musl host is refused by name, rather than failing in the dynamic linker")
+    void muslIsRefusedByName() {
+        // os.arch says nothing about the C library, and the published Linux builds need glibc.
+        // Without this check the library resolves, extracts, and then fails to load with a message
+        // from the linker that names neither musl nor glibc.
+        UnsupportedPlatformException thrown = assertThrows(
+                UnsupportedPlatformException.class,
+                () -> NativePlatform.detect("Linux", "x86_64", NativePlatform.LibC.MUSL));
+
+        assertTrue(thrown.getMessage().contains("musl"), thrown.getMessage());
+        assertTrue(thrown.getMessage().contains("glibc"), thrown.getMessage());
+        assertTrue(thrown.getMessage().contains(NativeLibrary.OVERRIDE_ENV), thrown.getMessage());
+    }
+
+    @Test
+    @DisplayName("a glibc host of the same shape is supported")
+    void glibcOfTheSameShapeIsSupported() {
+        assertEquals(NativePlatform.LINUX_X86_64, NativePlatform.detect("Linux", "x86_64", NativePlatform.LibC.GLIBC));
+    }
+
+    @Test
     @DisplayName("this JVM is one of the supported platforms")
     void thisJvmIsSupported() {
         assertTrue(NativePlatform.supported().contains(NativePlatform.current()));
