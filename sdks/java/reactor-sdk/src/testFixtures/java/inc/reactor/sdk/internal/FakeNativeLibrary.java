@@ -305,6 +305,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
      */
     public boolean hasPendingCall() {
         return lastCompletion != null;
+    }
 
     /** The completion stub of the last async call, so a test can settle calls out of order. */
     public MemorySegment lastCompletionStub() {

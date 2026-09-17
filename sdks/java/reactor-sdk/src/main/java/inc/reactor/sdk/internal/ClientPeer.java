@@ -796,16 +796,14 @@ public final class ClientPeer implements Runnable {
                 invoke(Ffi.Symbol.PUBLISH_TRACK, handle, call.allocateFrom(name), completion, userdata);
             }
         });
-        // Registered on `published`, and the stage it returns is thrown away. The caller gets a
-        // separate one below, and that separation is the whole point: a dependent stage that is
-        // already complete is skipped when its source settles, so handing the caller *this* stage
-        // let cancelling it drop the bookkeeping. The native publish then succeeded, nothing wrote
-        // the state, and the track sat in PUBLISHING for the rest of the session with every
-        // pushFrame refused. Cancelling is not a rare thing to do: every coroutine cancellation in
-        // the Kotlin facade does it.
-        published.whenComplete((ignored, failure) -> {
-
-        return published.whenComplete((ignored, failure) -> {
+        // Two stages, and the shape of both matters. Getting either wrong has already shipped a bug.
+        //
+        // `tracked` completes only once the state has been written, because that is what
+        // whenComplete promises. Handing *this* to the caller is what the first version did, and
+        // cancelling it dropped the write: a dependent stage that is already complete is skipped
+        // when its source settles, so the native publish succeeded, nothing recorded it, and the
+        // track sat in PUBLISHING for the rest of the session.
+        CompletableFuture<Void> tracked = published.whenComplete((ignored, failure) -> {
             synchronized (publishLock) {
                 Long current = publishTokens.get(name);
                 if (current == null || current != attempt) {
@@ -821,9 +819,15 @@ public final class ClientPeer implements Runnable {
                 publishStates.put(name, failure == null ? PublishState.PUBLISHED : PublishState.UNPUBLISHED);
             }
         });
-        // The caller's own stage. Cancelling it abandons the wait, which is all a caller can
-        // abandon — the native publish is already in flight and cannot be recalled.
-        return published.thenApply(ignored -> ignored);
+        // The caller's own stage, chained from `tracked` rather than from `published`. Chaining it
+        // from `published` made both stages dependents of the same source, CompletableFuture runs
+        // those last-registered-first, and the caller resumed before the state was written — a
+        // `publish().thenRun(() -> pushFrame(...))` refused with "still publishing. Await the
+        // future publish() returned", which is precisely what the caller had done.
+        //
+        // From `tracked`, both hold: the write happens first, and cancelling this leaves `tracked`
+        // alone so the write still happens.
+        return tracked.thenApply(ignored -> ignored);
     }
 
     /**
