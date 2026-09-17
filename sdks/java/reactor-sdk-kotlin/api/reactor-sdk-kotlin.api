@@ -44,6 +44,7 @@ public final class inc/reactor/sdk/kotlin/ReactorClient : java/lang/AutoCloseabl
 	public final fun requestClip (DLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun requestRecording (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun requestSchema (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun sendCommand (Ljava/lang/String;Linc/reactor/sdk/JsonValue;Ljava/util/Map;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun sendCommand (Ljava/lang/String;Linc/reactor/sdk/JsonValue;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static synthetic fun sendCommand$default (Linc/reactor/sdk/kotlin/ReactorClient;Ljava/lang/String;Linc/reactor/sdk/JsonValue;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public final fun setBitrate (IIILkotlin/coroutines/Continuation;)Ljava/lang/Object;
@@ -54,7 +55,9 @@ public final class inc/reactor/sdk/kotlin/ReactorClient : java/lang/AutoCloseabl
 }
 
 public final class inc/reactor/sdk/kotlin/ReactorClient$Companion {
+	public final fun fetchJwt (Ljava/lang/String;Ljava/lang/String;Linc/reactor/sdk/JsonValue;ZLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun fetchJwt (Ljava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun fetchJwt$default (Linc/reactor/sdk/kotlin/ReactorClient$Companion;Ljava/lang/String;Ljava/lang/String;Linc/reactor/sdk/JsonValue;ZLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public final fun open (Linc/reactor/sdk/ReactorOptions;)Linc/reactor/sdk/kotlin/ReactorClient;
 }
 

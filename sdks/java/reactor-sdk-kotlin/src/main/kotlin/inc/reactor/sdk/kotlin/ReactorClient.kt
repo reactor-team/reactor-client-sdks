@@ -24,7 +24,7 @@ import kotlinx.coroutines.future.await
  * ```kotlin
  * ReactorClient.open(reactorOptions(apiUrl, "reactor/echo") { jwt(token) }).use { client ->
  *     client.connect()
- *     client.track("output").frames().collect { render(it) }
+ *     client.track("output").onVideoFrame { frame -> render(frame) }
  * }
  * ```
  *
@@ -59,6 +59,24 @@ public class ReactorClient(
          */
         public suspend fun fetchJwt(apiUrl: String, apiKey: String): String =
             Reactor.fetchJwt(apiUrl, apiKey).await()
+
+        /**
+         * Exchanges an API key for a scoped token.
+         *
+         * @param apiUrl the platform
+         * @param apiKey the key
+         * @param options what to scope the token to, or null for everything the key allows. An
+         *   unrecognised key in here is an error rather than ignored: dropping a misspelt `models`
+         *   in silence would mint exactly the unscoped token the caller was avoiding
+         * @param local whether to accept a dev coordinator's certificate
+         * @return the token
+         */
+        public suspend fun fetchJwt(
+            apiUrl: String,
+            apiKey: String,
+            options: JsonValue?,
+            local: Boolean = false,
+        ): String = Reactor.fetchJwt(apiUrl, apiKey, options, local).await()
     }
 
     /** Connects, and settles once the session is ready. */
@@ -113,6 +131,21 @@ public class ReactorClient(
         (if (args == null) java.sendCommand(name) else java.sendCommand(name, args))
             .await()
             .orElse(null)
+
+    /**
+     * Sends a command that refers to files the platform is already holding.
+     *
+     * @param name the command
+     * @param args its other arguments
+     * @param uploads what [uploadFile] and [uploadBytes] returned, keyed by the parameter each one
+     *   fills
+     * @return the model's reply, or null when it answered without one
+     */
+    public suspend fun sendCommand(
+        name: String,
+        args: JsonValue,
+        uploads: Map<String, FileRef>,
+    ): CommandReply? = java.sendCommand(name, args, uploads).await().orElse(null)
 
     /**
      * Uploads a file for a command to refer to.
@@ -177,7 +210,13 @@ public class ReactorClient(
     ): DownloadedClip =
         java.downloadClip(clip, destination, readyTimeoutSeconds, onProgress).await()
 
-    /** How far into the generated timeline this session is. */
+    /**
+     * The engine's own clock.
+     *
+     * Capture times passed to [ReactorTrack.pushFrame] are compared against this rather than
+     * against `System.currentTimeMillis()`. It is not a position in the generated media: a caller
+     * tracking recording progress wants neither this nor a wall clock.
+     */
     public val timeMicros: Long
         get() = java.timeMicros()
 

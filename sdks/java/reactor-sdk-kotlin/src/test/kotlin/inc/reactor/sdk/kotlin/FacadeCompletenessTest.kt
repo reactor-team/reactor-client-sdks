@@ -17,8 +17,15 @@ import org.junit.jupiter.api.Test
  *
  * Only the future-returning methods. Those are the ones that have a different shape on this side; a
  * plain getter reads the same either way and is not what drifts. A `suspend` function compiles to a
- * method of the same name taking one more parameter, so ordinary reflection sees both surfaces
- * without kotlin-reflect on the test path.
+ * method of the same name taking one more parameter — the continuation — so ordinary reflection
+ * sees both surfaces without kotlin-reflect on the test path.
+ *
+ * Counted by name **and parameter count**, not by name alone. Comparing names let two overloads go
+ * missing while the check stayed green: the facade had `sendCommand(name, args)` but not the
+ * three-argument one that attaches uploads, and only the unscoped `fetchJwt`, so a Kotlin caller
+ * could neither send a file to a model nor mint a least-privilege token without dropping to
+ * [ReactorClient.java]. Both were reported by a reviewer rather than by this test, which is what
+ * this test exists to prevent.
  */
 class FacadeCompletenessTest {
 
@@ -36,25 +43,49 @@ class FacadeCompletenessTest {
     }
 
     @Test
+    fun `an overload of a covered name is not itself covered`() {
+        // The specific hole the name-only version had: sendCommand appeared covered because one of
+        // its overloads was. Against a facade that has the two-argument form and nothing else, the
+        // three-argument one has to be reported.
+        assertEquals(
+            listOf("sendCommand/3"),
+            missingFrom(Reactor::class.java, TwoArgumentFacadeOnly::class.java).filter {
+                it.startsWith("sendCommand")
+            },
+        )
+    }
+
+    /** A stand-in carrying exactly one sendCommand overload, so the check can be checked. */
+    @Suppress("unused")
+    private class TwoArgumentFacadeOnly {
+        fun sendCommand(name: String, args: Any?, continuation: Any?): Any? = null
+    }
+
+    @Test
     fun `the check would notice an omission`() {
         // Against a facade that covers nothing, every future-returning method must be reported —
         // otherwise the two passing tests above prove only that the reflection found nothing.
         val reported = missingFrom(Reactor::class.java, Object::class.java)
         assertEquals(
             listOf(
-                "connect",
-                "disconnect",
-                "downloadClip",
-                "fetchJwt",
-                "getStats",
-                "reconnect",
-                "requestClip",
-                "requestRecording",
-                "requestSchema",
-                "sendCommand",
-                "setBitrate",
-                "uploadBytes",
-                "uploadFile",
+                "connect/0",
+                "connect/2",
+                "disconnect/0",
+                "downloadClip/3",
+                "downloadClip/4",
+                "fetchJwt/2",
+                "fetchJwt/4",
+                "getStats/0",
+                "reconnect/0",
+                "requestClip/1",
+                "requestRecording/0",
+                "requestSchema/0",
+                "sendCommand/1",
+                "sendCommand/2",
+                "sendCommand/3",
+                "setBitrate/3",
+                "uploadBytes/3",
+                "uploadFile/1",
             ),
             reported,
         )
@@ -63,17 +94,24 @@ class FacadeCompletenessTest {
     private fun missingFrom(java: Class<*>, facade: Class<*>): List<String> {
         // The companion object too: a static on the Java side has its twin there, and Kotlin
         // compiles that into a nested class rather than onto the facade itself.
+        //
+        // A suspend function takes the continuation as one extra parameter, and a facade method may
+        // carry defaults the Java side does not — so the match is "some overload of this name takes
+        // at least as many parameters as the Java one", rather than an exact count. Loose enough to
+        // survive a default argument, tight enough that a two-argument twin no longer answers for a
+        // three-argument original.
         val covered =
             (facade.declaredMethods.asSequence() +
                     facade.declaredClasses.asSequence().flatMap { it.declaredMethods.asSequence() })
-                .map { it.name }
-                .toSet()
+                .groupBy({ it.name }, { it.parameterCount })
+                .mapValues { (_, counts) -> counts.max() }
         return java.declaredMethods
             .filter { Modifier.isPublic(it.modifiers) }
             .filter { CompletableFuture::class.java.isAssignableFrom(it.returnType) }
-            .map { it.name }
+            .map { it.name to it.parameterCount }
             .distinct()
-            .filterNot { it in covered }
+            .filterNot { (name, parameters) -> (covered[name] ?: -1) >= parameters + 1 }
+            .map { (name, parameters) -> "$name/$parameters" }
             .sorted()
     }
 }

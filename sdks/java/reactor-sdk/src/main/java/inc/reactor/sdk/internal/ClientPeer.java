@@ -796,6 +796,15 @@ public final class ClientPeer implements Runnable {
                 invoke(Ffi.Symbol.PUBLISH_TRACK, handle, call.allocateFrom(name), completion, userdata);
             }
         });
+        // Registered on `published`, and the stage it returns is thrown away. The caller gets a
+        // separate one below, and that separation is the whole point: a dependent stage that is
+        // already complete is skipped when its source settles, so handing the caller *this* stage
+        // let cancelling it drop the bookkeeping. The native publish then succeeded, nothing wrote
+        // the state, and the track sat in PUBLISHING for the rest of the session with every
+        // pushFrame refused. Cancelling is not a rare thing to do: every coroutine cancellation in
+        // the Kotlin facade does it.
+        published.whenComplete((ignored, failure) -> {
+
         return published.whenComplete((ignored, failure) -> {
             synchronized (publishLock) {
                 Long current = publishTokens.get(name);
@@ -812,6 +821,9 @@ public final class ClientPeer implements Runnable {
                 publishStates.put(name, failure == null ? PublishState.PUBLISHED : PublishState.UNPUBLISHED);
             }
         });
+        // The caller's own stage. Cancelling it abandons the wait, which is all a caller can
+        // abandon — the native publish is already in flight and cannot be recalled.
+        return published.thenApply(ignored -> ignored);
     }
 
     /**
