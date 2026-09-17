@@ -57,8 +57,10 @@ These are the release targets, not verified release claims. Android x86_64 and
 
 ## Distribution
 
-Planned Maven group: `inc.reactor`; artifacts `reactor-core`, `reactor-jvm`, and
-`reactor-android`. Registry namespace ownership, signing credentials and release
+Planned Maven group: `inc.reactor`; artifacts `reactor-core`, `reactor-jvm`,
+`reactor-desktop`, one `reactor-native-*` runtime per supported desktop target, and
+`reactor-android`. Desktop applications apply `inc.reactor.desktop-platform` alongside
+`reactor-desktop`; it selects the matching native runtime automatically. Registry namespace ownership, signing credentials and release
 permissions must be verified in REA-6231. Nothing in this scaffold publishes.
 Versions start at `0.0.0-SNAPSHOT`; the v1 bump is the final PR in the stack.
 

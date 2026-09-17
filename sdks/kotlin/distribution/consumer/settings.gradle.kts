@@ -1,5 +1,5 @@
-pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
 pluginManagement {
+    repositories { google(); mavenCentral(); gradlePluginPortal() }
     val staged = providers.gradleProperty("stagedRepository")
     if (staged.isPresent) {
         repositories { maven { url = uri(staged.get()) } }
