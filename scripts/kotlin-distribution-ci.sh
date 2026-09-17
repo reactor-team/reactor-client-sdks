@@ -13,6 +13,7 @@ cd sdks/kotlin
 ./gradlew --no-daemon :reactor-core:publishAllPublicationsToStagingRepository \
   :reactor-jvm:publishAllPublicationsToStagingRepository \
   :reactor-desktop:publishAllPublicationsToStagingRepository \
+  :reactor-desktop-platform:publishAllPublicationsToStagingRepository \
   "-PreactorNativeDirectory=$stage/natives" "-PreactorNativePlatform=$platform" \
   "-PreactorStagingRepository=$stage/maven"
 cd "$repo_root"

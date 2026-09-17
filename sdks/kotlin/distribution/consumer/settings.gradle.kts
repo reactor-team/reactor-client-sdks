@@ -1,4 +1,13 @@
 pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+pluginManagement {
+    val staged = providers.gradleProperty("stagedRepository")
+    if (staged.isPresent) {
+        repositories { maven { url = uri(staged.get()) } }
+    }
+    plugins {
+        id("inc.reactor.desktop-platform") version providers.gradleProperty("sdkVersion").orElse("0.0.0-SNAPSHOT").get()
+    }
+}
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {

@@ -45,11 +45,14 @@ class ReactorDesktopPlatformPlugin : Plugin<Project> {
         )
 
         project.afterEvaluate {
+            if (project.findProperty("omitNative") == "true") return@afterEvaluate
             val desktopDependency = project.configurations
                 .flatMap { it.dependencies.toList() }
                 .firstOrNull { it.group == "inc.reactor" && it.name == "reactor-desktop" }
                 ?: return@afterEvaluate
-            val platform = extension.platform.orNull?.also { requested ->
+            val platformOverride = extension.platform.orNull
+                ?: project.findProperty("reactorDesktopPlatform")?.toString()
+            val platform = platformOverride?.also { requested ->
                 check(requested in setOf("macos-arm64", "macos-x64", "linux-arm64", "linux-x64", "windows-x64")) {
                     "Unsupported reactorDesktop.platform '$requested'"
                 }
