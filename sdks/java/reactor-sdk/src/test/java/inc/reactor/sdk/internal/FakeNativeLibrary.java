@@ -109,6 +109,8 @@ public final class FakeNativeLibrary implements AutoCloseable {
         bind("reactor_get_stats", Ffi.Symbol.GET_STATS.descriptor(), "getStats");
         bind("reactor_upload_file", Ffi.Symbol.UPLOAD_FILE.descriptor(), "uploadFile");
         bind("reactor_upload_bytes", Ffi.Symbol.UPLOAD_BYTES.descriptor(), "uploadBytes");
+        bind("reactor_request_clip", Ffi.Symbol.REQUEST_CLIP.descriptor(), "requestClip");
+        bind("reactor_download_clip", Ffi.Symbol.DOWNLOAD_CLIP.descriptor(), "downloadClip");
     }
 
     /** Makes this library report an ABI version other than the one the binding expects. */
@@ -392,6 +394,66 @@ public final class FakeNativeLibrary implements AutoCloseable {
         lastUploadBytes = data.reinterpret(length).toArray(java.lang.foreign.ValueLayout.JAVA_BYTE);
         lastCompletion = completion;
         lastUserdata = userdata;
+    }
+
+    /** The completion the last download was given — it outlives the client, so it is kept apart. */
+    public @Nullable MemorySegment downloadCompletion;
+
+    /** The progress callback the last download was given. */
+    public @Nullable MemorySegment downloadProgress;
+
+    /** The timeout the last download was given. */
+    public double downloadTimeout;
+
+    private void requestClip(MemorySegment handle, double duration, MemorySegment completion, MemorySegment userdata) {
+        lastCompletion = completion;
+        lastUserdata = userdata;
+    }
+
+    private void downloadClip(
+            MemorySegment handle,
+            MemorySegment playlistUrl,
+            MemorySegment jwt,
+            MemorySegment outPath,
+            double predictedReadyAtMs,
+            double readyTimeoutSeconds,
+            int local,
+            MemorySegment progress,
+            MemorySegment completion,
+            MemorySegment userdata) {
+        downloadProgress = progress;
+        downloadCompletion = completion;
+        downloadTimeout = readyTimeoutSeconds;
+    }
+
+    /** Calls the download's progress callback, the way the downloader's own thread would. */
+    @SuppressWarnings("restricted") // downcallHandle: calling the client's own stub
+    public void reportDownloadProgress(int done, int total) {
+        MethodHandle call = linker.downcallHandle(
+                java.util.Objects.requireNonNull(downloadProgress, "no download is outstanding"),
+                Ffi.Callbacks.PROGRESS);
+        try {
+            call.invokeWithArguments(done, total, MemorySegment.NULL);
+        } catch (Throwable t) {
+            throw new AssertionError("the progress callback threw out of the stub", t);
+        }
+    }
+
+    /** Settles the download's completion, which the FFI promises fires exactly once. */
+    @SuppressWarnings("restricted") // downcallHandle: calling the client's own stub
+    public void settleDownload(boolean ok, @Nullable String resultJson, @Nullable String errorJson) {
+        MethodHandle call = linker.downcallHandle(
+                java.util.Objects.requireNonNull(downloadCompletion, "no download is outstanding"),
+                Ffi.Callbacks.COMPLETION);
+        try {
+            call.invokeWithArguments(
+                    ok ? 1 : 0,
+                    resultJson == null ? MemorySegment.NULL : arena.allocateFrom(resultJson),
+                    errorJson == null ? MemorySegment.NULL : arena.allocateFrom(errorJson),
+                    MemorySegment.NULL);
+        } catch (Throwable t) {
+            throw new AssertionError("settling the download threw out of the stub", t);
+        }
     }
 
     /**
