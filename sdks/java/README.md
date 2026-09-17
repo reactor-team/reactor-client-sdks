@@ -40,32 +40,57 @@ granted to one module rather than to everything.
 
 ## What gets published
 
-One dependency line, and nothing configured:
+One dependency line, on Gradle and on Maven alike, and nothing configured:
 
 ```kotlin
 implementation("inc.reactor:reactor-sdk:1.0.0")
 ```
 
-Gradle resolves the native library for the host from this SDK's own variants — no
-plugin applied, no classifier written. Maven ignores that metadata, so Maven users
-name the aggregate instead:
-
 ```xml
 <dependency>
   <groupId>inc.reactor</groupId>
-  <artifactId>reactor-sdk-platform</artifactId>
+  <artifactId>reactor-sdk</artifactId>
   <version>1.0.0</version>
 </dependency>
 ```
 
+That pulls `reactor-sdk-natives`, one jar carrying every platform's library, and
+the SDK loads the one this machine needs. No plugin, no classifier, no profile,
+and nothing to change when the code runs somewhere else.
+
 | Coordinate | What it carries |
 | --- | --- |
-| `reactor-sdk` | the binding, and the variants that resolve a native library |
-| `reactor-sdk-natives` (5 classifiers) | one native library each |
-| `reactor-sdk-platform` | POM-only: the SDK plus all five, for Maven |
+| `reactor-sdk` | the binding, and a runtime dependency on the natives |
+| `reactor-sdk-natives` | every platform's library — about 50 MB — plus one classified jar each |
 | `reactor-sdk-audio` | optional microphone and speaker helpers |
 | `reactor-sdk-jackson` | optional `JsonValue` / `JsonNode` adapters |
 | `reactor-sdk-kotlin` | optional Kotlin facade: `suspend` functions and flows |
+
+### If 50 MB is too much
+
+A build that knows exactly what it runs on — a container image, usually — takes
+the classifier it wants instead:
+
+```kotlin
+implementation("inc.reactor:reactor-sdk:1.0.0") {
+    exclude(group = "inc.reactor", module = "reactor-sdk-natives")
+}
+runtimeOnly("inc.reactor:reactor-sdk-natives:1.0.0:macos-arm64")
+```
+
+The classifiers are `linux-x86_64`, `linux-aarch64`, `macos-arm64`,
+`macos-x86_64` and `windows-x86_64`. Take the wrong one and the failure is loud
+and immediate: the SDK names the platform it looked for and the three places it
+looked.
+
+This is opt-in, and it is the only part of the packaging you can get wrong —
+which is why it is the second thing on this page rather than the first. An
+earlier design tried to make Gradle pick the classifier for you from variant
+attributes. It does not work: a plain JVM project requests no operating-system
+or architecture attribute, so Gradle selects the ordinary runtime variant and no
+native artifact arrives at all. Expressing those attributes in the consumer only
+makes resolution ambiguous. Zero configuration through variants would require
+every consumer to apply a plugin, which is not zero configuration.
 
 ## From Kotlin
 
@@ -125,10 +150,6 @@ The facade is a separate coordinate rather than part of `reactor-sdk` for one
 reason — it carries `kotlinx-coroutines-core`, and a Java consumer should not.
 That is a packaging decision, not a lifecycle one.
 
-The aggregate is POM-only, not a fat jar — the shape JavaCPP publishes as
-`opencv-platform`. `-uber` would mean a fat jar and `-all` means all *modules* of
-a library in this ecosystem, not all platforms.
-
 ## Finding the native library
 
 `libreactor_ffi` is looked for in three places, in this order. The order is part
@@ -185,8 +206,7 @@ mise exec java@temurin-22.0.2+9 -- \
 | Module | What it is |
 | --- | --- |
 | `reactor-sdk` | the binding and the public API |
-| `reactor-sdk-natives` | the native library, one classified artifact per platform |
-| `reactor-sdk-platform` | POM-only aggregate, for builds that cannot read Gradle Module Metadata |
+| `reactor-sdk-natives` | every platform's library in the main jar, plus one classified artifact each |
 | `reactor-sdk-audio` | optional microphone and speaker helpers; nothing that opens audio hardware is on the mandatory import path |
 | `reactor-sdk-jackson` | optional interop between `JsonValue` and Jackson's `JsonNode` |
 | `reactor-sdk-kotlin` | optional Kotlin facade over the binding; holds no native symbol of its own |

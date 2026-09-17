@@ -8,9 +8,19 @@ plugins {
 }
 
 description =
-    "The native library, one artifact per platform. A consumer never names one of these: the " +
-        "core resolves the right one, and this module exists so that resolution has something to " +
-        "resolve."
+    "Every platform's native library. The main jar carries all five, which is what makes one " +
+        "dependency line enough; the classified artifacts beside it are for a build that wants " +
+        "exactly one."
+
+tasks.named<Javadoc>("javadoc") {
+    // There is nothing to document: the only source here is a module descriptor, and the artifact's
+    // content is five shared libraries. javac's javadoc on JDK 22 calls that an error — "No public
+    // or protected classes found to document" — while 25 lets it pass, so adding module-info.java
+    // broke only the lower leg of the matrix and only in CI.
+    //
+    // The jar is still produced, empty, because Central refuses a coordinate without one.
+    enabled = false
+}
 
 // Where the built libraries are staged, one directory per platform token. CI fills all five from
 // its build matrix; a local build usually has only the host's, and packages only that.
@@ -29,6 +39,39 @@ val platforms =
         "windows-x86_64" to "reactor_ffi.dll",
     )
 
+// ── The jar that makes one dependency line enough ────────────────────────────
+//
+// All five libraries, in one artifact, roughly 50 MB of it. That is the price of the thing this
+// SDK promises: a consumer writes one line, configures nothing, and the library for whatever
+// machine the code ends up on is already there.
+//
+// It replaced a design that did not work. reactor-sdk used to publish five extra variants keyed on
+// operating system and architecture, on the theory that Gradle would match the host's. A plain JVM
+// project requests neither attribute, so Gradle selected runtimeElements and no native artifact
+// reached the classpath at all — the client opened and then failed at load. Setting the attributes
+// in the consumer made it worse rather than better: the extra variants compete with
+// runtimeElements rather than adding to it, so resolution became ambiguous. addVariantsFromConfiguration
+// on the java component is the wrong mechanism for "a library plus a per-platform companion", and
+// there is no producer-side fix for it — the consumer would have to apply a plugin.
+//
+// An ordinary runtime dependency needs no metadata anyone has to opt into, which is also why
+// reactor-sdk-platform is gone: it existed only because Maven ignores Gradle Module Metadata.
+tasks.named<Jar>("jar") {
+    from(stagingDirectory) {
+        // The resource directory is not a valid package name, on purpose: JPMS encapsulates
+        // resources that live in packages, and these have to be readable from the core module
+        // whether a consumer is on the classpath or the module path.
+        into("reactor-native")
+        // Only the tokens this module publishes for. A stray directory under natives/ — a
+        // half-finished cross-compile, an editor's backup — must not become a resource the
+        // loader would then find and try to load.
+        include(platforms.keys.map { "$it/**" })
+    }
+}
+
+// Beside it, one jar per platform, for a build that wants exactly one: a container image that
+// knows what it runs on can exclude the module above and name its own.
+//
 // Only the platforms this machine actually has a library for, decided while the build is being
 // configured rather than skipped while it runs. A task that is registered and then skipped still
 // leaves the publication naming a file that was never written, which fails the publish with
@@ -43,10 +86,12 @@ val nativeJars =
             tasks.register<Jar>("nativesJar-$token") {
                 archiveBaseName = "reactor-sdk-natives"
                 archiveClassifier = token
-                // The resource directory is not a valid package name, on purpose: JPMS encapsulates
-                // resources that live in packages, and this one has to be readable from the core
-                // module whether a consumer is on the classpath or the module path.
                 from(stagingDirectory.dir(token)) { into("reactor-native/$token") }
+                // The module descriptor too. A consumer on the module path resolves modules, not
+                // artifacts, so whichever of these jars they end up with has to be the same module
+                // — otherwise `requires inc.reactor.sdk.natives` in the core holds for the default
+                // dependency and fails for the slim path.
+                from(sourceSets["main"].output)
             }
         }
 
@@ -56,11 +101,11 @@ publishing {
     publications {
         create<MavenPublication>("natives") {
             artifactId = "reactor-sdk-natives"
-            // The main jar and both companions, then one classified jar per platform. Central
-            // refuses a coordinate that has only classifiers: the classifier-less jar is what a
-            // POM resolves, and -sources/-javadoc are required of every jar coordinate, including
-            // one whose only content is a shared library. All three are empty here, which is the
-            // honest answer for a module with no Java in it.
+            // The main jar — every platform's library — and both companions, then one classified
+            // jar per platform. Central refuses a coordinate that has only classifiers: the
+            // classifier-less jar is what a POM resolves, and -sources/-javadoc are required of
+            // every jar coordinate, including one whose content is five shared libraries. Those
+            // two are empty, which is the honest answer for a module with no Java in it.
             from(components["java"])
             nativeJars.forEach { jar -> artifact(jar) }
             // standardPom, not a name and a description: the licence, developer and SCM blocks are

@@ -15,7 +15,6 @@ val publishingModules = listOf(
     ":reactor-sdk-jackson",
     ":reactor-sdk-kotlin",
     ":reactor-sdk-natives",
-    ":reactor-sdk-platform",
 )
 
 /**
