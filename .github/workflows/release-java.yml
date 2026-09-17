@@ -317,6 +317,10 @@ jobs:
           CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           VERSION: ${{ needs.detect-version.outputs.version }}
+          # Validation is usually a minute or two; publication can take longer when Central is
+          # busy. Long enough not to fail a healthy release, short enough that a stuck one does not
+          # hold a runner all day.
+          PUBLISH_TIMEOUT_SECONDS: '1800'
         run: |
           set -euo pipefail
           bundle=$(ls sdks/java/build/central-bundle/*-bundle.zip)
@@ -328,8 +332,46 @@ jobs:
             --request POST \
             --header "Authorization: Bearer ${token}" \
             --form "bundle=@${bundle}" \
-            "https://central.sonatype.com/api/v1/publisher/upload?name=reactor-sdk-${VERSION}&publishingType=AUTOMATIC")
+            "https://central.sonatype.com/api/v1/publisher/upload?name=reactor-sdk-${VERSION}&publishingType=AUTOMATIC" \
+            | tr -d '[:space:]')
+          if [ -z "$deployment" ]; then
+            echo "::error::the Portal accepted the bundle but named no deployment"
+            exit 1
+          fi
           echo "::notice::deployment ${deployment}"
+
+          # The upload is where this *starts*. A 200 means the Portal took the bundle, nothing more:
+          # validation and publication run afterwards and can still end in FAILED. Returning here
+          # would let the next step cut a GitHub release announcing coordinates that Central went on
+          # to reject — a release note pointing at something nobody can resolve, and no failure
+          # anywhere to say so.
+          deadline=$(( $(date +%s) + PUBLISH_TIMEOUT_SECONDS ))
+          while :; do
+            body=$(curl --silent --show-error --fail-with-body \
+              --request POST \
+              --header "Authorization: Bearer ${token}" \
+              "https://central.sonatype.com/api/v1/publisher/status?id=${deployment}")
+            state=$(printf '%s' "$body" | jq -r '.deploymentState // "UNKNOWN"')
+            echo "deployment ${deployment}: ${state}"
+            case "$state" in
+              PUBLISHED)
+                echo "::notice::Central published ${deployment}"
+                break
+                ;;
+              FAILED)
+                echo "::error::Central rejected ${deployment}"
+                printf '%s' "$body" | jq -r '.errors // . '
+                exit 1
+                ;;
+            esac
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              # Not a success. The artifacts may yet publish, but this workflow has no way to know,
+              # and a GitHub release is not something to cut on a maybe.
+              echo "::error::deployment ${deployment} was still ${state} after ${PUBLISH_TIMEOUT_SECONDS}s — check the Portal before re-running"
+              exit 1
+            fi
+            sleep 15
+          done
 
       - name: Publish the GitHub release
         if: steps.switch.outputs.publish == 'true'
