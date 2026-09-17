@@ -1,12 +1,15 @@
 package inc.reactor.sdk.internal;
 
+import inc.reactor.sdk.CommandReply;
 import inc.reactor.sdk.ConnectionStatus;
 import inc.reactor.sdk.ErrorCode;
+import inc.reactor.sdk.JsonValue;
 import inc.reactor.sdk.Media;
 import inc.reactor.sdk.PublishState;
 import inc.reactor.sdk.ReactorException;
 import inc.reactor.sdk.ReactorOptions;
 import inc.reactor.sdk.ReactorSdk;
+import inc.reactor.sdk.Stats;
 import inc.reactor.sdk.Subscription;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -100,10 +103,10 @@ public final class ClientPeer implements Runnable {
 
     final Events<ConnectionStatus> statusEvents = new Events<>("status");
     final Events<ReactorException> errorEvents = new Events<>("error");
-    final Events<String> messageEvents = new Events<>("message");
-    final Events<String> runtimeMessageEvents = new Events<>("runtimeMessage");
+    final Events<JsonValue> messageEvents = new Events<>("message");
+    final Events<JsonValue> runtimeMessageEvents = new Events<>("runtimeMessage");
     final Events<TrackAnnouncement> trackEvents = new Events<>("track");
-    final Events<String> capabilitiesEvents = new Events<>("capabilities");
+    final Events<JsonValue> capabilitiesEvents = new Events<>("capabilities");
     final Events<Optional<String>> sessionIdEvents = new Events<>("sessionId");
 
     private final TrackRegistry tracks = new TrackRegistry();
@@ -438,12 +441,12 @@ public final class ClientPeer implements Runnable {
     }
 
     /** @return a subscription that removes the handler */
-    public Subscription onMessage(Consumer<String> handler) {
+    public Subscription onMessage(Consumer<JsonValue> handler) {
         return messageEvents.add(handler);
     }
 
     /** @return a subscription that removes the handler */
-    public Subscription onRuntimeMessage(Consumer<String> handler) {
+    public Subscription onRuntimeMessage(Consumer<JsonValue> handler) {
         return runtimeMessageEvents.add(handler);
     }
 
@@ -453,7 +456,7 @@ public final class ClientPeer implements Runnable {
     }
 
     /** @return a subscription that removes the handler */
-    public Subscription onCapabilities(Consumer<String> handler) {
+    public Subscription onCapabilities(Consumer<JsonValue> handler) {
         return capabilitiesEvents.add(handler);
     }
 
@@ -489,16 +492,34 @@ public final class ClientPeer implements Runnable {
     }
 
     private void onMessage(MemorySegment msgJson, MemorySegment userdata) {
-        String copy = NativeStrings.borrow(msgJson);
-        if (copy != null) {
-            dispatch.run(() -> messageEvents.emit(copy));
-        }
+        parsed(msgJson, "message").ifPresent(value -> dispatch.run(() -> messageEvents.emit(value)));
     }
 
     private void onRuntimeMessage(MemorySegment msgJson, MemorySegment userdata) {
-        String copy = NativeStrings.borrow(msgJson);
-        if (copy != null) {
-            dispatch.run(() -> runtimeMessageEvents.emit(copy));
+        parsed(msgJson, "runtime_message").ifPresent(value -> dispatch.run(() -> runtimeMessageEvents.emit(value)));
+    }
+
+    /**
+     * Parses a payload once, here, rather than in each handler.
+     *
+     * <p>A payload that will not parse is reported through the error channel rather than dropped:
+     * the platform sent something, and losing it silently would leave nothing to debug.
+     */
+    private Optional<JsonValue> parsed(MemorySegment json, String what) {
+        String copy = NativeStrings.borrow(json);
+        if (copy == null) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(JsonBridge.parse(copy));
+        } catch (ReactorException malformed) {
+            dispatch.run(() -> errorEvents.emit(ReactorException.of(
+                    ErrorCode.DECODE_FAILED.code(),
+                    "a " + what + " arrived that could not be parsed: " + malformed.getMessage(),
+                    null,
+                    what,
+                    null)));
+            return Optional.empty();
         }
     }
 
@@ -513,11 +534,8 @@ public final class ClientPeer implements Runnable {
     }
 
     private void onCapabilities(MemorySegment capsJson, MemorySegment userdata) {
-        String copy = NativeStrings.borrow(capsJson);
-        if (copy != null) {
-            tracks.invalidate();
-            dispatch.run(() -> capabilitiesEvents.emit(copy));
-        }
+        tracks.invalidate();
+        parsed(capsJson, "capabilities").ifPresent(value -> dispatch.run(() -> capabilitiesEvents.emit(value)));
     }
 
     private void onSessionId(MemorySegment sessionId, MemorySegment userdata) {
@@ -943,7 +961,106 @@ public final class ClientPeer implements Runnable {
         }
     }
 
+    // ── Commands ────────────────────────────────────────────────────────────
+
+    /**
+     * Sends a command and waits for the reply the FFI correlates to it.
+     *
+     * <p>The reply comes back through this call's own completion. Firing a command and then
+     * listening for a matching event is the fire-then-listen bug: the reply may already have
+     * arrived by the time the listener is registered, and then nothing ever settles.
+     *
+     * @param name the command
+     * @param argsJson its arguments as JSON, or {@code null} for none
+     * @param uploadsJson named uploads as JSON, or {@code null} for none
+     * @return the model's reply, empty when it acknowledged without a message
+     */
+    public CompletableFuture<Optional<CommandReply>> sendCommand(
+            String name, @Nullable String argsJson, @Nullable String uploadsJson) {
+        CompletableFuture<Optional<CommandReply>> reply = new CompletableFuture<>();
+        start("send_command", ClientPeer::decodeCommandReply, reply, (completion, userdata) -> {
+            try (Arena call = Arena.ofConfined()) {
+                invoke(
+                        Ffi.Symbol.SEND_COMMAND,
+                        handle,
+                        call.allocateFrom(name),
+                        argsJson == null ? MemorySegment.NULL : call.allocateFrom(argsJson),
+                        uploadsJson == null ? MemorySegment.NULL : call.allocateFrom(uploadsJson),
+                        completion,
+                        userdata);
+            }
+        });
+        return reply;
+    }
+
+    /**
+     * Asks the model what it accepts.
+     *
+     * @return the schema, as the model declares it
+     */
+    public CompletableFuture<JsonValue> requestSchema() {
+        CompletableFuture<JsonValue> schema = new CompletableFuture<>();
+        start(
+                "request_schema",
+                json -> {
+                    if (json == null) {
+                        // Absent is a different answer from unreadable, and it means "nothing
+                        // declared" rather than "something arrived that I could not read".
+                        return JsonValue.object().build();
+                    }
+                    // Deliberately not caught: a schema that will not parse is a decode failure,
+                    // and answering with an empty object would be indistinguishable from a model
+                    // that declares nothing.
+                    return JsonBridge.parse(json);
+                },
+                schema,
+                (completion, userdata) -> invoke(Ffi.Symbol.REQUEST_SCHEMA, handle, completion, userdata));
+        return schema;
+    }
+
+    /**
+     * Reads the connection.
+     *
+     * @return what the platform reported
+     */
+    public CompletableFuture<Stats> getStats() {
+        CompletableFuture<Stats> stats = new CompletableFuture<>();
+        start(
+                "get_stats",
+                json -> new Stats(json == null ? JsonValue.object().build() : JsonBridge.parse(json)),
+                stats,
+                (completion, userdata) -> invoke(Ffi.Symbol.GET_STATS, handle, completion, userdata));
+        return stats;
+    }
+
+    private static Optional<CommandReply> decodeCommandReply(@Nullable String json) {
+        if (json == null || json.isBlank()) {
+            // The handler ran and acknowledged without producing a message.
+            return Optional.empty();
+        }
+        JsonValue parsed = JsonBridge.parse(json);
+        if (!(parsed instanceof JsonValue.JsonObject object)) {
+            return Optional.of(new CommandReply(Optional.empty(), Optional.of(parsed)));
+        }
+        return Optional.of(new CommandReply(object.getString("type"), object.get("data")));
+    }
+
     // ── Plumbing ────────────────────────────────────────────────────────────
+
+    private <T> void start(
+            String operation, Completions.Decoder<T> decoder, CompletableFuture<T> future, Completions.Invoker invoke) {
+        if (closed.get()) {
+            future.completeExceptionally(ReactorException.of(
+                    ErrorCode.INVALID_STATE.code(),
+                    operation + " was called on a closed client",
+                    null,
+                    operation,
+                    null));
+            return;
+        }
+        Completions.Ticket ticket = completions.register(operation, decoder, future);
+        invoke.call(ticket.callback(), ticket.userdata());
+    }
 
     private CompletableFuture<Void> call(String operation, Completions.Invoker invoke) {
         CompletableFuture<Void> future = new CompletableFuture<>();

@@ -9,6 +9,7 @@ rootProject.name = "reactor-java"
 include(
     "reactor-sdk",
     "reactor-sdk-audio",
+    "reactor-sdk-jackson",
     "examples",
     "integration-tests",
     "endurance-tests",
