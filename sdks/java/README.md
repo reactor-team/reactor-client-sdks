@@ -1,13 +1,12 @@
 # Reactor Java SDK
 
+[![Maven Central: reactor-sdk](https://img.shields.io/maven-central/v/inc.reactor/reactor-sdk.svg?label=reactor-sdk)](https://central.sonatype.com/artifact/inc.reactor/reactor-sdk)
+[![build](https://img.shields.io/github/actions/workflow/status/reactor-team/reactor-client-sdks/ci.yml?branch=main)](https://github.com/reactor-team/reactor-client-sdks/actions)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/reactor-team/reactor-client-sdks/blob/main/LICENSE)
+
 A Reactor client for desktop JVM applications, bound to `libreactor_ffi`
 through the [Foreign Function & Memory API][ffm] — no JNI, no JNA, and no
 native code of its own.
-
-> **Status: not published yet.** The binding is complete and all eight example
-> scenarios run against published production models; what remains before a first
-> release is the live integration suite, the endurance suite, and the version bump
-> that is itself the release switch.
 
 ## Requirements
 
