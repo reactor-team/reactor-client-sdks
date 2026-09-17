@@ -33,7 +33,7 @@ subprojects {
 
 // Local rehearsal only. There is deliberately no remote repository or publishing credential.
 subprojects {
-    if (name != "native-probe") {
+    if (name != "native-probe" && name != "reactor-desktop-platform") {
         apply(plugin = "maven-publish")
         apply(plugin = "org.jetbrains.dokka")
 
