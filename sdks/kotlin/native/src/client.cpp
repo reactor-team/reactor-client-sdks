@@ -298,3 +298,37 @@ Java_inc_reactor_sdk_internal_NativeClient_uploadBytes(JNIEnv* env, jobject, jlo
     reactor_upload_bytes(state->handle, data.empty() ? nullptr : data.data(), data.size(), n.data(), m.data(), complete, operation);
   } catch (const std::exception& error) { failure(env, error); }
 }
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_NativeClient_recording(JNIEnv* env, jobject, jlong value,
+    jboolean full, jdouble duration, jobject receiver) {
+  try {
+    auto* state = client(value);
+    auto owned = std::make_unique<Operation>(state, env, receiver);
+    auto* operation = owned.get();
+    { std::lock_guard<std::mutex> lock(state->mutex); state->pending.emplace(operation, std::move(owned)); }
+    if (full) reactor_request_recording(state->handle, complete, operation);
+    else reactor_request_clip(state->handle, duration, complete, operation);
+  } catch (const std::exception& error) { failure(env, error); }
+}
+namespace {
+void download_progress(uint32_t done, uint32_t total, void* userdata) noexcept {
+  char json[80];
+  std::snprintf(json, sizeof(json), "{\"done\":%llu,\"total\":%llu}",
+      static_cast<unsigned long long>(done), static_cast<unsigned long long>(total));
+  static_cast<Ticket*>(userdata)->deliver(2, json, nullptr, 0);
+}
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_NativeClient_download(JNIEnv* env, jobject, jlong value,
+    jbyteArray url, jbyteArray token, jbyteArray path, jdouble prediction, jdouble timeout,
+    jboolean local, jobject receiver) {
+  try {
+    auto* state = value ? client(value) : nullptr;
+    auto u = reactor_jni::inputText(env, url), t = optional(env, token), p = reactor_jni::inputText(env, path);
+    // No Client pointer or pending-map entry: download callbacks outlive destroy even after 0.
+    auto ticket = std::make_unique<Ticket>(env, receiver);
+    reactor_download_clip(state ? state->handle : nullptr, u.data(), pointer(t), p.data(), prediction, timeout, local,
+        download_progress, reactor_jni::completeDetached, ticket.release());
+  } catch (const std::exception& error) { failure(env, error); }
+}
