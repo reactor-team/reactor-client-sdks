@@ -50,6 +50,14 @@ val enduranceTest =
     }
 
 tasks.named("test") {
+    // This module's tests are not unit tests, and `test` is what every other module's unit run
+    // resolves to. Disabled rather than left to loop for the run's full duration on a laptop.
+    //
+    // Nothing is wired from here to `enduranceTest`, and nothing may be. A `dependsOn` on a
+    // provider derived from it — even one mapping to an empty list, which adds no dependency of
+    // its own — still leaves Gradle tracking the task the provider came from, which is what put
+    // the live suite into every `gradle test` in this build until REA-6446 caught it in CI. Same
+    // line, same mistake, and this one would have spent the endurance duration rather than a
+    // session.
     enabled = false
-    dependsOn(enduranceTest.map { emptyList<Any>() })
 }
