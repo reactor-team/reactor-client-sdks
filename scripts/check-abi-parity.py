@@ -48,6 +48,7 @@ HEADER = REPO_ROOT / "crates/reactor-ffi/include/reactor_ffi.h"
 CTYPES_SRC = REPO_ROOT / "sdks/python/reactor_sdk/_ffi.py"
 CPP_DIR = REPO_ROOT / "sdks/cpp"
 SWIFT_DIR = REPO_ROOT / "sdks/swift"
+JAVA_DIR = REPO_ROOT / "sdks/java"
 
 # `pub unsafe extern "C" fn reactor_foo(` — the exported ABI. `unsafe` is optional
 # because a handful of exports have no pointer to uphold anything about (a clock
@@ -62,6 +63,28 @@ RUST_EXPORT = re.compile(
 # followed by `)`, and parameters read `reactor_completion_fn completion`, where it
 # is followed by an identifier — so requiring `(` excludes both.
 HEADER_DECL = re.compile(r"\b(reactor_[a-z0-9_]+)\s*\(")
+
+# The header, with parameters: `reactor_foo(const char *a, int b);`. Applied to
+# comment-stripped text, the same `name(` requirement as HEADER_DECL excludes the
+# function-pointer typedefs (`(*reactor_on_status_fn)(...)`, where the name is
+# followed by `)`) and parameter declarations (`reactor_completion_fn completion`).
+HEADER_PROTOTYPE = re.compile(r"\b(reactor_[a-z0-9_]+)\s*\(([^;{]*?)\)\s*;", re.S)
+
+# The Java SDK declares each function as an enum constant carrying the C name and
+# a FunctionDescriptor:
+#
+#     SEND_COMMAND("reactor_send_command", FunctionDescriptor.ofVoid(ADDRESS, …)),
+#
+# which is the reason this binding gets a check none of the others can have. A C++
+# or ctypes declaration is not something a script can take apart, so for those the
+# comparison is by name and the arity goes unchecked — and an unchecked arity is
+# the failure this whole script exists to catch: a function that gained a
+# parameter still links, still resolves, and corrupts the stack at the call.
+# A FunctionDescriptor is a data structure, so here the arguments can be counted.
+JAVA_DESCRIPTOR = re.compile(
+    r'\(\s*"(reactor_[a-z0-9_]+)"\s*,\s*FunctionDescriptor\.(of|ofVoid)\s*\(([^()]*)\)',
+    re.S,
+)
 
 # `lib.reactor_foo.restype = ...` / `lib.reactor_foo.argtypes = [...]`
 CTYPES_DECL = re.compile(r"\blib\.(reactor_[a-z0-9_]+)\s*\.")
@@ -96,6 +119,12 @@ SWIFT_SILGEN = re.compile(r'@_silgen_name\s*\(\s*"(reactor_[a-z0-9_]+)"')
 # `reactor_ffi` is the library and its header; Swift names both in the module map
 # and in messages about rebuilding it. `reactor_sdk` is the SwiftPM package name.
 SWIFT_NON_FUNCTIONS = {"reactor_ffi", "reactor_sdk"}
+
+# Java reaches the ABI through FunctionDescriptors rather than through the header,
+# but any other `reactor_*` identifier in its sources would be a second, unchecked
+# way to name a symbol — so the same crude scan applies.
+JAVA_SYMBOL = CPP_SYMBOL
+JAVA_NON_FUNCTIONS = {"reactor_ffi", "reactor_sdk"}
 
 # A redeclaration in C++ would reintroduce the drift the header exists to
 # prevent: `extern "C" void reactor_foo(...)` compiles against a signature nobody
@@ -181,6 +210,51 @@ def swift_sources() -> list[Path]:
     )
 
 
+def java_sources() -> list[Path]:
+    """Every Java file the Java SDK owns, tests included.
+
+    Gradle's build trees (`build/`, `buildSrc/build/`) hold generated and copied
+    sources that are none of this script's business.
+    """
+    if not JAVA_DIR.is_dir():
+        return []
+    return sorted(
+        path
+        for path in JAVA_DIR.glob("**/*.java")
+        if "build" not in path.relative_to(JAVA_DIR).parts
+    )
+
+
+def parameter_count(parameters: str) -> int:
+    """How many parameters a C parameter list declares. `void` is none."""
+    stripped = parameters.strip()
+    if not stripped or stripped == "void":
+        return 0
+    return len([p for p in stripped.split(",") if p.strip()])
+
+
+def header_arities(text: str) -> dict[str, int]:
+    """Every exported function in the header, with how many parameters it takes."""
+    return {
+        name: parameter_count(parameters)
+        for name, parameters in HEADER_PROTOTYPE.findall(text)
+        if not name.endswith("_fn")
+    }
+
+
+def java_arities(text: str) -> dict[str, int]:
+    """Every function the Java SDK declares, with the arity its descriptor gives it.
+
+    `FunctionDescriptor.of(...)` names the return layout first and `ofVoid(...)`
+    does not, so one of them counts one fewer argument than it lists.
+    """
+    arities: dict[str, int] = {}
+    for name, kind, layouts in JAVA_DESCRIPTOR.findall(text):
+        declared = len([layout for layout in layouts.split(",") if layout.strip()])
+        arities[name] = declared - 1 if kind == "of" else declared
+    return arities
+
+
 def forbidden_problem(binding: str, hits: dict[str, str]) -> str:
     """The message for a symbol a binding is not allowed to name."""
     return f"reached for by the {binding} SDK and not allowed there:\n" + "\n".join(
@@ -233,6 +307,23 @@ def main() -> int:
                 swift_forbidden.setdefault(name, where)
         for name in SWIFT_SILGEN.findall(text):
             swift_bound.setdefault(name, where)
+
+    java_named: set[str] = set()
+    java_forbidden: dict[str, str] = {}
+    java_declared: dict[str, int] = {}
+    for path in java_sources():
+        text = CPP_COMMENT.sub(" ", read(path))
+        where = str(path.relative_to(REPO_ROOT))
+        java_declared.update(java_arities(text))
+        for name in JAVA_SYMBOL.findall(text):
+            # REACTOR_ABI_VERSION and friends are macros the header exports as
+            # constants; reactor_*_fn are its function-pointer typedefs. Neither
+            # is a function.
+            if name.isupper() or name.endswith("_fn") or name in JAVA_NON_FUNCTIONS:
+                continue
+            java_named.add(name)
+            if name in FORBIDDEN:
+                java_forbidden.setdefault(name, where)
 
     if not rust:
         sys.exit("error: found no exported reactor_* functions — has lib.rs moved?")
@@ -300,6 +391,48 @@ def main() -> int:
     if swift_forbidden:
         problems.append(forbidden_problem("Swift", swift_forbidden))
 
+    unknown_in_java = sorted(java_named - rust)
+    if unknown_in_java:
+        problems.append(
+            "named by the Java SDK and not exported by reactor-ffi:\n"
+            + "\n".join(f"    {name}" for name in unknown_in_java)
+        )
+
+    if java_forbidden:
+        problems.append(forbidden_problem("Java", java_forbidden))
+
+    # The check no other binding gets. Names agreeing is not the same as
+    # signatures agreeing, and a wrong arity is invisible until the call.
+    # Comments stripped first: the header is mostly prose, and a prototype quoted
+    # inside an explanation is not a declaration.
+    header_arity = header_arities(CPP_COMMENT.sub(" ", read(HEADER)))
+    arity_mismatches = [
+        (name, declared, header_arity[name])
+        for name, declared in sorted(java_declared.items())
+        if name in header_arity and declared != header_arity[name]
+    ]
+    if arity_mismatches:
+        problems.append(
+            "declared by the Java SDK with the wrong number of arguments:\n"
+            + "\n".join(
+                f"    {name}: FunctionDescriptor declares {declared}, "
+                f"reactor_ffi.h takes {expected}\n"
+                f"        A call through this descriptor corrupts the stack. It does\n"
+                f"        not fail at load; it looks like a hang, or like the operation\n"
+                f"        silently doing nothing."
+                for name, declared, expected in arity_mismatches
+            )
+        )
+
+    undeclared_arity = sorted(set(java_named) - set(java_declared))
+    if undeclared_arity:
+        problems.append(
+            "named by the Java SDK outside its FunctionDescriptor table:\n"
+            + "\n".join(f"    {name}" for name in undeclared_arity)
+            + "\n        Every symbol this binding reaches must be declared in Ffi.java's\n"
+            "        Symbol enum, where its arity can be checked against the header."
+        )
+
     if problems:
         print("ABI parity check failed.\n", file=sys.stderr)
         for problem in problems:
@@ -314,7 +447,8 @@ def main() -> int:
     only_in_rust = sorted(rust - ctypes_decls)
     summary = (
         f"ABI parity OK — {len(rust)} exported functions, header in sync, "
-        f"{len(cpp_named)} named by the C++ SDK, {len(swift_named)} by the Swift SDK"
+        f"{len(cpp_named)} named by the C++ SDK, {len(swift_named)} by the Swift SDK, "
+        f"{len(java_declared)} by the Java SDK (arity checked)"
     )
     if only_in_rust:
         # Not an error: the Python SDK is free to bind a subset.
