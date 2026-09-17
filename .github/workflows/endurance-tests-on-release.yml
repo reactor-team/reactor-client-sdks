@@ -159,10 +159,13 @@ jobs:
     permissions:
       actions: write
     steps:
-      # The workflow's own top-level conclusion is also "success" for a pull-request build or a
-      # dry-run dispatch, neither of which published anything. The job that actually ships is what
-      # gets checked — and its name is read off release-java.yml rather than assumed to match
-      # another SDK's.
+      # Not the "Publish to Maven Central" job's own conclusion, for the same reason the C++ job
+      # above checks a step: release-java.yml's PUBLISH_JAVA_RELEASE kill switch (its "Is
+      # publishing switched on?" step) skips both publishing steps without failing the job — so a
+      # run with the switch off, or a dry-run dispatch, reports that job as a plain success while
+      # publishing nothing. Checking the step that actually ships distinguishes "ran and
+      # published" from "job succeeded, nothing published". Its name is read off release-java.yml
+      # rather than assumed to match another SDK's.
       - name: Check whether this run actually published a release
         id: released
         env:
@@ -171,8 +174,8 @@ jobs:
         run: |
           set -euo pipefail
           conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs" --paginate \
-            --jq '[.jobs[] | select(.name == "Publish to Maven Central")] | last | .conclusion // "missing"')
-          echo "release job conclusion: $conclusion"
+            --jq '[.jobs[] | select(.name == "Publish to Maven Central") | .steps[]? | select(.name == "Publish")] | last | .conclusion // "missing"')
+          echo "publish step conclusion: $conclusion"
           echo "released=$([ "$conclusion" = "success" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - name: Dispatch the Java endurance suite
