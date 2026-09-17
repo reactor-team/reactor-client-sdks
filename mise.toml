@@ -544,6 +544,22 @@ run = "gradle --project-dir sdks/java --console=plain -PreactorJdk={{ env.REACTO
 description = "[Testing] Java SDK unit tests"
 run = "gradle --project-dir sdks/java --console=plain -PreactorJdk={{ env.REACTOR_JDK | default(value='25') }} test"
 
+[tasks."test:java:integration-tests"]
+description = "[Testing] Java SDK integration tests — real FFI, real WebRTC, against a live model (needs INTEGRATION_TESTS_REACTOR_API_KEY)"
+# Deliberately not a dependency of `test` / `test:java`: unlike the unit suite's Java-implemented
+# fake library, this connects to a real model in production over a real WebRTC connection, so it
+# needs a key, costs live sessions, and cannot gate a laptop's build.
+#
+# Only the test invocation is wrapped in scripts/retry.sh — never the build above it, so a retry
+# never re-pays for a build that already succeeded. Wrapped here rather than in each caller's
+# workflow step: ci.yml and release-java.yml both run this task, and a wrapper each of them had to
+# remember is exactly the drift this avoids. A live model's shared session quota, its capacity
+# pool and an SDP poll can all fail transiently without any bug in the binding.
+run = [
+    "gradle --project-dir sdks/java --console=plain :integration-tests:testClasses",
+    "scripts/retry.sh gradle --project-dir sdks/java --console=plain :integration-tests:integrationTest",
+]
+
 [tasks."example:java"]
 description = "[Examples] Run one numbered Java example, e.g. `mise run example:java 01`"
 # Needs REACTOR_API_KEY, and a native library: `mise run build:ffi` first, or set

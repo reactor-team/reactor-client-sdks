@@ -1,6 +1,9 @@
 plugins {
-    `java-library`
-    `maven-publish`
+    // The conventions, even though this module holds no Java: they set the same release target
+    // every other module has — without which resolution refuses it as "compatible with 25 or
+    // newer" — and produce the empty -sources and -javadoc jars Central requires of every
+    // coordinate, including one whose content is a shared library.
+    id("reactor-java-conventions")
 }
 
 description =
