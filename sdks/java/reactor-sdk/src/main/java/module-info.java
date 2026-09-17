@@ -7,7 +7,10 @@
  * restricted call, and a future release will refuse them outright.
  */
 module inc.reactor.sdk {
-    requires static org.jspecify;
+    // transitive: @Nullable appears in this module's own public signatures, so a consumer
+    // compiling against them has to be able to read it. static: the annotations are
+    // class-retained and absent at run time, so nothing is required on the module path.
+    requires static transitive org.jspecify;
 
     exports inc.reactor.sdk;
 }
