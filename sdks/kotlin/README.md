@@ -96,3 +96,7 @@ publication lifecycle, validation and cancellation behavior.
 
 Correlated commands, schemas, unsolicited messages and typed connection statistics are
 available; see [Commands and statistics](docs/0008-commands-and-statistics.md).
+
+File/byte uploads and FileRef command arguments are available, with an Android content URI
+adapter and bounded stream staging. See [Uploads](docs/0009-uploads.md) for ownership,
+cancellation and cache limits.

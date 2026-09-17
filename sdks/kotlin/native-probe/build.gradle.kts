@@ -22,6 +22,7 @@ android {
         "../reactor-core/src/main/kotlin",
         "../reactor-core/build/generated/sdkVersion",
         "../reactor-core/src/test/kotlin",
+        "../reactor-android/src/main/kotlin",
     )
     sourceSets["main"].jniLibs.srcDir(layout.buildDirectory.dir("native/jniLibs"))
 }
