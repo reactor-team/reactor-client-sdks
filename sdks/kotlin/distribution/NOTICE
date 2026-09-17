@@ -1,0 +1,13 @@
+Reactor Kotlin SDK and reactor-ffi: Apache License 2.0 (see LICENSE).
+reactor-webrtc 0.17.2: https://github.com/reactor-team/reactor-webrtc/tree/v0.17.2
+
+Native binaries contain Google WebRTC branch-heads/7907,
+commit a5ddff6086d96fd2356ad6c521525ea2803f7988, and its dependencies.
+WebRTC is licensed under BSD-3-Clause with the WebRTC patent grant.
+Upstream: https://webrtc.googlesource.com/src
+Component versions and license identifiers are recorded in the per-platform
+SBOMs attached to reactor-webrtc's webrtc-7907-a5ddff60-p7 release.
+
+This local rehearsal is not a public distribution. Full transitive native
+license-text collection and registry ownership/signing verification remain
+release prerequisites, alongside the live integration and Android R8 gates.
