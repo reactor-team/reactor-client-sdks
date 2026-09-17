@@ -36,7 +36,7 @@ import org.jspecify.annotations.Nullable;
  * the header returns void — and wrong here, where the fake has to imitate functions that return
  * one.
  */
-final class FakeNativeLibrary implements AutoCloseable {
+public final class FakeNativeLibrary implements AutoCloseable {
 
     private final Arena arena = Arena.ofShared();
     private final Linker linker = Linker.nativeLinker();
@@ -54,16 +54,16 @@ final class FakeNativeLibrary implements AutoCloseable {
     private int abiVersion = Ffi.ABI_VERSION;
 
     /** What the next owned string this library hands out will say. */
-    String nextOwnedString = "session-0000";
+    public String nextOwnedString = "session-0000";
 
     /** What {@code reactor_destroy} answers: 0 = quiesced, -1 = a callback is still running. */
-    int destroyResult = 0;
+    public int destroyResult = 0;
 
     /** How many times {@code reactor_destroy} was called. */
-    int destroyCalls;
+    public int destroyCalls;
 
     /** The audio device mode {@code reactor_create_with_adm} was asked for. */
-    int admMode = -1;
+    public int admMode = -1;
 
     /** What the client reported about itself. */
     @Nullable
@@ -85,9 +85,9 @@ final class FakeNativeLibrary implements AutoCloseable {
     MemorySegment lastUserdata;
 
     /** What {@code reactor_status} answers. */
-    String status = "ready";
+    public String status = "ready";
 
-    FakeNativeLibrary() {
+    public FakeNativeLibrary() {
         for (Ffi.Symbol symbol : Ffi.Symbol.values()) {
             symbols.put(symbol.cName(), doNothing(symbol.descriptor()));
         }
@@ -101,33 +101,36 @@ final class FakeNativeLibrary implements AutoCloseable {
         bind("reactor_disconnect", Ffi.Symbol.DISCONNECT.descriptor(), "disconnect");
         bind("reactor_tracks", Ffi.Symbol.TRACKS.descriptor(), "tracks");
         bind("reactor_paused_tracks", Ffi.Symbol.PAUSED_TRACKS.descriptor(), "pausedTracks");
+        bind("reactor_publish_track", Ffi.Symbol.PUBLISH_TRACK.descriptor(), "publishTrack");
+        bind("reactor_unpublish_track", Ffi.Symbol.UNPUBLISH_TRACK.descriptor(), "unpublishTrack");
+        bind("reactor_push_video_frame", Ffi.Symbol.PUSH_VIDEO_FRAME.descriptor(), "pushVideoFrame");
     }
 
     /** Makes this library report an ABI version other than the one the binding expects. */
-    void setAbiVersion(int version) {
+    public void setAbiVersion(int version) {
         this.abiVersion = version;
     }
 
     /** Drops a symbol, the way a library older than the crates is missing a newly added one. */
-    void removeSymbol(String cName) {
+    public void removeSymbol(String cName) {
         symbols.remove(cName);
     }
 
-    SymbolLookup lookup() {
+    public SymbolLookup lookup() {
         return name -> Optional.ofNullable(symbols.get(name));
     }
 
     /** Whether every owned string handed out came back to {@code reactor_free_string} exactly once. */
-    boolean ownedStringsFreedExactlyOnce() {
+    public boolean ownedStringsFreedExactlyOnce() {
         return new HashSet<>(freed).equals(ownedOut) && freed.size() == ownedOut.size();
     }
 
     /** Whether a static string was ever passed to {@code reactor_free_string}. */
-    boolean aStaticStringWasFreed() {
+    public boolean aStaticStringWasFreed() {
         return freed.stream().anyMatch(staticsOut::contains);
     }
 
-    int freeCallCount() {
+    public int freeCallCount() {
         return freed.size();
     }
 
@@ -196,7 +199,7 @@ final class FakeNativeLibrary implements AutoCloseable {
 
     /** Calls one of the client's callbacks, the way the FFI would. */
     @SuppressWarnings("restricted") // downcallHandle: calling the client's own stub
-    void fireCallback(String field, FunctionDescriptor descriptor, Object... arguments) {
+    public void fireCallback(String field, FunctionDescriptor descriptor, Object... arguments) {
         MemorySegment struct = java.util.Objects.requireNonNull(callbacks, "the client registered no callbacks");
         long offset = Ffi.Callbacks.LAYOUT.byteOffset(java.lang.foreign.MemoryLayout.PathElement.groupElement(field));
         MemorySegment pointer = struct.get(java.lang.foreign.ValueLayout.ADDRESS, offset);
@@ -209,19 +212,21 @@ final class FakeNativeLibrary implements AutoCloseable {
     }
 
     /** Allocates zeroed memory that lives as long as this fake. */
-    MemorySegment allocate(long bytes) {
+    public MemorySegment allocate(long bytes) {
         return arena.allocate(bytes);
     }
 
     /** Allocates a C string that lives as long as this fake. */
-    MemorySegment cString(String text) {
+    public MemorySegment cString(String text) {
         return arena.allocateFrom(text);
     }
 
     /** What {@code reactor_tracks} answers, as the FFI's JSON array. */
-    String tracksJson = "[]";
+    public String tracksJson = "[]";
+
     /** What {@code reactor_paused_tracks} answers. */
-    String pausedJson = "[]";
+    public String pausedJson = "[]";
+
     /** Runs on every {@code reactor_tracks} read, before it answers — for racing the cache. */
     @Nullable
     Runnable duringTracksRead;
@@ -239,6 +244,47 @@ final class FakeNativeLibrary implements AutoCloseable {
         MemorySegment segment = arena.allocateFrom(pausedJson);
         ownedOut.add(segment.address());
         return segment;
+    }
+
+    /** The error {@code reactor_unpublish_track} answers with, or null for success. */
+    public @Nullable String unpublishError;
+
+    /** How many frames reached {@code reactor_push_video_frame}. */
+    public int videoFramesPushed;
+
+    private void publishTrack(
+            MemorySegment handle, MemorySegment name, MemorySegment completion, MemorySegment userdata) {
+        lastCompletion = completion;
+        lastUserdata = userdata;
+    }
+
+    private MemorySegment unpublishTrack(MemorySegment handle, MemorySegment name) {
+        if (unpublishError == null) {
+            return MemorySegment.NULL;
+        }
+        MemorySegment segment = arena.allocateFrom(unpublishError);
+        ownedOut.add(segment.address());
+        return segment;
+    }
+
+    private void pushVideoFrame(MemorySegment handle, MemorySegment name, MemorySegment data, int width, int height) {
+        videoFramesPushed++;
+    }
+
+    /** Settles the completion of the last async call the client made. */
+    @SuppressWarnings("restricted") // downcallHandle: calling the client's own completion stub
+    public void settleLastCall(boolean ok, @Nullable String resultJson, @Nullable String errorJson) {
+        MethodHandle call = linker.downcallHandle(
+                java.util.Objects.requireNonNull(lastCompletion, "no call is outstanding"), Ffi.Callbacks.COMPLETION);
+        try {
+            call.invokeWithArguments(
+                    ok ? 1 : 0,
+                    resultJson == null ? MemorySegment.NULL : arena.allocateFrom(resultJson),
+                    errorJson == null ? MemorySegment.NULL : arena.allocateFrom(errorJson),
+                    java.util.Objects.requireNonNull(lastUserdata));
+        } catch (Throwable t) {
+            throw new AssertionError("settling the completion threw out of the stub", t);
+        }
     }
 
     /**
