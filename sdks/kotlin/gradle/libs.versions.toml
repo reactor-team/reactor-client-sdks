@@ -3,6 +3,7 @@ kotlin = "2.2.21"
 agp = "8.9.2"
 ktlint-plugin = "12.1.2"
 ktlint = "1.5.0"
+dokka = "2.0.0"
 junit = "4.13.2"
 androidx-test-runner = "1.6.2"
 androidx-test-junit = "1.2.1"
@@ -23,3 +24,4 @@ kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 android-library = { id = "com.android.library", version.ref = "agp" }
 ktlint = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlint-plugin" }
+dokka = { id = "org.jetbrains.dokka", version.ref = "dokka" }

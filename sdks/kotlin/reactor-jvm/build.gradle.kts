@@ -29,7 +29,6 @@ if (nativePlatform.isPresent) {
         publications.create<MavenPublication>("native") {
             artifactId = "reactor-native-$platform"
             artifact(nativeJar)
-            artifact(tasks.named("manualJar"))
             artifact(
                 tasks.register<Jar>("nativeSourcesJar") {
                     archiveBaseName.set("reactor-native-$platform")
