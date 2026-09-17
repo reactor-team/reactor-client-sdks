@@ -13,11 +13,13 @@ All modules use the single `reactorVersion` in `gradle.properties`, currently a
 snapshot. These are planned Maven coordinates; they are not on Maven Central yet:
 
 ```kotlin
-// Desktop: choose exactly one native runtime for the deployment target.
+// Desktop: the plugin selects the native runtime for the host automatically.
 implementation("inc.reactor:reactor-jvm:$version")
-runtimeOnly("inc.reactor:reactor-native-macos-arm64:$version")
-// Optional Java Sound/Swing integration:
 implementation("inc.reactor:reactor-desktop:$version")
+// Add once in the application module:
+plugins { id("inc.reactor.desktop-platform") version "$version" }
+// Optional cross-compilation override:
+reactorDesktop { platform.set("linux-arm64") }
 
 // Android: AAR includes arm64-v8a libraries and matching relocated WebRTC classes.
 implementation("inc.reactor:reactor-android:$version")
@@ -31,7 +33,11 @@ Initialization is serialized and idempotent; ABI mismatch or a partially failed
 load is terminal until process restart. Android preloads WebRTC's Java class
 loader, loads the AAR's FFI/JNI libraries, then checks the ABI.
 
-Desktop resolution is `REACTOR_NATIVE_DIR` (explicit directory containing **both**
+The `inc.reactor.desktop-platform` Gradle plugin detects the JVM host OS and architecture,
+then adds the matching `reactor-native-*` artifact as `runtimeOnly`. Supported values are
+`macos-arm64`, `macos-x64`, `linux-arm64`, `linux-x64` and `windows-x64`. Set
+`reactorDesktop.platform` (or `-PreactorDesktopPlatform`) when building for another target.
+Desktop runtime loading is `REACTOR_NATIVE_DIR` (explicit directory containing **both**
 libraries), then the matching native artifact on the classpath. The latter is
 extracted into a unique private temporary directory and retained for the process
 lifetime. Shutdown schedules deletion; Windows may retain mapped DLLs until later
