@@ -34,7 +34,7 @@ for pattern in patterns:
     assert not any(char in literal for char in "*?[]{}!()"), pattern
 
 for path in [
-    "sdks/kotlin/reactor-core/src/main/kotlin/Reactor.kt",
+    "sdks/kotlin/reactor-core/src/main/kotlin/inc/reactor/sdk/Reactor.kt",
     "sdks/kotlin/gradle/libs.versions.toml",
     "scripts/kotlin.sh",
     "scripts/check-kotlin-ci.py",
