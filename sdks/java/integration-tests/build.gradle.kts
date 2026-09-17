@@ -36,6 +36,14 @@ val integrationTest =
     }
 
 tasks.named("test") {
+    // This module's tests are not unit tests, and `test` is what every other module's unit run
+    // resolves to. Disabled rather than left to reach the platform from a laptop.
+    //
+    // Nothing is wired from here to `integrationTest`, and nothing may be. A `dependsOn` on a
+    // provider derived from it — even one mapping to an empty list, which adds no dependency of
+    // its own — still leaves Gradle tracking the task the provider came from. `mise run test:java`
+    // therefore pulled the live suite into its graph and ran it: green on a laptop, where a
+    // missing key is a skip, and a hard failure in CI's unit job, which has no key and no reason
+    // to be given one.
     enabled = false
-    dependsOn(integrationTest.map { emptyList<Any>() })
 }
