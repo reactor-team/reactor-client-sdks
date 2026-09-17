@@ -12,32 +12,33 @@ final class LifecycleChurnTest {
 
     @Test
     @DisplayName("lifecycle churn")
-    void lifecycleChurn() {
+    void lifecycleChurn() throws Exception {
         String jwt = Endurance.jwt();
-        Endurance run = new Endurance(
+        Endurance.run(
                 "lifecycle-churn",
                 "A new client every cycle: create, connect, send one command, disconnect, close. "
-                        + "The only scenario that creates and destroys native handles.");
-
-        while (run.keepGoing()) {
-            // Closed explicitly rather than by scope exit, so the moment it happens is this line
-            // and not wherever the last reference happened to be dropped.
-            Reactor reactor = Reactor.open(Endurance.options(jwt));
-            try {
-                reactor.connect().join();
-                reactor.sendCommand("get_status").join();
-                reactor.disconnect().join();
-            } finally {
-                reactor.close();
-            }
-            // Its own invariant, which belongs here rather than in the shared metrics: this
-            // scenario is the one that must bring the count back to zero every cycle.
-            if (inc.reactor.sdk.internal.ClientPeer.liveClients() != 0) {
-                throw new AssertionError(
-                        "a client outlived its cycle: " + inc.reactor.sdk.internal.ClientPeer.liveClients());
-            }
-            run.endOfCycle();
-        }
-        run.finish(true);
+                        + "The only scenario that creates and destroys native handles.",
+                true,
+                run -> {
+                    while (run.keepGoing()) {
+                        // Closed explicitly rather than by scope exit, so the moment it happens is this line
+                        // and not wherever the last reference happened to be dropped.
+                        Reactor reactor = Reactor.open(Endurance.options(jwt));
+                        try {
+                            reactor.connect().join();
+                            reactor.sendCommand("get_status").join();
+                            reactor.disconnect().join();
+                        } finally {
+                            reactor.close();
+                        }
+                        // Its own invariant, which belongs here rather than in the shared metrics: this
+                        // scenario is the one that must bring the count back to zero every cycle.
+                        if (inc.reactor.sdk.internal.ClientPeer.liveClients() != 0) {
+                            throw new AssertionError("a client outlived its cycle: "
+                                    + inc.reactor.sdk.internal.ClientPeer.liveClients());
+                        }
+                        run.endOfCycle();
+                    }
+                });
     }
 }

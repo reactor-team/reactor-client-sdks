@@ -16,45 +16,46 @@ final class SessionChurnTest {
 
     @Test
     @DisplayName("session churn")
-    void sessionChurn() {
+    void sessionChurn() throws Exception {
         String jwt = Endurance.jwt();
-        Endurance run = new Endurance(
+        Endurance.run(
                 "session-churn",
                 "One client, connected once: publish, subscribe, push a frame, send a command, "
-                        + "unpublish — repeated without ever disconnecting.");
+                        + "unpublish — repeated without ever disconnecting.",
+                false,
+                run -> {
+                    Reactor reactor = Reactor.open(Endurance.options(jwt));
+                    try {
+                        reactor.connect().join();
+                        Track input = reactor.track("webcam");
+                        Track output = reactor.track("main_video");
+                        byte[] frame = new byte[320 * 240 * 4];
 
-        Reactor reactor = Reactor.open(Endurance.options(jwt));
-        try {
-            reactor.connect().join();
-            Track input = reactor.track("webcam");
-            Track output = reactor.track("main_video");
-            byte[] frame = new byte[320 * 240 * 4];
+                        while (run.keepGoing()) {
+                            AtomicInteger received = new AtomicInteger();
+                            var subscription = output.onFrame((VideoFrame ignored) -> received.incrementAndGet());
 
-            while (run.keepGoing()) {
-                AtomicInteger received = new AtomicInteger();
-                var subscription = output.onFrame((VideoFrame ignored) -> received.incrementAndGet());
+                            input.publish().join();
+                            input.pushFrame(frame, 320, 240);
+                            reactor.sendCommand("get_status").join();
+                            input.unpublish();
+                            subscription.close();
 
-                input.publish().join();
-                input.pushFrame(frame, 320, 240);
-                reactor.sendCommand("get_status").join();
-                input.unpublish();
-                subscription.close();
-
-                // This scenario's own invariant: every operation it starts is answered, so nothing
-                // may be left waiting at the end of a cycle.
-                if (reactor.isClosed()) {
-                    throw new AssertionError("the client closed itself mid-run");
-                }
-                run.endOfCycle();
-            }
-        } finally {
-            try {
-                reactor.disconnect().join();
-            } catch (RuntimeException alreadyGone) {
-                // The report still has to be written.
-            }
-            reactor.close();
-        }
-        run.finish(false);
+                            // This scenario's own invariant: every operation it starts is answered, so nothing
+                            // may be left waiting at the end of a cycle.
+                            if (reactor.isClosed()) {
+                                throw new AssertionError("the client closed itself mid-run");
+                            }
+                            run.endOfCycle();
+                        }
+                    } finally {
+                        try {
+                            reactor.disconnect().join();
+                        } catch (RuntimeException alreadyGone) {
+                            // The report still has to be written.
+                        }
+                        reactor.close();
+                    }
+                });
     }
 }

@@ -17,34 +17,37 @@ final class PublishChurnTest {
 
     @Test
     @DisplayName("publish churn")
-    void publishChurn() {
+    void publishChurn() throws Exception {
         String jwt = Endurance.jwt();
-        Endurance run = new Endurance(
-                "publish-churn", "publish then unpublish, nothing else: no frames, no commands, no reconnects.");
+        Endurance.run(
+                "publish-churn",
+                "publish then unpublish, nothing else: no frames, no commands, no reconnects.",
+                false,
+                run -> {
+                    Reactor reactor = Reactor.open(Endurance.options(jwt));
+                    try {
+                        reactor.connect().join();
+                        Track input = reactor.track("webcam");
 
-        Reactor reactor = Reactor.open(Endurance.options(jwt));
-        try {
-            reactor.connect().join();
-            Track input = reactor.track("webcam");
+                        while (run.keepGoing()) {
+                            input.publish().join();
+                            input.unpublish();
 
-            while (run.keepGoing()) {
-                input.publish().join();
-                input.unpublish();
-
-                // This scenario's own invariant: the state it churns has to come back each time.
-                if (input.publishState() != PublishState.UNPUBLISHED) {
-                    throw new AssertionError("a track stayed published after unpublish: " + input.publishState());
-                }
-                run.endOfCycle();
-            }
-        } finally {
-            try {
-                reactor.disconnect().join();
-            } catch (RuntimeException alreadyGone) {
-                // The report still has to be written.
-            }
-            reactor.close();
-        }
-        run.finish(false);
+                            // This scenario's own invariant: the state it churns has to come back each time.
+                            if (input.publishState() != PublishState.UNPUBLISHED) {
+                                throw new AssertionError(
+                                        "a track stayed published after unpublish: " + input.publishState());
+                            }
+                            run.endOfCycle();
+                        }
+                    } finally {
+                        try {
+                            reactor.disconnect().join();
+                        } catch (RuntimeException alreadyGone) {
+                            // The report still has to be written.
+                        }
+                        reactor.close();
+                    }
+                });
     }
 }

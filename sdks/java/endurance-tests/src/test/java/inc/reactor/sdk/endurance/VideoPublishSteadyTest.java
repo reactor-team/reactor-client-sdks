@@ -20,44 +20,45 @@ final class VideoPublishSteadyTest {
 
     @Test
     @DisplayName("video publish steady")
-    void videoPublishSteady() {
+    void videoPublishSteady() throws Exception {
         String jwt = Endurance.jwt();
-        Endurance run = new Endurance(
+        Endurance.run(
                 "video-publish-steady",
                 "publish once and hold it, pushing video for the whole run — no pause, no unpublish, "
-                        + "no reconnect.");
+                        + "no reconnect.",
+                false,
+                run -> {
+                    Reactor reactor = Reactor.open(Endurance.options(jwt));
+                    try {
+                        reactor.connect().join();
+                        Track input = reactor.track("webcam");
+                        input.publish().join();
+                        byte[] frame = new byte[WIDTH * HEIGHT * 4];
 
-        Reactor reactor = Reactor.open(Endurance.options(jwt));
-        try {
-            reactor.connect().join();
-            Track input = reactor.track("webcam");
-            input.publish().join();
-            byte[] frame = new byte[WIDTH * HEIGHT * 4];
+                        while (run.keepGoing()) {
+                            // A cycle is a second of video rather than one frame: at 30fps a per-frame sample
+                            // would be more measuring than streaming.
+                            for (int index = 0; index < 30 && run.keepGoing(); index++) {
+                                input.pushFrame(frame, WIDTH, HEIGHT);
+                                Endurance.pause(Duration.ofMillis(33));
+                            }
 
-            while (run.keepGoing()) {
-                // A cycle is a second of video rather than one frame: at 30fps a per-frame sample
-                // would be more measuring than streaming.
-                for (int index = 0; index < 30 && run.keepGoing(); index++) {
-                    input.pushFrame(frame, WIDTH, HEIGHT);
-                    Endurance.pause(Duration.ofMillis(33));
-                }
-
-                // This scenario's own invariant: the publish must survive the whole run, and a
-                // session that dropped out from under it would make every later reading meaningless.
-                if (!input.isPublished()) {
-                    throw new AssertionError("the publish did not survive the run");
-                }
-                run.endOfCycle();
-            }
-            input.unpublish();
-        } finally {
-            try {
-                reactor.disconnect().join();
-            } catch (RuntimeException alreadyGone) {
-                // The report still has to be written.
-            }
-            reactor.close();
-        }
-        run.finish(false);
+                            // This scenario's own invariant: the publish must survive the whole run, and a
+                            // session that dropped out from under it would make every later reading meaningless.
+                            if (!input.isPublished()) {
+                                throw new AssertionError("the publish did not survive the run");
+                            }
+                            run.endOfCycle();
+                        }
+                        input.unpublish();
+                    } finally {
+                        try {
+                            reactor.disconnect().join();
+                        } catch (RuntimeException alreadyGone) {
+                            // The report still has to be written.
+                        }
+                        reactor.close();
+                    }
+                });
     }
 }

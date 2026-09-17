@@ -46,6 +46,61 @@ final class Endurance {
         this.deadlineNanos = startedAt + durationSeconds() * 1_000_000_000L;
     }
 
+    /** One scenario's loop, given the run it reports into. */
+    @FunctionalInterface
+    interface Scenario {
+        void run(Endurance run) throws Exception;
+    }
+
+    /**
+     * Runs one scenario and writes its report, whichever way it ends.
+     *
+     * <p>Every scenario goes through here rather than calling {@link #finish} itself. A scenario
+     * that finished with its own call put report generation on the success path: a run that threw
+     * on cycle 4,000 — which is the run somebody actually needs to read — cleaned up, propagated,
+     * and left nothing behind, while the workflow dutifully uploaded an empty directory. The shape
+     * is the fix: a new scenario cannot forget what it never had to remember.
+     *
+     * <p>The original failure wins. A metric that also fails is attached to it as suppressed rather
+     * than replacing it, because "still climbing" is a worse answer than the exception that stopped
+     * the run.
+     *
+     * @param scenario the slug
+     * @param description one line saying what this loop does
+     * @param liveClientsBaselineZero whether this scenario ends every cycle with no clients alive
+     * @param body the loop
+     * @throws Exception whatever the loop threw
+     */
+    static void run(String scenario, String description, boolean liveClientsBaselineZero, Scenario body)
+            throws Exception {
+        Endurance run = new Endurance(scenario, description);
+        Throwable failure = null;
+        try {
+            body.run(run);
+        } catch (Throwable thrown) {
+            failure = thrown;
+        }
+        // Nothing to report from a run that never took a reading: a scenario aborted for want of a
+        // key, or one that failed before its first cycle, would otherwise leave three files saying
+        // nothing and bury the run that has something to say.
+        if (!run.samples.isEmpty()) {
+            try {
+                run.finish(liveClientsBaselineZero);
+            } catch (Throwable verdict) {
+                if (failure == null) {
+                    throw verdict;
+                }
+                failure.addSuppressed(verdict);
+            }
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        if (failure instanceof Exception exception) {
+            throw exception;
+        }
+    }
+
     /** @return how long a run lasts, from {@code ENDURANCE_DURATION_MINUTES} */
     static long durationSeconds() {
         String minutes = System.getenv("ENDURANCE_DURATION_MINUTES");

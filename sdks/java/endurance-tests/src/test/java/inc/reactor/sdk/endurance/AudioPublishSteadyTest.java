@@ -21,37 +21,38 @@ final class AudioPublishSteadyTest {
 
     @Test
     @DisplayName("audio publish steady")
-    void audioPublishSteady() {
+    void audioPublishSteady() throws Exception {
         String jwt = Endurance.jwt();
-        Endurance run = new Endurance(
+        Endurance.run(
                 "audio-publish-steady",
-                "publish once and hold it, pushing PCM for the whole run — no pause, no unpublish, " + "no reconnect.");
+                "publish once and hold it, pushing PCM for the whole run — no pause, no unpublish, " + "no reconnect.",
+                false,
+                run -> {
+                    Reactor reactor = Reactor.open(Endurance.options(jwt));
+                    try {
+                        reactor.connect().join();
+                        Track microphone = reactor.track("mic");
+                        microphone.publish().join();
 
-        Reactor reactor = Reactor.open(Endurance.options(jwt));
-        try {
-            reactor.connect().join();
-            Track microphone = reactor.track("mic");
-            microphone.publish().join();
-
-            while (run.keepGoing()) {
-                for (int index = 0; index < 50 && run.keepGoing(); index++) {
-                    microphone.pushFrame(SILENCE, 48_000, 1);
-                    Endurance.pause(Duration.ofMillis(20));
-                }
-                if (!microphone.isPublished()) {
-                    throw new AssertionError("the publish did not survive the run");
-                }
-                run.endOfCycle();
-            }
-            microphone.unpublish();
-        } finally {
-            try {
-                reactor.disconnect().join();
-            } catch (RuntimeException alreadyGone) {
-                // The report still has to be written.
-            }
-            reactor.close();
-        }
-        run.finish(false);
+                        while (run.keepGoing()) {
+                            for (int index = 0; index < 50 && run.keepGoing(); index++) {
+                                microphone.pushFrame(SILENCE, 48_000, 1);
+                                Endurance.pause(Duration.ofMillis(20));
+                            }
+                            if (!microphone.isPublished()) {
+                                throw new AssertionError("the publish did not survive the run");
+                            }
+                            run.endOfCycle();
+                        }
+                        microphone.unpublish();
+                    } finally {
+                        try {
+                            reactor.disconnect().join();
+                        } catch (RuntimeException alreadyGone) {
+                            // The report still has to be written.
+                        }
+                        reactor.close();
+                    }
+                });
     }
 }

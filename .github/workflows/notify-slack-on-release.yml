@@ -236,8 +236,11 @@ jobs:
           fetch-depth: 0
 
       # The workflow's top-level conclusion is also "success" for a pull-request build or a dry
-      # run, neither of which published anything. This checks the job that actually ships, by the
-      # name release-java.yml gives it.
+      # run, neither of which published anything — and so is the enclosing job's. release-java.yml
+      # gates its two publishing steps on the PUBLISH_JAVA_RELEASE kill switch, so a run with the
+      # switch off skips them and still reports "Publish to Maven Central" as a plain success. This
+      # checks the step that actually ships, by the name that file gives it; announcing a release
+      # that never happened is worse than announcing none.
       - name: Check whether this run actually published a release
         id: released
         env:
@@ -246,8 +249,8 @@ jobs:
         run: |
           set -euo pipefail
           conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs" --paginate \
-            --jq '[.jobs[] | select(.name == "Publish to Maven Central")] | last | .conclusion // "missing"')
-          echo "release job conclusion: $conclusion"
+            --jq '[.jobs[] | select(.name == "Publish to Maven Central") | .steps[]? | select(.name == "Publish")] | last | .conclusion // "missing"')
+          echo "publish step conclusion: $conclusion"
           echo "released=$([ "$conclusion" = "success" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       # Read out of the repository at the commit that was released. A workflow_run carries no
