@@ -1,5 +1,6 @@
 plugins {
     id("reactor-java-conventions")
+    id("reactor-maven-central")
 }
 
 description =
@@ -9,4 +10,13 @@ description =
 
 dependencies {
     api(project(":reactor-sdk"))
+}
+
+publishing {
+    publications {
+        create<MavenPublication>("sdk") {
+            from(components["java"])
+            pom { standardPom("Reactor SDK audio devices", project.description ?: "") }
+        }
+    }
 }

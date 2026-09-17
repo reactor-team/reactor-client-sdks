@@ -597,6 +597,15 @@ jobs:
       # the other half of this binding's lint gate, so there is no separate step
       # for it.
       - run: mise run test:java
+      # Staging the release bundle, not just building the jars. Whether a coordinate can be
+      # published is a separate question from whether it compiles: a duplicated classifier, a POM
+      # without its licence block, a jar missing its -sources companion are refusals that only
+      # appear when something actually performs a publish, and every one of them sat unnoticed
+      # until a release tried it. No signing key and no credentials here — this checks the shape,
+      # and release-java.yml checks the signatures before it uploads. The natives directory is
+      # empty on this runner, so the bundle carries no classified artifact, which is the case a
+      # release refuses and an ordinary pull request has no reason to.
+      - run: mise run build:java:central-bundle
 
   cpp-integration-tests:
     name: C++ SDK integration tests (real FFI, real model)

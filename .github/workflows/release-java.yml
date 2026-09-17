@@ -254,7 +254,15 @@ jobs:
             fi
           done
 
-      - run: mise run build:java
+      # Not `assemble`. Building the jars says nothing about whether they can be published: a
+      # duplicated classifier, a POM without its licence block, a coordinate missing its -sources
+      # companion — every one of those is a refusal that only appears when something actually
+      # performs a publish. This stages the exact bundle, so the shape is checked here rather than
+      # by Central after the version has been tagged.
+      - run: mise run build:java:central-bundle
+        env:
+          ORG_GRADLE_PROJECT_signingKey: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          ORG_GRADLE_PROJECT_signingPassword: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
 
       # Read in a step, not in a job-level `if`. An environment-scoped variable is resolved after
       # the condition decides whether the job runs, and checking it there has already silently
@@ -275,14 +283,53 @@ jobs:
             echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # A signing block that quietly does nothing publishes an unsigned release the first time a
+      # secret is misspelled, and Central's own refusal would arrive after the tag exists. Every
+      # file in the bundle that is not a checksum must have its detached signature beside it.
+      - name: Refuse to publish an unsigned bundle
+        if: steps.switch.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          bundle=$(ls sdks/java/build/central-bundle/*-bundle.zip)
+          rm -rf /tmp/bundle-check
+          unzip -q "$bundle" -d /tmp/bundle-check
+          unsigned=0
+          while IFS= read -r file; do
+            case "$file" in
+              *.md5|*.sha1|*.sha256|*.sha512|*.asc) continue ;;
+            esac
+            if [ ! -f "${file}.asc" ]; then
+              echo "::error::no signature for ${file#/tmp/bundle-check/}"
+              unsigned=$((unsigned + 1))
+            fi
+          done < <(find /tmp/bundle-check -type f)
+          if [ "$unsigned" -gt 0 ]; then
+            echo "::error::$unsigned artifact(s) unsigned — check MAVEN_GPG_PRIVATE_KEY and MAVEN_GPG_PASSPHRASE"
+            exit 1
+          fi
+          echo "::notice::every artifact in the bundle is signed"
+
+      # One upload for the whole release: the Portal validates every coordinate together and
+      # accepts or rejects them as one, which is what keeps a half-published version from existing.
       - name: Publish
         if: steps.switch.outputs.publish == 'true'
         env:
-          ORG_GRADLE_PROJECT_signingKey: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
-          ORG_GRADLE_PROJECT_signingPassword: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
-          ORG_GRADLE_PROJECT_centralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
-          ORG_GRADLE_PROJECT_centralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
-        run: mise exec -- gradle --project-dir sdks/java --console=plain publish
+          CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          VERSION: ${{ needs.detect-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          bundle=$(ls sdks/java/build/central-bundle/*-bundle.zip)
+          token=$(printf '%s:%s' "$CENTRAL_USERNAME" "$CENTRAL_PASSWORD" | base64 | tr -d '\n')
+          # AUTOMATIC: validated and then released without a second click in the Portal. A manual
+          # gate here would leave the GitHub release below pointing at coordinates nobody can
+          # resolve yet.
+          deployment=$(curl --silent --show-error --fail-with-body \
+            --request POST \
+            --header "Authorization: Bearer ${token}" \
+            --form "bundle=@${bundle}" \
+            "https://central.sonatype.com/api/v1/publisher/upload?name=reactor-sdk-${VERSION}&publishingType=AUTOMATIC")
+          echo "::notice::deployment ${deployment}"
 
       - name: Publish the GitHub release
         if: steps.switch.outputs.publish == 'true'
@@ -293,4 +340,19 @@ jobs:
           set -euo pipefail
           gh release create "java-v${VERSION}" \
             --title "Java SDK ${VERSION}" \
-            --notes "See \`sdks/java/CHANGELOG.md\` for what changed."
+            --notes "$(cat <<EOF
+          Published to Maven Central:
+
+          \`\`\`kotlin
+          implementation("inc.reactor:reactor-sdk:${VERSION}")
+          \`\`\`
+
+          Requires JDK 22 or newer. The native library for the host — Linux
+          (x86_64, aarch64), macOS (arm64, x86_64) or Windows (x86_64) — is
+          resolved automatically, so there is nothing to install by hand; a
+          Maven build that cannot read Gradle Module Metadata takes
+          \`inc.reactor:reactor-sdk-platform\` instead. See
+          \`sdks/java/README.md\` for the artifact table and
+          \`sdks/java/CHANGELOG.md\` for what changed.
+          EOF
+          )"

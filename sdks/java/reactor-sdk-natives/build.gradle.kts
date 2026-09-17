@@ -1,4 +1,5 @@
 plugins {
+    id("reactor-maven-central")
     // The conventions, even though this module holds no Java: they set the same release target
     // every other module has — without which resolution refuses it as "compatible with 25 or
     // newer" — and produce the empty -sources and -javadoc jars Central requires of every
@@ -28,20 +29,26 @@ val platforms =
         "windows-x86_64" to "reactor_ffi.dll",
     )
 
+// Only the platforms this machine actually has a library for, decided while the build is being
+// configured rather than skipped while it runs. A task that is registered and then skipped still
+// leaves the publication naming a file that was never written, which fails the publish with
+// "artifact file does not exist" — so a developer, and every pull request, could not stage the
+// bundle at all without cross-compiling all five first. Publishing fewer than five is not a risk
+// this has to carry: release-java.yml refuses a release whose staging directory is missing any of
+// them, before anything is uploaded.
 val nativeJars =
-    platforms.map { (token, libraryFile) ->
-        tasks.register<Jar>("nativesJar-$token") {
-            archiveBaseName = "reactor-sdk-natives"
-            archiveClassifier = token
-            // The resource directory is not a valid package name, on purpose: JPMS encapsulates
-            // resources that live in packages, and this one has to be readable from the core
-            // module whether a consumer is on the classpath or the module path.
-            from(stagingDirectory.dir(token)) { into("reactor-native/$token") }
-            // Nothing to package for a platform this machine did not build. Absent is better than
-            // an empty jar that resolves and then fails at load.
-            onlyIf { stagingDirectory.dir(token).asFile.resolve(libraryFile).isFile }
+    platforms
+        .filter { (token, libraryFile) -> stagingDirectory.dir(token).asFile.resolve(libraryFile).isFile }
+        .map { (token, _) ->
+            tasks.register<Jar>("nativesJar-$token") {
+                archiveBaseName = "reactor-sdk-natives"
+                archiveClassifier = token
+                // The resource directory is not a valid package name, on purpose: JPMS encapsulates
+                // resources that live in packages, and this one has to be readable from the core
+                // module whether a consumer is on the classpath or the module path.
+                from(stagingDirectory.dir(token)) { into("reactor-native/$token") }
+            }
         }
-    }
 
 tasks.named("assemble") { dependsOn(nativeJars) }
 
@@ -49,11 +56,16 @@ publishing {
     publications {
         create<MavenPublication>("natives") {
             artifactId = "reactor-sdk-natives"
+            // The main jar and both companions, then one classified jar per platform. Central
+            // refuses a coordinate that has only classifiers: the classifier-less jar is what a
+            // POM resolves, and -sources/-javadoc are required of every jar coordinate, including
+            // one whose only content is a shared library. All three are empty here, which is the
+            // honest answer for a module with no Java in it.
+            from(components["java"])
             nativeJars.forEach { jar -> artifact(jar) }
-            pom {
-                name = "Reactor SDK natives"
-                description = project.description
-            }
+            // standardPom, not a name and a description: the licence, developer and SCM blocks are
+            // what Central refuses a release without, and this publication used to carry neither.
+            pom { standardPom("Reactor SDK natives", project.description ?: "") }
         }
     }
 }
