@@ -6,7 +6,11 @@ plugins {
 kotlin { jvmToolchain(17) }
 java { withSourcesJar() }
 
-dependencies { testImplementation(libs.junit) }
+dependencies {
+    implementation(libs.coroutines)
+    implementation(libs.serialization.json)
+    testImplementation(libs.junit)
+}
 
 val buildJniTests by tasks.registering(Exec::class) {
     dependsOn(tasks.compileTestKotlin)

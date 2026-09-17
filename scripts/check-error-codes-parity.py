@@ -28,7 +28,7 @@ of (label, file, pattern) rather than one bespoke check per language — adding
 a future SDK (Swift, Go, ...) means adding one entry to SDKS, not a new
 function.
 
-`recoverable` is deliberately not checked here: none of the SDKs compute it
+`recoverable` is deliberately not checked here: most SDKs do not compute it
 per code (each reads it straight off the wire payload — the core is the only
 place that decides it, via `code_is_recoverable()`), so there is no per-SDK
 copy of it to drift.
@@ -103,6 +103,8 @@ SWIFT_MATCHER = re.compile(r"public static var (\w+): Code \{ \.\w+ \}")
 SWIFT_ERRORS = REPO_ROOT / "sdks/swift/Sources/Reactor/ReactorError.swift"
 
 SDKS = [
+    Sdk("Kotlin", REPO_ROOT / "sdks/kotlin/reactor-core/src/main/kotlin/inc/reactor/sdk/ReactorError.kt",
+        re.compile(r'"([A-Z_]+)" -> \w+\(details\)')),
     Sdk("JS", REPO_ROOT / "sdks/js/src/errors.ts", JS_CODE),
     Sdk("Python", REPO_ROOT / "sdks/python/reactor_sdk/errors.py", PY_CODE),
     Sdk("C++ (classes)", REPO_ROOT / "sdks/cpp/include/reactor/errors.hpp", CPP_CLASS_CODE),
@@ -118,7 +120,17 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def check_kotlin_recoverability() -> None:
+    core = read(CORE_SRC).split("pub fn code_is_recoverable", 1)[1].split("\n}", 1)[0]
+    expected = set(re.findall(r"codes::([A-Z_]+)", core))
+    kotlin = read(REPO_ROOT / "sdks/kotlin/reactor-core/src/main/kotlin/inc/reactor/sdk/ReactorError.kt")
+    mapping = re.search(r"val recoverable: Boolean\s*=\s*code in\s*setOf\((.*?)\)", kotlin, re.S)
+    if mapping is None or set(re.findall(r'"([A-Z_]+)"', mapping.group(1))) != expected:
+        sys.exit("Kotlin recoverability mapping differs from reactor-core")
+
+
 def main() -> int:
+    check_kotlin_recoverability()
     core_codes = set(CORE_CODE.findall(read(CORE_SRC))) - {FALLBACK_CODE}
     if not core_codes:
         sys.exit("error: found no codes in error.rs — has the `codes` module moved?")
