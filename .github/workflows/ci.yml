@@ -122,8 +122,12 @@ jobs:
               - 'scripts/kotlin-jni-build.sh'
               - 'scripts/check-kotlin-native.py'
               - 'scripts/test-kotlin-native.py'
-              - 'scripts/*kotlin*distribution*'
-              - 'scripts/kotlin-release-*'
+              - 'scripts/kotlin-distribution.py'
+              - 'scripts/kotlin-distribution-ci.sh'
+              - 'scripts/kotlin-distribution-test.py'
+              - 'scripts/test-kotlin-distribution.py'
+              - 'scripts/kotlin-release-build.py'
+              - 'scripts/kotlin-release-version.py'
               - 'scripts/build-manylinux-kotlin.sh'
             cpp:
               - *shared
