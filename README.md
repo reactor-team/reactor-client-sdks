@@ -28,6 +28,8 @@ dedicated track.
 - **[Python](sdks/python/README.md)** — `pip install reactor-sdk`
 - **[C++](sdks/cpp/README.md)** — C++17, over the same native core
 - **[Swift](sdks/swift/README.md)** — macOS and iOS, via Swift Package Manager
+- **[Java](sdks/java/README.md)** — desktop JVM, over the Foreign Function &
+  Memory API *(under construction)*
 
 ## Documentation
 

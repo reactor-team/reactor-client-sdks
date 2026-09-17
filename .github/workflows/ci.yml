@@ -39,6 +39,7 @@ jobs:
       python: ${{ steps.filter.outputs.python }}
       js: ${{ steps.filter.outputs.js }}
       cpp: ${{ steps.filter.outputs.cpp }}
+      java: ${{ steps.filter.outputs.java }}
       swift: ${{ steps.effective.outputs.swift }}
       swift_package: ${{ steps.effective.outputs.swift_package }}
     steps:
@@ -112,6 +113,10 @@ jobs:
               - *shared
               - *core
               - 'sdks/cpp/**'
+            java:
+              - *shared
+              - *core
+              - 'sdks/java/**'
             # Package.swift is at the repository root — SwiftPM will not resolve
             # a package in a subdirectory — so it is named here alongside the
             # sources it points at.
@@ -510,6 +515,52 @@ jobs:
       - run: mise run lint:cpp
       - run: mise run test:cpp
 
+  java:
+    name: Java SDK (JDK ${{ matrix.jdk }})
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.java == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      # One leg failing must not cancel the other: which JDK broke is the whole
+      # question a two-JDK matrix exists to answer.
+      fail-fast: false
+      matrix:
+        # 22 is the published floor — the release where the Foreign Function &
+        # Memory API stopped being a preview feature — and 25 is the LTS mise
+        # pins for local work. Running both is what makes the floor a tested
+        # claim rather than a compiler flag; compilation targets release 22 on
+        # either one.
+        jdk: ["22", "25"]
+    env:
+      # Overrides the workflow-level value for this key only. The rust entries
+      # are repeated deliberately, and `java` joins them because
+      # actions/setup-java owns the JDK here: mise pins one so a laptop needs no
+      # global JDK, and letting that pin win would run both legs on 25 and prove
+      # nothing about the floor.
+      MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup,java"
+      # Read by the mise tasks, which pass it to Gradle as -PreactorJdk. Gradle
+      # finds the JDK itself through JAVA_HOME_<major>_<arch>, which setup-java
+      # exports — see sdks/java/gradle.properties.
+      REACTOR_JDK: ${{ matrix.jdk }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.jdk }}
+          # Caches ~/.gradle/caches, keyed on the build files it finds. Gradle
+          # otherwise re-downloads Spotless, palantir-java-format and JUnit on
+          # every run of every leg.
+          cache: gradle
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - run: mise run lint:java
+      # Compiles with -Xlint:all -Werror as well as running the tests — javac is
+      # the other half of this binding's lint gate, so there is no separate step
+      # for it.
+      - run: mise run test:java
+
   cpp-integration-tests:
     name: C++ SDK integration tests (real FFI, real model)
     # No longer chained onto python-integration-tests — see
@@ -746,6 +797,7 @@ jobs:
         js-integration-tests,
         cpp,
         cpp-integration-tests,
+        java,
         swift,
         swift-integration-tests,
         swift-integration-tests-ios-simulator,
@@ -768,6 +820,7 @@ jobs:
                    "${{ needs.js-integration-tests.result }}" \
                    "${{ needs.cpp.result }}" \
                    "${{ needs.cpp-integration-tests.result }}" \
+                   "${{ needs.java.result }}" \
                    "${{ needs.swift.result }}" \
                    "${{ needs.swift-integration-tests.result }}" \
                    "${{ needs.swift-integration-tests-ios-simulator.result }}" \

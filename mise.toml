@@ -40,6 +40,14 @@ cmake = "4.4.2"
 ninja = "1.13.2"
 # wasm-pack builds crates/reactor-wasm into a loadable JS package.
 "cargo:wasm-pack" = "0.15.0"
+# The JDK and Gradle build the Java SDK. Both pinned here rather than taken from
+# PATH or from a Gradle wrapper: a wrapper is a second, unlocked source of truth
+# for a toolchain version, and this table is deliberately the only one. `java` is
+# the *build* JDK — the SDK compiles to release 22, which is where the Foreign
+# Function & Memory API stopped being a preview feature, and CI also runs the
+# suite on a 22 runtime so that floor is a tested claim rather than a flag.
+java   = "temurin-25.0.4+7.0.LTS"
+gradle = "9.7.1"
 uv          = "0.11.31"
 ruff        = "0.15.22"
 shellcheck  = "0.11.0"
@@ -197,10 +205,10 @@ run = [
 ]
 
 [tasks.test]
-description = "[Testing] Every test suite (Rust + Python + JS + C++ + Swift)"
+description = "[Testing] Every test suite (Rust + Python + JS + C++ + Swift + Java)"
 # test:swift skips itself off a machine with a Swift toolchain rather than
 # failing, so this stays runnable on Linux. See the Swift SDK section below.
-depends = ["test:rust", "test:python", "test:js", "test:cpp", "test:swift"]
+depends = ["test:rust", "test:python", "test:js", "test:cpp", "test:swift", "test:java"]
 
 # ── JS SDK ────────────────────────────────────────────────────────────────────
 # Node/npm aren't in [tools] above yet — every task here just shells out to
@@ -506,6 +514,36 @@ run = "scripts/swift-package-check.sh"
 
 # ── Lints ─────────────────────────────────────────────────────────────────────
 
+# ── Java SDK ──────────────────────────────────────────────────────────────────
+# The JDK and Gradle come from [tools] above, and there is no Gradle wrapper on
+# purpose — sdks/java/settings.gradle.kts says why. Every task passes
+# --project-dir rather than cd'ing, so they behave the same from anywhere in the
+# repo, and --console=plain so CI logs are readable rather than redrawn.
+#
+# REACTOR_JDK picks the JDK the build compiles and tests with; it defaults to the
+# one mise pins. CI sets it to 22 as well, because 22 is the published floor and
+# a floor nobody runs is a claim rather than a fact. Compilation targets release
+# 22 whichever JDK is used.
+
+[tasks."fmt:java"]
+description = "[Format] Format the Java SDK (palantir-java-format, via Spotless)"
+run = "gradle --project-dir sdks/java --console=plain -PreactorJdk={{ env.REACTOR_JDK | default(value='25') }} spotlessApply"
+
+[tasks."lint:java"]
+description = "[Quality] Check Java SDK formatting"
+# Formatting only. The compiler's own gate — -Xlint:all -Werror, set in
+# buildSrc/src/main/kotlin/reactor-java-conventions.gradle.kts — runs as part of
+# `test:java`, because it is javac doing it rather than a separate tool.
+run = "gradle --project-dir sdks/java --console=plain -PreactorJdk={{ env.REACTOR_JDK | default(value='25') }} spotlessCheck"
+
+[tasks."build:java"]
+description = "[Build] Build the Java SDK jars"
+run = "gradle --project-dir sdks/java --console=plain -PreactorJdk={{ env.REACTOR_JDK | default(value='25') }} assemble"
+
+[tasks."test:java"]
+description = "[Testing] Java SDK unit tests"
+run = "gradle --project-dir sdks/java --console=plain -PreactorJdk={{ env.REACTOR_JDK | default(value='25') }} test"
+
 [tasks."lint:abi"]
 description = "[Quality] Verify lib.rs, reactor_ffi.h and _ffi.py declare the same ABI"
 run = "python3 scripts/check-abi-parity.py"
@@ -543,6 +581,7 @@ depends = [
     "lint:js",
     "lint:cpp",
     "lint:swift",
+    "lint:java",
     "lint:abi",
     "lint:error-codes",
     "lint:shell",

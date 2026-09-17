@@ -47,3 +47,10 @@ node_modules/
 # clangd's index, written wherever it finds a compile_commands.json — which is
 # any directory, hence the leading **.
 **/.cache/clangd/
+
+# Java SDK: Gradle's build output and per-project state, for every module and
+# for buildSrc. There is no Gradle wrapper to ignore — mise pins Gradle instead,
+# see sdks/java/settings.gradle.kts.
+/sdks/java/**/build/
+/sdks/java/.gradle/
+/sdks/java/buildSrc/.gradle/
