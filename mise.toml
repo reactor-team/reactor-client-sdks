@@ -544,6 +544,12 @@ run = "gradle --project-dir sdks/java --console=plain -PreactorJdk={{ env.REACTO
 description = "[Testing] Java SDK unit tests"
 run = "gradle --project-dir sdks/java --console=plain -PreactorJdk={{ env.REACTOR_JDK | default(value='25') }} test"
 
+[tasks."example:java"]
+description = "[Examples] Run one numbered Java example, e.g. `mise run example:java 01`"
+# Needs REACTOR_API_KEY, and a native library: `mise run build:ffi` first, or set
+# REACTOR_FFI_LIB. REACTOR_SHOW=1 opens a window; REACTOR_SECONDS shortens a run.
+run = "gradle --project-dir sdks/java --console=plain -Pexample={{arg(name='number')}} :examples:example"
+
 [tasks."lint:abi"]
 description = "[Quality] Verify lib.rs, reactor_ffi.h and _ffi.py declare the same ABI"
 run = "python3 scripts/check-abi-parity.py"

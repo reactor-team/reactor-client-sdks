@@ -46,6 +46,17 @@ public final class DetachedCompletion<T> {
         }
     }
 
+    /**
+     * Tickets the FFI may still call back about.
+     *
+     * <p>Nothing else reaches one: the arena holds the stub, the stub binds the ticket, and the
+     * pointer the FFI holds is not something a garbage collector can see. Without this the whole
+     * graph is collectable while native code is still about to call into it. Every entry is removed
+     * by its own completion, which fires exactly once.
+     */
+    private static final java.util.Set<DetachedCompletion<?>> IN_FLIGHT =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     private final String operation;
     private final Completions.Decoder<T> decoder;
     private final CompletableFuture<T> future;
@@ -74,6 +85,7 @@ public final class DetachedCompletion<T> {
     public static <T> CompletableFuture<T> start(String operation, Completions.Decoder<T> decoder, Invoker invoke) {
         CompletableFuture<T> future = new CompletableFuture<>();
         DetachedCompletion<T> ticket = new DetachedCompletion<>(operation, decoder, future);
+        IN_FLIGHT.add(ticket);
         try {
             invoke.call(ticket.callback, MemorySegment.NULL);
         } catch (RuntimeException notStarted) {
@@ -163,7 +175,12 @@ public final class DetachedCompletion<T> {
             // downcall that started it. Put the flag back so whoever returns from that call closes
             // it instead; there is exactly one such caller and it is already on its way here.
             released.set(false);
+            return;
         }
+        // Only now, and not at settlement: until the arena is actually gone this ticket still owns
+        // memory native code was given, and teardown has to be able to find it. Leaving the set on
+        // the failed attempt above would have hidden it for exactly that window.
+        IN_FLIGHT.remove(this);
     }
 
     /** Whether this ticket has settled. Exposed for the tests that pin the once-only rule. */

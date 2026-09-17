@@ -40,9 +40,9 @@ public final class NativeLibrary {
     /** The override, checked first and documented in the README. */
     public static final String OVERRIDE_ENV = "REACTOR_FFI_LIB";
 
-    private NativeLibrary() {}
-
     private static @org.jspecify.annotations.Nullable Ffi shared;
+
+    private NativeLibrary() {}
 
     /**
      * The library, loaded once for the whole process.

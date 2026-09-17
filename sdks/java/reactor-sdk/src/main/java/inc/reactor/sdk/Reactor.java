@@ -74,6 +74,44 @@ public final class Reactor implements AutoCloseable {
     }
 
     /**
+     * Exchanges an API key for a token.
+     *
+     * <p>Everything else here wants a JWT, and a caller holding a key needs this first. It takes no
+     * client: the exchange is one request, and it is not bounded by any session's lifetime.
+     *
+     * <p>A token minted this way carries everything the key's roles allow. That is fine server to
+     * server and wrong to hand to a client you do not control — scope it there.
+     *
+     * @param apiUrl the coordinator's base URL
+     * @param apiKey the key to exchange
+     * @return the token
+     */
+    public static CompletableFuture<String> fetchJwt(String apiUrl, String apiKey) {
+        return fetchJwt(apiUrl, apiKey, null, false);
+    }
+
+    /**
+     * Exchanges an API key for a scoped token.
+     *
+     * @param apiUrl the coordinator's base URL
+     * @param apiKey the key to exchange
+     * @param options scoping options, or {@code null} for everything the key allows. An
+     *     unrecognised key in this object is an error rather than ignored: dropping a misspelt
+     *     {@code models} in silence would mint exactly the unscoped token the caller was avoiding
+     * @param local whether to accept a dev coordinator's certificate
+     * @return the token
+     */
+    public static CompletableFuture<String> fetchJwt(
+            String apiUrl, String apiKey, @Nullable JsonValue options, boolean local) {
+        return inc.reactor.sdk.internal.Authentication.fetchJwt(
+                inc.reactor.sdk.internal.NativeLibrary.shared(),
+                apiUrl,
+                apiKey,
+                options == null ? null : options.toJsonString(),
+                local);
+    }
+
+    /**
      * Creates a session and establishes the transport.
      *
      * @return settles when the transport is up
