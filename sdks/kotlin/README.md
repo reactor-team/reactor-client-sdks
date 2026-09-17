@@ -1,7 +1,7 @@
 # Reactor Kotlin SDK
 
-Work in progress: client lifecycle, authentication and control events are available
-for development builds. Sending media and published binary packages are still pending. Implementation follows
+Work in progress: lifecycle, authentication, control events, receiving and sending media
+are available for development builds. Published binary packages are still pending. Implementation follows
 [the Kotlin SDK project](https://linear.app/reactor-team/project/kotlin-sdk-64a4e3f8a9ff)
 as a stack of focused PRs, starting with REA-6219.
 
@@ -89,3 +89,7 @@ reactor-webrtc 0.17.2 from crates.io. Sending media and distribution remain late
 [Tracks and receiving media](docs/0006-receiving-media.md) describes ordered track lists,
 inline BGRA/PCM handlers, retained buffers and metadata, pause/resume, and subscription
 removal. Rebuild the development JNI library when updating this stack.
+
+Publishing, typed BGRA/PCM pushes, metadata, engine capture times and bitrate controls are
+available on the same Track API. See [Sending media](docs/0007-sending-media.md) for the
+publication lifecycle, validation and cancellation behavior.
