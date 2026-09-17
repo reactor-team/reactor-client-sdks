@@ -3,6 +3,7 @@ package inc.reactor.sdk.internal;
 import inc.reactor.sdk.CommandReply;
 import inc.reactor.sdk.ConnectionStatus;
 import inc.reactor.sdk.ErrorCode;
+import inc.reactor.sdk.FileRef;
 import inc.reactor.sdk.JsonValue;
 import inc.reactor.sdk.Media;
 import inc.reactor.sdk.PublishState;
@@ -16,6 +17,8 @@ import java.lang.foreign.MemorySegment;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -1043,6 +1046,89 @@ public final class ClientPeer implements Runnable {
             return Optional.of(new CommandReply(Optional.empty(), Optional.of(parsed)));
         }
         return Optional.of(new CommandReply(object.getString("type"), object.get("data")));
+    }
+
+    // ── Uploads ─────────────────────────────────────────────────────────────
+
+    /**
+     * Uploads a file the platform will hold for a command.
+     *
+     * <p>The path crosses the boundary, not the bytes: a file of any size is read by the native
+     * layer straight from disk, so nothing here depends on it fitting in the heap.
+     *
+     * @param path the file
+     * @return the reference to pass into a command
+     */
+    public CompletableFuture<FileRef> uploadFile(Path path) {
+        CompletableFuture<FileRef> uploaded = new CompletableFuture<>();
+        // Checked here so the failure names the path and the reason. Handed to the FFI unchecked,
+        // a missing file comes back as whatever the platform made of an unreadable upload.
+        if (!Files.isRegularFile(path)) {
+            uploaded.completeExceptionally(ReactorException.of(
+                    ErrorCode.NOT_FOUND.code(),
+                    "there is no file at " + path.toAbsolutePath(),
+                    null,
+                    "upload_file",
+                    null));
+            return uploaded;
+        }
+        if (!Files.isReadable(path)) {
+            uploaded.completeExceptionally(ReactorException.of(
+                    ErrorCode.BAD_REQUEST.code(),
+                    "this process cannot read " + path.toAbsolutePath(),
+                    null,
+                    "upload_file",
+                    null));
+            return uploaded;
+        }
+        start("upload_file", ClientPeer::decodeFileRef, uploaded, (completion, userdata) -> {
+            try (Arena call = Arena.ofConfined()) {
+                invoke(
+                        Ffi.Symbol.UPLOAD_FILE,
+                        handle,
+                        call.allocateFrom(path.toAbsolutePath().toString()),
+                        completion,
+                        userdata);
+            }
+        });
+        return uploaded;
+    }
+
+    /**
+     * Uploads bytes already in memory.
+     *
+     * @param data the bytes
+     * @param name what to call it
+     * @param mimeType what it is
+     * @return the reference to pass into a command
+     */
+    public CompletableFuture<FileRef> uploadBytes(byte[] data, String name, String mimeType) {
+        CompletableFuture<FileRef> uploaded = new CompletableFuture<>();
+        start("upload_bytes", ClientPeer::decodeFileRef, uploaded, (completion, userdata) -> {
+            // Confined and closed when the call returns. The header says these bytes are borrowed
+            // for the call only, so the FFI has copied whatever it keeps by the time this arena
+            // goes — the completion that arrives later reads nothing from here.
+            try (Arena call = Arena.ofConfined()) {
+                invokeMixed(
+                        Ffi.Symbol.UPLOAD_BYTES,
+                        handle,
+                        call.allocateFrom(java.lang.foreign.ValueLayout.JAVA_BYTE, data),
+                        (long) data.length,
+                        call.allocateFrom(name),
+                        call.allocateFrom(mimeType),
+                        completion,
+                        userdata);
+            }
+        });
+        return uploaded;
+    }
+
+    private static FileRef decodeFileRef(@Nullable String json) {
+        if (json == null || json.isBlank()) {
+            throw ReactorException.of(
+                    ErrorCode.DECODE_FAILED.code(), "an upload answered with nothing", null, "upload", null);
+        }
+        return FileRef.from(JsonBridge.parse(json));
     }
 
     // ── Plumbing ────────────────────────────────────────────────────────────

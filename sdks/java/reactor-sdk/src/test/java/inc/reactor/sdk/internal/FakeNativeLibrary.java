@@ -107,6 +107,8 @@ public final class FakeNativeLibrary implements AutoCloseable {
         bind("reactor_send_command", Ffi.Symbol.SEND_COMMAND.descriptor(), "sendCommand");
         bind("reactor_request_schema", Ffi.Symbol.REQUEST_SCHEMA.descriptor(), "requestSchema");
         bind("reactor_get_stats", Ffi.Symbol.GET_STATS.descriptor(), "getStats");
+        bind("reactor_upload_file", Ffi.Symbol.UPLOAD_FILE.descriptor(), "uploadFile");
+        bind("reactor_upload_bytes", Ffi.Symbol.UPLOAD_BYTES.descriptor(), "uploadBytes");
     }
 
     /** Makes this library report an ABI version other than the one the binding expects. */
@@ -341,6 +343,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
             MemorySegment completion,
             MemorySegment userdata) {
         lastCommandArgs = readString(args);
+        lastUploadsJson = readString(uploads);
         lastCompletion = completion;
         lastUserdata = userdata;
     }
@@ -357,6 +360,39 @@ public final class FakeNativeLibrary implements AutoCloseable {
 
     /** The JSON the client serialised the last command's arguments to. */
     public @Nullable String lastCommandArgs;
+
+    /** The path the last file upload was given. */
+    public @Nullable String lastUploadPath;
+
+    /** A copy of the bytes the last byte upload was given, taken while the call was in flight. */
+    public byte @Nullable [] lastUploadBytes;
+
+    /** The uploads JSON the last command carried. */
+    public @Nullable String lastUploadsJson;
+
+    private void uploadFile(
+            MemorySegment handle, MemorySegment path, MemorySegment completion, MemorySegment userdata) {
+        lastUploadPath = readString(path);
+        lastCompletion = completion;
+        lastUserdata = userdata;
+    }
+
+    @SuppressWarnings("restricted") // reinterpret: reading the borrowed buffer, during the call
+    private void uploadBytes(
+            MemorySegment handle,
+            MemorySegment data,
+            long length,
+            MemorySegment name,
+            MemorySegment mimeType,
+            MemorySegment completion,
+            MemorySegment userdata) {
+        // Read here, inside the call, because that is the whole contract: the header says these
+        // bytes are borrowed for the call only, so a real library copies them before returning and
+        // so does this one. Reading them after the call would be the bug this pins.
+        lastUploadBytes = data.reinterpret(length).toArray(java.lang.foreign.ValueLayout.JAVA_BYTE);
+        lastCompletion = completion;
+        lastUserdata = userdata;
+    }
 
     /**
      * Held open while a test wants a native call to be in flight.

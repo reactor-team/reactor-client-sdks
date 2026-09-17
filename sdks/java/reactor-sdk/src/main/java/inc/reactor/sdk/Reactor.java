@@ -231,6 +231,49 @@ public final class Reactor implements AutoCloseable {
     }
 
     /**
+     * Sends a command with files the platform is already holding.
+     *
+     * @param name the command
+     * @param args its arguments
+     * @param uploads the files, keyed by the parameter each one fills
+     * @return the reply, empty when the model acknowledged without producing a message
+     */
+    public CompletableFuture<java.util.Optional<CommandReply>> sendCommand(
+            String name, JsonValue args, java.util.Map<String, FileRef> uploads) {
+        if (uploads.isEmpty()) {
+            return sendCommand(name, args);
+        }
+        JsonValue.ObjectBuilder named = JsonValue.object();
+        uploads.forEach((parameter, ref) -> named.put(parameter, ref.toJsonValue()));
+        return peer.sendCommand(name, args.toJsonString(), named.build().toJsonString());
+    }
+
+    /**
+     * Uploads a file for a later command.
+     *
+     * <p>The path crosses the boundary rather than the bytes, so the file's size is the platform's
+     * business and not the heap's.
+     *
+     * @param path the file
+     * @return the reference to pass into a command
+     */
+    public CompletableFuture<FileRef> uploadFile(java.nio.file.Path path) {
+        return peer.uploadFile(path);
+    }
+
+    /**
+     * Uploads bytes already in memory.
+     *
+     * @param data the bytes
+     * @param name what to call it
+     * @param mimeType what it is
+     * @return the reference to pass into a command
+     */
+    public CompletableFuture<FileRef> uploadBytes(byte[] data, String name, String mimeType) {
+        return peer.uploadBytes(data, name, mimeType);
+    }
+
+    /**
      * Asks the model what commands it accepts and what they take.
      *
      * @return the schema, as the model declares it
