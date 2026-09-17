@@ -102,3 +102,5 @@ adapter and bounded stream staging. See [Uploads](docs/0009-uploads.md) for owne
 cancellation and cache limits.
 
 See [clips and recordings](docs/0010-recordings.md) for downloads, progress and Android output ownership.
+
+Optional [desktop media helpers](docs/0011-desktop-media.md) live in `reactor-desktop`, separate from core and Android.
