@@ -136,6 +136,7 @@ std::string identity;
 std::string supplied_token;
 ReactorHandle* live = nullptr;
 ReactorCallbacks orphan_callbacks{};
+void clear_queries();
 reactor_completion_fn pending_completion = nullptr;
 void* pending_userdata = nullptr;
 std::mutex start_mutex;
@@ -162,7 +163,7 @@ extern "C" int reactor_destroy(ReactorHandle* handle) {
   const bool orphaned = lifecycle_mode == 1 || orphan_next_destroy;
   orphan_next_destroy = false;
   if (orphaned) orphan_callbacks = handle->callbacks;
-  else { pending_completion = nullptr; pending_userdata = nullptr; }
+  else { pending_completion = nullptr; pending_userdata = nullptr; clear_queries(); }
   delete handle;
   live = nullptr;
   return orphaned ? -1 : 0;
@@ -410,3 +411,75 @@ Java_inc_reactor_sdk_internal_MediaSendTest_audioSamples(JNIEnv* env, jobject) {
   if (result && !pushed_audio.empty()) env->SetShortArrayRegion(result, 0, static_cast<jsize>(pushed_audio.size()), pushed_audio.data());
   return result;
 }
+
+#include "stats_fixture.hpp"
+namespace {
+struct QueryAnswer {
+  reactor_completion_fn fn;
+  void* userdata;
+  std::string payload;
+  bool absent;
+  bool failure;
+};
+int query_mode = 0;
+bool custom_query = false, custom_absent = false;
+std::string custom_payload;
+std::vector<QueryAnswer> queries;
+void clear_queries() { queries.clear(); }
+void answer(QueryAnswer value) {
+  std::thread worker([&] {
+    if (value.failure) value.fn(0, nullptr, R"({"code":"BAD_REQUEST","message":"Command rejected"})", value.userdata);
+    else value.fn(1, value.absent ? nullptr : value.payload.c_str(), nullptr, value.userdata);
+    std::fill(value.payload.begin(), value.payload.end(), 'x');
+  });
+  worker.join();
+}
+void query_result(reactor_completion_fn fn, void* ud, std::string payload) {
+  if (custom_query) payload = custom_payload;
+  else if (query_mode == 4) payload = "{";
+  else if (query_mode == 5) payload = "[]";
+  else if (query_mode == 6) payload = R"({"type":42})";
+  QueryAnswer value{fn, ud, payload, query_mode == 3 || (custom_query && custom_absent), query_mode == 2};
+  if (query_mode == 1) queries.push_back(std::move(value)); else answer(std::move(value));
+}
+}
+extern "C" void reactor_send_command(ReactorHandle*, const char*, const char* args, const char*, reactor_completion_fn fn, void* ud) {
+  query_result(fn, ud, std::string(R"({"type":"reply","data":)") + (args ? args : "{}") + "}");
+}
+extern "C" void reactor_request_schema(ReactorHandle*, reactor_completion_fn fn, void* ud) {
+  query_result(fn, ud, R"({"openapi":"3.1.0","paths":{"/command":{}}})");
+}
+extern "C" void reactor_get_stats(ReactorHandle* handle, reactor_completion_fn fn, void* ud) {
+  if (std::strcmp(handle->status, "ready")) {
+    std::thread worker([=] { fn(0, nullptr, R"({"code":"INVALID_STATE","message":"Statistics require ready"})", ud); });
+    worker.join(); return;
+  }
+  query_result(fn, ud, stats_fixture);
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_CommandTest_configure(JNIEnv*, jobject, jint mode) {
+  lifecycle_mode = 0; query_mode = mode; custom_query = false; custom_absent = false; custom_payload.clear();
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_CommandTest_replyWith(JNIEnv* env, jobject, jbyteArray payload) {
+  custom_query = true; custom_absent = !payload;
+  custom_payload = payload ? reactor_jni::inputText(env, payload).data() : "";
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_CommandTest_finishReverse(JNIEnv*, jobject) {
+  auto pending = std::move(queries); queries.clear();
+  for (auto it = pending.rbegin(); it != pending.rend(); ++it) answer(std::move(*it));
+}
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_CommandTest_orphanNextDestroy(JNIEnv*, jobject) { orphan_next_destroy = true; }
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_internal_CommandTest_emitMessage(JNIEnv*, jobject, jboolean runtime) {
+  auto cb = live->callbacks;
+  std::thread worker([=] {
+    auto fn = runtime ? cb.on_runtime_message : cb.on_message;
+    fn(R"({"type":"notice","data":{"value":7}})", cb.userdata);
+  });
+  worker.join();
+}
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_inc_reactor_sdk_internal_CommandTest_statsFixture(JNIEnv* env, jobject) { return reactor_jni::text(env, stats_fixture); }

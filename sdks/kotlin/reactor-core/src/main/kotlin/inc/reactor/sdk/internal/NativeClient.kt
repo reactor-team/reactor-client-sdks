@@ -22,6 +22,14 @@ internal object NativeClient {
         receiver: Any,
     )
 
+    external fun query(
+        handle: Long,
+        operation: Int,
+        name: ByteArray?,
+        arguments: ByteArray?,
+        receiver: Any,
+    )
+
     external fun unpublish(
         handle: Long,
         name: ByteArray,
