@@ -44,6 +44,16 @@ public final class Completions {
         T decode(@Nullable String resultJson);
     }
 
+    /** Makes the native call for an operation, given what to hand it. */
+    @FunctionalInterface
+    public interface Invoker {
+        /**
+         * @param callback the completion function pointer
+         * @param userdata what the completion finds this operation by
+         */
+        void call(MemorySegment callback, MemorySegment userdata);
+    }
+
     /** What an operation needs to hand the FFI: the callback and the userdata that finds it again. */
     public record Ticket(MemorySegment callback, MemorySegment userdata) {}
 
