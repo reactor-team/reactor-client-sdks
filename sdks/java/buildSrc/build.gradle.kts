@@ -14,4 +14,8 @@ dependencies {
     // Dumps the Kotlin module's public ABI to a checked-in file and fails when it changes without
     // the file changing with it. On a facade, an accidental widening is the whole risk.
     implementation("org.jetbrains.kotlinx:binary-compatibility-validator:0.18.1")
+    // KDoc, rendered. Central requires a -javadoc jar of every coordinate, and an empty one on the
+    // module a Kotlin user reads most would be the wrong thing to give them. 2.1.0 at the earliest:
+    // see the note in gradle.properties about 2.0.0 and JDK 25.
+    implementation("org.jetbrains.dokka:dokka-gradle-plugin:2.1.0")
 }

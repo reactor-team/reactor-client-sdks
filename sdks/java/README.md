@@ -113,6 +113,18 @@ Cancelling a coroutine that awaits one of these cancels **the await, not the
 operation** — the native call is already in flight and cannot be recalled. A
 command whose caller walked away still reached the model.
 
+### Versioning
+
+`reactor-sdk` and `reactor-sdk-kotlin` carry **one version between them**. Both
+are published from this build, from the single `version=` line in
+`gradle.properties`, so a release of either is a release of both. Pin whichever
+you depend on and there is nothing to work out: there is no pairing table, and no
+release in which the facade lags the binding it forwards to.
+
+The facade is a separate coordinate rather than part of `reactor-sdk` for one
+reason — it carries `kotlinx-coroutines-core`, and a Java consumer should not.
+That is a packaging decision, not a lifecycle one.
+
 The aggregate is POM-only, not a fat jar — the shape JavaCPP publishes as
 `opencv-platform`. `-uber` would mean a fat jar and `-all` means all *modules* of
 a library in this ecosystem, not all platforms.
