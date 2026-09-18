@@ -13,13 +13,22 @@ description =
         "exactly one."
 
 tasks.named<Javadoc>("javadoc") {
-    // There is nothing to document: the only source here is a module descriptor, and the artifact's
-    // content is five shared libraries. javac's javadoc on JDK 22 calls that an error — "No public
-    // or protected classes found to document" — while 25 lets it pass, so adding module-info.java
-    // broke only the lower leg of the matrix and only in CI.
+    // Documented as a module, not as a set of types.
     //
-    // The jar is still produced, empty, because Central refuses a coordinate without one.
-    enabled = false
+    // The only source here is a module descriptor and there are no public classes, which javadoc
+    // on JDK 22 calls a fatal error — "No public or protected classes found to document" — while 25
+    // renders the module summary happily. So adding module-info.java broke one leg of the matrix
+    // and only in CI, since every local build ran on 25.
+    //
+    // Naming the module makes both agree, and both produce the page: what this artifact is, and why
+    // it is a module at all. Disabling the task instead would have been consistent and empty, which
+    // is a worse answer for the one file here that has something to say.
+    val moduleName = "inc.reactor.sdk.natives"
+    options {
+        this as StandardJavadocDocletOptions
+        addStringOption("-module-source-path", "$moduleName=" + file("src/main/java").absolutePath)
+        addStringOption("-module", moduleName)
+    }
 }
 
 // Where the built libraries are staged, one directory per platform token. CI fills all five from

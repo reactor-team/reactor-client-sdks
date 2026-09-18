@@ -11,6 +11,7 @@
 [![PyPI: reactor-sdk](https://img.shields.io/pypi/v/reactor-sdk.svg?label=reactor-sdk)](https://pypi.org/project/reactor-sdk/)
 [![GitHub release: cpp-sdk](https://img.shields.io/github/v/release/reactor-team/reactor-client-sdks?filter=cpp-*&label=cpp-sdk)](https://github.com/reactor-team/reactor-client-sdks/releases?q=cpp-)
 [![GitHub release: swift-sdk](https://img.shields.io/github/v/release/reactor-team/reactor-client-sdks?filter=v*&label=swift-sdk)](https://github.com/reactor-team/reactor-client-sdks/releases?q=Swift)
+[![Maven Central: reactor-sdk](https://img.shields.io/maven-central/v/inc.reactor/reactor-sdk.svg?label=java-sdk)](https://central.sonatype.com/artifact/inc.reactor/reactor-sdk)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 </div>
@@ -28,11 +29,11 @@ dedicated track.
 - **[Python](sdks/python/README.md)** — `pip install reactor-sdk`
 - **[C++](sdks/cpp/README.md)** — C++17, over the same native core
 - **[Swift](sdks/swift/README.md)** — macOS and iOS, via Swift Package Manager
-- **[Java](sdks/java/README.md)** — desktop JVM, over the Foreign Function &
-  Memory API *(under construction)*
-- **[Kotlin (desktop)](sdks/java/README.md#from-kotlin)** — a `suspend`-and-`Flow`
-  facade over that same binding, versioned in lockstep with it *(under
-  construction)*
+- **[Java](sdks/java/README.md)** — `inc.reactor:reactor-sdk`, desktop JVM over
+  the Foreign Function & Memory API
+- **[Kotlin (desktop)](sdks/java/README.md#from-kotlin)** —
+  `inc.reactor:reactor-sdk-kotlin`, a `suspend`-and-`Flow` facade over that same
+  binding, versioned in lockstep with it
 
 ## Documentation
 
