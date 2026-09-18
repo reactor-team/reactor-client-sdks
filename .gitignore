@@ -60,3 +60,8 @@ replay_pid*.log
 /sdks/java/**/build/
 /sdks/java/.gradle/
 /sdks/java/buildSrc/.gradle/
+
+# Java SDK: native libraries staged for packaging. Built by `mise run build:ffi`
+# locally and by the release workflow's matrix in CI — tens of megabytes each,
+# and never something to commit.
+/sdks/java/reactor-sdk-natives/natives/

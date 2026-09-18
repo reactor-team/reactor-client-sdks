@@ -2,6 +2,10 @@ import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 
 plugins {
     `java-library`
+    // Applied everywhere, and harmless where nothing is published: a module without a publication
+    // publishes nothing. Declaring it per-module instead would mean remembering it on the day a
+    // new published artifact is added, which is the day it would be forgotten.
+    `maven-publish`
     id("com.diffplug.spotless")
 }
 
@@ -87,5 +91,23 @@ spotless {
         removeUnusedImports()
         trimTrailingWhitespace()
         endWithNewline()
+    }
+}
+
+// ── Publishing ───────────────────────────────────────────────────────────────
+
+java {
+    // Maven Central requires both companions for every jar coordinate, and refuses a release
+    // without them. Built here rather than in a release script, so a local `assemble` produces
+    // exactly what gets published.
+    withJavadocJar()
+}
+
+tasks.withType<Javadoc>().configureEach {
+    (options as StandardJavadocDocletOptions).apply {
+        // A broken @param fails a pull request rather than a release.
+        addBooleanOption("Xdoclint:all", true)
+        addStringOption("Xmaxwarns", "1")
+        encoding = "UTF-8"
     }
 }

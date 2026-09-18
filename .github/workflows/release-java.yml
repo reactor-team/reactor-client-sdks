@@ -1,0 +1,296 @@
+# Release the Java SDK to Maven Central.
+#
+# The version in sdks/java/gradle.properties is the switch: bumping it and merging
+# to main is what publishes, and everything else on main is a no-op. Same shape as
+# the other four release workflows, with two things specific to this one:
+#
+#   * Five native libraries, each built on the platform it targets, staged into
+#     sdks/java/reactor-sdk-natives/natives/<token>/ and packaged as one classified
+#     artifact per platform.
+#   * Central refuses a jar coordinate without its -sources and -javadoc companions,
+#     so those are built by the ordinary `assemble` rather than by a release script.
+#     The POM-only aggregate is exempt and has neither.
+name: Release Java SDK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdks/java/**'
+      - 'crates/**'
+      - '.github/workflows/release-java.yml'
+  pull_request:
+    paths:
+      - 'sdks/java/**'
+      - '.github/workflows/release-java.yml'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and stage without publishing'
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-java
+  cancel-in-progress: false
+
+env:
+  MISE_VERSION: "2026.8.8"
+  MISE_LOCKED: "1"
+  MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
+
+permissions:
+  contents: write
+
+jobs:
+  detect-version:
+    name: Detect version bump
+    runs-on: ubuntu-latest
+    outputs:
+      bumped: ${{ steps.diff.outputs.bumped }}
+      version: ${{ steps.diff.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Diff the SDK version across the pushed range
+        id: diff
+        run: |
+          set -euo pipefail
+
+          version_at() {
+            git show "$1:sdks/java/gradle.properties" 2>/dev/null \
+              | grep -m1 '^version=' \
+              | sed -E 's/^version=([0-9]+\.[0-9]+\.[0-9]+.*)$/\1/'
+          }
+
+          NEW_VER=$(version_at "${{ github.sha }}")
+          if [ -z "$NEW_VER" ]; then
+            echo "::error::could not read the version out of sdks/java/gradle.properties"
+            exit 1
+          fi
+          echo "version=$NEW_VER" >> "$GITHUB_OUTPUT"
+
+          # A SNAPSHOT is never a release, whatever changed.
+          case "$NEW_VER" in
+            *-SNAPSHOT)
+              echo "::notice::$NEW_VER is a snapshot — building, not releasing"
+              echo "bumped=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "::notice::${{ github.event_name }} — building $NEW_VER, not releasing"
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # The whole pushed range, not HEAD^. A push can advance main by several commits — a
+          # merge queue, a stack landing at once — and then HEAD^ already carries the new version
+          # and the release the bump asked for silently never happens.
+          BEFORE="${{ github.event.before }}"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "::warning::no previous commit to diff against — not releasing"
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          OLD_VER=$(version_at "$BEFORE" || true)
+          if [ "$NEW_VER" != "$OLD_VER" ]; then
+            echo "::notice::version changed: ${OLD_VER:-none} -> $NEW_VER"
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::version unchanged ($NEW_VER) — building, not releasing"
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A version bump with no changelog entry ships undocumented, and the release notes point at
+      # that file. Writes nothing: the entry is added by hand, in the same pull request as the bump.
+      - name: Verify CHANGELOG.md documents this version
+        if: steps.diff.outputs.bumped == 'true'
+        env:
+          VERSION: ${{ steps.diff.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! grep -qF "## [${VERSION}]" sdks/java/CHANGELOG.md; then
+            echo "::error::sdks/java/CHANGELOG.md has no '## [${VERSION}]' section — move the [Unreleased] entries under one before releasing."
+            exit 1
+          fi
+
+  integration-tests:
+    name: Integration tests (real FFI, real model)
+    needs: detect-version
+    # Skipped on pull_request only: ci.yml runs the same suite on the same commit, and reactor/echo
+    # does not have the session quota for both workflows racing it.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-shared-key: reactor-host-${{ hashFiles('mise.lock') }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Install clang for the libwebrtc C++ glue
+        uses: ./.github/actions/setup-libwebrtc-cxx
+      - run: mise run build:ffi
+      - run: mise run test:java:integration-tests
+        env:
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+
+  natives:
+    name: Native library (${{ matrix.token }})
+    needs: detect-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - token: linux-x86_64
+            runner: ubuntu-latest
+            library: libreactor_ffi.so
+          - token: linux-aarch64
+            runner: ubuntu-24.04-arm
+            library: libreactor_ffi.so
+          - token: macos-arm64
+            runner: macos-latest
+            library: libreactor_ffi.dylib
+          - token: macos-x86_64
+            runner: macos-13
+            library: libreactor_ffi.dylib
+          - token: windows-x86_64
+            runner: windows-latest
+            library: reactor_ffi.dll
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Install clang for the libwebrtc C++ glue
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/setup-libwebrtc-cxx
+      - run: mise run build:ffi
+
+      # Cargo writes the build machine's absolute path as the install name, so a package can link
+      # correctly and still send the loader somewhere that only ever existed on a runner. The Java
+      # SDK loads by explicit path, so this is not what makes it work — it is what stops the
+      # artifact carrying a lie about itself.
+      - name: Rewrite the macOS install name to @rpath
+        if: runner.os == 'macOS'
+        run: install_name_tool -id @rpath/${{ matrix.library }} target/release/${{ matrix.library }}
+
+      - name: Stage it and record its size
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "sdks/java/reactor-sdk-natives/natives/${{ matrix.token }}"
+          cp "target/release/${{ matrix.library }}" "sdks/java/reactor-sdk-natives/natives/${{ matrix.token }}/"
+          SIZE=$(wc -c < "target/release/${{ matrix.library }}")
+          # Recorded per platform because the packaging layout is a decision downstream of these
+          # numbers: five separate artifacts make sense while each is tens of megabytes, and stop
+          # making sense if they are not.
+          echo "::notice::${{ matrix.token }}: $((SIZE / 1048576)) MB"
+          echo "${{ matrix.token }} $SIZE" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: natives-${{ matrix.token }}
+          path: sdks/java/reactor-sdk-natives/natives/${{ matrix.token }}/
+          retention-days: 7
+
+  release:
+    name: Publish to Maven Central
+    needs: [detect-version, integration-tests, natives]
+    if: needs.detect-version.outputs.bumped == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+
+      - name: Collect every platform's library
+        uses: actions/download-artifact@v4
+        with:
+          pattern: natives-*
+          path: sdks/java/reactor-sdk-natives/natives/
+      - name: Flatten the downloaded artifacts into the staging layout
+        run: |
+          set -euo pipefail
+          cd sdks/java/reactor-sdk-natives/natives
+          for directory in natives-*; do
+            token="${directory#natives-}"
+            mkdir -p "$token"
+            mv "$directory"/* "$token"/
+            rmdir "$directory"
+          done
+          ls -la */
+
+      - name: Refuse to publish without all five platforms
+        run: |
+          set -euo pipefail
+          cd sdks/java/reactor-sdk-natives/natives
+          for token in linux-x86_64 linux-aarch64 macos-arm64 macos-x86_64 windows-x86_64; do
+            if [ -z "$(ls -A "$token" 2>/dev/null)" ]; then
+              echo "::error::no native library for $token — a release missing a platform resolves for everyone and fails at load for someone"
+              exit 1
+            fi
+          done
+
+      - run: mise run build:java
+
+      # Read in a step, not in a job-level `if`. An environment-scoped variable is resolved after
+      # the condition decides whether the job runs, and checking it there has already silently
+      # skipped a release that had tagged and built.
+      - name: Is publishing switched on?
+        id: switch
+        env:
+          PUBLISH: ${{ vars.PUBLISH_JAVA_RELEASE }}
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "::notice::dry run — staging only"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          elif [ "$PUBLISH" != "true" ]; then
+            echo "::notice::PUBLISH_JAVA_RELEASE is not 'true' — staging only"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.switch.outputs.publish == 'true'
+        env:
+          ORG_GRADLE_PROJECT_signingKey: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          ORG_GRADLE_PROJECT_signingPassword: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+          ORG_GRADLE_PROJECT_centralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_centralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+        run: mise exec -- gradle --project-dir sdks/java --console=plain publish
+
+      - name: Publish the GitHub release
+        if: steps.switch.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "java-v${VERSION}" \
+            --title "Java SDK ${VERSION}" \
+            --notes "See \`sdks/java/CHANGELOG.md\` for what changed."

@@ -10,6 +10,8 @@ include(
     "reactor-sdk",
     "reactor-sdk-audio",
     "reactor-sdk-jackson",
+    "reactor-sdk-natives",
+    "reactor-sdk-platform",
     "examples",
     "integration-tests",
     "endurance-tests",

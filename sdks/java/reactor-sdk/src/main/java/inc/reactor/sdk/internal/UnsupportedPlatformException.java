@@ -18,6 +18,13 @@ public final class UnsupportedPlatformException extends RuntimeException {
         super(message(osName, osArch));
     }
 
+    UnsupportedPlatformException(String osName, String osArch, String libc) {
+        super("The Reactor SDK's Linux builds need glibc 2.34 or newer, and this host runs " + libc
+                + " (os.name=\"" + osName + "\", os.arch=\"" + osArch + "\")."
+                + " Nothing published here will load against it. Build the library yourself and point "
+                + NativeLibrary.OVERRIDE_ENV + " at it, or run on a glibc host.");
+    }
+
     private static String message(String osName, String osArch) {
         String supported =
                 Stream.of(NativePlatform.values()).map(NativePlatform::token).collect(Collectors.joining(", "));
