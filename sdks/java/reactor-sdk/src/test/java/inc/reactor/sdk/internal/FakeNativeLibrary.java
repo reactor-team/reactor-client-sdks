@@ -268,6 +268,14 @@ public final class FakeNativeLibrary implements AutoCloseable {
     }
 
     private void pushVideoFrame(MemorySegment handle, MemorySegment name, MemorySegment data, int width, int height) {
+        if (blockInPushVideo) {
+            enteredPush.countDown();
+            try {
+                blockPush.await(30, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
         videoFramesPushed++;
     }
 
@@ -301,6 +309,15 @@ public final class FakeNativeLibrary implements AutoCloseable {
 
     /** Set to make reactor_status wait on {@link #blockStatus} before answering. */
     public volatile boolean blockInStatus;
+
+    /** The same, for a frame push — which reaches the FFI through a different funnel. */
+    public volatile boolean blockInPushVideo;
+
+    /** Released to let a blocked push return. */
+    public final java.util.concurrent.CountDownLatch blockPush = new java.util.concurrent.CountDownLatch(1);
+
+    /** Counted up the moment the push is entered. */
+    public final java.util.concurrent.CountDownLatch enteredPush = new java.util.concurrent.CountDownLatch(1);
 
     /** Counted up the moment reactor_status is entered, so a test knows the call is inside. */
     public final java.util.concurrent.CountDownLatch enteredStatus = new java.util.concurrent.CountDownLatch(1);

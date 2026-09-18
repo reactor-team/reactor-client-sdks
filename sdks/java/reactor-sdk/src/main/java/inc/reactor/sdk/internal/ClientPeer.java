@@ -907,11 +907,21 @@ public final class ClientPeer implements Runnable {
         });
     }
 
+    /**
+     * The same as {@link #invoke}, for calls whose arguments are not all segments.
+     *
+     * <p>And it takes the same lease, for the same reason. It was left out of that change and every
+     * frame push, every bitrate request and every download went through here — past the guard,
+     * straight at a handle `close()` was free to destroy underneath them.
+     */
     private void invokeMixed(Ffi.Symbol symbol, Object... arguments) {
+        acquireHandle(symbol.cName());
         try {
             ffi.handle(symbol).invokeWithArguments(arguments);
         } catch (Throwable t) {
             throw new IllegalStateException(symbol.cName() + " could not be called", t);
+        } finally {
+            releaseHandle();
         }
     }
 
