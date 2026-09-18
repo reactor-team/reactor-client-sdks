@@ -37,6 +37,33 @@ access, and a future release will refuse them outright. Consumers pass:
 The module declares itself as `inc.reactor.sdk` precisely so this can be
 granted to one module rather than to everything.
 
+## Finding the native library
+
+`libreactor_ffi` is looked for in three places, in this order. The order is part
+of the SDK's contract, not an implementation detail:
+
+1. **`REACTOR_FFI_LIB`**, pointing straight at a library file. It always wins,
+   and pointing it at something that is not a file is an error rather than a
+   fallthrough — someone who set it meant to use *that* library.
+2. **The packaged resource** for this platform, extracted to a versioned cache
+   directory. This is how a normal consumer gets one, with nothing configured.
+3. **An enclosing checkout's `target/release`**, which is what makes running the
+   published SDK against a local `cargo build -p reactor-ffi --release` work.
+
+Failing to find one reports all three attempts, because the step you are failing
+at is the only useful thing to know.
+
+**Rebuild the library after pulling changes under `crates/`.** The exported
+surface is hand-copied in several places and checked by name, so a library older
+than the crates still links and still resolves every symbol — it only misbehaves
+at the call, which looks like a hang rather than a version error. This SDK checks
+`reactor_abi_version()` at load and refuses a mismatch, which turns most of that
+into a message; it cannot catch a function whose *signature* changed under a name
+that stayed the same. `scripts/check-abi-parity.py` covers that half, and for
+this binding it also compares the arity each `FunctionDescriptor` declares
+against the header's own prototype — a check the other bindings' declarations
+cannot be taken apart for.
+
 ## Development
 
 The whole toolchain — the JDK and Gradle included — is pinned by
