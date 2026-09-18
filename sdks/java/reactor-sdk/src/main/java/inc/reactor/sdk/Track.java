@@ -27,6 +27,15 @@ import org.jspecify.annotations.Nullable;
  */
 public final class Track {
 
+    /**
+     * What the core's audio path accepts, from the FFI header.
+     *
+     * <p>Anything else is logged and dropped down there, which from here looks like a successful
+     * push producing silence.
+     */
+    private static final java.util.Set<Integer> SUPPORTED_SAMPLE_RATES =
+            java.util.Set.of(8_000, 16_000, 24_000, 32_000, 44_100, 48_000);
+
     private final ClientPeer peer;
     private final String name;
     private final TrackKind kind;
@@ -201,11 +210,15 @@ public final class Track {
         requireSendable("pushFrame");
         requireKind(TrackKind.AUDIO, "a short[] of PCM", "a BGRA byte[]");
         requirePublished();
-        if (channels <= 0 || sampleRate <= 0) {
+        if (!SUPPORTED_SAMPLE_RATES.contains(sampleRate) || channels < 1 || channels > 2) {
+            // Positivity was not the contract. The FFI takes 8/16/24/32/44.1/48 kHz in mono or
+            // stereo and logs-and-drops anything else, so pushFrame(pcm, 12345, 3) returned
+            // normally and produced no audio — a caller pushing at rate and hearing silence, which
+            // is the failure this table exists to turn into a sentence.
             throw refusal(
                     "pushFrame",
-                    "sampleRate and channels must both be positive; got sampleRate=" + sampleRate + ", channels="
-                            + channels + ".");
+                    "the FFI takes " + SUPPORTED_SAMPLE_RATES + " Hz in mono or stereo, and drops anything else; got"
+                            + " sampleRate=" + sampleRate + ", channels=" + channels + ".");
         }
         if (pcm.length % channels != 0) {
             throw refusal(

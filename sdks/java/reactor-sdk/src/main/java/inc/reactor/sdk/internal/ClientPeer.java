@@ -109,6 +109,17 @@ public final class ClientPeer implements Runnable {
     private final TrackRegistry tracks = new TrackRegistry();
     private final java.util.Map<String, PublishState> publishStates = new java.util.concurrent.ConcurrentHashMap<>();
 
+    /**
+     * Bumped whenever the session stops being the one a publish was asked of.
+     *
+     * <p>A publish in flight across a disconnect settles after the map above has been cleared, and
+     * its success wrote PUBLISHED back for a connection that has no sender behind that slot.
+     * pushFrame then accepted frames the FFI drops on the floor — the silent failure the whole
+     * refusal table exists to prevent, arrived at from the one direction the table cannot see.
+     */
+    private final java.util.concurrent.atomic.AtomicLong publishGeneration =
+            new java.util.concurrent.atomic.AtomicLong();
+
     private static final System.Logger LOG = System.getLogger(ClientPeer.class.getName());
 
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -323,6 +334,7 @@ public final class ClientPeer implements Runnable {
         completions.settleAll(
                 ReactorException.of(ErrorCode.ABORTED.code(), "the client was closed", null, "close", null));
         tracks.clear();
+        publishGeneration.incrementAndGet();
         publishStates.clear();
 
         // Between the flag above and the destroy below, a call that was already past its own check
@@ -465,6 +477,7 @@ public final class ClientPeer implements Runnable {
             // A reconnect resumes recvonly tracks and nothing else, so a slot published before one
             // is not published after it. Remembering otherwise would let a caller push into a slot
             // with no sender behind it and see nothing arrive.
+            publishGeneration.incrementAndGet();
             publishStates.clear();
         }
         dispatch.run(() -> statusEvents.emit(parsed));
@@ -692,6 +705,7 @@ public final class ClientPeer implements Runnable {
      * @return settles when the track is publishing
      */
     public CompletableFuture<Void> publish(String name) {
+        long asked = publishGeneration.get();
         publishStates.put(name, PublishState.PUBLISHING);
         CompletableFuture<Void> published = call("publish_track", (completion, userdata) -> {
             try (Arena call = Arena.ofConfined()) {
@@ -699,6 +713,13 @@ public final class ClientPeer implements Runnable {
             }
         });
         return published.whenComplete((ignored, failure) -> {
+            if (publishGeneration.get() != asked) {
+                // The session this was asked of is gone. Whatever the answer is, it describes a
+                // connection that no longer has a sender behind this slot — reconnect resumes
+                // recvonly tracks and nothing else — so writing it back would re-arm a track with
+                // nothing behind it and pushFrame would accept frames the FFI drops.
+                return;
+            }
             // Only a success means there is a sender. A failed publish goes back to unpublished so
             // the caller can retry, rather than leaving a slot that reports itself ready to push.
             publishStates.put(name, failure == null ? PublishState.PUBLISHED : PublishState.UNPUBLISHED);

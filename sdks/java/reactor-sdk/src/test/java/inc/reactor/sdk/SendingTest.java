@@ -152,4 +152,44 @@ final class SendingTest extends SendingFixture {
         sending.unpublish();
         assertEquals(PublishState.UNPUBLISHED, sending.publishState());
     }
+
+    @Test
+    @DisplayName("an audio format the FFI drops is refused, not accepted")
+    void unsupportedAudioFormatsAreRefused() {
+        Track microphone = publishedMicrophone();
+
+        // The FFI takes 8/16/24/32/44.1/48 kHz in mono or stereo and logs-and-drops the rest, so
+        // these returned normally and produced silence.
+        ReactorException rate =
+                assertThrows(ReactorException.class, () -> microphone.pushFrame(new short[480], 12_345, 1));
+        assertTrue(rate.getMessage().contains("12345"), rate.getMessage());
+        assertTrue(rate.getMessage().contains("48000"), rate.getMessage());
+
+        ReactorException channels =
+                assertThrows(ReactorException.class, () -> microphone.pushFrame(new short[480], 48_000, 3));
+        assertTrue(channels.getMessage().contains("mono or stereo"), channels.getMessage());
+
+        // And the ones it does take still work.
+        microphone.pushFrame(new short[480], 48_000, 1);
+        microphone.pushFrame(new short[480], 44_100, 2);
+    }
+
+    @Test
+    @DisplayName("a publish that settles after the session left ready does not re-arm the track")
+    void aStalePublishDoesNotReArmTheTrack() {
+        Track camera = reactor.track("camera_in");
+        camera.publish();
+
+        // The session goes away while the publish is still in flight. A reconnect resumes recvonly
+        // tracks and nothing else, so there is no sender behind this slot afterwards.
+        leaveReady();
+
+        // The FFI answers the publish it was asked for, successfully, because it was asked before
+        // any of that. Writing PUBLISHED back here let pushFrame accept frames the FFI then dropped.
+        fake.settleLastCall(true, "{}", null);
+
+        assertEquals(PublishState.UNPUBLISHED, camera.publishState());
+        ReactorException refused = assertThrows(ReactorException.class, () -> camera.pushFrame(new byte[4], 1, 1));
+        assertTrue(refused.getMessage().contains("publish"), refused.getMessage());
+    }
 }
