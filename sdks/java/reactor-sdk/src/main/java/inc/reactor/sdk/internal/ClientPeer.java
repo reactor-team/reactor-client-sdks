@@ -110,15 +110,25 @@ public final class ClientPeer implements Runnable {
     private final java.util.Map<String, PublishState> publishStates = new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
-     * Bumped whenever the session stops being the one a publish was asked of.
+     * The attempt each track's publish state belongs to.
      *
-     * <p>A publish in flight across a disconnect settles after the map above has been cleared, and
-     * its success wrote PUBLISHED back for a connection that has no sender behind that slot.
-     * pushFrame then accepted frames the FFI drops on the floor — the silent failure the whole
-     * refusal table exists to prevent, arrived at from the one direction the table cannot see.
+     * <p>Per track, and replaced on every new attempt — not one counter for the client. A single
+     * generation moved only when the session went away, which left two orderings wrong: a
+     * successful unpublish does not move it, so an older publish's success restored PUBLISHED
+     * afterwards; and two attempts on one track share a generation, so a slow failure could
+     * overwrite a newer success. Both end the same way — a slot the SDK calls published with
+     * nothing behind it, and frames the FFI drops in silence.
+     *
+     * <p>Guarded by {@link #publishLock} together with the state itself, so that deciding an
+     * answer is still current and acting on it cannot be split. Native calls stay outside that
+     * lock.
      */
-    private final java.util.concurrent.atomic.AtomicLong publishGeneration =
+    private final java.util.Map<String, Long> publishTokens = new java.util.HashMap<>();
+
+    private final java.util.concurrent.atomic.AtomicLong nextPublishToken =
             new java.util.concurrent.atomic.AtomicLong();
+
+    private final Object publishLock = new Object();
 
     private static final System.Logger LOG = System.getLogger(ClientPeer.class.getName());
 
@@ -334,22 +344,10 @@ public final class ClientPeer implements Runnable {
         completions.settleAll(
                 ReactorException.of(ErrorCode.ABORTED.code(), "the client was closed", null, "close", null));
         tracks.clear();
-        publishGeneration.incrementAndGet();
-        publishStates.clear();
-
-        // Between the flag above and the destroy below, a call that was already past its own check
-        // may still be inside the FFI holding this handle. Freeing it under that call is a
-        // use-after-free, so this waits for them to come back first.
-        // The comment this used to carry said destroying anyway was the wrong trade, and then the
-        // code destroyed anyway: the wait returned and the destroy below ran regardless. A blocked
-        // call is a thread that will come back, and freeing under it is the crash this exists to
-        // prevent — so when they have not all come back, the handle is not destroyed at all.
-        //
-        // That leaks a handle and an arena for the life of the process. It is the same trade this
-        // class already makes when reactor_destroy reports a callback still running, and for the
-        // same reason: a permanent leak beats a jump into freed memory.
-        boolean quiet = awaitNoCallsInFlight();
-        int quiesced = quiet ? destroyOffVirtualThread() : -1;
+        synchronized (publishLock) {
+            publishTokens.clear();
+            publishStates.clear();
+        }
 
         dispatch.shutdown();
         // Between the flag above and the destroy, a call that was already past its own check may
@@ -477,8 +475,10 @@ public final class ClientPeer implements Runnable {
             // A reconnect resumes recvonly tracks and nothing else, so a slot published before one
             // is not published after it. Remembering otherwise would let a caller push into a slot
             // with no sender behind it and see nothing arrive.
-            publishGeneration.incrementAndGet();
-            publishStates.clear();
+            synchronized (publishLock) {
+                publishTokens.clear();
+                publishStates.clear();
+            }
         }
         dispatch.run(() -> statusEvents.emit(parsed));
     }
@@ -705,24 +705,33 @@ public final class ClientPeer implements Runnable {
      * @return settles when the track is publishing
      */
     public CompletableFuture<Void> publish(String name) {
-        long asked = publishGeneration.get();
-        publishStates.put(name, PublishState.PUBLISHING);
+        long attempt = nextPublishToken.incrementAndGet();
+        synchronized (publishLock) {
+            // The token and the state together: a completion that reads one and acts on the other
+            // must never see them disagree.
+            publishTokens.put(name, attempt);
+            publishStates.put(name, PublishState.PUBLISHING);
+        }
         CompletableFuture<Void> published = call("publish_track", (completion, userdata) -> {
             try (Arena call = Arena.ofConfined()) {
                 invoke(Ffi.Symbol.PUBLISH_TRACK, handle, call.allocateFrom(name), completion, userdata);
             }
         });
         return published.whenComplete((ignored, failure) -> {
-            if (publishGeneration.get() != asked) {
-                // The session this was asked of is gone. Whatever the answer is, it describes a
-                // connection that no longer has a sender behind this slot — reconnect resumes
-                // recvonly tracks and nothing else — so writing it back would re-arm a track with
-                // nothing behind it and pushFrame would accept frames the FFI drops.
-                return;
+            synchronized (publishLock) {
+                Long current = publishTokens.get(name);
+                if (current == null || current != attempt) {
+                    // Not the attempt this track is on any more: the session went away, the track
+                    // was unpublished, or a newer publish replaced it. Whichever, this answer
+                    // describes a state that no longer exists, and writing it back would re-arm a
+                    // slot with nothing behind it.
+                    return;
+                }
+                // Only a success means there is a sender. A failed publish goes back to
+                // unpublished so the caller can retry, rather than leaving a slot that reports
+                // itself ready to push.
+                publishStates.put(name, failure == null ? PublishState.PUBLISHED : PublishState.UNPUBLISHED);
             }
-            // Only a success means there is a sender. A failed publish goes back to unpublished so
-            // the caller can retry, rather than leaving a slot that reports itself ready to push.
-            publishStates.put(name, failure == null ? PublishState.PUBLISHED : PublishState.UNPUBLISHED);
         });
     }
 
@@ -735,7 +744,7 @@ public final class ClientPeer implements Runnable {
      *     something
      */
     public void unpublish(String name) {
-        requireOpen("unpublish");
+        acquireHandle("unpublish");
         String errorJson;
         try (Arena call = Arena.ofConfined()) {
             MemorySegment track = call.allocateFrom(name);
@@ -744,13 +753,22 @@ public final class ClientPeer implements Runnable {
             errorJson = NativeStrings.takeOwned(returned, ffi.handle(Ffi.Symbol.FREE_STRING));
         } catch (Throwable t) {
             throw new IllegalStateException("reactor_unpublish_track could not be called", t);
+        } finally {
+            // Two native calls here — the unpublish and the free of the string it returns — and a
+            // close between them would free that string through a handle that is already gone.
+            releaseHandle();
         }
         if (errorJson != null) {
             // The state is deliberately left alone. Clearing it on a failure would make the
             // unpublish unretryable: the next call would refuse because nothing looks published.
             throw ErrorPayloads.parse(errorJson, "unpublish_track");
         }
-        publishStates.remove(name);
+        synchronized (publishLock) {
+            // The token goes with it. Without this, a publish still in flight from before could
+            // settle afterwards and put the track back to PUBLISHED, with nothing behind it.
+            publishTokens.remove(name);
+            publishStates.remove(name);
+        }
     }
 
     /**

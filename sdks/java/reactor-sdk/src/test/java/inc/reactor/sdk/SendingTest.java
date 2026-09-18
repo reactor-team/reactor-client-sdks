@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.foreign.MemorySegment;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -191,5 +192,47 @@ final class SendingTest extends SendingFixture {
         assertEquals(PublishState.UNPUBLISHED, camera.publishState());
         ReactorException refused = assertThrows(ReactorException.class, () -> camera.pushFrame(new byte[4], 1, 1));
         assertTrue(refused.getMessage().contains("publish"), refused.getMessage());
+    }
+
+    @Test
+    @DisplayName("an older publish cannot restore PUBLISHED after a successful unpublish")
+    void aStalePublishDoesNotSurviveAnUnpublish() {
+        Track camera = publishedCamera();
+        assertEquals(PublishState.PUBLISHED, camera.publishState());
+
+        // A second attempt is in flight when the caller unpublishes. The unpublish succeeds, so
+        // there is no sender behind the slot — and then the old attempt answers.
+        camera.publish();
+        camera.unpublish();
+        assertEquals(PublishState.UNPUBLISHED, camera.publishState());
+
+        fake.settleLastCall(true, "{}", null);
+
+        // A client-wide generation did not move on unpublish, so this used to write PUBLISHED back
+        // and pushFrame accepted frames the FFI drops.
+        assertEquals(PublishState.UNPUBLISHED, camera.publishState());
+        assertThrows(ReactorException.class, () -> camera.pushFrame(new byte[4], 1, 1));
+    }
+
+    @Test
+    @DisplayName("an older publish's failure cannot overwrite a newer success")
+    void anOlderFailureDoesNotOverwriteANewerSuccess() {
+        Track camera = reactor.track("camera_in");
+
+        // Two attempts on one track. The second succeeds; the first fails afterwards, which is an
+        // ordering the FFI is free to produce and the SDK has to survive.
+        camera.publish();
+        MemorySegment firstCompletion = fake.lastCompletionStub();
+        MemorySegment firstUserdata = fake.lastUserdataFor();
+        camera.publish();
+        fake.settleLastCall(true, "{}", null);
+        assertEquals(PublishState.PUBLISHED, camera.publishState());
+
+        fake.settle(
+                firstCompletion, firstUserdata, false, null, "{\"code\":\"internal_error\",\"message\":\"too late\"}");
+
+        // One generation for the whole client could not tell these two attempts apart.
+        assertEquals(PublishState.PUBLISHED, camera.publishState());
+        camera.pushFrame(new byte[4], 1, 1);
     }
 }

@@ -279,6 +279,41 @@ public final class FakeNativeLibrary implements AutoCloseable {
         videoFramesPushed++;
     }
 
+    /** The completion stub of the last async call, so a test can settle calls out of order. */
+    public MemorySegment lastCompletionStub() {
+        return java.util.Objects.requireNonNull(lastCompletion, "no call is outstanding");
+    }
+
+    /** The userdata that went with it. */
+    public MemorySegment lastUserdataFor() {
+        return java.util.Objects.requireNonNull(lastUserdata, "no call is outstanding");
+    }
+
+    /**
+     * Settles a specific completion, not the newest one.
+     *
+     * <p>Two calls on one track can answer in either order, and the SDK has to survive both. That
+     * is not expressible while the only handle a test has is "the last one".
+     */
+    @SuppressWarnings("restricted") // downcallHandle: calling the client's own completion stub
+    public void settle(
+            MemorySegment completion,
+            MemorySegment userdata,
+            boolean ok,
+            @Nullable String resultJson,
+            @Nullable String errorJson) {
+        MethodHandle call = linker.downcallHandle(completion, Ffi.Callbacks.COMPLETION);
+        try {
+            call.invokeWithArguments(
+                    ok ? 1 : 0,
+                    resultJson == null ? MemorySegment.NULL : arena.allocateFrom(resultJson),
+                    errorJson == null ? MemorySegment.NULL : arena.allocateFrom(errorJson),
+                    userdata);
+        } catch (Throwable t) {
+            throw new IllegalStateException("the completion could not be called", t);
+        }
+    }
+
     /** Settles the completion of the last async call the client made. */
     @SuppressWarnings("restricted") // downcallHandle: calling the client's own completion stub
     public void settleLastCall(boolean ok, @Nullable String resultJson, @Nullable String errorJson) {
