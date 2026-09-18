@@ -39,9 +39,42 @@ public sealed interface JsonValue {
      * A JSON number.
      *
      * <p>JSON has one numeric type and this SDK does not invent two. {@link #asLong()} is there for
-     * the common case, and it refuses rather than rounding.
+     * the common case, and it refuses rather than rounding — and an exact integer is kept exactly.
+     * Holding only a {@code double} lost the difference above 2^53: 9007199254740993 came back as
+     * 9007199254740992, which for a command id or a counter is a different value silently
+     * substituted, and {@link #asLong()} could not refuse it because the rounding had already
+     * happened at parse time.
      */
-    record JsonNumber(double value) implements JsonValue {
+    final class JsonNumber implements JsonValue {
+
+        private final double value;
+        private final @org.jspecify.annotations.Nullable Long exact;
+
+        /**
+         * @param value the number
+         */
+        public JsonNumber(double value) {
+            this.value = value;
+            this.exact = null;
+        }
+
+        /**
+         * @param value an integer the source expressed exactly
+         */
+        public JsonNumber(long value) {
+            this.value = value;
+            this.exact = value;
+        }
+
+        /** @return this number as a {@code double}, which is lossy above 2^53 */
+        public double value() {
+            return value;
+        }
+
+        /** @return whether this number was an integer the source expressed exactly */
+        public boolean isExactInteger() {
+            return exact != null;
+        }
 
         /**
          * @return this number as a {@code long}
@@ -49,10 +82,36 @@ public sealed interface JsonValue {
          *     precision silently is how an id becomes a different id
          */
         public long asLong() {
+            if (exact != null) {
+                return exact;
+            }
             if (value != Math.rint(value) || value < Long.MIN_VALUE || value > Long.MAX_VALUE) {
                 throw new ArithmeticException(value + " is not an exact long");
             }
             return (long) value;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (!(other instanceof JsonNumber that)) {
+                return false;
+            }
+            // Two numbers are the same number, however each arrived. An exact 1 and a parsed 1.0
+            // are one value in JSON and a caller comparing them means that.
+            if (exact != null && that.exact != null) {
+                return exact.equals(that.exact);
+            }
+            return Double.compare(value, that.value) == 0;
+        }
+
+        @Override
+        public int hashCode() {
+            return Double.hashCode(value);
+        }
+
+        @Override
+        public String toString() {
+            return exact != null ? "JsonNumber[" + exact + "]" : "JsonNumber[" + value + "]";
         }
     }
 

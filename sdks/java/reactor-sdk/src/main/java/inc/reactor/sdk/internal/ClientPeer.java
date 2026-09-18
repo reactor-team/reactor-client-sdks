@@ -1059,7 +1059,22 @@ public final class ClientPeer implements Runnable {
             return;
         }
         Completions.Ticket ticket = completions.register(operation, decoder, future);
-        invoke.call(ticket.callback(), ticket.userdata());
+        try {
+            invoke.call(ticket.callback(), ticket.userdata());
+        } catch (RuntimeException notStarted) {
+            // Registered but never started: nothing will ever complete this ticket, so without
+            // this the entry sat in the map with its future unsettled until the client closed, and
+            // the caller holding that future waited for a callback that could not come.
+            completions.abandon(
+                    ticket,
+                    ReactorException.of(
+                            ReactorException.INTERNAL_ERROR,
+                            "the native call for " + operation + " failed to start",
+                            null,
+                            operation,
+                            null));
+            throw notStarted;
+        }
     }
 
     private CompletableFuture<Void> call(String operation, Completions.Invoker invoke) {
@@ -1077,8 +1092,17 @@ public final class ClientPeer implements Runnable {
         try {
             invoke.call(ticket.callback(), ticket.userdata());
         } catch (RuntimeException notStarted) {
-            completions.settleAll(ReactorException.of(
-                    ReactorException.INTERNAL_ERROR, "the native call failed to start", null, operation, null));
+            // This one, not every operation in flight. settleAll here meant one failed invocation
+            // aborted every command that happened to be outstanding, which is a far larger blast
+            // radius than the failure deserved.
+            completions.abandon(
+                    ticket,
+                    ReactorException.of(
+                            ReactorException.INTERNAL_ERROR,
+                            "the native call for " + operation + " failed to start",
+                            null,
+                            operation,
+                            null));
             throw notStarted;
         }
         return future;

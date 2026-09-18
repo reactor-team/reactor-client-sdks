@@ -46,7 +46,8 @@ public final class JsonBridge {
             case null -> JsonValue.ofNull();
             case String text -> new JsonValue.JsonString(text);
             case Boolean flag -> new JsonValue.JsonBoolean(flag);
-            case Long number -> new JsonValue.JsonNumber(number);
+            // The long overload, not the double one: this is where the precision was lost.
+            case Long number -> new JsonValue.JsonNumber(number.longValue());
             case Double number -> new JsonValue.JsonNumber(number);
             case Map<?, ?> object -> {
                 Map<String, JsonValue> fields = new LinkedHashMap<>();
@@ -74,7 +75,13 @@ public final class JsonBridge {
         switch (value) {
             case JsonValue.JsonNull ignored -> out.append("null");
             case JsonValue.JsonBoolean flag -> out.append(flag.value());
-            case JsonValue.JsonNumber number -> writeNumber(number.value(), out);
+            case JsonValue.JsonNumber number -> {
+                if (number.isExactInteger()) {
+                    out.append(Long.toString(number.asLong()));
+                } else {
+                    writeNumber(number.value(), out);
+                }
+            }
             case JsonValue.JsonString text -> writeString(text.value(), out);
             case JsonValue.JsonArray array -> {
                 out.append('[');

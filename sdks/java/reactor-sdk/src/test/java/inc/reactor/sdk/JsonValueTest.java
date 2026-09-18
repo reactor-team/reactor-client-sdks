@@ -1,6 +1,7 @@
 package inc.reactor.sdk;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -131,5 +132,29 @@ final class JsonValueTest {
                 };
 
         assertEquals("array of 3", described);
+    }
+
+    @Test
+    @DisplayName("an integer beyond 2^53 survives a round trip")
+    void largeIntegersAreNotRounded() {
+        // 2^53 + 1. As a double this is 9007199254740992, which for a command id or a counter is a
+        // different value handed back without a word.
+        long id = 9_007_199_254_740_993L;
+        JsonValue parsed = JsonValue.parse("{\"id\":" + id + "}");
+        JsonValue.JsonNumber number =
+                (JsonValue.JsonNumber) ((JsonValue.JsonObject) parsed).fields().get("id");
+
+        assertEquals(id, number.asLong());
+        assertTrue(number.isExactInteger());
+        // And it goes back out as it came in, rather than as the double it would have become.
+        assertEquals("{\"id\":" + id + "}", parsed.toJsonString());
+    }
+
+    @Test
+    @DisplayName("a fractional number is still a double, and still refuses asLong")
+    void fractionsAreUnchanged() {
+        JsonValue.JsonNumber half = new JsonValue.JsonNumber(0.5);
+        assertFalse(half.isExactInteger());
+        assertThrows(ArithmeticException.class, half::asLong);
     }
 }
