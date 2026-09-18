@@ -50,6 +50,7 @@ public final class DetachedCompletion<T> {
     private final Completions.Decoder<T> decoder;
     private final CompletableFuture<T> future;
     private final Arena arena;
+    private final AtomicBoolean released = new AtomicBoolean();
     private final MemorySegment callback;
     private final AtomicBoolean settled = new AtomicBoolean();
 
@@ -80,6 +81,17 @@ public final class DetachedCompletion<T> {
             // the arena back rather than leaking a stub nobody can reach.
             ticket.settleOnce(() -> future.completeExceptionally(notStarted));
             throw notStarted;
+        } finally {
+            // The FFI may complete before this call returns — fetch_jwt does exactly that when the
+            // options it is given are invalid. The completion then runs inside the downcall, and
+            // the downcall holds this arena's scope for its whole duration, because the callback
+            // it was passed was allocated from it. So the close attempted from the completion
+            // could not succeed, and the only thing that noticed was a log line: the upcall guard
+            // swallows whatever escapes it, the caller's future completed, and the stub stayed
+            // allocated for the life of the process.
+            //
+            // Here the downcall has returned and the scope is free.
+            ticket.releaseIfSettled();
         }
         return future;
     }
@@ -126,8 +138,31 @@ public final class DetachedCompletion<T> {
             settle.run();
         } finally {
             // The FFI promises this fires exactly once, so this is the moment the stub stops being
-            // reachable from native code — and the only moment it is safe to release.
+            // reachable from native code — and the first moment it is safe to release. Not always
+            // a possible one: see releaseIfSettled.
+            releaseIfSettled();
+        }
+    }
+
+    /**
+     * Closes the arena, once, if there is nothing left to use it.
+     *
+     * <p>Called from two places that cannot both be right on their own: the completion, which knows
+     * the stub is finished with, and {@link #start}, which knows the native call has returned.
+     * Whichever runs second is the one that succeeds when the first could not — and when the
+     * completion arrives later, on an FFI thread, the first is also the only one.
+     */
+    private void releaseIfSettled() {
+        if (!settled.get() || !released.compareAndSet(false, true)) {
+            return;
+        }
+        try {
             arena.close();
+        } catch (IllegalStateException stillInUse) {
+            // A native call still holds this scope, which means the completion fired inside the
+            // downcall that started it. Put the flag back so whoever returns from that call closes
+            // it instead; there is exactly one such caller and it is already on its way here.
+            released.set(false);
         }
     }
 
