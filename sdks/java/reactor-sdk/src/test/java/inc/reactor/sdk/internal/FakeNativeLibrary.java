@@ -219,6 +219,10 @@ final class FakeNativeLibrary implements AutoCloseable {
      */
     public final java.util.concurrent.CountDownLatch blockStatus = new java.util.concurrent.CountDownLatch(1);
 
+    /** Runs inside reactor_status, for a test that closes from within a native call. */
+    @Nullable
+    public Runnable duringStatus;
+
     /** Set to make reactor_status wait on {@link #blockStatus} before answering. */
     public volatile boolean blockInStatus;
 
@@ -226,6 +230,10 @@ final class FakeNativeLibrary implements AutoCloseable {
     public final java.util.concurrent.CountDownLatch enteredStatus = new java.util.concurrent.CountDownLatch(1);
 
     private MemorySegment status(MemorySegment handle) {
+        Runnable during = duringStatus;
+        if (during != null) {
+            during.run();
+        }
         if (blockInStatus) {
             enteredStatus.countDown();
             try {

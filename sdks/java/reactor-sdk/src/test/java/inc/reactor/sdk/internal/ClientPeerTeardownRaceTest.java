@@ -84,8 +84,43 @@ final class ClientPeerTeardownRaceTest {
 
         assertEquals(0, fake.destroyCalls, "reactor_destroy ran with a call still inside the FFI");
 
+        // And then it happens. Skipping it outright was the other half of the same mistake: the
+        // session stayed alive on the platform, its tasks kept running and the handle leaked for
+        // the life of the process. Deferring has to mean later, not never.
         fake.blockStatus.countDown();
         reader.join(TimeUnit.SECONDS.toMillis(10));
+
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (fake.destroyCalls == 0 && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertEquals(1, fake.destroyCalls, "the handle was never destroyed once the call returned");
+        fake.close();
+    }
+
+    @Test
+    @DisplayName("a close from inside a native call destroys once that call returns")
+    void aReentrantCloseStillTearsDown() throws Exception {
+        // A callback closing its own client cannot wait — it would be waiting for the call it is
+        // itself making. Deferring is right; never destroying is not, and both used to be the same
+        // branch.
+        FakeNativeLibrary fake = new FakeNativeLibrary();
+        ClientPeer[] holder = new ClientPeer[1];
+        fake.duringStatus = () -> holder[0].close();
+        ClientPeer peer = ClientPeer.create(
+                ReactorOptions.builder("https://api.example.test", "owner/model")
+                        .dispatcher(Runnable::run)
+                        .build(),
+                arena -> Ffi.open(fake.lookup()));
+        holder[0] = peer;
+
+        peer.status();
+
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (fake.destroyCalls == 0 && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertEquals(1, fake.destroyCalls, "a reentrant close never destroyed the handle");
         fake.close();
     }
 }

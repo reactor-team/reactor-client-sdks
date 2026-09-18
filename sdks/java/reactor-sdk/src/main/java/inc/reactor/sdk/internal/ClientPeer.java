@@ -90,6 +90,11 @@ public final class ClientPeer implements Runnable {
      */
     private final ThreadLocal<int[]> leasesHere = ThreadLocal.withInitial(() -> new int[1]);
 
+    /** Set when close could not wait, so the last call to return owes the destroy. */
+    private final AtomicBoolean destroyWhenQuiet = new AtomicBoolean();
+
+    private final AtomicBoolean teardownStarted = new AtomicBoolean();
+
     private ClientPeer(Ffi ffi, Arena arena, ReactorOptions options) {
         this.ffi = ffi;
         this.arena = arena;
@@ -283,21 +288,41 @@ public final class ClientPeer implements Runnable {
         }
         completions.settleAll(
                 ReactorException.of(ErrorCode.ABORTED.code(), "the client was closed", null, "close", null));
-        // Between the flag above and the destroy below, a call that was already past its own check
-        // may still be inside the FFI holding this handle. Freeing it under that call is a
-        // use-after-free, so this waits for them to come back first.
-        // The comment this used to carry said destroying anyway was the wrong trade, and then the
-        // code destroyed anyway: the wait returned and the destroy below ran regardless. A blocked
-        // call is a thread that will come back, and freeing under it is the crash this exists to
-        // prevent — so when they have not all come back, the handle is not destroyed at all.
-        //
-        // That leaks a handle and an arena for the life of the process. It is the same trade this
-        // class already makes when reactor_destroy reports a callback still running, and for the
-        // same reason: a permanent leak beats a jump into freed memory.
-        boolean quiet = awaitNoCallsInFlight();
-        int quiesced = quiet ? destroyOffVirtualThread() : -1;
         dispatch.shutdown();
-        if (quiet && quiesced == 0) {
+        // Between the flag above and the destroy, a call that was already past its own check may
+        // still be inside the FFI holding this handle, and freeing it under that call is the
+        // use-after-free this guard exists to prevent. So the destroy waits — and when it cannot
+        // wait, it is scheduled rather than skipped.
+        //
+        // Skipping it outright was the previous answer and it was half of one: an interrupted or
+        // reentrant close left reactor_destroy never called at all, so the session stayed alive on
+        // the platform, its tasks kept running and the handle leaked for the life of the process.
+        // Deferring has to mean later, not never.
+        if (awaitNoCallsInFlight()) {
+            finishTeardown();
+            return;
+        }
+        destroyWhenQuiet.set(true);
+        // The last call may have returned between the wait giving up and the flag going up, in
+        // which case nobody is left to notice it. Checked here so that ordering cannot strand it.
+        if (inFlight.get() == 0) {
+            finishTeardown();
+        }
+    }
+
+    /**
+     * Destroys the handle and disposes of the arena. Runs once, whoever gets here first.
+     *
+     * <p>On its own thread when the last call releases, because that release happens on whatever
+     * thread was making the call — an FFI callback thread, or the one a user closed from inside a
+     * handler — and reactor_destroy blocks.
+     */
+    private void finishTeardown() {
+        if (!teardownStarted.compareAndSet(false, true)) {
+            return;
+        }
+        int quiesced = destroyOffVirtualThread();
+        if (quiesced == 0) {
             arena.close();
         } else {
             // -1: a callback is still executing. The handle is gone either way, but the library
@@ -492,6 +517,12 @@ public final class ClientPeer implements Runnable {
         if (inFlight.decrementAndGet() == 0) {
             synchronized (inFlightIdle) {
                 inFlightIdle.notifyAll();
+            }
+            if (destroyWhenQuiet.get()) {
+                // A close gave up waiting for this call. It is the last one out, so it owes the
+                // teardown — on a thread of its own, because this one is returning from a native
+                // call and reactor_destroy blocks.
+                Thread.ofPlatform().name("reactor-deferred-destroy").start(this::finishTeardown);
             }
         }
     }
