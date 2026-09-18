@@ -196,4 +196,45 @@ final class AudioDevicesTest {
             assertTrue(thrown.getMessage().contains("48000"), thrown.getMessage());
         }
     }
+
+    @Test
+    @DisplayName("a line that stops on its own stops the microphone, rather than spinning")
+    void aQuietlyStoppedLineEndsCapture() throws Exception {
+        FakeAudioLines lines = new FakeAudioLines();
+        lines.capture.stopQuietly = true;
+
+        Microphone microphone = Microphone.open(lines, new PcmFormat(48_000, 1), pcm -> {});
+
+        // -1 means the line has stopped. Treating it as an empty read sent the daemon thread round
+        // again at full speed, forever, with isRunning() still saying yes.
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        while (microphone.isRunning() && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertFalse(microphone.isRunning(), "the microphone reported capture after the line stopped");
+        int spun = lines.capture.reads.get();
+        Thread.sleep(50);
+        assertEquals(spun, lines.capture.reads.get(), "the reader thread was still spinning");
+        microphone.close();
+    }
+
+    @Test
+    @DisplayName("a consumer that throws stops the microphone, and says so")
+    void aThrowingConsumerEndsCapture() throws Exception {
+        FakeAudioLines lines = new FakeAudioLines();
+        Microphone microphone = Microphone.open(lines, new PcmFormat(48_000, 1), pcm -> {
+            throw new IllegalStateException("the consumer has a bug");
+        });
+
+        lines.capture.feed(new byte[960]);
+
+        // The thread died without clearing the flag, so isRunning() went on reporting capture that
+        // had stopped — the state said one thing and the device another.
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        while (microphone.isRunning() && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertFalse(microphone.isRunning(), "the microphone reported capture after the consumer threw");
+        microphone.close();
+    }
 }

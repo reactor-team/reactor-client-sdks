@@ -126,6 +126,16 @@ public final class Microphone implements AutoCloseable {
 
     private void capture() {
         byte[] buffer = new byte[format.sampleRate() / (1000 / MILLIS_PER_READ) * format.frameBytes()];
+        try {
+            capture(buffer);
+        } finally {
+            // Whichever way the loop ends — a device that stopped, a consumer that threw, an
+            // interrupt — the public state says capture has stopped, because it has.
+            running.set(false);
+        }
+    }
+
+    private void capture(byte[] buffer) {
         while (running.get()) {
             int read;
             try {
@@ -137,7 +147,16 @@ public final class Microphone implements AutoCloseable {
                 running.set(false);
                 return;
             }
-            if (read <= 0) {
+            if (read < 0) {
+                // Not the same as an empty read. The line says -1 when it has stopped, which a
+                // backend can do without close() and without throwing — a device lost quietly. The
+                // old branch treated it as "nothing this time" and went straight round again, so
+                // the daemon thread spun at full speed forever while isRunning() went on saying
+                // yes.
+                running.set(false);
+                return;
+            }
+            if (read == 0) {
                 continue;
             }
             // Checked again after the read: the block that was in flight while close() ran belongs
@@ -145,7 +164,16 @@ public final class Microphone implements AutoCloseable {
             if (!running.get()) {
                 return;
             }
-            samples.accept(toSamples(buffer, read));
+            try {
+                samples.accept(toSamples(buffer, read));
+            } catch (RuntimeException | Error thrown) {
+                // The consumer is application code. An exception here used to end the reader
+                // thread without clearing the flag, so isRunning() reported capture that had
+                // stopped and nothing arrived again — the state said one thing and the device
+                // another. Stopping is the honest answer, and it is what the flag now says.
+                running.set(false);
+                throw thrown;
+            }
         }
     }
 

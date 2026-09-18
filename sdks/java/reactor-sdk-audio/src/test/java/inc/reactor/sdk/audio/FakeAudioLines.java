@@ -54,6 +54,12 @@ final class FakeAudioLines implements AudioLines {
         /** Set to make the next read throw, the way an unplugged device does. */
         volatile boolean failNextRead;
 
+        /** Set to make read answer -1, the way a backend that stopped on its own does. */
+        volatile boolean stopQuietly;
+
+        /** How many times read was entered, so a test can see a spin. */
+        final AtomicInteger reads = new AtomicInteger();
+
         void feed(byte[] block) {
             blocks.add(block);
         }
@@ -65,6 +71,10 @@ final class FakeAudioLines implements AudioLines {
 
         @Override
         public int read(byte[] buffer) {
+            reads.incrementAndGet();
+            if (stopQuietly) {
+                return -1;
+            }
             if (failNextRead) {
                 throw new IllegalStateException("the device went away");
             }
