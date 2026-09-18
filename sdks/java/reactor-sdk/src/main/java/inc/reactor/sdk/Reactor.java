@@ -111,6 +111,43 @@ public final class Reactor implements AutoCloseable {
     }
 
     /**
+     * The tracks this session declared, in the order it declared them.
+     *
+     * @return the tracks; empty before the session is accepted and after it is torn down, so "no
+     *     tracks yet" is distinguishable from a name that does not exist
+     */
+    public TrackList tracks() {
+        return new TrackList(peer.trackDeclarations().stream()
+                .map(declaration -> new Track(
+                        peer, declaration.name(), declaration.kind(), declaration.direction(), declaration.mid()))
+                .toList());
+    }
+
+    /**
+     * One track, by the name the session declared it under.
+     *
+     * <p>This is how an application that knows its model asks. Unknown names raise rather than
+     * answering with nothing: a handler registered on a track that does not exist never fires, and
+     * a session that looks healthy and produces nothing is the failure this SDK exists to refuse.
+     *
+     * @param name the declared name
+     * @return the track
+     * @throws ReactorException when the session declared no track by that name, listing the names
+     *     it did declare
+     */
+    public Track track(String name) {
+        TrackList declared = tracks();
+        return declared.byName(name)
+                .orElseThrow(() -> ReactorException.of(
+                        ErrorCode.NOT_FOUND.code(),
+                        "this session declares no track named \"" + name + "\". It declares: "
+                                + declared.stream().map(Track::name).toList() + ".",
+                        null,
+                        "track",
+                        null));
+    }
+
+    /**
      * @param handler called with every status change
      * @return a subscription that removes it
      */
