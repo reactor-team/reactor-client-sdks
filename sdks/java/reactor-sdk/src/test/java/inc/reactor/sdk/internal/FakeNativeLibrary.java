@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A native library, written in Java.
@@ -55,6 +56,37 @@ final class FakeNativeLibrary implements AutoCloseable {
     /** What the next owned string this library hands out will say. */
     String nextOwnedString = "session-0000";
 
+    /** What {@code reactor_destroy} answers: 0 = quiesced, -1 = a callback is still running. */
+    int destroyResult = 0;
+
+    /** How many times {@code reactor_destroy} was called. */
+    int destroyCalls;
+
+    /** The audio device mode {@code reactor_create_with_adm} was asked for. */
+    int admMode = -1;
+
+    /** What the client reported about itself. */
+    @Nullable
+    String sdkVersion;
+
+    /** Which binding the client said it was. */
+    @Nullable
+    String sdkType;
+
+    /** The ReactorCallbacks struct the client handed over, so a test can call back through it. */
+    @Nullable
+    MemorySegment callbacks;
+
+    /** The completion and userdata of the last async call, so a test can settle it. */
+    @Nullable
+    MemorySegment lastCompletion;
+
+    @Nullable
+    MemorySegment lastUserdata;
+
+    /** What {@code reactor_status} answers. */
+    String status = "ready";
+
     FakeNativeLibrary() {
         for (Ffi.Symbol symbol : Ffi.Symbol.values()) {
             symbols.put(symbol.cName(), doNothing(symbol.descriptor()));
@@ -63,6 +95,10 @@ final class FakeNativeLibrary implements AutoCloseable {
         bind("reactor_free_string", Ffi.Symbol.FREE_STRING.descriptor(), "freeString");
         bind("reactor_session_id", Ffi.Symbol.SESSION_ID.descriptor(), "sessionId");
         bind("reactor_status", Ffi.Symbol.STATUS.descriptor(), "status");
+        bind("reactor_create_with_adm", Ffi.Symbol.CREATE_WITH_ADM.descriptor(), "createWithAdm");
+        bind("reactor_destroy", Ffi.Symbol.DESTROY.descriptor(), "destroy");
+        bind("reactor_connect", Ffi.Symbol.CONNECT.descriptor(), "connect");
+        bind("reactor_disconnect", Ffi.Symbol.DISCONNECT.descriptor(), "disconnect");
     }
 
     /** Makes this library report an ABI version other than the one the binding expects. */
@@ -109,7 +145,103 @@ final class FakeNativeLibrary implements AutoCloseable {
         return segment;
     }
 
+    @SuppressWarnings("restricted") // reinterpret: the callbacks struct, to call back through it
+    private MemorySegment createWithAdm(
+            MemorySegment apiUrl,
+            MemorySegment modelName,
+            MemorySegment jwt,
+            int local,
+            MemorySegment callbacksStruct,
+            int adm,
+            MemorySegment version,
+            MemorySegment type) {
+        this.admMode = adm;
+        this.sdkVersion = readString(version);
+        this.sdkType = readString(type);
+        // Kept so a test can call back through the struct the way the FFI would.
+        this.callbacks = callbacksStruct.reinterpret(Ffi.Callbacks.LAYOUT.byteSize());
+        // Any non-null address will do: nothing here dereferences it, and the binding only ever
+        // passes it straight back.
+        return arena.allocate(8);
+    }
+
+    private int destroy(MemorySegment handle) {
+        destroyCalls++;
+        return destroyResult;
+    }
+
+    private void connect(
+            MemorySegment handle,
+            MemorySegment sessionId,
+            MemorySegment connectionId,
+            MemorySegment completion,
+            MemorySegment userdata) {
+        lastCompletion = completion;
+        lastUserdata = userdata;
+    }
+
+    private void disconnect(MemorySegment handle, MemorySegment completion, MemorySegment userdata) {
+        lastCompletion = completion;
+        lastUserdata = userdata;
+    }
+
+    @SuppressWarnings("restricted") // reinterpret: reading a string the binding just allocated
+    private static @Nullable String readString(MemorySegment segment) {
+        return segment.equals(MemorySegment.NULL)
+                ? null
+                : segment.reinterpret(4096).getString(0);
+    }
+
+    /** Calls one of the client's callbacks, the way the FFI would. */
+    @SuppressWarnings("restricted") // downcallHandle: calling the client's own stub
+    void fireCallback(String field, FunctionDescriptor descriptor, Object... arguments) {
+        MemorySegment struct = java.util.Objects.requireNonNull(callbacks, "the client registered no callbacks");
+        long offset = Ffi.Callbacks.LAYOUT.byteOffset(java.lang.foreign.MemoryLayout.PathElement.groupElement(field));
+        MemorySegment pointer = struct.get(java.lang.foreign.ValueLayout.ADDRESS, offset);
+        MethodHandle call = linker.downcallHandle(pointer, descriptor);
+        try {
+            call.invokeWithArguments(arguments);
+        } catch (Throwable t) {
+            throw new AssertionError("calling " + field + " threw out of the stub", t);
+        }
+    }
+
+    /** Allocates a C string that lives as long as this fake. */
+    MemorySegment cString(String text) {
+        return arena.allocateFrom(text);
+    }
+
+    /**
+     * Held open while a test wants a native call to be in flight.
+     *
+     * <p>A closed latch is what "the FFI is still running this call" looks like from Java, and the
+     * only way to exercise a teardown that races one.
+     */
+    public final java.util.concurrent.CountDownLatch blockStatus = new java.util.concurrent.CountDownLatch(1);
+
+    /** Runs inside reactor_status, for a test that closes from within a native call. */
+    @Nullable
+    public Runnable duringStatus;
+
+    /** Set to make reactor_status wait on {@link #blockStatus} before answering. */
+    public volatile boolean blockInStatus;
+
+    /** Counted up the moment reactor_status is entered, so a test knows the call is inside. */
+    public final java.util.concurrent.CountDownLatch enteredStatus = new java.util.concurrent.CountDownLatch(1);
+
     private MemorySegment status(MemorySegment handle) {
+        Runnable during = duringStatus;
+        if (during != null) {
+            during.run();
+        }
+        if (blockInStatus) {
+            enteredStatus.countDown();
+            try {
+                blockStatus.await(30, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
         MemorySegment segment = arena.allocateFrom("ready");
         staticsOut.add(segment.address());
         return segment;

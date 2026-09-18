@@ -42,6 +42,29 @@ public final class NativeLibrary {
 
     private NativeLibrary() {}
 
+    private static @org.jspecify.annotations.Nullable Ffi shared;
+
+    /**
+     * The library, loaded once for the whole process.
+     *
+     * <p>{@link Arena#global()}, and never a client's. `reactor_destroy` ends a session; it does
+     * not stop the core's shared Tokio runtime, whose worker threads go on running, and a detached
+     * download is documented as outliving the handle it was given. A client arena that owned the
+     * library would unload it on close and pull the code out from under both — a jump into an
+     * unmapped page, with nothing in Java to catch and no stack to read afterwards.
+     *
+     * <p>There is deliberately no way to unload it. There is no moment at which doing so is known
+     * to be safe.
+     *
+     * @return the bound ABI, its version already checked
+     */
+    public static synchronized Ffi shared() {
+        if (shared == null) {
+            shared = load(Arena.global());
+        }
+        return shared;
+    }
+
     /**
      * Loads the native library for this platform and binds the ABI.
      *
