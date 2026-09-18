@@ -102,6 +102,18 @@ SWIFT_MATCHER = re.compile(r"public static var (\w+): Code \{ \.\w+ \}")
 
 SWIFT_ERRORS = REPO_ROOT / "sdks/swift/Sources/Reactor/ReactorError.swift"
 
+# Java: the ErrorCode enum's constants, which carry the wire value and the class
+# that raises it in one declaration:
+# `NETWORK_ERROR("NETWORK_ERROR", true, NetworkException::new),`.
+#
+# One entry rather than two, unlike C++ and Swift. Their second hand-copy is a
+# separately written list that can fall out of step with the first; Java's
+# constant names its exception class in the same line, so the compiler enforces
+# that half — a constant naming a class that does not exist does not build.
+JAVA_CODE = re.compile(r'\("([A-Z_]+)",\s*(?:true|false),\s*\w+::new\)')
+
+JAVA_ERRORS = REPO_ROOT / "sdks/java/reactor-sdk/src/main/java/inc/reactor/sdk/ErrorCode.java"
+
 SDKS = [
     Sdk("JS", REPO_ROOT / "sdks/js/src/errors.ts", JS_CODE),
     Sdk("Python", REPO_ROOT / "sdks/python/reactor_sdk/errors.py", PY_CODE),
@@ -109,6 +121,7 @@ SDKS = [
     Sdk("C++ (codes::)", REPO_ROOT / "sdks/cpp/include/reactor/errors.hpp", CPP_NAMESPACE_CODE),
     Sdk("Swift (Code)", SWIFT_ERRORS, SWIFT_CODE),
     Sdk("Swift (matchers)", SWIFT_ERRORS, SWIFT_MATCHER, screaming_snake),
+    Sdk("Java", JAVA_ERRORS, JAVA_CODE),
 ]
 
 

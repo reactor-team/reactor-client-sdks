@@ -37,7 +37,13 @@ dependencies {
     // classpath. It is what lets Kotlin read this API's nullability as real types
     // instead of platform types, which is why it is here from the first commit
     // rather than added when the Kotlin facade needs it.
-    compileOnly("org.jspecify:jspecify:1.0.1")
+    // compileOnlyApi, not compileOnly. The annotations are absent at run time either way, but this
+    // one also puts them on a consumer's compile classpath — and module-info declares
+    // `requires static transitive org.jspecify`, which the module system has to resolve when a
+    // consumer compiles a named module of their own. With compileOnly the dependency is published
+    // nowhere, so that consumer got "module not found: org.jspecify" against a module they never
+    // named. A consumer on the class path never noticed, which is why nobody did.
+    compileOnlyApi("org.jspecify:jspecify:1.0.1")
 
     testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
