@@ -110,20 +110,42 @@ public final class ClipDownload {
      * @return the download, which the client keeps until it settles
      */
     static ClipDownload start(CompletableFuture<DownloadedClip> future, @Nullable Progress progress, Invoker invoke) {
+        ClipDownload download = register(future, progress);
+        download.begin(invoke);
+        return download;
+    }
+
+    /**
+     * Creates a download and makes it visible, without starting it.
+     *
+     * <p>Split from {@link #begin} so a caller can register it somewhere of its own before the
+     * native call — a teardown that takes its snapshot while this is mid-flight has to be able to
+     * find it, and a download that becomes visible only afterwards can fall into exactly that gap
+     * and leave its caller waiting for the life of the process.
+     */
+    static ClipDownload register(CompletableFuture<DownloadedClip> future, @Nullable Progress progress) {
         ClipDownload download = new ClipDownload(future, progress);
         IN_FLIGHT.add(download);
+        return download;
+    }
+
+    /**
+     * Hands the stubs to the FFI.
+     *
+     * @param invoke makes the native call
+     */
+    void begin(Invoker invoke) {
         try {
-            invoke.call(download.progressStub, download.completionStub);
+            invoke.call(progressStub, completionStub);
         } catch (RuntimeException notStarted) {
             // The FFI never took the pointers, so nothing will ever call them: this is the one path
             // where releasing the arena here is correct rather than a use-after-free.
-            IN_FLIGHT.remove(download);
-            download.settled.set(true);
-            download.arena.close();
+            IN_FLIGHT.remove(this);
+            settled.set(true);
+            arena.close();
             future.completeExceptionally(notStarted);
             throw notStarted;
         }
-        return download;
     }
 
     /** Makes the native call for a download. */

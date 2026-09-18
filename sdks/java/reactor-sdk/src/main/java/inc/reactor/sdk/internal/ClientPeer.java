@@ -1264,7 +1264,18 @@ public final class ClientPeer implements Runnable {
             boolean local,
             ClipDownload.@Nullable Progress progress,
             CompletableFuture<DownloadedClip> downloaded) {
-        ClipDownload download = ClipDownload.start(downloaded, progress, (progressStub, completionStub) -> {
+        // Registered before the native call, not after it.
+        //
+        // close() takes the set of downloads and settles it, and then waits for calls in flight.
+        // Registering afterwards put a download in the gap between those two: close saw an empty
+        // set, waited for the native call — which is this one — and finished, leaving the caller's
+        // future pending for the life of the process. Registering first makes the download visible
+        // to any close that has not yet taken its snapshot, and the lease held across this whole
+        // method makes sure a close that has taken one is still waiting for us.
+        ClipDownload download = ClipDownload.register(downloaded, progress);
+        downloads.add(download);
+        downloaded.whenComplete((ignored, failure) -> downloads.remove(download));
+        download.begin((progressStub, completionStub) -> {
             // Confined and closed when the call returns: these arguments are read during the call.
             // The stubs are not among them — they live in the download's own arena, which outlives
             // this client.
@@ -1283,8 +1294,6 @@ public final class ClientPeer implements Runnable {
                         MemorySegment.NULL);
             }
         });
-        downloads.add(download);
-        downloaded.whenComplete((ignored, failure) -> downloads.remove(download));
         return downloaded;
     }
 

@@ -84,6 +84,15 @@ public final class FakeNativeLibrary implements AutoCloseable {
     @Nullable
     MemorySegment lastUserdata;
 
+    /** Set to make reactor_download_clip block, so a test can close while it is initiating. */
+    public volatile boolean blockInDownload;
+
+    /** Released to let a blocked download initiation return. */
+    public final java.util.concurrent.CountDownLatch blockDownload = new java.util.concurrent.CountDownLatch(1);
+
+    /** Counted up the moment the download is entered. */
+    public final java.util.concurrent.CountDownLatch enteredDownload = new java.util.concurrent.CountDownLatch(1);
+
     /** What {@code reactor_status} answers. */
     public String status = "ready";
 
@@ -421,6 +430,14 @@ public final class FakeNativeLibrary implements AutoCloseable {
             MemorySegment progress,
             MemorySegment completion,
             MemorySegment userdata) {
+        if (blockInDownload) {
+            enteredDownload.countDown();
+            try {
+                blockDownload.await(30, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
         downloadProgress = progress;
         downloadCompletion = completion;
         downloadTimeout = readyTimeoutSeconds;
