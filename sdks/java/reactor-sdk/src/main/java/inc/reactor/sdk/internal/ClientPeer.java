@@ -638,12 +638,23 @@ public final class ClientPeer implements Runnable {
         return List.copyOf(declarations);
     }
 
+    /**
+     * Reads a string the FFI hands over ownership of, and frees it.
+     *
+     * <p>Under the same lease every other native call takes. Two calls happen here — the read and
+     * the free — and both name the handle's library, so a `close()` landing between them frees the
+     * string through a handle that is already gone. The copy is made before the lease is given up,
+     * which is what makes the returned String safe to hold afterwards.
+     */
     private @Nullable String readOwnedString(Ffi.Symbol symbol, String what) {
+        acquireHandle(what);
         try {
             MemorySegment owned = (MemorySegment) ffi.handle(symbol).invokeExact(handle);
             return NativeStrings.takeOwned(owned, ffi.handle(Ffi.Symbol.FREE_STRING));
         } catch (Throwable t) {
             throw new IllegalStateException(what + " could not be called", t);
+        } finally {
+            releaseHandle();
         }
     }
 
