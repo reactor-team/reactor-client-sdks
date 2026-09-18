@@ -211,7 +211,29 @@ final class FakeNativeLibrary implements AutoCloseable {
         return arena.allocateFrom(text);
     }
 
+    /**
+     * Held open while a test wants a native call to be in flight.
+     *
+     * <p>A closed latch is what "the FFI is still running this call" looks like from Java, and the
+     * only way to exercise a teardown that races one.
+     */
+    public final java.util.concurrent.CountDownLatch blockStatus = new java.util.concurrent.CountDownLatch(1);
+
+    /** Set to make reactor_status wait on {@link #blockStatus} before answering. */
+    public volatile boolean blockInStatus;
+
+    /** Counted up the moment reactor_status is entered, so a test knows the call is inside. */
+    public final java.util.concurrent.CountDownLatch enteredStatus = new java.util.concurrent.CountDownLatch(1);
+
     private MemorySegment status(MemorySegment handle) {
+        if (blockInStatus) {
+            enteredStatus.countDown();
+            try {
+                blockStatus.await(30, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
         MemorySegment segment = arena.allocateFrom("ready");
         staticsOut.add(segment.address());
         return segment;

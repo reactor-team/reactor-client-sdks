@@ -75,7 +75,11 @@ public final class ClientPeer implements Runnable {
     final Events<String> capabilitiesEvents = new Events<>("capabilities");
     final Events<Optional<String>> sessionIdEvents = new Events<>("sessionId");
 
+    private static final System.Logger LOG = System.getLogger(ClientPeer.class.getName());
+
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final java.util.concurrent.atomic.AtomicInteger inFlight = new java.util.concurrent.atomic.AtomicInteger();
+    private final Object inFlightIdle = new Object();
 
     private ClientPeer(Ffi ffi, Arena arena, ReactorOptions options) {
         this.ffi = ffi;
@@ -92,7 +96,11 @@ public final class ClientPeer implements Runnable {
      * @return the peer
      */
     public static ClientPeer create(ReactorOptions options) {
-        return create(options, NativeLibrary::load);
+        // The process-wide library, not one bound to this client's arena. Closing a client would
+        // otherwise unload it, and `reactor_destroy` does not stop the core's shared runtime — nor
+        // does it reach a detached download, which the header documents as outliving the handle.
+        // Both would have been left executing code that is no longer mapped.
+        return create(options, arena -> NativeLibrary.shared());
     }
 
     /**
@@ -214,24 +222,28 @@ public final class ClientPeer implements Runnable {
 
     /** @return the current status */
     public ConnectionStatus status() {
-        requireOpen("status");
+        acquireHandle("status");
         try {
             MemorySegment text = (MemorySegment) ffi.handle(Ffi.Symbol.STATUS).invokeExact(handle);
             return ConnectionStatus.of(NativeStrings.staticRef(text)).orElse(ConnectionStatus.DISCONNECTED);
         } catch (Throwable t) {
             throw new IllegalStateException("reactor_status could not be called", t);
+        } finally {
+            releaseHandle();
         }
     }
 
     /** @return the session id, or empty when there is no session */
     public Optional<String> sessionId() {
-        requireOpen("sessionId");
+        acquireHandle("sessionId");
         try {
             MemorySegment owned =
                     (MemorySegment) ffi.handle(Ffi.Symbol.SESSION_ID).invokeExact(handle);
             return Optional.ofNullable(NativeStrings.takeOwned(owned, ffi.handle(Ffi.Symbol.FREE_STRING)));
         } catch (Throwable t) {
             throw new IllegalStateException("reactor_session_id could not be called", t);
+        } finally {
+            releaseHandle();
         }
     }
 
@@ -262,6 +274,10 @@ public final class ClientPeer implements Runnable {
         }
         completions.settleAll(
                 ReactorException.of(ErrorCode.ABORTED.code(), "the client was closed", null, "close", null));
+        // Between the flag above and the destroy below, a call that was already past its own check
+        // may still be inside the FFI holding this handle. Freeing it under that call is a
+        // use-after-free, so this waits for them to come back first.
+        awaitNoCallsInFlight();
         int quiesced = destroyOffVirtualThread();
         dispatch.shutdown();
         if (quiesced == 0) {
@@ -418,10 +434,71 @@ public final class ClientPeer implements Runnable {
     }
 
     private void invoke(Ffi.Symbol symbol, MemorySegment... arguments) {
+        acquireHandle(symbol.cName());
         try {
             ffi.handle(symbol).invokeWithArguments((Object[]) arguments);
         } catch (Throwable t) {
             throw new IllegalStateException(symbol.cName() + " could not be called", t);
+        } finally {
+            releaseHandle();
+        }
+    }
+
+    /**
+     * Holds the native handle open for the duration of one call.
+     *
+     * <p>`closed` on its own answered a question that had already stopped being true by the time
+     * the answer was used: a thread could pass the check, and `close()` on another thread could
+     * free the handle through `reactor_destroy` before that thread reached the FFI. The call then
+     * ran against freed memory — a use-after-free in a client documented as thread-safe.
+     *
+     * <p>So a call announces itself before it looks. Incrementing first and checking after is what
+     * makes the two orderings both safe: a call that got in before `close()` read the counter is
+     * one `close()` waits for, and a call that arrives after the flag is set backs out without
+     * touching anything.
+     *
+     * @param what names the operation, for the refusal
+     * @return a lease the caller must release
+     */
+    private void acquireHandle(String what) {
+        inFlight.incrementAndGet();
+        if (closed.get()) {
+            releaseHandle();
+            throw ReactorException.of(
+                    ErrorCode.INVALID_STATE.code(), what + " was called on a closed client", null, what, null);
+        }
+    }
+
+    private void releaseHandle() {
+        if (inFlight.decrementAndGet() == 0) {
+            synchronized (inFlightIdle) {
+                inFlightIdle.notifyAll();
+            }
+        }
+    }
+
+    /** Waits for every in-flight native call to return, so teardown cannot pull the handle out. */
+    private void awaitNoCallsInFlight() {
+        synchronized (inFlightIdle) {
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
+            while (inFlight.get() > 0) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) {
+                    // Destroying anyway is the wrong trade: a blocked call is a thread that will
+                    // come back, and freeing under it is the crash this exists to prevent.
+                    LOG.log(
+                            System.Logger.Level.WARNING,
+                            "closing with {0} native call(s) still in flight",
+                            inFlight.get());
+                    return;
+                }
+                try {
+                    inFlightIdle.wait(java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(remaining) + 1);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
         }
     }
 
