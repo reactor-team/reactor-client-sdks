@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextlib
 import ctypes
 import json
 import logging
 import mimetypes
 import os
+import tempfile
 import weakref
 from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
@@ -23,16 +25,16 @@ from ._ffi import (
     ON_FRAME_FN,
     ON_STRING_FN,
     ON_TRACK_FN,
+    PROGRESS_FN,
     ReactorCallbacks,
     get_lib,
 )
 
-# Re-exported from `client` as well as their own modules: all of these have been
-# importable from here since before the split, and the tests reach for them by that
-# path. The two media helpers have no caller left here now that the client-wide
-# `on_frame` is gone — `Track` uses them — but the import path stays.
+# Re-exported from `client` as well as their own modules: both have been
+# importable from here since before the split, and the tests reach for them by
+# that path. They have no caller left here now that the client-wide `on_frame`
+# is gone — `Track` uses them — but the import path stays.
 from ._media import _bgra_to_rgb_array, _positional_arity  # noqa: F401  (re-export)
-from ._recording import download_clip
 from ._stats import ConnectionStats, stats_from_payload
 from .errors import (  # noqa: F401  (ReactorError/error_for_code/error_from_payload re-export)
     AbortedError,
@@ -111,6 +113,20 @@ _log = logging.getLogger(__name__)
 # into them, and a small permanent leak beats a use-after-free. Growth here means
 # handlers are blocking or clients are being closed from inside a handler.
 _ORPHANED_CALLBACKS: list[tuple[Any, list[Any]]] = []
+
+# `(progress_fn, completion_fn)` pairs for a `reactor_download_clip` still in
+# flight, keyed by `id(completion_fn)`. Module-level and deliberately outside
+# any client's own bookkeeping: unlike every other operation, a download is
+# *detached* on the Rust side (it clones the session's Arc before spawning,
+# specifically so the fetch keeps running after `reactor_destroy`), so
+# `_destroy_handle()` cannot bound how long these must survive the way it
+# bounds `_pending_completions` — Rust may still call one after the handle,
+# and even the Reactor instance that started it, are gone. A given pair is
+# freed only from inside its own completion trampoline, once native code has
+# proven it will not be called again. An entry that a process exit strands
+# here is a small permanent leak, not a dangling pointer — the trade
+# `_ORPHANED_CALLBACKS` already makes for the same reason.
+_LIVE_DOWNLOAD_CALLBACKS: dict[int, tuple[Any, Any]] = {}
 
 # Every client with a live handle, weakly held. Exists so the interpreter cannot
 # exit with one still open.
@@ -297,6 +313,16 @@ class Reactor:
         # `_destroy_handle()` can settle the future if the trampoline itself never
         # fires (see there).
         self._pending_completions: dict[int, tuple[Any, asyncio.Future]] = {}
+
+        # `future` for a `reactor_download_clip` in flight, keyed by
+        # id(completion_fn) — deliberately *not* `_pending_completions`: the
+        # trampolines themselves live in the module-level
+        # `_LIVE_DOWNLOAD_CALLBACKS` instead, because a download outlives
+        # `reactor_destroy` and this dict's entries must not. This one exists
+        # so `_destroy_handle()` can still settle the *future* early (an
+        # abandoned await must not hang for the life of the process), without
+        # touching the trampolines a still-running download needs.
+        self._pending_downloads: dict[int, asyncio.Future] = {}
 
         # The loop that created the handle. Control events are marshalled onto it.
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -762,6 +788,28 @@ class Reactor:
                     AbortedError("the client was destroyed before this call completed"),
                 )
 
+        # Downloads are settled the same way, but their trampolines are not among
+        # `trampolines` above and `quiesced` says nothing about them: a
+        # `reactor_download_clip` in flight is detached on the Rust side
+        # specifically so it keeps running past this point (see
+        # `_LIVE_DOWNLOAD_CALLBACKS`), so this client's own destroy reaching
+        # quiescence never implied a download had too. Only the coroutine
+        # waiting on it is this client's to settle.
+        downloads = list(self._pending_downloads.values())
+        self._pending_downloads = {}
+        if loop is not None:
+            for future in downloads:
+                _settle_from_foreign_thread(
+                    loop,
+                    future,
+                    None,
+                    AbortedError(
+                        "the client was destroyed before this download completed — the "
+                        "file may still be written in the background, since the download "
+                        "itself outlives the client that started it"
+                    ),
+                )
+
         if quiesced:
             return
 
@@ -825,6 +873,124 @@ class Reactor:
 
         dispatcher(fn)
         return await future
+
+    async def _download_via_ffi(
+        self,
+        clip: Clip,
+        path: str | os.PathLike | None,
+        *,
+        on_progress: Callable[[int, int], None] | None,
+        ready_timeout: float | None,
+    ) -> bytes | None:
+        """Fetch `clip`'s segments through `reactor_download_clip` — the same
+        native call the C++ and Swift SDKs make, so this session's liveness
+        bounds the wait exactly the way theirs does, with no Python-side
+        reimplementation of the HLS/202 rules to keep in sync with those.
+
+        Without `path`, streams to a private temporary file and reads it back:
+        the native call only ever writes to disk (see its own doc comment), so
+        an in-memory result is this wrapper's own doing, not the downloader's.
+        """
+        lib = get_lib()
+        handle = self._handle
+        jwt_bytes = self._jwt.encode() if self._jwt else None
+        local_int = 1 if self._local else 0
+        # Negative means "as long as the session lives" on the native side —
+        # the right default for a model generating slower than real time, and
+        # what `None` has always meant at this layer.
+        timeout = -1.0 if ready_timeout is None else ready_timeout
+
+        tmp_path: str | None = None
+        if path is None:
+            fd, tmp_path = tempfile.mkstemp(prefix="reactor-download-", suffix=".part")
+            os.close(fd)
+            out_path = tmp_path
+        else:
+            out_path = os.fspath(path)
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+
+        def _progress(done: int, total: int, _ud: Any) -> None:
+            # Runs on the downloader's own (native) thread, same contract the
+            # pure-Python implementation this replaces already documented for
+            # `on_progress`: fine for a counter or a log line, not a place to
+            # touch anything that is not thread-safe.
+            if on_progress is None:
+                return
+            try:
+                on_progress(done, total)
+            except Exception:
+                _log.exception("on_progress callback raised; ignoring")
+
+        def _cb(ok: int, _result_json: bytes | None, error_json: bytes | None, _ud: Any) -> None:
+            # Runs on the FFI's control thread, possibly long after this
+            # Reactor — even its handle — is gone; see `_LIVE_DOWNLOAD_CALLBACKS`.
+            try:
+                if ok:
+                    _settle_from_foreign_thread(loop, future, True, None)
+                else:
+                    _settle_from_foreign_thread(loop, future, None, error_from_payload(error_json))
+            finally:
+                # The one and only place this pair is freed — never
+                # `_destroy_handle()`, which cannot bound a detached download.
+                _LIVE_DOWNLOAD_CALLBACKS.pop(id(completion_fn), None)
+
+        progress_fn = PROGRESS_FN(_progress) if on_progress is not None else None
+        completion_fn = COMPLETION_FN(_cb)
+
+        # Registered before the call: the completion can fire on another
+        # thread before `reactor_download_clip` itself returns here.
+        _LIVE_DOWNLOAD_CALLBACKS[id(completion_fn)] = (progress_fn, completion_fn)
+        self._pending_downloads[id(completion_fn)] = future
+
+        try:
+            lib.reactor_download_clip(
+                ctypes.c_void_p(handle),
+                clip.playlist_url.encode(),
+                jwt_bytes,
+                out_path.encode(),
+                ctypes.c_double(clip.predicted_ready_at_ms),
+                ctypes.c_double(timeout),
+                local_int,
+                progress_fn,
+                completion_fn,
+                None,
+            )
+        except BaseException:
+            # Never reached the native side, so `_cb` will never fire to free
+            # these — the one case where this method, not the completion,
+            # owns that cleanup.
+            _LIVE_DOWNLOAD_CALLBACKS.pop(id(completion_fn), None)
+            self._pending_downloads.pop(id(completion_fn), None)
+            if tmp_path is not None:
+                with contextlib.suppress(OSError):
+                    os.remove(tmp_path)
+            raise
+
+        try:
+            await future
+        except BaseException:
+            # Cancelled, or `_destroy_handle()` settled it early — either way
+            # the native write may still be running in the background. Safe
+            # to unlink a temp path out from under it (POSIX keeps writing to
+            # the now-nameless inode until it closes); leaves `path`, a
+            # caller's own file, untouched.
+            if tmp_path is not None:
+                with contextlib.suppress(OSError):
+                    os.remove(tmp_path)
+            raise
+        finally:
+            self._pending_downloads.pop(id(completion_fn), None)
+
+        if tmp_path is None:
+            return None
+        try:
+            with open(tmp_path, "rb") as fh:
+                return fh.read()
+        finally:
+            with contextlib.suppress(OSError):
+                os.remove(tmp_path)
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -1455,27 +1621,17 @@ class Reactor:
         on_progress: Callable[[int, int], None] | None = None,
         ready_timeout: float | None = None,
     ) -> bytes | None:
-        """Download a `Clip` this client asked for, with this client's token.
+        """Download a `Clip` this client asked for, through the native downloader.
 
-        The coordinator serves playlists and segments behind auth, so the
-        module-level `download_clip()` needs a `jwt=` handed to it. This is the
-        same call with the one already in hand.
-
-        It also waits without a deadline, where the module-level function
-        defaults to a bounded one. A clip becomes ready because the model keeps
-        generating, and this client knows whether it still is: the wait ends by
-        itself when the session does. Any number here would instead be a guess
-        about how fast the model generates — `predicted_ready_at_ms` is the
-        runtime adding *media* seconds to a wall clock, so it is only right for a
-        model running at real-time. Pass `ready_timeout` to bound it anyway.
+        Bounded by this session's own liveness, not a guess: the native call
+        takes this client's handle and stops asking once it can no longer
+        produce the clip, the same way the C++ and Swift SDKs' `download()`
+        does — there is no `while_live` here to wire up separately because
+        there is no Python-side poll left to wire it into. Pass
+        `ready_timeout` to bound the wait by the clock instead (or as well).
         """
-        return await download_clip(
-            clip,
-            path,
-            jwt=self._jwt,
-            on_progress=on_progress,
-            ready_timeout=ready_timeout,
-            while_live=lambda: self.status == ReactorStatus.READY,
+        return await self._download_via_ffi(
+            clip, path, on_progress=on_progress, ready_timeout=ready_timeout
         )
 
     @overload
@@ -1510,13 +1666,8 @@ class Reactor:
         download depending on what it says.
         """
         clip = await self.request_clip(duration_seconds)
-        return await download_clip(
-            clip,
-            path,
-            jwt=self._jwt,
-            on_progress=on_progress,
-            ready_timeout=ready_timeout,
-            while_live=lambda: self.status == ReactorStatus.READY,
+        return await self._download_via_ffi(
+            clip, path, on_progress=on_progress, ready_timeout=ready_timeout
         )
 
     @overload
@@ -1544,16 +1695,13 @@ class Reactor:
 
         Prefer passing `path`: a full-session recording has no upper bound on
         length, and only the streamed-to-disk form avoids holding the whole
-        thing in memory — see `download_clip()` (the module-level function).
+        thing in memory — the native downloader always writes to disk first
+        regardless; omitting `path` here only means this wrapper reads that
+        file back afterward instead of leaving it on disk for you.
         """
         clip = await self.request_recording()
-        return await download_clip(
-            clip,
-            path,
-            jwt=self._jwt,
-            on_progress=on_progress,
-            ready_timeout=ready_timeout,
-            while_live=lambda: self.status == ReactorStatus.READY,
+        return await self._download_via_ffi(
+            clip, path, on_progress=on_progress, ready_timeout=ready_timeout
         )
 
     # ------------------------------------------------------------------
