@@ -59,6 +59,15 @@ export class Reactor implements Disposable {
   private connectStartTime: number | undefined;
   private waitingStartTime: number | undefined;
 
+  /** Controllers for `downloadClipAsFile()` calls currently in flight, so
+   *  `[Symbol.dispose]()` can abort them directly. It has to: disposal is
+   *  synchronous (the `using` contract) and clears `emitter` without ever
+   *  emitting a final `"statusChanged"`, so the listener `downloadClipAsFile()`
+   *  registers for the ordinary disconnect case is both gone and never fired —
+   *  a download in flight at dispose time would otherwise poll forever, past
+   *  the lifetime of the `Reactor` that started it. */
+  private readonly downloadAborts = new Set<AbortController>();
+
   private readonly emitter = new Emitter<ReactorEventMap>();
   /** Serializes connect()/reconnect()/disconnect() (and the free() inside
    *  disconnect()/[Symbol.dispose]) against each other. Calling into the
@@ -599,6 +608,10 @@ export class Reactor implements Disposable {
 
     abortIfNotReady(this.getStatus());
     this.on('statusChanged', abortIfNotReady);
+    // Belt-and-suspenders alongside the listener above: `[Symbol.dispose]()`
+    // is synchronous and clears every listener without emitting a final
+    // `"statusChanged"`, so it aborts through this set directly instead.
+    this.downloadAborts.add(controller);
 
     try {
       return await downloadClipAsFileFn(clip, filename, {
@@ -607,6 +620,7 @@ export class Reactor implements Disposable {
       });
     } finally {
       this.off('statusChanged', abortIfNotReady);
+      this.downloadAborts.delete(controller);
       callerSignal?.removeEventListener('abort', forwardCallerAbort);
     }
   }
@@ -703,6 +717,13 @@ export class Reactor implements Disposable {
     this.capabilities = undefined;
     this.resetConnectionState();
     this.emitter.clear();
+    // Direct, not through the "statusChanged" listener downloadClipAsFile()
+    // also registers: that one is already gone, cleared above, and no event
+    // was emitted to fire it even if it weren't — see `downloadAborts`' own
+    // doc comment for why disposal needs its own path here.
+    for (const controller of [...this.downloadAborts]) {
+      controller.abort();
+    }
     if (client) {
       // Queued behind any in-flight connect()/reconnect()/disconnect(), same
       // as freeClient() — this can't await that itself, since [Symbol.dispose]

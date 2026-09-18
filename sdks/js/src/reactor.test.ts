@@ -955,6 +955,39 @@ describe('Reactor.requestClip / requestRecording / downloadClipAsFile', () => {
     // the next time status changes — this must be a no-op.
     expect(() => client.emitDisconnected()).not.toThrow();
   });
+
+  it('downloadClipAsFile aborts when the Reactor is disposed mid-download', async () => {
+    // [Symbol.dispose]() is synchronous (the `using` contract) and clears
+    // every "statusChanged" listener without ever emitting one — the
+    // ordinary disconnect path this describe block's other tests cover
+    // doesn't fire here at all, so a download in flight at dispose time
+    // needs its own, listener-independent route to the same abort.
+    const { downloadClipAsFile } = await import('./recording');
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const clip = toPublicClip(client.requestClipResult);
+
+    let capturedSignal: AbortSignal | undefined;
+
+    vi.mocked(downloadClipAsFile).mockImplementationOnce(
+      (_clip, _filename, options) =>
+        new Promise((_resolve, reject) => {
+          capturedSignal = options?.signal;
+          options?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('Aborted', 'AbortError'));
+          });
+        }),
+    );
+
+    const download = reactor.downloadClipAsFile(clip);
+
+    expect(capturedSignal?.aborted).toBe(false);
+
+    reactor[Symbol.dispose]();
+
+    await expect(download).rejects.toThrow(expect.objectContaining({ name: 'AbortError' }));
+    expect(capturedSignal?.aborted).toBe(true);
+  });
 });
 
 describe('Reactor tracks', () => {
