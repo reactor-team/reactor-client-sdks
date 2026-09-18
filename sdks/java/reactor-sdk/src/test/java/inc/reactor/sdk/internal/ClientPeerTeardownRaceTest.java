@@ -58,6 +58,43 @@ final class ClientPeerTeardownRaceTest {
     }
 
     @Test
+    @DisplayName("close waits for a frame push too, not only the calls through invoke()")
+    void closeWaitsForMixedArgumentCallsAsWell() throws Exception {
+        // invokeMixed is the funnel for every call whose arguments are not all segments — frame
+        // pushes, bitrate requests, downloads. It was left out of the lease, so all of them went
+        // past the guard at a handle close() was free to destroy underneath them.
+        FakeNativeLibrary fake = new FakeNativeLibrary();
+        fake.tracksJson = "[{\"name\":\"camera_in\",\"kind\":\"video\",\"direction\":\"sendonly\"}]";
+        fake.blockInPushVideo = true;
+        ClientPeer peer = ClientPeer.create(
+                ReactorOptions.builder("https://api.example.test", "owner/model")
+                        .dispatcher(Runnable::run)
+                        .build(),
+                arena -> Ffi.open(fake.lookup()));
+        peer.publish("camera_in");
+        fake.settleLastCall(true, "{}", null);
+
+        Thread pusher =
+                Thread.ofPlatform().start(() -> peer.pushVideoFrame("camera_in", new byte[4], 1, 1, null, null));
+        assertTrue(fake.enteredPush.await(10, TimeUnit.SECONDS), "the push never reached the library");
+
+        CountDownLatch closed = new CountDownLatch(1);
+        Thread closer = Thread.ofPlatform().start(() -> {
+            peer.close();
+            closed.countDown();
+        });
+
+        assertFalse(closed.await(1, TimeUnit.SECONDS), "close returned while a push was inside the FFI");
+        assertEquals(0, fake.destroyCalls, "reactor_destroy ran with a push in flight");
+
+        fake.blockPush.countDown();
+        pusher.join(TimeUnit.SECONDS.toMillis(10));
+        assertTrue(closed.await(10, TimeUnit.SECONDS), "close never finished once the push returned");
+        closer.join(TimeUnit.SECONDS.toMillis(10));
+        fake.close();
+    }
+
+    @Test
     @DisplayName("a call that never returns leaves the handle alone rather than freeing under it")
     void aCallThatNeverReturnsStopsTheDestroy() throws Exception {
         // The wait used to time out and fall through to reactor_destroy, which is the crash it

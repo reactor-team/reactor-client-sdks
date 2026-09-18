@@ -3,6 +3,7 @@ package inc.reactor.sdk.internal;
 import inc.reactor.sdk.ConnectionStatus;
 import inc.reactor.sdk.ErrorCode;
 import inc.reactor.sdk.Media;
+import inc.reactor.sdk.PublishState;
 import inc.reactor.sdk.ReactorException;
 import inc.reactor.sdk.ReactorOptions;
 import inc.reactor.sdk.ReactorSdk;
@@ -106,6 +107,28 @@ public final class ClientPeer implements Runnable {
     final Events<Optional<String>> sessionIdEvents = new Events<>("sessionId");
 
     private final TrackRegistry tracks = new TrackRegistry();
+    private final java.util.Map<String, PublishState> publishStates = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * The attempt each track's publish state belongs to.
+     *
+     * <p>Per track, and replaced on every new attempt — not one counter for the client. A single
+     * generation moved only when the session went away, which left two orderings wrong: a
+     * successful unpublish does not move it, so an older publish's success restored PUBLISHED
+     * afterwards; and two attempts on one track share a generation, so a slow failure could
+     * overwrite a newer success. Both end the same way — a slot the SDK calls published with
+     * nothing behind it, and frames the FFI drops in silence.
+     *
+     * <p>Guarded by {@link #publishLock} together with the state itself, so that deciding an
+     * answer is still current and acting on it cannot be split. Native calls stay outside that
+     * lock.
+     */
+    private final java.util.Map<String, Long> publishTokens = new java.util.HashMap<>();
+
+    private final java.util.concurrent.atomic.AtomicLong nextPublishToken =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    private final Object publishLock = new Object();
 
     private static final System.Logger LOG = System.getLogger(ClientPeer.class.getName());
 
@@ -160,7 +183,7 @@ public final class ClientPeer implements Runnable {
      * @param loader binds the ABI within a lifetime
      * @return the peer
      */
-    static ClientPeer create(ReactorOptions options, java.util.function.Function<Arena, Ffi> loader) {
+    public static ClientPeer create(ReactorOptions options, java.util.function.Function<Arena, Ffi> loader) {
         // Shared, not confined: every callback arrives on a thread this one has never met, and a
         // confined arena throws WrongThreadException at the first access from any other.
         Arena arena = Arena.ofShared();
@@ -320,6 +343,12 @@ public final class ClientPeer implements Runnable {
         }
         completions.settleAll(
                 ReactorException.of(ErrorCode.ABORTED.code(), "the client was closed", null, "close", null));
+        tracks.clear();
+        synchronized (publishLock) {
+            publishTokens.clear();
+            publishStates.clear();
+        }
+
         dispatch.shutdown();
         // Between the flag above and the destroy, a call that was already past its own check may
         // still be inside the FFI holding this handle, and freeing it under that call is the
@@ -442,6 +471,15 @@ public final class ClientPeer implements Runnable {
                 : ConnectionStatus.of(text).orElse(ConnectionStatus.DISCONNECTED);
         // Leaving `ready` can change what is declared, so the cached list stops being current.
         tracks.invalidate();
+        if (parsed != ConnectionStatus.READY) {
+            // A reconnect resumes recvonly tracks and nothing else, so a slot published before one
+            // is not published after it. Remembering otherwise would let a caller push into a slot
+            // with no sender behind it and see nothing arrive.
+            synchronized (publishLock) {
+                publishTokens.clear();
+                publishStates.clear();
+            }
+        }
         dispatch.run(() -> statusEvents.emit(parsed));
     }
 
@@ -653,6 +691,253 @@ public final class ClientPeer implements Runnable {
             return NativeStrings.takeOwned(owned, ffi.handle(Ffi.Symbol.FREE_STRING));
         } catch (Throwable t) {
             throw new IllegalStateException(what + " could not be called", t);
+        } finally {
+            releaseHandle();
+        }
+    }
+
+    // ── Sending ─────────────────────────────────────────────────────────────
+
+    /**
+     * Asks for a sender behind a sendonly track.
+     *
+     * @param name the declared track
+     * @return settles when the track is publishing
+     */
+    public CompletableFuture<Void> publish(String name) {
+        long attempt = nextPublishToken.incrementAndGet();
+        synchronized (publishLock) {
+            // The token and the state together: a completion that reads one and acts on the other
+            // must never see them disagree.
+            publishTokens.put(name, attempt);
+            publishStates.put(name, PublishState.PUBLISHING);
+        }
+        CompletableFuture<Void> published = call("publish_track", (completion, userdata) -> {
+            try (Arena call = Arena.ofConfined()) {
+                invoke(Ffi.Symbol.PUBLISH_TRACK, handle, call.allocateFrom(name), completion, userdata);
+            }
+        });
+        return published.whenComplete((ignored, failure) -> {
+            synchronized (publishLock) {
+                Long current = publishTokens.get(name);
+                if (current == null || current != attempt) {
+                    // Not the attempt this track is on any more: the session went away, the track
+                    // was unpublished, or a newer publish replaced it. Whichever, this answer
+                    // describes a state that no longer exists, and writing it back would re-arm a
+                    // slot with nothing behind it.
+                    return;
+                }
+                // Only a success means there is a sender. A failed publish goes back to
+                // unpublished so the caller can retry, rather than leaving a slot that reports
+                // itself ready to push.
+                publishStates.put(name, failure == null ? PublishState.PUBLISHED : PublishState.UNPUBLISHED);
+            }
+        });
+    }
+
+    /**
+     * Tells the session a sendonly track is finished. Synchronous: no round trip, only a local
+     * status check and a fire-and-forget notification.
+     *
+     * @param name the declared track
+     * @throws ReactorException when the FFI refused, leaving the track publishable so a retry means
+     *     something
+     */
+    public void unpublish(String name) {
+        acquireHandle("unpublish");
+        String errorJson;
+        try (Arena call = Arena.ofConfined()) {
+            MemorySegment track = call.allocateFrom(name);
+            MemorySegment returned =
+                    (MemorySegment) ffi.handle(Ffi.Symbol.UNPUBLISH_TRACK).invokeExact(handle, track);
+            errorJson = NativeStrings.takeOwned(returned, ffi.handle(Ffi.Symbol.FREE_STRING));
+        } catch (Throwable t) {
+            throw new IllegalStateException("reactor_unpublish_track could not be called", t);
+        } finally {
+            // Two native calls here — the unpublish and the free of the string it returns — and a
+            // close between them would free that string through a handle that is already gone.
+            releaseHandle();
+        }
+        if (errorJson != null) {
+            // The state is deliberately left alone. Clearing it on a failure would make the
+            // unpublish unretryable: the next call would refuse because nothing looks published.
+            throw ErrorPayloads.parse(errorJson, "unpublish_track");
+        }
+        synchronized (publishLock) {
+            // The token goes with it. Without this, a publish still in flight from before could
+            // settle afterwards and put the track back to PUBLISHED, with nothing behind it.
+            publishTokens.remove(name);
+            publishStates.remove(name);
+        }
+    }
+
+    /**
+     * @param name the declared track
+     * @return settles when the track is paused
+     */
+    public CompletableFuture<Void> pause(String name) {
+        return call("pause_track", (completion, userdata) -> {
+            try (Arena call = Arena.ofConfined()) {
+                invoke(Ffi.Symbol.PAUSE_TRACK, handle, call.allocateFrom(name), completion, userdata);
+            }
+        });
+    }
+
+    /**
+     * @param name the declared track
+     * @return settles when the track is producing again
+     */
+    public CompletableFuture<Void> resume(String name) {
+        return call("resume_track", (completion, userdata) -> {
+            try (Arena call = Arena.ofConfined()) {
+                invoke(Ffi.Symbol.RESUME_TRACK, handle, call.allocateFrom(name), completion, userdata);
+            }
+        });
+    }
+
+    /**
+     * @param name the declared track
+     * @return whether it has a sender, is getting one, or has none
+     */
+    public PublishState publishState(String name) {
+        return publishStates.getOrDefault(name, PublishState.UNPUBLISHED);
+    }
+
+    /**
+     * Pushes one BGRA video frame.
+     *
+     * @param name the declared track
+     * @param bgra {@code width * height * 4} bytes
+     * @param width frame width
+     * @param height frame height
+     * @param userData a tag for the far end, or {@code null}
+     * @param captureTimeUs when this was captured on the engine clock, or {@code null} for now
+     */
+    public void pushVideoFrame(
+            String name, byte[] bgra, int width, int height, byte @Nullable [] userData, @Nullable Long captureTimeUs) {
+        requireOpen("pushFrame");
+        // Copied into native memory for the call and released at the end of it. A copy per frame is
+        // 8 MB at 1080p; Linker.Option.critical would let the heap array be passed directly, and is
+        // the obvious thing to measure before reaching for it — it forbids blocking and calling
+        // back, which this call would have to be shown not to do.
+        try (Arena call = Arena.ofConfined()) {
+            MemorySegment track = call.allocateFrom(name);
+            MemorySegment pixels = call.allocateFrom(java.lang.foreign.ValueLayout.JAVA_BYTE, bgra);
+            if (userData == null && captureTimeUs == null) {
+                invokeMixed(Ffi.Symbol.PUSH_VIDEO_FRAME, handle, track, pixels, width, height);
+                return;
+            }
+            MemorySegment tag = userData == null
+                    ? MemorySegment.NULL
+                    : call.allocateFrom(java.lang.foreign.ValueLayout.JAVA_BYTE, userData);
+            int tagLength = userData == null ? 0 : userData.length;
+            if (captureTimeUs == null) {
+                invokeMixed(
+                        Ffi.Symbol.PUSH_VIDEO_FRAME_WITH_METADATA,
+                        handle,
+                        track,
+                        pixels,
+                        width,
+                        height,
+                        tag,
+                        tagLength);
+                return;
+            }
+            invokeMixed(
+                    Ffi.Symbol.PUSH_VIDEO_FRAME_WITH_METADATA_AT,
+                    handle,
+                    track,
+                    pixels,
+                    width,
+                    height,
+                    tag,
+                    tagLength,
+                    captureTimeUs.longValue());
+        }
+    }
+
+    /**
+     * Pushes interleaved 16-bit PCM.
+     *
+     * @param name the declared track
+     * @param pcm the samples, across every channel
+     * @param sampleRate samples per second
+     * @param channels how many channels the samples are interleaved across
+     */
+    public void pushAudioFrame(String name, short[] pcm, int sampleRate, int channels) {
+        requireOpen("pushFrame");
+        try (Arena call = Arena.ofConfined()) {
+            invokeMixed(
+                    Ffi.Symbol.PUSH_AUDIO_FRAME,
+                    handle,
+                    call.allocateFrom(name),
+                    call.allocateFrom(java.lang.foreign.ValueLayout.JAVA_SHORT, pcm),
+                    pcm.length / Math.max(channels, 1),
+                    sampleRate,
+                    channels);
+        }
+    }
+
+    /**
+     * The engine's own clock, for timestamping pushed frames.
+     *
+     * @return microseconds on the clock the FFI compares capture times against
+     */
+    public long timeMicros() {
+        try {
+            return (long) ffi.handle(Ffi.Symbol.TIME_MICROS).invokeExact();
+        } catch (Throwable t) {
+            throw new IllegalStateException("reactor_time_micros could not be called", t);
+        }
+    }
+
+    /**
+     * @param minBps lower bound, or a negative value for none
+     * @param startBps where to start, or a negative value for none
+     * @param maxBps upper bound, or a negative value for none
+     * @return settles when the bounds are applied
+     */
+    public CompletableFuture<Void> setBitrate(int minBps, int startBps, int maxBps) {
+        return call(
+                "set_bitrate",
+                (completion, userdata) ->
+                        invokeMixed(Ffi.Symbol.SET_BITRATE, handle, minBps, startBps, maxBps, completion, userdata));
+    }
+
+    /**
+     * @param name the declared track
+     * @param minBps lower bound, or a negative value for none
+     * @param maxBps upper bound, or a negative value for none
+     * @return settles when the bounds are applied
+     */
+    public CompletableFuture<Void> setTrackBitrate(String name, int minBps, int maxBps) {
+        return call("set_track_bitrate", (completion, userdata) -> {
+            try (Arena call = Arena.ofConfined()) {
+                invokeMixed(
+                        Ffi.Symbol.SET_TRACK_BITRATE,
+                        handle,
+                        call.allocateFrom(name),
+                        minBps,
+                        maxBps,
+                        completion,
+                        userdata);
+            }
+        });
+    }
+
+    /**
+     * The same as {@link #invoke}, for calls whose arguments are not all segments.
+     *
+     * <p>And it takes the same lease, for the same reason. It was left out of that change and every
+     * frame push, every bitrate request and every download went through here — past the guard,
+     * straight at a handle `close()` was free to destroy underneath them.
+     */
+    private void invokeMixed(Ffi.Symbol symbol, Object... arguments) {
+        acquireHandle(symbol.cName());
+        try {
+            ffi.handle(symbol).invokeWithArguments(arguments);
+        } catch (Throwable t) {
+            throw new IllegalStateException(symbol.cName() + " could not be called", t);
         } finally {
             releaseHandle();
         }

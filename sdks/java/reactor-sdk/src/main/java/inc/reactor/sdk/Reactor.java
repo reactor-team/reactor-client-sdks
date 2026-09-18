@@ -59,6 +59,19 @@ public final class Reactor implements AutoCloseable {
     }
 
     /**
+     * Creates a client over a given library, for this SDK's own tests.
+     *
+     * <p>Package-private, and the only thing it changes is where the ABI comes from: everything
+     * below it is the same code the public factory runs, which is the point of having a seam rather
+     * than a test double for the client itself.
+     */
+    static Reactor open(
+            ReactorOptions options,
+            java.util.function.Function<java.lang.foreign.Arena, inc.reactor.sdk.internal.Ffi> loader) {
+        return new Reactor(ClientPeer.create(options, loader));
+    }
+
+    /**
      * Creates a session and establishes the transport.
      *
      * @return settles when the transport is up
@@ -194,6 +207,30 @@ public final class Reactor implements AutoCloseable {
      */
     public Subscription onSessionId(Consumer<Optional<String>> handler) {
         return peer.onSessionId(handler);
+    }
+
+    /**
+     * The engine's own clock.
+     *
+     * <p>Capture times handed to {@link Track#pushFrame(byte[], int, int, byte[], Long)} are
+     * compared against this, not against {@link System#currentTimeMillis()}.
+     *
+     * @return microseconds on the engine clock
+     */
+    public long timeMicros() {
+        return peer.timeMicros();
+    }
+
+    /**
+     * Bounds the connection's bitrate.
+     *
+     * @param minBps lower bound, or a negative value for none
+     * @param startBps where to start, or a negative value for none
+     * @param maxBps upper bound, or a negative value for none
+     * @return settles when the bounds are applied
+     */
+    public CompletableFuture<Void> setBitrate(int minBps, int startBps, int maxBps) {
+        return peer.setBitrate(minBps, startBps, maxBps);
     }
 
     /**
