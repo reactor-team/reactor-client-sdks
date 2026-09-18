@@ -63,9 +63,21 @@ public final class ErrorPayloads {
         return value instanceof String text ? text : null;
     }
 
+    /**
+     * A field as an {@code int}, or nothing.
+     *
+     * <p>Never an exception. {@code Math.toIntExact} throws on a value that does not fit, and this
+     * runs while the SDK is already decoding an error — so a status the wire made too large would
+     * have replaced the failure the caller needs to see with an ArithmeticException that says
+     * nothing about it. A status out of range is not a status; that is the honest answer and it
+     * keeps the real error intact.
+     */
     private static @Nullable Integer integer(@Nullable Object value) {
         Long asLong = longValue(value);
-        return asLong == null ? null : Math.toIntExact(asLong);
+        if (asLong == null || asLong < Integer.MIN_VALUE || asLong > Integer.MAX_VALUE) {
+            return null;
+        }
+        return asLong.intValue();
     }
 
     private static @Nullable Long longValue(@Nullable Object value) {
