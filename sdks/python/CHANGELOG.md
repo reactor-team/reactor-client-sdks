@@ -9,6 +9,17 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-09-18
+
+### Fixed
+
+- `Reactor.download_clip()` and `Reactor.download_recording()` now stop
+  polling once the session leaves `READY`, matching `Reactor.download()`.
+  Previously only `download()` passed `while_live` to the underlying fetch, so
+  a clip whose boundary chunk never closed (e.g. because the session stopped
+  generating) left these two polling a permanent 202 indefinitely instead of
+  raising.
+
 ## [1.6.0] - 2026-09-15
 
 ### Added

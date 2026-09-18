@@ -481,3 +481,71 @@ class TestReactorDownloadConvenience:
         result = await reactor.download_recording(out)
         assert result is None
         assert out.read_bytes() == _INIT + _SEG0 + _SEG1
+
+    def _reactor_with_status(
+        self, monkeypatch: pytest.MonkeyPatch, server_url: str, kind: str, statuses: list[bytes]
+    ) -> Reactor:
+        """Like `_reactor()`, but against `/never/clip.m3u8` (permanent 202) and
+        with `reactor_status` stepping through `statuses` on each read, the last
+        one repeating once exhausted."""
+        payload = json.dumps(
+            {
+                "session_id": "s1",
+                "kind": kind,
+                "start_marker": 0.0,
+                "end_marker": 10.0,
+                "now_marker": 10.0,
+                "predicted_ready_at_ms": 0.0,
+                "playlist_url": f"{server_url}/never/clip.m3u8",
+            }
+        ).encode()
+
+        remaining = list(statuses)
+
+        def next_status(_handle: object) -> bytes:
+            return remaining.pop(0) if len(remaining) > 1 else remaining[0]
+
+        fake_lib = mock.Mock()
+        fake_lib.reactor_request_clip = lambda h, duration, completion, ud: completion(
+            1, payload, None, None
+        )
+        fake_lib.reactor_request_recording = lambda h, completion, ud: completion(
+            1, payload, None, None
+        )
+        fake_lib.reactor_status = next_status
+        monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: fake_lib)
+        reactor = Reactor("m", jwt="fake")
+        reactor._handle = 1234
+        return reactor
+
+    async def test_download_clip_stops_polling_once_the_session_stops_being_ready(
+        self, monkeypatch: pytest.MonkeyPatch, server_url: str
+    ) -> None:
+        """Unlike `download()`, `download_clip()` did not pass
+        `while_live` to the module-level fetch, so a clip that outlived its
+        session polled a permanent 202 forever instead of stopping once
+        `self.status` left `READY` — bounded only by `ready_timeout`, and by
+        default not even that (`None`). `ready_timeout=1.0` here is a safety
+        net for this test, not the thing under test: a passing run must stop
+        via the `while_live` predicate, well inside that budget, not via the
+        timeout — which is what the `match` on the *session-ended* message
+        (not the *ready_timeout* one) pins down.
+        """
+        reactor = self._reactor_with_status(
+            monkeypatch, server_url, kind="clip", statuses=[b"ready", b"ready", b"disconnected"]
+        )
+        with pytest.raises(TimeoutError, match="session ended"):
+            await reactor.download_clip(5, ready_timeout=1.0)
+
+    async def test_download_recording_stops_polling_once_the_session_stops_being_ready(
+        self, monkeypatch: pytest.MonkeyPatch, server_url: str
+    ) -> None:
+        """Same gap, same fix, `download_recording()`'s own call site."""
+        reactor = self._reactor_with_status(
+            monkeypatch,
+            server_url,
+            kind="recording",
+            statuses=[b"ready", b"ready", b"disconnected"],
+        )
+        with pytest.raises(TimeoutError, match="session ended"):
+            await reactor.download_recording(ready_timeout=1.0)

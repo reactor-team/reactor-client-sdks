@@ -1511,7 +1511,12 @@ class Reactor:
         """
         clip = await self.request_clip(duration_seconds)
         return await download_clip(
-            clip, path, jwt=self._jwt, on_progress=on_progress, ready_timeout=ready_timeout
+            clip,
+            path,
+            jwt=self._jwt,
+            on_progress=on_progress,
+            ready_timeout=ready_timeout,
+            while_live=lambda: self.status == ReactorStatus.READY,
         )
 
     @overload
@@ -1543,7 +1548,12 @@ class Reactor:
         """
         clip = await self.request_recording()
         return await download_clip(
-            clip, path, jwt=self._jwt, on_progress=on_progress, ready_timeout=ready_timeout
+            clip,
+            path,
+            jwt=self._jwt,
+            on_progress=on_progress,
+            ready_timeout=ready_timeout,
+            while_live=lambda: self.status == ReactorStatus.READY,
         )
 
     # ------------------------------------------------------------------
