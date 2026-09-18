@@ -838,7 +838,7 @@ describe('Reactor.requestClip / requestRecording / downloadClipAsFile', () => {
     expect(clip).toEqual(toPublicClip(client.requestRecordingResult));
   });
 
-  it('downloadClipAsFile delegates to the standalone helper with the same arguments', async () => {
+  it('downloadClipAsFile delegates to the standalone helper with the same arguments, plus a signal', async () => {
     const { downloadClipAsFile } = await import('./recording');
     const reactor = new Reactor({ modelName: 'test-model' });
     const clip = toPublicClip((await currentClient(reactor)).requestClipResult);
@@ -849,7 +849,111 @@ describe('Reactor.requestClip / requestRecording / downloadClipAsFile', () => {
     const result = await reactor.downloadClipAsFile(clip, 'out.mp4', { jwt: 'jwt-token' });
 
     expect(result).toBe(blob);
-    expect(downloadClipAsFile).toHaveBeenCalledWith(clip, 'out.mp4', { jwt: 'jwt-token' });
+    const call = vi.mocked(downloadClipAsFile).mock.calls[0];
+
+    expect(call?.[0]).toBe(clip);
+    expect(call?.[1]).toBe('out.mp4');
+    expect(call?.[2]?.jwt).toBe('jwt-token');
+    expect(call?.[2]?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('downloadClipAsFile aborts the poll once the session leaves ready', async () => {
+    // Unlike Python/C++/Swift, there is no session handle to pass the native
+    // downloader — `fetchPlaylist` takes an `AbortSignal` instead, and
+    // nothing wired it to this client's own status before. This is the gap:
+    // without it, a clip whose boundary chunk never closes (the session
+    // stopped generating before reaching it) polls a permanent `202` forever.
+    const { downloadClipAsFile } = await import('./recording');
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const clip = toPublicClip(client.requestClipResult);
+
+    let capturedSignal: AbortSignal | undefined;
+
+    vi.mocked(downloadClipAsFile).mockImplementationOnce(
+      (_clip, _filename, options) =>
+        new Promise((_resolve, reject) => {
+          capturedSignal = options?.signal;
+          options?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('Aborted', 'AbortError'));
+          });
+        }),
+    );
+
+    const download = reactor.downloadClipAsFile(clip);
+
+    expect(capturedSignal?.aborted).toBe(false);
+
+    client.emitDisconnected();
+
+    await expect(download).rejects.toThrow(expect.objectContaining({ name: 'AbortError' }));
+    expect(capturedSignal?.aborted).toBe(true);
+  });
+
+  it('downloadClipAsFile aborts immediately if the session already left ready before the call', async () => {
+    const { downloadClipAsFile } = await import('./recording');
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const clip = toPublicClip(client.requestClipResult);
+
+    // Real disconnect(), not emitDisconnected(): this needs getStatus()'s
+    // synchronous read to already say so, and only the fake's own
+    // disconnect() updates that — emitDisconnected() only fires the event
+    // the *other* test above relies on instead.
+    await reactor.disconnect();
+
+    let capturedSignal: AbortSignal | undefined;
+
+    vi.mocked(downloadClipAsFile).mockImplementationOnce((_clip, _filename, options) => {
+      capturedSignal = options?.signal;
+      return new Promise(() => {}); // never resolves on its own
+    });
+
+    void reactor.downloadClipAsFile(clip);
+
+    expect(capturedSignal?.aborted).toBe(true);
+  });
+
+  it("downloadClipAsFile still honors the caller's own signal alongside the session's", async () => {
+    const { downloadClipAsFile } = await import('./recording');
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const clip = toPublicClip((await currentClient(reactor)).requestClipResult);
+    const callerController = new AbortController();
+
+    let capturedSignal: AbortSignal | undefined;
+
+    vi.mocked(downloadClipAsFile).mockImplementationOnce(
+      (_clip, _filename, options) =>
+        new Promise((_resolve, reject) => {
+          capturedSignal = options?.signal;
+          options?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('Aborted', 'AbortError'));
+          });
+        }),
+    );
+
+    const download = reactor.downloadClipAsFile(clip, 'out.mp4', {
+      signal: callerController.signal,
+    });
+
+    callerController.abort();
+
+    await expect(download).rejects.toThrow(expect.objectContaining({ name: 'AbortError' }));
+    expect(capturedSignal?.aborted).toBe(true);
+  });
+
+  it('downloadClipAsFile stops listening for status changes once the download settles', async () => {
+    const { downloadClipAsFile } = await import('./recording');
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const clip = toPublicClip(client.requestClipResult);
+
+    vi.mocked(downloadClipAsFile).mockResolvedValueOnce(new Blob(['mp4-bytes']));
+    await reactor.downloadClipAsFile(clip);
+
+    // A leaked listener would throw (or reject a promise nobody awaits)
+    // the next time status changes — this must be a no-op.
+    expect(() => client.emitDisconnected()).not.toThrow();
   });
 });
 

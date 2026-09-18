@@ -560,13 +560,55 @@ export class Reactor implements Disposable {
     }
   }
 
-  /** Thin delegation to the standalone `downloadClipAsFile()` — see its own doc comment. */
+  /**
+   * Delegates to the standalone `downloadClipAsFile()` — see its own doc
+   * comment for the fetch/parse/remux itself — with one thing this method
+   * adds on top: the wait is also bounded by this session's own liveness,
+   * the same guarantee `Reactor.download()` gives the Python/C++/Swift SDKs
+   * by passing their own session handle. Without it, a clip whose boundary
+   * chunk never closes (the session stopped generating before reaching it)
+   * polls a permanent `202` forever — `slackMs` / `maxRetries` are opt-in on
+   * the standalone function for exactly that reason, and easy to forget to
+   * pass. This aborts the poll itself once `getStatus()` leaves `"ready"`,
+   * checked both up front (already not ready when called) and on every
+   * `"statusChanged"` after. A caller's own `options.signal` still works —
+   * either one aborts the download.
+   */
   async downloadClipAsFile(
     clip: Clip,
     filename: string | null = 'reactor-clip.mp4',
     options?: DownloadClipOptions,
   ): Promise<Blob> {
-    return downloadClipAsFileFn(clip, filename, options);
+    const controller = new AbortController();
+    const callerSignal = options?.signal;
+    const forwardCallerAbort = () => controller.abort(callerSignal!.reason);
+
+    if (callerSignal) {
+      if (callerSignal.aborted) {
+        controller.abort(callerSignal.reason);
+      } else {
+        callerSignal.addEventListener('abort', forwardCallerAbort, { once: true });
+      }
+    }
+
+    const abortIfNotReady = (status: ReactorStatus) => {
+      if (status !== 'ready') {
+        controller.abort();
+      }
+    };
+
+    abortIfNotReady(this.getStatus());
+    this.on('statusChanged', abortIfNotReady);
+
+    try {
+      return await downloadClipAsFileFn(clip, filename, {
+        ...options,
+        signal: controller.signal,
+      });
+    } finally {
+      this.off('statusChanged', abortIfNotReady);
+      callerSignal?.removeEventListener('abort', forwardCallerAbort);
+    }
   }
 
   // ── Uploads ─────────────────────────────────────────────────────────────
