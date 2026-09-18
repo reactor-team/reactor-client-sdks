@@ -129,4 +129,29 @@ final class UploadsTest extends SendingFixture {
         assertEquals("DECODE_FAILED", cause.code());
         assertTrue(cause.getMessage().contains("upload_id"), cause.getMessage());
     }
+
+    @Test
+    @DisplayName("an upload whose size is not a whole number of bytes is a decode failure")
+    void aBadSizeIsRefusedAtTheUpload() {
+        // Each of these used to produce a FileRef with size 0, or a truncated one, which was then
+        // re-sent into a command as though the platform had said it.
+        for (String size : java.util.List.of("\"12\"", "1.5", "-1", "null")) {
+            String payload = "{\"upload_id\":\"u\",\"name\":\"n\",\"mime_type\":\"image/png\",\"size\":" + size + "}";
+            ReactorException refused =
+                    assertThrows(ReactorException.class, () -> FileRef.from(JsonValue.parse(payload)), size);
+            assertEquals(ErrorCode.DECODE_FAILED.code(), refused.code(), size);
+        }
+
+        // A missing field is the same answer, not a default.
+        assertThrows(
+                ReactorException.class, () -> FileRef.from(JsonValue.parse("{\"upload_id\":\"u\",\"name\":\"n\"}")));
+    }
+
+    @Test
+    @DisplayName("a size the platform states exactly comes through exactly")
+    void aGoodSizeIsKept() {
+        FileRef ref = FileRef.from(JsonValue.parse(
+                "{\"upload_id\":\"u\",\"name\":\"n\",\"mime_type\":\"image/png\",\"size\":9007199254740993}"));
+        assertEquals(9_007_199_254_740_993L, ref.size());
+    }
 }

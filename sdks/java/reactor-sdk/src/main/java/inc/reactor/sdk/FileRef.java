@@ -62,7 +62,49 @@ public record FileRef(String uploadId, String name, String mimeType, long size) 
                 required(object, "upload_id"),
                 required(object, "name"),
                 object.getString("mime_type").orElse("application/octet-stream"),
-                object.getNumber("size").map(Double::longValue).orElse(0L));
+                requiredSize(object));
+    }
+
+    /**
+     * The size the platform reported, or a decode failure.
+     *
+     * <p>Not {@code getNumber(...).map(Double::longValue).orElse(0L)}. That accepted a size the
+     * platform sent as a string — or omitted — as zero, truncated a fractional one and saturated an
+     * overflowing one, and the reference was then sent back into a command carrying a number
+     * nobody had produced. A field the protocol got wrong is a decode failure at the upload, where
+     * the caller can still see what happened, rather than a command that fails later for a reason
+     * that points somewhere else.
+     */
+    private static long requiredSize(JsonValue.JsonObject object) {
+        JsonValue field = object.fields().get("size");
+        if (!(field instanceof JsonValue.JsonNumber number)) {
+            throw ReactorException.of(
+                    ErrorCode.DECODE_FAILED.code(),
+                    "an upload answered with a \"size\" that is not a number: " + field,
+                    null,
+                    "upload",
+                    null);
+        }
+        long size;
+        try {
+            size = number.asLong();
+        } catch (ArithmeticException notAnInteger) {
+            throw ReactorException.of(
+                    ErrorCode.DECODE_FAILED.code(),
+                    "an upload answered with a \"size\" that is not a whole number of bytes: " + number.value(),
+                    null,
+                    "upload",
+                    null);
+        }
+        if (size < 0) {
+            throw ReactorException.of(
+                    ErrorCode.DECODE_FAILED.code(),
+                    "an upload answered with a negative \"size\": " + size,
+                    null,
+                    "upload",
+                    null);
+        }
+        return size;
     }
 
     private static String required(JsonValue.JsonObject object, String field) {
