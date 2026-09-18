@@ -1,7 +1,9 @@
 package inc.reactor.sdk.internal;
 
+import inc.reactor.sdk.Clip;
 import inc.reactor.sdk.CommandReply;
 import inc.reactor.sdk.ConnectionStatus;
+import inc.reactor.sdk.DownloadedClip;
 import inc.reactor.sdk.ErrorCode;
 import inc.reactor.sdk.FileRef;
 import inc.reactor.sdk.JsonValue;
@@ -114,6 +116,7 @@ public final class ClientPeer implements Runnable {
 
     private final TrackRegistry tracks = new TrackRegistry();
     private final java.util.Map<String, PublishState> publishStates = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Set<ClipDownload> downloads = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     /**
      * The attempt each track's publish state belongs to.
@@ -350,6 +353,16 @@ public final class ClientPeer implements Runnable {
         completions.settleAll(
                 ReactorException.of(ErrorCode.ABORTED.code(), "the client was closed", null, "close", null));
         tracks.clear();
+        synchronized (publishLock) {
+            publishTokens.clear();
+            publishStates.clear();
+        }
+        // Settles their callers and releases nothing: a download is not bounded by this handle, so
+        // its own completion is what frees it. Leaving them out would leave those callers waiting
+        // for the life of the process.
+        List.copyOf(downloads).forEach(ClipDownload::abandon);
+        downloads.clear();
+
         synchronized (publishLock) {
             publishTokens.clear();
             publishStates.clear();
@@ -1129,6 +1142,159 @@ public final class ClientPeer implements Runnable {
                     ErrorCode.DECODE_FAILED.code(), "an upload answered with nothing", null, "upload", null);
         }
         return FileRef.from(JsonBridge.parse(json));
+    }
+
+    // ── Clips ───────────────────────────────────────────────────────────────
+
+    /**
+     * Asks for a clip of the last {@code durationSeconds} of the session.
+     *
+     * @param durationSeconds how far back the window reaches
+     * @return the clip, which is not ready yet
+     */
+    public CompletableFuture<Clip> requestClip(double durationSeconds) {
+        CompletableFuture<Clip> clip = new CompletableFuture<>();
+        if (!Double.isFinite(durationSeconds) || durationSeconds <= 0) {
+            clip.completeExceptionally(ReactorException.of(
+                    ErrorCode.BAD_REQUEST.code(),
+                    "a clip needs a finite, positive duration; got " + durationSeconds,
+                    null,
+                    "request_clip",
+                    null));
+            return clip;
+        }
+        start(
+                "request_clip",
+                json -> Clip.from(JsonBridge.parse(json == null ? "{}" : json)),
+                clip,
+                (completion, userdata) ->
+                        invokeMixed(Ffi.Symbol.REQUEST_CLIP, handle, durationSeconds, completion, userdata));
+        return clip;
+    }
+
+    /**
+     * Starts recording the whole session.
+     *
+     * @return the recording, which is not ready yet
+     */
+    public CompletableFuture<Clip> requestRecording() {
+        CompletableFuture<Clip> recording = new CompletableFuture<>();
+        start(
+                "request_recording",
+                json -> Clip.from(JsonBridge.parse(json == null ? "{}" : json)),
+                recording,
+                (completion, userdata) -> invoke(Ffi.Symbol.REQUEST_RECORDING, handle, completion, userdata));
+        return recording;
+    }
+
+    /**
+     * Downloads a clip into one playable file.
+     *
+     * <p>This outlives the client. See {@link ClipDownload}.
+     *
+     * @param clip what to download
+     * @param jwt the token for a coordinator-hosted playlist, or {@code null}
+     * @param outPath the file to write
+     * @param readyTimeoutSeconds how long to wait past the clip's own prediction; negative or
+     *     infinite waits as long as the session lives
+     * @param local whether to accept a dev coordinator's certificate
+     * @param progress told how many segments have been written, or {@code null}
+     * @return the assembled file
+     */
+    public CompletableFuture<DownloadedClip> downloadClip(
+            Clip clip,
+            @Nullable String jwt,
+            Path outPath,
+            double readyTimeoutSeconds,
+            boolean local,
+            ClipDownload.@Nullable Progress progress) {
+        CompletableFuture<DownloadedClip> downloaded = new CompletableFuture<>();
+        if (closed.get()) {
+            // Every other asynchronous operation checks this and this one did not, so a download
+            // started after close() reached reactor_download_clip with a handle reactor_destroy had
+            // already freed. The download outliving its client is a documented property of the FFI;
+            // starting one against a destroyed handle is not.
+            downloaded.completeExceptionally(ReactorException.of(
+                    ErrorCode.INVALID_STATE.code(),
+                    "download_clip was called on a closed client",
+                    null,
+                    "download_clip",
+                    null));
+            return downloaded;
+        }
+        if (Double.isNaN(readyTimeoutSeconds)) {
+            // The FFI answers a NaN through its own completion rather than panicking, but saying so
+            // here costs a round trip less and names the argument. Negative and infinite are not
+            // errors: both mean "no bound", which is the only sane answer for a model generating
+            // slower than real time.
+            downloaded.completeExceptionally(ReactorException.of(
+                    ErrorCode.BAD_REQUEST.code(),
+                    "readyTimeoutSeconds is NaN. Use a negative value or an infinity to wait as long as"
+                            + " the session lives.",
+                    null,
+                    "download_clip",
+                    null));
+            return downloaded;
+        }
+        // The lease the native call itself takes is not enough: registration has to happen under it
+        // too, or a close that lands between the two finds nothing to settle and the download is
+        // left running against a handle it is about to lose.
+        acquireHandle("download_clip");
+        try {
+            if (closed.get()) {
+                downloaded.completeExceptionally(ReactorException.of(
+                        ErrorCode.INVALID_STATE.code(),
+                        "download_clip was called on a closed client",
+                        null,
+                        "download_clip",
+                        null));
+                return downloaded;
+            }
+            return startDownload(clip, jwt, outPath, readyTimeoutSeconds, local, progress, downloaded);
+        } finally {
+            releaseHandle();
+        }
+    }
+
+    private CompletableFuture<DownloadedClip> startDownload(
+            Clip clip,
+            @Nullable String jwt,
+            Path outPath,
+            double readyTimeoutSeconds,
+            boolean local,
+            ClipDownload.@Nullable Progress progress,
+            CompletableFuture<DownloadedClip> downloaded) {
+        // Registered before the native call, not after it.
+        //
+        // close() takes the set of downloads and settles it, and then waits for calls in flight.
+        // Registering afterwards put a download in the gap between those two: close saw an empty
+        // set, waited for the native call — which is this one — and finished, leaving the caller's
+        // future pending for the life of the process. Registering first makes the download visible
+        // to any close that has not yet taken its snapshot, and the lease held across this whole
+        // method makes sure a close that has taken one is still waiting for us.
+        ClipDownload download = ClipDownload.register(downloaded, progress);
+        downloads.add(download);
+        downloaded.whenComplete((ignored, failure) -> downloads.remove(download));
+        download.begin((progressStub, completionStub) -> {
+            // Confined and closed when the call returns: these arguments are read during the call.
+            // The stubs are not among them — they live in the download's own arena, which outlives
+            // this client.
+            try (Arena call = Arena.ofConfined()) {
+                invokeMixed(
+                        Ffi.Symbol.DOWNLOAD_CLIP,
+                        handle,
+                        call.allocateFrom(clip.playlistUrl()),
+                        jwt == null ? MemorySegment.NULL : call.allocateFrom(jwt),
+                        call.allocateFrom(outPath.toAbsolutePath().toString()),
+                        clip.predictedReadyAtMs(),
+                        readyTimeoutSeconds,
+                        local ? 1 : 0,
+                        progressStub,
+                        completionStub,
+                        MemorySegment.NULL);
+            }
+        });
+        return downloaded;
     }
 
     // ── Plumbing ────────────────────────────────────────────────────────────

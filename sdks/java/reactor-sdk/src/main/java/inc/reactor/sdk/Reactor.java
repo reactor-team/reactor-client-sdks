@@ -37,10 +37,12 @@ public final class Reactor implements AutoCloseable {
     private static final Cleaner CLEANER = Cleaner.create();
 
     private final ClientPeer peer;
+    private final ReactorOptions options;
     private final Cleaner.Cleanable cleanable;
 
-    private Reactor(ClientPeer peer) {
+    private Reactor(ClientPeer peer, ReactorOptions options) {
         this.peer = peer;
+        this.options = options;
         // The action is the peer itself, and the peer holds no reference back to this object. A
         // cleaning action that captured its own referent would keep it reachable forever, so the
         // cleaner would never run and the native handle would never be destroyed — the leak this
@@ -55,7 +57,7 @@ public final class Reactor implements AutoCloseable {
      * @return the client
      */
     public static Reactor open(ReactorOptions options) {
-        return new Reactor(ClientPeer.create(options));
+        return new Reactor(ClientPeer.create(options), options);
     }
 
     /**
@@ -68,7 +70,7 @@ public final class Reactor implements AutoCloseable {
     static Reactor open(
             ReactorOptions options,
             java.util.function.Function<java.lang.foreign.Arena, inc.reactor.sdk.internal.Ffi> loader) {
-        return new Reactor(ClientPeer.create(options, loader));
+        return new Reactor(ClientPeer.create(options, loader), options);
     }
 
     /**
@@ -289,6 +291,68 @@ public final class Reactor implements AutoCloseable {
      */
     public CompletableFuture<Stats> getStats() {
         return peer.getStats();
+    }
+
+    /**
+     * Asks for a clip of the last {@code durationSeconds} of this session.
+     *
+     * <p>The clip is not ready when this settles. See {@link Clip} for why waiting on a wall clock
+     * is the wrong instinct.
+     *
+     * @param durationSeconds how far back the window reaches
+     * @return the clip
+     */
+    public CompletableFuture<Clip> requestClip(double durationSeconds) {
+        return peer.requestClip(durationSeconds);
+    }
+
+    /**
+     * Starts recording the whole session.
+     *
+     * @return the recording
+     */
+    public CompletableFuture<Clip> requestRecording() {
+        return peer.requestRecording();
+    }
+
+    /**
+     * Downloads a clip into one playable file, waiting for it to become ready.
+     *
+     * <p><b>This outlives the client.</b> Closing the client settles this future with an error
+     * saying so, but does not cancel the download — the file may still arrive.
+     *
+     * @param clip what to download
+     * @param outPath the file to write
+     * @param progress told how many segments have been written, or {@code null}
+     * @return the assembled file
+     */
+    public CompletableFuture<DownloadedClip> downloadClip(
+            Clip clip, java.nio.file.Path outPath, @Nullable ClipProgress progress) {
+        // Negative: wait as long as the session lives. A model generating slower than real time
+        // reaches the boundary chunk later than any fixed number would allow for, and once the
+        // session is gone a "not ready" is a "not ready" forever.
+        return downloadClip(clip, outPath, -1, progress);
+    }
+
+    /**
+     * Downloads a clip, giving up if it is not ready within a bound.
+     *
+     * @param clip what to download
+     * @param outPath the file to write
+     * @param readyTimeoutSeconds how long to wait past the clip's own prediction — measured from
+     *     there, not from now. Negative or infinite waits as long as the session lives
+     * @param progress told how many segments have been written, or {@code null}
+     * @return the assembled file
+     */
+    public CompletableFuture<DownloadedClip> downloadClip(
+            Clip clip, java.nio.file.Path outPath, double readyTimeoutSeconds, @Nullable ClipProgress progress) {
+        return peer.downloadClip(
+                clip,
+                options.jwt(),
+                outPath,
+                readyTimeoutSeconds,
+                options.local(),
+                progress == null ? null : progress::report);
     }
 
     /**
