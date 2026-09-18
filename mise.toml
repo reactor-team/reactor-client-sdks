@@ -540,6 +540,13 @@ run = "gradle --project-dir sdks/java --console=plain -PreactorJdk={{ env.REACTO
 description = "[Build] Build the Java SDK jars"
 run = "gradle --project-dir sdks/java --console=plain -PreactorJdk={{ env.REACTOR_JDK | default(value='25') }} assemble"
 
+[tasks."build:java:central-bundle"]
+description = "[Build] Stage every published Java coordinate and zip the Maven Central bundle"
+# The Portal takes a whole release as one zip, validated and accepted together. Runnable without a
+# signing key and without credentials, which is what lets a pull request find an invalid
+# publication — a duplicated classifier, a POM missing its licence — before a release does.
+run = "gradle --project-dir sdks/java --console=plain -PreactorJdk={{ env.REACTOR_JDK | default(value='25') }} centralBundle"
+
 [tasks."test:java"]
 description = "[Testing] Java SDK unit tests"
 run = "gradle --project-dir sdks/java --console=plain -PreactorJdk={{ env.REACTOR_JDK | default(value='25') }} test"

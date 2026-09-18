@@ -1,5 +1,6 @@
 plugins {
     id("reactor-java-conventions")
+    id("reactor-maven-central")
 }
 
 description =
@@ -13,4 +14,13 @@ dependencies {
     // application on 3.x writes the same twenty lines this module holds, against its own line;
     // that is exactly why neither one is in the core's public signatures.
     api("com.fasterxml.jackson.core:jackson-databind:2.22.2")
+}
+
+publishing {
+    publications {
+        create<MavenPublication>("sdk") {
+            from(components["java"])
+            pom { standardPom("Reactor SDK Jackson interop", project.description ?: "") }
+        }
+    }
 }

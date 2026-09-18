@@ -1,6 +1,6 @@
 plugins {
     `java-platform`
-    `maven-publish`
+    id("reactor-maven-central")
 }
 
 description =

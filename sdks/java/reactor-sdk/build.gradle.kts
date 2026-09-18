@@ -1,5 +1,6 @@
 plugins {
     id("reactor-java-conventions")
+    id("reactor-maven-central")
 }
 
 description =
@@ -46,8 +47,11 @@ nativePlatforms.forEach { (token, os, arch) ->
 publishing {
     publications {
         create<MavenPublication>("sdk") {
+            // Carries the jar, both companions and every native variant. Not `artifact(javadocJar)`
+            // beside it: the conventions' withJavadocJar() already puts that jar in this component,
+            // and naming it twice makes the publication invalid — "multiple artifacts with the
+            // identical extension and classifier" — at publish time rather than at build time.
             from(components["java"])
-            artifact(tasks.named("javadocJar"))
             pom { standardPom("Reactor SDK", project.description ?: "") }
         }
     }
