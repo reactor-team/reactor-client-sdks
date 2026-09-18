@@ -37,6 +37,12 @@ node_modules/
 # kept separate from build/ so REACTOR_SDK_BUILD_INTEGRATION_TESTS=ON never
 # shares a CMake cache with the default build.
 /sdks/cpp/build-integration-tests/
+# JVM fatal-error dumps. A crash in a test writes one into whatever directory the
+# JVM was started in, carrying local paths, host details and register state — and
+# one was committed, 1,800 lines of it, before anyone noticed.
+hs_err_pid*.log
+replay_pid*.log
+
 # Same reasoning, for the endurance suite (mise run test:cpp:endurance-tests).
 /sdks/cpp/build-endurance-tests/
 # Swift SDK: SwiftPM's build tree and per-user state. The manifest is at the

@@ -191,4 +191,22 @@ final class ClipsTest extends SendingFixture {
         fake.settleLastCall(true, CLIP, null);
         return pending.join();
     }
+
+    @Test
+    @DisplayName("a download asked for after close is refused, not started")
+    void aDownloadAfterCloseIsRefused(@TempDir java.nio.file.Path directory) {
+        Clip clip = new Clip("s", "clip", 0, 0, 0, 0, "https://example.test/clip.m3u8");
+        reactor.close();
+
+        // Every other asynchronous operation refused this and this one did not: it reached
+        // reactor_download_clip with a handle reactor_destroy had already freed.
+        java.util.concurrent.CompletionException thrown = assertThrows(
+                java.util.concurrent.CompletionException.class,
+                () -> reactor.downloadClip(clip, directory.resolve("clip.mp4"), null)
+                        .join());
+
+        ReactorException refused = (ReactorException) thrown.getCause();
+        assertEquals(ErrorCode.INVALID_STATE.code(), refused.code());
+        assertTrue(refused.getMessage().contains("closed client"), refused.getMessage());
+    }
 }

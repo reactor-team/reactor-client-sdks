@@ -1209,6 +1209,19 @@ public final class ClientPeer implements Runnable {
             boolean local,
             ClipDownload.@Nullable Progress progress) {
         CompletableFuture<DownloadedClip> downloaded = new CompletableFuture<>();
+        if (closed.get()) {
+            // Every other asynchronous operation checks this and this one did not, so a download
+            // started after close() reached reactor_download_clip with a handle reactor_destroy had
+            // already freed. The download outliving its client is a documented property of the FFI;
+            // starting one against a destroyed handle is not.
+            downloaded.completeExceptionally(ReactorException.of(
+                    ErrorCode.INVALID_STATE.code(),
+                    "download_clip was called on a closed client",
+                    null,
+                    "download_clip",
+                    null));
+            return downloaded;
+        }
         if (Double.isNaN(readyTimeoutSeconds)) {
             // The FFI answers a NaN through its own completion rather than panicking, but saying so
             // here costs a round trip less and names the argument. Negative and infinite are not
@@ -1223,6 +1236,34 @@ public final class ClientPeer implements Runnable {
                     null));
             return downloaded;
         }
+        // The lease the native call itself takes is not enough: registration has to happen under it
+        // too, or a close that lands between the two finds nothing to settle and the download is
+        // left running against a handle it is about to lose.
+        acquireHandle("download_clip");
+        try {
+            if (closed.get()) {
+                downloaded.completeExceptionally(ReactorException.of(
+                        ErrorCode.INVALID_STATE.code(),
+                        "download_clip was called on a closed client",
+                        null,
+                        "download_clip",
+                        null));
+                return downloaded;
+            }
+            return startDownload(clip, jwt, outPath, readyTimeoutSeconds, local, progress, downloaded);
+        } finally {
+            releaseHandle();
+        }
+    }
+
+    private CompletableFuture<DownloadedClip> startDownload(
+            Clip clip,
+            @Nullable String jwt,
+            Path outPath,
+            double readyTimeoutSeconds,
+            boolean local,
+            ClipDownload.@Nullable Progress progress,
+            CompletableFuture<DownloadedClip> downloaded) {
         ClipDownload download = ClipDownload.start(downloaded, progress, (progressStub, completionStub) -> {
             // Confined and closed when the call returns: these arguments are read during the call.
             // The stubs are not among them — they live in the download's own arena, which outlives

@@ -87,6 +87,11 @@ public final class ClipDownload {
     private final MemorySegment progressStub;
     private final AtomicBoolean settled = new AtomicBoolean();
 
+    private static final System.Logger LOG = System.getLogger(ClipDownload.class.getName());
+
+    private final java.util.concurrent.atomic.AtomicBoolean progressFailed =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
     private ClipDownload(CompletableFuture<DownloadedClip> future, @Nullable Progress progress) {
         this.future = future;
         this.progress = progress;
@@ -156,15 +161,33 @@ public final class ClipDownload {
         return IN_FLIGHT.size();
     }
 
-    private void onProgress(int done, int total, MemorySegment userdata) {
+    /** Visible for the test that a throwing listener must not take the process down with it. */
+    void onProgress(int done, int total, MemorySegment userdata) {
         if (settled.get()) {
             // The client closed and the caller has already been told. Reporting progress to a
             // settled future would do nothing; reading anything the client owned would be worse.
             return;
         }
-        Progress report = progress;
-        if (report != null) {
+        Progress report = progressFailed.get() ? null : progress;
+        if (report == null) {
+            return;
+        }
+        try {
             report.report(done, total);
+        } catch (RuntimeException | Error thrown) {
+            // This method is the target of an upcall stub, and an exception cannot cross native
+            // code: it does not propagate to any caller, and the JVM terminates rather than guess.
+            // A progress listener is ordinary application code and is entitled to have a bug in
+            // it; killing the process over one is not a trade this SDK gets to make.
+            //
+            // Reported once and then dropped. A listener that throws on every chunk throws at the
+            // rate the chunks arrive, and a log that repeats that is a log nobody reads.
+            if (progressFailed.compareAndSet(false, true)) {
+                LOG.log(
+                        System.Logger.Level.WARNING,
+                        "a clip progress listener threw; no further progress will be reported for this download",
+                        thrown);
+            }
         }
     }
 
