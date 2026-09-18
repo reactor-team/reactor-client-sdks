@@ -30,6 +30,9 @@ dedicated track.
 - **[Swift](sdks/swift/README.md)** — macOS and iOS, via Swift Package Manager
 - **[Java](sdks/java/README.md)** — desktop JVM, over the Foreign Function &
   Memory API *(under construction)*
+- **[Kotlin (desktop)](sdks/java/README.md#from-kotlin)** — a `suspend`-and-`Flow`
+  facade over that same binding, versioned in lockstep with it *(under
+  construction)*
 
 ## Documentation
 

@@ -2,6 +2,9 @@ plugins {
     id("reactor-kotlin-conventions")
     id("reactor-maven-central")
     id("org.jetbrains.kotlinx.binary-compatibility-validator")
+    id("org.jetbrains.dokka")
+    // The javadoc format is its own plugin in Dokka V2 — the dependency alone registers no task.
+    id("org.jetbrains.dokka-javadoc")
 }
 
 description =
@@ -20,6 +23,7 @@ dependencies {
     // The same fake library the core's own tests bind to. A second copy here would be a second
     // thing to keep in step with the FFI, which is what this module exists not to be.
     testImplementation(testFixtures(project(":reactor-sdk")))
+
 }
 
 kotlin {
@@ -27,6 +31,19 @@ kotlin {
     // job is a published API, inferring either is how a type nobody meant to expose becomes part of
     // the contract. Here rather than in the conventions: the example module is not an API.
     explicitApi()
+}
+
+// The -javadoc jar Central requires, filled with the KDoc a reader of this module actually wants.
+// The conventions' withJavadocJar() builds it from javac's Javadoc task, which sees no Java source
+// here and so produces an empty jar — correct enough for Central and useless to everyone else.
+tasks.named<Javadoc>("javadoc") {
+    // There is no Java source here for it to read, and leaving it on would put an empty tree beside
+    // Dokka's inside the jar.
+    enabled = false
+}
+
+tasks.named<Jar>("javadocJar") {
+    from(tasks.named("dokkaGeneratePublicationJavadoc"))
 }
 
 // No module-info.java. Kotlin does not compile one, and the usual workaround — a second source set
