@@ -515,6 +515,43 @@ jobs:
       - run: mise run lint:cpp
       - run: mise run test:cpp
 
+  java-integration-tests:
+    name: Java SDK integration tests (real FFI, real model)
+    needs: changes
+    # Same fork-PR reasoning as the other integration jobs: GitHub withholds repo
+    # secrets from a fork's pull_request runs, so INTEGRATION_TESTS_REACTOR_API_KEY
+    # would never be populated there. This suite deliberately *fails* rather than
+    # skips when the key is missing — a required check that goes green because a
+    # secret was absent is worse than one that fails — which means without this
+    # condition every external contribution fails here for a reason that has
+    # nothing to do with the contribution. Skipped for a fork, and still run for
+    # every same-repo PR and on push.
+    if: github.event_name == 'push' || (needs.changes.outputs.java == 'true' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1   # reads rust-toolchain.toml
+        with:
+          cache-on-failure: true
+          cache-shared-key: reactor-host-${{ hashFiles('mise.lock') }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Install clang for the libwebrtc C++ glue
+        uses: ./.github/actions/setup-libwebrtc-cxx
+      - name: Build libreactor_ffi (what the suite loads)
+        run: mise run build:ffi
+      # Retries live inside the mise task, not around this step: release-java.yml runs the same
+      # task, and a wrapper each caller had to remember is the drift that rule exists to prevent.
+      - run: mise run test:java:integration-tests
+        env:
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+
   java:
     name: Java SDK (JDK ${{ matrix.jdk }})
     needs: changes
@@ -798,6 +835,7 @@ jobs:
         cpp,
         cpp-integration-tests,
         java,
+        java-integration-tests,
         swift,
         swift-integration-tests,
         swift-integration-tests-ios-simulator,
@@ -821,6 +859,7 @@ jobs:
                    "${{ needs.cpp.result }}" \
                    "${{ needs.cpp-integration-tests.result }}" \
                    "${{ needs.java.result }}" \
+                   "${{ needs['java-integration-tests'].result }}" \
                    "${{ needs.swift.result }}" \
                    "${{ needs.swift-integration-tests.result }}" \
                    "${{ needs.swift-integration-tests-ios-simulator.result }}" \
