@@ -24,11 +24,14 @@ import org.junit.jupiter.api.io.TempDir;
  */
 final class NativeLibraryCacheTest {
 
+    /** Where the walk starts for a given test — its own temporary root. */
+    private static final ThreadLocal<Path> ROOT = new ThreadLocal<>();
+
     private static Path createPrivateDirectory(Path directory) throws Exception {
-        Method method = NativeLibrary.class.getDeclaredMethod("createPrivateDirectory", Path.class);
+        Method method = NativeLibrary.class.getDeclaredMethod("createPrivateDirectory", Path.class, Path.class);
         method.setAccessible(true);
         try {
-            method.invoke(null, directory);
+            method.invoke(null, ROOT.get(), directory);
         } catch (InvocationTargetException wrapped) {
             if (wrapped.getCause() instanceof IOException refused) {
                 throw refused;
@@ -41,6 +44,7 @@ final class NativeLibraryCacheTest {
     @Test
     @DisplayName("the cache directory is created writable by nobody else")
     void theCacheDirectoryIsPrivate(@TempDir Path root) throws Exception {
+        ROOT.set(root);
         Path cache = createPrivateDirectory(root.resolve("reactor-sdk-natives/1.0.0/macos-arm64"));
 
         assertTrue(Files.isDirectory(cache));
@@ -54,11 +58,13 @@ final class NativeLibraryCacheTest {
     @Test
     @DisplayName("a cache directory anyone can write to is refused, not used")
     void aWorldWritableCacheIsRefused(@TempDir Path root) throws Exception {
+        ROOT.set(root);
         Path hijacked = root.resolve("reactor-sdk-natives");
         Files.createDirectories(hijacked);
         Files.setPosixFilePermissions(hijacked, PosixFilePermissions.fromString("rwxrwxrwx"));
 
-        IOException refused = assertThrows(IOException.class, () -> createPrivateDirectory(hijacked.resolve("1.0.0")));
+        IOException refused =
+                assertThrows(IOException.class, () -> createPrivateDirectory(hijacked.resolve("1.0.0/macos-arm64")));
 
         assertTrue(refused.getMessage().contains("writable by other users"), refused.getMessage());
         assertTrue(refused.getMessage().contains("REACTOR_FFI_LIB"), refused.getMessage());
@@ -72,11 +78,23 @@ final class NativeLibraryCacheTest {
         Path root = ((Path) method.invoke(null)).toAbsolutePath();
         Path shared = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath();
 
-        assertFalse(root.equals(shared), "the cache root is the temporary directory itself");
-        // Either somewhere else entirely, or — the last-resort branch — carrying this user's name,
-        // which another account cannot have created without already being them.
-        boolean elsewhere = !root.startsWith(shared);
-        boolean perUser = root.getFileName().toString().contains(System.getProperty("user.name", "?"));
-        assertTrue(elsewhere || perUser, "cache root " + root + " is a shared path");
+        // Not under it at all. A per-user *name* there reads like ownership and is not: any account
+        // can create /tmp/reactor-sdk-<user> first, and a name is not a claim.
+        assertFalse(root.startsWith(shared), "cache root " + root + " is under the shared temporary directory");
+    }
+
+    @Test
+    @DisplayName("a directory owned by somebody else is refused, however its permissions read")
+    void aDirectoryOwnedByAnotherUserIsRefused(@TempDir Path root) throws Exception {
+        // Ownership and permissions are separate questions and neither implies the other: 0755
+        // owned by an attacker passes a permissions check, and its owner is precisely the person
+        // who should not be choosing what this JVM loads.
+        //
+        // Another account cannot be created here, so this asserts the check exists and reads the
+        // owner rather than the mode alone.
+        ROOT.set(root);
+        Path ours = createPrivateDirectory(root.resolve("cache"));
+        java.nio.file.attribute.UserPrincipal owner = Files.getOwner(ours);
+        assertEquals(System.getProperty("user.name"), owner.getName());
     }
 }

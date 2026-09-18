@@ -8,9 +8,9 @@ import java.lang.foreign.SymbolLookup;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.file.attribute.UserPrincipal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -131,7 +131,7 @@ public final class NativeLibrary {
                 return Optional.empty();
             }
             Path cached = cacheDirectory(platform).resolve(platform.libraryFileName());
-            createPrivateDirectory(cached.getParent());
+            createPrivateDirectory(userCacheRoot(), cached.getParent());
             if (!Files.isRegularFile(cached)) {
                 // Written beside the target and moved into place, so two JVMs starting at once
                 // cannot have one of them load a half-written file.
@@ -181,7 +181,15 @@ public final class NativeLibrary {
                 .resolve(platform.token());
     }
 
-    /** A directory this user owns. Falls back to a per-user name under the temporary directory. */
+    /**
+     * A directory this user owns.
+     *
+     * <p>No fallback into the shared temporary directory. A per-user *name* there —
+     * {@code /tmp/reactor-sdk-<user>} — reads like ownership and is not: any account can create
+     * that path first, and this class would then load whatever library it found inside. A name is
+     * not a claim. If none of these exist there is nowhere safe to cache, and saying so beats
+     * inventing somewhere.
+     */
     private static Path userCacheRoot() {
         String local = System.getenv("LOCALAPPDATA");
         if (local != null && !local.isBlank()) {
@@ -195,54 +203,89 @@ public final class NativeLibrary {
         if (home != null && !home.isBlank() && Files.isDirectory(Path.of(home))) {
             return Path.of(home).resolve(".cache");
         }
-        // Last resort, and still not a shared name: a directory another account cannot have created
-        // under this user's own name without already being this user.
-        return Path.of(System.getProperty("java.io.tmpdir"))
-                .resolve("reactor-sdk-" + System.getProperty("user.name", "unknown"));
+        throw new NativeLibraryNotFoundException("no per-user cache directory exists (tried LOCALAPPDATA,"
+                + " XDG_CACHE_HOME and the home directory), so there is nowhere this SDK can safely unpack a"
+                + " native library. Set " + OVERRIDE_ENV + " to a library you control.");
     }
 
     /**
-     * Creates the cache directory such that only this user can write into it.
+     * Creates the cache path such that only this user can write anywhere along it.
      *
-     * <p>The permissions are the point, not the directory. Where POSIX permissions exist they are
-     * set at creation — not afterwards, which would leave a window in which the directory is open —
-     * and an existing directory that anyone else can write to is refused rather than used.
+     * <p>Every component from {@code root} down is created private, or — if it is already there —
+     * checked. Checking only the ones this call happens to create is worth nothing: a private leaf
+     * under a directory somebody else can write to is a leaf they can replace wholesale, and the
+     * first version of this walked straight past an existing parent for exactly that reason.
+     *
+     * <p>Above {@code root} it stops. Those are the user's own home and the system's, and refusing
+     * them would mean refusing every machine.
+     *
+     * @param root where this user's own space begins
+     * @param directory the leaf to end up with
      */
-    private static void createPrivateDirectory(Path directory) throws IOException {
-        if (Files.isDirectory(directory)) {
-            refuseIfOthersCanWrite(directory);
-            return;
+    private static void createPrivateDirectory(Path root, Path directory) throws IOException {
+        Path relative = root.relativize(directory);
+        Path at = root;
+        if (!Files.isDirectory(root)) {
+            createOnePrivateDirectory(root);
+        } else {
+            refuseIfNotOurs(root);
         }
-        Path parent = directory.getParent();
-        if (parent != null) {
-            createPrivateDirectory(parent);
-        }
-        try {
-            if (Files.getFileStore(directory.getRoot() == null ? Path.of(".") : directory.getRoot())
-                    .supportsFileAttributeView(PosixFileAttributeView.class)) {
-                Files.createDirectory(
-                        directory, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
-                return;
+        for (Path component : relative) {
+            at = at.resolve(component);
+            if (Files.isDirectory(at)) {
+                refuseIfNotOurs(at);
+            } else {
+                createOnePrivateDirectory(at);
             }
-        } catch (UnsupportedOperationException | IOException notPosix) {
-            // Windows, or a file store that cannot answer. Fall through to a plain create: the path
-            // is already under a per-user root there.
         }
-        Files.createDirectory(directory);
     }
 
-    private static void refuseIfOthersCanWrite(Path directory) throws IOException {
+    private static void createOnePrivateDirectory(Path directory) throws IOException {
+        Path parent = directory.getParent();
+        if (parent != null && !Files.isDirectory(parent)) {
+            createOnePrivateDirectory(parent);
+        }
+        try {
+            // At creation, not afterwards: a chmod later leaves a window in which the directory is
+            // open, and that window is all an attacker needs.
+            Files.createDirectory(
+                    directory, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+        } catch (UnsupportedOperationException notPosix) {
+            // Windows, where the per-user root is the protection.
+            Files.createDirectory(directory);
+        } catch (java.nio.file.FileAlreadyExistsException raced) {
+            // Another JVM of ours got there first. Still checked.
+            refuseIfNotOurs(directory);
+        }
+    }
+
+    /**
+     * Refuses a directory this user does not own, or that anyone else can write to.
+     *
+     * <p>Both halves matter and neither implies the other. A directory owned by somebody else with
+     * ordinary 0755 permissions passes a permissions check — nobody but its owner can write to it —
+     * and its owner is exactly the person who should not be choosing what this JVM loads.
+     */
+    private static void refuseIfNotOurs(Path directory) throws IOException {
+        UserPrincipal owner;
         Set<PosixFilePermission> permissions;
         try {
+            owner = Files.getOwner(directory);
             permissions = Files.getPosixFilePermissions(directory);
         } catch (UnsupportedOperationException notPosix) {
             return;
+        }
+        String us = System.getProperty("user.name");
+        if (us != null && !owner.getName().equals(us)) {
+            throw new IOException(directory + " is owned by " + owner.getName()
+                    + ", not by this user, so a library cached there cannot be trusted. Remove it, or point "
+                    + OVERRIDE_ENV + " at a library you control.");
         }
         if (permissions.contains(PosixFilePermission.GROUP_WRITE)
                 || permissions.contains(PosixFilePermission.OTHERS_WRITE)) {
             throw new IOException(directory
                     + " is writable by other users, so a library cached there cannot be trusted."
-                    + " Remove it, or point REACTOR_FFI_LIB at a library you control.");
+                    + " Remove it, or point " + OVERRIDE_ENV + " at a library you control.");
         }
     }
 }
