@@ -17,45 +17,38 @@ dependencies {
     testFixturesCompileOnly("org.jspecify:jspecify:1.0.1")
 }
 
-// ── Zero-configuration platform resolution ───────────────────────────────────
+// ── Zero configuration, and what it costs ────────────────────────────────────
 //
-// A consumer writes one dependency line. On Gradle, these variants are what makes
-// that work: resolution matches the host's own operatingSystem and architecture
-// attributes and pulls exactly one natives artifact, with no plugin applied and no
-// classifier written.
+// One dependency line, and the library for whatever machine the code ends up on is already there.
+// It is an ordinary runtime dependency on a jar carrying all five platforms, roughly 50 MB of it,
+// because that is the only shape both build tools understand without the consumer opting into
+// anything.
 //
-// Maven ignores Gradle Module Metadata entirely, which is why reactor-sdk-platform
-// exists beside this.
-val nativePlatforms =
-    listOf(
-        Triple("linux-x86_64", OperatingSystemFamily.LINUX, MachineArchitecture.X86_64),
-        Triple("linux-aarch64", OperatingSystemFamily.LINUX, MachineArchitecture.ARM64),
-        Triple("macos-arm64", OperatingSystemFamily.MACOS, MachineArchitecture.ARM64),
-        Triple("macos-x86_64", OperatingSystemFamily.MACOS, MachineArchitecture.X86_64),
-        Triple("windows-x86_64", OperatingSystemFamily.WINDOWS, MachineArchitecture.X86_64),
-    )
-
-nativePlatforms.forEach { (token, os, arch) ->
-    val variant = configurations.create("nativeRuntime-$token") {
-        isCanBeConsumed = true
-        isCanBeResolved = false
-        attributes {
-            attribute(Usage.USAGE_ATTRIBUTE, objects.named(Usage.JAVA_RUNTIME))
-            attribute(Category.CATEGORY_ATTRIBUTE, objects.named(Category.LIBRARY))
-            attribute(OperatingSystemFamily.OPERATING_SYSTEM_ATTRIBUTE, objects.named(os))
-            attribute(MachineArchitecture.ARCHITECTURE_ATTRIBUTE, objects.named(arch))
-        }
-        dependencies.add(
-            project.dependencies.create("${project.group}:reactor-sdk-natives:${project.version}:$token"),
-        )
-    }
-    // Named after the platform rather than numbered: a resolution failure names the variant, and
-    // "no matching variant nativeRuntime-linux-aarch64" is a sentence someone can act on.
-    components["java"].let { it as AdhocComponentWithVariants }.addVariantsFromConfiguration(variant) {}
+// The design it replaced looked cheaper and did not work. This module published five extra
+// variants keyed on operating system and architecture, on the theory that Gradle would match the
+// host's. A plain JVM project requests neither attribute, so Gradle chose runtimeElements and no
+// native artifact reached the classpath at all — proven against a clean consumer project, which
+// opened a client and then failed at load with "the natives artifact for macos-arm64 is not on the
+// classpath". Setting those attributes in the consumer made it worse: the extra variants compete
+// with runtimeElements rather than adding to it, so resolution became ambiguous. There is no fix
+// on this side — a consumer would have to apply a plugin to express the attributes — and a
+// zero-configuration promise that needs a plugin is not one.
+//
+// A build that wants exactly one platform, a container image that knows what it runs on, excludes
+// this and names its own classifier. See the README.
+dependencies {
+    // Not runtimeOnly: module-info names this module, so javac needs it on the module path to
+    // compile the descriptor at all.
+    implementation(project(":reactor-sdk-natives"))
 }
 
-// Test fixtures are for this repository's tests, not for a consumer's. Left in, they would publish
-// two more coordinates carrying a fake FFI.
+// Test fixtures are for this repository's tests, not for a consumer's. Left in, the published
+// module metadata carries two more variants and attaches a jar holding a fake FFI — this
+// repository's internal test double, on a Maven Central coordinate.
+//
+// Lost once already: the block below was written with the fixtures themselves and then dropped by
+// the rewrite that replaced this module's native-platform variants, which had nothing to do with
+// it. A reviewer caught it before it shipped.
 val javaComponent = components["java"] as AdhocComponentWithVariants
 
 listOf("testFixturesApiElements", "testFixturesRuntimeElements").forEach { name ->

@@ -12,5 +12,15 @@ module inc.reactor.sdk {
     // class-retained and absent at run time, so nothing is required on the module path.
     requires static transitive org.jspecify;
 
+    // The shared libraries live in their own artifact, and a consumer on the module path resolves
+    // modules rather than artifacts: without this, an application declaring only
+    // `requires inc.reactor.sdk` never pulls the natives into the graph, and the class-loader
+    // lookup that finds the packaged library finds nothing. It worked on the class path, where
+    // there is no graph to be outside of, which is why it went unnoticed.
+    //
+    // Not `requires static`: a static requires is not resolved at run time, which is precisely when
+    // the library is needed.
+    requires inc.reactor.sdk.natives;
+
     exports inc.reactor.sdk;
 }

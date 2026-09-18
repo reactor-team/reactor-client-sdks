@@ -12,7 +12,6 @@ include(
     "reactor-sdk-jackson",
     "reactor-sdk-kotlin",
     "reactor-sdk-natives",
-    "reactor-sdk-platform",
     "examples",
     "integration-tests",
     "endurance-tests",

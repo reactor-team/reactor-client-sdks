@@ -9,7 +9,6 @@
 #     artifact per platform.
 #   * Central refuses a jar coordinate without its -sources and -javadoc companions,
 #     so those are built by the ordinary `assemble` rather than by a release script.
-#     The POM-only aggregate is exempt and has neither.
 #
 # What the `maven` environment has to hold before any of this publishes anything.
 # Only the release job below names that environment, so nothing else in this
