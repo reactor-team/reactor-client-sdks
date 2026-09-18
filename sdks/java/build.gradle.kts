@@ -13,6 +13,7 @@ val publishingModules = listOf(
     ":reactor-sdk",
     ":reactor-sdk-audio",
     ":reactor-sdk-jackson",
+    ":reactor-sdk-kotlin",
     ":reactor-sdk-natives",
     ":reactor-sdk-platform",
 )
@@ -29,11 +30,11 @@ val publishingModules = listOf(
 // the Portal validates the bundle as a whole. A task of its own rather than a doFirst on the
 // aggregator below — a doFirst runs *after* everything the task depends on, so that version of
 // this deleted exactly what the publish tasks had just written and staged an empty bundle.
-val clearStaging by tasks.registering(Delete::class) {
+val clearStaging = tasks.register<Delete>("clearStaging") {
     delete(centralStaging)
 }
 
-val stageForCentral by tasks.registering {
+val stageForCentral = tasks.register("stageForCentral") {
     group = "publishing"
     description = "Stage every published coordinate into build/central-staging"
     dependsOn(clearStaging)
@@ -50,7 +51,7 @@ publishingModules.forEach { path ->
 }
 
 /** The single artefact the Portal accepts. */
-val centralBundle by tasks.registering(Zip::class) {
+val centralBundle = tasks.register<Zip>("centralBundle") {
     group = "publishing"
     description = "Zip the staged release into the bundle the Central Portal accepts"
     dependsOn(stageForCentral)

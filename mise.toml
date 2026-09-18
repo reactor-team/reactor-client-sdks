@@ -534,7 +534,10 @@ description = "[Quality] Check Java SDK formatting"
 # Formatting only. The compiler's own gate — -Xlint:all -Werror, set in
 # buildSrc/src/main/kotlin/reactor-java-conventions.gradle.kts — runs as part of
 # `test:java`, because it is javac doing it rather than a separate tool.
-run = "gradle --project-dir sdks/java --console=plain -PreactorJdk={{ env.REACTOR_JDK | default(value='25') }} spotlessCheck"
+# apiCheck beside it: the Kotlin facade's public ABI is dumped to a checked-in file, and this is
+# what fails when the two disagree. Not reachable through `test:java`, which runs `test` rather
+# than `check` — `check` drags the live and endurance suites into the graph.
+run = "gradle --project-dir sdks/java --console=plain -PreactorJdk={{ env.REACTOR_JDK | default(value='25') }} spotlessCheck apiCheck"
 
 [tasks."build:java"]
 description = "[Build] Build the Java SDK jars"
@@ -575,6 +578,12 @@ description = "[Testing] Java SDK endurance tests — long-running leak and reso
 #
 # ENDURANCE_DURATION_MINUTES sets the length; ENDURANCE_VERBOSE=1 brings back the per-cycle rows.
 run = "gradle --project-dir sdks/java --console=plain :endurance-tests:enduranceTest"
+
+[tasks."example:kotlin"]
+description = "[Examples] Run the Kotlin example through the facade"
+# Needs REACTOR_API_KEY and a native library, exactly as the Java examples do. One example, not
+# eight: the facade forwards to the same code the Java examples already cover.
+run = "gradle --project-dir sdks/java --console=plain :examples:exampleKotlin"
 
 [tasks."example:java"]
 description = "[Examples] Run one numbered Java example, e.g. `mise run example:java 01`"

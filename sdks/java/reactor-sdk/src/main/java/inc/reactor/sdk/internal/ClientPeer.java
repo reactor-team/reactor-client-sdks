@@ -451,6 +451,30 @@ public final class ClientPeer implements Runnable {
     }
 
     /**
+     * How many control-event handlers this client currently holds.
+     *
+     * <p>For a test that has to prove a handler was <em>removed</em>. Nothing else can see that: a
+     * subscription nobody dropped goes on being called by the SDK, and from outside, a handler that
+     * is still registered and one that is not look the same until an event arrives with nobody left
+     * to want it. The Kotlin facade's flows live or die on this — every one of them unregisters
+     * when its collector goes away, and this is what asserts it.
+     *
+     * <p>Media handlers are not counted. They are per track rather than per client, and the
+     * question here is what the client is holding.
+     *
+     * @return the count, across every control event
+     */
+    public int controlHandlerCount() {
+        return statusEvents.size()
+                + errorEvents.size()
+                + messageEvents.size()
+                + runtimeMessageEvents.size()
+                + trackEvents.size()
+                + capabilitiesEvents.size()
+                + sessionIdEvents.size();
+    }
+
+    /**
      * How many clients exist and have not been closed.
      *
      * @return the count, which a run that creates and closes clients in a loop should bring back
@@ -772,7 +796,14 @@ public final class ClientPeer implements Runnable {
                 invoke(Ffi.Symbol.PUBLISH_TRACK, handle, call.allocateFrom(name), completion, userdata);
             }
         });
-        return published.whenComplete((ignored, failure) -> {
+        // Two stages, and the shape of both matters. Getting either wrong has already shipped a bug.
+        //
+        // `tracked` completes only once the state has been written, because that is what
+        // whenComplete promises. Handing *this* to the caller is what the first version did, and
+        // cancelling it dropped the write: a dependent stage that is already complete is skipped
+        // when its source settles, so the native publish succeeded, nothing recorded it, and the
+        // track sat in PUBLISHING for the rest of the session.
+        CompletableFuture<Void> tracked = published.whenComplete((ignored, failure) -> {
             synchronized (publishLock) {
                 Long current = publishTokens.get(name);
                 if (current == null || current != attempt) {
@@ -788,6 +819,15 @@ public final class ClientPeer implements Runnable {
                 publishStates.put(name, failure == null ? PublishState.PUBLISHED : PublishState.UNPUBLISHED);
             }
         });
+        // The caller's own stage, chained from `tracked` rather than from `published`. Chaining it
+        // from `published` made both stages dependents of the same source, CompletableFuture runs
+        // those last-registered-first, and the caller resumed before the state was written — a
+        // `publish().thenRun(() -> pushFrame(...))` refused with "still publishing. Await the
+        // future publish() returned", which is precisely what the caller had done.
+        //
+        // From `tracked`, both hold: the write happens first, and cancelling this leaves `tracked`
+        // alone so the write still happens.
+        return tracked.thenApply(ignored -> ignored);
     }
 
     /**

@@ -1,11 +1,21 @@
 plugins {
     id("reactor-java-conventions")
     id("reactor-maven-central")
+    // The fake library lives here, and the Kotlin facade's tests need the same one: a second copy
+    // over there would be a second thing to keep in step with the FFI.
+    `java-test-fixtures`
 }
 
 description =
     "Reactor client SDK for desktop JVM applications, bound to libreactor_ffi " +
         "through the Foreign Function & Memory API."
+
+dependencies {
+    // The fixtures are ordinary sources of this module and carry the same nullness annotations.
+    // Declared here rather than in the conventions: only this module has a testFixtures source set,
+    // and the configuration does not exist anywhere else.
+    testFixturesCompileOnly("org.jspecify:jspecify:1.0.1")
+}
 
 // ── Zero-configuration platform resolution ───────────────────────────────────
 //
@@ -42,6 +52,14 @@ nativePlatforms.forEach { (token, os, arch) ->
     // Named after the platform rather than numbered: a resolution failure names the variant, and
     // "no matching variant nativeRuntime-linux-aarch64" is a sentence someone can act on.
     components["java"].let { it as AdhocComponentWithVariants }.addVariantsFromConfiguration(variant) {}
+}
+
+// Test fixtures are for this repository's tests, not for a consumer's. Left in, they would publish
+// two more coordinates carrying a fake FFI.
+val javaComponent = components["java"] as AdhocComponentWithVariants
+
+listOf("testFixturesApiElements", "testFixturesRuntimeElements").forEach { name ->
+    javaComponent.withVariantsFromConfiguration(configurations[name]) { skip() }
 }
 
 publishing {

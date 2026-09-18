@@ -1,0 +1,104 @@
+public final class inc/reactor/sdk/kotlin/AudioFrameCopy {
+	public fun <init> ([SIII)V
+	public final fun getChannels ()I
+	public final fun getSampleCount ()I
+	public final fun getSampleRate ()I
+	public final fun getSamples ()[S
+}
+
+public final class inc/reactor/sdk/kotlin/FlowsKt {
+	public static final fun audioFrames (Linc/reactor/sdk/kotlin/ReactorTrack;)Lkotlinx/coroutines/flow/Flow;
+	public static final fun capabilitiesFlow (Linc/reactor/sdk/kotlin/ReactorClient;)Lkotlinx/coroutines/flow/Flow;
+	public static final fun errorFlow (Linc/reactor/sdk/kotlin/ReactorClient;)Lkotlinx/coroutines/flow/Flow;
+	public static final fun messageFlow (Linc/reactor/sdk/kotlin/ReactorClient;)Lkotlinx/coroutines/flow/Flow;
+	public static final fun runtimeMessageFlow (Linc/reactor/sdk/kotlin/ReactorClient;)Lkotlinx/coroutines/flow/Flow;
+	public static final fun sessionIdFlow (Linc/reactor/sdk/kotlin/ReactorClient;)Lkotlinx/coroutines/flow/Flow;
+	public static final fun statusFlow (Linc/reactor/sdk/kotlin/ReactorClient;)Lkotlinx/coroutines/flow/Flow;
+	public static final fun videoFrames (Linc/reactor/sdk/kotlin/ReactorTrack;)Lkotlinx/coroutines/flow/Flow;
+}
+
+public final class inc/reactor/sdk/kotlin/OptionsKt {
+	public static final fun asReactorDispatcher (Lkotlinx/coroutines/CoroutineDispatcher;)Linc/reactor/sdk/Dispatcher;
+	public static final fun reactorOptions (Ljava/lang/String;Ljava/lang/String;Lkotlin/jvm/functions/Function1;)Linc/reactor/sdk/ReactorOptions;
+	public static synthetic fun reactorOptions$default (Ljava/lang/String;Ljava/lang/String;Lkotlin/jvm/functions/Function1;ILjava/lang/Object;)Linc/reactor/sdk/ReactorOptions;
+}
+
+public final class inc/reactor/sdk/kotlin/ReactorClient : java/lang/AutoCloseable {
+	public static final field Companion Linc/reactor/sdk/kotlin/ReactorClient$Companion;
+	public fun <init> (Linc/reactor/sdk/Reactor;)V
+	public fun close ()V
+	public final fun connect (Ljava/lang/String;Ljava/lang/Integer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun connect (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun connect$default (Linc/reactor/sdk/kotlin/ReactorClient;Ljava/lang/String;Ljava/lang/Integer;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun disconnect (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun downloadClip (Linc/reactor/sdk/Clip;Ljava/nio/file/Path;Linc/reactor/sdk/ClipProgress;DLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun downloadClip$default (Linc/reactor/sdk/kotlin/ReactorClient;Linc/reactor/sdk/Clip;Ljava/nio/file/Path;Linc/reactor/sdk/ClipProgress;DLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun getJava ()Linc/reactor/sdk/Reactor;
+	public final fun getSessionId ()Ljava/lang/String;
+	public final fun getStats (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getStatus ()Linc/reactor/sdk/ConnectionStatus;
+	public final fun getTimeMicros ()J
+	public final fun getTracks ()Ljava/util/List;
+	public final fun isClosed ()Z
+	public final fun reconnect (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun requestClip (DLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun requestRecording (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun requestSchema (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun sendCommand (Ljava/lang/String;Linc/reactor/sdk/JsonValue;Ljava/util/Map;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun sendCommand (Ljava/lang/String;Linc/reactor/sdk/JsonValue;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun sendCommand$default (Linc/reactor/sdk/kotlin/ReactorClient;Ljava/lang/String;Linc/reactor/sdk/JsonValue;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun setBitrate (IIILkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun toString ()Ljava/lang/String;
+	public final fun track (Ljava/lang/String;)Linc/reactor/sdk/kotlin/ReactorTrack;
+	public final fun uploadBytes ([BLjava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun uploadFile (Ljava/nio/file/Path;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class inc/reactor/sdk/kotlin/ReactorClient$Companion {
+	public final fun fetchJwt (Ljava/lang/String;Ljava/lang/String;Linc/reactor/sdk/JsonValue;ZLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun fetchJwt (Ljava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun fetchJwt$default (Linc/reactor/sdk/kotlin/ReactorClient$Companion;Ljava/lang/String;Ljava/lang/String;Linc/reactor/sdk/JsonValue;ZLkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun open (Linc/reactor/sdk/ReactorOptions;)Linc/reactor/sdk/kotlin/ReactorClient;
+}
+
+public final class inc/reactor/sdk/kotlin/ReactorTrack {
+	public fun <init> (Linc/reactor/sdk/Track;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDirection ()Linc/reactor/sdk/TrackDirection;
+	public final fun getJava ()Linc/reactor/sdk/Track;
+	public final fun getKind ()Linc/reactor/sdk/TrackKind;
+	public final fun getMid ()Ljava/lang/String;
+	public final fun getName ()Ljava/lang/String;
+	public final fun getPublishState ()Linc/reactor/sdk/PublishState;
+	public fun hashCode ()I
+	public final fun isPaused ()Z
+	public final fun isPublished ()Z
+	public final fun onAudioFrame (Lkotlin/jvm/functions/Function1;)Linc/reactor/sdk/Subscription;
+	public final fun onVideoFrame (Lkotlin/jvm/functions/Function1;)Linc/reactor/sdk/Subscription;
+	public final fun pause (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun publish (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun pushFrame ([BII)V
+	public final fun pushFrame ([SII)V
+	public final fun resume (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun setBitrate (IILkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun toString ()Ljava/lang/String;
+	public final fun unpublish ()V
+}
+
+public final class inc/reactor/sdk/kotlin/ReactorTrackKt {
+	public static final fun get (Ljava/util/List;Ljava/lang/String;)Linc/reactor/sdk/kotlin/ReactorTrack;
+	public static final fun one (Ljava/util/List;)Linc/reactor/sdk/kotlin/ReactorTrack;
+	public static final fun withDirection (Ljava/util/List;Linc/reactor/sdk/TrackDirection;)Ljava/util/List;
+	public static final fun withKind (Ljava/util/List;Linc/reactor/sdk/TrackKind;)Ljava/util/List;
+}
+
+public final class inc/reactor/sdk/kotlin/VideoFrameCopy {
+	public fun <init> (II[BJJ[B)V
+	public final fun getBgra ()[B
+	public final fun getFrameId ()J
+	public final fun getHeight ()I
+	public final fun getTimestampUs ()J
+	public final fun getUserData ()[B
+	public final fun getWidth ()I
+}
+
