@@ -24,8 +24,18 @@ import java.util.Map;
  */
 final class Json {
 
+    /**
+     * How deeply nested a value may be.
+     *
+     * <p>Parsing is recursive, so depth is stack depth: {@code [[[[…]]]]} a few tens of thousands
+     * deep is a StackOverflowError, which is an Error rather than an exception and will not be
+     * caught by anything reasonable on the way out. A payload nested past this is refused instead.
+     */
+    private static final int MAX_DEPTH = 256;
+
     private final String source;
     private int at;
+    private int depth;
 
     private Json(String source) {
         this.source = source;
@@ -89,11 +99,13 @@ final class Json {
     }
 
     private Map<String, Object> readObject() {
+        enter();
         Map<String, Object> fields = new LinkedHashMap<>();
         expect('{');
         skipWhitespace();
         if (peek() == '}') {
             at++;
+            leave();
             return fields;
         }
         while (true) {
@@ -106,6 +118,7 @@ final class Json {
             skipWhitespace();
             char c = next();
             if (c == '}') {
+                leave();
                 return fields;
             }
             if (c != ',') {
@@ -115,11 +128,13 @@ final class Json {
     }
 
     private List<Object> readArray() {
+        enter();
         List<Object> items = new ArrayList<>();
         expect('[');
         skipWhitespace();
         if (peek() == ']') {
             at++;
+            leave();
             return items;
         }
         while (true) {
@@ -128,6 +143,7 @@ final class Json {
             skipWhitespace();
             char c = next();
             if (c == ']') {
+                leave();
                 return items;
             }
             if (c != ',') {
@@ -165,6 +181,16 @@ final class Json {
                 default -> throw new JsonException("unknown escape \\" + escape, at - 1);
             }
         }
+    }
+
+    private void enter() {
+        if (++depth > MAX_DEPTH) {
+            throw new JsonException("nested more than " + MAX_DEPTH + " deep", at);
+        }
+    }
+
+    private void leave() {
+        depth--;
     }
 
     private char readUnicodeEscape() {

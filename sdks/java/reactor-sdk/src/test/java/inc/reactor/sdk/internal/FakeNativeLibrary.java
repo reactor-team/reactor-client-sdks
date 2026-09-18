@@ -104,6 +104,9 @@ public final class FakeNativeLibrary implements AutoCloseable {
         bind("reactor_publish_track", Ffi.Symbol.PUBLISH_TRACK.descriptor(), "publishTrack");
         bind("reactor_unpublish_track", Ffi.Symbol.UNPUBLISH_TRACK.descriptor(), "unpublishTrack");
         bind("reactor_push_video_frame", Ffi.Symbol.PUSH_VIDEO_FRAME.descriptor(), "pushVideoFrame");
+        bind("reactor_send_command", Ffi.Symbol.SEND_COMMAND.descriptor(), "sendCommand");
+        bind("reactor_request_schema", Ffi.Symbol.REQUEST_SCHEMA.descriptor(), "requestSchema");
+        bind("reactor_get_stats", Ffi.Symbol.GET_STATS.descriptor(), "getStats");
     }
 
     /** Makes this library report an ABI version other than the one the binding expects. */
@@ -329,6 +332,31 @@ public final class FakeNativeLibrary implements AutoCloseable {
             throw new AssertionError("settling the completion threw out of the stub", t);
         }
     }
+
+    private void sendCommand(
+            MemorySegment handle,
+            MemorySegment name,
+            MemorySegment args,
+            MemorySegment uploads,
+            MemorySegment completion,
+            MemorySegment userdata) {
+        lastCommandArgs = readString(args);
+        lastCompletion = completion;
+        lastUserdata = userdata;
+    }
+
+    private void requestSchema(MemorySegment handle, MemorySegment completion, MemorySegment userdata) {
+        lastCompletion = completion;
+        lastUserdata = userdata;
+    }
+
+    private void getStats(MemorySegment handle, MemorySegment completion, MemorySegment userdata) {
+        lastCompletion = completion;
+        lastUserdata = userdata;
+    }
+
+    /** The JSON the client serialised the last command's arguments to. */
+    public @Nullable String lastCommandArgs;
 
     /**
      * Held open while a test wants a native call to be in flight.

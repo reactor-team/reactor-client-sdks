@@ -104,6 +104,26 @@ public final class Completions {
         return new Ticket(callback, MemorySegment.ofAddress(id));
     }
 
+    /**
+     * Settles one registered operation that never reached the FFI, and forgets it.
+     *
+     * <p>For the window between {@link #register} and the native call: if that call throws, nothing
+     * will ever complete this ticket, and without this the entry sat in the map with its future
+     * unsettled until the client closed. The caller who is holding that future waits forever.
+     *
+     * <p>One operation, not all of them. Settling the whole map was the other half of the same
+     * mistake — one failed invocation aborted every command that happened to be in flight.
+     *
+     * @param ticket what {@link #register} answered
+     * @param failure what to tell the caller
+     */
+    public void abandon(Ticket ticket, Throwable failure) {
+        Pending<?> operation = pending.remove(ticket.userdata().address());
+        if (operation != null) {
+            operation.future().completeExceptionally(failure);
+        }
+    }
+
     /** How many operations are still waiting. The endurance suite watches this for a leak. */
     public int pendingCount() {
         return pending.size();

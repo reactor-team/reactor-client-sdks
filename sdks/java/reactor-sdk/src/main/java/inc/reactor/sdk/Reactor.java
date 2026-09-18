@@ -178,26 +178,26 @@ public final class Reactor implements AutoCloseable {
     }
 
     /**
-     * @param handler called with every application message the model sends, as JSON
+     * @param handler called with every application message the model sends
      * @return a subscription that removes it
      */
-    public Subscription onMessage(Consumer<String> handler) {
+    public Subscription onMessage(Consumer<JsonValue> handler) {
         return peer.onMessage(handler);
     }
 
     /**
-     * @param handler called with every runtime (platform) message, as JSON
+     * @param handler called with every runtime (platform) message
      * @return a subscription that removes it
      */
-    public Subscription onRuntimeMessage(Consumer<String> handler) {
+    public Subscription onRuntimeMessage(Consumer<JsonValue> handler) {
         return peer.onRuntimeMessage(handler);
     }
 
     /**
-     * @param handler called with the session's capabilities, as JSON
+     * @param handler called with the session's capabilities
      * @return a subscription that removes it
      */
-    public Subscription onCapabilities(Consumer<String> handler) {
+    public Subscription onCapabilities(Consumer<JsonValue> handler) {
         return peer.onCapabilities(handler);
     }
 
@@ -207,6 +207,45 @@ public final class Reactor implements AutoCloseable {
      */
     public Subscription onSessionId(Consumer<Optional<String>> handler) {
         return peer.onSessionId(handler);
+    }
+
+    /**
+     * Sends a command and waits for the model's reply.
+     *
+     * @param name the command, as the model's schema declares it
+     * @param args its arguments
+     * @return the reply, empty when the model acknowledged without producing a message
+     */
+    public CompletableFuture<java.util.Optional<CommandReply>> sendCommand(String name, JsonValue args) {
+        return peer.sendCommand(name, args.toJsonString(), null);
+    }
+
+    /**
+     * Sends a command that takes no arguments.
+     *
+     * @param name the command
+     * @return the reply, empty when the model acknowledged without producing a message
+     */
+    public CompletableFuture<java.util.Optional<CommandReply>> sendCommand(String name) {
+        return peer.sendCommand(name, null, null);
+    }
+
+    /**
+     * Asks the model what commands it accepts and what they take.
+     *
+     * @return the schema, as the model declares it
+     */
+    public CompletableFuture<JsonValue> requestSchema() {
+        return peer.requestSchema();
+    }
+
+    /**
+     * Reads the connection.
+     *
+     * @return what the platform reported
+     */
+    public CompletableFuture<Stats> getStats() {
+        return peer.getStats();
     }
 
     /**
