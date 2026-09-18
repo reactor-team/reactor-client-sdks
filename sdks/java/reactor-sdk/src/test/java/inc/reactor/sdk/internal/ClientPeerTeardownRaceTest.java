@@ -56,4 +56,36 @@ final class ClientPeerTeardownRaceTest {
         assertEquals(1, fake.destroyCalls, "the handle was never destroyed");
         fake.close();
     }
+
+    @Test
+    @DisplayName("a call that never returns leaves the handle alone rather than freeing under it")
+    void aCallThatNeverReturnsStopsTheDestroy() throws Exception {
+        // The wait used to time out and fall through to reactor_destroy, which is the crash it
+        // exists to prevent — the comment beside it even said so while the code did the opposite.
+        // A leaked handle beats a jump into freed memory, and that is the trade this makes.
+        FakeNativeLibrary fake = new FakeNativeLibrary();
+        fake.blockInStatus = true;
+        ClientPeer peer = ClientPeer.create(
+                ReactorOptions.builder("https://api.example.test", "owner/model")
+                        .dispatcher(Runnable::run)
+                        .build(),
+                arena -> Ffi.open(fake.lookup()));
+
+        Thread reader = Thread.ofPlatform().start(peer::status);
+        assertTrue(fake.enteredStatus.await(10, TimeUnit.SECONDS), "the call never reached the library");
+
+        // A close that cannot wait long enough. The bound is this SDK's, not the test's, so this
+        // asserts the decision rather than the duration: interrupt the closer and it must still
+        // refuse to destroy.
+        Thread closer = Thread.ofPlatform().start(peer::close);
+        Thread.sleep(50);
+        closer.interrupt();
+        closer.join(TimeUnit.SECONDS.toMillis(10));
+
+        assertEquals(0, fake.destroyCalls, "reactor_destroy ran with a call still inside the FFI");
+
+        fake.blockStatus.countDown();
+        reader.join(TimeUnit.SECONDS.toMillis(10));
+        fake.close();
+    }
 }

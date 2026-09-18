@@ -81,6 +81,15 @@ public final class ClientPeer implements Runnable {
     private final java.util.concurrent.atomic.AtomicInteger inFlight = new java.util.concurrent.atomic.AtomicInteger();
     private final Object inFlightIdle = new Object();
 
+    /**
+     * How many native calls this thread is inside.
+     *
+     * <p>For the one case the counter above cannot answer: a callback that closes the client. The
+     * FFI can run a completion inside the call that started it, so `close()` from there would be a
+     * thread waiting for a call it is itself making. It has to defer instead.
+     */
+    private final ThreadLocal<int[]> leasesHere = ThreadLocal.withInitial(() -> new int[1]);
+
     private ClientPeer(Ffi ffi, Arena arena, ReactorOptions options) {
         this.ffi = ffi;
         this.arena = arena;
@@ -277,10 +286,18 @@ public final class ClientPeer implements Runnable {
         // Between the flag above and the destroy below, a call that was already past its own check
         // may still be inside the FFI holding this handle. Freeing it under that call is a
         // use-after-free, so this waits for them to come back first.
-        awaitNoCallsInFlight();
-        int quiesced = destroyOffVirtualThread();
+        // The comment this used to carry said destroying anyway was the wrong trade, and then the
+        // code destroyed anyway: the wait returned and the destroy below ran regardless. A blocked
+        // call is a thread that will come back, and freeing under it is the crash this exists to
+        // prevent — so when they have not all come back, the handle is not destroyed at all.
+        //
+        // That leaks a handle and an arena for the life of the process. It is the same trade this
+        // class already makes when reactor_destroy reports a callback still running, and for the
+        // same reason: a permanent leak beats a jump into freed memory.
+        boolean quiet = awaitNoCallsInFlight();
+        int quiesced = quiet ? destroyOffVirtualThread() : -1;
         dispatch.shutdown();
-        if (quiesced == 0) {
+        if (quiet && quiesced == 0) {
             arena.close();
         } else {
             // -1: a callback is still executing. The handle is gone either way, but the library
@@ -462,6 +479,7 @@ public final class ClientPeer implements Runnable {
      */
     private void acquireHandle(String what) {
         inFlight.incrementAndGet();
+        leasesHere.get()[0]++;
         if (closed.get()) {
             releaseHandle();
             throw ReactorException.of(
@@ -470,6 +488,7 @@ public final class ClientPeer implements Runnable {
     }
 
     private void releaseHandle() {
+        leasesHere.get()[0]--;
         if (inFlight.decrementAndGet() == 0) {
             synchronized (inFlightIdle) {
                 inFlightIdle.notifyAll();
@@ -477,29 +496,41 @@ public final class ClientPeer implements Runnable {
         }
     }
 
-    /** Waits for every in-flight native call to return, so teardown cannot pull the handle out. */
-    private void awaitNoCallsInFlight() {
+    /**
+     * Waits for every in-flight native call to return.
+     *
+     * @return whether they all did — and so whether the handle may be destroyed at all
+     */
+    private boolean awaitNoCallsInFlight() {
+        if (leasesHere.get()[0] > 0) {
+            // This thread is itself inside a native call, which means a callback is closing its own
+            // client. Waiting would be waiting for itself.
+            LOG.log(
+                    System.Logger.Level.WARNING,
+                    "close() was called from inside a native call; the handle is left"
+                            + " for the process rather than destroyed underneath the call making it");
+            return false;
+        }
         synchronized (inFlightIdle) {
             long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
             while (inFlight.get() > 0) {
                 long remaining = deadline - System.nanoTime();
                 if (remaining <= 0) {
-                    // Destroying anyway is the wrong trade: a blocked call is a thread that will
-                    // come back, and freeing under it is the crash this exists to prevent.
                     LOG.log(
                             System.Logger.Level.WARNING,
-                            "closing with {0} native call(s) still in flight",
+                            "closing with {0} native call(s) still in flight; the handle is left for the process",
                             inFlight.get());
-                    return;
+                    return false;
                 }
                 try {
                     inFlightIdle.wait(java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(remaining) + 1);
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
-                    return;
+                    return false;
                 }
             }
         }
+        return true;
     }
 
     private void requireOpen(String what) {
