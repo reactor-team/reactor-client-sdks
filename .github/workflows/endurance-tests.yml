@@ -39,6 +39,7 @@ on:
           - python
           - cpp
           - swift
+          - java
         default: python
       duration_minutes:
         description: "How long each scenario loops for, in minutes"
@@ -101,6 +102,7 @@ jobs:
       cpp_scenarios: ${{ steps.cpp-scenarios.outputs.scenarios }}
       swift_timeout_minutes: ${{ steps.compute-swift.outputs.timeout_minutes }}
       swift_scenarios: ${{ steps.swift-scenarios.outputs.scenarios }}
+      java_scenarios: ${{ steps.java-scenarios.outputs.scenarios }}
     steps:
       # Needed by "Discover endurance scenarios"/"Discover cpp endurance
       # scenarios"/"Discover swift endurance scenarios" below, which read
@@ -249,6 +251,18 @@ jobs:
           )
           echo "Discovered swift scenarios: $scenarios"
           echo "scenarios=$scenarios" >> "$GITHUB_OUTPUT"
+
+      # Globbed rather than listed: adding a scenario is adding a file, with no second place
+      # that has to be kept in step. The compact JSON array is what strategy.matrix needs.
+      - name: Discover java endurance scenarios
+        id: java-scenarios
+        run: |
+          set -euo pipefail
+          scenarios=$(find sdks/java/endurance-tests/src/test/java/inc/reactor/sdk/endurance \
+            -name '*Test.java' -exec basename {} .java \; \
+            | sort | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "scenarios=$scenarios" >> "$GITHUB_OUTPUT"
+          echo "::notice::java scenarios: $scenarios"
 
   python:
     name: Python SDK endurance tests (${{ matrix.scenario }})
@@ -1011,9 +1025,107 @@ jobs:
   # three here is safe: `failure()` only trips on the one that actually ran
   # and lost a scenario. Add a fourth SDK's job here alongside its `python`/
   # `cpp`/`swift`-shaped job above, per this file's own extension idiom.
+  java:
+    name: Java · ${{ matrix.scenario }}
+    needs: setup
+    if: inputs.sdk == 'java' || inputs.sdk == 'all'
+    strategy:
+      # One scenario's real leak must not cancel the others: which one failed is the answer this
+      # suite exists to give.
+      fail-fast: false
+      matrix:
+        scenario: ${{ fromJSON(needs.setup.outputs.java_scenarios) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(needs.setup.outputs.timeout_minutes) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Install clang for the libwebrtc C++ glue
+        uses: ./.github/actions/setup-libwebrtc-cxx
+      - run: mise run build:ffi
+
+      # gdb as the *direct* inferior of the JVM, never via mise or gradle: a debugger does not
+      # follow its inferior's grandchildren, so wrapping the task runner captures nothing. The
+      # crash this hunts dies on a Rust or libwebrtc thread, where the JVM's own hs_err is written
+      # but the one stack that matters belongs to a thread it knows nothing about.
+      - name: Install gdb
+        run: sudo apt-get update && sudo apt-get install -y gdb
+
+      - name: Run the scenario
+        id: run
+        env:
+          ENDURANCE_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+          ENDURANCE_DURATION_MINUTES: ${{ inputs.duration_minutes }}
+        run: |
+          set -eo pipefail
+          mise run test:java:endurance-tests -- --tests '*${{ matrix.scenario }}*' 2>&1 | tee /tmp/endurance.log
+
+      # if: always(), because the run that needs reading is the one that failed.
+      - name: Render the report into the job summary
+        if: always()
+        run: |
+          set -euo pipefail
+          for report in sdks/java/endurance-tests/endurance-results/*-report.md; do
+            [ -f "$report" ] && cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Collect native crash diagnostics
+        if: failure()
+        run: |
+          set -euo pipefail
+          mkdir -p sdks/java/endurance-tests/endurance-results
+          # hs_err is the JVM's own account and is worth keeping, but it names <no frame> for the
+          # thread that matters. Whatever gdb caught goes beside it.
+          python3 - <<'PY'
+          import json, os, pathlib, re
+          log = pathlib.Path("/tmp/endurance.log")
+          text = log.read_text(errors="replace") if log.is_file() else ""
+          text = re.sub(r"\x1b\[[0-9;]*m", "", text)[-200_000:]
+          hs_err = sorted(pathlib.Path(".").glob("**/hs_err_pid*.log"))
+          pathlib.Path("sdks/java/endurance-tests/endurance-results/native-crash-diagnostics.json").write_text(
+              json.dumps(
+                  {
+                      "what_is_this_file": (
+                          "An endurance run failed. If it died on a signal rather than on an "
+                          "assertion, the faulting thread is usually a Rust or libwebrtc one that "
+                          "the JVM knows nothing about — hs_err names it <no frame>. Read the "
+                          "gdb backtrace in 'log_tail' from the bottom up, starting at the thread "
+                          "whose stop reason is a signal. Reproduce with the command in 'reproduce'."
+                      ),
+                      "scenario": "${{ matrix.scenario }}",
+                      "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+                      "sha": "${{ github.sha }}",
+                      "reproduce": "ENDURANCE_DURATION_MINUTES=${{ inputs.duration_minutes }} mise run test:java:endurance-tests -- --tests '*${{ matrix.scenario }}*'",
+                      "hs_err_files": [str(p) for p in hs_err],
+                      "hs_err": hs_err[0].read_text(errors="replace")[:100_000] if hs_err else None,
+                      "log_tail": text,
+                  },
+                  indent=2,
+              )
+          )
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          # Suffixed per scenario: two matrix jobs uploading one name in a run is a hard error.
+          name: endurance-test-results-java-${{ matrix.scenario }}
+          path: sdks/java/endurance-tests/endurance-results/
+          retention-days: 14
+
   notify-slack-failure:
     name: "Notify #sdk-releases on failure"
-    needs: [setup, python, cpp, swift]
+    needs: [setup, python, cpp, swift, java]
     if: failure()
     runs-on: ubuntu-latest
     steps:

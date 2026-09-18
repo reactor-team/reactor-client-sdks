@@ -27,6 +27,7 @@ on:
       - "Release Python SDK"
       - 'Release C\+\+ SDK'
       - "Release Swift SDK"
+      - "Release Java SDK"
     types: [completed]
     # Restricts to the branch the release actually happened on. A
     # pull_request build of a release-*.yml workflow runs against the PR's
@@ -147,4 +148,43 @@ jobs:
           set -euo pipefail
           gh workflow run endurance-tests.yml --ref main \
             -f sdk=swift \
+            -f duration_minutes="$RELEASE_ENDURANCE_DURATION_MINUTES"
+
+  java:
+    name: Dispatch Java SDK endurance tests
+    if: >-
+      github.event.workflow_run.name == 'Release Java SDK' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      # Not the "Publish to Maven Central" job's own conclusion, for the same reason the C++ job
+      # above checks a step: release-java.yml's PUBLISH_JAVA_RELEASE kill switch (its "Is
+      # publishing switched on?" step) skips both publishing steps without failing the job — so a
+      # run with the switch off, or a dry-run dispatch, reports that job as a plain success while
+      # publishing nothing. Checking the step that actually ships distinguishes "ran and
+      # published" from "job succeeded, nothing published". Its name is read off release-java.yml
+      # rather than assumed to match another SDK's.
+      - name: Check whether this run actually published a release
+        id: released
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs" --paginate \
+            --jq '[.jobs[] | select(.name == "Publish to Maven Central") | .steps[]? | select(.name == "Publish")] | last | .conclusion // "missing"')
+          echo "publish step conclusion: $conclusion"
+          echo "released=$([ "$conclusion" = "success" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch the Java endurance suite
+        if: steps.released.outputs.released == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ENDURANCE_DURATION_MINUTES: ${{ vars.RELEASE_ENDURANCE_DURATION_MINUTES || '120' }}
+        run: |
+          set -euo pipefail
+          gh workflow run endurance-tests.yml --ref main \
+            -f sdk=java \
             -f duration_minutes="$RELEASE_ENDURANCE_DURATION_MINUTES"
