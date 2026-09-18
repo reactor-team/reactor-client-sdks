@@ -99,6 +99,8 @@ final class FakeNativeLibrary implements AutoCloseable {
         bind("reactor_destroy", Ffi.Symbol.DESTROY.descriptor(), "destroy");
         bind("reactor_connect", Ffi.Symbol.CONNECT.descriptor(), "connect");
         bind("reactor_disconnect", Ffi.Symbol.DISCONNECT.descriptor(), "disconnect");
+        bind("reactor_tracks", Ffi.Symbol.TRACKS.descriptor(), "tracks");
+        bind("reactor_paused_tracks", Ffi.Symbol.PAUSED_TRACKS.descriptor(), "pausedTracks");
     }
 
     /** Makes this library report an ABI version other than the one the binding expects. */
@@ -206,9 +208,37 @@ final class FakeNativeLibrary implements AutoCloseable {
         }
     }
 
+    /** Allocates zeroed memory that lives as long as this fake. */
+    MemorySegment allocate(long bytes) {
+        return arena.allocate(bytes);
+    }
+
     /** Allocates a C string that lives as long as this fake. */
     MemorySegment cString(String text) {
         return arena.allocateFrom(text);
+    }
+
+    /** What {@code reactor_tracks} answers, as the FFI's JSON array. */
+    String tracksJson = "[]";
+    /** What {@code reactor_paused_tracks} answers. */
+    String pausedJson = "[]";
+    /** Runs on every {@code reactor_tracks} read, before it answers — for racing the cache. */
+    @Nullable
+    Runnable duringTracksRead;
+
+    private MemorySegment tracks(MemorySegment handle) {
+        if (duringTracksRead != null) {
+            duringTracksRead.run();
+        }
+        MemorySegment segment = arena.allocateFrom(tracksJson);
+        ownedOut.add(segment.address());
+        return segment;
+    }
+
+    private MemorySegment pausedTracks(MemorySegment handle) {
+        MemorySegment segment = arena.allocateFrom(pausedJson);
+        ownedOut.add(segment.address());
+        return segment;
     }
 
     /**

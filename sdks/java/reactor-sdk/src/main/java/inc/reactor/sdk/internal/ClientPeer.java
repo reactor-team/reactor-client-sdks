@@ -2,6 +2,7 @@ package inc.reactor.sdk.internal;
 
 import inc.reactor.sdk.ConnectionStatus;
 import inc.reactor.sdk.ErrorCode;
+import inc.reactor.sdk.Media;
 import inc.reactor.sdk.ReactorException;
 import inc.reactor.sdk.ReactorOptions;
 import inc.reactor.sdk.ReactorSdk;
@@ -11,7 +12,9 @@ import java.lang.foreign.MemorySegment;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -39,6 +42,8 @@ public final class ClientPeer implements Runnable {
     private static final MethodHandle ON_TRACK;
     private static final MethodHandle ON_CAPABILITIES;
     private static final MethodHandle ON_SESSION_ID;
+    private static final MethodHandle ON_FRAME;
+    private static final MethodHandle ON_AUDIO;
 
     static {
         try {
@@ -53,6 +58,31 @@ public final class ClientPeer implements Runnable {
             ON_TRACK = lookup.findVirtual(ClientPeer.class, "onTrack", twoStrings);
             ON_CAPABILITIES = lookup.findVirtual(ClientPeer.class, "onCapabilities", oneString);
             ON_SESSION_ID = lookup.findVirtual(ClientPeer.class, "onSessionId", oneString);
+            ON_FRAME = lookup.findVirtual(
+                    ClientPeer.class,
+                    "onFrame",
+                    MethodType.methodType(
+                            void.class,
+                            MemorySegment.class,
+                            MemorySegment.class,
+                            int.class,
+                            int.class,
+                            long.class,
+                            long.class,
+                            MemorySegment.class,
+                            int.class,
+                            MemorySegment.class));
+            ON_AUDIO = lookup.findVirtual(
+                    ClientPeer.class,
+                    "onAudio",
+                    MethodType.methodType(
+                            void.class,
+                            MemorySegment.class,
+                            MemorySegment.class,
+                            int.class,
+                            int.class,
+                            int.class,
+                            MemorySegment.class));
         } catch (ReflectiveOperationException e) {
             throw new ExceptionInInitializerError(e);
         }
@@ -74,6 +104,8 @@ public final class ClientPeer implements Runnable {
     final Events<TrackAnnouncement> trackEvents = new Events<>("track");
     final Events<String> capabilitiesEvents = new Events<>("capabilities");
     final Events<Optional<String>> sessionIdEvents = new Events<>("sessionId");
+
+    private final TrackRegistry tracks = new TrackRegistry();
 
     private static final System.Logger LOG = System.getLogger(ClientPeer.class.getName());
 
@@ -151,10 +183,10 @@ public final class ClientPeer implements Runnable {
         setCallback(callbacks, "on_track", stub(ON_TRACK, Ffi.Callbacks.ON_TRACK));
         setCallback(callbacks, "on_capabilities", stub(ON_CAPABILITIES, Ffi.Callbacks.ON_CAPABILITIES));
         setCallback(callbacks, "on_session_id", stub(ON_SESSION_ID, Ffi.Callbacks.ON_SESSION_ID));
-        // on_frame and on_audio stay NULL until tracks exist. userdata is unused: each stub is
-        // already bound to this peer, so there is nothing to look up.
-        setCallback(callbacks, "on_frame", MemorySegment.NULL);
-        setCallback(callbacks, "on_audio", MemorySegment.NULL);
+        setCallback(callbacks, "on_frame", stub(ON_FRAME, Ffi.Callbacks.ON_FRAME));
+        setCallback(callbacks, "on_audio", stub(ON_AUDIO, Ffi.Callbacks.ON_AUDIO));
+        // userdata is unused: each stub is already bound to this peer, so there is nothing to
+        // look up when one fires.
         setCallback(callbacks, "userdata", MemorySegment.NULL);
 
         // Every argument goes into a typed local first. invokeExact is signature-polymorphic: it
@@ -408,6 +440,8 @@ public final class ClientPeer implements Runnable {
         ConnectionStatus parsed = text == null
                 ? ConnectionStatus.DISCONNECTED
                 : ConnectionStatus.of(text).orElse(ConnectionStatus.DISCONNECTED);
+        // Leaving `ready` can change what is declared, so the cached list stops being current.
+        tracks.invalidate();
         dispatch.run(() -> statusEvents.emit(parsed));
     }
 
@@ -434,6 +468,7 @@ public final class ClientPeer implements Runnable {
         String trackName = NativeStrings.borrow(name);
         String trackMid = NativeStrings.borrow(mid);
         if (trackName != null) {
+            tracks.noteMid(trackName, trackMid);
             TrackAnnouncement announcement = new TrackAnnouncement(trackName, trackMid);
             dispatch.run(() -> trackEvents.emit(announcement));
         }
@@ -442,6 +477,7 @@ public final class ClientPeer implements Runnable {
     private void onCapabilities(MemorySegment capsJson, MemorySegment userdata) {
         String copy = NativeStrings.borrow(capsJson);
         if (copy != null) {
+            tracks.invalidate();
             dispatch.run(() -> capabilitiesEvents.emit(copy));
         }
     }
@@ -449,6 +485,177 @@ public final class ClientPeer implements Runnable {
     private void onSessionId(MemorySegment sessionId, MemorySegment userdata) {
         Optional<String> id = Optional.ofNullable(NativeStrings.borrow(sessionId));
         dispatch.run(() -> sessionIdEvents.emit(id));
+    }
+
+    // ── Media, inline on the FFI's own delivery threads ─────────────────────
+
+    /**
+     * A video frame, delivered on the thread the FFI decoded it on.
+     *
+     * <p>Not marshalled to the dispatcher, on purpose. The FFI keeps only the newest frame while
+     * this runs, so blocking here drops frames — a bounded cost. Handing them to a queue instead
+     * would trade that for unbounded latency and memory.
+     */
+    @SuppressWarnings("restricted") // reinterpret: bounded to the size the FFI documents
+    private void onFrame(
+            MemorySegment trackName,
+            MemorySegment data,
+            int width,
+            int height,
+            long frameId,
+            long timestampUs,
+            MemorySegment userData,
+            int userDataLength,
+            MemorySegment userdata) {
+        String track = NativeStrings.borrow(trackName);
+        if (track == null || track.isEmpty()) {
+            // Empty means the transceiver could not be matched to a declared track. There is
+            // nothing to deliver it to.
+            return;
+        }
+        long bytes = (long) width * height * 4;
+        byte[] tag = userDataLength > 0 && !userData.equals(MemorySegment.NULL)
+                ? userData.reinterpret(userDataLength).toArray(java.lang.foreign.ValueLayout.JAVA_BYTE)
+                : null;
+        // Confined to this thread and closed when the handler returns. That is what makes a frame
+        // kept past the callback throw IllegalStateException instead of reading memory the FFI has
+        // already reused.
+        try (Arena frame = Arena.ofConfined()) {
+            MemorySegment pixels = data.reinterpret(bytes, frame, null).asReadOnly();
+            tracks.deliverVideo(track, Media.videoFrame(pixels, width, height, frameId, timestampUs, tag));
+        }
+    }
+
+    /** An audio frame, on the FFI's own thread, for the same reason as {@link #onFrame}. */
+    @SuppressWarnings("restricted") // reinterpret: bounded to the sample count the FFI reports
+    private void onAudio(
+            MemorySegment trackName,
+            MemorySegment samples,
+            int sampleCount,
+            int sampleRate,
+            int channels,
+            MemorySegment userdata) {
+        String track = NativeStrings.borrow(trackName);
+        if (track == null || track.isEmpty()) {
+            return;
+        }
+        try (Arena frame = Arena.ofConfined()) {
+            MemorySegment pcm = samples.reinterpret((long) sampleCount * Short.BYTES, frame, null)
+                    .asReadOnly();
+            tracks.deliverAudio(track, Media.audioFrame(pcm, sampleCount, sampleRate, channels));
+        }
+    }
+
+    // ── Tracks ──────────────────────────────────────────────────────────────
+
+    /**
+     * The tracks the session declared, in declaration order.
+     *
+     * @return the declarations
+     */
+    public List<TrackRegistry.Declaration> trackDeclarations() {
+        requireOpen("tracks");
+        return tracks.declarations(this::readTracks);
+    }
+
+    /**
+     * @param track the declared name
+     * @param handler what to call with its video frames
+     * @return a subscription that removes the handler
+     */
+    public Subscription onVideoFrame(String track, inc.reactor.sdk.VideoFrameHandler handler) {
+        return tracks.onVideoFrame(track, handler);
+    }
+
+    /**
+     * @param track the declared name
+     * @param handler what to call with its audio frames
+     * @return a subscription that removes the handler
+     */
+    public Subscription onAudioFrame(String track, inc.reactor.sdk.AudioFrameHandler handler) {
+        return tracks.onAudioFrame(track, handler);
+    }
+
+    /** @return the names of the tracks that are currently paused */
+    public Set<String> pausedTracks() {
+        requireOpen("pausedTracks");
+        String json = readOwnedString(Ffi.Symbol.PAUSED_TRACKS, "reactor_paused_tracks");
+        if (json == null) {
+            return Set.of();
+        }
+        Object parsed = Json.parse(json);
+        if (!(parsed instanceof List<?> names)) {
+            return Set.of();
+        }
+        Set<String> paused = new java.util.LinkedHashSet<>();
+        for (Object name : names) {
+            if (name instanceof String text) {
+                paused.add(text);
+            }
+        }
+        return java.util.Collections.unmodifiableSet(paused);
+    }
+
+    private List<TrackRegistry.Declaration> readTracks() {
+        String json = readOwnedString(Ffi.Symbol.TRACKS, "reactor_tracks");
+        if (json == null) {
+            return List.of();
+        }
+        Object parsed;
+        try {
+            parsed = Json.parse(json);
+        } catch (RuntimeException malformed) {
+            throw ReactorException.of(
+                    ErrorCode.DECODE_FAILED.code(),
+                    "the track list could not be read: " + malformed.getMessage(),
+                    null,
+                    "tracks",
+                    null);
+        }
+        if (!(parsed instanceof List<?> entries)) {
+            return List.of();
+        }
+        // Built as a sequence, never a map. A name-keyed collection would sort these and silently
+        // renumber what tracks().get(0) means for every caller.
+        List<TrackRegistry.Declaration> declarations = new java.util.ArrayList<>(entries.size());
+        for (Object entry : entries) {
+            if (!(entry instanceof java.util.Map<?, ?> fields)) {
+                continue;
+            }
+            Object name = fields.get("name");
+            Object kind = fields.get("kind");
+            Object direction = fields.get("direction");
+            if (!(name instanceof String trackName)
+                    || !(kind instanceof String kindText)
+                    || !(direction instanceof String directionText)) {
+                continue;
+            }
+            inc.reactor.sdk.TrackKind.of(kindText)
+                    .ifPresent(parsedKind -> inc.reactor.sdk.TrackDirection.of(directionText)
+                            .ifPresent(parsedDirection -> declarations.add(
+                                    new TrackRegistry.Declaration(trackName, parsedKind, parsedDirection, null))));
+        }
+        return List.copyOf(declarations);
+    }
+
+    /**
+     * Reads a string the FFI hands over ownership of, and frees it.
+     *
+     * <p>Under the same lease every other native call takes. Two calls happen here — the read and
+     * the free — and both name the handle's library, so a `close()` landing between them frees the
+     * string through a handle that is already gone. The copy is made before the lease is given up,
+     * which is what makes the returned String safe to hold afterwards.
+     */
+    private @Nullable String readOwnedString(Ffi.Symbol symbol, String what) {
+        acquireHandle(what);
+        try {
+            MemorySegment owned = (MemorySegment) ffi.handle(symbol).invokeExact(handle);
+            return NativeStrings.takeOwned(owned, ffi.handle(Ffi.Symbol.FREE_STRING));
+        } catch (Throwable t) {
+            throw new IllegalStateException(what + " could not be called", t);
+        } finally {
+            releaseHandle();
+        }
     }
 
     // ── Plumbing ────────────────────────────────────────────────────────────
