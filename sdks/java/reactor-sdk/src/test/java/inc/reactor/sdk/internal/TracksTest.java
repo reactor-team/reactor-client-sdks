@@ -1,6 +1,7 @@
 package inc.reactor.sdk.internal;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -204,5 +205,22 @@ final class TracksTest {
                 MemorySegment.NULL,
                 0,
                 MemorySegment.NULL);
+    }
+
+    @Test
+    @DisplayName("a mid the session takes back is forgotten, not remembered")
+    void aNullMidClearsTheOldOne() {
+        TrackRegistry registry = new TrackRegistry();
+        java.util.function.Supplier<java.util.List<TrackRegistry.Declaration>> read =
+                () -> java.util.List.of(new TrackRegistry.Declaration(
+                        "main_video", inc.reactor.sdk.TrackKind.VIDEO, inc.reactor.sdk.TrackDirection.RECVONLY, null));
+
+        registry.noteMid("main_video", "0");
+        assertEquals("0", registry.declarations(read).get(0).mid());
+
+        // What a renegotiation that removed the transceiver sends. Keeping "0" here left
+        // Track.mid() naming something that no longer exists, and only using it would say so.
+        registry.noteMid("main_video", null);
+        assertNull(registry.declarations(read).get(0).mid());
     }
 }

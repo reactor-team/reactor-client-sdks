@@ -59,10 +59,19 @@ public final class TrackRegistry {
         generation.incrementAndGet();
     }
 
-    /** Remembers the mid an on_track event carried. */
+    /**
+     * Remembers the mid an on_track event carried, or forgets the one it no longer has.
+     *
+     * <p>A null mid is an answer, not an absence. The session sends one when a renegotiation has
+     * taken the transceiver away, and keeping the previous value meant the rebuilt declarations
+     * carried it: {@code Track.mid()} went on naming a transceiver that no longer existed, which a
+     * caller can only find out by using it.
+     */
     void noteMid(String name, @Nullable String mid) {
         if (mid != null) {
             midsByName.put(name, mid);
+        } else {
+            midsByName.remove(name);
         }
         invalidate();
     }
