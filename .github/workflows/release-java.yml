@@ -56,8 +56,14 @@ on:
         default: true
 
 concurrency:
-  group: release-java
-  cancel-in-progress: false
+  # Keyed by ref, like the other four release workflows. Unkeyed, one run held the
+  # group for every ref and every event: a pull-request build that could never be
+  # scheduled sat queued for 22 hours, and because GitHub keeps only one *pending*
+  # run per group, each new arrival cancelled the last — which is how the v1 release
+  # push was cancelled with zero jobs and 1.0.0 silently never published.
+  group: release-java-${{ github.ref }}
+  # Supersede an outdated pull-request build, but never interrupt a release.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   MISE_VERSION: "2026.8.8"
@@ -189,24 +195,54 @@ jobs:
             runner: macos-latest
             library: libreactor_ffi.dylib
           - token: macos-x86_64
-            runner: macos-13
+            # macos-13 is retired: the job is never scheduled, sits queued until it is
+            # cancelled, and `release` needs every platform — so one dead runner label holds
+            # the whole release. macos-15-intel is the x86_64 runner now, and what
+            # release-cpp.yml and the Python wheels already build on.
+            runner: macos-15-intel
             library: libreactor_ffi.dylib
+            # libwebrtc's x86_64 build requires 13.0 and the dylib has to say so. Cargo
+            # defaults this target to 10.12, and a library that understates its minimum
+            # resolves for everyone and fails at load for someone — precisely the failure
+            # shipping all five natives in one jar exists to prevent.
+            macos_deployment_target: "13.0"
           - token: windows-x86_64
             runner: windows-latest
             library: reactor_ffi.dll
+            # libwebrtc.lib is built /MT, so Rust must match or the link fails with LNK2038.
+            # Same pin as release-cpp.yml and release-python.yml use for this target.
+            rustflags: "-C target-feature=+crt-static"
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache-on-failure: true
+      # Linux only, and the two steps belong together: setup-libwebrtc-cxx resolves the pinned
+      # conda clang++ through `mise which`, so it needs mise on PATH. Nothing else in this job
+      # does — `build:ffi` is a single `cargo build`, spelled out below. That matters because
+      # mise.lock carries no windows-x64 URLs at all, so `mise install --locked` (MISE_LOCKED
+      # above) refuses on the Windows runner before it reaches a single tool. release-cpp.yml
+      # and release-python.yml shell out to cargo on every platform for the same reason.
       - uses: jdx/mise-action@v4
+        if: runner.os == 'Linux'
         with:
           version: ${{ env.MISE_VERSION }}
       - name: Install clang for the libwebrtc C++ glue
         if: runner.os == 'Linux'
         uses: ./.github/actions/setup-libwebrtc-cxx
-      - run: mise run build:ffi
+
+      # Read by cargo below rather than left to the environment: the floor the natives jar
+      # promises is not one any default supplies.
+      - name: Set the macOS deployment target
+        if: matrix.macos_deployment_target != ''
+        run: echo "MACOSX_DEPLOYMENT_TARGET=${{ matrix.macos_deployment_target }}" >> "$GITHUB_ENV"
+
+      - name: Build libreactor_ffi
+        shell: bash
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: cargo build -p reactor-ffi --release
 
       # Cargo writes the build machine's absolute path as the install name, so a package can link
       # correctly and still send the loader somewhere that only ever existed on a runner. The Java
