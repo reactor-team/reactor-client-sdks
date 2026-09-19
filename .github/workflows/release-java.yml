@@ -56,8 +56,14 @@ on:
         default: true
 
 concurrency:
-  group: release-java
-  cancel-in-progress: false
+  # Keyed by ref, like the other four release workflows. Unkeyed, one run held the
+  # group for every ref and every event: a pull-request build that could never be
+  # scheduled sat queued for 22 hours, and because GitHub keeps only one *pending*
+  # run per group, each new arrival cancelled the last — which is how the v1 release
+  # push was cancelled with zero jobs and 1.0.0 silently never published.
+  group: release-java-${{ github.ref }}
+  # Supersede an outdated pull-request build, but never interrupt a release.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   MISE_VERSION: "2026.8.8"
