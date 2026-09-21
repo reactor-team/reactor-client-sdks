@@ -138,6 +138,7 @@ public final class Reactor: @unchecked Sendable {
         jwt: String? = nil,
         apiURL: String = Reactor.defaultAPIURL,
         local: Bool = false,
+        autoResumeTracks: Bool = true,
         eventQueue: DispatchQueue? = nil
     ) throws {
         try self.init(
@@ -145,6 +146,7 @@ public final class Reactor: @unchecked Sendable {
             jwt: jwt,
             apiURL: apiURL,
             local: local,
+            autoResumeTracks: autoResumeTracks,
             eventQueue: eventQueue,
             ffi: .system
         )
@@ -156,6 +158,7 @@ public final class Reactor: @unchecked Sendable {
         jwt: String?,
         apiURL: String,
         local: Bool,
+        autoResumeTracks: Bool = true,
         eventQueue: DispatchQueue?,
         ffi: FFI
     ) throws {
@@ -194,8 +197,8 @@ public final class Reactor: @unchecked Sendable {
             // never let an env var put a live microphone on the wire because a
             // model happened to declare a sendonly audio track.
             ffi.createWithADM(
-                resolvedURL, model, jwt, local ? 1 : 0, callbacksPointer, 0,
-                ReactorSDK.version, Reactor.sdkType)
+                resolvedURL, model, jwt, local ? 1 : 0, autoResumeTracks ? 1 : 0,
+                callbacksPointer, 0, ReactorSDK.version, Reactor.sdkType)
         }
 
         guard let handle else {
@@ -360,8 +363,10 @@ public final class Reactor: @unchecked Sendable {
     /// Tears down the live connection first if there is one, without ending the
     /// session server-side. Fails when there is no session to reconnect to.
     ///
-    /// Note that a reconnect resumes recvonly tracks and nothing else: anything
-    /// this client published before it is not published after it.
+    /// Note that a reconnect resumes recvonly tracks — unless ``init(model:jwt:apiURL:local:autoResumeTracks:eventQueue:)``
+    /// was given `autoResumeTracks: false` at creation, which this client keeps
+    /// for its whole lifetime — and nothing else: anything this client published
+    /// before it is not published after it.
     public func reconnect() async throws {
         _ = try await perform("reconnect") { handle, completion, userdata in
             self.ffi.reconnect(handle, completion, userdata)

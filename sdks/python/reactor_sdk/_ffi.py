@@ -58,6 +58,7 @@ def _load() -> ctypes.CDLL:
         ctypes.c_char_p,  # model_name
         ctypes.c_char_p,  # jwt (nullable)
         ctypes.c_int,  # local
+        ctypes.c_int,  # auto_resume_tracks
         ctypes.c_void_p,  # callbacks (nullable)
         ctypes.c_char_p,  # sdk_version (nullable)
         ctypes.c_char_p,  # sdk_type (nullable)
@@ -69,6 +70,7 @@ def _load() -> ctypes.CDLL:
         ctypes.c_char_p,
         ctypes.c_char_p,
         ctypes.c_int,
+        ctypes.c_int,  # auto_resume_tracks
         ctypes.c_void_p,
         ctypes.c_int,  # adm_mode
         ctypes.c_char_p,  # sdk_version (nullable)

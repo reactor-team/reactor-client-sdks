@@ -384,7 +384,7 @@ fn fallback_error_json(message: &str) -> String {
 /// type changed, a return value repurposed. Do **not** bump it when a function is
 /// added: a binding built against the older version calls every function it knows
 /// about exactly as before, so refusing to run would strand it for no reason.
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 
 /// The ABI version, so a binding can refuse a library it was not built for.
 ///
@@ -751,6 +751,11 @@ async fn write_segments<L: Fn() -> bool>(
 /// Create a client. The returned handle must be released with
 /// [`reactor_destroy`].
 ///
+/// `auto_resume_tracks`: non-zero resumes every recvonly track on connect and
+/// reconnect (the default a binding should pass unless the caller opted out);
+/// zero leaves recvonly tracks paused until the host resumes them itself. See
+/// [`ReactorOptions::auto_resume_tracks`].
+///
 /// # Safety
 ///
 /// `api_url` and `model_name` must be NUL-terminated C strings. `jwt` may be null
@@ -764,6 +769,7 @@ pub unsafe extern "C" fn reactor_create(
     model_name: *const c_char,
     jwt: *const c_char,
     local: c_int,
+    auto_resume_tracks: c_int,
     callbacks: *const ReactorCallbacks,
     sdk_version: *const c_char,
     sdk_type: *const c_char,
@@ -773,6 +779,7 @@ pub unsafe extern "C" fn reactor_create(
         model_name,
         jwt,
         local,
+        auto_resume_tracks,
         callbacks,
         None,
         sdk_version,
@@ -796,6 +803,7 @@ pub unsafe extern "C" fn reactor_create_with_adm(
     model_name: *const c_char,
     jwt: *const c_char,
     local: c_int,
+    auto_resume_tracks: c_int,
     callbacks: *const ReactorCallbacks,
     adm_mode: c_int,
     sdk_version: *const c_char,
@@ -811,6 +819,7 @@ pub unsafe extern "C" fn reactor_create_with_adm(
         model_name,
         jwt,
         local,
+        auto_resume_tracks,
         callbacks,
         adm,
         sdk_version,
@@ -831,6 +840,7 @@ unsafe fn create_impl(
     model_name: *const c_char,
     jwt: *const c_char,
     local: c_int,
+    auto_resume_tracks: c_int,
     callbacks: *const ReactorCallbacks,
     adm: Option<AdmMode>,
     sdk_version: *const c_char,
@@ -975,6 +985,7 @@ unsafe fn create_impl(
         options.sdk_version = version;
     }
     options.local = local != 0;
+    options.auto_resume_tracks = auto_resume_tracks != 0;
 
     let deps = ReactorDeps {
         http,

@@ -85,6 +85,7 @@ class FakeLibrary {
   std::string fetch_jwt_key;
   int fetch_jwt_local = 0;
   int created_with_local = 0;
+  int created_with_auto_resume_tracks = -1;
   int connects = 0;
   std::string connect_session_id;
 
@@ -183,12 +184,14 @@ class FakeLibrary {
   static std::uint32_t abi_version() { return REACTOR_ABI_VERSION; }
 
   static ReactorHandle* create_with_adm(const char* api_url, const char* model, const char* jwt,
-                                        int local, const ReactorCallbacks* callbacks, int adm_mode,
+                                        int local, int auto_resume_tracks,
+                                        const ReactorCallbacks* callbacks, int adm_mode,
                                         const char* sdk_version, const char* sdk_type) {
     auto& self = current();
     ++self.creates;
     self.adm_mode = adm_mode;
     self.created_with_local = local;
+    self.created_with_auto_resume_tracks = auto_resume_tracks;
     self.created_with_api_url = api_url == nullptr ? "" : api_url;
     self.created_with_model = model == nullptr ? "" : model;
     self.created_with_jwt = jwt == nullptr ? "" : jwt;
@@ -790,6 +793,25 @@ TEST_CASE("local mode selects localhost and never exchanges an API key") {
   CHECK(fixture.library.created_with_api_url == expected);
   CHECK(fixture.library.created_with_local == 1);
   CHECK(fixture.library.created_with_jwt.empty());
+}
+
+TEST_CASE("auto_resume_tracks defaults to on and is forwarded to create_with_adm") {
+  Fixture fixture;
+  reactor::Options options;
+  options.local = true;
+  reactor::Reactor client{"reactor/echo", options};
+  client.connect().get();
+  CHECK(fixture.library.created_with_auto_resume_tracks == 1);
+}
+
+TEST_CASE("auto_resume_tracks set false is forwarded as 0") {
+  Fixture fixture;
+  reactor::Options options;
+  options.local = true;
+  options.auto_resume_tracks = false;
+  reactor::Reactor client{"reactor/echo", options};
+  client.connect().get();
+  CHECK(fixture.library.created_with_auto_resume_tracks == 0);
 }
 
 TEST_CASE("a local client can connect without credentials") {

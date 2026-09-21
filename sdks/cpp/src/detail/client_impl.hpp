@@ -285,6 +285,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
         api_url_(options.local && options.api_url == DEFAULT_API_URL ? std::string{LOCAL_API_URL}
                                                                      : std::move(options.api_url)),
         local_(options.local),
+        auto_resume_tracks_(options.auto_resume_tracks),
         dispatcher_(std::move(options.executor)) {}
 
   // NOLINTNEXTLINE(bugprone-exception-escape)
@@ -615,9 +616,9 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     constexpr int synthetic_adm = 0;
     // REACTOR_SDK_VERSION is a string literal (see version.hpp.in), so it needs
     // no lifetime management here unlike the other c_str()s above.
-    handle_ = ffi().create_with_adm(api_url_.c_str(), model_.c_str(),
-                                    jwt_ ? jwt_->c_str() : nullptr, local_ ? 1 : 0, &callbacks,
-                                    synthetic_adm, REACTOR_SDK_VERSION, "cpp");
+    handle_ = ffi().create_with_adm(
+        api_url_.c_str(), model_.c_str(), jwt_ ? jwt_->c_str() : nullptr, local_ ? 1 : 0,
+        auto_resume_tracks_ ? 1 : 0, &callbacks, synthetic_adm, REACTOR_SDK_VERSION, "cpp");
     if (handle_ == nullptr) {
       throw ReactorError{"libreactor_ffi could not create a client (allocation failed)"};
     }
@@ -839,6 +840,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   std::string model_;
   std::string api_url_;
   bool local_ = false;
+  bool auto_resume_tracks_ = true;
 
   /// At most one of these: whichever constructor was used.
   std::optional<std::string> api_key_;

@@ -19,6 +19,7 @@ public final class ReactorOptions {
     private final @Nullable String jwt;
     private final @Nullable String apiKey;
     private final boolean local;
+    private final boolean autoResumeTracks;
     private final @Nullable Dispatcher dispatcher;
 
     private ReactorOptions(Builder builder) {
@@ -27,6 +28,7 @@ public final class ReactorOptions {
         this.jwt = builder.jwt;
         this.apiKey = builder.apiKey;
         this.local = builder.local;
+        this.autoResumeTracks = builder.autoResumeTracks;
         this.dispatcher = builder.dispatcher;
     }
 
@@ -65,6 +67,11 @@ public final class ReactorOptions {
         return local;
     }
 
+    /** @return whether every recvonly track resumes automatically on connect and reconnect */
+    public boolean autoResumeTracks() {
+        return autoResumeTracks;
+    }
+
     /** @return where control events are delivered, or {@code null} for the client's own thread */
     public @Nullable Dispatcher dispatcher() {
         return dispatcher;
@@ -78,6 +85,7 @@ public final class ReactorOptions {
         private @Nullable String jwt;
         private @Nullable String apiKey;
         private boolean local;
+        private boolean autoResumeTracks = true;
         private @Nullable Dispatcher dispatcher;
 
         private Builder(String apiUrl, String modelName) {
@@ -120,6 +128,17 @@ public final class ReactorOptions {
          */
         public Builder local(boolean local) {
             this.local = local;
+            return this;
+        }
+
+        /**
+         * @param autoResumeTracks whether every recvonly track resumes automatically on connect and
+         *     reconnect. Defaults to {@code true}; pass {@code false} when the host wants to resume
+         *     tracks itself instead.
+         * @return this builder
+         */
+        public Builder autoResumeTracks(boolean autoResumeTracks) {
+            this.autoResumeTracks = autoResumeTracks;
             return this;
         }
 

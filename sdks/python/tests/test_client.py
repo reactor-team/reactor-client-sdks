@@ -743,12 +743,23 @@ class TestNoAudioDeviceIsOpened:
     passes is the whole contract.
     """
 
-    def _create(self, monkeypatch: pytest.MonkeyPatch) -> dict:
+    def _create(self, monkeypatch: pytest.MonkeyPatch, *, auto_resume_tracks: bool = True) -> dict:
         captured: dict = {}
         fake_lib = mock.Mock()
 
-        def create_with_adm(api_url, model, jwt, local, callbacks, adm_mode, sdk_version, sdk_type):
+        def create_with_adm(
+            api_url,
+            model,
+            jwt,
+            local,
+            auto_resume_tracks,
+            callbacks,
+            adm_mode,
+            sdk_version,
+            sdk_type,
+        ):
             captured["adm_mode"] = adm_mode
+            captured["auto_resume_tracks"] = auto_resume_tracks
             return 1234
 
         fake_lib.reactor_create_with_adm = create_with_adm
@@ -758,7 +769,7 @@ class TestNoAudioDeviceIsOpened:
         )
         monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: fake_lib)
 
-        reactor = Reactor("m")
+        reactor = Reactor("m", auto_resume_tracks=auto_resume_tracks)
         try:
             reactor._create_handle()
         finally:
@@ -795,6 +806,16 @@ class TestNoAudioDeviceIsOpened:
         """
         with pytest.raises(TypeError, match="adm_mode"):
             Reactor("m", adm_mode=1)  # type: ignore[call-arg]
+
+    async def test_auto_resume_tracks_defaults_to_true(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert self._create(monkeypatch)["auto_resume_tracks"] == 1
+
+    async def test_auto_resume_tracks_false_is_forwarded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert self._create(monkeypatch, auto_resume_tracks=False)["auto_resume_tracks"] == 0
 
 
 class TestConnectionId:

@@ -65,6 +65,10 @@ struct FFI: Sendable {
     /// declaring a sendonly audio track would end up putting a live microphone on
     /// the wire without anyone asking.
     ///
+    /// `autoResumeTracks` — non-zero resumes every recvonly track on connect and
+    /// reconnect; zero leaves recvonly tracks paused until the host resumes them
+    /// itself.
+    ///
     /// `sdkVersion` and `sdkType` are reported to the coordinator as
     /// `client_info`. Every binding shares this entry point, which would
     /// otherwise report `ffi` for all of them — Python sends `python`, so this
@@ -75,6 +79,7 @@ struct FFI: Sendable {
             _ model: UnsafePointer<CChar>?,
             _ jwt: UnsafePointer<CChar>?,
             _ local: Int32,
+            _ autoResumeTracks: Int32,
             _ callbacks: UnsafePointer<ReactorCallbacks>?,
             _ admMode: Int32,
             _ sdkVersion: UnsafePointer<CChar>?,
@@ -238,9 +243,11 @@ extension FFI {
         fetchJWT: { apiURL, apiKey, optionsJSON, local, completion, userdata in
             reactor_fetch_jwt(apiURL, apiKey, optionsJSON, local, completion, userdata)
         },
-        createWithADM: { apiURL, model, jwt, local, callbacks, admMode, sdkVersion, sdkType in
+        createWithADM: {
+            apiURL, model, jwt, local, autoResumeTracks, callbacks, admMode, sdkVersion, sdkType in
             reactor_create_with_adm(
-                apiURL, model, jwt, local, callbacks, admMode, sdkVersion, sdkType)
+                apiURL, model, jwt, local, autoResumeTracks, callbacks, admMode, sdkVersion,
+                sdkType)
         },
         destroy: { handle in reactor_destroy(handle) },
         connect: { handle, sessionID, connectionID, completion, userdata in

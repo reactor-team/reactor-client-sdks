@@ -86,7 +86,7 @@ extern "C" {
  * it knows about exactly as before, and refusing to run would strand it for no
  * reason.
  */
-#define REACTOR_ABI_VERSION 2
+#define REACTOR_ABI_VERSION 3
 
 uint32_t reactor_abi_version(void);
 
@@ -254,19 +254,23 @@ void reactor_fetch_jwt(
 /*
  * Create a new Reactor client.
  *
- *   api_url     — coordinator base URL, e.g. "https://api.reactor.inc"
- *   model_name  — model to connect to
- *   jwt         — JWT token, or NULL for unauthenticated (local dev)
- *   local       — non-zero to enable local-dev mode (skips TLS cert checks, etc.)
- *   callbacks   — event callbacks struct, or NULL (no events)
- *   sdk_version — reported as client_info.sdk_version to the coordinator, or NULL
- *                 to fall back to reactor-core's own workspace version. Pass your
- *                 binding's published package version (npm/PyPI/etc.), not this
- *                 default — the coordinator needs to see what actually shipped.
- *   sdk_type    — reported as client_info.sdk_type, or NULL to fall back to
- *                 "ffi". Pass a language tag ("python", "cpp", …) so the
- *                 coordinator can tell bindings apart; every FFI binding
- *                 defaults to the same "ffi" otherwise.
+ *   api_url            — coordinator base URL, e.g. "https://api.reactor.inc"
+ *   model_name         — model to connect to
+ *   jwt                — JWT token, or NULL for unauthenticated (local dev)
+ *   local              — non-zero to enable local-dev mode (skips TLS cert checks, etc.)
+ *   auto_resume_tracks — non-zero resumes every recvonly track on connect and
+ *                        reconnect; zero leaves recvonly tracks paused until the
+ *                        host resumes them itself. Pass non-zero unless the
+ *                        caller explicitly opted out.
+ *   callbacks          — event callbacks struct, or NULL (no events)
+ *   sdk_version        — reported as client_info.sdk_version to the coordinator, or NULL
+ *                        to fall back to reactor-core's own workspace version. Pass your
+ *                        binding's published package version (npm/PyPI/etc.), not this
+ *                        default — the coordinator needs to see what actually shipped.
+ *   sdk_type           — reported as client_info.sdk_type, or NULL to fall back to
+ *                        "ffi". Pass a language tag ("python", "cpp", …) so the
+ *                        coordinator can tell bindings apart; every FFI binding
+ *                        defaults to the same "ffi" otherwise.
  *
  * Returns NULL only on allocation failure (extremely unlikely).
  * The returned handle must be destroyed with reactor_destroy().
@@ -276,6 +280,7 @@ ReactorHandle *reactor_create(
     const char           *model_name,
     const char           *jwt,        /* nullable */
     int                   local,
+    int                   auto_resume_tracks,
     const ReactorCallbacks *callbacks, /* nullable */
     const char           *sdk_version, /* nullable */
     const char           *sdk_type     /* nullable */
@@ -300,6 +305,7 @@ ReactorHandle *reactor_create_with_adm(
     const char           *model_name,
     const char           *jwt,        /* nullable */
     int                   local,
+    int                   auto_resume_tracks,
     const ReactorCallbacks *callbacks, /* nullable */
     int                   adm_mode,
     const char           *sdk_version, /* nullable */
