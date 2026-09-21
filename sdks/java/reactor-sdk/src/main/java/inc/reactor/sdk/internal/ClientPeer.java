@@ -570,11 +570,21 @@ public final class ClientPeer implements Runnable {
             releaseHandle();
         }
         if (quiesced != 0) {
-            // -1: a callback is still executing against the arena the next handle would share.
-            teardownStarted.set(true);
-            closed.set(true);
-            LIVE.decrementAndGet();
+            // -1: a callback is still executing against the arena the next handle would share, so
+            // the arena stays for the life of the process and this client is finished.
             OrphanedArenas.keepForever(arena);
+            // Claiming the teardown before closing is what lets close() do the rest — the flags,
+            // the dispatcher's thread, the live count — instead of this branch setting them by
+            // hand: finishTeardown finds the claim already taken and returns, rather than
+            // destroying a NULL handle, being told 0, and releasing the arena just retained.
+            //
+            // Delegating also makes the live count right. Setting `closed` here by hand skipped
+            // the compare-and-set that makes close() exactly-once, so a close that had already run
+            // — one waiting on the lease released just above, say — left this decrementing a
+            // second time, and a count that only goes wrong under a destroy that reported -1 is
+            // one nobody would find.
+            teardownStarted.set(true);
+            close();
             throw ReactorException.of(
                     ErrorCode.INVALID_STATE.code(),
                     "a callback was still running when the token was re-minted, so the client"

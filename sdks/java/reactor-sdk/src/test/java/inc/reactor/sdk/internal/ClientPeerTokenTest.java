@@ -39,6 +39,35 @@ final class ClientPeerTokenTest {
         return ClientPeer.create(options, arena -> Ffi.open(fake.lookup()));
     }
 
+    /** @return how many of the SDK's own event threads are alive right now */
+    private static int eventThreads() {
+        return (int) Thread.getAllStackTraces().keySet().stream()
+                .filter(thread -> thread.isAlive() && "reactor-events".equals(thread.getName()))
+                .count();
+    }
+
+    /**
+     * Waits for the SDK's event threads to reach {@code expected}.
+     *
+     * <p>A wait rather than a read: the executor starts its thread on first use and stops it a
+     * moment after {@code shutdown()}, and neither is synchronous with the call that caused it.
+     * Failing on the timeout is what makes this an assertion — a thread that is never shut down
+     * never reaches zero, which is the leak this is here to catch.
+     */
+    private static void awaitEventThreads(int expected) {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        while (eventThreads() != expected) {
+            if (System.nanoTime() > deadline) {
+                assertEquals(
+                        expected,
+                        eventThreads(),
+                        "the dispatcher's own thread outlived the client — setting the teardown"
+                                + " flags by hand skips the shutdown that close() does");
+            }
+            Thread.onSpinWait();
+        }
+    }
+
     @Test
     @DisplayName("a key is exchanged for a token scoped to this model, and the client is built with it")
     void aKeyIsExchangedScopedToThisModel() {
@@ -274,6 +303,51 @@ final class ClientPeerTokenTest {
                     fake.jwtRequests,
                     "and each asks for the scope its own connect needed");
             client.close();
+        }
+    }
+
+    @Test
+    @DisplayName("a re-mint whose destroy reports a live callback retains the arena and closes once")
+    void aRemintThatCannotDestroyClosesThroughTheOrdinaryPath() {
+        try (FakeNativeLibrary fake = new FakeNativeLibrary()) {
+            int liveBefore = ClientPeer.liveClients();
+            int orphanedBefore = OrphanedArenas.count();
+            // The default dispatcher, which owns a thread — the one this branch used to leave
+            // running, because it set the teardown flags by hand instead of going through close().
+            ClientPeer client = peer(
+                    fake,
+                    ReactorOptions.builder(API_URL, MODEL).apiKey("rk_test").build());
+            client.connect(null, null);
+            fake.settleLastCall(true, "{}", null);
+            fake.clearPendingCall();
+
+            // The executor creates its thread on first use, not at construction, so an event has
+            // to go through it before there is anything to assert about.
+            fake.fireCallback(
+                    "on_status", Ffi.Callbacks.ON_STATUS, fake.cString("ready"), java.lang.foreign.MemorySegment.NULL);
+            awaitEventThreads(1);
+
+            // -1: a callback is still running against the arena the next handle would share, so
+            // there is no rebuilding this client.
+            fake.destroyResult = -1;
+            fake.nextMintedJwt = "unscoped-token";
+            CompletableFuture<Void> adopting = client.connect("session-1", null);
+
+            assertTrue(adopting.isCompletedExceptionally(), "the client cannot be rebuilt, so the connect fails");
+            assertTrue(client.isClosed(), "and the client is finished, not left half-torn-down");
+            assertEquals(
+                    orphanedBefore + 1,
+                    OrphanedArenas.count(),
+                    "the library still holds pointers into the arena, so it has to stay");
+            assertEquals(
+                    liveBefore,
+                    ClientPeer.liveClients(),
+                    "counted down once, by the close this delegates to rather than by hand");
+            awaitEventThreads(0);
+
+            // The close already happened; this must not count a second time.
+            client.close();
+            assertEquals(liveBefore, ClientPeer.liveClients(), "and closing again changes nothing");
         }
     }
 
