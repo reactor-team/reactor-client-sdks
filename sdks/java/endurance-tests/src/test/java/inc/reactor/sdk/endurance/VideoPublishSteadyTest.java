@@ -28,9 +28,8 @@ final class VideoPublishSteadyTest {
                         + "no reconnect.",
                 false,
                 run -> {
-                    Reactor reactor = Reactor.open(Endurance.options(apiKey));
+                    Reactor reactor = Endurance.connected(apiKey);
                     try {
-                        reactor.connect().join();
                         Track input = reactor.track("webcam");
                         input.publish().join();
                         byte[] frame = new byte[WIDTH * HEIGHT * 4];

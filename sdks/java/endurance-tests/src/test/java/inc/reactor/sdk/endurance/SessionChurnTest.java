@@ -24,9 +24,8 @@ final class SessionChurnTest {
                         + "unpublish — repeated without ever disconnecting.",
                 false,
                 run -> {
-                    Reactor reactor = Reactor.open(Endurance.options(apiKey));
+                    Reactor reactor = Endurance.connected(apiKey);
                     try {
-                        reactor.connect().join();
                         Track input = reactor.track("webcam");
                         Track output = reactor.track("main_video");
                         byte[] frame = new byte[320 * 240 * 4];

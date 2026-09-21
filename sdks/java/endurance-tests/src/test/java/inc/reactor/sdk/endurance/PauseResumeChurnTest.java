@@ -21,9 +21,8 @@ final class PauseResumeChurnTest {
         String apiKey = Endurance.apiKey();
         Endurance.run(
                 "pause-resume-churn", "pause then resume a recvonly track, nothing else in the loop.", false, run -> {
-                    Reactor reactor = Reactor.open(Endurance.options(apiKey));
+                    Reactor reactor = Endurance.connected(apiKey);
                     try {
-                        reactor.connect().join();
                         Track output = reactor.track("main_video");
 
                         while (run.keepGoing()) {

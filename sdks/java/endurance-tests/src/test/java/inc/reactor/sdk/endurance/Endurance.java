@@ -2,6 +2,7 @@ package inc.reactor.sdk.endurance;
 
 import com.sun.management.OperatingSystemMXBean;
 import com.sun.management.UnixOperatingSystemMXBean;
+import inc.reactor.sdk.Reactor;
 import inc.reactor.sdk.ReactorOptions;
 import inc.reactor.sdk.ReactorSdk;
 import inc.reactor.sdk.internal.ClientPeer;
@@ -143,6 +144,57 @@ final class Endurance {
      */
     static ReactorOptions options(String apiKey) {
         return ReactorOptions.builder(apiUrl(), model()).apiKey(apiKey).build();
+    }
+
+    /** How many times a connect is attempted before the run gives up on it. */
+    private static final int CONNECT_ATTEMPTS = 5;
+
+    private static final Duration CONNECT_RETRY_DELAY = Duration.ofSeconds(5);
+
+    /**
+     * A connected client, retrying a connect that failed for a reason the platform is entitled to
+     * have.
+     *
+     * <p>The last binding to go without this was this one, and the first five-minute run said why:
+     * the platform answered one create-session with a 500 — a DynamoDB transaction conflict, with
+     * seven scenarios creating sessions at once — and 115 cycles of accumulated trend went with it.
+     * A run that is unattended for hours specifically so nobody has to watch it must not end on a
+     * few seconds of someone else's contention. The C++ suite's {@code connect_with_retries} was
+     * written after the same thing happened there, and Swift's
+     * {@code makeAndConnectWithRetries} after it happened there.
+     *
+     * <p>A failed attempt is disconnected before it is abandoned, not merely closed: the connect
+     * may have got as far as creating a session before it failed, and {@code close()} does not end
+     * one server-side. Left alone that session runs until its own idle timeout, holding capacity
+     * the next attempt wants.
+     *
+     * <p>Retrying something genuinely wrong — a refused key — costs five fast attempts and then
+     * fails with the same error it would have failed with anyway.
+     *
+     * @param apiKey the key the client exchanges
+     * @return a connected client the caller closes
+     */
+    static Reactor connected(String apiKey) {
+        RuntimeException last = null;
+        for (int attempt = 1; attempt <= CONNECT_ATTEMPTS; attempt++) {
+            Reactor reactor = Reactor.open(options(apiKey));
+            try {
+                reactor.connect().join();
+                return reactor;
+            } catch (RuntimeException failed) {
+                last = failed;
+                try {
+                    reactor.disconnect().join();
+                } catch (RuntimeException nothingToLeave) {
+                    // There may have been no session to end. The close below still has to happen.
+                }
+                reactor.close();
+                if (attempt < CONNECT_ATTEMPTS) {
+                    pause(CONNECT_RETRY_DELAY);
+                }
+            }
+        }
+        throw new IllegalStateException("the platform refused " + CONNECT_ATTEMPTS + " connects in a row", last);
     }
 
     /** @return whether the run still has time left */

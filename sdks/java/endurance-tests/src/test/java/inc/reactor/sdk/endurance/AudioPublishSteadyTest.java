@@ -28,9 +28,8 @@ final class AudioPublishSteadyTest {
                 "publish once and hold it, pushing PCM for the whole run — no pause, no unpublish, " + "no reconnect.",
                 false,
                 run -> {
-                    Reactor reactor = Reactor.open(Endurance.options(apiKey));
+                    Reactor reactor = Endurance.connected(apiKey);
                     try {
-                        reactor.connect().join();
                         Track microphone = reactor.track("mic");
                         microphone.publish().join();
 

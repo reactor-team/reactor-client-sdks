@@ -24,9 +24,8 @@ final class PublishChurnTest {
                 "publish then unpublish, nothing else: no frames, no commands, no reconnects.",
                 false,
                 run -> {
-                    Reactor reactor = Reactor.open(Endurance.options(apiKey));
+                    Reactor reactor = Endurance.connected(apiKey);
                     try {
-                        reactor.connect().join();
                         Track input = reactor.track("webcam");
 
                         while (run.keepGoing()) {
