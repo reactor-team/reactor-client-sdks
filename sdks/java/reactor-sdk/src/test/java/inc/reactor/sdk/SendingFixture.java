@@ -31,6 +31,12 @@ abstract class SendingFixture {
                         .dispatcher(Runnable::run)
                         .build(),
                 arena -> Ffi.open(fake.lookup()));
+        // The native client exists from the first connect, not from `open` — that is where the
+        // token it is handed is settled. Until then the library has not been given this client's
+        // callbacks, so nothing here could fire one.
+        reactor.connect();
+        fake.settleLastCall(true, "{}", null);
+        fake.clearPendingCall();
     }
 
     @AfterEach

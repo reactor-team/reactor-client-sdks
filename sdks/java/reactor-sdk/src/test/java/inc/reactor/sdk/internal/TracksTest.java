@@ -24,12 +24,23 @@ final class TracksTest {
                     + "{\"name\":\"alpha_audio\",\"kind\":\"audio\",\"direction\":\"recvonly\"},"
                     + "{\"name\":\"mike_input\",\"kind\":\"video\",\"direction\":\"sendonly\"}]";
 
+    /**
+     * A peer that has been through a connect.
+     *
+     * <p>Tracks arrive through the library and frames arrive through the callbacks it was handed,
+     * and the library is handed neither until a handle exists — which is the first connect, where
+     * the token the native client is built with is settled.
+     */
     private static ClientPeer peer(FakeNativeLibrary fake) {
-        return ClientPeer.create(
+        ClientPeer client = ClientPeer.create(
                 ReactorOptions.builder("https://api.example.test", "owner/model")
                         .dispatcher(Runnable::run)
                         .build(),
                 arena -> Ffi.open(fake.lookup()));
+        client.connect(null, null);
+        fake.settleLastCall(true, "{}", null);
+        fake.clearPendingCall();
+        return client;
     }
 
     @Test

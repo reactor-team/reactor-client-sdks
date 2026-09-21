@@ -2,7 +2,6 @@ package inc.reactor.sdk.endurance;
 
 import com.sun.management.OperatingSystemMXBean;
 import com.sun.management.UnixOperatingSystemMXBean;
-import inc.reactor.sdk.Reactor;
 import inc.reactor.sdk.ReactorOptions;
 import inc.reactor.sdk.ReactorSdk;
 import inc.reactor.sdk.internal.ClientPeer;
@@ -108,7 +107,7 @@ final class Endurance {
     }
 
     /** @return the key, or an aborted test — this suite cannot run without reaching the platform */
-    static String jwt() {
+    static String apiKey() {
         String key = System.getenv("ENDURANCE_TESTS_REACTOR_API_KEY");
         if (key == null || key.isBlank()) {
             key = System.getenv("INTEGRATION_TESTS_REACTOR_API_KEY");
@@ -116,7 +115,7 @@ final class Endurance {
         if (key == null || key.isBlank()) {
             Assumptions.abort("no API key set — skipping the endurance suite");
         }
-        return Reactor.fetchJwt(apiUrl(), key).join();
+        return key;
     }
 
     static String apiUrl() {
@@ -127,9 +126,23 @@ final class Endurance {
         return System.getenv().getOrDefault("ENDURANCE_TESTS_REACTOR_MODEL", "reactor/echo");
     }
 
-    /** @return options for a client this suite creates */
-    static ReactorOptions options(String jwt) {
-        return ReactorOptions.builder(apiUrl(), model()).jwt(jwt).build();
+    /**
+     * Options for a client this suite creates.
+     *
+     * <p>The key rather than a token minted once for the whole run, which is what this used to
+     * pass and what made lifecycle churn the only scenario that could not finish. A token carries a
+     * session grant with a capacity the server sets, and a session spends its slot for the life of
+     * the grant — disconnecting does not give it back. Every scenario but one holds a single
+     * session for the whole run and never notices; the one that opens a client per cycle exhausted
+     * the grant and was refused with "Session limit reached for this token". Handing the client the
+     * key instead mints per connect, which is what the Python, C++ and Swift suites have always
+     * done.
+     *
+     * @param apiKey the key to exchange
+     * @return the options
+     */
+    static ReactorOptions options(String apiKey) {
+        return ReactorOptions.builder(apiUrl(), model()).apiKey(apiKey).build();
     }
 
     /** @return whether the run still has time left */

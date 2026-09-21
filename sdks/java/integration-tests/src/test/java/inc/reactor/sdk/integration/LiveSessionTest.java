@@ -143,6 +143,27 @@ final class LiveSessionTest extends LiveFixture {
     }
 
     @Test
+    @DisplayName("a client given an API key exchanges it itself, and the session it creates is real")
+    @Timeout(180)
+    void anApiKeyIsExchangedByTheClient() {
+        // The path a caller takes when they never touch `fetchJwt`: the key goes into the options
+        // and the client mints on connect, scoped to this model. Worth reaching the platform for
+        // rather than proving against a fake, because what the coordinator does with a
+        // model-scoped token — and whether the token this SDK asks for is one it accepts — is not
+        // something a fake library can answer.
+        Live.pace();
+        try (Reactor reactor = Reactor.open(ReactorOptions.builder(Live.API_URL, Live.MODEL)
+                .apiKey(Live.apiKey())
+                .build())) {
+            reactor.connect().join();
+
+            assertEquals(ConnectionStatus.READY, reactor.status());
+            assertTrue(reactor.sessionId().isPresent(), "a session the client created must have an id");
+            reactor.disconnect().join();
+        }
+    }
+
+    @Test
     @DisplayName("the client reports statistics the platform actually sent")
     @Timeout(180)
     void statisticsComeBack() {

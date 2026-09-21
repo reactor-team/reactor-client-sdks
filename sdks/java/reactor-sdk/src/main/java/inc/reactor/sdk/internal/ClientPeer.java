@@ -102,9 +102,59 @@ public final class ClientPeer implements Runnable {
 
     private final Ffi ffi;
     private final Arena arena;
-    private final MemorySegment handle;
     private final Completions completions;
     private final Dispatch dispatch;
+
+    /**
+     * The callbacks struct, built once and reused by every handle this peer creates.
+     *
+     * <p>Arena-scoped rather than handle-scoped because the stubs in it are bound to this peer,
+     * which outlives any one handle: re-minting a token replaces the handle underneath, and the
+     * struct it registered has to still be there for the next one.
+     */
+    private final MemorySegment callbacks;
+
+    /**
+     * The native client, or {@code NULL} before the first connect and between a token change and
+     * the connect that acts on it.
+     *
+     * <p>Volatile because the FFI's threads read it, and {@code NULL} rather than an exception
+     * because every entry point in the header null-checks its handle: {@code reactor_status}
+     * answers "disconnected", {@code reactor_destroy} answers 0, and the rest refuse. A client that
+     * never connected therefore behaves exactly as it did when the handle was built eagerly,
+     * without this class having to decide what each operation should say.
+     */
+    private volatile MemorySegment handle = MemorySegment.NULL;
+
+    /** Serializes creating, replacing and destroying {@link #handle}, and the token beside it. */
+    private final Object handleLock = new Object();
+
+    private final ReactorOptions options;
+
+    /** The key to exchange, or {@code null} when the caller brought a token or wants none. */
+    private final @Nullable String apiKey;
+
+    /** A token the caller supplied is theirs: never re-minted over. */
+    private final boolean callerSuppliedJwt;
+
+    /** The current token. Guarded by {@link #handleLock}. */
+    private @Nullable String jwt;
+
+    /** The scope {@link #jwt} was minted with, or {@code null} for a token this peer did not mint. */
+    private @Nullable TokenScope mintedFor;
+
+    /**
+     * What a token is allowed to reach.
+     *
+     * <p>Creating a session takes the narrower one, which can only start sessions on this model, so
+     * a leak is worth that rather than everything the key can reach. Adopting a session created
+     * elsewhere takes the broader one, because a scoped token cannot reach a session it did not
+     * create — a 403 on `get session`, and exactly what the multi-connection example hits.
+     */
+    private enum TokenScope {
+        THIS_MODEL,
+        UNSCOPED
+    }
 
     final Events<ConnectionStatus> statusEvents = new Events<>("status");
     final Events<ReactorException> errorEvents = new Events<>("error");
@@ -171,9 +221,17 @@ public final class ClientPeer implements Runnable {
     private ClientPeer(Ffi ffi, Arena arena, ReactorOptions options) {
         this.ffi = ffi;
         this.arena = arena;
+        this.options = options;
         this.completions = new Completions(arena);
         this.dispatch = Dispatch.of(options.dispatcher());
-        this.handle = createHandle(options);
+        this.callbacks = buildCallbacks();
+        this.apiKey = options.apiKey();
+        this.jwt = options.jwt();
+        this.callerSuppliedJwt = options.jwt() != null;
+        // The handle is deferred to the first connect, because that is where the token is settled:
+        // the native client is handed its token at creation, and which token is right depends on
+        // whether that connect creates a session or adopts one. A client that never connects also
+        // never allocates a session's worth of machinery, which is how the other bindings behave.
         LIVE.incrementAndGet();
     }
 
@@ -216,29 +274,60 @@ public final class ClientPeer implements Runnable {
         }
     }
 
-    private MemorySegment createHandle(ReactorOptions options) {
-        MemorySegment callbacks = arena.allocate(Ffi.Callbacks.LAYOUT);
-        setCallback(callbacks, "on_status", stub(ON_STATUS, Ffi.Callbacks.ON_STATUS));
-        setCallback(callbacks, "on_error", stub(ON_ERROR, Ffi.Callbacks.ON_ERROR));
-        setCallback(callbacks, "on_message", stub(ON_MESSAGE, Ffi.Callbacks.ON_MESSAGE));
-        setCallback(callbacks, "on_runtime_message", stub(ON_RUNTIME_MESSAGE, Ffi.Callbacks.ON_RUNTIME_MESSAGE));
-        setCallback(callbacks, "on_track", stub(ON_TRACK, Ffi.Callbacks.ON_TRACK));
-        setCallback(callbacks, "on_capabilities", stub(ON_CAPABILITIES, Ffi.Callbacks.ON_CAPABILITIES));
-        setCallback(callbacks, "on_session_id", stub(ON_SESSION_ID, Ffi.Callbacks.ON_SESSION_ID));
-        setCallback(callbacks, "on_frame", stub(ON_FRAME, Ffi.Callbacks.ON_FRAME));
-        setCallback(callbacks, "on_audio", stub(ON_AUDIO, Ffi.Callbacks.ON_AUDIO));
+    private MemorySegment buildCallbacks() {
+        MemorySegment struct = arena.allocate(Ffi.Callbacks.LAYOUT);
+        setCallback(struct, "on_status", stub(ON_STATUS, Ffi.Callbacks.ON_STATUS));
+        setCallback(struct, "on_error", stub(ON_ERROR, Ffi.Callbacks.ON_ERROR));
+        setCallback(struct, "on_message", stub(ON_MESSAGE, Ffi.Callbacks.ON_MESSAGE));
+        setCallback(struct, "on_runtime_message", stub(ON_RUNTIME_MESSAGE, Ffi.Callbacks.ON_RUNTIME_MESSAGE));
+        setCallback(struct, "on_track", stub(ON_TRACK, Ffi.Callbacks.ON_TRACK));
+        setCallback(struct, "on_capabilities", stub(ON_CAPABILITIES, Ffi.Callbacks.ON_CAPABILITIES));
+        setCallback(struct, "on_session_id", stub(ON_SESSION_ID, Ffi.Callbacks.ON_SESSION_ID));
+        setCallback(struct, "on_frame", stub(ON_FRAME, Ffi.Callbacks.ON_FRAME));
+        setCallback(struct, "on_audio", stub(ON_AUDIO, Ffi.Callbacks.ON_AUDIO));
         // userdata is unused: each stub is already bound to this peer, so there is nothing to
         // look up when one fires.
-        setCallback(callbacks, "userdata", MemorySegment.NULL);
+        setCallback(struct, "userdata", MemorySegment.NULL);
+        return struct;
+    }
 
+    /**
+     * Creates the native client if this peer has not got one, with whatever token it holds.
+     *
+     * <p>Under a lease, because this allocates from the shared arena: a {@link #close()} on another
+     * thread is otherwise free to reach {@code arena.close()} while this is still writing into it.
+     * The lease is also what refuses a connect on a client that is already closing, which is the
+     * same answer every other operation gives.
+     */
+    private void ensureHandle() {
+        acquireHandle("connect");
+        try {
+            synchronized (handleLock) {
+                if (!handle.equals(MemorySegment.NULL)) {
+                    return;
+                }
+                handle = createHandle(jwt);
+            }
+        } finally {
+            releaseHandle();
+        }
+    }
+
+    /**
+     * Builds one native client around {@code token}.
+     *
+     * <p>Its strings are allocated from the shared arena, so each call leaves another copy behind
+     * for the life of the client. Bounded because this is reached once per token, and a token
+     * changes only when a connect needs a scope the last one was not minted for.
+     */
+    private MemorySegment createHandle(@Nullable String token) {
         // Every argument goes into a typed local first. invokeExact is signature-polymorphic: it
         // builds the call descriptor from the *static* types at the call site, and a conditional
         // expression in that position infers as Object — which does not match, and fails at the
         // call with a WrongMethodTypeException rather than at compile time.
         MemorySegment apiUrl = arena.allocateFrom(options.apiUrl());
         MemorySegment modelName = arena.allocateFrom(options.modelName());
-        String token = options.jwt();
-        MemorySegment jwt = token == null ? MemorySegment.NULL : arena.allocateFrom(token);
+        MemorySegment jwtArg = token == null ? MemorySegment.NULL : arena.allocateFrom(token);
         int local = options.local() ? 1 : 0;
         // 0 is the synthetic audio device module. Nothing opens a microphone because a model
         // happened to declare a sendonly audio track.
@@ -249,7 +338,7 @@ public final class ClientPeer implements Runnable {
         MemorySegment created;
         try {
             created = (MemorySegment) ffi.handle(Ffi.Symbol.CREATE_WITH_ADM)
-                    .invokeExact(apiUrl, modelName, jwt, local, callbacks, admMode, sdkVersion, sdkType);
+                    .invokeExact(apiUrl, modelName, jwtArg, local, callbacks, admMode, sdkVersion, sdkType);
         } catch (Throwable t) {
             throw new IllegalStateException("reactor_create_with_adm could not be called", t);
         }
@@ -284,17 +373,135 @@ public final class ClientPeer implements Runnable {
      * @return settles when the transport is up
      */
     public CompletableFuture<Void> connect(@Nullable String sessionId, @Nullable Integer connectionId) {
-        return call("connect", (completion, userdata) -> {
-            // Confined and closed at the end of the call: these arguments are read during the
-            // call and never kept, so the narrowest possible lifetime is the right one.
-            try (Arena call = Arena.ofConfined()) {
-                MemorySegment id = sessionId == null ? MemorySegment.NULL : call.allocateFrom(sessionId);
-                MemorySegment connection = connectionId == null
-                        ? MemorySegment.NULL
-                        : call.allocateFrom(java.lang.foreign.ValueLayout.JAVA_INT, connectionId);
-                invoke(Ffi.Symbol.CONNECT, handle, id, connection, completion, userdata);
+        // The token first, because the native client is handed one at creation and the handle
+        // below does not exist until this settles. Already-completed when there is nothing to
+        // exchange, which is every client that was given a token or is talking to a local runtime.
+        return resolveToken(sessionId)
+                .thenCompose(ignored -> call("connect", (completion, userdata) -> {
+                    ensureHandle();
+                    // Confined and closed at the end of the call: these arguments are read during the
+                    // call and never kept, so the narrowest possible lifetime is the right one.
+                    try (Arena call = Arena.ofConfined()) {
+                        MemorySegment id = sessionId == null ? MemorySegment.NULL : call.allocateFrom(sessionId);
+                        MemorySegment connection = connectionId == null
+                                ? MemorySegment.NULL
+                                : call.allocateFrom(java.lang.foreign.ValueLayout.JAVA_INT, connectionId);
+                        invoke(Ffi.Symbol.CONNECT, handle, id, connection, completion, userdata);
+                    }
+                }));
+    }
+
+    /**
+     * Turns an API key into a token, if that is what this client was given.
+     *
+     * <p>The scope depends on the <em>call</em> rather than on the client: a token minted for one
+     * connect is not necessarily right for the next, and this mints again when the requirement
+     * changes. Caching regardless would quietly hand a model-scoped token to a connect that needs
+     * an unscoped one.
+     *
+     * <p>Skipped in local mode, which does not authenticate, and for a token the caller supplied,
+     * which is theirs rather than this client's to replace.
+     *
+     * @param sessionId the session this connect will adopt, or {@code null} to create one
+     * @return settles when the client holds the right token
+     */
+    private CompletableFuture<Void> resolveToken(@Nullable String sessionId) {
+        if (apiKey == null || callerSuppliedJwt || options.local()) {
+            return CompletableFuture.completedFuture(null);
+        }
+        TokenScope wanted = sessionId == null ? TokenScope.THIS_MODEL : TokenScope.UNSCOPED;
+        synchronized (handleLock) {
+            if (jwt != null && mintedFor == wanted) {
+                return CompletableFuture.completedFuture(null);
             }
-        });
+        }
+        // Null options mint the token the key's roles allow; naming the model narrows it to one
+        // that can only start sessions here. `max_sessions` is deliberately left out: the server's
+        // own default is what every other binding gets, and asking for more would make this SDK
+        // the one that quietly raised the ceiling.
+        String mintOptions = wanted == TokenScope.THIS_MODEL
+                ? JsonValue.object()
+                        .putArray("models", List.of(JsonValue.of(options.modelName())))
+                        .build()
+                        .toJsonString()
+                : null;
+        return Authentication.fetchJwt(ffi, options.apiUrl(), apiKey, mintOptions, options.local())
+                .thenAccept(minted -> adoptMintedToken(minted, wanted));
+    }
+
+    /**
+     * Takes a token this client minted, and drops the handle if it changed.
+     *
+     * <p>The native client is handed its token at creation, so a new one only reaches it through a
+     * new handle. Compared under the lock rather than before it: this runs on whichever thread
+     * answered the exchange, while another connect may be reading the same field.
+     */
+    private void adoptMintedToken(String minted, TokenScope scope) {
+        MemorySegment stale;
+        synchronized (handleLock) {
+            boolean changed = !minted.equals(jwt);
+            jwt = minted;
+            mintedFor = scope;
+            if (!changed) {
+                return;
+            }
+            stale = handle;
+            handle = MemorySegment.NULL;
+        }
+        if (stale.equals(MemorySegment.NULL)) {
+            return;
+        }
+        discard(stale);
+    }
+
+    /**
+     * Destroys a handle this peer has stopped using, once no call is inside it.
+     *
+     * <p>The same rule teardown follows, and for the same reason: a call that is already past its
+     * own check may still be inside the FFI holding this handle, and freeing it under that call is
+     * a use-after-free. Unlike teardown there is no deferring it — the arena this peer is about to
+     * build another handle in is the one the library would still hold pointers into — so a wait
+     * that gives up, or a destroy that reports a callback still running, ends the client instead of
+     * risking a jump into freed memory.
+     */
+    private void discard(MemorySegment stale) {
+        if (!awaitNoCallsInFlight("re-minting a token")) {
+            close();
+            throw ReactorException.of(
+                    ErrorCode.INVALID_STATE.code(),
+                    "the token had to be re-minted while native calls were still in flight,"
+                            + " and the client could not be rebuilt underneath them",
+                    null,
+                    "connect",
+                    null);
+        }
+        // Between that wait and this lease a close() may have started, and this runs on whichever
+        // thread answered the exchange rather than the one connecting. Taking the lease resolves it
+        // either way: won, and close() waits for this destroy the way it waits for any other call;
+        // lost, and the lease is refused and the stale handle is left for the session's own idle
+        // timeout — a handle that outlives its client by minutes, rather than destroying one whose
+        // callbacks would then fire into an arena close() is about to release.
+        acquireHandle("re-minting a token");
+        int quiesced;
+        try {
+            quiesced = destroyOffVirtualThread(stale);
+        } finally {
+            releaseHandle();
+        }
+        if (quiesced != 0) {
+            // -1: a callback is still executing against the arena the next handle would share.
+            teardownStarted.set(true);
+            closed.set(true);
+            LIVE.decrementAndGet();
+            OrphanedArenas.keepForever(arena);
+            throw ReactorException.of(
+                    ErrorCode.INVALID_STATE.code(),
+                    "a callback was still running when the token was re-minted, so the client"
+                            + " could not be rebuilt",
+                    null,
+                    "connect",
+                    null);
+        }
     }
 
     /** @return settles when the session has been left */
@@ -389,7 +596,7 @@ public final class ClientPeer implements Runnable {
         // reentrant close left reactor_destroy never called at all, so the session stayed alive on
         // the platform, its tasks kept running and the handle leaked for the life of the process.
         // Deferring has to mean later, not never.
-        if (awaitNoCallsInFlight()) {
+        if (awaitNoCallsInFlight("close()")) {
             finishTeardown();
             return;
         }
@@ -412,7 +619,7 @@ public final class ClientPeer implements Runnable {
         if (!teardownStarted.compareAndSet(false, true)) {
             return;
         }
-        int quiesced = destroyOffVirtualThread();
+        int quiesced = destroyOffVirtualThread(handle);
         if (quiesced == 0) {
             arena.close();
         } else {
@@ -422,15 +629,15 @@ public final class ClientPeer implements Runnable {
         }
     }
 
-    private int destroyOffVirtualThread() {
+    private int destroyOffVirtualThread(MemorySegment target) {
         if (!Thread.currentThread().isVirtual()) {
-            return destroy();
+            return destroy(target);
         }
         // Joining a platform thread parks this virtual thread properly, where calling the blocking
         // downcall directly would pin its carrier for the length of the wait.
         try {
             var result = new int[1];
-            Thread worker = Thread.ofPlatform().name("reactor-destroy").start(() -> result[0] = destroy());
+            Thread worker = Thread.ofPlatform().name("reactor-destroy").start(() -> result[0] = destroy(target));
             worker.join();
             return result[0];
         } catch (InterruptedException interrupted) {
@@ -440,9 +647,11 @@ public final class ClientPeer implements Runnable {
         }
     }
 
-    private int destroy() {
+    private int destroy(MemorySegment target) {
         try {
-            return (int) ffi.handle(Ffi.Symbol.DESTROY).invokeExact(handle);
+            // NULL is accepted and answers 0, so a client that never connected tears down through
+            // the same path as one that did rather than needing a branch of its own here.
+            return (int) ffi.handle(Ffi.Symbol.DESTROY).invokeExact(target);
         } catch (Throwable t) {
             // Nothing useful is left to do, and throwing out of close() would hide whatever the
             // caller was closing because of.
@@ -1476,16 +1685,18 @@ public final class ClientPeer implements Runnable {
     /**
      * Waits for every in-flight native call to return.
      *
+     * @param what names the caller, for the refusal
      * @return whether they all did — and so whether the handle may be destroyed at all
      */
-    private boolean awaitNoCallsInFlight() {
+    private boolean awaitNoCallsInFlight(String what) {
         if (leasesHere.get()[0] > 0) {
             // This thread is itself inside a native call, which means a callback is closing its own
             // client. Waiting would be waiting for itself.
             LOG.log(
                     System.Logger.Level.WARNING,
-                    "close() was called from inside a native call; the handle is left"
-                            + " for the process rather than destroyed underneath the call making it");
+                    "{0} happened inside a native call; the handle is left"
+                            + " for the process rather than destroyed underneath the call making it",
+                    what);
             return false;
         }
         synchronized (inFlightIdle) {
@@ -1495,7 +1706,8 @@ public final class ClientPeer implements Runnable {
                 if (remaining <= 0) {
                     LOG.log(
                             System.Logger.Level.WARNING,
-                            "closing with {0} native call(s) still in flight; the handle is left for the process",
+                            "{0} with {1} native call(s) still in flight; the handle is left for the process",
+                            what,
                             inFlight.get());
                     return false;
                 }

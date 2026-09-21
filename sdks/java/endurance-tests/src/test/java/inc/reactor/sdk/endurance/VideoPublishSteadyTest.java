@@ -21,14 +21,14 @@ final class VideoPublishSteadyTest {
     @Test
     @DisplayName("video publish steady")
     void videoPublishSteady() throws Exception {
-        String jwt = Endurance.jwt();
+        String apiKey = Endurance.apiKey();
         Endurance.run(
                 "video-publish-steady",
                 "publish once and hold it, pushing video for the whole run — no pause, no unpublish, "
                         + "no reconnect.",
                 false,
                 run -> {
-                    Reactor reactor = Reactor.open(Endurance.options(jwt));
+                    Reactor reactor = Reactor.open(Endurance.options(apiKey));
                     try {
                         reactor.connect().join();
                         Track input = reactor.track("webcam");

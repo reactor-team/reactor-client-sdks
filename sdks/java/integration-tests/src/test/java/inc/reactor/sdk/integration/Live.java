@@ -65,6 +65,15 @@ final class Live {
      * @return the token
      */
     static String jwt() {
+        return Reactor.fetchJwt(API_URL, apiKey()).join();
+    }
+
+    /**
+     * The key itself, for the tests that hand it to the client rather than minting first.
+     *
+     * @return the key
+     */
+    static String apiKey() {
         String key = System.getenv("INTEGRATION_TESTS_REACTOR_API_KEY");
         boolean inCi = "true".equals(System.getenv("CI"));
         if (key == null || key.isBlank()) {
@@ -76,7 +85,7 @@ final class Live {
             }
             Assumptions.abort("INTEGRATION_TESTS_REACTOR_API_KEY is not set — skipping the live suite");
         }
-        return Reactor.fetchJwt(API_URL, key).join();
+        return key;
     }
 
     /**
@@ -108,7 +117,13 @@ final class Live {
         }
     }
 
-    private static synchronized void pace() {
+    /**
+     * Waits for this process's turn to create a session.
+     *
+     * <p>Package-private for the one test that builds its own client rather than going through
+     * {@link #connected}: the quota it paces against is per key, not per client.
+     */
+    static synchronized void pace() {
         long earliest = lastCreatedAt + SESSION_INTERVAL.toNanos();
         long wait = earliest - System.nanoTime();
         if (wait > 0) {

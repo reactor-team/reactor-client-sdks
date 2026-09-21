@@ -17,14 +17,14 @@ final class SessionChurnTest {
     @Test
     @DisplayName("session churn")
     void sessionChurn() throws Exception {
-        String jwt = Endurance.jwt();
+        String apiKey = Endurance.apiKey();
         Endurance.run(
                 "session-churn",
                 "One client, connected once: publish, subscribe, push a frame, send a command, "
                         + "unpublish — repeated without ever disconnecting.",
                 false,
                 run -> {
-                    Reactor reactor = Reactor.open(Endurance.options(jwt));
+                    Reactor reactor = Reactor.open(Endurance.options(apiKey));
                     try {
                         reactor.connect().join();
                         Track input = reactor.track("webcam");
