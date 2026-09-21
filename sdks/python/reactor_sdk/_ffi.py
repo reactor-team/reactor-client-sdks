@@ -184,6 +184,20 @@ def _load() -> ctypes.CDLL:
         ctypes.c_void_p,  # userdata
     ]
 
+    lib.reactor_download_clip.restype = None
+    lib.reactor_download_clip.argtypes = [
+        ctypes.c_void_p,  # handle (nullable)
+        ctypes.c_char_p,  # playlist_url
+        ctypes.c_char_p,  # jwt (nullable)
+        ctypes.c_char_p,  # out_path
+        ctypes.c_double,  # predicted_ready_at_ms
+        ctypes.c_double,  # ready_timeout_seconds (negative/inf = no bound)
+        ctypes.c_int,  # local
+        ctypes.c_void_p,  # progress fn ptr (nullable)
+        ctypes.c_void_p,  # completion fn ptr
+        ctypes.c_void_p,  # userdata
+    ]
+
     lib.reactor_status.restype = ctypes.c_char_p
     lib.reactor_status.argtypes = [ctypes.c_void_p]
 
@@ -304,6 +318,9 @@ ON_AUDIO_FN = ctypes.CFUNCTYPE(
 COMPLETION_FN = ctypes.CFUNCTYPE(
     None, ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p
 )
+
+# (uint32_t, uint32_t, void*) -> void  [reactor_download_clip's progress]
+PROGRESS_FN = ctypes.CFUNCTYPE(None, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p)
 
 
 class ReactorCallbacks(ctypes.Structure):
