@@ -116,6 +116,7 @@ class FakeRecorder {
 
   static ReactorHandle* create_with_adm(const char* /*api_url*/, const char* /*model*/,
                                         const char* /*jwt*/, int /*local*/,
+                                        int /*auto_resume_tracks*/,
                                         const ReactorCallbacks* callbacks, int /*adm_mode*/,
                                         const char* /*sdk_version*/, const char* /*sdk_type*/) {
     auto& self = current();
