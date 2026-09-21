@@ -59,6 +59,15 @@ export class Reactor implements Disposable {
   private connectStartTime: number | undefined;
   private waitingStartTime: number | undefined;
 
+  /** Controllers for `downloadClipAsFile()` calls currently in flight, so
+   *  `[Symbol.dispose]()` can abort them directly. It has to: disposal is
+   *  synchronous (the `using` contract) and clears `emitter` without ever
+   *  emitting a final `"statusChanged"`, so the listener `downloadClipAsFile()`
+   *  registers for the ordinary disconnect case is both gone and never fired —
+   *  a download in flight at dispose time would otherwise poll forever, past
+   *  the lifetime of the `Reactor` that started it. */
+  private readonly downloadAborts = new Set<AbortController>();
+
   private readonly emitter = new Emitter<ReactorEventMap>();
   /** Serializes connect()/reconnect()/disconnect() (and the free() inside
    *  disconnect()/[Symbol.dispose]) against each other. Calling into the
@@ -560,13 +569,60 @@ export class Reactor implements Disposable {
     }
   }
 
-  /** Thin delegation to the standalone `downloadClipAsFile()` — see its own doc comment. */
+  /**
+   * Delegates to the standalone `downloadClipAsFile()` — see its own doc
+   * comment for the fetch/parse/remux itself — with one thing this method
+   * adds on top: the wait is also bounded by this session's own liveness,
+   * the same guarantee `Reactor.download()` gives the Python/C++/Swift SDKs
+   * by passing their own session handle. Without it, a clip whose boundary
+   * chunk never closes (the session stopped generating before reaching it)
+   * polls a permanent `202` forever — `slackMs` / `maxRetries` are opt-in on
+   * the standalone function for exactly that reason, and easy to forget to
+   * pass. This aborts the poll itself once `getStatus()` leaves `"ready"`,
+   * checked both up front (already not ready when called) and on every
+   * `"statusChanged"` after. A caller's own `options.signal` still works —
+   * either one aborts the download.
+   */
   async downloadClipAsFile(
     clip: Clip,
     filename: string | null = 'reactor-clip.mp4',
     options?: DownloadClipOptions,
   ): Promise<Blob> {
-    return downloadClipAsFileFn(clip, filename, options);
+    const controller = new AbortController();
+    const callerSignal = options?.signal;
+    const forwardCallerAbort = () => controller.abort(callerSignal!.reason);
+
+    if (callerSignal) {
+      if (callerSignal.aborted) {
+        controller.abort(callerSignal.reason);
+      } else {
+        callerSignal.addEventListener('abort', forwardCallerAbort, { once: true });
+      }
+    }
+
+    const abortIfNotReady = (status: ReactorStatus) => {
+      if (status !== 'ready') {
+        controller.abort();
+      }
+    };
+
+    abortIfNotReady(this.getStatus());
+    this.on('statusChanged', abortIfNotReady);
+    // Belt-and-suspenders alongside the listener above: `[Symbol.dispose]()`
+    // is synchronous and clears every listener without emitting a final
+    // `"statusChanged"`, so it aborts through this set directly instead.
+    this.downloadAborts.add(controller);
+
+    try {
+      return await downloadClipAsFileFn(clip, filename, {
+        ...options,
+        signal: controller.signal,
+      });
+    } finally {
+      this.off('statusChanged', abortIfNotReady);
+      this.downloadAborts.delete(controller);
+      callerSignal?.removeEventListener('abort', forwardCallerAbort);
+    }
   }
 
   // ── Uploads ─────────────────────────────────────────────────────────────
@@ -661,6 +717,13 @@ export class Reactor implements Disposable {
     this.capabilities = undefined;
     this.resetConnectionState();
     this.emitter.clear();
+    // Direct, not through the "statusChanged" listener downloadClipAsFile()
+    // also registers: that one is already gone, cleared above, and no event
+    // was emitted to fire it even if it weren't — see `downloadAborts`' own
+    // doc comment for why disposal needs its own path here.
+    for (const controller of [...this.downloadAborts]) {
+      controller.abort();
+    }
     if (client) {
       // Queued behind any in-flight connect()/reconnect()/disconnect(), same
       // as freeClient() — this can't await that itself, since [Symbol.dispose]
