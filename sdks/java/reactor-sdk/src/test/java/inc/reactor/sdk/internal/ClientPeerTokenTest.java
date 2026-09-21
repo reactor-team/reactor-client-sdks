@@ -1,6 +1,7 @@
 package inc.reactor.sdk.internal;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -184,6 +185,94 @@ final class ClientPeerTokenTest {
 
             assertEquals(List.of(), fake.jwtRequests);
             assertEquals(1, fake.createdWithJwt.size());
+            client.close();
+        }
+    }
+
+    @Test
+    @DisplayName("an operation still outstanding when the token changes is settled, not left waiting")
+    void aReplacedHandleSettlesWhatItWasCarrying() {
+        try (FakeNativeLibrary fake = new FakeNativeLibrary()) {
+            ClientPeer client = peer(fake, withKey());
+            client.connect(null, null);
+            fake.settleLastCall(true, "{}", null);
+            fake.clearPendingCall();
+
+            // Registered against the handle that is about to be replaced, and deliberately never
+            // settled by the library. Its downcall has already returned, so the in-flight count
+            // this used to wait on says zero and knows nothing about it.
+            CompletableFuture<?> outstanding = client.sendCommand("get_status", null, null);
+            assertFalse(outstanding.isDone(), "the library is holding this one");
+
+            fake.nextMintedJwt = "unscoped-token";
+            client.connect("session-1", null);
+
+            // reactor_destroy ended the old client's right to call back, so this completion is one
+            // that can now never arrive. Settled is the only honest answer; pending forever is what
+            // the caller would otherwise get.
+            assertTrue(outstanding.isCompletedExceptionally(), "a future nobody can ever settle is a hang");
+            client.close();
+        }
+    }
+
+    @Test
+    @DisplayName("a close that races the re-mint still destroys the handle the re-mint replaced")
+    void aCloseRacingTheRemintStillDestroysTheStaleHandle() {
+        try (FakeNativeLibrary fake = new FakeNativeLibrary()) {
+            int orphanedBefore = OrphanedArenas.count();
+            ClientPeer client = peer(fake, withKey());
+            client.connect(null, null);
+            fake.settleLastCall(true, "{}", null);
+            fake.clearPendingCall();
+
+            // The interleaving that used to lose the handle: the replaced one has been detached
+            // but not yet destroyed when close() arrives. Provoked rather than waited for — this
+            // operation's failure is what the re-mint settles on its way past, and closing from a
+            // handler is a pattern this SDK supports, so the close lands inside that exact window.
+            CompletableFuture<?> outstanding = client.sendCommand("get_status", null, null);
+            outstanding.whenComplete((ignored, failed) -> client.close());
+
+            fake.nextMintedJwt = "unscoped-token";
+            CompletableFuture<Void> adopting = client.connect("session-1", null);
+
+            assertTrue(adopting.isCompletedExceptionally(), "the connect cannot proceed on a closed client");
+            assertEquals(
+                    1,
+                    fake.destroyCalls,
+                    "the handle the re-mint replaced must still be destroyed — by teardown, if the"
+                            + " thread that replaced it lost the race");
+            assertEquals(
+                    orphanedBefore,
+                    OrphanedArenas.count(),
+                    "and with it destroyed, the arena holding its callback stubs can be released");
+        }
+    }
+
+    @Test
+    @DisplayName("two connects wanting different scopes mint one at a time, not at once")
+    void mintsAreSerialized() {
+        try (FakeNativeLibrary fake = new FakeNativeLibrary()) {
+            fake.deferFetchJwt = true;
+            ClientPeer client = peer(fake, withKey());
+
+            CompletableFuture<Void> creating = client.connect(null, null);
+            CompletableFuture<Void> adopting = client.connect("session-1", null);
+
+            // Both connects want a token and they want different ones. Letting them exchange at
+            // once would leave two mints racing to rebuild the handle under each other, and the
+            // loser's rebuild landing under the winner's connect.
+            assertEquals(1, fake.heldJwtCount(), "the second connect must wait for the first to mint");
+            assertFalse(creating.isDone());
+            assertFalse(adopting.isDone());
+
+            fake.settleHeldJwt("scoped-token");
+            assertEquals(1, fake.heldJwtCount(), "the second mint starts only once the first is done");
+
+            fake.settleHeldJwt("unscoped-token");
+            assertEquals(
+                    java.util.Arrays.asList("{\"models\":[\"owner/model\"]}", null),
+                    fake.jwtRequests,
+                    "and each asks for the scope its own connect needed");
             client.close();
         }
     }

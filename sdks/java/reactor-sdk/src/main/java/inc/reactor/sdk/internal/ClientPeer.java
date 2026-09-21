@@ -126,8 +126,31 @@ public final class ClientPeer implements Runnable {
      */
     private volatile MemorySegment handle = MemorySegment.NULL;
 
+    /**
+     * A handle this peer has stopped using and not yet destroyed.
+     *
+     * <p>Detaching a replaced handle from {@link #handle} and destroying it cannot be one step —
+     * the destroy has to wait for the calls already inside the FFI — and a handle that is live but
+     * reachable from neither is a handle teardown cannot see. {@link #close()} would then destroy
+     * {@code NULL}, be told 0, and release the arena holding the stale client's callback stubs,
+     * which its next callback jumps into. So it sits here for the window in between, where
+     * {@link #finishTeardown} destroys it too.
+     */
+    private MemorySegment abandoned = MemorySegment.NULL;
+
     /** Serializes creating, replacing and destroying {@link #handle}, and the token beside it. */
     private final Object handleLock = new Object();
+
+    /**
+     * The mints this peer has queued, so only one is ever in flight.
+     *
+     * <p>Two connects wanting different scopes would otherwise both mint and then race to rebuild
+     * the handle under each other, and the loser's rebuild would land under the winner's connect.
+     * Chained rather than locked because a mint is a network round trip: blocking a caller's thread
+     * for the length of one is what the {@code CompletableFuture} this returns exists to avoid.
+     * Guarded by {@link #handleLock}.
+     */
+    private CompletableFuture<Void> mints = CompletableFuture.completedFuture(null);
 
     private final ReactorOptions options;
 
@@ -298,15 +321,21 @@ public final class ClientPeer implements Runnable {
      * thread is otherwise free to reach {@code arena.close()} while this is still writing into it.
      * The lease is also what refuses a connect on a client that is already closing, which is the
      * same answer every other operation gives.
+     *
+     * <p>Returns the handle rather than leaving the caller to re-read the field. A re-read is a
+     * second chance for a re-mint to have replaced it, and the call would then reach the FFI with
+     * the {@code NULL} that sits there in between.
+     *
+     * @return the handle this connect is to use
      */
-    private void ensureHandle() {
+    private MemorySegment ensureHandle() {
         acquireHandle("connect");
         try {
             synchronized (handleLock) {
-                if (!handle.equals(MemorySegment.NULL)) {
-                    return;
+                if (handle.equals(MemorySegment.NULL)) {
+                    handle = createHandle(jwt);
                 }
-                handle = createHandle(jwt);
+                return handle;
             }
         } finally {
             releaseHandle();
@@ -378,7 +407,7 @@ public final class ClientPeer implements Runnable {
         // exchange, which is every client that was given a token or is talking to a local runtime.
         return resolveToken(sessionId)
                 .thenCompose(ignored -> call("connect", (completion, userdata) -> {
-                    ensureHandle();
+                    MemorySegment client = ensureHandle();
                     // Confined and closed at the end of the call: these arguments are read during the
                     // call and never kept, so the narrowest possible lifetime is the right one.
                     try (Arena call = Arena.ofConfined()) {
@@ -386,7 +415,7 @@ public final class ClientPeer implements Runnable {
                         MemorySegment connection = connectionId == null
                                 ? MemorySegment.NULL
                                 : call.allocateFrom(java.lang.foreign.ValueLayout.JAVA_INT, connectionId);
-                        invoke(Ffi.Symbol.CONNECT, handle, id, connection, completion, userdata);
+                        invoke(Ffi.Symbol.CONNECT, client, id, connection, completion, userdata);
                     }
                 }));
     }
@@ -414,6 +443,28 @@ public final class ClientPeer implements Runnable {
             if (jwt != null && mintedFor == wanted) {
                 return CompletableFuture.completedFuture(null);
             }
+            // Behind whatever is already queued, and the scope is checked again when this runs:
+            // the mint ahead of it may have settled on the very token this one wants, and two
+            // mints landing at once would race to rebuild the handle under each other.
+            // `exceptionally` rather than a plain compose, so one caller's refused key does not
+            // fail every connect queued behind it — this caller still sees its own failure, from
+            // its own mint.
+            mints = mints.exceptionally(alreadyReported -> null).thenCompose(ignored -> mint(wanted));
+            return mints;
+        }
+    }
+
+    /**
+     * One exchange, once it is this caller's turn.
+     *
+     * @param wanted what the connect that queued this needs the token to reach
+     * @return settles when the client holds it
+     */
+    private CompletableFuture<Void> mint(TokenScope wanted) {
+        synchronized (handleLock) {
+            if (jwt != null && mintedFor == wanted) {
+                return CompletableFuture.completedFuture(null);
+            }
         }
         // Null options mint the token the key's roles allow; naming the model narrows it to one
         // that can only start sessions here. `max_sessions` is deliberately left out: the server's
@@ -437,35 +488,53 @@ public final class ClientPeer implements Runnable {
      * answered the exchange, while another connect may be reading the same field.
      */
     private void adoptMintedToken(String minted, TokenScope scope) {
-        MemorySegment stale;
         synchronized (handleLock) {
             boolean changed = !minted.equals(jwt);
             jwt = minted;
             mintedFor = scope;
-            if (!changed) {
+            if (!changed || handle.equals(MemorySegment.NULL)) {
                 return;
             }
-            stale = handle;
+            // Moved rather than dropped: it is live until something destroys it, and the only
+            // thing that may destroy it between here and there is teardown, which has to be able
+            // to find it. See the field's own comment.
+            abandoned = handle;
             handle = MemorySegment.NULL;
         }
-        if (stale.equals(MemorySegment.NULL)) {
-            return;
-        }
-        discard(stale);
+        discardAbandoned();
     }
 
     /**
-     * Destroys a handle this peer has stopped using, once no call is inside it.
+     * Destroys the handle this peer has stopped using, if it is still this thread's to destroy.
      *
-     * <p>The same rule teardown follows, and for the same reason: a call that is already past its
-     * own check may still be inside the FFI holding this handle, and freeing it under that call is
-     * a use-after-free. Unlike teardown there is no deferring it — the arena this peer is about to
-     * build another handle in is the one the library would still hold pointers into — so a wait
-     * that gives up, or a destroy that reports a callback still running, ends the client instead of
-     * risking a jump into freed memory.
+     * <p>Three things have to happen before the destroy, and each is a way the old handle could
+     * otherwise outlive what it depends on.
+     *
+     * <p>The operations registered against it are settled first. {@code reactor_destroy} ends the
+     * old client's right to call back, so every completion it owned is one that will now never
+     * arrive — and {@link #awaitNoCallsInFlight} does not cover them, because it counts threads
+     * inside a downcall and a registered operation's downcall has already returned. Left alone
+     * they are futures nobody ever settles.
+     *
+     * <p>Then the calls that are still inside the FFI are waited for, because freeing a handle
+     * under one is a use-after-free. Then the lease, because a destroy can run callbacks whose
+     * stubs live in the arena {@link #close()} is free to be releasing.
+     *
+     * <p>Whatever this cannot do, teardown does: the handle stays in {@link #abandoned} until it
+     * is actually destroyed, so a {@code close()} that wins any of these races finds it and
+     * destroys it there instead. That is why none of the paths out of here leave a live handle
+     * behind.
      */
-    private void discard(MemorySegment stale) {
+    private void discardAbandoned() {
+        completions.settleAll(ReactorException.of(
+                ErrorCode.ABORTED.code(),
+                "the client was rebuilt around a new token, which ends the operations the old one" + " was carrying",
+                null,
+                "connect",
+                null));
+
         if (!awaitNoCallsInFlight("re-minting a token")) {
+            // close() destroys what this could not, from `abandoned`.
             close();
             throw ReactorException.of(
                     ErrorCode.INVALID_STATE.code(),
@@ -475,15 +544,27 @@ public final class ClientPeer implements Runnable {
                     "connect",
                     null);
         }
-        // Between that wait and this lease a close() may have started, and this runs on whichever
-        // thread answered the exchange rather than the one connecting. Taking the lease resolves it
-        // either way: won, and close() waits for this destroy the way it waits for any other call;
-        // lost, and the lease is refused and the stale handle is left for the session's own idle
-        // timeout — a handle that outlives its client by minutes, rather than destroying one whose
-        // callbacks would then fire into an arena close() is about to release.
-        acquireHandle("re-minting a token");
+
+        try {
+            acquireHandle("re-minting a token");
+        } catch (ReactorException closing) {
+            // A close() got here first. It owns `abandoned` now and destroys it on its way out,
+            // which is the whole reason the handle was left there rather than carried on the
+            // stack: this thread walking away must not be what decides it is never destroyed.
+            throw closing;
+        }
         int quiesced;
         try {
+            MemorySegment stale;
+            synchronized (handleLock) {
+                stale = abandoned;
+                abandoned = MemorySegment.NULL;
+            }
+            if (stale.equals(MemorySegment.NULL)) {
+                // Teardown destroyed it between the wait and the lease. Nothing left to do, and
+                // the connect that queued this will be refused by its own lease in a moment.
+                return;
+            }
             quiesced = destroyOffVirtualThread(stale);
         } finally {
             releaseHandle();
@@ -619,8 +700,22 @@ public final class ClientPeer implements Runnable {
         if (!teardownStarted.compareAndSet(false, true)) {
             return;
         }
-        int quiesced = destroyOffVirtualThread(handle);
-        if (quiesced == 0) {
+        MemorySegment current;
+        MemorySegment stale;
+        synchronized (handleLock) {
+            current = handle;
+            stale = abandoned;
+            handle = MemorySegment.NULL;
+            abandoned = MemorySegment.NULL;
+        }
+        // Both, and the stale one is not optional. A re-mint that had not got as far as destroying
+        // the handle it replaced leaves it here, still live and still holding callback stubs from
+        // this arena — releasing the arena with that client alive is the jump into freed code this
+        // whole discipline exists to prevent. `reactor_destroy` takes NULL and answers 0, so the
+        // ordinary case of no stale handle costs a call and decides nothing.
+        boolean quiesced = destroyOffVirtualThread(current) == 0;
+        boolean staleQuiesced = stale.equals(MemorySegment.NULL) || destroyOffVirtualThread(stale) == 0;
+        if (quiesced && staleQuiesced) {
             arena.close();
         } else {
             // -1: a callback is still executing. The handle is gone either way, but the library

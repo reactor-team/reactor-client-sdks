@@ -111,6 +111,15 @@ public final class FakeNativeLibrary implements AutoCloseable {
     @Nullable
     public String nextMintedJwt = "minted-jwt";
 
+    /**
+     * Holds each {@code reactor_fetch_jwt} instead of answering it, for a test that needs a mint
+     * to still be in flight while it does something else.
+     */
+    public boolean deferFetchJwt;
+
+    /** The completion and userdata of each deferred exchange, oldest first. */
+    private final List<MemorySegment[]> heldJwtCompletions = new ArrayList<>();
+
     public FakeNativeLibrary() {
         for (Ffi.Symbol symbol : Ffi.Symbol.values()) {
             symbols.put(symbol.cName(), doNothing(symbol.descriptor()));
@@ -231,7 +240,33 @@ public final class FakeNativeLibrary implements AutoCloseable {
             MemorySegment completion,
             MemorySegment userdata) {
         jwtRequests.add(readString(optionsJson));
-        String minted = nextMintedJwt;
+        if (deferFetchJwt) {
+            heldJwtCompletions.add(new MemorySegment[] {completion, userdata});
+            return;
+        }
+        answerJwt(completion, userdata, nextMintedJwt);
+    }
+
+    /**
+     * Answers the oldest exchange this library is holding.
+     *
+     * @param minted the token to answer with, or {@code null} to refuse the key
+     */
+    public void settleHeldJwt(@Nullable String minted) {
+        if (heldJwtCompletions.isEmpty()) {
+            throw new IllegalStateException("no key exchange is outstanding");
+        }
+        MemorySegment[] held = heldJwtCompletions.remove(0);
+        answerJwt(held[0], held[1], minted);
+    }
+
+    /** @return how many key exchanges this library is holding unanswered */
+    public int heldJwtCount() {
+        return heldJwtCompletions.size();
+    }
+
+    @SuppressWarnings("restricted") // downcallHandle: calling the binding's own completion stub
+    private void answerJwt(MemorySegment completion, MemorySegment userdata, @Nullable String minted) {
         MethodHandle call = linker.downcallHandle(completion, Ffi.Callbacks.COMPLETION);
         try (Arena reply = Arena.ofConfined()) {
             MemorySegment result =
