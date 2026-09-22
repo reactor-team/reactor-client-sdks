@@ -669,6 +669,15 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      # Before mise, exactly as the rust, cpp and swift jobs order it. With mise first, `cargo`
+      # resolved to a toolchain with no cargo component — "the 'cargo' binary ... is not
+      # applicable to the '1.97.1-aarch64-apple-darwin' toolchain" — and the cross-build died
+      # before it started. MISE_DISABLE_TOOLS keeps mise's own rustup out of the way; the
+      # ordering is what makes this action's toolchain the one on PATH.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1 # reads rust-toolchain.toml
+        with:
+          cache-on-failure: true
+          cache-shared-key: reactor-android-${{ hashFiles('mise.lock') }}
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
@@ -678,14 +687,6 @@ jobs:
           path: ~/.local/share/mise/installs/android-sdk
           key: android-sdk-emu-${{ runner.os }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'sdks/android/sdk-packages-emulator.txt', 'mise.lock') }}
       - run: mise run setup:android:emulator
-      # The Rust toolchain comes from the action rather than from mise, as it does in every
-      # other job that builds native code here — MISE_DISABLE_TOOLS at the workflow level keeps
-      # mise's rustup out of the way, so without this `cargo` resolves to a toolchain with no
-      # cargo component and the cross-build dies before it starts.
-      - uses: actions-rust-lang/setup-rust-toolchain@v1 # reads rust-toolchain.toml
-        with:
-          cache-on-failure: true
-          cache-shared-key: reactor-android-${{ hashFiles('mise.lock') }}
       # The slow part: a Rust cross-compile linking a prebuilt libwebrtc.
       - run: mise run build:android:native
       # A 16 KB page-size image on purpose. On an ordinary 4 KB image a misaligned library loads
