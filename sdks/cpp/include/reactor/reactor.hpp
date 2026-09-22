@@ -111,6 +111,10 @@ struct Options {
   /// Also accepts the coordinator's self-signed certificate.
   bool local = false;
 
+  /// Resume every recvonly track on connect and reconnect. Set false to leave
+  /// recvonly tracks paused until the host resumes them itself.
+  bool auto_resume_tracks = true;
+
   /// Where control events run. Empty means the SDK's own dispatcher thread.
   Executor executor;
 };

@@ -45,7 +45,7 @@ public final class Ffi {
      * than the crates still links and still resolves every symbol, and only misbehaves at the call
      * — which looks like a hang, or like an operation silently doing nothing.
      */
-    public static final int ABI_VERSION = 2;
+    public static final int ABI_VERSION = 3;
 
     /**
      * {@code size_t}, as every platform this SDK publishes for defines it. All five are 64-bit; a
@@ -61,7 +61,7 @@ public final class Ffi {
         CREATE_WITH_ADM(
                 "reactor_create_with_adm",
                 FunctionDescriptor.of(
-                        ADDRESS, ADDRESS, ADDRESS, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, ADDRESS)),
+                        ADDRESS, ADDRESS, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, ADDRESS)),
         DESTROY("reactor_destroy", FunctionDescriptor.of(JAVA_INT, ADDRESS)),
         CONNECT("reactor_connect", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS)),
         DISCONNECT("reactor_disconnect", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS)),

@@ -36,6 +36,7 @@ final class FakeLibrary: @unchecked Sendable {
         var model: String?
         var jwt: String?
         var local: Int32
+        var autoResumeTracks: Int32
         var admMode: Int32
         var sdkVersion: String?
         var sdkType: String?
@@ -408,7 +409,7 @@ final class FakeLibrary: @unchecked Sendable {
             },
             createWithADM: {
                 [self]
-                apiURL, model, jwt, local, callbacks, admMode, sdkVersion,
+                apiURL, model, jwt, local, autoResumeTracks, callbacks, admMode, sdkVersion,
                 sdkType in
                 state.withLock { state in
                     state.createCalls.append(
@@ -417,6 +418,7 @@ final class FakeLibrary: @unchecked Sendable {
                             model: String(borrowing: model),
                             jwt: String(borrowing: jwt),
                             local: local,
+                            autoResumeTracks: autoResumeTracks,
                             admMode: admMode,
                             sdkVersion: String(borrowing: sdkVersion),
                             sdkType: String(borrowing: sdkType)))

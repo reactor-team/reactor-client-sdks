@@ -358,6 +358,7 @@ public final class ClientPeer implements Runnable {
         MemorySegment modelName = arena.allocateFrom(options.modelName());
         MemorySegment jwtArg = token == null ? MemorySegment.NULL : arena.allocateFrom(token);
         int local = options.local() ? 1 : 0;
+        int autoResumeTracks = options.autoResumeTracks() ? 1 : 0;
         // 0 is the synthetic audio device module. Nothing opens a microphone because a model
         // happened to declare a sendonly audio track.
         int admMode = 0;
@@ -367,7 +368,16 @@ public final class ClientPeer implements Runnable {
         MemorySegment created;
         try {
             created = (MemorySegment) ffi.handle(Ffi.Symbol.CREATE_WITH_ADM)
-                    .invokeExact(apiUrl, modelName, jwtArg, local, callbacks, admMode, sdkVersion, sdkType);
+                    .invokeExact(
+                            apiUrl,
+                            modelName,
+                            jwtArg,
+                            local,
+                            autoResumeTracks,
+                            callbacks,
+                            admMode,
+                            sdkVersion,
+                            sdkType);
         } catch (Throwable t) {
             throw new IllegalStateException("reactor_create_with_adm could not be called", t);
         }
