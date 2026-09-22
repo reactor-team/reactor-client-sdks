@@ -38,6 +38,8 @@ void Java_inc_reactor_sdk_android_internal_NativeClient_nativeConnect(JNIEnv*, j
                                                                      jstring, jlong);
 void fake_set_destroy_result(int result);
 void fake_complete_last_on_foreign_thread(int ok, const char* result_json, const char* error_json);
+void fake_fire_video_frame_on_foreign_thread(const char* track, uint32_t width, uint32_t height,
+                                             uint64_t frame_id);
 void fake_fire_status_on_foreign_thread(const char* status);
 void fake_fire_session_id_on_foreign_thread(const char* session_id);
 }
@@ -181,6 +183,33 @@ void destroy_minus_one_keeps_the_references_alive() {
   fake_set_destroy_result(0);
 }
 
+/// A video frame, delivered inline on an FFI-owned thread over a direct buffer.
+///
+/// The fake frees the pixels the moment the callback returns, so a binding that handed Kotlin
+/// anything but a view valid for exactly that call would be reading freed memory here.
+void video_frames_arrive_over_a_direct_buffer() {
+  jlong context = create();
+  const jint before = static_int("videoFrameCount");
+  fake_fire_video_frame_on_foreign_thread("main_video", 64, 48, 99);
+  check(static_int("videoFrameCount") == before + 1, "a video frame reached its listener");
+  check(static_int("lastWidth") == 64 && static_int("lastHeight") == 48,
+        "the frame's dimensions survive the crossing");
+  check(static_int("lastPixelCapacity") == 64 * 48 * 4,
+        "the buffer spans exactly width * height * 4 bytes");
+
+  jfieldID direct_id = g_env->GetStaticFieldID(g_listener_class, "lastBufferWasDirect", "Z");
+  check(g_env->GetStaticBooleanField(g_listener_class, direct_id) == JNI_TRUE,
+        "pixels arrive as a direct buffer rather than a copy");
+  check(static_int("lastTagLength") == 3, "the per-frame tag is copied, not borrowed");
+
+  jfieldID frame_id = g_env->GetStaticFieldID(g_listener_class, "lastFrameId", "J");
+  check(g_env->GetStaticLongField(g_listener_class, frame_id) == 99,
+        "the trailer's frame id survives the crossing");
+
+  fake_set_destroy_result(0);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, context);
+}
+
 /// The completion path, end to end on the native side: a completion fires on a thread the JVM has
 /// never seen, and both of its strings are copied before the FFI frees them.
 void completions_cross_from_a_foreign_thread() {
@@ -258,6 +287,7 @@ int main() {
   the_static_string_is_never_freed();
   events_cross_from_a_foreign_thread();
   a_throwing_handler_is_contained();
+  video_frames_arrive_over_a_direct_buffer();
   completions_cross_from_a_foreign_thread();
   destroy_minus_one_keeps_the_references_alive();
 
