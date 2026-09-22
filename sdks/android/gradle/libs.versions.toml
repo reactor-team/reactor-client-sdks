@@ -11,9 +11,22 @@
 # AGP 9.x is the Gradle-9 generation. The cancelled Kotlin SDK stack pinned 8.9.2 against a Gradle
 # wrapper of its own; this repository pins Gradle 9.7.1 in mise.toml, and 8.9 does not run on it.
 agp = "9.4.1"
-# Matches the kotlin-gradle-plugin sdks/java/buildSrc pins, so one repository does not need two
-# Kotlin compilers. If you bump one, bump the other.
-kotlin = "2.2.21"
+# Gradle's embedded Kotlin, not AGP's declared one, and that is the whole subtlety.
+#
+# From AGP 9.0 the Android plugin owns Kotlin — applying `org.jetbrains.kotlin.android` beside it
+# is a hard error — and AGP 9.4.1 *declares* kotlin 2.2.10. But buildSrc applies `kotlin-dsl`,
+# which pins Gradle 9.7.1's embedded Kotlin (2.4.0), and that stdlib is what reaches a module's
+# Kotlin compile. A 2.2 compiler cannot read 2.4 metadata, so the build fails on `kotlin.Unit`
+# with "compiled with an incompatible version of Kotlin" while `dependencies` still reports
+# kotlin-stdlib 2.2.10 — the classpath Gradle prints is not the classpath the compiler gets.
+#
+# So this tracks the Gradle version, not the AGP version: bumping Gradle in the root mise.toml
+# may require bumping this line with it.
+#
+# This is also why sdks/java/buildSrc's comment about keeping its kotlin-gradle-plugin in
+# lockstep with the Android SDK no longer holds — the desktop build picks its Kotlin, and this
+# one follows Gradle's.
+kotlin = "2.4.0"
 spotless = "8.10.2"
 ktlint = "1.5.0"
 junit = "4.13.2"
