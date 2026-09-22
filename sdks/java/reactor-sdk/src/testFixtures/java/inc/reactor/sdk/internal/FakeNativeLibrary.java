@@ -96,6 +96,30 @@ public final class FakeNativeLibrary implements AutoCloseable {
     /** What {@code reactor_status} answers. */
     public String status = "ready";
 
+    /**
+     * The token handed to each {@code reactor_create_with_adm}, oldest first.
+     *
+     * <p>A list rather than a field: a client that re-mints replaces its handle, and what a test
+     * has to be able to see is that the second one was created with the second token.
+     */
+    public final List<@Nullable String> createdWithJwt = new ArrayList<>();
+
+    /** The options JSON of each {@code reactor_fetch_jwt}, oldest first. */
+    public final List<@Nullable String> jwtRequests = new ArrayList<>();
+
+    /** What the next {@code reactor_fetch_jwt} answers with, or {@code null} to fail it. */
+    @Nullable
+    public String nextMintedJwt = "minted-jwt";
+
+    /**
+     * Holds each {@code reactor_fetch_jwt} instead of answering it, for a test that needs a mint
+     * to still be in flight while it does something else.
+     */
+    public boolean deferFetchJwt;
+
+    /** The completion and userdata of each deferred exchange, oldest first. */
+    private final List<MemorySegment[]> heldJwtCompletions = new ArrayList<>();
+
     public FakeNativeLibrary() {
         for (Ffi.Symbol symbol : Ffi.Symbol.values()) {
             symbols.put(symbol.cName(), doNothing(symbol.descriptor()));
@@ -120,6 +144,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
         bind("reactor_upload_bytes", Ffi.Symbol.UPLOAD_BYTES.descriptor(), "uploadBytes");
         bind("reactor_request_clip", Ffi.Symbol.REQUEST_CLIP.descriptor(), "requestClip");
         bind("reactor_download_clip", Ffi.Symbol.DOWNLOAD_CLIP.descriptor(), "downloadClip");
+        bind("reactor_fetch_jwt", Ffi.Symbol.FETCH_JWT.descriptor(), "fetchJwt");
     }
 
     /** Makes this library report an ABI version other than the one the binding expects. */
@@ -179,6 +204,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
         this.admMode = adm;
         this.sdkVersion = readString(version);
         this.sdkType = readString(type);
+        this.createdWithJwt.add(readString(jwt));
         // Kept so a test can call back through the struct the way the FFI would.
         this.callbacks = callbacksStruct.reinterpret(Ffi.Callbacks.LAYOUT.byteSize());
         // Any non-null address will do: nothing here dereferences it, and the binding only ever
@@ -187,8 +213,75 @@ public final class FakeNativeLibrary implements AutoCloseable {
     }
 
     private int destroy(MemorySegment handle) {
+        // The header says null is accepted and answers 0, before anything this fake could be asked
+        // to imitate. A client that never created a handle must not be able to reach destroyResult.
+        if (handle.equals(MemorySegment.NULL)) {
+            return 0;
+        }
         destroyCalls++;
         return destroyResult;
+    }
+
+    /**
+     * Answers a key exchange, synchronously, on the calling thread.
+     *
+     * <p>{@code reactor_fetch_jwt} takes no handle and its completion is not bounded by any
+     * client, so the binding routes it through {@code DetachedCompletion} rather than the ordinary
+     * pending map — which is exactly the path this exercises. Calling the completion before
+     * returning is what a real exchange is free to do and the harder ordering for the binding: the
+     * future settles while the caller is still inside the downcall.
+     */
+    @SuppressWarnings("restricted") // downcallHandle: calling the binding's own completion stub
+    private void fetchJwt(
+            MemorySegment apiUrl,
+            MemorySegment apiKey,
+            MemorySegment optionsJson,
+            int local,
+            MemorySegment completion,
+            MemorySegment userdata) {
+        jwtRequests.add(readString(optionsJson));
+        if (deferFetchJwt) {
+            heldJwtCompletions.add(new MemorySegment[] {completion, userdata});
+            return;
+        }
+        answerJwt(completion, userdata, nextMintedJwt);
+    }
+
+    /**
+     * Answers the oldest exchange this library is holding.
+     *
+     * @param minted the token to answer with, or {@code null} to refuse the key
+     */
+    public void settleHeldJwt(@Nullable String minted) {
+        if (heldJwtCompletions.isEmpty()) {
+            throw new IllegalStateException("no key exchange is outstanding");
+        }
+        MemorySegment[] held = heldJwtCompletions.remove(0);
+        answerJwt(held[0], held[1], minted);
+    }
+
+    /** @return how many key exchanges this library is holding unanswered */
+    public int heldJwtCount() {
+        return heldJwtCompletions.size();
+    }
+
+    @SuppressWarnings("restricted") // downcallHandle: calling the binding's own completion stub
+    private void answerJwt(MemorySegment completion, MemorySegment userdata, @Nullable String minted) {
+        MethodHandle call = linker.downcallHandle(completion, Ffi.Callbacks.COMPLETION);
+        try (Arena reply = Arena.ofConfined()) {
+            MemorySegment result =
+                    minted == null ? MemorySegment.NULL : reply.allocateFrom("{\"jwt\":" + quote(minted) + "}");
+            MemorySegment error = minted == null
+                    ? reply.allocateFrom("{\"code\":\"UNAUTHORIZED\",\"message\":\"the key was refused\"}")
+                    : MemorySegment.NULL;
+            call.invokeWithArguments(minted == null ? 0 : 1, result, error, userdata);
+        } catch (Throwable t) {
+            throw new AssertionError("calling the fetch_jwt completion threw out of the stub", t);
+        }
+    }
+
+    private static String quote(String text) {
+        return "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
     }
 
     private void connect(
@@ -305,6 +398,18 @@ public final class FakeNativeLibrary implements AutoCloseable {
      */
     public boolean hasPendingCall() {
         return lastCompletion != null;
+    }
+
+    /**
+     * Forgets the outstanding call, without settling it.
+     *
+     * <p>For a fixture whose setup makes a call of its own — a connect, to bring the native client
+     * into being — so that {@link #hasPendingCall} still answers about the call the test is
+     * actually waiting for rather than about the setup's.
+     */
+    public void clearPendingCall() {
+        lastCompletion = null;
+        lastUserdata = null;
     }
 
     /** The completion stub of the last async call, so a test can settle calls out of order. */

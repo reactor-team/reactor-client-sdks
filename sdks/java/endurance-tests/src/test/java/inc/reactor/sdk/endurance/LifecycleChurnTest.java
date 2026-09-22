@@ -13,7 +13,7 @@ final class LifecycleChurnTest {
     @Test
     @DisplayName("lifecycle churn")
     void lifecycleChurn() throws Exception {
-        String jwt = Endurance.jwt();
+        String apiKey = Endurance.apiKey();
         Endurance.run(
                 "lifecycle-churn",
                 "A new client every cycle: create, connect, send one command, disconnect, close. "
@@ -23,9 +23,8 @@ final class LifecycleChurnTest {
                     while (run.keepGoing()) {
                         // Closed explicitly rather than by scope exit, so the moment it happens is this line
                         // and not wherever the last reference happened to be dropped.
-                        Reactor reactor = Reactor.open(Endurance.options(jwt));
+                        Reactor reactor = Endurance.connected(apiKey);
                         try {
-                            reactor.connect().join();
                             reactor.sendCommand("get_status").join();
                             reactor.disconnect().join();
                         } finally {

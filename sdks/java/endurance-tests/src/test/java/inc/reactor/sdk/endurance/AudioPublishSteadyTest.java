@@ -22,15 +22,14 @@ final class AudioPublishSteadyTest {
     @Test
     @DisplayName("audio publish steady")
     void audioPublishSteady() throws Exception {
-        String jwt = Endurance.jwt();
+        String apiKey = Endurance.apiKey();
         Endurance.run(
                 "audio-publish-steady",
                 "publish once and hold it, pushing PCM for the whole run — no pause, no unpublish, " + "no reconnect.",
                 false,
                 run -> {
-                    Reactor reactor = Reactor.open(Endurance.options(jwt));
+                    Reactor reactor = Endurance.connected(apiKey);
                     try {
-                        reactor.connect().join();
                         Track microphone = reactor.track("mic");
                         microphone.publish().join();
 

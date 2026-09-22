@@ -18,15 +18,14 @@ final class PublishChurnTest {
     @Test
     @DisplayName("publish churn")
     void publishChurn() throws Exception {
-        String jwt = Endurance.jwt();
+        String apiKey = Endurance.apiKey();
         Endurance.run(
                 "publish-churn",
                 "publish then unpublish, nothing else: no frames, no commands, no reconnects.",
                 false,
                 run -> {
-                    Reactor reactor = Reactor.open(Endurance.options(jwt));
+                    Reactor reactor = Endurance.connected(apiKey);
                     try {
-                        reactor.connect().join();
                         Track input = reactor.track("webcam");
 
                         while (run.keepGoing()) {

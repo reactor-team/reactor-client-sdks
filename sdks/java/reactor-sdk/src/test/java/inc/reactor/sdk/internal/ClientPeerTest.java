@@ -46,11 +46,27 @@ final class ClientPeerTest {
         return ClientPeer.create(options, arena -> Ffi.open(fake.lookup()));
     }
 
+    /**
+     * A peer that has been through a connect, and so has a native client behind it.
+     *
+     * <p>The handle is created on the first connect rather than with the peer, because that is
+     * where the token is settled — so anything that needs the library to have been handed this
+     * client's callbacks has to connect first. The connect is settled rather than left pending so
+     * that a later {@code settleLastCall} in the same test answers the call the test made.
+     */
+    private static ClientPeer connected(FakeNativeLibrary fake, ReactorOptions options) {
+        ClientPeer client = peer(fake, options);
+        client.connect(null, null);
+        fake.settleLastCall(true, "{}", null);
+        fake.clearPendingCall();
+        return client;
+    }
+
     @Test
     @DisplayName("creation pins the synthetic audio module and reports this binding's own identity")
     void creationPinsSyntheticAudioAndReportsItself() {
         try (FakeNativeLibrary fake = new FakeNativeLibrary()) {
-            ClientPeer client = peer(fake, OPTIONS);
+            ClientPeer client = connected(fake, OPTIONS);
 
             // 0 is synthetic. Nothing may open a microphone because a model declared a sendonly
             // audio track, and there is no option anywhere that changes this.
@@ -69,14 +85,14 @@ final class ClientPeerTest {
     void teardownHonoursWhatDestroyAnswered() {
         try (FakeNativeLibrary quiesced = new FakeNativeLibrary()) {
             quiesced.destroyResult = 0;
-            ClientPeer client = peer(quiesced, OPTIONS);
+            ClientPeer client = connected(quiesced, OPTIONS);
             client.close();
             assertEquals(1, quiesced.destroyCalls);
         }
 
         try (FakeNativeLibrary busy = new FakeNativeLibrary()) {
             busy.destroyResult = -1;
-            ClientPeer client = peer(busy, OPTIONS);
+            ClientPeer client = connected(busy, OPTIONS);
             int orphanedBefore = OrphanedArenas.count();
 
             client.close();
@@ -93,7 +109,7 @@ final class ClientPeerTest {
     @DisplayName("close twice destroys once")
     void closeIsIdempotent() {
         try (FakeNativeLibrary fake = new FakeNativeLibrary()) {
-            ClientPeer client = peer(fake, OPTIONS);
+            ClientPeer client = connected(fake, OPTIONS);
             client.close();
             client.close();
             client.close();
@@ -140,7 +156,7 @@ final class ClientPeerTest {
     @DisplayName("a handler that throws does not silence the handlers beside it")
     void oneThrowingHandlerDoesNotSilenceTheOthers() {
         try (FakeNativeLibrary fake = new FakeNativeLibrary()) {
-            ClientPeer client = peer(fake, inline());
+            ClientPeer client = connected(fake, inline());
             List<ConnectionStatus> seen = new ArrayList<>();
             client.onStatus(status -> {
                 throw new IllegalStateException("a handler with a bug in it");
@@ -161,7 +177,7 @@ final class ClientPeerTest {
             // The default dispatcher: its own thread, which is where this gets interesting —
             // shutting an executor down from inside its own thread and then waiting for it is a
             // thread waiting for itself.
-            ClientPeer client = peer(fake, OPTIONS);
+            ClientPeer client = connected(fake, OPTIONS);
             CountDownLatch closed = new CountDownLatch(1);
             long[] elapsedMillis = new long[1];
             client.onStatus(status -> {
@@ -190,7 +206,7 @@ final class ClientPeerTest {
     @DisplayName("removing a handler stops it firing")
     void removalActuallyRemoves() {
         try (FakeNativeLibrary fake = new FakeNativeLibrary()) {
-            ClientPeer client = peer(fake, inline());
+            ClientPeer client = connected(fake, inline());
             AtomicInteger calls = new AtomicInteger();
             Subscription subscription = client.onStatus(status -> calls.incrementAndGet());
 
@@ -208,7 +224,7 @@ final class ClientPeerTest {
     @DisplayName("an error event carries the same typed exception a failed call would throw")
     void errorEventsAreTheSameObjectAsFailures() {
         try (FakeNativeLibrary fake = new FakeNativeLibrary()) {
-            ClientPeer client = peer(fake, inline());
+            ClientPeer client = connected(fake, inline());
             List<ReactorException> seen = new ArrayList<>();
             client.onError(seen::add);
 

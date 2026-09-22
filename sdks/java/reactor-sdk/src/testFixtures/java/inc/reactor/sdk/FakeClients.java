@@ -30,6 +30,27 @@ public final class FakeClients {
     }
 
     /**
+     * Opens a client and takes it through a connect.
+     *
+     * <p>The native client exists from the first connect rather than from {@code open} — that is
+     * where the token it is handed is settled — so anything that needs the library to be holding
+     * this client's callbacks, such as firing one, has to go through here.
+     *
+     * @param fake the library it binds to
+     * @param options what it would connect to
+     * @return the client, which the caller closes
+     */
+    public static Reactor openConnected(FakeNativeLibrary fake, ReactorOptions options) {
+        Reactor client = open(fake, options);
+        client.connect();
+        fake.settleLastCall(true, "{}", null);
+        // The connect is setup, not the call under test: a fixture that left it outstanding would
+        // have `hasPendingCall` answering about this one while a test waits for its own.
+        fake.clearPendingCall();
+        return client;
+    }
+
+    /**
      * How many control-event handlers a client is holding.
      *
      * <p>The only way to prove a handler was removed: a subscription nobody dropped goes on being

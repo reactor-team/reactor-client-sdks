@@ -91,6 +91,37 @@ native artifact arrives at all. Expressing those attributes in the consumer only
 makes resolution ambiguous. Zero configuration through variants would require
 every consumer to apply a plugin, which is not zero configuration.
 
+## Authenticating
+
+Two ways in, and which one you want depends on where the code runs.
+
+```java
+// On a machine you control: the client exchanges the key itself, on connect.
+ReactorOptions.builder(apiUrl, "reactor/helios").apiKey(apiKey).build();
+
+// Anywhere else: your backend holds the key and hands out tokens.
+ReactorOptions.builder(apiUrl, "reactor/helios").jwt(jwt).build();
+```
+
+`apiKey` is the one to reach for when this SDK is the thing talking to the
+platform. The token it mints is scoped to the model the options name, so a
+token that escapes is worth sessions on that model rather than everything the
+key can reach, and it is minted per connect rather than once for the life of
+the process — which matters, because a token carries a session grant with a
+capacity, and a session spends its slot for the life of the grant whether or
+not you disconnect.
+
+`jwt` is for a token minted elsewhere — by your own backend, through
+`Reactor.fetchJwt`, or by whatever else owns the key. A token you supply is
+yours: the SDK never replaces it, and never mints over it even if a key is
+also set. Pass a key to a client you do not control and you have shipped the
+key.
+
+One case needs the broader token and gets it without being asked:
+`connect(sessionId, connectionId)` adopts a session this client did not
+create, which a model-scoped token cannot reach, so a client holding a key
+mints an unscoped one for that connect and rebuilds itself around it.
+
 ## From Kotlin
 
 `reactor-sdk-kotlin` is a facade over the same binding, not a second one. It holds
@@ -103,9 +134,7 @@ implementation("inc.reactor:reactor-sdk-kotlin:1.0.0")
 ```
 
 ```kotlin
-val jwt = ReactorClient.fetchJwt(apiUrl, apiKey)
-
-ReactorClient.open(reactorOptions(apiUrl, "reactor/helios") { jwt(jwt) }).use { client ->
+ReactorClient.open(reactorOptions(apiUrl, "reactor/helios") { apiKey(apiKey) }).use { client ->
     client.connect()
 
     client.sendCommand("set_prompt", JsonValue.`object`().put("prompt", prompt).build())

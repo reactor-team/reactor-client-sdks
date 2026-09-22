@@ -20,16 +20,31 @@ import org.junit.jupiter.api.Test;
  */
 final class ClientPeerTeardownRaceTest {
 
-    @Test
-    @DisplayName("close waits for a native call that is already inside the FFI")
-    void closeWaitsForCallsInFlight() throws Exception {
-        FakeNativeLibrary fake = new FakeNativeLibrary();
-        fake.blockInStatus = true;
+    /**
+     * A peer with a native client behind it.
+     *
+     * <p>Every case here is about what teardown does to a handle, and a handle exists from the
+     * first connect rather than from creation — that is where the token it is built with is
+     * settled.
+     */
+    private static ClientPeer connected(FakeNativeLibrary fake) {
         ClientPeer peer = ClientPeer.create(
                 ReactorOptions.builder("https://api.example.test", "owner/model")
                         .dispatcher(Runnable::run)
                         .build(),
                 arena -> Ffi.open(fake.lookup()));
+        peer.connect(null, null);
+        fake.settleLastCall(true, "{}", null);
+        fake.clearPendingCall();
+        return peer;
+    }
+
+    @Test
+    @DisplayName("close waits for a native call that is already inside the FFI")
+    void closeWaitsForCallsInFlight() throws Exception {
+        FakeNativeLibrary fake = new FakeNativeLibrary();
+        fake.blockInStatus = true;
+        ClientPeer peer = connected(fake);
 
         AtomicBoolean finished = new AtomicBoolean();
         Thread reader = Thread.ofPlatform().start(() -> {
@@ -66,11 +81,7 @@ final class ClientPeerTeardownRaceTest {
         FakeNativeLibrary fake = new FakeNativeLibrary();
         fake.tracksJson = "[{\"name\":\"camera_in\",\"kind\":\"video\",\"direction\":\"sendonly\"}]";
         fake.blockInPushVideo = true;
-        ClientPeer peer = ClientPeer.create(
-                ReactorOptions.builder("https://api.example.test", "owner/model")
-                        .dispatcher(Runnable::run)
-                        .build(),
-                arena -> Ffi.open(fake.lookup()));
+        ClientPeer peer = connected(fake);
         peer.publish("camera_in");
         fake.settleLastCall(true, "{}", null);
 
@@ -102,11 +113,7 @@ final class ClientPeerTeardownRaceTest {
         // A leaked handle beats a jump into freed memory, and that is the trade this makes.
         FakeNativeLibrary fake = new FakeNativeLibrary();
         fake.blockInStatus = true;
-        ClientPeer peer = ClientPeer.create(
-                ReactorOptions.builder("https://api.example.test", "owner/model")
-                        .dispatcher(Runnable::run)
-                        .build(),
-                arena -> Ffi.open(fake.lookup()));
+        ClientPeer peer = connected(fake);
 
         Thread reader = Thread.ofPlatform().start(peer::status);
         assertTrue(fake.enteredStatus.await(10, TimeUnit.SECONDS), "the call never reached the library");
@@ -144,11 +151,7 @@ final class ClientPeerTeardownRaceTest {
         FakeNativeLibrary fake = new FakeNativeLibrary();
         ClientPeer[] holder = new ClientPeer[1];
         fake.duringStatus = () -> holder[0].close();
-        ClientPeer peer = ClientPeer.create(
-                ReactorOptions.builder("https://api.example.test", "owner/model")
-                        .dispatcher(Runnable::run)
-                        .build(),
-                arena -> Ffi.open(fake.lookup()));
+        ClientPeer peer = connected(fake);
         holder[0] = peer;
 
         peer.status();

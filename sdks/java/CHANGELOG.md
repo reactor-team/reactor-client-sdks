@@ -9,6 +9,27 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `ReactorOptions.apiKey`: hand the client a key and it exchanges one itself
+  on `connect()`, scoped to the model it was built for — the shape Python,
+  C++ and Swift have always had, where `Reactor.fetchJwt` was previously the
+  only way in. A token you supply still wins, and is never re-minted over.
+  Adopting a session by id mints an unscoped token instead, because a
+  model-scoped one cannot reach a session it did not create.
+
+### Changed
+
+- The native client is now created on the first `connect()` rather than by
+  `Reactor.open()`, because that is where the token it is handed is settled.
+  A client that never connects allocates nothing; one that never connected
+  and is closed destroys nothing. Nothing else about the lifetime moves —
+  `close()` is still what ends a client, and still idempotent.
+- Re-minting a token settles the operations the replaced client was
+  carrying. `reactor_destroy` ends its right to call back, so those
+  completions can no longer arrive, and a caller left holding one would wait
+  for the life of the process.
+
 ## [1.0.0] - 2026-09-17
 
 Initial release. Published to Maven Central as `inc.reactor:reactor-sdk`,

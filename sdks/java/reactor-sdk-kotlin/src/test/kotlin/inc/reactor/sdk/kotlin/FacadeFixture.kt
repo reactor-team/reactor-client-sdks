@@ -22,7 +22,7 @@ abstract class FacadeFixture {
         fake.tracksJson = TRACKS
         client =
             ReactorClient(
-                FakeClients.open(
+                FakeClients.openConnected(
                     fake,
                     ReactorOptions.builder("https://api.example.test", "owner/model")
                         .dispatcher { it.run() }
