@@ -23,12 +23,23 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PACKAGES_FILE="$REPO_ROOT/sdks/android/sdk-packages.txt"
+PACKAGE_FILES=("$REPO_ROOT/sdks/android/sdk-packages.txt")
 
-if [ ! -f "$PACKAGES_FILE" ]; then
-  echo "error: $PACKAGES_FILE not found" >&2
-  exit 1
+# --emulator adds the instrumented-test set: an emulator and a system image, which are well over
+# a gigabyte together and which the ordinary build has no use for.
+if [ "${1:-}" = "--emulator" ]; then
+  PACKAGE_FILES+=("$REPO_ROOT/sdks/android/sdk-packages-emulator.txt")
+elif [ -n "${1:-}" ]; then
+  echo "usage: $0 [--emulator]" >&2
+  exit 2
 fi
+
+for f in "${PACKAGE_FILES[@]}"; do
+  if [ ! -f "$f" ]; then
+    echo "error: $f not found" >&2
+    exit 1
+  fi
+done
 
 if [ -z "${ANDROID_HOME:-}" ]; then
   cat >&2 <<'MSG'
@@ -52,14 +63,16 @@ fi
 # comments in sdk-packages.txt are the part that tells the next reader why each version is what
 # it is.
 PACKAGES=()
-while IFS= read -r line; do
-  line="${line%%#*}"
-  line="$(printf '%s' "$line" | tr -d '[:space:]')"
-  [ -n "$line" ] && PACKAGES+=("$line")
-done < "$PACKAGES_FILE"
+for f in "${PACKAGE_FILES[@]}"; do
+  while IFS= read -r line; do
+    line="${line%%#*}"
+    line="$(printf '%s' "$line" | tr -d '[:space:]')"
+    [ -n "$line" ] && PACKAGES+=("$line")
+  done < "$f"
+done
 
 if [ ${#PACKAGES[@]} -eq 0 ]; then
-  echo "error: $PACKAGES_FILE pins no packages" >&2
+  echo "error: no packages pinned in ${PACKAGE_FILES[*]}" >&2
   exit 1
 fi
 

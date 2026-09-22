@@ -84,7 +84,23 @@ for abi in "${ABIS[@]}"; do
   # this .so with someone else's JAR.
   jar="$(find "$REPO_ROOT/target/$target/release/build" -name libwebrtc.jar -print -quit)"
   [ -n "$jar" ] || { echo "error: no libwebrtc.jar under target/$target — did reactor-webrtc-sys build?" >&2; exit 1; }
-  cp "$jar" "$STAGE/libs/libwebrtc.jar"
+
+  # Keep only `inc/`, which is everything the relocation produced: inc/reactor/org/webrtc,
+  # inc/reactor/org/jni_zero, and inc/reactor/J/N.class — the generated JNI registration class.
+  #
+  # The jar as built also carries a whole Kotlin stdlib (997 entries), androidx.annotation, and
+  # Chromium's and IntelliJ's annotation packages. Shipping those inside the AAR puts them on
+  # every consumer's compile classpath, where they collide with the same classes arriving
+  # normally: `Duplicate class androidx.annotation.AnimRes … found in modules annotation-jvm and
+  # libwebrtc.jar`, and two copies of kotlin/annotation/annotation.kotlin_builtins. That is a
+  # build failure in an app that has done nothing wrong, and it is not ours to hand them.
+  #
+  # Found by the instrumented test's own build hitting it first.
+  repack="$(mktemp -d)"
+  ( cd "$repack" && unzip -q "$jar" 'inc/*' )
+  [ -d "$repack/inc" ] || { echo "error: $jar contains no inc/ — has the JNI package prefix changed?" >&2; exit 1; }
+  ( cd "$repack" && jar --create --file "$STAGE/libs/libwebrtc.jar" inc )
+  rm -rf "$repack"
 
   echo "==> Checking $abi artifacts"
   python3 "$REPO_ROOT/scripts/check-android-native.py" \
