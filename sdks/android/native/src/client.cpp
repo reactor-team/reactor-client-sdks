@@ -31,6 +31,8 @@ struct Context {
   jmethodID on_status = nullptr;
   jmethodID on_error = nullptr;
   jmethodID on_session_id = nullptr;
+  jmethodID on_video_frame = nullptr;
+  jmethodID on_audio_frame = nullptr;
 
   void release(JNIEnv* env) {
     if (listener != nullptr) env->DeleteGlobalRef(listener);
@@ -75,6 +77,76 @@ void on_error(const char* error_json, void* userdata) {
 
 void on_session_id(const char* session_id_or_null, void* userdata) {
   dispatch(userdata, static_cast<Context*>(userdata)->on_session_id, session_id_or_null);
+}
+
+/**
+ * Deliver a video frame, inline, on the FFI's own delivery thread.
+ *
+ * Not marshalled anywhere, and that is the design rather than an omission: while the handler runs
+ * the FFI keeps only the newest frame and drops the rest, which is a bounded loss. Handing frames
+ * to a queue here would trade that for unbounded latency and memory.
+ *
+ * The pixels are wrapped in a **direct** ByteBuffer over the FFI's own memory — no copy, and
+ * valid only until this returns. Kotlin's contract says the same thing to the caller.
+ */
+void on_frame(const char* track_name, const uint8_t* data, uint32_t width, uint32_t height,
+              uint64_t frame_id, uint64_t timestamp_us, const uint8_t* user_data,
+              uint32_t user_data_len, void* userdata) {
+  auto* context = static_cast<Context*>(userdata);
+  if (context == nullptr || context->on_video_frame == nullptr || data == nullptr) return;
+
+  ScopedEnv scoped;
+  if (!scoped) return;
+  JNIEnv* env = scoped.get();
+
+  jstring name = to_jstring(env, track_name);
+  jobject pixels = env->NewDirectByteBuffer(
+      const_cast<uint8_t*>(data), static_cast<jlong>(width) * height * 4);
+
+  // The tag is copied rather than wrapped: it is small, and a caller keeping it is the ordinary
+  // case — unlike the pixel buffer, where a copy per frame would be the expensive default.
+  jbyteArray tag = nullptr;
+  if (user_data != nullptr && user_data_len > 0) {
+    tag = env->NewByteArray(static_cast<jsize>(user_data_len));
+    env->SetByteArrayRegion(tag, 0, static_cast<jsize>(user_data_len),
+                            reinterpret_cast<const jbyte*>(user_data));
+  }
+
+  env->CallVoidMethod(context->listener, context->on_video_frame, name, pixels,
+                      static_cast<jint>(width), static_cast<jint>(height),
+                      static_cast<jlong>(frame_id), static_cast<jlong>(timestamp_us), tag);
+  if (env->ExceptionCheck()) {
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+  }
+  if (tag != nullptr) env->DeleteLocalRef(tag);
+  if (pixels != nullptr) env->DeleteLocalRef(pixels);
+  if (name != nullptr) env->DeleteLocalRef(name);
+}
+
+/// As on_frame, for interleaved int16 PCM. Roughly 10 ms per call.
+void on_audio(const char* track_name, const int16_t* samples, uint32_t num_samples,
+              uint32_t sample_rate, uint32_t channels, void* userdata) {
+  auto* context = static_cast<Context*>(userdata);
+  if (context == nullptr || context->on_audio_frame == nullptr || samples == nullptr) return;
+
+  ScopedEnv scoped;
+  if (!scoped) return;
+  JNIEnv* env = scoped.get();
+
+  jstring name = to_jstring(env, track_name);
+  jobject pcm = env->NewDirectByteBuffer(const_cast<int16_t*>(samples),
+                                         static_cast<jlong>(num_samples) * 2);
+
+  env->CallVoidMethod(context->listener, context->on_audio_frame, name, pcm,
+                      static_cast<jint>(num_samples), static_cast<jint>(sample_rate),
+                      static_cast<jint>(channels));
+  if (env->ExceptionCheck()) {
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+  }
+  if (pcm != nullptr) env->DeleteLocalRef(pcm);
+  if (name != nullptr) env->DeleteLocalRef(name);
 }
 
 /// Where completions are settled: Completions.settleFromNative, resolved once at load.
@@ -140,9 +212,15 @@ extern "C" JNIEXPORT jlong JNICALL Java_inc_reactor_sdk_android_internal_NativeC
       env->GetMethodID(context->listener_class, "onError", "(Ljava/lang/String;)V");
   context->on_session_id =
       env->GetMethodID(context->listener_class, "onSessionId", "(Ljava/lang/String;)V");
+  context->on_video_frame = env->GetMethodID(
+      context->listener_class, "onVideoFrame",
+      "(Ljava/lang/String;Ljava/nio/ByteBuffer;IIJJ[B)V");
+  context->on_audio_frame = env->GetMethodID(context->listener_class, "onAudioFrame",
+                                             "(Ljava/lang/String;Ljava/nio/ByteBuffer;III)V");
 
   if (context->on_status == nullptr || context->on_error == nullptr ||
-      context->on_session_id == nullptr) {
+      context->on_session_id == nullptr || context->on_video_frame == nullptr ||
+      context->on_audio_frame == nullptr) {
     context->release(env);
     reactor_jni::fail(env, "java/lang/NoSuchMethodError",
                       "NativeEvents is missing a callback method — the Kotlin interface and "
@@ -154,6 +232,8 @@ extern "C" JNIEXPORT jlong JNICALL Java_inc_reactor_sdk_android_internal_NativeC
   callbacks.on_status = on_status;
   callbacks.on_error = on_error;
   callbacks.on_session_id = on_session_id;
+  callbacks.on_frame = on_frame;
+  callbacks.on_audio = on_audio;
   callbacks.userdata = context.get();
 
   JavaString url(env, api_url);
