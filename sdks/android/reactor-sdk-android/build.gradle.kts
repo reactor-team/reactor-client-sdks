@@ -11,8 +11,35 @@ plugins {
 /** Where scripts/build-android-ffi.sh stages libreactor_ffi.so and the libwebrtc JAR. */
 val nativeStage: Directory = layout.buildDirectory.dir("reactor-native").get()
 
+/**
+ * `REACTOR_ABI_VERSION` as the canonical header declares it.
+ *
+ * Read out of the header rather than written here, and handed to the instrumented test as a
+ * BuildConfig field. That is what lets the test assert the *packaged* library agrees with the
+ * header this AAR was built against — a stale .so staged from an older checkout links, loads and
+ * then reports a different number, which is precisely what NativeAbi.checkAbi() exists to catch
+ * and precisely what a test asserting `> 0` would not.
+ */
+val headerAbiVersion: Int =
+    rootProject
+        .file("../../crates/reactor-ffi/include/reactor_ffi.h")
+        .readLines()
+        .firstNotNullOfOrNull { Regex("""^#define\s+REACTOR_ABI_VERSION\s+(\d+)""").find(it) }
+        ?.groupValues
+        ?.get(1)
+        ?.toInt()
+        ?: error("No `#define REACTOR_ABI_VERSION` in crates/reactor-ffi/include/reactor_ffi.h")
+
 android {
     namespace = "inc.reactor.sdk.android"
+
+    buildFeatures {
+        buildConfig = true
+    }
+
+    defaultConfig {
+        buildConfigField("int", "REACTOR_ABI_VERSION", "$headerAbiVersion")
+    }
 
     defaultConfig {
         // Native methods are resolved by name at load time, so R8 cannot see that they are used.
