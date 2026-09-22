@@ -29,6 +29,24 @@ internal object NativeClient {
 
     private external fun nativePausedTracks(context: Long): String?
 
+    private external fun nativeInitCompletions(completions: Class<*>)
+
+    private external fun nativeConnect(
+        context: Long,
+        sessionId: String?,
+        ticket: Long,
+    )
+
+    private external fun nativeDisconnect(
+        context: Long,
+        ticket: Long,
+    )
+
+    private external fun nativeReconnect(
+        context: Long,
+        ticket: Long,
+    )
+
     /**
      * Global references the bridge could not release, kept forever on purpose.
      *
@@ -51,6 +69,21 @@ internal object NativeClient {
         orphanedContexts += 1
     }
 
+    /**
+     * Tell the bridge where to settle completions. Idempotent, and done once before the first
+     * handle exists — the lookup needs a thread with an application class loader, which an
+     * FFI-owned callback thread does not have.
+     */
+    @Synchronized
+    private fun ensureCompletionsWired() {
+        if (completionsWired) return
+        nativeInitCompletions(Completions::class.java)
+        completionsWired = true
+    }
+
+    @Volatile
+    private var completionsWired = false
+
     /** A live handle. Not thread-safe against its own [close]; the object model serialises that. */
     class Handle internal constructor(
         private val context: Long,
@@ -71,6 +104,30 @@ internal object NativeClient {
          * — they are serialised by their own `checkOpen` and by the FFI.
          */
         private val lifecycle = Any()
+
+        /** Create or adopt a session and bring the transport up. */
+        suspend fun connect(sessionId: String?) {
+            checkOpen()
+            Completions.await("connect", decode = { }) { ticket ->
+                nativeConnect(context, sessionId, ticket)
+            }
+        }
+
+        /** End the session server-side. */
+        suspend fun disconnect() {
+            checkOpen()
+            Completions.await("disconnect", decode = { }) { ticket ->
+                nativeDisconnect(context, ticket)
+            }
+        }
+
+        /** Cycle the connection, keeping the session. */
+        suspend fun reconnect() {
+            checkOpen()
+            Completions.await("reconnect", decode = { }) { ticket ->
+                nativeReconnect(context, ticket)
+            }
+        }
 
         val status: String?
             get() = withOpenHandle { nativeStatus(context) }
@@ -127,6 +184,7 @@ internal object NativeClient {
         sdkType: String? = "android",
     ): Handle {
         NativeLibrary.ensureLoaded()
+        ensureCompletionsWired()
         val context =
             nativeCreate(apiUrl, modelName, jwt, local, autoResumeTracks, listener, sdkVersion, sdkType)
         check(context != 0L) { "The native layer refused to create a client for $modelName" }

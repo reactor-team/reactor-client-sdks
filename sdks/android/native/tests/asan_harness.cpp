@@ -36,8 +36,13 @@ jstring Java_inc_reactor_sdk_android_internal_NativeClient_nativeTracks(JNIEnv*,
 jstring Java_inc_reactor_sdk_android_internal_NativeClient_nativePausedTracks(JNIEnv*, jobject,
                                                                              jlong);
 
+void Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitCompletions(JNIEnv*, jobject,
+                                                                             jclass);
+void Java_inc_reactor_sdk_android_internal_NativeClient_nativeConnect(JNIEnv*, jobject, jlong,
+                                                                     jstring, jlong);
 void fake_set_destroy_result(int result);
 int fake_last_auto_resume(void);
+void fake_complete_last_on_foreign_thread(int ok, const char* result_json, const char* error_json);
 void fake_fire_status_on_foreign_thread(const char* status);
 void fake_fire_session_id_on_foreign_thread(const char* session_id);
 }
@@ -93,6 +98,20 @@ jlong create(jboolean auto_resume = JNI_TRUE) {
   g_env->DeleteLocalRef(version);
   g_env->DeleteLocalRef(type);
   return context;
+}
+
+/// The bridge must ask for the synthetic audio module and nothing else.
+///
+/// `reactor_create_with_adm`'s other mode opens a real microphone, and `reactor_create` takes its
+/// mode from an environment variable — which is how a library whose audience is applications ends
+/// up with live microphone audio on the wire because a model declared a sendonly audio track. The
+/// fake refuses any mode but 0, so a bridge that ever passed 1 gets a null handle here.
+void the_synthetic_audio_module_is_pinned() {
+  jlong context = create();
+  check(context != 0,
+        "create asked for the synthetic ADM (the fake refuses every other mode)");
+  fake_set_destroy_result(0);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, context);
 }
 
 /// The owned strings, read enough times that a missing free is a leak ASan reports at exit and a
@@ -187,6 +206,45 @@ void destroy_minus_one_keeps_the_references_alive() {
   fake_set_destroy_result(0);
 }
 
+/// The completion path, end to end on the native side: a completion fires on a thread the JVM has
+/// never seen, and both of its strings are copied before the FFI frees them.
+void completions_cross_from_a_foreign_thread() {
+  jclass local = g_env->FindClass("AsanCompletions");
+  if (local == nullptr) {
+    check(false, "AsanCompletions is on the classpath");
+    return;
+  }
+  jclass completions = static_cast<jclass>(g_env->NewGlobalRef(local));
+  g_env->DeleteLocalRef(local);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitCompletions(g_env, nullptr,
+                                                                          completions);
+
+  jlong context = create();
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeConnect(g_env, nullptr, context,
+                                                                  nullptr, /*ticket=*/4242);
+  fake_complete_last_on_foreign_thread(1, "{\"ok\":true}", nullptr);
+
+  jfieldID ticket_id = g_env->GetStaticFieldID(completions, "lastTicket", "J");
+  jfieldID result_id = g_env->GetStaticFieldID(completions, "lastResult", "Ljava/lang/String;");
+  jfieldID error_id = g_env->GetStaticFieldID(completions, "lastError", "Ljava/lang/String;");
+
+  check(g_env->GetStaticLongField(completions, ticket_id) == 4242,
+        "the ticket survives the round trip through userdata");
+
+  auto result = static_cast<jstring>(g_env->GetStaticObjectField(completions, result_id));
+  const char* chars = result == nullptr ? nullptr : g_env->GetStringUTFChars(result, nullptr);
+  check(chars != nullptr && std::strcmp(chars, "{\"ok\":true}") == 0,
+        "result_json is copied before the FFI frees it");
+  if (chars != nullptr) g_env->ReleaseStringUTFChars(result, chars);
+
+  check(g_env->GetStaticObjectField(completions, error_id) == nullptr,
+        "a null error_json arrives as Java null rather than as \"\"");
+
+  fake_set_destroy_result(0);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, context);
+  g_env->DeleteGlobalRef(completions);
+}
+
 }  // namespace
 
 /// Strings survive the crossing in both directions, including outside the BMP.
@@ -268,10 +326,12 @@ int main() {
 
   std::printf("JNI boundary, under AddressSanitizer:\n");
   auto_resume_tracks_crosses_as_the_caller_set_it();
+  the_synthetic_audio_module_is_pinned();
   owned_strings_are_freed_exactly_once();
   the_static_string_is_never_freed();
   events_cross_from_a_foreign_thread();
   a_throwing_handler_is_contained();
+  completions_cross_from_a_foreign_thread();
   destroy_minus_one_keeps_the_references_alive();
   strings_round_trip_outside_the_bmp();
 
