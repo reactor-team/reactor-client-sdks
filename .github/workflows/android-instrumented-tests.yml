@@ -1,0 +1,67 @@
+# The Android instrumented suite: the real libraries, loaded on a real Android image.
+#
+# **Not a pull-request gate, and that is a limitation rather than a choice.** An arm64 Android
+# emulator needs a hypervisor for the guest, and no GitHub-hosted runner provides one for arm64:
+#
+#   * hosted macOS (Apple Silicon) runners are themselves VMs and do not expose
+#     Hypervisor.framework — the emulator reports `HVF error: HV_UNSUPPORTED` and then times out
+#     booting under pure emulation. The Swift jobs pass there because the iOS *Simulator* is not
+#     virtualisation; it runs arm64 binaries natively.
+#   * hosted arm64 Linux runners (`ubuntu-24.04-arm`) have no `/dev/kvm` at all — `udevadm
+#     trigger --name-match=kvm` fails with "Failed to open the device 'kvm': Invalid argument".
+#
+# Both were tried, in that order. What would restore a per-pull-request gate is an x86_64 Android
+# ABI (REA-6551 — reactor-webrtc publishes an android arm64 prebuilt and no other), because
+# hosted x86_64 Linux runners *do* have KVM. Until then this runs on demand and on a developer's
+# own machine, where `mise run test:android:instrumented` works against a local AVD.
+#
+# What still gates every pull request, in ci.yml: the unit tests, the AddressSanitizer harness
+# over the JNI boundary, and the native cross-build itself.
+
+name: Android SDK instrumented tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: A runner with a working arm64 hypervisor (a self-hosted macOS or Linux arm64 host)
+        required: true
+        default: self-hosted
+
+concurrency:
+  group: android-instrumented-tests
+  cancel-in-progress: false
+
+env:
+  MISE_VERSION: 2026.8.8
+  MISE_LOCKED: "1"
+  MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
+
+jobs:
+  instrumented:
+    name: Instrumented tests (real libraries, 16 KB emulator)
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1 # reads rust-toolchain.toml
+        with:
+          cache-on-failure: true
+          cache-shared-key: reactor-android-${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - run: mise run setup:android:emulator
+      - run: mise run build:android:native
+      # A 16 KB page-size image on purpose. On an ordinary 4 KB image a misaligned library loads
+      # fine and the test proves nothing; on this one it fails the way an Android 15 device does.
+      - name: Run the instrumented tests on an arm64 emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis_ps16k
+          arch: arm64-v8a
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: mise run test:android:instrumented
