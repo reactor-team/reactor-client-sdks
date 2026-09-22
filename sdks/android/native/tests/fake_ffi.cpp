@@ -59,11 +59,56 @@ char* reactor_paused_tracks(ReactorHandle*) { return strdup("[]"); }
 
 void reactor_free_string(char* s) { free(s); }
 
+// ── Async operations ─────────────────────────────────────────────────────────
+//
+// The completion is stored rather than called, so the harness decides when it fires and on which
+// thread. That is the whole point: a real library completes when it completes, and the races this
+// boundary has to survive — a completion arriving after the caller was cancelled, or after the
+// client was closed — are not reproducible by waiting.
+
+static reactor_completion_fn g_completion = nullptr;
+static void* g_completion_userdata = nullptr;
+
+static void remember(reactor_completion_fn completion, void* userdata) {
+    g_completion = completion;
+    g_completion_userdata = userdata;
+}
+
+void reactor_connect(ReactorHandle*, const char*, const uint32_t*,
+                     reactor_completion_fn completion, void* userdata) {
+    remember(completion, userdata);
+}
+
+void reactor_disconnect(ReactorHandle*, reactor_completion_fn completion, void* userdata) {
+    remember(completion, userdata);
+}
+
+void reactor_reconnect(ReactorHandle*, reactor_completion_fn completion, void* userdata) {
+    remember(completion, userdata);
+}
+
 // ── Controls, for the harness only ───────────────────────────────────────────
 // Named fake_* rather than reactor_*: a reactor_* symbol here would be a new name in the ABI as
 // far as check-abi-parity.py is concerned.
 
 void fake_set_destroy_result(int result) { g_destroy_result = result; }
+
+/// Fire the completion the last async call registered, from a thread the JVM has never seen.
+void fake_complete_last_on_foreign_thread(int ok, const char* result_json, const char* error_json) {
+    reactor_completion_fn completion = g_completion;
+    void* userdata = g_completion_userdata;
+    if (completion == nullptr) return;
+    const bool has_result = result_json != nullptr;
+    const bool has_error = error_json != nullptr;
+    std::string result(has_result ? result_json : "");
+    std::string error(has_error ? error_json : "");
+    std::thread([completion, userdata, ok, result, error, has_result, has_error]() {
+        completion(ok, has_result ? result.c_str() : nullptr,
+                   has_error ? error.c_str() : nullptr, userdata);
+    }).join();
+    g_completion = nullptr;
+    g_completion_userdata = nullptr;
+}
 
 /// Fire a status event from a thread the "FFI" owns — one the JVM has never seen, which is the
 /// only way to exercise ScopedEnv's attach and detach.
