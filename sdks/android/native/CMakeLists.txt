@@ -28,6 +28,11 @@ target_link_libraries(reactor_jni PRIVATE "${REACTOR_FFI_LIB}" log)
 
 target_compile_options(reactor_jni PRIVATE -Wall -Wextra -Werror)
 
-# 16 KB pages are required for Android 15 (API 35) targets, and a library that misses it does not
-# load at all. cargo-ndk already does this for the Rust half; this is the C++ half.
+# 16 KB pages are required for Android 15 (API 35) targets: a 4 KB-aligned library does not load
+# at all on such a device, which is why the instrumented tests run against a 16 KB system image.
+#
+# Stated explicitly even though the pinned NDK appears to align this way already — removing this
+# line and rebuilding still produced an aligned library, so it is insurance against a toolchain
+# whose default changes rather than the thing currently doing the work.
+# scripts/check-android-native.py is what actually enforces it, on every packaged library.
 target_link_options(reactor_jni PRIVATE "-Wl,-z,max-page-size=16384")

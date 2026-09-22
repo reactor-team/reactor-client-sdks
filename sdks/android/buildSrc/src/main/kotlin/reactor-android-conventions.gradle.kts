@@ -90,6 +90,9 @@ val libs = extensions.getByType<VersionCatalogsExtension>().named("libs")
 
 dependencies {
     testImplementation(libs.findLibrary("junit").get())
+    androidTestImplementation(libs.findLibrary("junit").get())
+    androidTestImplementation(libs.findLibrary("androidx-test-runner").get())
+    androidTestImplementation(libs.findLibrary("androidx-test-junit").get())
 }
 
 tasks.withType<Test>().configureEach {
