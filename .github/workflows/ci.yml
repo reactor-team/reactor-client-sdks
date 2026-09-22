@@ -642,7 +642,16 @@ jobs:
       # resolve, so without this a withdrawn pin would build against whatever was already there.
       - run: mise run setup:android
       - run: mise run lint:android
-      - run: mise run build:android
+      # No `build:android` here, deliberately. Assembling the AAR needs libreactor_ffi.so and the
+      # libwebrtc JAR staged by `build:android:native`, which is a Rust cross-compile linking a
+      # prebuilt libwebrtc — minutes and gigabytes, for an artifact this job does not otherwise
+      # need. `requireNativeArtifacts` fails the build rather than packaging an empty AAR, which
+      # is exactly what it did here before this comment existed.
+      #
+      # The AAR is assembled on the instrumented job below, which stages the natives because it
+      # has to run them on a device. So "does the AAR package correctly" is still answered on
+      # every pull request, just once rather than twice.
+      #
       # Compiles with allWarningsAsErrors as well as running the tests — kotlinc is the other
       # half of this binding's lint gate, so there is no separate step for it.
       - run: mise run test:android
@@ -669,10 +678,15 @@ jobs:
           path: ~/.local/share/mise/installs/android-sdk
           key: android-sdk-emu-${{ runner.os }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'sdks/android/sdk-packages-emulator.txt', 'mise.lock') }}
       - run: mise run setup:android:emulator
-      # The Rust cross-build, which is the slow part: it links a prebuilt libwebrtc.
-      - uses: Swatinem/rust-cache@v2
+      # The Rust toolchain comes from the action rather than from mise, as it does in every
+      # other job that builds native code here — MISE_DISABLE_TOOLS at the workflow level keeps
+      # mise's rustup out of the way, so without this `cargo` resolves to a toolchain with no
+      # cargo component and the cross-build dies before it starts.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1 # reads rust-toolchain.toml
         with:
-          key: android-arm64
+          cache-on-failure: true
+          cache-shared-key: reactor-android-${{ hashFiles('mise.lock') }}
+      # The slow part: a Rust cross-compile linking a prebuilt libwebrtc.
       - run: mise run build:android:native
       # A 16 KB page-size image on purpose. On an ordinary 4 KB image a misaligned library loads
       # fine and the test proves nothing; on this one it fails the way an Android 15 device does,
