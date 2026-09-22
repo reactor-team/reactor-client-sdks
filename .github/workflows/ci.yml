@@ -697,10 +697,10 @@ jobs:
           api-level: 36
           target: google_apis_ps16k
           arch: arm64-v8a
-          # Installed and verified by setup:android:emulator above, from the pinned
-          # sdk-packages-emulator.txt — not resolved by the action, which would take whatever is
-          # newest that day.
-          emulator-build: false
+          # No `emulator-build`: that input takes a build *number* to pin a specific emulator
+          # binary, and passing a boolean fails the action with "Unexpected emulator build:
+          # 'false'". The emulator itself is already pinned — setup:android:emulator installs the
+          # version sdk-packages-emulator.txt names, and this action reuses what is installed.
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
