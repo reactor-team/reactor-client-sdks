@@ -651,6 +651,14 @@ description = "[Setup] Install the pinned emulator and 16 KB system image for in
 # instrumented-test job needs them.
 run = "scripts/setup-android-sdk.sh --emulator"
 
+[tasks."test:android:asan"]
+description = "[Testing] Android JNI bridge lifetime checks under AddressSanitizer (host build)"
+# Runs the real bridge against a fake libreactor_ffi, inside a JVM the harness creates, with ASan
+# watching. Needs no device and no Android SDK: it is a host build, and it covers the two things
+# the on-device suite cannot — a use-after-free that a passing run hides, and reactor_destroy
+# returning -1, which a healthy library will never do on request.
+run = "scripts/asan-android-jni.sh"
+
 [tasks."test:android:instrumented"]
 description = "[Testing] Android SDK instrumented tests — real libraries, on a device or emulator"
 # Needs a running device: `mise run setup:android:emulator` first, then an AVD from the pinned
