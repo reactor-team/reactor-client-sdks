@@ -218,6 +218,11 @@ def android_native_sources() -> list[Path]:
         path
         for pattern in ("**/*.hpp", "**/*.cpp")
         for path in ANDROID_NATIVE_DIR.glob(pattern)
+        # tests/ holds the fake libreactor_ffi the sanitizer harness links instead of the real
+        # one. It *defines* the ABI on purpose — that is what a fake is — so the redeclaration
+        # rule does not apply to it. It includes the real header for the struct layouts, which is
+        # what keeps it honest.
+        if "tests" not in path.relative_to(ANDROID_NATIVE_DIR).parts
     )
 
 

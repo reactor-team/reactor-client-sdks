@@ -50,7 +50,11 @@ class ScopedEnv {
       // Named, so a native thread shows up as something recognisable in a thread dump rather
       // than as an anonymous "Thread-12" in the middle of a WebRTC stack.
       JavaVMAttachArgs args = {JNI_VERSION_1_6, const_cast<char*>("reactor-ffi"), nullptr};
-      if (g_vm->AttachCurrentThread(&env_, &args) == JNI_OK) {
+      // Cast because the two jni.h in play disagree: the NDK declares AttachCurrentThread as
+      // taking JNIEnv**, the desktop JDK as taking void**. The bridge compiles against the first
+      // on a device and the second in the host sanitizer harness, and only the cast satisfies
+      // both. The device build alone would never have shown this.
+      if (g_vm->AttachCurrentThread(reinterpret_cast<void**>(&env_), &args) == JNI_OK) {
         attached_ = true;
       } else {
         env_ = nullptr;
