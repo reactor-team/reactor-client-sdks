@@ -16,7 +16,7 @@ if(NOT EXISTS "${REACTOR_FFI_LIB}")
   message(FATAL_ERROR "No libreactor_ffi.so at ${REACTOR_FFI_LIB} — run `mise run build:android:native`")
 endif()
 
-add_library(reactor_jni SHARED src/abi.cpp)
+add_library(reactor_jni SHARED src/abi.cpp src/client.cpp)
 
 target_include_directories(reactor_jni PRIVATE
   include

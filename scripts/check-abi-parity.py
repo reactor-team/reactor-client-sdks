@@ -47,6 +47,7 @@ RUST_SRC = REPO_ROOT / "crates/reactor-ffi/src/lib.rs"
 HEADER = REPO_ROOT / "crates/reactor-ffi/include/reactor_ffi.h"
 CTYPES_SRC = REPO_ROOT / "sdks/python/reactor_sdk/_ffi.py"
 CPP_DIR = REPO_ROOT / "sdks/cpp"
+ANDROID_NATIVE_DIR = REPO_ROOT / "sdks/android/native"
 SWIFT_DIR = REPO_ROOT / "sdks/swift"
 JAVA_DIR = REPO_ROOT / "sdks/java"
 
@@ -103,7 +104,9 @@ CPP_COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.DOTALL)
 
 # Not functions. `reactor_ffi` is the library and its header; the SDK names both
 # in an #include and in messages about rebuilding it.
-CPP_NON_FUNCTIONS = {"reactor_ffi"}
+# reactor_ffi and reactor_jni are library/target names — they appear in CMake
+# references and in load-order prose, and neither is an exported function.
+CPP_NON_FUNCTIONS = {"reactor_ffi", "reactor_jni"}
 
 # Swift reaches the ABI the same way C++ does — through the header, with the
 # compiler deriving every signature — so the same crude scan applies: any
@@ -160,7 +163,16 @@ def cpp_redeclarations(text: str) -> list[str]:
                         region = rest[1:index]
                         break
         else:
-            region = rest.split(";", 1)[0]
+            # `extern "C"` not followed by a block is either a single declaration ending at `;`
+            # or a single *definition*, whose body starts at `{`. Stopping at whichever comes
+            # first matters: reading on into a body turns every call the function makes into a
+            # false redeclaration, which is what `extern "C" JNIEXPORT … { return
+            # reactor_abi_version(); }` in the Android bridge produced.
+            end = min(
+                (index for index in (rest.find(";"), rest.find("{")) if index != -1),
+                default=len(rest),
+            )
+            region = rest[:end]
         found.extend(HEADER_DECL.findall(region))
     return found
 
@@ -190,6 +202,22 @@ def cpp_sources() -> list[Path]:
         # The build tree holds fetched dependencies (Catch2, nlohmann) whose own
         # sources are none of this script's business.
         if "build" not in path.relative_to(CPP_DIR).parts
+    )
+
+
+def android_native_sources() -> list[Path]:
+    """The Android SDK's JNI bridge, which is C++ over the same canonical header.
+
+    Scanned with the same rules as the C++ SDK: it includes reactor_ffi.h directly, so arity and
+    types are the compiler's problem, and what this script adds is the half a compiler cannot see
+    — a function the bridge names that Rust no longer exports.
+    """
+    if not ANDROID_NATIVE_DIR.is_dir():
+        return []
+    return sorted(
+        path
+        for pattern in ("**/*.hpp", "**/*.cpp")
+        for path in ANDROID_NATIVE_DIR.glob(pattern)
     )
 
 
@@ -286,7 +314,7 @@ def main() -> int:
     cpp_named: set[str] = set()
     cpp_redeclared: dict[str, str] = {}
     cpp_forbidden: dict[str, str] = {}
-    for path in cpp_sources():
+    for path in [*cpp_sources(), *android_native_sources()]:
         text = CPP_COMMENT.sub(" ", read(path))
         where = str(path.relative_to(REPO_ROOT))
         for name in CPP_SYMBOL.findall(text):
@@ -381,7 +409,7 @@ def main() -> int:
     unknown_in_cpp = sorted(cpp_named - rust)
     if unknown_in_cpp:
         problems.append(
-            "named by the C++ SDK but not exported by Rust "
+            "named by the C++ or Android SDK but not exported by Rust "
             "(the link fails, or resolves to something else entirely):\n"
             + "\n".join(f"    {name}" for name in unknown_in_cpp)
         )
@@ -482,7 +510,7 @@ def main() -> int:
     only_in_rust = sorted(rust - ctypes_decls)
     summary = (
         f"ABI parity OK — {len(rust)} exported functions, header in sync, "
-        f"{len(cpp_named)} named by the C++ SDK, {len(swift_named)} by the Swift SDK, "
+        f"{len(cpp_named)} named by the C++ and Android SDKs, {len(swift_named)} by the Swift SDK, "
         f"{len(java_declared)} by the Java SDK (arity checked), "
         f"none by the Kotlin facade ({len(kotlin_sources())} files checked)"
     )
