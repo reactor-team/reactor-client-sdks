@@ -656,24 +656,20 @@ jobs:
       # half of this binding's lint gate, so there is no separate step for it.
       - run: mise run test:android
 
-  android-instrumented-tests:
-    name: Android SDK instrumented tests (real libraries, 16 KB emulator)
+  android-native:
+    name: Android SDK native libraries
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.android == 'true'
-    # macOS, and specifically an Apple Silicon runner. The AAR carries arm64-v8a and nothing
-    # else, because reactor-webrtc publishes an android arm64 prebuilt and no other Android ABI
-    # (REA-6551 is what would add x86_64). An arm64 system image needs an arm64 host to run at
-    # native speed, so an ubuntu runner cannot execute these libraries at all — not slowly, not
-    # at all.
-    runs-on: macos-15
+    # x86_64, because the NDK's toolchain is one `linux` archive containing
+    # `toolchains/llvm/prebuilt/linux-x86_64` — there is no arm64 Linux *host* build of it. It
+    # cross-compiles to aarch64-linux-android from here, which is what an NDK is for. The
+    # emulator then runs on a native arm64 host in the job below; each half runs where it works.
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-      # Before mise, exactly as the rust, cpp and swift jobs order it. With mise first, `cargo`
-      # resolved to a toolchain with no cargo component — "the 'cargo' binary ... is not
-      # applicable to the '1.97.1-aarch64-apple-darwin' toolchain" — and the cross-build died
-      # before it started. MISE_DISABLE_TOOLS keeps mise's own rustup out of the way; the
-      # ordering is what makes this action's toolchain the one on PATH.
+      # Before mise, as the rust, cpp and swift jobs order it: with mise first, `cargo` resolves
+      # to a toolchain with no cargo component and the cross-build dies before it starts.
       - uses: actions-rust-lang/setup-rust-toolchain@v1 # reads rust-toolchain.toml
         with:
           cache-on-failure: true
@@ -685,10 +681,59 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/share/mise/installs/android-sdk
-          key: android-sdk-emu-${{ runner.os }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'sdks/android/sdk-packages-emulator.txt', 'mise.lock') }}
-      - run: mise run setup:android:emulator
-      # The slow part: a Rust cross-compile linking a prebuilt libwebrtc.
+          key: android-sdk-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'mise.lock') }}
+      - run: mise run setup:android
       - run: mise run build:android:native
+      # The AAR's payload, handed to the emulator job rather than rebuilt there. Staging it is
+      # minutes and gigabytes; downloading it is seconds.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-native-arm64-v8a
+          path: sdks/android/reactor-sdk-android/build/reactor-native
+          retention-days: 1
+          if-no-files-found: error
+
+  android-instrumented-tests:
+    name: Android SDK instrumented tests (real libraries, 16 KB emulator)
+    needs: [changes, android-native]
+    if: github.event_name == 'push' || needs.changes.outputs.android == 'true'
+    # A **native arm64 Linux** runner, which the release workflows here already use ("Native
+    # arm64 runner, so no qemu"). The AAR carries arm64-v8a and nothing else, so the emulator has
+    # to be arm64 too — and an arm64 guest needs an arm64 host to run at any usable speed.
+    #
+    # Not macOS, and that was tried first: GitHub's hosted Apple Silicon runners are themselves
+    # VMs and do not expose Hypervisor.framework, so the emulator fails with
+    # `HVF error: HV_UNSUPPORTED` and then times out booting under pure emulation. The Swift jobs
+    # pass on those runners because the iOS *Simulator* is not virtualisation — it runs arm64
+    # binaries natively. The Android emulator is QEMU and needs a hypervisor; on Linux that is
+    # KVM, which these runners do expose.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      # /dev/kvm is root-only by default on these images and the emulator runs unprivileged.
+      # Without this the action falls back to software emulation and times out exactly as macOS
+      # did — same symptom, different cause, which is worth saying out loud.
+      - name: Give the emulator access to KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Cache the pinned Android SDK components
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/mise/installs/android-sdk
+          key: android-sdk-emu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'sdks/android/sdk-packages-emulator.txt', 'mise.lock') }}
+      - run: mise run setup:android:emulator
+      # Built on x86_64 above. No Rust toolchain and no NDK needed here at all.
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-native-arm64-v8a
+          path: sdks/android/reactor-sdk-android/build/reactor-native
       # A 16 KB page-size image on purpose. On an ordinary 4 KB image a misaligned library loads
       # fine and the test proves nothing; on this one it fails the way an Android 15 device does,
       # which is the whole reason the build aligns to 16 KB in the first place.
@@ -699,9 +744,8 @@ jobs:
           target: google_apis_ps16k
           arch: arm64-v8a
           # No `emulator-build`: that input takes a build *number* to pin a specific emulator
-          # binary, and passing a boolean fails the action with "Unexpected emulator build:
-          # 'false'". The emulator itself is already pinned — setup:android:emulator installs the
-          # version sdk-packages-emulator.txt names, and this action reuses what is installed.
+          # binary, and a boolean fails the action outright. The emulator is already pinned —
+          # setup:android:emulator installs what sdk-packages-emulator.txt names.
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
@@ -946,6 +990,7 @@ jobs:
         java,
         java-integration-tests,
         android,
+        android-native,
         android-instrumented-tests,
         swift,
         swift-integration-tests,
@@ -972,6 +1017,7 @@ jobs:
                    "${{ needs.java.result }}" \
                    "${{ needs['java-integration-tests'].result }}" \
                    "${{ needs.android.result }}" \
+                   "${{ needs['android-native'].result }}" \
                    "${{ needs['android-instrumented-tests'].result }}" \
                    "${{ needs.swift.result }}" \
                    "${{ needs.swift-integration-tests.result }}" \
