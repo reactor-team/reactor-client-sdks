@@ -1,0 +1,28 @@
+# The Android SDK components, pinned.
+#
+# mise pins the command-line tools themselves (root mise.toml, `android-sdk`), and that is as far
+# as mise reaches: the plugin installs cmdline-tools and nothing else. Everything below is fetched
+# by the `android` CLI those tools provide, which mise has no view of and cannot put in mise.lock.
+# This file is the single source of truth for those versions, and scripts/setup-android-sdk.sh
+# installs from it and then verifies the result against it.
+#
+# Format is the `android sdk install` spec: either a versioned path (`build-tools/36.1.0`) or,
+# for a package whose path carries no version, `name@version` (`platform-tools@37.0.1`). One per
+# line, `#` comments ignored. Every version here is from the stable channel.
+#
+# A spec with no version at all installs "whatever is newest today", which is the drift this file
+# exists to prevent — the setup script refuses one.
+
+# Matches `compileSdk = 36` in buildSrc/src/main/kotlin/reactor-android-conventions.gradle.kts.
+# A compileSdk bump means a line change here too.
+platforms/android-36
+build-tools/36.1.0
+
+# adb and friends. Needed from A02 onward, where the first instrumented test runs on a device.
+platform-tools@37.0.1
+
+# The NDK that compiles the JNI bridge in A02. Its C++ ABI has to agree with the libwebrtc Android
+# archive, which Chromium's own bundled NDK clang builds against WebRTC's bundled libc++ (the
+# `__Cr` namespace) — see crates/reactor-webrtc-sys/build.rs. A mismatch here is the class of
+# failure that already cost the cancelled Kotlin stack a round trip (REA-6255).
+ndk/30.0.16248370

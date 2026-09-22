@@ -1,0 +1,27 @@
+# Every Maven artifact this build pins, in one place.
+#
+# Toolchains are *not* here — the JDK, Gradle, CMake, Ninja and the Android command-line tools
+# live in the repository-root mise.toml, and the SDK components sdkmanager installs live in
+# ../sdk-packages.txt. This file is for things resolved from google() and mavenCentral().
+#
+# buildSrc reads this same file (see buildSrc/settings.gradle.kts), so the plugin classpath and
+# the modules cannot drift onto different versions of AGP or Kotlin.
+
+[versions]
+# AGP 9.x is the Gradle-9 generation. The cancelled Kotlin SDK stack pinned 8.9.2 against a Gradle
+# wrapper of its own; this repository pins Gradle 9.7.1 in mise.toml, and 8.9 does not run on it.
+agp = "9.4.1"
+# Matches the kotlin-gradle-plugin sdks/java/buildSrc pins, so one repository does not need two
+# Kotlin compilers. If you bump one, bump the other.
+kotlin = "2.2.21"
+spotless = "8.10.2"
+ktlint = "1.5.0"
+junit = "4.13.2"
+
+[libraries]
+# Referenced from buildSrc to build the plugin classpath, which cannot use plugin markers.
+android-gradle-plugin = { module = "com.android.tools.build:gradle", version.ref = "agp" }
+kotlin-gradle-plugin = { module = "org.jetbrains.kotlin:kotlin-gradle-plugin", version.ref = "kotlin" }
+spotless-gradle-plugin = { module = "com.diffplug.spotless:spotless-plugin-gradle", version.ref = "spotless" }
+
+junit = { module = "junit:junit", version.ref = "junit" }

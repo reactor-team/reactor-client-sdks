@@ -620,6 +620,22 @@ checksum = "sha256:ec381e40cf1caf8496265bbf14ca0d2cb947495cd3e9069947e2fa75f7de7
 url = "https://conda.anaconda.org/conda-forge/osx-64/zstd-1.5.7-hbc1a06c_7.conda"
 checksum = "sha256:5277886d9704a624dc9b79ac985861e1e431bdb39a57c082507ab577a138ec6c"
 
+[[tools.android-sdk]]
+version = "23.0"
+backend = "vfox:mise-plugins/vfox-android-sdk"
+
+[tools.android-sdk."platforms.linux-arm64"]
+url = "https://dl.google.com/android/repository/commandlinetools-linux-16111833_latest.zip"
+
+[tools.android-sdk."platforms.linux-x64"]
+url = "https://dl.google.com/android/repository/commandlinetools-linux-16111833_latest.zip"
+
+[tools.android-sdk."platforms.macos-arm64"]
+url = "https://dl.google.com/android/repository/commandlinetools-mac_arm64-16111833_latest.zip"
+
+[tools.android-sdk."platforms.macos-x64"]
+url = "https://dl.google.com/android/repository/commandlinetools-mac_x86_64-16111833_latest.zip"
+
 [[tools."aqua:cargo-bins/cargo-binstall"]]
 version = "1.21.0"
 backend = "aqua:cargo-bins/cargo-binstall"
