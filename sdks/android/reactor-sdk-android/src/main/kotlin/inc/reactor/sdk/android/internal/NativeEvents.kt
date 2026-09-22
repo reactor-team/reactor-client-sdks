@@ -23,4 +23,29 @@ internal interface NativeEvents {
 
     /** Null when the session is cleared, which is distinct from "no event". */
     fun onSessionId(sessionId: String?)
+
+    /**
+     * A decoded video frame, **inline on the FFI's delivery thread**.
+     *
+     * `pixels` is a direct buffer over the FFI's own memory, valid only until this returns.
+     * Blocking here is the backpressure: the FFI keeps only the newest frame while this runs.
+     */
+    fun onVideoFrame(
+        trackName: String?,
+        pixels: java.nio.ByteBuffer?,
+        width: Int,
+        height: Int,
+        frameId: Long,
+        timestampUs: Long,
+        userData: ByteArray?,
+    )
+
+    /** Interleaved int16 PCM, with the same borrowed-buffer contract as [onVideoFrame]. */
+    fun onAudioFrame(
+        trackName: String?,
+        pcm: java.nio.ByteBuffer?,
+        sampleCount: Int,
+        sampleRate: Int,
+        channels: Int,
+    )
 }
