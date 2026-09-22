@@ -48,6 +48,18 @@ ninja = "1.13.2"
 # suite on a 22 runtime so that floor is a tested claim rather than a flag.
 java   = "temurin-25.0.4+7.0.LTS"
 gradle = "9.7.1"
+# The Android command-line tools — sdkmanager itself. Pinned here like every other
+# toolchain rather than taken from a runner image's preinstalled ANDROID_HOME, which
+# is whatever that image shipped that week. The plugin resolves one archive per
+# OS/arch out of Google's repository2-3.xml.
+#
+# It installs *only* cmdline-tools. The SDK components it then fetches — the
+# platform, the build-tools and the NDK — are sdkmanager's, and mise has no view of
+# them: they are pinned in sdks/android/sdk-packages.txt and installed by
+# scripts/setup-android-sdk.sh, which verifies the installed set matches that file.
+# That split is the one exception to "[tools] is the only place a version lives",
+# and it exists because mise cannot express the other half.
+"android-sdk" = "23.0"
 uv          = "0.11.31"
 ruff        = "0.15.22"
 shellcheck  = "0.11.0"
@@ -205,10 +217,10 @@ run = [
 ]
 
 [tasks.test]
-description = "[Testing] Every test suite (Rust + Python + JS + C++ + Swift + Java)"
+description = "[Testing] Every test suite (Rust + Python + JS + C++ + Swift + Java + Android)"
 # test:swift skips itself off a machine with a Swift toolchain rather than
 # failing, so this stays runnable on Linux. See the Swift SDK section below.
-depends = ["test:rust", "test:python", "test:js", "test:cpp", "test:swift", "test:java"]
+depends = ["test:rust", "test:python", "test:js", "test:cpp", "test:swift", "test:java", "test:android"]
 
 # ── JS SDK ────────────────────────────────────────────────────────────────────
 # Node/npm aren't in [tools] above yet — every task here just shells out to
@@ -591,6 +603,41 @@ description = "[Examples] Run one numbered Java example, e.g. `mise run example:
 # REACTOR_FFI_LIB. REACTOR_SHOW=1 opens a window; REACTOR_SECONDS shortens a run.
 run = "gradle --project-dir sdks/java --console=plain -Pexample={{arg(name='number')}} :examples:example"
 
+# ── Android SDK ───────────────────────────────────────────────────────────────
+# The JDK, Gradle and the Android command-line tools come from [tools] above, and there is no
+# Gradle wrapper on purpose — sdks/android/settings.gradle.kts says why. Every task passes
+# --project-dir rather than cd'ing, so they behave the same from anywhere in the repo, and
+# --console=plain so CI logs are readable rather than redrawn.
+#
+# ANDROID_HOME comes from the android-sdk tool, so Gradle finds the SDK with nothing configured.
+# The components inside it are pinned in sdks/android/sdk-packages.txt — run `setup:android`
+# once, and again whenever that file changes.
+
+[tasks."setup:android"]
+description = "[Setup] Install and verify the pinned Android SDK components"
+run = "scripts/setup-android-sdk.sh"
+
+[tasks."fmt:android"]
+description = "[Format] Format the Android SDK (ktlint, via Spotless)"
+run = "gradle --project-dir sdks/android --console=plain spotlessApply"
+
+[tasks."lint:android"]
+description = "[Quality] Check Android SDK formatting"
+# Formatting only. The Kotlin compiler's own gate — allWarningsAsErrors, set in
+# buildSrc/src/main/kotlin/reactor-android-conventions.gradle.kts — runs as part of
+# `test:android`, because it is kotlinc doing it rather than a separate tool.
+run = "gradle --project-dir sdks/android --console=plain spotlessCheck"
+
+[tasks."build:android"]
+description = "[Build] Build the Android SDK AARs"
+run = "gradle --project-dir sdks/android --console=plain assemble"
+
+[tasks."test:android"]
+description = "[Testing] Android SDK unit tests"
+# Unit tests only — the JVM ones. The instrumented suites need a device or an emulator and arrive
+# with A02 (the native load check) and A13 (the live integration gate).
+run = "gradle --project-dir sdks/android --console=plain test"
+
 [tasks."lint:abi"]
 description = "[Quality] Verify lib.rs, reactor_ffi.h and _ffi.py declare the same ABI"
 run = "python3 scripts/check-abi-parity.py"
@@ -629,6 +676,7 @@ depends = [
     "lint:cpp",
     "lint:swift",
     "lint:java",
+    "lint:android",
     "lint:abi",
     "lint:error-codes",
     "lint:shell",
