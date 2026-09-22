@@ -17,10 +17,37 @@ plugins {
     id("com.diffplug.spotless")
 }
 
+/**
+ * A version pinned in sdks/android/sdk-packages.txt, by its `<kind>/` prefix.
+ *
+ * Read from that file rather than written here, because it is the file that
+ * scripts/setup-android-sdk.sh installs from and verifies against. A second copy in the Gradle
+ * build is a second thing to bump, and when the two disagree AGP quietly downloads its own
+ * default alongside the pin — which is exactly the drift the packages file exists to prevent.
+ * (It did: AGP pulled build-tools/36.0.0 in beside the pinned 36.1.0, and the setup script's
+ * verification is what caught it.)
+ */
+fun pinnedVersion(kind: String): String =
+    rootProject.file("sdk-packages.txt").readLines()
+        .map { it.substringBefore('#').trim() }
+        .firstOrNull { it.startsWith("$kind/") }
+        ?.removePrefix("$kind/")
+        ?: error("No $kind/<version> pinned in sdks/android/sdk-packages.txt")
+
 android {
     // API 36 is the newest stable platform; sdk-packages.txt pins the matching
-    // `platforms;android-36`, so a compileSdk bump means a line there too.
+    // `platforms/android-36`, so a compileSdk bump means a line there too.
     compileSdk = 36
+
+    // Told to AGP explicitly. Left alone it resolves its own default and downloads it, ignoring
+    // the pin entirely.
+    buildToolsVersion = pinnedVersion("build-tools")
+
+    // Set for every module, though only the one with native sources uses it. A function declared
+    // in a precompiled script plugin is not visible to the build scripts that apply it, so the
+    // alternative is re-reading the packages file in each module — which is the duplication this
+    // whole helper exists to remove.
+    ndkVersion = pinnedVersion("ndk")
 
     defaultConfig {
         // API 26 is the floor. It is where java.time and the desugaring-free library surface this
@@ -34,6 +61,19 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+}
+
+// Keep every Kotlin artifact on the version the compiler is, rather than letting Gradle's
+// "highest wins" resolution mix a 2.2 stdlib from AGP with the 2.4 one buildSrc's `kotlin-dsl`
+// brings. See the note in gradle/libs.versions.toml for why the version is Gradle's and not
+// AGP's.
+val kotlinVersion = "2.4.0"
+configurations.configureEach {
+    resolutionStrategy.force(
+        "org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion",
+        "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlinVersion",
+        "org.jetbrains.kotlin:kotlin-reflect:$kotlinVersion",
+    )
 }
 
 kotlin {

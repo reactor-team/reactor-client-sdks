@@ -25,4 +25,8 @@ targets = [
     "x86_64-apple-darwin",
     "aarch64-apple-ios",
     "aarch64-apple-ios-sim",
+    # The Android SDK's AAR. arm64-v8a only for now: reactor-webrtc publishes an
+    # android arm64 prebuilt and no other Android ABI, so x86_64-linux-android
+    # joins this list when REA-6551 lands one.
+    "aarch64-linux-android",
 ]
