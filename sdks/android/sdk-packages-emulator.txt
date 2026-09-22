@@ -1,0 +1,18 @@
+# The Android SDK components the instrumented tests need, pinned.
+#
+# Kept out of sdk-packages.txt because they are large and only the instrumented-test job needs
+# them: the emulator and a system image together are well over a gigabyte, and the ordinary build
+# — including the Linux CI job, which cannot run an arm64 emulator at all — has no use for either.
+#
+# scripts/setup-android-sdk.sh --emulator installs and verifies these in addition to the base set.
+
+emulator@37.1.11
+
+# A **16 KB page size** image, deliberately.
+#
+# The whole point of the alignment work in this SDK is that Android 15 devices with 16 KB pages
+# refuse to load a library aligned to 4 KB. On an ordinary image a misaligned library loads fine
+# and the guard proves nothing; on this one, the instrumented test fails exactly the way a real
+# device would. arm64-v8a because that is the only ABI reactor-webrtc publishes an Android
+# prebuilt for.
+system-images/android-36/google_apis_ps16k/arm64-v8a

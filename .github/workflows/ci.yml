@@ -642,10 +642,56 @@ jobs:
       # resolve, so without this a withdrawn pin would build against whatever was already there.
       - run: mise run setup:android
       - run: mise run lint:android
-      - run: mise run build:android
+      # No `build:android` here, deliberately. Assembling the AAR needs libreactor_ffi.so and the
+      # libwebrtc JAR staged by `build:android:native`, which is a Rust cross-compile linking a
+      # prebuilt libwebrtc — minutes and gigabytes, for an artifact this job does not otherwise
+      # need. `requireNativeArtifacts` fails the build rather than packaging an empty AAR, which
+      # is exactly what it did here before this comment existed.
+      #
+      # The AAR is assembled on the instrumented job below, which stages the natives because it
+      # has to run them on a device. So "does the AAR package correctly" is still answered on
+      # every pull request, just once rather than twice.
+      #
       # Compiles with allWarningsAsErrors as well as running the tests — kotlinc is the other
       # half of this binding's lint gate, so there is no separate step for it.
       - run: mise run test:android
+
+  android-native:
+    name: Android SDK native libraries
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.android == 'true'
+    # x86_64, because the NDK's toolchain is one `linux` archive containing
+    # `toolchains/llvm/prebuilt/linux-x86_64` — there is no arm64 Linux *host* build of it. It
+    # cross-compiles to aarch64-linux-android from here, which is what an NDK is for. The
+    # emulator then runs on a native arm64 host in the job below; each half runs where it works.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      # Before mise, as the rust, cpp and swift jobs order it: with mise first, `cargo` resolves
+      # to a toolchain with no cargo component and the cross-build dies before it starts.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1 # reads rust-toolchain.toml
+        with:
+          cache-on-failure: true
+          cache-shared-key: reactor-android-${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Cache the pinned Android SDK components
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/mise/installs/android-sdk
+          key: android-sdk-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'mise.lock') }}
+      - run: mise run setup:android
+      - run: mise run build:android:native
+      # The AAR's payload, handed to the emulator job rather than rebuilt there. Staging it is
+      # minutes and gigabytes; downloading it is seconds.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-native-arm64-v8a
+          path: sdks/android/reactor-sdk-android/build/reactor-native
+          retention-days: 1
+          if-no-files-found: error
 
   cpp-integration-tests:
     name: C++ SDK integration tests (real FFI, real model)
@@ -886,6 +932,7 @@ jobs:
         java,
         java-integration-tests,
         android,
+        android-native,
         swift,
         swift-integration-tests,
         swift-integration-tests-ios-simulator,
@@ -911,6 +958,7 @@ jobs:
                    "${{ needs.java.result }}" \
                    "${{ needs['java-integration-tests'].result }}" \
                    "${{ needs.android.result }}" \
+                   "${{ needs['android-native'].result }}" \
                    "${{ needs.swift.result }}" \
                    "${{ needs.swift-integration-tests.result }}" \
                    "${{ needs.swift-integration-tests-ios-simulator.result }}" \

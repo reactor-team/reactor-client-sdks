@@ -40,6 +40,11 @@ cmake = "4.4.2"
 ninja = "1.13.2"
 # wasm-pack builds crates/reactor-wasm into a loadable JS package.
 "cargo:wasm-pack" = "0.15.0"
+# cargo-ndk cross-compiles reactor-ffi for Android. It is what knows how to point
+# cargo at the NDK's clang for a given ABI and API level, which is otherwise a
+# hand-written linker path per target in .cargo/config.toml — one more place for
+# the NDK version to be written down and drift from sdks/android/sdk-packages.txt.
+"cargo:cargo-ndk" = "4.1.2"
 # The JDK and Gradle build the Java SDK. Both pinned here rather than taken from
 # PATH or from a Gradle wrapper: a wrapper is a second, unlocked source of truth
 # for a toolchain version, and this table is deliberately the only one. `java` is
@@ -628,9 +633,33 @@ description = "[Quality] Check Android SDK formatting"
 # `test:android`, because it is kotlinc doing it rather than a separate tool.
 run = "gradle --project-dir sdks/android --console=plain spotlessCheck"
 
+[tasks."build:android:native"]
+description = "[Build] Cross-build libreactor_ffi for Android and stage it with the libwebrtc JAR"
+# Not a dependency of `build:android`: this compiles the Rust core for an Android target and
+# links a prebuilt libwebrtc, which is minutes and gigabytes rather than seconds. The Gradle
+# build fails with a pointer back here when the artifacts are absent, which is a better trade
+# than making every `assemble` pay for a cross-compile it usually does not need.
+run = "scripts/build-android-ffi.sh"
+
 [tasks."build:android"]
 description = "[Build] Build the Android SDK AARs"
 run = "gradle --project-dir sdks/android --console=plain assemble"
+
+[tasks."setup:android:emulator"]
+description = "[Setup] Install the pinned emulator and 16 KB system image for instrumented tests"
+# Separate from setup:android because these are well over a gigabyte together, and only the
+# instrumented-test job needs them.
+run = "scripts/setup-android-sdk.sh --emulator"
+
+[tasks."test:android:instrumented"]
+description = "[Testing] Android SDK instrumented tests — real libraries, on a device or emulator"
+# Needs a running device: `mise run setup:android:emulator` first, then an AVD from the pinned
+# 16 KB system image. Deliberately not a dependency of `test` / `test:android`, which must stay
+# runnable on a laptop and on a Linux runner with no arm64 emulator.
+#
+# The native artifacts have to be staged first — the AAR under test is the one carrying them.
+depends = ["build:android:native"]
+run = "gradle --project-dir sdks/android --console=plain :reactor-sdk-android:connectedDebugAndroidTest"
 
 [tasks."test:android"]
 description = "[Testing] Android SDK unit tests"

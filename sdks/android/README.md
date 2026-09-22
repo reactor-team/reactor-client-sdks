@@ -33,9 +33,32 @@ wrapper, which this build deliberately does not have:
 ```sh
 mise run setup:android    # install the pinned SDK components (first time, and after a bump)
 mise run lint:android
+mise run build:android:native   # cross-build libreactor_ffi and stage it with the libwebrtc JAR
 mise run build:android
 mise run test:android
 ```
+
+### Instrumented tests
+
+```sh
+mise run setup:android:emulator   # the emulator and a 16 KB page-size system image
+mise run test:android:instrumented
+```
+
+These run against the real libraries on a real Android image, and they are **not** a
+pull-request gate — not by choice. An arm64 emulator needs a hypervisor for the
+guest, and no GitHub-hosted runner provides one for arm64: hosted macOS runners are
+VMs without Hypervisor.framework, and hosted arm64 Linux runners have no `/dev/kvm`
+at all. Both were tried. An x86_64 Android ABI would restore the gate, because
+hosted x86_64 Linux runners do have KVM; that waits on reactor-webrtc publishing
+one (REA-6551).
+
+Until then they run locally — which works, on an arm64 machine — and on demand
+through the `Android SDK instrumented tests` workflow against a runner with a
+working hypervisor.
+
+What does gate every pull request: the unit tests, the AddressSanitizer harness over
+the JNI boundary, and the native cross-build itself.
 
 ### Toolchains, and where each version lives
 

@@ -21,6 +21,13 @@ build-tools/36.1.0
 # adb and friends. Needed from A02 onward, where the first instrumented test runs on a device.
 platform-tools@37.0.1
 
+# The CMake AGP invokes for externalNativeBuild. A second CMake next to the one mise pins for the
+# C++ SDK, deliberately: AGP drives its own toolchain through the SDK's copy, and pointing it at
+# mise's means a cmake.dir in local.properties — a machine-local file that pins a path rather than
+# a version, which is the opposite of what this file is for. Two pinned CMakes for two toolchains
+# beats one pinned CMake and one unpinned path.
+cmake/4.1.2
+
 # The NDK that compiles the JNI bridge in A02. Its C++ ABI has to agree with the libwebrtc Android
 # archive, which Chromium's own bundled NDK clang builds against WebRTC's bundled libc++ (the
 # `__Cr` namespace) — see crates/reactor-webrtc-sys/build.rs. A mismatch here is the class of
