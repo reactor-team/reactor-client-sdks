@@ -52,10 +52,12 @@ tools fetch are `sdkmanager`'s. `scripts/setup-android-sdk.sh` installs from tha
 file and then verifies the installed set against it, so the pin is checked rather
 than merely written down.
 
-The SDK is installed into `~/.local/share/reactor/android-sdk` by default, not
-into whatever `ANDROID_HOME` a machine already has — a shared SDK is how an
-unpinned NDK gets used without anyone noticing. Override with
-`REACTOR_ANDROID_SDK_ROOT` if you need to.
+The SDK root is mise's own install directory for the `android-sdk` tool, which
+its plugin exports as `ANDROID_HOME` — so Gradle finds the SDK with nothing
+configured, and the components land beside the command-line tools that fetched
+them, version-scoped by the cmdline-tools pin. That is deliberate: a shared
+system SDK is how an unpinned NDK gets used without anyone noticing. There is no
+override, and `local.properties` is not read; run the tasks through mise.
 
 ### After pulling changes under `crates/`
 
