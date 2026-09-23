@@ -18,26 +18,52 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NATIVE="$REPO_ROOT/sdks/android/native"
 OUT="$REPO_ROOT/target/android-jni-asan"
 
-JAVA_BIN="$(command -v javac)"
-if [ -z "$JAVA_BIN" ]; then
-  echo "error: javac is not on PATH — run through mise (mise run test:android:asan)" >&2
-  exit 1
-fi
-JAVA_HOME_DIR="$(cd "$(dirname "$(dirname "$JAVA_BIN")")" && pwd)"
-if [ ! -f "$JAVA_HOME_DIR/include/jni.h" ]; then
-  echo "error: no jni.h under $JAVA_HOME_DIR — is javac from a JDK?" >&2
-  exit 1
+# Finding the JDK is not `dirname $(command -v javac)`.
+#
+# mise installs javac as a **shim** on some platforms, so that path resolves to the shim
+# directory and not to a JDK — no include/jni.h, and this script used to exit before printing
+# anything useful. $JAVA_HOME is the reliable answer where it is set (mise exports it), and the
+# realpath of javac is the fallback.
+if [ -n "${JAVA_HOME:-}" ] && [ -f "${JAVA_HOME}/include/jni.h" ]; then
+  JAVA_HOME_DIR="$JAVA_HOME"
+else
+  JAVA_BIN="$(command -v javac || true)"
+  if [ -z "$JAVA_BIN" ]; then
+    echo "error: javac is not on PATH and JAVA_HOME is unset — run through mise" >&2
+    exit 1
+  fi
+  JAVA_BIN="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$JAVA_BIN")"
+  JAVA_HOME_DIR="$(cd "$(dirname "$(dirname "$JAVA_BIN")")" && pwd)"
 fi
 
-# LeakSanitizer is Linux-only, and upstream ASan *aborts* on macOS when asked for it rather than
-# warning — so it is switched on per platform. macOS still catches use-after-free, double free
-# and freeing a non-heap pointer, which are the failures this boundary actually produces; the
-# leak half of the answer comes from the Linux CI run.
+if [ ! -f "$JAVA_HOME_DIR/include/jni.h" ]; then
+  echo "error: no include/jni.h under '$JAVA_HOME_DIR'." >&2
+  echo "       JAVA_HOME=${JAVA_HOME:-<unset>}; javac=$(command -v javac || echo '<none>')" >&2
+  exit 1
+fi
+echo "==> JDK: $JAVA_HOME_DIR"
+
 case "$(uname -s)" in
-  Darwin) JNI_MD="darwin"; JVM_LIB="$JAVA_HOME_DIR/lib/server"; DETECT_LEAKS=0 ;;
-  Linux)  JNI_MD="linux";  JVM_LIB="$JAVA_HOME_DIR/lib/server"; DETECT_LEAKS=1 ;;
+  Darwin) JNI_MD="darwin"; JVM_LIB="$JAVA_HOME_DIR/lib/server" ;;
+  Linux)  JNI_MD="linux";  JVM_LIB="$JAVA_HOME_DIR/lib/server" ;;
   *) echo "error: the sanitizer harness runs on macOS and Linux" >&2; exit 1 ;;
 esac
+
+# Leak detection is off, on both platforms, and that is deliberate rather than a macOS
+# limitation.
+#
+# This process embeds a JVM, which allocates a great deal it never frees before exit. With
+# LeakSanitizer on, every one of those is reported, and the handful of bytes a forgotten
+# reactor_free_string would leak is invisible in the noise — the gate would fail constantly for
+# reasons no one here can fix. Suppressing JVM frames is a maintenance burden with its own way of
+# going quietly wrong.
+#
+# What this harness is for is the class of bug that ends a process: use-after-free, double free,
+# and freeing a pointer that was never allocated. ASan catches all three with leak detection off,
+# on both platforms, and those are what this boundary actually produces.
+#
+# Leaks are answered by the endurance suite (A14), which watches RSS and handle counts trend over
+# minutes — the right instrument for that question.
 
 mkdir -p "$OUT/classes"
 
@@ -63,5 +89,5 @@ echo "==> Building the harness with AddressSanitizer"
 
 echo "==> Running"
 REACTOR_ASAN_CLASSPATH="$OUT/classes" \
-  ASAN_OPTIONS="detect_leaks=${DETECT_LEAKS}:abort_on_error=0:print_stats=0" \
+  ASAN_OPTIONS="detect_leaks=0:abort_on_error=0:print_stats=0" \
   "$OUT/asan-harness"
