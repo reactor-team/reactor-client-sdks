@@ -390,6 +390,70 @@ public class Reactor(
     /** A connection statistics snapshot. */
     public suspend fun stats(): Stats = requireHandle("get_stats").stats()
 
+    /**
+     * Upload a file from the filesystem.
+     *
+     * The MIME type is inferred from the name's extension, so a staged copy has to keep one.
+     */
+    public suspend fun uploadFile(file: java.io.File): FileRef {
+        if (!file.isFile) {
+            throw ErrorCode.toException(
+                wire = "NOT_FOUND",
+                message = "No file at ${file.path}",
+                operation = "upload_file",
+            )
+        }
+        return requireHandle("upload_file").uploadFile(file.absolutePath)
+    }
+
+    /**
+     * Upload bytes already in memory.
+     *
+     * @param data a **direct** [java.nio.ByteBuffer]; the native layer reads it in place rather
+     *   than copying, which keeps peak memory at one copy for a large payload.
+     */
+    public suspend fun uploadBytes(
+        data: java.nio.ByteBuffer,
+        name: String,
+        mimeType: String? = null,
+    ): FileRef {
+        require(data.isDirect) {
+            "uploadBytes needs a direct ByteBuffer — ByteBuffer.allocateDirect(), not allocate()"
+        }
+        return requireHandle("upload_bytes").uploadBytes(data, data.remaining(), name, mimeType)
+    }
+
+    /**
+     * Upload from anything that opens a stream, staging it through [cacheDirectory] first.
+     *
+     * Public because a caller with their own source — an asset, a network response, a cipher
+     * stream — should not have to construct a `content://` URI to reach this. [uploadContent] is
+     * a thin wrapper over it.
+     *
+     * Copied in chunks and bounded by [maxBytes]: the source is a file the *user* chose, and an
+     * SDK that read it whole would be deciding the memory ceiling of an app it knows nothing
+     * about. The staged copy is deleted once the upload settles — **after**, never during,
+     * because the native layer is reading it until then. The `finally` is what makes cancellation
+     * behave like failure instead of leaving the copy behind.
+     */
+    public suspend fun uploadStream(
+        name: String,
+        cacheDirectory: java.io.File,
+        maxBytes: Long = DEFAULT_UPLOAD_LIMIT_BYTES,
+        open: () -> java.io.InputStream,
+    ): FileRef {
+        val staged =
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                inc.reactor.sdk.android.internal.Uploads
+                    .stage(name, cacheDirectory, maxBytes, open)
+            }
+        return try {
+            requireHandle("upload_file").uploadFile(staged.absolutePath)
+        } finally {
+            staged.delete()
+        }
+    }
+
     /** End the session server-side. Use [reconnect] to keep it. */
     public suspend fun disconnect() {
         handle?.disconnect()
@@ -423,7 +487,15 @@ public class Reactor(
         scope.cancel()
     }
 
-    internal companion object {
+    public companion object {
+        /**
+         * The default ceiling for a streamed upload, 64 MiB.
+         *
+         * A number rather than "unbounded": the source is user-chosen, and an unbounded default
+         * turns a mis-picked video into an out-of-memory crash in someone else's app.
+         */
+        public const val DEFAULT_UPLOAD_LIMIT_BYTES: Long = 64L * 1024 * 1024
+
         /**
          * What the coordinator records as `client_info.sdk_version`.
          *

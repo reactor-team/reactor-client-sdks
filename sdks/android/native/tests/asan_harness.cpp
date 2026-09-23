@@ -43,7 +43,10 @@ void fake_fire_video_frame_on_foreign_thread(const char* track, uint32_t width, 
                                              uint64_t frame_id);
 void fake_set_unpublish_fails(int fails);
 uint32_t fake_pushed_video_frames(void);
+size_t fake_uploaded_checksum(void);
 const char* fake_last_command_args(void);
+void Java_inc_reactor_sdk_android_internal_NativeClient_nativeUploadBytes(
+    JNIEnv*, jobject, jlong, jobject, jint, jstring, jstring, jlong);
 const char* fake_last_command_uploads(void);
 void Java_inc_reactor_sdk_android_internal_NativeClient_nativeSendCommand(
     JNIEnv*, jobject, jlong, jstring, jstring, jstring, jlong);
@@ -269,6 +272,31 @@ void pushing_reads_the_whole_buffer_and_unpublish_owns_its_error() {
   Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, context);
 }
 
+/// An uploaded buffer is borrowed for the call, and read whole.
+///
+/// The fake sums every byte, so a length that does not match the buffer reads past the end and
+/// ASan says so — where a real platform would simply upload the wrong bytes and no one would
+/// know until the model complained.
+void uploaded_bytes_are_read_whole_while_borrowed() {
+  jlong context = create();
+  const int size = 32 * 1024;
+  void* raw = std::malloc(size);
+  std::memset(raw, 0x01, size);
+  jobject buffer = g_env->NewDirectByteBuffer(raw, size);
+  jstring name = g_env->NewStringUTF("payload.bin");
+
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeUploadBytes(
+      g_env, nullptr, context, buffer, size, name, nullptr, /*ticket=*/11);
+  check(fake_uploaded_checksum() == static_cast<size_t>(size),
+        "every byte of the uploaded buffer was read, and none beyond it");
+
+  g_env->DeleteLocalRef(name);
+  g_env->DeleteLocalRef(buffer);
+  std::free(raw);
+  fake_set_destroy_result(0);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, context);
+}
+
 /// A nullable argument must reach the ABI as NULL, not as "null" or "".
 ///
 /// The header says args_json and uploads_json are nullable and that NULL means "{}"/none. A
@@ -377,6 +405,7 @@ int main() {
   a_throwing_handler_is_contained();
   video_frames_arrive_over_a_direct_buffer();
   pushing_reads_the_whole_buffer_and_unpublish_owns_its_error();
+  uploaded_bytes_are_read_whole_while_borrowed();
   nullable_command_arguments_arrive_as_null();
   completions_cross_from_a_foreign_thread();
   destroy_minus_one_keeps_the_references_alive();
