@@ -88,11 +88,70 @@ void reactor_reconnect(ReactorHandle*, reactor_completion_fn completion, void* u
     remember(completion, userdata);
 }
 
+void reactor_publish_track(ReactorHandle*, const char*, reactor_completion_fn completion,
+                           void* userdata) {
+    remember(completion, userdata);
+}
+
+void reactor_pause_track(ReactorHandle*, const char*, reactor_completion_fn completion,
+                         void* userdata) {
+    remember(completion, userdata);
+}
+
+void reactor_resume_track(ReactorHandle*, const char*, reactor_completion_fn completion,
+                          void* userdata) {
+    remember(completion, userdata);
+}
+
+static int g_unpublish_fails = 0;
+
+/// The fourth owned-string case: heap on failure, NULL on success, and the caller frees it.
+/// Returning a real strdup is what lets the sanitizer see a leak or a double free.
+char* reactor_unpublish_track(ReactorHandle*, const char*) {
+    if (!g_unpublish_fails) return nullptr;
+    return strdup("{\"code\":\"CONFLICT\",\"message\":\"still sending\"}");
+}
+
+// ── Media, counted rather than sent ──────────────────────────────────────────
+
+static uint32_t g_pushed_video = 0;
+static uint32_t g_pushed_audio = 0;
+static uint8_t g_last_pixel = 0;
+
+void reactor_push_video_frame(ReactorHandle*, const char*, const uint8_t* data, uint32_t width,
+                              uint32_t height) {
+    g_pushed_video++;
+    // Read the far end of the buffer. If Kotlin's length check were wrong, or the buffer were
+    // not really direct, this is where the sanitizer would say so.
+    if (data != nullptr && width > 0 && height > 0) {
+        g_last_pixel = data[static_cast<size_t>(width) * height * 4 - 1];
+    }
+}
+
+void reactor_push_video_frame_with_metadata(ReactorHandle*, const char*, const uint8_t* data,
+                                            uint32_t width, uint32_t height, const uint8_t*,
+                                            uint32_t) {
+    reactor_push_video_frame(nullptr, nullptr, data, width, height);
+}
+
+void reactor_push_audio_frame(ReactorHandle*, const char*, const int16_t* data,
+                              uint32_t samples_per_channel, uint32_t, uint32_t num_channels) {
+    g_pushed_audio++;
+    if (data != nullptr && samples_per_channel > 0 && num_channels > 0) {
+        g_last_pixel = static_cast<uint8_t>(
+            data[static_cast<size_t>(samples_per_channel) * num_channels - 1] & 0xFF);
+    }
+}
+
 // ── Controls, for the harness only ───────────────────────────────────────────
 // Named fake_* rather than reactor_*: a reactor_* symbol here would be a new name in the ABI as
 // far as check-abi-parity.py is concerned.
 
 void fake_set_destroy_result(int result) { g_destroy_result = result; }
+
+void fake_set_unpublish_fails(int fails) { g_unpublish_fails = fails; }
+
+uint32_t fake_pushed_video_frames(void) { return g_pushed_video; }
 
 /// Fire a video frame from a thread the JVM has never seen, with a tag attached.
 ///

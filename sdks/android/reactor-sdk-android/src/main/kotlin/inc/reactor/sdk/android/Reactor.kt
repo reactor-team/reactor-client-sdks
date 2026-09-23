@@ -162,6 +162,25 @@ public class Reactor(
         }
     }
 
+    /**
+     * Publish state, which the session does not record for us.
+     *
+     * `reactor_publish_track` is a request and `reactor_unpublish_track` a notification; neither
+     * leaves anything to query. So the binding keeps it — and **clears it whenever the status
+     * leaves `ready`**, because a reconnect resumes recvonly tracks and nothing else. A slot
+     * published before one is not published after it, and remembering otherwise reintroduces
+     * exactly the silent drop that publishing exists to prevent.
+     */
+    private val publishStates =
+        java.util.concurrent.ConcurrentHashMap<String, PublishState>()
+
+    private fun requireHandle(operation: String) =
+        handle ?: throw ErrorCode.toException(
+            wire = "INVALID_STATE",
+            message = "Not connected — call connect() before $operation",
+            operation = operation,
+        )
+
     private val videoHandlers = java.util.concurrent.ConcurrentHashMap<String, (VideoFrame) -> Unit>()
     private val audioHandlers = java.util.concurrent.ConcurrentHashMap<String, (AudioFrame) -> Unit>()
 
@@ -229,10 +248,77 @@ public class Reactor(
                 audioHandlers.remove(track)
             }
 
+            override fun publishState(track: String): PublishState = publishStates[track] ?: PublishState.UNPUBLISHED
+
+            override suspend fun publish(track: String) {
+                val client = requireHandle("publish")
+                publishStates[track] = PublishState.PUBLISHING
+                try {
+                    client.publishTrack(track)
+                } catch (t: Throwable) {
+                    // A failed publish leaves no sender behind the slot, so it must not read as
+                    // published — and must stay retryable.
+                    publishStates.remove(track)
+                    throw t
+                }
+                // Only if the session is still ready. A status change during the publish means the
+                // completion is answering about a connection that has since gone, and recording
+                // "published" here would outlive the sender it describes.
+                if (_status.value == ConnectionStatus.READY) {
+                    publishStates[track] = PublishState.PUBLISHED
+                } else {
+                    publishStates.remove(track)
+                }
+            }
+
+            override suspend fun unpublish(track: String) {
+                val client = requireHandle("unpublish")
+                val error = client.unpublishTrack(track)
+                if (error != null) {
+                    // Deliberately *not* clearing the state: an unpublish that failed leaves the
+                    // sender attached, and forgetting that would make the retry a no-op.
+                    throw inc.reactor.sdk.android.internal.ErrorPayloads
+                        .toException(error, "unpublish")
+                }
+                publishStates.remove(track)
+            }
+
+            override suspend fun pause(track: String) {
+                requireHandle("pause").pauseTrack(track)
+            }
+
+            override suspend fun resume(track: String) {
+                requireHandle("resume").resumeTrack(track)
+            }
+
+            override fun pushVideoFrame(
+                track: String,
+                pixels: java.nio.ByteBuffer,
+                width: Int,
+                height: Int,
+                userData: ByteArray?,
+            ) {
+                requireHandle("pushFrame").pushVideoFrame(track, pixels, width, height, userData)
+            }
+
+            override fun pushAudioFrame(
+                track: String,
+                pcm: java.nio.ByteBuffer,
+                samplesPerChannel: Int,
+                sampleRate: Int,
+                channels: Int,
+            ) {
+                requireHandle("pushFrame").pushAudioFrame(track, pcm, samplesPerChannel, sampleRate, channels)
+            }
+
             override fun isPaused(track: String): Boolean = handle?.pausedTracks?.let { it.contains("\"" + track + "\"") } ?: false
         }
 
     private fun deliverStatus(status: ConnectionStatus) {
+        // Cleared here rather than on the dispatcher: the drop has to be visible to a caller
+        // pushing from any thread the instant the session stops being ready, not one dispatch
+        // later. A frame pushed in that window goes into a slot with no sender behind it.
+        if (status != ConnectionStatus.READY) publishStates.clear()
         scope.launch { _status.value = status }
     }
 
