@@ -655,6 +655,11 @@ jobs:
       # Compiles with allWarningsAsErrors as well as running the tests — kotlinc is the other
       # half of this binding's lint gate, so there is no separate step for it.
       - run: mise run test:android
+      # The JNI bridge's lifetime rules, under AddressSanitizer, against a fake libreactor_ffi.
+      # On Linux specifically: LeakSanitizer only exists here, so this is the run that can see a
+      # string the bridge forgot to free as well as one it freed twice. No device needed — the
+      # harness builds for the host and creates its own JVM.
+      - run: mise run test:android:asan
 
   android-native:
     name: Android SDK native libraries
