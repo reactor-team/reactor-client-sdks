@@ -15,6 +15,7 @@
 
 #include <jni.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>

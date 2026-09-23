@@ -11,6 +11,7 @@
 // one is a free() of something that was never malloc'd. Under AddressSanitizer both are errors
 // rather than opinions.
 
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <string>
