@@ -89,7 +89,12 @@ kotlin {
 val libs = extensions.getByType<VersionCatalogsExtension>().named("libs")
 
 dependencies {
+    // Coroutines are the SDK's async surface — `suspend` operations and `Flow` events. The
+    // -android artifact brings the Main dispatcher backed by the app's looper.
+    implementation(libs.findLibrary("coroutines-android").get())
+
     testImplementation(libs.findLibrary("junit").get())
+    testImplementation(libs.findLibrary("coroutines-test").get())
     androidTestImplementation(libs.findLibrary("junit").get())
     androidTestImplementation(libs.findLibrary("androidx-test-runner").get())
     androidTestImplementation(libs.findLibrary("androidx-test-junit").get())

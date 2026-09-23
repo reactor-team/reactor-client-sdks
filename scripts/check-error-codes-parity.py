@@ -114,6 +114,15 @@ JAVA_CODE = re.compile(r'\("([A-Z_]+)",\s*(?:true|false),\s*\w+::new\)')
 
 JAVA_ERRORS = REPO_ROOT / "sdks/java/reactor-sdk/src/main/java/inc/reactor/sdk/ErrorCode.java"
 
+# Android: the same one-declaration-per-code shape as Java, in Kotlin — the constant carries the
+# wire value, the recoverability and a constructor reference:
+# `NETWORK_ERROR("NETWORK_ERROR", true, ::NetworkException),`.
+ANDROID_CODE = re.compile(r'\("([A-Z_]+)",\s*(?:true|false),\s*::\w+\)')
+
+ANDROID_ERRORS = (
+    REPO_ROOT / "sdks/android/reactor-sdk-android/src/main/kotlin/inc/reactor/sdk/android/ErrorCode.kt"
+)
+
 SDKS = [
     Sdk("JS", REPO_ROOT / "sdks/js/src/errors.ts", JS_CODE),
     Sdk("Python", REPO_ROOT / "sdks/python/reactor_sdk/errors.py", PY_CODE),
@@ -122,6 +131,7 @@ SDKS = [
     Sdk("Swift (Code)", SWIFT_ERRORS, SWIFT_CODE),
     Sdk("Swift (matchers)", SWIFT_ERRORS, SWIFT_MATCHER, screaming_snake),
     Sdk("Java", JAVA_ERRORS, JAVA_CODE),
+    Sdk("Android", ANDROID_ERRORS, ANDROID_CODE),
 ]
 
 
