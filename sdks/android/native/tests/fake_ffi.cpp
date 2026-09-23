@@ -14,6 +14,7 @@
 // zero rather than trusting the sanitizer to notice.
 
 #include <atomic>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <string>
