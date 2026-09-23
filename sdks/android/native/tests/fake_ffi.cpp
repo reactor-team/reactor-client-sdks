@@ -93,6 +93,28 @@ void reactor_publish_track(ReactorHandle*, const char*, reactor_completion_fn co
     remember(completion, userdata);
 }
 
+static std::string g_last_args;
+static std::string g_last_uploads;
+
+/// Records what the binding actually put on the wire, so the harness can check that nullable
+/// arguments arrive as NULL rather than as the string "null" or "".
+void reactor_send_command(ReactorHandle*, const char* name, const char* args_json,
+                          const char* uploads_json, reactor_completion_fn completion,
+                          void* userdata) {
+    (void)name;
+    g_last_args = args_json == nullptr ? "<null>" : args_json;
+    g_last_uploads = uploads_json == nullptr ? "<null>" : uploads_json;
+    remember(completion, userdata);
+}
+
+void reactor_request_schema(ReactorHandle*, reactor_completion_fn completion, void* userdata) {
+    remember(completion, userdata);
+}
+
+void reactor_get_stats(ReactorHandle*, reactor_completion_fn completion, void* userdata) {
+    remember(completion, userdata);
+}
+
 void reactor_pause_track(ReactorHandle*, const char*, reactor_completion_fn completion,
                          void* userdata) {
     remember(completion, userdata);
@@ -152,6 +174,10 @@ void fake_set_destroy_result(int result) { g_destroy_result = result; }
 void fake_set_unpublish_fails(int fails) { g_unpublish_fails = fails; }
 
 uint32_t fake_pushed_video_frames(void) { return g_pushed_video; }
+
+const char* fake_last_command_args(void) { return g_last_args.c_str(); }
+
+const char* fake_last_command_uploads(void) { return g_last_uploads.c_str(); }
 
 /// Fire a video frame from a thread the JVM has never seen, with a tag attached.
 ///

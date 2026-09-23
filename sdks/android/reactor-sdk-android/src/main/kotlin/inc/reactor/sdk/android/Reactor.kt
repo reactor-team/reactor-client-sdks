@@ -359,6 +359,37 @@ public class Reactor(
         client.connect(sessionId)
     }
 
+    /**
+     * Send a command to the model and await its **correlated** reply.
+     *
+     * The correlation is the FFI's: this completes for this command and no other. A binding that
+     * sent and then waited for a message event would be racing a reply that may already have
+     * arrived.
+     *
+     * @param args a JSON object as a string, or null for none. Typed argument builders arrive
+     *   with the JSON work in a later slice; this is the primitive underneath them.
+     * @return the reply, which may be [CommandReply.isEmpty] when the handler acknowledged the
+     *   command without sending anything back — success with nothing to report.
+     * @throws DecodeFailedException when a reply arrived but did not parse.
+     */
+    public suspend fun sendCommand(
+        name: String,
+        args: String? = null,
+        uploads: String? = null,
+    ): CommandReply = requireHandle("send_command").sendCommand(name, args, uploads)
+
+    /**
+     * The model's declared command and track schema.
+     *
+     * @throws DecodeFailedException when the request succeeded but carried no schema. An absent
+     *   schema is not an empty one, and reporting `{}` would be indistinguishable from a model
+     *   that genuinely declares nothing.
+     */
+    public suspend fun requestSchema(): Map<String, Any?> = requireHandle("request_schema").requestSchema()
+
+    /** A connection statistics snapshot. */
+    public suspend fun stats(): Stats = requireHandle("get_stats").stats()
+
     /** End the session server-side. Use [reconnect] to keep it. */
     public suspend fun disconnect() {
         handle?.disconnect()

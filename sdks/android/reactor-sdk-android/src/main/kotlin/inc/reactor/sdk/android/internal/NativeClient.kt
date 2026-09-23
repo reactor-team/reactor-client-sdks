@@ -1,5 +1,7 @@
 package inc.reactor.sdk.android.internal
 
+import inc.reactor.sdk.android.CommandReply
+import inc.reactor.sdk.android.Stats
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -86,6 +88,24 @@ internal object NativeClient {
         samplesPerChannel: Int,
         sampleRate: Int,
         channels: Int,
+    )
+
+    private external fun nativeSendCommand(
+        context: Long,
+        name: String,
+        argsJson: String?,
+        uploadsJson: String?,
+        ticket: Long,
+    )
+
+    private external fun nativeRequestSchema(
+        context: Long,
+        ticket: Long,
+    )
+
+    private external fun nativeGetStats(
+        context: Long,
+        ticket: Long,
     )
 
     /**
@@ -206,6 +226,34 @@ internal object NativeClient {
             checkOpen()
             nativePushAudioFrame(context, name, pcm, samplesPerChannel, sampleRate, channels)
         }
+
+        /**
+         * Send a command and await its correlated reply.
+         *
+         * `decode` runs before the promise is claimed, so a reply that will not parse fails with
+         * DECODE_FAILED rather than hanging — see Completions.
+         */
+        suspend fun sendCommand(
+            name: String,
+            argsJson: String?,
+            uploadsJson: String?,
+        ): CommandReply =
+            Completions.await("send_command", decode = ::decodeCommandReply) { ticket ->
+                checkOpen()
+                nativeSendCommand(context, name, argsJson, uploadsJson, ticket)
+            }
+
+        suspend fun requestSchema(): Map<String, Any?> =
+            Completions.await("request_schema", decode = ::decodeSchema) { ticket ->
+                checkOpen()
+                nativeRequestSchema(context, ticket)
+            }
+
+        suspend fun stats(): Stats =
+            Completions.await("get_stats", decode = ::decodeStats) { ticket ->
+                checkOpen()
+                nativeGetStats(context, ticket)
+            }
 
         val status: String?
             get() = checkOpen().let { nativeStatus(context) }

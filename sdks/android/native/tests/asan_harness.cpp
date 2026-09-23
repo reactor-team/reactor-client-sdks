@@ -43,6 +43,10 @@ void fake_fire_video_frame_on_foreign_thread(const char* track, uint32_t width, 
                                              uint64_t frame_id);
 void fake_set_unpublish_fails(int fails);
 uint32_t fake_pushed_video_frames(void);
+const char* fake_last_command_args(void);
+const char* fake_last_command_uploads(void);
+void Java_inc_reactor_sdk_android_internal_NativeClient_nativeSendCommand(
+    JNIEnv*, jobject, jlong, jstring, jstring, jstring, jlong);
 jstring Java_inc_reactor_sdk_android_internal_NativeClient_nativeUnpublishTrack(JNIEnv*, jobject,
                                                                                jlong, jstring);
 void Java_inc_reactor_sdk_android_internal_NativeClient_nativePushVideoFrame(
@@ -265,6 +269,35 @@ void pushing_reads_the_whole_buffer_and_unpublish_owns_its_error() {
   Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, context);
 }
 
+/// A nullable argument must reach the ABI as NULL, not as "null" or "".
+///
+/// The header says args_json and uploads_json are nullable and that NULL means "{}"/none. A
+/// binding that stringified a Kotlin null would send the four characters n-u-l-l, which the
+/// platform would try to parse as arguments — a silent misbehaviour rather than a crash, and so
+/// exactly the kind this harness exists to make loud.
+void nullable_command_arguments_arrive_as_null() {
+  jlong context = create();
+  jstring name = g_env->NewStringUTF("get_status");
+
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeSendCommand(
+      g_env, nullptr, context, name, nullptr, nullptr, /*ticket=*/7);
+  check(std::strcmp(fake_last_command_args(), "<null>") == 0,
+        "a null args object reaches the ABI as NULL, not as \"null\"");
+  check(std::strcmp(fake_last_command_uploads(), "<null>") == 0,
+        "a null uploads object reaches the ABI as NULL");
+
+  jstring args = g_env->NewStringUTF("{\"fps\":30}");
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeSendCommand(
+      g_env, nullptr, context, name, args, nullptr, /*ticket=*/8);
+  check(std::strcmp(fake_last_command_args(), "{\"fps\":30}") == 0,
+        "a real args object crosses unchanged");
+  g_env->DeleteLocalRef(args);
+  g_env->DeleteLocalRef(name);
+
+  fake_set_destroy_result(0);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, context);
+}
+
 /// The completion path, end to end on the native side: a completion fires on a thread the JVM has
 /// never seen, and both of its strings are copied before the FFI frees them.
 void completions_cross_from_a_foreign_thread() {
@@ -344,6 +377,7 @@ int main() {
   a_throwing_handler_is_contained();
   video_frames_arrive_over_a_direct_buffer();
   pushing_reads_the_whole_buffer_and_unpublish_owns_its_error();
+  nullable_command_arguments_arrive_as_null();
   completions_cross_from_a_foreign_thread();
   destroy_minus_one_keeps_the_references_alive();
 
