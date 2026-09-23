@@ -1,6 +1,7 @@
 package inc.reactor.sdk.android.internal
 
 import inc.reactor.sdk.android.CommandReply
+import inc.reactor.sdk.android.FileRef
 import inc.reactor.sdk.android.Stats
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -106,6 +107,21 @@ internal object NativeClient {
 
     private external fun nativeGetStats(
         context: Long,
+        ticket: Long,
+    )
+
+    private external fun nativeUploadFile(
+        context: Long,
+        path: String,
+        ticket: Long,
+    )
+
+    private external fun nativeUploadBytes(
+        context: Long,
+        data: java.nio.ByteBuffer,
+        length: Int,
+        name: String,
+        mimeType: String?,
         ticket: Long,
     )
 
@@ -275,6 +291,23 @@ internal object NativeClient {
             Completions.await("get_stats", decode = ::decodeStats) { ticket ->
                 checkOpen()
                 nativeGetStats(context, ticket)
+            }
+
+        suspend fun uploadFile(path: String): FileRef =
+            Completions.await("upload_file", decode = Uploads::decode) { ticket ->
+                checkOpen()
+                nativeUploadFile(context, path, ticket)
+            }
+
+        suspend fun uploadBytes(
+            data: java.nio.ByteBuffer,
+            length: Int,
+            name: String,
+            mimeType: String?,
+        ): FileRef =
+            Completions.await("upload_bytes", decode = Uploads::decode) { ticket ->
+                checkOpen()
+                nativeUploadBytes(context, data, length, name, mimeType, ticket)
             }
 
         val status: String?
