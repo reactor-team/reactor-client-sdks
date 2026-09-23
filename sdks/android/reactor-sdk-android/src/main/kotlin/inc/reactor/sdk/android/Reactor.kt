@@ -454,6 +454,60 @@ public class Reactor(
         }
     }
 
+    /**
+     * Ask for a clip of the last [durationSeconds] of generated media.
+     *
+     * A "snap" clip's window ends at *now*, so its boundary chunk is always the still-open one —
+     * which is why waiting before asking does not help: it moves the target with you.
+     */
+    public suspend fun requestClip(durationSeconds: Double): Clip = requireHandle("request_clip").requestClip(durationSeconds)
+
+    /** Start recording the whole session. */
+    public suspend fun requestRecording(): Clip = requireHandle("request_recording").requestRecording()
+
+    /**
+     * Download a clip to [outFile].
+     *
+     * **This outlives the client.** The download keeps running if the [Reactor] is closed
+     * mid-flight, and its completion is not bounded by teardown. [close] settles your call so you
+     * are not left waiting for the life of the process — and the error says the file may yet
+     * arrive, because it may: telling a caller the download was "aborted" when it is still
+     * writing is worse than telling them nothing.
+     *
+     * @param readyTimeoutSeconds grace past the clip's own prediction. Null or negative waits as
+     *   long as the session lives, which is the right answer for a model generating slower than
+     *   real time — readiness is in **media** time, so a wall-clock guess is only correct at 1x.
+     *   Bound the wait on the session being alive, never on a number: once the session is gone, a
+     *   202 is a 202 forever.
+     * @param onProgress called after each segment, **on the download's own thread**. Blocking it
+     *   delays this download and nothing else.
+     */
+    public suspend fun downloadClip(
+        clip: Clip,
+        outFile: java.io.File,
+        readyTimeoutSeconds: Double? = null,
+        onProgress: ((ClipProgress) -> Unit)? = null,
+    ): DownloadedClip {
+        val timeout =
+            inc.reactor.sdk.android.internal.Recordings.readyTimeoutSeconds(
+                readyTimeoutSeconds,
+            )
+        return requireHandle("download_clip").downloadClip(
+            playlistUrl = clip.playlistUrl,
+            jwt = options.jwt,
+            outPath = outFile.absolutePath,
+            predictedReadyAtMs =
+                inc.reactor.sdk.android.internal.Recordings
+                    .predictedReadyAtMs(clip),
+            readyTimeoutSeconds = timeout,
+            local = options.local,
+            onProgress =
+                onProgress?.let { handler ->
+                    { done, total -> handler(ClipProgress(done, total)) }
+                },
+        )
+    }
+
     /** End the session server-side. Use [reconnect] to keep it. */
     public suspend fun disconnect() {
         handle?.disconnect()

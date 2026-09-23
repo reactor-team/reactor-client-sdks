@@ -552,3 +552,91 @@ Java_inc_reactor_sdk_android_internal_NativeClient_nativeUploadBytes(
                        mime.get(), completion_trampoline,
                        reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
 }
+
+// ── Recordings and clip downloads ────────────────────────────────────────────
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeRequestClip(JNIEnv*, jobject,
+                                                                     jlong context_ptr,
+                                                                     jdouble durationSeconds,
+                                                                     jlong ticket) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return;
+  reactor_request_clip(context->handle, durationSeconds, completion_trampoline,
+                       reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeRequestRecording(JNIEnv*, jobject,
+                                                                          jlong context_ptr,
+                                                                          jlong ticket) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return;
+  reactor_request_recording(context->handle, completion_trampoline,
+                            reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}
+
+namespace {
+
+/// Where download progress is reported: Completions.progressFromNative, resolved once at load.
+jmethodID g_progress = nullptr;
+
+/**
+ * Report one segment written.
+ *
+ * Carries the ticket and nothing else, exactly as the completion trampoline does — which is what
+ * makes a progress callback arriving after the client is gone harmless. It looks up a ticket that
+ * is no longer registered and returns having touched nothing, rather than dereferencing an
+ * object teardown has freed. That dereference is the bug AddressSanitizer found in the C++ SDK,
+ * on this very callback.
+ */
+void progress_trampoline(uint32_t done, uint32_t total, void* userdata) {
+  if (g_completions_class == nullptr || g_progress == nullptr) return;
+  ScopedEnv scoped;
+  if (!scoped) return;
+  JNIEnv* env = scoped.get();
+  env->CallStaticVoidMethod(g_completions_class, g_progress,
+                            static_cast<jlong>(reinterpret_cast<intptr_t>(userdata)),
+                            static_cast<jint>(done), static_cast<jint>(total));
+  if (env->ExceptionCheck()) {
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+  }
+}
+
+}  // namespace
+
+/**
+ * Download a clip.
+ *
+ * The completion here is **not** bounded by reactor_destroy: the header says a download outlives
+ * the handle it was given. Nothing on this side needs to change for that, and that is the point
+ * of carrying only a ticket — there is no context object whose lifetime has to be reasoned
+ * about, so "keep it alive until the completion fires" is satisfied by there being nothing to
+ * keep alive.
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeDownloadClip(
+    JNIEnv* env, jobject, jlong context_ptr, jstring playlist_url, jstring jwt, jstring out_path,
+    jdouble predicted_ready_at_ms, jdouble ready_timeout_seconds, jboolean local,
+    jboolean want_progress, jlong ticket) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  JavaString url(env, playlist_url);
+  JavaString token(env, jwt);
+  JavaString path(env, out_path);
+  reactor_download_clip(context == nullptr ? nullptr : context->handle, url.get(), token.get(),
+                        path.get(), predicted_ready_at_ms, ready_timeout_seconds, local ? 1 : 0,
+                        want_progress ? progress_trampoline : nullptr, completion_trampoline,
+                        reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitProgress(JNIEnv* env, jobject,
+                                                                      jclass completions) {
+  g_progress = env->GetStaticMethodID(completions, "progressFromNative", "(JII)V");
+  if (g_progress == nullptr) {
+    reactor_jni::fail(env, "java/lang/NoSuchMethodError",
+                      "Completions.progressFromNative is missing — the Kotlin registry and "
+                      "client.cpp have drifted apart");
+  }
+}

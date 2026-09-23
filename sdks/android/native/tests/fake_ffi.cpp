@@ -122,6 +122,32 @@ void reactor_upload_file(ReactorHandle*, const char*, reactor_completion_fn comp
     remember(completion, userdata);
 }
 
+void reactor_request_clip(ReactorHandle*, double, reactor_completion_fn completion,
+                          void* userdata) {
+    remember(completion, userdata);
+}
+
+void reactor_request_recording(ReactorHandle*, reactor_completion_fn completion, void* userdata) {
+    remember(completion, userdata);
+}
+
+static reactor_progress_fn g_progress = nullptr;
+static void* g_progress_userdata = nullptr;
+static double g_last_ready_timeout = 0.0;
+
+/// A download keeps the callbacks it was given and does **not** treat the handle as its owner —
+/// the header says a download outlives the handle it was given one of. The harness fires its
+/// progress and completion *after* destroying the client, which is where a binding holding a
+/// pointer rather than a ticket reads freed memory.
+void reactor_download_clip(ReactorHandle*, const char*, const char*, const char*, double,
+                           double ready_timeout_seconds, int, reactor_progress_fn progress,
+                           reactor_completion_fn completion, void* userdata) {
+    g_last_ready_timeout = ready_timeout_seconds;
+    g_progress = progress;
+    g_progress_userdata = userdata;
+    remember(completion, userdata);
+}
+
 /// Reads the whole borrowed buffer, so a binding that handed over a wrong length — or a
 /// non-direct buffer whose address is not the bytes — is a read past the end under the sanitizer
 /// rather than a truncated upload nobody notices.
@@ -193,6 +219,16 @@ void fake_set_unpublish_fails(int fails) { g_unpublish_fails = fails; }
 uint32_t fake_pushed_video_frames(void) { return g_pushed_video; }
 
 size_t fake_uploaded_checksum(void) { return g_uploaded_bytes; }
+
+double fake_last_ready_timeout(void) { return g_last_ready_timeout; }
+
+/// Fire the download's progress callback from a thread the JVM has never seen.
+void fake_fire_download_progress(uint32_t done, uint32_t total) {
+    reactor_progress_fn progress = g_progress;
+    void* userdata = g_progress_userdata;
+    if (progress == nullptr) return;
+    std::thread([progress, userdata, done, total]() { progress(done, total, userdata); }).join();
+}
 
 const char* fake_last_command_args(void) { return g_last_args.c_str(); }
 
