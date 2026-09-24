@@ -44,6 +44,13 @@ void fake_fire_video_frame_on_foreign_thread(const char* track, uint32_t width, 
 void fake_set_unpublish_fails(int fails);
 uint32_t fake_pushed_video_frames(void);
 size_t fake_uploaded_checksum(void);
+double fake_last_ready_timeout(void);
+void fake_fire_download_progress(uint32_t done, uint32_t total);
+void Java_inc_reactor_sdk_android_internal_NativeClient_nativeDownloadClip(
+    JNIEnv*, jobject, jlong, jstring, jstring, jstring, jdouble, jdouble, jboolean, jboolean,
+    jlong);
+void Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitProgress(JNIEnv*, jobject,
+                                                                          jclass);
 const char* fake_last_command_args(void);
 void Java_inc_reactor_sdk_android_internal_NativeClient_nativeUploadBytes(
     JNIEnv*, jobject, jlong, jobject, jint, jstring, jstring, jlong);
@@ -272,6 +279,45 @@ void pushing_reads_the_whole_buffer_and_unpublish_owns_its_error() {
   Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, context);
 }
 
+/// A download outlives its client, and its callbacks must still be safe afterwards.
+///
+/// This is the finding AddressSanitizer made on the C++ SDK, reproduced deliberately: a download
+/// is started, the client is destroyed, and *then* progress and completion fire. A binding whose
+/// callback context was an object owned by the client would be reading freed memory here. This
+/// one carries a ticket, so the late callbacks find nothing in a map and return.
+void a_download_survives_its_client() {
+  jclass local = g_env->FindClass("AsanCompletions");
+  jclass completions = static_cast<jclass>(g_env->NewGlobalRef(local));
+  g_env->DeleteLocalRef(local);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitCompletions(g_env, nullptr,
+                                                                          completions);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitProgress(g_env, nullptr,
+                                                                       completions);
+
+  jlong context = create();
+  jstring url = g_env->NewStringUTF("https://example.invalid/playlist.m3u8");
+  jstring out = g_env->NewStringUTF("/tmp/clip.mp4");
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeDownloadClip(
+      g_env, nullptr, context, url, nullptr, out, /*predicted=*/0.0,
+      /*ready_timeout=*/-1.0, JNI_FALSE, /*want_progress=*/JNI_TRUE, /*ticket=*/4321);
+  check(fake_last_ready_timeout() < 0,
+        "a negative readiness grace crosses as negative — wait as long as the session lives");
+  g_env->DeleteLocalRef(url);
+  g_env->DeleteLocalRef(out);
+
+  // Tear the client down while the download is still "running".
+  fake_set_destroy_result(0);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, context);
+
+  // Now the download reports in. Both of these are what would crash a binding that had freed a
+  // callback context along with the client.
+  fake_fire_download_progress(3, 8);
+  fake_complete_last_on_foreign_thread(1, "{\"path\":\"/tmp/clip.mp4\"}", nullptr);
+  check(true, "progress and completion after destroy touch nothing freed");
+
+  g_env->DeleteGlobalRef(completions);
+}
+
 /// An uploaded buffer is borrowed for the call, and read whole.
 ///
 /// The fake sums every byte, so a length that does not match the buffer reads past the end and
@@ -406,6 +452,7 @@ int main() {
   video_frames_arrive_over_a_direct_buffer();
   pushing_reads_the_whole_buffer_and_unpublish_owns_its_error();
   uploaded_bytes_are_read_whole_while_borrowed();
+  a_download_survives_its_client();
   nullable_command_arguments_arrive_as_null();
   completions_cross_from_a_foreign_thread();
   destroy_minus_one_keeps_the_references_alive();
