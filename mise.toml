@@ -669,6 +669,20 @@ description = "[Testing] Android SDK instrumented tests — real libraries, on a
 depends = ["build:android:native"]
 run = "gradle --project-dir sdks/android --console=plain :reactor-sdk-android:connectedDebugAndroidTest"
 
+[tasks."test:android:endurance"]
+description = "[Testing] Android SDK endurance — one long-running scenario on a device"
+# Gates nothing. Runs from workflow_dispatch and after a real release, for minutes to hours, to
+# see what a short suite cannot: a handle, a JNI global or a descriptor that leaks a little every
+# cycle.
+#
+#   mise run test:android:endurance -- PublishChurnTest
+#
+# No retry wrapper, unlike the integration suite. A retried endurance run is a *different* run —
+# the trend it was reading is gone — and the harness already retries the one thing that is
+# legitimately transient, which is a connect the platform refused.
+depends = ["build:android:native"]
+run = "scripts/android-endurance.sh"
+
 [tasks."test:android:integration-tests"]
 description = "[Testing] Android SDK integration tests — real client, real reactor/echo session, on a device"
 # The gate. Unit tests and the seven examples do not reach the wire; this is the one thing that

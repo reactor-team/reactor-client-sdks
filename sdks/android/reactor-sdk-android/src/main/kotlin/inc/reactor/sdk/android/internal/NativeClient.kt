@@ -174,6 +174,31 @@ internal object NativeClient {
     }
 
     /**
+     * Handles created and not yet closed.
+     *
+     * For the endurance suite, which needs to tell "this scenario leaks a client every cycle" from
+     * "this scenario holds one on purpose". A churn scenario asserts it returns to zero at every
+     * cycle boundary; a steady one expects exactly one for the whole run.
+     *
+     * Not a debugging aid bolted on: a count that is only correct when someone remembers to
+     * maintain it is worse than none, so it moves in the same two places the handle itself does —
+     * [create] and [Handle.close] — and nowhere else.
+     */
+    @Volatile
+    var liveClients: Int = 0
+        private set
+
+    @Synchronized
+    private fun clientOpened() {
+        liveClients += 1
+    }
+
+    @Synchronized
+    private fun clientClosed() {
+        liveClients -= 1
+    }
+
+    /**
      * Tell the bridge where to settle completions. Idempotent, and done once before the first
      * handle exists — the lookup needs a thread with an application class loader, which an
      * FFI-owned callback thread does not have.
@@ -382,6 +407,7 @@ internal object NativeClient {
         override fun close() {
             if (!closed.compareAndSet(false, true)) return
             if (nativeDestroy(context) != 0) recordOrphan()
+            clientClosed()
         }
     }
 
@@ -405,6 +431,9 @@ internal object NativeClient {
         ensureCompletionsWired()
         val context = nativeCreate(apiUrl, modelName, jwt, local, listener, sdkVersion, sdkType)
         check(context != 0L) { "The native layer refused to create a client for $modelName" }
+        // After the check, not before: a refused create produced no handle to close, and counting
+        // it would leave the number permanently one too high.
+        clientOpened()
         // One pointer: the context owns the ReactorHandle, so there are not two things that
         // have to agree about which client this is.
         return Handle(context = context)

@@ -130,6 +130,8 @@ jobs:
               - 'scripts/check-android-native.py'
               - 'scripts/asan-android-jni.sh'
               - 'scripts/require-android-device.sh'
+              - 'scripts/android-endurance.sh'
+              - 'scripts/android-endurance-diagnostics.sh'
             # Package.swift is at the repository root — SwiftPM will not resolve
             # a package in a subdirectory — so it is named here alongside the
             # sources it points at.

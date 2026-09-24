@@ -189,6 +189,36 @@ do have KVM — REA-6551, waiting on reactor-webrtc publishing one.
 What gates every pull request today: the unit tests, the AddressSanitizer harness
 over the JNI boundary, and the native cross-build itself.
 
+### The endurance suite
+
+```sh
+mise run test:android:endurance -- PublishChurnTest
+```
+
+Six scenarios in four shapes: a fresh client per cycle, one client churning
+operations, two single-operation churns, and two that publish once and stream
+for the whole run. Four shapes rather than one broad mix because a leak in one
+operation is diluted into "RSS grew a bit, inconclusive" by everything else in
+the loop — a real run of `pause-resume-churn` in another binding found a 50%
+RSS climb that `publish-churn`, same process, did not show at all.
+
+It gates nothing. It runs for minutes to hours, from `workflow_dispatch`
+(*Endurance tests* → `android`) and after a release.
+
+Two things are Android's alone. Reports are written to app-private storage on
+the device and pulled off afterwards — `scripts/android-endurance.sh` does
+that, whichever way the run ends, because the report from a failed run is the
+one worth reading. And there is no attaching a debugger as the suite's parent,
+which is how every other binding gets a backtrace off a crashing Rust or
+libwebrtc thread: the suite is an app process on a device. The equivalent is
+the tombstone `debuggerd` writes, collected into the same
+`native-crash-diagnostics.json` the other suites produce.
+
+The trend rules and the report format are unit-tested on the host JVM
+(`:endurance-tests:test`), so they are checked on every CI run without a
+device, a key or a live session. That is the point of keeping `Trends` and
+`Report` free of any SDK import.
+
 ### Toolchains, and where each version lives
 
 | What | Pinned in |
