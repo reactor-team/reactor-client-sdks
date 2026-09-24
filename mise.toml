@@ -669,6 +669,27 @@ description = "[Testing] Android SDK instrumented tests — real libraries, on a
 depends = ["build:android:native"]
 run = "gradle --project-dir sdks/android --console=plain :reactor-sdk-android:connectedDebugAndroidTest"
 
+[tasks."test:android:integration-tests"]
+description = "[Testing] Android SDK integration tests — real client, real reactor/echo session, on a device"
+# The gate. Unit tests and the seven examples do not reach the wire; this is the one thing that
+# drives the real client against a real session end to end.
+#
+# Needs a device or emulator and INTEGRATION_TESTS_REACTOR_API_KEY. Neither is optional and
+# neither is allowed to pass quietly: the device check refuses before anything is built, and a
+# missing key fails on the device (see Live.apiKey) rather than skipping, whenever CI=true.
+depends = ["build:android:native"]
+run = [
+  # First, because a missing device is the cheapest failure available and the least ambiguous
+  # message. Everything below it costs minutes.
+  "scripts/require-android-device.sh",
+  # Built outside the retry on purpose: a retry must never re-pay for a build that already
+  # succeeded, and a compile error is not transient.
+  "gradle --project-dir sdks/android --console=plain :integration-tests:assembleDebugAndroidTest",
+  # Retries wrap only this line, and they live in the task rather than in the CI step — every
+  # caller of this task gets them with nothing to remember. See scripts/retry.sh.
+  "scripts/retry.sh gradle --project-dir sdks/android --console=plain :integration-tests:connectedDebugAndroidTest",
+]
+
 [tasks."test:android"]
 description = "[Testing] Android SDK unit tests, and a compile of everything that needs a device"
 # Unit tests only — the JVM ones. The instrumented suites need a device or an emulator, so they
