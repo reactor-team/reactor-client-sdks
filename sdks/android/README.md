@@ -151,27 +151,43 @@ mise run test:android
 mise run test:android:asan      # the JNI boundary under AddressSanitizer
 ```
 
-### Instrumented tests
+### Tests that need a device
 
 ```sh
-mise run setup:android:emulator   # the emulator and a 16 KB page-size system image
-mise run test:android:instrumented
+mise run setup:android:emulator      # the emulator and a 16 KB page-size system image
+mise run test:android:instrumented   # the real libraries load and the ABI matches
+mise run test:android:integration-tests   # the real client against a live reactor/echo session
 ```
 
-These run against the real libraries on a real Android image, and they are **not** a
-pull-request gate — not by choice. An arm64 emulator needs a hypervisor for the
-guest, and no GitHub-hosted runner provides one for arm64: hosted macOS runners are
-VMs without Hypervisor.framework, and hosted arm64 Linux runners have no `/dev/kvm`
-at all. Both were tried. An x86_64 Android ABI would restore the gate, because
-hosted x86_64 Linux runners do have KVM; that waits on reactor-webrtc publishing
-one (REA-6551).
+The second is the one that reaches the wire. It drives the packaged client through
+connection, commands, media in both directions, pause/resume, reconnection, uploads
+and a clip download, against a real session — the only place the whole path exists.
 
-Until then they run locally — which works, on an arm64 machine — and on demand
-through the `Android SDK instrumented tests` workflow against a runner with a
-working hypervisor.
+Both refuse rather than reporting success for tests that never ran. No device
+attached fails before anything is built; a missing
+`INTEGRATION_TESTS_REACTOR_API_KEY` fails **on the device** when `CI=true`, and
+skips locally, because a contributor should not need production credentials to run
+the unit suite.
 
-What does gate every pull request: the unit tests, the AddressSanitizer harness over
-the JNI boundary, and the native cross-build itself.
+#### Why they are not a pull-request gate yet
+
+Not by choice. An arm64 emulator needs a hypervisor for the guest, and no
+GitHub-hosted runner provides one for arm64: hosted macOS runners are VMs without
+Hypervisor.framework, and hosted arm64 Linux runners have no `/dev/kvm` at all.
+Both were tried.
+
+The CI job exists and is in `ci-complete`'s `needs`. It runs when the repository
+variable **`ANDROID_EMULATOR_RUNNER`** names a runner with a working hypervisor —
+a self-hosted arm64 host — and is skipped otherwise. Setting that variable closes
+the gate with no change to any workflow. While it is unset, `ci-complete` prints a
+warning on every Android run saying so, because a gate that quietly stops being a
+gate is worse than one that was never claimed.
+
+The other way to close it is an x86_64 Android ABI, on ordinary hosted runners that
+do have KVM — REA-6551, waiting on reactor-webrtc publishing one.
+
+What gates every pull request today: the unit tests, the AddressSanitizer harness
+over the JNI boundary, and the native cross-build itself.
 
 ### Toolchains, and where each version lives
 

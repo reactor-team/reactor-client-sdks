@@ -122,7 +122,14 @@ jobs:
               - *shared
               - *core
               - 'sdks/android/**'
+              # Every script the Android jobs actually run. `setup-android-sdk.sh` was the only
+              # one listed while it was the only one that existed; a change to the cross-build or
+              # to either guard would otherwise skip the jobs that consume it.
               - 'scripts/setup-android-sdk.sh'
+              - 'scripts/build-android-ffi.sh'
+              - 'scripts/check-android-native.py'
+              - 'scripts/asan-android-jni.sh'
+              - 'scripts/require-android-device.sh'
             # Package.swift is at the repository root — SwiftPM will not resolve
             # a package in a subdirectory — so it is named here alongside the
             # sources it points at.
@@ -648,9 +655,11 @@ jobs:
       # need. `requireNativeArtifacts` fails the build rather than packaging an empty AAR, which
       # is exactly what it did here before this comment existed.
       #
-      # The AAR is assembled on the instrumented job below, which stages the natives because it
-      # has to run them on a device. So "does the AAR package correctly" is still answered on
-      # every pull request, just once rather than twice.
+      # The AAR is assembled by `android-integration-tests` below, which stages the natives
+      # because it has to run them on a device — so "does the AAR package correctly" is answered
+      # once rather than twice, on the job that needs the answer anyway. While that job has no
+      # runner to run on (see its own comment), the packaging claim rests on the native
+      # cross-build in `android-native` and on the examples APK assembled locally.
       #
       # Compiles with allWarningsAsErrors as well as running the tests — kotlinc is the other
       # half of this binding's lint gate, so there is no separate step for it.
@@ -697,6 +706,74 @@ jobs:
           path: sdks/android/reactor-sdk-android/build/reactor-native
           retention-days: 1
           if-no-files-found: error
+
+  android-integration-tests:
+    name: Android SDK integration tests (real FFI, real model)
+    needs: [changes, android-native]
+    # Two conditions, and the first is the awkward one.
+    #
+    # `vars.ANDROID_EMULATOR_RUNNER` names a runner with a working arm64 hypervisor. No
+    # GitHub-hosted runner is one: hosted macOS (Apple Silicon) runners are VMs without
+    # Hypervisor.framework, and hosted arm64 Linux runners have no /dev/kvm. Both were tried.
+    # Until that variable is set to a self-hosted label this job is skipped, which `ci-complete`
+    # reports in as many words rather than passing over in silence — a gate that is not yet
+    # closed should be legible in the required check itself, not only in a ticket. Setting the
+    # variable closes it with no change here.
+    #
+    # An x86_64 Android ABI would also close it, on ordinary hosted runners that do have KVM:
+    # REA-6551, waiting on reactor-webrtc publishing one.
+    #
+    # The second is the same fork-PR reasoning as every other integration job: GitHub withholds
+    # repo secrets from a fork's pull_request runs, so INTEGRATION_TESTS_REACTOR_API_KEY would
+    # never be populated there. This suite deliberately *fails* rather than skips when the key is
+    # missing, which without this condition means every external contribution fails here for a
+    # reason that has nothing to do with the contribution.
+    if: >-
+      vars.ANDROID_EMULATOR_RUNNER != '' &&
+      (github.event_name == 'push' ||
+       (needs.changes.outputs.android == 'true' &&
+        github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: ${{ vars.ANDROID_EMULATOR_RUNNER }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Cache the pinned Android SDK components
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/mise/installs/android-sdk
+          key: android-sdk-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'mise.lock') }}
+      - run: mise run setup:android:emulator
+      # Built once by android-native and downloaded here. Staging it is minutes and gigabytes on
+      # a runner that has no NDK host toolchain for its own architecture anyway.
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-native-arm64-v8a
+          path: sdks/android/reactor-sdk-android/build/reactor-native
+      # A 16 KB page-size image on purpose. On an ordinary 4 KB image a misaligned library loads
+      # fine and the suite proves nothing; on this one it fails the way an Android 15 device does.
+      - name: Run the live suite on an arm64 emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+          # The artifact above is this commit's cross-build. Without this the mise task's
+          # `depends` would rebuild it here, on a runner that has no NDK host toolchain for its
+          # own architecture. The script still verifies what it was handed — see its own comment
+          # for why this is opt-in rather than "skip if the files are there".
+          REACTOR_ANDROID_NATIVE_PRESTAGED: "1"
+        with:
+          api-level: 36
+          target: google_apis_ps16k
+          arch: arm64-v8a
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          # Retries live inside the mise task, not around this step: release-android.yml will run
+          # the same task, and a wrapper each caller has to remember is the drift that rule exists
+          # to prevent.
+          script: mise run test:android:integration-tests
 
   cpp-integration-tests:
     name: C++ SDK integration tests (real FFI, real model)
@@ -938,6 +1015,7 @@ jobs:
         java-integration-tests,
         android,
         android-native,
+        android-integration-tests,
         swift,
         swift-integration-tests,
         swift-integration-tests-ios-simulator,
@@ -964,6 +1042,7 @@ jobs:
                    "${{ needs['java-integration-tests'].result }}" \
                    "${{ needs.android.result }}" \
                    "${{ needs['android-native'].result }}" \
+                   "${{ needs['android-integration-tests'].result }}" \
                    "${{ needs.swift.result }}" \
                    "${{ needs.swift-integration-tests.result }}" \
                    "${{ needs.swift-integration-tests-ios-simulator.result }}" \
@@ -972,4 +1051,15 @@ jobs:
               echo "::error::a required job failed ($r)"; exit 1
             fi
           done
+          # Said out loud rather than left to a skipped row nobody reads. The Android live
+          # suite is a required job with no runner able to host it — an arm64 emulator needs a
+          # hypervisor, and no GitHub-hosted runner provides one. Skipping is a pass here, which
+          # is correct and is also exactly how a gate quietly stops being a gate, so the required
+          # check names it on every run until the runner variable is set.
+          if [ "${{ needs['android-integration-tests'].result }}" = "skipped" ] \
+             && [ "${{ needs.android.result }}" != "skipped" ]; then
+            echo "::warning::The Android live suite did not run: no ANDROID_EMULATOR_RUNNER is" \
+                 "configured. Android changes are gated by unit tests, the AddressSanitizer" \
+                 "harness and the native cross-build only — see REA-6551."
+          fi
           echo "All CI checks passed."
