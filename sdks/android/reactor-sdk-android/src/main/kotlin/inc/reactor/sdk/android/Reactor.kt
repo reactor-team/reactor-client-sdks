@@ -104,7 +104,133 @@ public class Reactor(
         override fun onSessionId(sessionId: String?) {
             owner.get()?.deliverSessionId(sessionId)
         }
+
+        // Frames are *not* handed to the dispatcher. They run here, on the FFI's thread, because
+        // blocking here is the backpressure — see Track.onFrame.
+        override fun onVideoFrame(
+            trackName: String?,
+            pixels: java.nio.ByteBuffer?,
+            width: Int,
+            height: Int,
+            frameId: Long,
+            timestampUs: Long,
+            userData: ByteArray?,
+        ) {
+            val reactor = owner.get() ?: return
+            val name = trackName.orEmpty()
+            val handler =
+                reactor.videoHandlers[name] ?: run {
+                    reactor.dropFrame(name)
+                    return
+                }
+            handler(
+                VideoFrame(
+                    trackName = name,
+                    pixels = pixels ?: return,
+                    width = width,
+                    height = height,
+                    frameId = frameId,
+                    timestampUs = timestampUs,
+                    userData = userData,
+                ),
+            )
+        }
+
+        override fun onAudioFrame(
+            trackName: String?,
+            pcm: java.nio.ByteBuffer?,
+            sampleCount: Int,
+            sampleRate: Int,
+            channels: Int,
+        ) {
+            val reactor = owner.get() ?: return
+            val name = trackName.orEmpty()
+            val handler =
+                reactor.audioHandlers[name] ?: run {
+                    reactor.dropFrame(name)
+                    return
+                }
+            handler(
+                AudioFrame(
+                    trackName = name,
+                    samples = (pcm ?: return).order(java.nio.ByteOrder.nativeOrder()).asShortBuffer(),
+                    sampleCount = sampleCount,
+                    sampleRate = sampleRate,
+                    channels = channels,
+                ),
+            )
+        }
     }
+
+    private val videoHandlers = java.util.concurrent.ConcurrentHashMap<String, (VideoFrame) -> Unit>()
+    private val audioHandlers = java.util.concurrent.ConcurrentHashMap<String, (AudioFrame) -> Unit>()
+
+    /**
+     * Frames for a track nobody is listening to.
+     *
+     * Dropped and counted rather than raised: a frame arriving with no matching handler is
+     * ordinary — the model generates whether or not anyone collects — and there is nowhere to
+     * raise to on an FFI thread. The count is what makes "my handler never fires" diagnosable.
+     */
+    @Volatile
+    public var droppedFrames: Long = 0L
+        private set
+
+    private fun dropFrame(
+        @Suppress("UNUSED_PARAMETER") track: String,
+    ) {
+        droppedFrames += 1
+    }
+
+    /**
+     * The tracks this session declared, in declaration order.
+     *
+     * Empty until [connect] has negotiated capabilities.
+     */
+    public val tracks: TrackList
+        get() =
+            inc.reactor.sdk.android.internal.TrackParsing
+                .parse(handle?.tracks, trackOwner)
+
+    /**
+     * One track by name — what an app that knows its model does.
+     *
+     * @throws InvalidStateException when no such track was declared, listing the names that were.
+     */
+    public fun track(name: String): Track {
+        val all = tracks
+        return all.firstOrNull { it.name == name } ?: throw ErrorCode.toException(
+            wire = "INVALID_STATE",
+            message =
+                "No track named '$name'. This session declared: " +
+                    (if (all.isEmpty()) "nothing yet — connect() first" else all.joinToString(", ") { it.name }),
+            operation = "track",
+        )
+    }
+
+    private val trackOwner =
+        object : TrackOwner {
+            override fun setVideoHandler(
+                track: String,
+                handler: (VideoFrame) -> Unit,
+            ) {
+                videoHandlers[track] = handler
+            }
+
+            override fun setAudioHandler(
+                track: String,
+                handler: (AudioFrame) -> Unit,
+            ) {
+                audioHandlers[track] = handler
+            }
+
+            override fun clearHandlers(track: String) {
+                videoHandlers.remove(track)
+                audioHandlers.remove(track)
+            }
+
+            override fun isPaused(track: String): Boolean = handle?.pausedTracks?.let { it.contains("\"" + track + "\"") } ?: false
+        }
 
     private fun deliverStatus(status: ConnectionStatus) {
         scope.launch { _status.value = status }
