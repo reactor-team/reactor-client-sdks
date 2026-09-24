@@ -20,8 +20,10 @@ Java 21 and earlier cannot run this SDK: FFM is a preview feature there, and
 `--enable-preview` is not a reasonable thing to ask of a consumer's production
 build.
 
-Android is **not** a target. FFM does not run there; the Kotlin SDK covers
-Android through JNI.
+Android is **not** a target, and cannot be one: FFM does not exist there, so
+this binding has nothing to call through. Android is served by its own SDK —
+[`sdks/android`](../android/README.md), `inc.reactor:reactor-sdk-android` —
+which reaches the same native core over JNI.
 
 ## Native access
 

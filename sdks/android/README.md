@@ -2,9 +2,9 @@
 
 A Reactor client for Android, bound to `libreactor_ffi` through a C++ JNI bridge.
 
-> **Status: scaffold.** The Gradle build, the toolchain pins and the CI job are in
-> place; the binding itself is not. See the Linear project *Android SDK*
-> (P-REA-89) for the stack that fills it in.
+Same object model as every other Reactor SDK — a `Reactor`, the `Track`s a model
+declares, one flat list of typed errors — spelled in Kotlin, with `StateFlow` for
+state and `suspend` for anything that waits.
 
 ## Why this is separate from the Java SDK
 
@@ -23,7 +23,106 @@ The Java SDK remains the answer for desktop JVM and desktop Kotlin.
 | --- | --- |
 | `minSdk` | **26** |
 | `compileSdk` | 36 |
-| ABIs | `arm64-v8a`, `x86_64` |
+| ABIs | `arm64-v8a` |
+
+`arm64-v8a` only, today. Every Android device shipped in years is arm64, but an
+x86_64 slice is what emulators on Intel hosts need — and what would let the
+instrumented tests gate a pull request. It waits on reactor-webrtc publishing an
+x86_64 Android build (REA-6551).
+
+The AAR is built for **16 KB page sizes** and CI refuses a native library that
+is not, because Android 15 devices with 16 KB pages will not load one that is.
+
+## Install
+
+```kotlin
+dependencies {
+    implementation("inc.reactor:reactor-sdk-android:1.0.0")
+
+    // Optional: microphone and speaker helpers. Left out of the core module on
+    // purpose — a library whose audience includes background services must not
+    // put a live mic on the wire because a model declared a sendonly track.
+    implementation("inc.reactor:reactor-sdk-android-media:1.0.0")
+}
+```
+
+The SDK declares no permissions of its own. A connecting app needs `INTERNET`;
+capturing needs `RECORD_AUDIO` or `CAMERA`, which are yours to request because
+only you know when to ask for them.
+
+## Quickstart
+
+```kotlin
+// A shipped app mints a short-lived token on its own backend and passes it as `jwt`.
+// An API key inside an APK is a key anyone can extract.
+val reactor = Reactor(ReactorOptions(jwt = tokenFromYourBackend))
+
+try {
+    reactor.connect("reactor/helios")
+    reactor.status.first { it == ConnectionStatus.READY }
+
+    reactor.track("main_video").onFrame { frame -> render(frame) }
+
+    reactor.sendCommand("set_prompt", """{"prompt":"a forest at dawn"}""")
+    reactor.sendCommand("start")
+    // … frames arrive until you stop ingesting them
+} finally {
+    runCatching { reactor.disconnect() }
+    reactor.close()
+}
+```
+
+Three things that are not obvious and cost an afternoon each:
+
+**`disconnect()` and `close()` are two different things, and you want both.**
+`close()` releases the native handle; `disconnect()` ends the session
+server-side. A creator that goes away without disconnecting orphans the session,
+and the next run cannot start until that lease clears. `use { }` alone gives you
+only the first half.
+
+**Nothing arrives until the model's own minimum is met, and that minimum is per
+model.** Helios emits no frames until it has both a prompt and a `start`. X2 needs
+a prompt and no start. When no frames appear, the model's schema is the first
+place to look — `requestSchema()` returns it.
+
+**Model names are `owner/name`.** A bare name resolves under `reactor/`, so it
+works by luck of ownership and answers 403 for anybody else's model.
+
+## Frames stay on the FFI thread
+
+Control events — status, errors, session id — are delivered on the dispatcher the
+`Reactor` was built with, `Dispatchers.Main.immediate` by default, because an
+Android handler usually touches UI.
+
+`onFrame` is deliberately the other way: it runs **inline on the FFI's delivery
+thread**, and blocking there is the backpressure. The FFI keeps only the newest
+video frame while your handler runs, so a slow handler drops frames — bounded, and
+visible. Hand them to an unbounded queue instead and you have traded that for
+unbounded latency and memory. Convert or encode inline, and post the result.
+
+## Errors
+
+One class per code, each carrying `code`, `message`, `recoverable`, `status`,
+`operation` and `retryAfterMs`. **`recoverable` is derived from the code**, never
+decided per call site, so no two SDKs can disagree about whether a timeout is
+worth retrying.
+
+The same object is what a failed call throws and what the `errors` flow delivers.
+
+This SDK refuses rather than failing quietly. Pushing into a track the session
+never declared, or one pointing the other way, or one not yet published, all reach
+the native layer, find nothing to do, and return — leaving a loop pushing at 30fps
+into nothing. Each of those throws here, naming the fix.
+
+## Examples
+
+Seven numbered scenarios, the same seven every Reactor SDK ships, in
+[`examples/`](examples/README.md). That shared numbering is the point: an example
+missing from a binding is a code path that binding has never run.
+
+```sh
+gradle --project-dir sdks/android :examples:installDebug -PreactorApiKey=rk_…
+```
 
 ## Development
 
@@ -36,6 +135,7 @@ mise run lint:android
 mise run build:android:native   # cross-build libreactor_ffi and stage it with the libwebrtc JAR
 mise run build:android
 mise run test:android
+mise run test:android:asan      # the JNI boundary under AddressSanitizer
 ```
 
 ### Instrumented tests
@@ -84,7 +184,7 @@ override, and `local.properties` is not read; run the tasks through mise.
 
 ### After pulling changes under `crates/`
 
-Rebuild the native library. The AAR carries a compiled `libreactor_ffi.so`, and a
-stale one links, resolves and then corrupts the stack at a call that gained a
-parameter — it does not fail at load. (A02 adds the build and the load-time ABI
-guard that catches it.)
+Rebuild the native library — `mise run build:android:native`. The AAR carries a
+compiled `libreactor_ffi.so`, and a stale one links, resolves and then corrupts the
+stack at a call that gained a parameter; it does not fail at load. The load-time
+ABI check catches the version skew, but only once the library is actually rebuilt.
