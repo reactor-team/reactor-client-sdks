@@ -469,3 +469,45 @@ Java_inc_reactor_sdk_android_internal_NativeClient_nativePushAudioFrame(
                            static_cast<uint32_t>(samplesPerChannel),
                            static_cast<uint32_t>(sampleRate), static_cast<uint32_t>(channels));
 }
+
+// ── Commands, schema and statistics ──────────────────────────────────────────
+
+/**
+ * Send a command and wait for its **correlated** reply.
+ *
+ * The correlation is the FFI's, not ours: the completion fires for this command and no other.
+ * A binding that instead sent and then waited for a message event would be racing a reply that
+ * may already have arrived — the classic hang at this boundary.
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeSendCommand(
+    JNIEnv* env, jobject, jlong context_ptr, jstring name, jstring args_json, jstring uploads_json,
+    jlong ticket) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return;
+  JavaString command(env, name);
+  JavaString args(env, args_json);
+  JavaString uploads(env, uploads_json);
+  reactor_send_command(context->handle, command.get(), args.get(), uploads.get(),
+                       completion_trampoline,
+                       reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeRequestSchema(JNIEnv*, jobject,
+                                                                       jlong context_ptr,
+                                                                       jlong ticket) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return;
+  reactor_request_schema(context->handle, completion_trampoline,
+                         reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeGetStats(JNIEnv*, jobject,
+                                                                  jlong context_ptr, jlong ticket) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return;
+  reactor_get_stats(context->handle, completion_trampoline,
+                    reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}
