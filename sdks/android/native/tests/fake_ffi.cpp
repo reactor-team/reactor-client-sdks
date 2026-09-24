@@ -115,6 +115,23 @@ void reactor_get_stats(ReactorHandle*, reactor_completion_fn completion, void* u
     remember(completion, userdata);
 }
 
+static size_t g_uploaded_bytes = 0;
+
+void reactor_upload_file(ReactorHandle*, const char*, reactor_completion_fn completion,
+                         void* userdata) {
+    remember(completion, userdata);
+}
+
+/// Reads the whole borrowed buffer, so a binding that handed over a wrong length — or a
+/// non-direct buffer whose address is not the bytes — is a read past the end under the sanitizer
+/// rather than a truncated upload nobody notices.
+void reactor_upload_bytes(ReactorHandle*, const uint8_t* data, size_t len, const char*,
+                          const char*, reactor_completion_fn completion, void* userdata) {
+    g_uploaded_bytes = 0;
+    for (size_t i = 0; i < len; ++i) g_uploaded_bytes += data[i];
+    remember(completion, userdata);
+}
+
 void reactor_pause_track(ReactorHandle*, const char*, reactor_completion_fn completion,
                          void* userdata) {
     remember(completion, userdata);
@@ -174,6 +191,8 @@ void fake_set_destroy_result(int result) { g_destroy_result = result; }
 void fake_set_unpublish_fails(int fails) { g_unpublish_fails = fails; }
 
 uint32_t fake_pushed_video_frames(void) { return g_pushed_video; }
+
+size_t fake_uploaded_checksum(void) { return g_uploaded_bytes; }
 
 const char* fake_last_command_args(void) { return g_last_args.c_str(); }
 
