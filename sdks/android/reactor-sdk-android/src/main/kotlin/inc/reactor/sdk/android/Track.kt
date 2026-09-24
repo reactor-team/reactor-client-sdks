@@ -34,8 +34,22 @@ public class Track internal constructor(
         owner.setVideoHandler(name, handler)
     }
 
-    /** As [onFrame], for audio. @throws InvalidStateException on a sendonly or video track. */
-    public fun onAudioFrame(handler: (AudioFrame) -> Unit) {
+    /**
+     * As [onFrame], for audio.
+     *
+     * The same name on purpose: the object model every Reactor SDK shares has **one** frame API
+     * for both kinds, and [kind] is what decides which a handler receives. A separate
+     * `onAudioFrame` would be a second way to say the same thing and the one no other binding has.
+     *
+     * `@JvmName` because the two overloads erase to the same JVM signature — both are
+     * `Function1` — which is a platform declaration clash rather than anything about Kotlin's own
+     * resolution. Java callers see `onAudioFrame`; Kotlin callers write `onFrame`, annotating the
+     * lambda's parameter when nothing else in the call fixes the type.
+     *
+     * @throws InvalidStateException on a sendonly or video track.
+     */
+    @JvmName("onAudioFrame")
+    public fun onFrame(handler: (AudioFrame) -> Unit) {
         requireReceivable()
         requireKind(TrackKind.AUDIO, "audio frames")
         owner.setAudioHandler(name, handler)
