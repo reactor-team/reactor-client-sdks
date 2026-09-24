@@ -35,6 +35,34 @@ class NativeBoundaryTest {
         override fun onSessionId(sessionId: String?) {
             synchronized(sessionIds) { sessionIds += sessionId }
         }
+
+        // Media never arrives here: nothing in this class connects, so no track is ever
+        // negotiated. Implemented because the interface requires it, and counted rather than
+        // ignored so that a frame showing up in a test that cannot receive one is loud.
+        var unexpectedFrames = 0
+            private set
+
+        override fun onVideoFrame(
+            trackName: String?,
+            pixels: java.nio.ByteBuffer?,
+            width: Int,
+            height: Int,
+            frameId: Long,
+            timestampUs: Long,
+            userData: ByteArray?,
+        ) {
+            synchronized(this) { unexpectedFrames++ }
+        }
+
+        override fun onAudioFrame(
+            trackName: String?,
+            pcm: java.nio.ByteBuffer?,
+            sampleCount: Int,
+            sampleRate: Int,
+            channels: Int,
+        ) {
+            synchronized(this) { unexpectedFrames++ }
+        }
     }
 
     private fun handle(listener: NativeEvents = RecordingEvents()) =
@@ -132,6 +160,24 @@ class NativeBoundaryTest {
                 override fun onError(errorJson: String?) = throw RuntimeException("handler bug")
 
                 override fun onSessionId(sessionId: String?) = throw RuntimeException("handler bug")
+
+                override fun onVideoFrame(
+                    trackName: String?,
+                    pixels: java.nio.ByteBuffer?,
+                    width: Int,
+                    height: Int,
+                    frameId: Long,
+                    timestampUs: Long,
+                    userData: ByteArray?,
+                ): Unit = throw RuntimeException("handler bug")
+
+                override fun onAudioFrame(
+                    trackName: String?,
+                    pcm: java.nio.ByteBuffer?,
+                    sampleCount: Int,
+                    sampleRate: Int,
+                    channels: Int,
+                ): Unit = throw RuntimeException("handler bug")
             }
         handle(throwing).use { client ->
             Thread.sleep(500)
