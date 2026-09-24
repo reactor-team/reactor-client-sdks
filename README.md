@@ -34,6 +34,8 @@ dedicated track.
 - **[Kotlin (desktop)](sdks/java/README.md#from-kotlin)** —
   `inc.reactor:reactor-sdk-kotlin`, a `suspend`-and-`Flow` facade over that same
   binding, versioned in lockstep with it
+- **[Android](sdks/android/README.md)** — `inc.reactor:reactor-sdk-android`,
+  a separate Kotlin binding over JNI, because FFM does not exist on Android
 
 ## Documentation
 
