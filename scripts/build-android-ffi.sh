@@ -43,6 +43,34 @@ rust_target_for() {
 # that dlopens on the build machine and not on a consumer's device.
 API_LEVEL=26
 
+# Accept artifacts staged by someone else — but verify them, and only when asked.
+#
+# The emulator job downloads what the cross-build job produced for the same commit, because the
+# runner that can boot an arm64 image is not the one with an NDK host toolchain. Without this the
+# mise task's `depends` would rebuild everything that artifact exists to avoid.
+#
+# Opt-in rather than "skip if the files are there", and that is the load-bearing half: a stale
+# .so links, resolves, and corrupts the stack at the first call that gained a parameter. An
+# implicit skip would make that the default for anyone with an old build lying around. The checks
+# still run, so a prestaged artifact that is wrong is caught here rather than on a device.
+if [ "${REACTOR_ANDROID_NATIVE_PRESTAGED:-}" = "1" ]; then
+  echo "==> REACTOR_ANDROID_NATIVE_PRESTAGED=1 — verifying staged artifacts instead of building"
+  [ -f "$STAGE/libs/libwebrtc.jar" ] || {
+    echo "error: REACTOR_ANDROID_NATIVE_PRESTAGED=1 but $STAGE/libs/libwebrtc.jar is missing" >&2
+    exit 1
+  }
+  for abi in "${ABIS[@]}"; do
+    so="$STAGE/jniLibs/$abi/libreactor_ffi.so"
+    [ -f "$so" ] || {
+      echo "error: REACTOR_ANDROID_NATIVE_PRESTAGED=1 but $so is missing" >&2
+      exit 1
+    }
+    python3 "$REPO_ROOT/scripts/check-android-native.py" "$so" "$STAGE/libs/libwebrtc.jar"
+  done
+  echo "==> Staged artifacts accepted from ${STAGE#"$REPO_ROOT"/}"
+  exit 0
+fi
+
 if [ -z "${ANDROID_HOME:-}" ]; then
   echo "error: ANDROID_HOME is unset — run through mise (mise run build:android:native)" >&2
   exit 1
