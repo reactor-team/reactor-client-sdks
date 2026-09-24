@@ -359,3 +359,113 @@ Java_inc_reactor_sdk_android_internal_NativeClient_nativeReconnect(JNIEnv*, jobj
   reactor_reconnect(context->handle, completion_trampoline,
                     reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
 }
+
+// ── Publishing and media ─────────────────────────────────────────────────────
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativePublishTrack(JNIEnv* env, jobject,
+                                                                      jlong context_ptr,
+                                                                      jstring name, jlong ticket) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return;
+  JavaString track(env, name);
+  reactor_publish_track(context->handle, track.get(), completion_trampoline,
+                        reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}
+
+/**
+ * Unpublish, which is synchronous and returns an error object rather than completing.
+ *
+ * That error string is the fourth owned-string case in this ABI: heap-allocated on failure, NULL
+ * on success, and the caller frees it. OwnedString is what keeps that from being the leak nobody
+ * notices, since the success path allocates nothing.
+ */
+extern "C" JNIEXPORT jstring JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeUnpublishTrack(JNIEnv* env, jobject,
+                                                                        jlong context_ptr,
+                                                                        jstring name) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return nullptr;
+  JavaString track(env, name);
+  return owned_to_jstring(env, reactor_unpublish_track(context->handle, track.get()));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativePauseTrack(JNIEnv* env, jobject,
+                                                                    jlong context_ptr, jstring name,
+                                                                    jlong ticket) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return;
+  JavaString track(env, name);
+  reactor_pause_track(context->handle, track.get(), completion_trampoline,
+                      reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeResumeTrack(JNIEnv* env, jobject,
+                                                                     jlong context_ptr,
+                                                                     jstring name, jlong ticket) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return;
+  JavaString track(env, name);
+  reactor_resume_track(context->handle, track.get(), completion_trampoline,
+                       reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}
+
+/**
+ * Push BGRA pixels, optionally tagged.
+ *
+ * The buffer is read straight out of a direct ByteBuffer — no copy on this side either, so a
+ * caller pushing at 30 fps pays for no allocation here. Kotlin has already checked that its
+ * length is exactly width * height * 4; this reads that many bytes and nothing checks it again,
+ * which is why that check is not optional up there.
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativePushVideoFrame(
+    JNIEnv* env, jobject, jlong context_ptr, jstring name, jobject pixels, jint width, jint height,
+    jbyteArray user_data) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr || pixels == nullptr) return;
+
+  auto* data = static_cast<const uint8_t*>(env->GetDirectBufferAddress(pixels));
+  if (data == nullptr) {
+    reactor_jni::fail(env, "java/lang/IllegalArgumentException",
+                      "pushFrame needs a direct ByteBuffer — allocateDirect(), not allocate()");
+    return;
+  }
+
+  JavaString track(env, name);
+  if (user_data == nullptr) {
+    reactor_push_video_frame(context->handle, track.get(), data, static_cast<uint32_t>(width),
+                             static_cast<uint32_t>(height));
+    return;
+  }
+
+  const jsize tag_len = env->GetArrayLength(user_data);
+  jbyte* tag = env->GetByteArrayElements(user_data, nullptr);
+  reactor_push_video_frame_with_metadata(
+      context->handle, track.get(), data, static_cast<uint32_t>(width),
+      static_cast<uint32_t>(height), reinterpret_cast<const uint8_t*>(tag),
+      static_cast<uint32_t>(tag_len));
+  env->ReleaseByteArrayElements(user_data, tag, JNI_ABORT);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativePushAudioFrame(
+    JNIEnv* env, jobject, jlong context_ptr, jstring name, jobject pcm, jint samplesPerChannel,
+    jint sampleRate, jint channels) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr || pcm == nullptr) return;
+
+  auto* data = static_cast<const int16_t*>(env->GetDirectBufferAddress(pcm));
+  if (data == nullptr) {
+    reactor_jni::fail(env, "java/lang/IllegalArgumentException",
+                      "pushFrame needs a direct ByteBuffer — allocateDirect(), not allocate()");
+    return;
+  }
+
+  JavaString track(env, name);
+  reactor_push_audio_frame(context->handle, track.get(), data,
+                           static_cast<uint32_t>(samplesPerChannel),
+                           static_cast<uint32_t>(sampleRate), static_cast<uint32_t>(channels));
+}

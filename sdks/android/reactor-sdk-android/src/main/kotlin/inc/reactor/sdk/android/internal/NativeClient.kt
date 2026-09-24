@@ -46,6 +46,48 @@ internal object NativeClient {
         ticket: Long,
     )
 
+    private external fun nativePublishTrack(
+        context: Long,
+        name: String,
+        ticket: Long,
+    )
+
+    /** Synchronous: the error payload on failure, null on success. */
+    private external fun nativeUnpublishTrack(
+        context: Long,
+        name: String,
+    ): String?
+
+    private external fun nativePauseTrack(
+        context: Long,
+        name: String,
+        ticket: Long,
+    )
+
+    private external fun nativeResumeTrack(
+        context: Long,
+        name: String,
+        ticket: Long,
+    )
+
+    private external fun nativePushVideoFrame(
+        context: Long,
+        name: String,
+        pixels: java.nio.ByteBuffer,
+        width: Int,
+        height: Int,
+        userData: ByteArray?,
+    )
+
+    private external fun nativePushAudioFrame(
+        context: Long,
+        name: String,
+        pcm: java.nio.ByteBuffer,
+        samplesPerChannel: Int,
+        sampleRate: Int,
+        channels: Int,
+    )
+
     /**
      * Global references the bridge could not release, kept forever on purpose.
      *
@@ -111,6 +153,58 @@ internal object NativeClient {
             Completions.await("reconnect", decode = { }) { ticket ->
                 nativeReconnect(context, ticket)
             }
+        }
+
+        suspend fun publishTrack(name: String) {
+            checkOpen()
+            Completions.await("publish_track", decode = { }) { ticket ->
+                nativePublishTrack(context, name, ticket)
+            }
+        }
+
+        /**
+         * Unpublish, which the ABI answers synchronously with an error payload rather than a
+         * completion. A non-null return is the failure.
+         */
+        fun unpublishTrack(name: String): String? {
+            checkOpen()
+            return nativeUnpublishTrack(context, name)
+        }
+
+        suspend fun pauseTrack(name: String) {
+            checkOpen()
+            Completions.await("pause_track", decode = { }) { ticket ->
+                nativePauseTrack(context, name, ticket)
+            }
+        }
+
+        suspend fun resumeTrack(name: String) {
+            checkOpen()
+            Completions.await("resume_track", decode = { }) { ticket ->
+                nativeResumeTrack(context, name, ticket)
+            }
+        }
+
+        fun pushVideoFrame(
+            name: String,
+            pixels: java.nio.ByteBuffer,
+            width: Int,
+            height: Int,
+            userData: ByteArray?,
+        ) {
+            checkOpen()
+            nativePushVideoFrame(context, name, pixels, width, height, userData)
+        }
+
+        fun pushAudioFrame(
+            name: String,
+            pcm: java.nio.ByteBuffer,
+            samplesPerChannel: Int,
+            sampleRate: Int,
+            channels: Int,
+        ) {
+            checkOpen()
+            nativePushAudioFrame(context, name, pcm, samplesPerChannel, sampleRate, channels)
         }
 
         val status: String?

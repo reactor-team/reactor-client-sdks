@@ -41,6 +41,12 @@ void fake_set_destroy_result(int result);
 void fake_complete_last_on_foreign_thread(int ok, const char* result_json, const char* error_json);
 void fake_fire_video_frame_on_foreign_thread(const char* track, uint32_t width, uint32_t height,
                                              uint64_t frame_id);
+void fake_set_unpublish_fails(int fails);
+uint32_t fake_pushed_video_frames(void);
+jstring Java_inc_reactor_sdk_android_internal_NativeClient_nativeUnpublishTrack(JNIEnv*, jobject,
+                                                                               jlong, jstring);
+void Java_inc_reactor_sdk_android_internal_NativeClient_nativePushVideoFrame(
+    JNIEnv*, jobject, jlong, jstring, jobject, jint, jint, jbyteArray);
 void fake_fire_status_on_foreign_thread(const char* status);
 void fake_fire_session_id_on_foreign_thread(const char* session_id);
 }
@@ -211,6 +217,54 @@ void video_frames_arrive_over_a_direct_buffer() {
   Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, context);
 }
 
+/// Pushing reads the whole buffer, and unpublish's error string is owned.
+///
+/// The fake reads the *last* byte of every pushed frame, so a direct buffer shorter than
+/// width * height * 4 — or one that was never direct — is a read past the end that ASan reports
+/// rather than a silent misread. And reactor_unpublish_track is the fourth owned-string case in
+/// this ABI: heap on failure, NULL on success. Exercising both paths is what would catch either
+/// a leak on the failure path or a free of the NULL success path.
+void pushing_reads_the_whole_buffer_and_unpublish_owns_its_error() {
+  jlong context = create();
+
+  jstring track = g_env->NewStringUTF("webcam");
+  const int capacity = 8 * 8 * 4;
+  void* raw = std::malloc(capacity);
+  std::memset(raw, 0x5A, capacity);
+  jobject pixels = g_env->NewDirectByteBuffer(raw, capacity);
+
+  const uint32_t before = fake_pushed_video_frames();
+  for (int i = 0; i < 200; ++i) {
+    Java_inc_reactor_sdk_android_internal_NativeClient_nativePushVideoFrame(
+        g_env, nullptr, context, track, pixels, 8, 8, nullptr);
+  }
+  check(fake_pushed_video_frames() == before + 200,
+        "200 frames pushed, every byte of each one read back");
+  g_env->DeleteLocalRef(pixels);
+  std::free(raw);
+
+  // Success: no string to free. Doing so anyway would be a free of NULL's worth of nothing, or
+  // worse, of a pointer the FFI still owns.
+  fake_set_unpublish_fails(0);
+  jstring ok = Java_inc_reactor_sdk_android_internal_NativeClient_nativeUnpublishTrack(
+      g_env, nullptr, context, track);
+  check(ok == nullptr, "a successful unpublish returns no error and allocates nothing");
+
+  // Failure: a heap string the bridge owns and must free exactly once.
+  fake_set_unpublish_fails(1);
+  for (int i = 0; i < 100; ++i) {
+    jstring err = Java_inc_reactor_sdk_android_internal_NativeClient_nativeUnpublishTrack(
+        g_env, nullptr, context, track);
+    if (err != nullptr) g_env->DeleteLocalRef(err);
+  }
+  check(true, "100 failing unpublishes, each error string freed exactly once");
+  fake_set_unpublish_fails(0);
+
+  g_env->DeleteLocalRef(track);
+  fake_set_destroy_result(0);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, context);
+}
+
 /// The completion path, end to end on the native side: a completion fires on a thread the JVM has
 /// never seen, and both of its strings are copied before the FFI frees them.
 void completions_cross_from_a_foreign_thread() {
@@ -289,6 +343,7 @@ int main() {
   events_cross_from_a_foreign_thread();
   a_throwing_handler_is_contained();
   video_frames_arrive_over_a_direct_buffer();
+  pushing_reads_the_whole_buffer_and_unpublish_owns_its_error();
   completions_cross_from_a_foreign_thread();
   destroy_minus_one_keeps_the_references_alive();
 
