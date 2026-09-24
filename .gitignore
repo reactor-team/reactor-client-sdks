@@ -31,6 +31,7 @@ node_modules/
 /sdks/cpp/endurance-results/
 /sdks/swift/endurance-results/
 /sdks/java/endurance-tests/endurance-results/
+/sdks/android/endurance-tests/endurance-results/
 
 # C++ SDK build tree (cmake -B sdks/cpp/build)
 /sdks/cpp/build/
