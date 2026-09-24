@@ -1,7 +1,9 @@
 package inc.reactor.sdk.android.integration
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import inc.reactor.sdk.android.AudioFrame
 import inc.reactor.sdk.android.InvalidStateException
+import inc.reactor.sdk.android.VideoFrame
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -62,9 +64,9 @@ internal class LiveMediaTest : LiveFixture() {
             val received = AtomicInteger()
             val shape = AtomicReference<String>()
 
-            incoming.onFrame {
+            incoming.onFrame { frame: VideoFrame ->
                 received.incrementAndGet()
-                shape.compareAndSet(null, "${it.width}x${it.height}")
+                shape.compareAndSet(null, "${frame.width}x${frame.height}")
             }
             outgoing.publish()
 
@@ -102,7 +104,7 @@ internal class LiveMediaTest : LiveFixture() {
     @Test
     fun receivingOnASendonlyTrackIsRefused() {
         assertThrows(InvalidStateException::class.java) {
-            reactor.track(Live.VIDEO_IN).onFrame { }
+            reactor.track(Live.VIDEO_IN).onFrame { _: VideoFrame -> }
         }
     }
 
@@ -121,9 +123,11 @@ internal class LiveMediaTest : LiveFixture() {
             val received = AtomicInteger()
             val rate = AtomicInteger()
 
-            incoming.onAudioFrame {
+            // The parameter is typed because onFrame is overloaded on it — one frame API for both
+            // kinds, as every Reactor SDK has — and the kind is not inferable from the body.
+            incoming.onFrame { frame: AudioFrame ->
                 received.incrementAndGet()
-                rate.compareAndSet(0, it.sampleRate)
+                rate.compareAndSet(0, frame.sampleRate)
             }
             outgoing.publish()
 
@@ -152,7 +156,7 @@ internal class LiveMediaTest : LiveFixture() {
             val incoming = reactor.track(Live.VIDEO_OUT)
             val outgoing = reactor.track(Live.VIDEO_IN)
             val received = AtomicInteger()
-            incoming.onFrame { received.incrementAndGet() }
+            incoming.onFrame { _: VideoFrame -> received.incrementAndGet() }
             outgoing.publish()
 
             try {
