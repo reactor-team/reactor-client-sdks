@@ -7,7 +7,15 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The track list: declaration order, filters, and the refusals. */
+/**
+ * The track list: declaration order, filters, and the refusals.
+ *
+ * The `_: VideoFrame ->` and `_: AudioFrame ->` annotations are load-bearing rather than noise.
+ * `onFrame` is overloaded on the handler's parameter type — one frame API for both kinds, as
+ * every Reactor SDK has — and a lambda whose body says nothing about its parameter gives the
+ * compiler nothing to resolve on. Real call sites usually touch a field and need no annotation;
+ * an empty test lambda always does.
+ */
 class TracksTest {
     private val owner =
         object : TrackOwner {
@@ -84,7 +92,8 @@ class TracksTest {
     @Test
     fun `onFrame on a sendonly track is refused, naming the direction`() {
         val webcam = tracks().first { it.name == "webcam" }
-        val error = assertThrows(InvalidStateException::class.java) { webcam.onFrame { } }
+        val error =
+            assertThrows(InvalidStateException::class.java) { webcam.onFrame { _: VideoFrame -> } }
         assertTrue(error.message!!.contains("sendonly"))
         // The message has to point at the thing to do instead.
         assertTrue(error.message!!.contains("pushFrame"))
@@ -93,7 +102,8 @@ class TracksTest {
     @Test
     fun `a video handler on an audio track is refused, naming the kind`() {
         val audioOut = tracks().first { it.name == "audio_out" }
-        val error = assertThrows(InvalidStateException::class.java) { audioOut.onFrame { } }
+        val error =
+            assertThrows(InvalidStateException::class.java) { audioOut.onFrame { _: VideoFrame -> } }
         assertTrue(error.message!!.contains("audio"))
         assertTrue(error.message!!.contains("video"))
     }
@@ -101,13 +111,15 @@ class TracksTest {
     @Test
     fun `an audio handler on a video track is refused`() {
         val mainVideo = tracks().first { it.name == "main_video" }
-        assertThrows(InvalidStateException::class.java) { mainVideo.onAudioFrame { } }
+        assertThrows(InvalidStateException::class.java) {
+            mainVideo.onFrame { _: AudioFrame -> }
+        }
     }
 
     @Test
     fun `a recvonly track of the right kind accepts its handler`() {
-        tracks().first { it.name == "main_video" }.onFrame { }
-        tracks().first { it.name == "audio_out" }.onAudioFrame { }
+        tracks().first { it.name == "main_video" }.onFrame { _: VideoFrame -> }
+        tracks().first { it.name == "audio_out" }.onFrame { _: AudioFrame -> }
         assertTrue("main_video" in owner.videoHandlers)
         assertTrue("audio_out" in owner.audioHandlers)
     }
