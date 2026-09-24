@@ -36,6 +36,34 @@ class NativeBoundaryTest {
         override fun onSessionId(sessionId: String?) {
             synchronized(sessionIds) { sessionIds += sessionId }
         }
+
+        // Media never arrives here: nothing in this class connects, so no track is ever
+        // negotiated. Implemented because the interface requires it, and counted rather than
+        // ignored so that a frame showing up in a test that cannot receive one is loud.
+        var unexpectedFrames = 0
+            private set
+
+        override fun onVideoFrame(
+            trackName: String?,
+            pixels: java.nio.ByteBuffer?,
+            width: Int,
+            height: Int,
+            frameId: Long,
+            timestampUs: Long,
+            userData: ByteArray?,
+        ) {
+            synchronized(this) { unexpectedFrames++ }
+        }
+
+        override fun onAudioFrame(
+            trackName: String?,
+            pcm: java.nio.ByteBuffer?,
+            sampleCount: Int,
+            sampleRate: Int,
+            channels: Int,
+        ) {
+            synchronized(this) { unexpectedFrames++ }
+        }
     }
 
     private fun handle(listener: NativeEvents = RecordingEvents()) =
@@ -144,6 +172,24 @@ class NativeBoundaryTest {
                 override fun onError(errorJson: String?): Unit = fail()
 
                 override fun onSessionId(sessionId: String?): Unit = fail()
+
+                override fun onVideoFrame(
+                    trackName: String?,
+                    pixels: java.nio.ByteBuffer?,
+                    width: Int,
+                    height: Int,
+                    frameId: Long,
+                    timestampUs: Long,
+                    userData: ByteArray?,
+                ): Unit = fail()
+
+                override fun onAudioFrame(
+                    trackName: String?,
+                    pcm: java.nio.ByteBuffer?,
+                    sampleCount: Int,
+                    sampleRate: Int,
+                    channels: Int,
+                ): Unit = fail()
 
                 private fun fail(): Nothing {
                     threw.incrementAndGet()
