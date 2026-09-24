@@ -4,6 +4,7 @@ import inc.reactor.sdk.android.ConnectionStatus
 import inc.reactor.sdk.android.Reactor
 import inc.reactor.sdk.android.TrackDirection
 import inc.reactor.sdk.android.TrackKind
+import inc.reactor.sdk.android.VideoFrame
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import java.io.File
@@ -121,7 +122,7 @@ public object Scenarios {
             reactor.status.first { it == ConnectionStatus.READY }
             var frames = 0
             val track = reactor.track(OUTPUT_TRACK)
-            track.onFrame { frame ->
+            track.onFrame { frame: VideoFrame ->
                 frames += 1
                 sink?.render(frame)
             }
@@ -277,7 +278,7 @@ public object Scenarios {
         withReactor(HELIOS, apiKey, log) { reactor ->
             reactor.status.first { it == ConnectionStatus.READY }
             var reported = 0
-            reactor.track(OUTPUT_TRACK).onFrame { frame ->
+            reactor.track(OUTPUT_TRACK).onFrame { frame: VideoFrame ->
                 if (reported < 5) {
                     reported += 1
                     log(

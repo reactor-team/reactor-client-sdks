@@ -94,8 +94,21 @@ Control events — status, errors, session id — are delivered on the dispatche
 `Reactor` was built with, `Dispatchers.Main.immediate` by default, because an
 Android handler usually touches UI.
 
-`onFrame` is deliberately the other way: it runs **inline on the FFI's delivery
-thread**, and blocking there is the backpressure. The FFI keeps only the newest
+**One `onFrame` for both kinds.** It is overloaded on the handler's parameter
+type — `VideoFrame` or `AudioFrame` — because the object model every Reactor SDK
+shares has one frame API and `Track.kind` decides which a handler receives. The
+practical consequence is that the parameter usually needs naming:
+
+```kotlin
+track.onFrame { frame: VideoFrame -> render(frame) }
+```
+
+Kotlin resolves the overload from the declared parameter type, not from what the
+body does with it, so `onFrame { frame -> … }` is ambiguous. Passing a function
+reference or an already-typed value needs no annotation.
+
+`onFrame` is deliberately the other way from control events: it runs **inline on
+the FFI's delivery thread**, and blocking there is the backpressure. The FFI keeps only the newest
 video frame while your handler runs, so a slow handler drops frames — bounded, and
 visible. Hand them to an unbounded queue instead and you have traded that for
 unbounded latency and memory. Convert or encode inline, and post the result.
