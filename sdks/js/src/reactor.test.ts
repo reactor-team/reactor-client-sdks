@@ -11,7 +11,7 @@ import { FakeReactorClient } from './internal/fake-reactor-client';
 import { toPublicFileRef } from './internal/file-ref';
 import { FileRef } from './file-ref';
 import { toPublicClip } from './internal/recording';
-import { RUNTIME_REPORT_INTERVAL_MS, LOCAL_STATS_INTERVAL_MS } from './internal/stats';
+import { LOCAL_STATS_INTERVAL_MS, RUNTIME_REPORT_INTERVAL_MS } from './internal/stats';
 import packageJson from '../package.json';
 import type * as RecordingModule from './recording';
 import type { ConnectOptions, ReactorMessage } from './internal/reactor-wasm.types';

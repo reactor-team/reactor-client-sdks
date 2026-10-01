@@ -7,13 +7,13 @@ import { extractFileRefs, toPublicFileRef } from './internal/file-ref';
 import { toPublicClip } from './internal/recording';
 import type { ReactorClient } from './internal/reactor-wasm.types';
 import {
-  RUNTIME_REPORT_INTERVAL_MS,
-  createTrackStatsExtractor,
-  createConnectionStatsExtractor,
-  type TrackStatsExtractor,
   LOCAL_STATS_INTERVAL_MS,
+  RUNTIME_REPORT_INTERVAL_MS,
+  createConnectionStatsExtractor,
+  createTrackStatsExtractor,
   pollPeerStats,
   toClientConnectionStat,
+  type TrackStatsExtractor,
 } from './internal/stats';
 import { loadReactorWasm } from './internal/wasm';
 import packageJson from '../package.json';
