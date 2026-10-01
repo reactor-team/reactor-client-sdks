@@ -28,6 +28,11 @@ export const RUNTIME_REPORT_INTERVAL_MS = 5_000;
  *  thrown by *onReport* itself is a bug, not a closing connection, so it is
  *  logged rather than swallowed, and polling goes on.
  *
+ *  One read at a time: a tick that finds the previous read still pending is
+ *  skipped. Reads that overlapped could resolve out of order, and a
+ *  bitrate is a delta against the previous report, so an older report
+ *  landing after a newer one would set the baseline back in time.
+ *
  *  Returns the function that stops it. Clearing the interval can't cancel a
  *  `getStats()` already in flight, so a read that resolves after the stop is
  *  dropped instead of reaching *onReport*: a recoverable disconnect can
@@ -39,27 +44,37 @@ export function pollPeerStats(
   onReport: (report: RTCStatsReport) => void,
 ): () => void {
   let stopped = false;
+  let reading = false;
   const handle = setInterval(() => {
+    if (reading) {
+      return;
+    }
     const peerConnection = client.getPeerConnection();
 
     if (!peerConnection) {
       return;
     }
-    peerConnection.getStats().then(
-      (report) => {
-        if (stopped) {
-          return;
-        }
-        try {
-          onReport(report);
-        } catch (error) {
-          console.error('[Reactor] stats report handler threw:', error);
-        }
-      },
-      () => {
-        // Connection may be closing.
-      },
-    );
+    reading = true;
+    void peerConnection
+      .getStats()
+      .then(
+        (report) => {
+          if (stopped) {
+            return;
+          }
+          try {
+            onReport(report);
+          } catch (error) {
+            console.error('[Reactor] stats report handler threw:', error);
+          }
+        },
+        () => {
+          // Connection may be closing.
+        },
+      )
+      .finally(() => {
+        reading = false;
+      });
   }, intervalMs);
 
   return () => {

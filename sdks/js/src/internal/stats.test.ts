@@ -632,6 +632,51 @@ describe('pollPeerStats()', () => {
     consoleError.mockRestore();
   });
 
+  it('starts no new read while the previous one is still pending', async () => {
+    const pending: Array<(report: RTCStatsReport) => void> = [];
+    const getStats = vi.fn(
+      () =>
+        new Promise<RTCStatsReport>((resolve) => {
+          pending.push(resolve);
+        }),
+    );
+    const onReport = vi.fn();
+
+    const stop = pollPeerStats(
+      { getPeerConnection: () => ({ getStats }) as unknown as RTCPeerConnection },
+      1_000,
+      onReport,
+    );
+
+    // Three ticks while the first read hangs: still one read.
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(getStats).toHaveBeenCalledTimes(1);
+
+    pending[0]?.(makeReport([]));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onReport).toHaveBeenCalledTimes(1);
+
+    // The next tick after it settles reads again.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(getStats).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it('reads again on the next tick after a read rejects', async () => {
+    const getStats = vi.fn(() => Promise.reject(new Error('closing')));
+
+    const stop = pollPeerStats(
+      { getPeerConnection: () => ({ getStats }) as unknown as RTCPeerConnection },
+      1_000,
+      vi.fn(),
+    );
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    stop();
+
+    expect(getStats).toHaveBeenCalledTimes(2);
+  });
+
   it('skips a tick whose read rejects', async () => {
     const peerConnection = {
       getStats: () => Promise.reject(new Error('closing')),
