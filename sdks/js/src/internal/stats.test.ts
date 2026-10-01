@@ -162,6 +162,30 @@ describe('createRTCStatsExtractor()', () => {
     expect(stats.availableOutgoingBitrate).toBe(5_465_846);
   });
 
+  it('reads the candidate-pair flagged selected when there is no transport stat', () => {
+    const report = makeReport([
+      ['cp1', { id: 'cp1', type: 'candidate-pair', state: 'succeeded', nominated: true, currentRoundTripTime: 0.01 }],
+      [
+        'cp2',
+        {
+          id: 'cp2',
+          type: 'candidate-pair',
+          state: 'succeeded',
+          nominated: true,
+          selected: true,
+          currentRoundTripTime: 0.003,
+          availableOutgoingBitrate: 2_000_000,
+        },
+      ],
+    ]);
+
+    const extract = createRTCStatsExtractor();
+    const stats = extract(report);
+
+    expect(stats.rtt).toBe(3);
+    expect(stats.availableOutgoingBitrate).toBe(2_000_000);
+  });
+
   it('computes incomingBitrate and outgoingBitrate from candidate-pair counters between samples', () => {
     const baseTimestamp = 1_777_674_503_920;
     const makeCandidatePairReport = (timestamp: number, bytesReceived: number, bytesSent: number) =>

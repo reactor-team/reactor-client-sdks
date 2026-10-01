@@ -11,7 +11,7 @@ import { FakeReactorClient } from './internal/fake-reactor-client';
 import { toPublicFileRef } from './internal/file-ref';
 import { FileRef } from './file-ref';
 import { toPublicClip } from './internal/recording';
-import { CLIENT_STATS_REPORT_INTERVAL_MS, STATS_INTERVAL_MS } from './internal/stats';
+import { RUNTIME_REPORT_INTERVAL_MS, LOCAL_STATS_INTERVAL_MS } from './internal/stats';
 import packageJson from '../package.json';
 import type * as RecordingModule from './recording';
 import type { ConnectOptions, ReactorMessage } from './internal/reactor-wasm.types';
@@ -1056,7 +1056,7 @@ describe('Reactor stats', () => {
     });
   });
 
-  it('polls getPeerConnection().getStats() every STATS_INTERVAL_MS once ready, emitting statsUpdate', async () => {
+  it('polls getPeerConnection().getStats() every LOCAL_STATS_INTERVAL_MS once ready, emitting statsUpdate', async () => {
     vi.useFakeTimers();
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
@@ -1071,12 +1071,12 @@ describe('Reactor stats', () => {
     client.emitReady();
     expect(getStats).not.toHaveBeenCalled();
 
-    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS);
     expect(getStats).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(onStatsUpdate).toHaveBeenCalledTimes(1));
     expect(reactor.getStats()).toEqual(onStatsUpdate.mock.calls[0]?.[0]);
 
-    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS);
     expect(getStats).toHaveBeenCalledTimes(2);
   });
 
@@ -1092,7 +1092,7 @@ describe('Reactor stats', () => {
     client.emitWaiting();
     client.emitReady();
 
-    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS);
 
     expect(reactor.getStats()?.connectionTimings).toBe(reactor.getConnectionTimings());
   });
@@ -1107,14 +1107,14 @@ describe('Reactor stats', () => {
     client.peerConnectionResult = { getStats } as unknown as RTCPeerConnection;
 
     client.emitReady();
-    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS);
     expect(getStats).toHaveBeenCalledTimes(1);
 
     await reactor.disconnect();
     expect(reactor.getStats()).toBeUndefined();
     expect(reactor.getConnectionTimings()).toBeUndefined();
 
-    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS * 2);
+    await vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS * 2);
     expect(getStats).toHaveBeenCalledTimes(1);
   });
 
@@ -1131,7 +1131,7 @@ describe('Reactor stats', () => {
     reactor.on('statsUpdate', onStatsUpdate);
 
     client.emitReady();
-    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS);
     expect(getStats).toHaveBeenCalledTimes(1); // in flight, not yet resolved
 
     // Recoverable: stops polling but keeps this same `client` (and its
@@ -1160,7 +1160,7 @@ describe('Reactor stats', () => {
     reactor.on('statsUpdate', onStatsUpdate);
 
     client.emitReady();
-    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS * 2);
+    await vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS * 2);
 
     expect(onStatsUpdate).not.toHaveBeenCalled();
     expect(reactor.getStats()).toBeUndefined();
@@ -1179,7 +1179,7 @@ describe('Reactor stats', () => {
     } as unknown as RTCStatsReport;
   }
 
-  it('reports client stats to the runtime every CLIENT_STATS_REPORT_INTERVAL_MS, for the mapped track', async () => {
+  it('reports client stats to the runtime every RUNTIME_REPORT_INTERVAL_MS, for the mapped track', async () => {
     vi.useFakeTimers();
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
@@ -1190,7 +1190,7 @@ describe('Reactor stats', () => {
     client.trackMappingResult = [{ name: 'main_video', kind: 'video', direction: 'recvonly', mid: '0' }];
 
     client.emitReady();
-    await vi.advanceTimersByTimeAsync(CLIENT_STATS_REPORT_INTERVAL_MS - 1);
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS - 1);
     expect(client.sendClientStatsCalls).toHaveLength(0);
 
     await vi.advanceTimersByTimeAsync(1);
@@ -1200,7 +1200,7 @@ describe('Reactor stats', () => {
     ]);
     expect(client.sendClientStatsCalls[0]?.connectionStat).toBeDefined();
 
-    await vi.advanceTimersByTimeAsync(CLIENT_STATS_REPORT_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS);
     expect(client.sendClientStatsCalls).toHaveLength(2);
     // Every report carries the connection facts; only the first the time to connect.
     expect(client.sendClientStatsCalls[1]?.connectionStat).toBeDefined();
@@ -1218,7 +1218,7 @@ describe('Reactor stats', () => {
     client.trackMappingResult = []; // Not yet negotiated, or a stale mapping.
 
     client.emitReady();
-    await vi.advanceTimersByTimeAsync(CLIENT_STATS_REPORT_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS);
 
     expect(client.sendClientStatsCalls).toHaveLength(0);
   });
@@ -1237,7 +1237,7 @@ describe('Reactor stats', () => {
     client.emitReady();
     // Doesn't throw and doesn't stop the interval — reportClientStats()
     // swallows the send failure the same way getStats()'s rejection is.
-    await vi.advanceTimersByTimeAsync(CLIENT_STATS_REPORT_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS);
     expect(client.sendClientStatsCalls).toHaveLength(1);
   });
 
@@ -1251,7 +1251,7 @@ describe('Reactor stats', () => {
     client.peerConnectionResult = { getStats } as unknown as RTCPeerConnection;
 
     client.emitReady();
-    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS);
     expect(getStats).toHaveBeenCalledTimes(1);
 
     // e.g. a transport error dropping straight to "disconnected" without
@@ -1259,7 +1259,7 @@ describe('Reactor stats', () => {
     client.emitDisconnected();
     expect(reactor.getStats()).toBeUndefined();
 
-    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS * 2);
+    await vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS * 2);
     expect(getStats).toHaveBeenCalledTimes(1);
   });
 
@@ -1274,11 +1274,11 @@ describe('Reactor stats', () => {
     client.trackMappingResult = [{ name: 'main_video', kind: 'video', direction: 'recvonly', mid: '0' }];
 
     client.emitReady();
-    await vi.advanceTimersByTimeAsync(CLIENT_STATS_REPORT_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS);
     expect(client.sendClientStatsCalls).toHaveLength(1);
 
     client.emitDisconnected();
-    await vi.advanceTimersByTimeAsync(CLIENT_STATS_REPORT_INTERVAL_MS * 3);
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS * 3);
     expect(client.sendClientStatsCalls).toHaveLength(1);
   });
 });

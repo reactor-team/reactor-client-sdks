@@ -241,7 +241,7 @@ export interface ReactorEventMap {
     stream: MediaStream,
     mid: string | undefined,
   ) => void;
-  /** Fired every `STATS_INTERVAL_MS` while the session is "ready" — see
+  /** Fired every `LOCAL_STATS_INTERVAL_MS` while the session is "ready" — see
    *  `getStats()`. */
   statsUpdate: (stats: ConnectionStats) => void;
 }

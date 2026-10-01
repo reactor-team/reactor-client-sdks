@@ -3,7 +3,7 @@ import { act, cleanup, render, renderHook } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FakeReactorClient } from '../internal/fake-reactor-client';
-import { STATS_INTERVAL_MS } from '../internal/stats';
+import { LOCAL_STATS_INTERVAL_MS } from '../internal/stats';
 import type { Reactor } from '../reactor';
 
 vi.mock('../internal/wasm', () => ({
@@ -190,12 +190,12 @@ describe('useStats', () => {
     currentClient().peerConnectionResult = { getStats: vi.fn().mockResolvedValue(report) } as unknown as RTCPeerConnection;
     act(() => currentClient().emitReady());
 
-    await act(() => vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS));
+    await act(() => vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS));
     expect(stats).toEqual(reactor?.getStats());
 
     const firstSample = stats;
 
-    await act(() => vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS));
+    await act(() => vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS));
     expect(stats).toEqual(reactor?.getStats());
     expect(stats).not.toBe(firstSample);
   });

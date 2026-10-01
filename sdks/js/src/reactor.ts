@@ -7,11 +7,11 @@ import { extractFileRefs, toPublicFileRef } from './internal/file-ref';
 import { toPublicClip } from './internal/recording';
 import type { ReactorClient } from './internal/reactor-wasm.types';
 import {
-  CLIENT_STATS_REPORT_INTERVAL_MS,
+  RUNTIME_REPORT_INTERVAL_MS,
   createClientTrackStatsExtractor,
   createRTCStatsExtractor,
   type ClientTrackStatsExtractor,
-  STATS_INTERVAL_MS,
+  LOCAL_STATS_INTERVAL_MS,
   toClientConnectionStat,
 } from './internal/stats';
 import { loadReactorWasm } from './internal/wasm';
@@ -712,7 +712,7 @@ export class Reactor implements Disposable {
     return this._lastError;
   }
 
-  /** The most recent WebRTC connection stats, polled every `STATS_INTERVAL_MS`
+  /** The most recent WebRTC connection stats, polled every `LOCAL_STATS_INTERVAL_MS`
    *  while "ready" — see `statsUpdate`. `undefined` before the first sample. */
   getStats(): ConnectionStats | undefined {
     return this.stats;
@@ -931,11 +931,11 @@ export class Reactor implements Disposable {
         .catch(() => {
           // Connection may be closing.
         });
-    }, STATS_INTERVAL_MS);
+    }, LOCAL_STATS_INTERVAL_MS);
     this.startClientStatsReporting(client, generation);
   }
 
-  /** Reports a client-stats batch every `CLIENT_STATS_REPORT_INTERVAL_MS`,
+  /** Reports a client-stats batch every `RUNTIME_REPORT_INTERVAL_MS`,
    *  from its own `getStats()` read. Its extractors are its own too: a
    *  bitrate is averaged over the report interval, not the local sampling
    *  one. Stopped, and its in-flight reads made stale, by the same
@@ -964,14 +964,14 @@ export class Reactor implements Disposable {
         .catch(() => {
           // Connection may be closing.
         });
-    }, CLIENT_STATS_REPORT_INTERVAL_MS);
+    }, RUNTIME_REPORT_INTERVAL_MS);
   }
 
   /** Report one quality batch to the runtime: a reading per negotiated
    *  track — audio and video, sent and received — see
    *  `createClientTrackStatsExtractor`. Silently skipped while no track has a
    *  reading yet (none negotiated onto a named track, or no codec reported
-   *  yet) — one is due again in `CLIENT_STATS_REPORT_INTERVAL_MS`. Every
+   *  yet) — one is due again in `RUNTIME_REPORT_INTERVAL_MS`. Every
    *  batch carries a `ClientConnectionStat`, its time to connect only the
    *  first one actually sent for this connection — see `hasSentConnectTime`.
    *  `sendClientStats` throws synchronously on a closing connection; caught

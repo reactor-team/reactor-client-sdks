@@ -7,14 +7,16 @@ import type {
   TrackMappingEntry,
 } from './reactor-wasm.types';
 
-/** How often `Reactor` samples `getPeerConnection().getStats()` while ready. */
-export const STATS_INTERVAL_MS = 2_000;
+/** How often `Reactor` reads `getStats()` while ready to update the stats it
+ *  exposes inside the SDK: `getStats()` and the `statsUpdate` event. Nothing
+ *  read on this timer leaves the browser. */
+export const LOCAL_STATS_INTERVAL_MS = 2_000;
 
-/** How often `Reactor` reports a client-stats batch to the runtime while
- *  ready. Runs on its own timer, apart from the sampling above: local UI
- *  updates want a responsive `statsUpdate`, while the runtime only needs a
- *  live dashboard's cadence. */
-export const CLIENT_STATS_REPORT_INTERVAL_MS = 5_000;
+/** How often `Reactor` sends a client-stats batch to the runtime while ready.
+ *  Runs on its own timer and its own `getStats()` read, apart from
+ *  `LOCAL_STATS_INTERVAL_MS`, so each batch's bitrates cover the whole
+ *  interval since the previous batch. */
+export const RUNTIME_REPORT_INTERVAL_MS = 5_000;
 
 /** The codecs the wire's `VideoCodec`/`AudioCodec` enums can carry, per
  *  track kind. `sendClientStats` rejects the whole batch over one codec
@@ -226,6 +228,7 @@ interface RTCStatsReportEntry extends RTCStats {
   state?: string;
   nominated?: boolean;
   selectedCandidatePairId?: string;
+  selected?: boolean;
   currentRoundTripTime?: number;
   availableOutgoingBitrate?: number;
   availableIncomingBitrate?: number;
@@ -264,17 +267,23 @@ interface RTCStatsReportWithLookup extends RTCStatsReport {
 /**
  * The candidate-pair the transport is actually sending on. Several pairs can
  * be `succeeded` and `nominated` at once (one per local interface), and the
- * browser only fills `availableOutgoingBitrate` on the selected one.
+ * browser only fills `availableOutgoingBitrate` on the selected one. Chrome
+ * and Safari name it on the `transport` stat; Firefox has no `transport` stat
+ * and flags the pair itself as `selected`.
  */
 function selectedCandidatePairId(report: RTCStatsReport): string | undefined {
-  let selected: string | undefined;
+  let fromTransport: string | undefined;
+  let flagged: string | undefined;
 
   report.forEach((stat: RTCStatsReportEntry) => {
-    if (selected === undefined && stat.type === 'transport' && stat.selectedCandidatePairId) {
-      selected = stat.selectedCandidatePairId;
+    if (fromTransport === undefined && stat.type === 'transport' && stat.selectedCandidatePairId) {
+      fromTransport = stat.selectedCandidatePairId;
+    }
+    if (flagged === undefined && stat.type === 'candidate-pair' && stat.selected) {
+      flagged = stat.id;
     }
   });
-  return selected;
+  return fromTransport ?? flagged;
 }
 
 /**
