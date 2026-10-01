@@ -7,6 +7,9 @@ import type {
   TrackMappingEntry,
 } from './reactor-wasm.types';
 
+// Two intervals, so the local `statsUpdate` cadence and the runtime report
+// cadence can each change without affecting the other.
+
 /** How often `Reactor` reads `getStats()` while ready to update the stats it
  *  exposes inside the SDK: `getStats()` and the `statsUpdate` event. Nothing
  *  read on this timer leaves the browser. */
