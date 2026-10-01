@@ -7,6 +7,17 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `Reactor.stats()`, an on-demand statistics snapshot for the live connection:
+  RTT, jitter, packet loss, measured and estimated bitrates, the candidate pair
+  carrying the media, and the engine's per-stream inbound, outbound and
+  candidate-pair counters, as a `ConnectionStats` value. Same fields and rules
+  as the other native SDKs: anything the engine has not measured yet is `nil`
+  rather than zero, the two measured bitrates are `nil` on the first call and on
+  one made less than 200 ms after the last, and the call throws `invalidState`
+  unless the session is ready.
+
 ### Changed
 
 - Commands larger than 256 KiB are sent instead of failing with

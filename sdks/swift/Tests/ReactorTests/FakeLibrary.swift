@@ -64,6 +64,7 @@ final class FakeLibrary: @unchecked Sendable {
         var pushedAudio: [PushedAudio] = []
         var commandCalls: [CommandCall] = []
         var schemaCalls = 0
+        var statsCalls = 0
         var uploadFileCalls: [String] = []
         var uploadBytesCalls: [UploadBytesCall] = []
         var jwtCalls: [JWTCall] = []
@@ -202,6 +203,7 @@ final class FakeLibrary: @unchecked Sendable {
     var pushedAudio: [PushedAudio] { state.withLock { $0.pushedAudio } }
     var commandCalls: [CommandCall] { state.withLock { $0.commandCalls } }
     var schemaCalls: Int { state.withLock { $0.schemaCalls } }
+    var statsCalls: Int { state.withLock { $0.statsCalls } }
     var uploadFileCalls: [String] { state.withLock { $0.uploadFileCalls } }
     var uploadBytesCalls: [UploadBytesCall] { state.withLock { $0.uploadBytesCalls } }
     var jwtCalls: [JWTCall] { state.withLock { $0.jwtCalls } }
@@ -534,6 +536,10 @@ final class FakeLibrary: @unchecked Sendable {
             },
             requestSchema: { [self] _, completion, userdata in
                 state.withLock { $0.schemaCalls += 1 }
+                record(completion, userdata)
+            },
+            getStats: { [self] _, completion, userdata in
+                state.withLock { $0.statsCalls += 1 }
                 record(completion, userdata)
             },
             uploadFile: { [self] _, path, completion, userdata in
