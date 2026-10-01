@@ -2,6 +2,7 @@ import type { ConnectionStats } from '../types';
 import type {
   ClientConnectionStat,
   ClientTrackStat,
+  ReactorClient,
   TrackDirection,
   TrackKind,
   TrackMappingEntry,
@@ -20,6 +21,45 @@ export const LOCAL_STATS_INTERVAL_MS = 2_000;
  *  `LOCAL_STATS_INTERVAL_MS`, so each batch's bitrates cover the whole
  *  interval since the previous batch. */
 export const RUNTIME_REPORT_INTERVAL_MS = 5_000;
+
+/** Reads `getStats()` off *client*'s peer connection every *intervalMs* and
+ *  hands each report to *onReport*. A tick without a peer connection, or
+ *  whose read rejects (the connection may be closing), is skipped.
+ *
+ *  Returns the function that stops it. Clearing the interval can't cancel a
+ *  `getStats()` already in flight, so a read that resolves after the stop is
+ *  dropped instead of reaching *onReport*: a recoverable disconnect can
+ *  restart polling on the same client, and the old read must not land in the
+ *  new one. */
+export function pollPeerStats(
+  client: Pick<ReactorClient, 'getPeerConnection'>,
+  intervalMs: number,
+  onReport: (report: RTCStatsReport) => void,
+): () => void {
+  let stopped = false;
+  const handle = setInterval(() => {
+    const peerConnection = client.getPeerConnection();
+
+    if (!peerConnection) {
+      return;
+    }
+    peerConnection
+      .getStats()
+      .then((report) => {
+        if (!stopped) {
+          onReport(report);
+        }
+      })
+      .catch(() => {
+        // Connection may be closing.
+      });
+  }, intervalMs);
+
+  return () => {
+    stopped = true;
+    clearInterval(handle);
+  };
+}
 
 /** The codecs the wire's `VideoCodec`/`AudioCodec` enums can carry, per
  *  track kind. `sendClientStats` rejects the whole batch over one codec

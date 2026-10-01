@@ -1281,6 +1281,47 @@ describe('Reactor stats', () => {
     await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS * 3);
     expect(client.sendClientStatsCalls).toHaveLength(1);
   });
+
+  it('replaces its pollers instead of adding to them when "ready" repeats', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const getStats = vi.fn().mockResolvedValue(videoStatsReport('0'));
+
+    client.peerConnectionResult = { getStats } as unknown as RTCPeerConnection;
+    client.trackMappingResult = [{ name: 'main_video', kind: 'video', direction: 'recvonly', mid: '0' }];
+
+    client.emitReady();
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS);
+
+    expect(client.sendClientStatsCalls).toHaveLength(1);
+    // One local read per elapsed LOCAL_STATS_INTERVAL_MS, plus the one report read.
+    expect(getStats).toHaveBeenCalledTimes(Math.floor(RUNTIME_REPORT_INTERVAL_MS / LOCAL_STATS_INTERVAL_MS) + 1);
+  });
+
+  it('reads the new peer connection after a reconnect, never the previous one', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const firstGetStats = vi.fn().mockResolvedValue(videoStatsReport('0'));
+    const secondGetStats = vi.fn().mockResolvedValue(videoStatsReport('0'));
+
+    client.trackMappingResult = [{ name: 'main_video', kind: 'video', direction: 'recvonly', mid: '0' }];
+    client.peerConnectionResult = { getStats: firstGetStats } as unknown as RTCPeerConnection;
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS);
+    const firstReads = firstGetStats.mock.calls.length;
+
+    client.emitDisconnected();
+    client.peerConnectionResult = { getStats: secondGetStats } as unknown as RTCPeerConnection;
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS);
+
+    expect(firstGetStats).toHaveBeenCalledTimes(firstReads);
+    expect(secondGetStats).toHaveBeenCalled();
+    expect(client.sendClientStatsCalls).toHaveLength(2);
+  });
 });
 
 describe('Reactor.uploadFile', () => {

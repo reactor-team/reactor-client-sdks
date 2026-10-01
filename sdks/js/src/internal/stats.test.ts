@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createClientTrackStatsExtractor,
   createRTCStatsExtractor,
+  pollPeerStats,
   toClientConnectionStat,
 } from './stats';
 import type { TrackMappingEntry } from './reactor-wasm.types';
@@ -516,5 +517,69 @@ describe('toClientConnectionStat()', () => {
 
   it('leaves out facts the browser/handshake has not produced yet', () => {
     expect(toClientConnectionStat({ timestamp: 1_700_000_000_000 }, true).metrics).toEqual({});
+  });
+});
+
+describe('pollPeerStats()', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('hands every interval\'s report to the handler, skipping ticks without a peer connection', async () => {
+    const report = makeReport([]);
+    const peer: { connection?: RTCPeerConnection } = {};
+    const onReport = vi.fn();
+
+    const stop = pollPeerStats({ getPeerConnection: () => peer.connection }, 1_000, onReport);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(onReport).not.toHaveBeenCalled();
+
+    peer.connection = { getStats: () => Promise.resolve(report) } as unknown as RTCPeerConnection;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(onReport).toHaveBeenCalledTimes(2);
+    expect(onReport).toHaveBeenCalledWith(report);
+
+    stop();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(onReport).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops a read that resolves after it was stopped', async () => {
+    let resolveRead: (report: RTCStatsReport) => void = () => {};
+    const peerConnection = {
+      getStats: () =>
+        new Promise<RTCStatsReport>((resolve) => {
+          resolveRead = resolve;
+        }),
+    } as unknown as RTCPeerConnection;
+    const onReport = vi.fn();
+
+    const stop = pollPeerStats({ getPeerConnection: () => peerConnection }, 1_000, onReport);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    stop();
+    resolveRead(makeReport([]));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(onReport).not.toHaveBeenCalled();
+  });
+
+  it('skips a tick whose read rejects', async () => {
+    const peerConnection = {
+      getStats: () => Promise.reject(new Error('closing')),
+    } as unknown as RTCPeerConnection;
+    const onReport = vi.fn();
+
+    const stop = pollPeerStats({ getPeerConnection: () => peerConnection }, 1_000, onReport);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    stop();
+
+    expect(onReport).not.toHaveBeenCalled();
   });
 });

@@ -12,6 +12,7 @@ import {
   createRTCStatsExtractor,
   type ClientTrackStatsExtractor,
   LOCAL_STATS_INTERVAL_MS,
+  pollPeerStats,
   toClientConnectionStat,
 } from './internal/stats';
 import { loadReactorWasm } from './internal/wasm';
@@ -56,12 +57,8 @@ export class Reactor implements Disposable {
 
   private stats: ConnectionStats | undefined;
   private connectionTimings: ConnectionTimings | undefined;
-  private statsPollHandle: ReturnType<typeof setInterval> | undefined;
-  private clientStatsHandle: ReturnType<typeof setInterval> | undefined;
-  /** Bumped on every `startStatsPolling()`/`stopStatsPolling()` call — lets an
-   *  in-flight `getStats()` recognize it's stale once it resolves, even if
-   *  `this.client` hasn't changed in the meantime. */
-  private statsPollGeneration = 0;
+  /** The stop functions of the running stats pollers — see `pollPeerStats()`. */
+  private stopStatsPollers: Array<() => void> = [];
   /** Whether this connection has already reported its time to connect —
    *  a one-time fact, sent on the first client-stats report after connecting
    *  and omitted on every one after. Reset per `startStatsPolling()` call,
@@ -902,69 +899,27 @@ export class Reactor implements Disposable {
     }
   }
 
+  /** Starts both stats pollers: the local one updates `getStats()` and emits
+   *  `statsUpdate`, the runtime one sends a client-stats batch. Each has its
+   *  own extractors, so a bitrate covers its own poller's interval. */
   private startStatsPolling(client: ReactorClient): void {
     this.stopStatsPolling();
-    const generation = ++this.statsPollGeneration;
     const extractStats = createRTCStatsExtractor();
-
-    this.statsPollHandle = setInterval(() => {
-      const peerConnection = client.getPeerConnection();
-
-      if (!peerConnection) {
-        return;
-      }
-      peerConnection
-        .getStats()
-        .then((report) => {
-          // `stopStatsPolling()` only clears the interval — it can't cancel
-          // a `getStats()` call already in flight. A recoverable disconnect
-          // or a status flicker back to "ready" can leave `this.client`
-          // pointing at this same `client`, so that identity alone can't
-          // tell a stale sample from a live one; the generation bumped by
-          // every `startStatsPolling()`/`stopStatsPolling()` call can.
-          if (generation !== this.statsPollGeneration) {
-            return;
-          }
-          this.stats = { ...extractStats(report), connectionTimings: this.connectionTimings };
-          this.emitter.emit('statsUpdate', this.stats);
-        })
-        .catch(() => {
-          // Connection may be closing.
-        });
-    }, LOCAL_STATS_INTERVAL_MS);
-    this.startClientStatsReporting(client, generation);
-  }
-
-  /** Reports a client-stats batch every `RUNTIME_REPORT_INTERVAL_MS`,
-   *  from its own `getStats()` read. Its extractors are its own too: a
-   *  bitrate is averaged over the report interval, not the local sampling
-   *  one. Stopped, and its in-flight reads made stale, by the same
-   *  `stopStatsPolling()` generation bump as the sampling above. */
-  private startClientStatsReporting(client: ReactorClient, generation: number): void {
     const extractConnection = createRTCStatsExtractor();
     const extractTrackStats = createClientTrackStatsExtractor();
 
     this.hasSentConnectTime = false;
-    this.clientStatsHandle = setInterval(() => {
-      const peerConnection = client.getPeerConnection();
+    this.stopStatsPollers = [
+      pollPeerStats(client, LOCAL_STATS_INTERVAL_MS, (report) => {
+        this.stats = { ...extractStats(report), connectionTimings: this.connectionTimings };
+        this.emitter.emit('statsUpdate', this.stats);
+      }),
+      pollPeerStats(client, RUNTIME_REPORT_INTERVAL_MS, (report) => {
+        const stats = { ...extractConnection(report), connectionTimings: this.connectionTimings };
 
-      if (!peerConnection) {
-        return;
-      }
-      peerConnection
-        .getStats()
-        .then((report) => {
-          if (generation !== this.statsPollGeneration) {
-            return;
-          }
-          const stats = { ...extractConnection(report), connectionTimings: this.connectionTimings };
-
-          this.reportClientStats(client, report, stats, extractTrackStats);
-        })
-        .catch(() => {
-          // Connection may be closing.
-        });
-    }, RUNTIME_REPORT_INTERVAL_MS);
+        this.reportClientStats(client, report, stats, extractTrackStats);
+      }),
+    ];
   }
 
   /** Report one quality batch to the runtime: a reading per negotiated
@@ -998,15 +953,10 @@ export class Reactor implements Disposable {
   }
 
   private stopStatsPolling(): void {
-    this.statsPollGeneration += 1;
-    if (this.statsPollHandle !== undefined) {
-      clearInterval(this.statsPollHandle);
-      this.statsPollHandle = undefined;
+    for (const stop of this.stopStatsPollers) {
+      stop();
     }
-    if (this.clientStatsHandle !== undefined) {
-      clearInterval(this.clientStatsHandle);
-      this.clientStatsHandle = undefined;
-    }
+    this.stopStatsPollers = [];
     this.stats = undefined;
   }
 
