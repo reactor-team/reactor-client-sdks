@@ -9,6 +9,17 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- While connected, the SDK reports the browser's own view of connection
+  quality to the runtime every 5 seconds over the control channel: one reading
+  per track (audio and video, sent and received) with bitrate, packet loss,
+  jitter, frame rate and similar `getStats()` values, plus connection-wide
+  readings such as the available bandwidth estimate and round-trip time. It
+  runs on its own timer, needs no configuration, and doesn't change
+  `getStats()` or `statsUpdate`. A runtime that doesn't read these reports
+  ignores them.
+
 ## [3.0.2]
 
 ### Fixed

@@ -1,7 +1,211 @@
 import type { ConnectionStats } from '../types';
+import type {
+  ClientConnectionStat,
+  ClientTrackStat,
+  TrackDirection,
+  TrackKind,
+  TrackMappingEntry,
+} from './reactor-wasm.types';
 
 /** How often `Reactor` samples `getPeerConnection().getStats()` while ready. */
 export const STATS_INTERVAL_MS = 2_000;
+
+/** How often `Reactor` reports a client-stats batch to the runtime while
+ *  ready. Runs on its own timer, apart from the sampling above: local UI
+ *  updates want a responsive `statsUpdate`, while the runtime only needs a
+ *  live dashboard's cadence. */
+export const CLIENT_STATS_REPORT_INTERVAL_MS = 5_000;
+
+/** The codecs the wire's `VideoCodec`/`AudioCodec` enums can carry, per
+ *  track kind. `sendClientStats` rejects the whole batch over one codec
+ *  outside this set, so a track negotiated onto anything else is left out
+ *  of the batch rather than taking every other track's reading down with it. */
+const WIRE_CODECS: Record<TrackKind, ReadonlySet<string>> = {
+  video: new Set(['vp8', 'vp9', 'av1', 'h264', 'h265']),
+  audio: new Set(['opus']),
+};
+
+/** The previous reading of one RTP stream's byte counter, for turning it
+ *  into a bitrate. */
+interface ByteSample {
+  bytes: number;
+  timestamp: number;
+}
+
+/** Builds one batch of the wire's `ClientTrackStat`s from a stats report, a
+ *  reading per negotiated track — audio and video, sent and received. */
+export type ClientTrackStatsExtractor = (
+  report: RTCStatsReport,
+  tracks: readonly TrackMappingEntry[],
+  pausedTracks: readonly string[],
+) => ClientTrackStat[];
+
+/**
+ * A closure over each RTP stream's previous byte counter, needed to turn the
+ * cumulative `bytesReceived`/`bytesSent` into a bitrate averaged over the
+ * interval since the previous batch. A stream's first batch carries no
+ * `bitrate_bps` — there is nothing to diff against yet.
+ *
+ * Each `inbound-rtp` (a `recvonly` track) and `outbound-rtp` (a `sendonly`
+ * track) resolves to its track through its `mid`; a stream on a `mid` that
+ * hasn't negotiated onto a named track, or whose codec isn't known yet, is
+ * skipped. A sent stream's loss, jitter and round-trip time are what the
+ * remote end reported back for it (its `remote-inbound-rtp`), the only
+ * vantage point onto them. A received stream carries no round-trip time: a
+ * receiver has no per-stream one, so the connection's own ICE round-trip time
+ * goes on the connection stat instead (`connection_rtt_ms`). With several
+ * streams on one `mid` (simulcast layers), the first one reported stands for
+ * the track.
+ *
+ * Reports raw cumulative counters (`packets_lost`/`packets_received`, not a
+ * pre-computed loss ratio) so the runtime's downstream aggregation across
+ * sessions stays a sum of sums — a pre-averaged ratio can't be re-aggregated
+ * correctly. A reading the browser hasn't produced is left out of `metrics`
+ * rather than reported as `0`, so it can't pass for a real zero.
+ */
+export function createClientTrackStatsExtractor(): ClientTrackStatsExtractor {
+  const lastBytes = new Map<string, ByteSample>();
+
+  return (report, tracks, pausedTracks) => {
+    const reportWithLookup = report as RTCStatsReportWithLookup;
+    const stats: ClientTrackStat[] = [];
+    // Keyed by direction too: a sendrecv transceiver shares one mid between
+    // its sent and received stream.
+    const seenStreams = new Set<string>();
+    const remoteInbound = new Map<string, RTCStatsReportEntry>();
+
+    report.forEach((stat: RTCStatsReportEntry) => {
+      if (stat.type === 'remote-inbound-rtp' && stat.localId !== undefined) {
+        remoteInbound.set(stat.localId, stat);
+      }
+    });
+
+    report.forEach((stat: RTCStatsReportEntry) => {
+      const inbound = stat.type === 'inbound-rtp';
+
+      if ((!inbound && stat.type !== 'outbound-rtp') || stat.mid === undefined) {
+        return;
+      }
+      const direction: TrackDirection = inbound ? 'recvonly' : 'sendonly';
+      const streamKey = `${direction}:${stat.mid}`;
+
+      if (seenStreams.has(streamKey)) {
+        return;
+      }
+      const track = tracks.find((entry) => entry.mid === stat.mid && entry.direction === direction);
+      const codecStat = stat.codecId !== undefined ? reportWithLookup.get(stat.codecId) : undefined;
+      // "video/VP9" -> "vp9".
+      const codec = codecStat?.mimeType?.split('/')[1]?.toLowerCase();
+
+      if (track === undefined || codec === undefined || !WIRE_CODECS[track.kind].has(codec)) {
+        return;
+      }
+      seenStreams.add(streamKey);
+
+      const metrics: Record<string, number> = {};
+      const put = (key: string, value: number | undefined) => {
+        if (value !== undefined) {
+          metrics[key] = value;
+        }
+      };
+      const bytes = inbound ? stat.bytesReceived : stat.bytesSent;
+
+      if (bytes !== undefined) {
+        const previous = lastBytes.get(stat.id);
+
+        if (previous !== undefined && stat.timestamp > previous.timestamp && bytes >= previous.bytes) {
+          put('bitrate_bps', Math.round(((bytes - previous.bytes) * 8 * 1000) / (stat.timestamp - previous.timestamp)));
+        }
+        lastBytes.set(stat.id, { bytes, timestamp: stat.timestamp });
+      }
+      const keyframeRequests =
+        stat.firCount !== undefined || stat.pliCount !== undefined
+          ? (stat.firCount ?? 0) + (stat.pliCount ?? 0)
+          : undefined;
+
+      if (inbound) {
+        put('packets_received', stat.packetsReceived);
+        put('packets_lost', stat.packetsLost);
+        put('jitter_ms', stat.jitter !== undefined ? stat.jitter * 1000 : undefined);
+        put('nack_count', stat.nackCount);
+        if (track.kind === 'video') {
+          put('frames_per_second', stat.framesPerSecond);
+          put('frames_decoded', stat.framesDecoded);
+          put('frames_dropped', stat.framesDropped);
+          put('frame_width', stat.frameWidth);
+          put('frame_height', stat.frameHeight);
+          put('keyframe_requests', keyframeRequests);
+        } else {
+          put('concealed_samples', stat.concealedSamples);
+          put('total_samples_received', stat.totalSamplesReceived);
+        }
+      } else {
+        const remote = remoteInbound.get(stat.id);
+
+        put('packets_sent', stat.packetsSent);
+        put('retransmitted_packets_sent', stat.retransmittedPacketsSent);
+        put('nack_count', stat.nackCount);
+        put('packets_lost', remote?.packetsLost);
+        put('jitter_ms', remote?.jitter !== undefined ? remote.jitter * 1000 : undefined);
+        put('round_trip_time_ms', remote?.roundTripTime !== undefined ? remote.roundTripTime * 1000 : undefined);
+        if (track.kind === 'video') {
+          put('frames_per_second', stat.framesPerSecond);
+          put('frames_encoded', stat.framesEncoded);
+          put('frame_width', stat.frameWidth);
+          put('frame_height', stat.frameHeight);
+          put('keyframe_requests', keyframeRequests);
+        }
+      }
+
+      stats.push({
+        timestamp: Date.now(),
+        trackName: track.name,
+        kind: track.kind,
+        direction,
+        codec,
+        paused: pausedTracks.includes(track.name),
+        metrics,
+      });
+    });
+
+    return stats;
+  };
+}
+
+/**
+ * Build the wire's `ClientConnectionStat` from one local `ConnectionStats`
+ * reading — the connection-wide facts, not tied to any one track.
+ * `available_outgoing_bitrate_bps` is the congestion controller's current
+ * estimate, so it's a reading like any other, sent on every report.
+ * `available_incoming_bitrate_bps` is the receive-side one, which a browser
+ * only has when it estimates as the receiver.
+ * `connection_rtt_ms` is the ICE round-trip time of the pair carrying the
+ * media, one value for the whole connection.
+ * `time_to_connect_ms` is a one-time fact, included only when
+ * *withConnectTime* — the first report after connecting. Like a track's
+ * metrics, a reading the browser hasn't produced is left out rather than
+ * reported as `0`, so it can't pass for a collapsed estimate.
+ */
+export function toClientConnectionStat(
+  stats: ConnectionStats,
+  withConnectTime: boolean,
+): ClientConnectionStat {
+  const metrics: Record<string, number> = {};
+
+  if (stats.availableOutgoingBitrate !== undefined) {
+    metrics.available_outgoing_bitrate_bps = stats.availableOutgoingBitrate;
+  }
+  if (stats.availableIncomingBitrate !== undefined) {
+    metrics.available_incoming_bitrate_bps = stats.availableIncomingBitrate;
+  }
+  if (stats.rtt !== undefined) {
+    metrics.connection_rtt_ms = stats.rtt;
+  }
+  if (withConnectTime && stats.connectionTimings !== undefined) {
+    metrics.time_to_connect_ms = stats.connectionTimings.totalMs;
+  }
+  return { timestamp: stats.timestamp, metrics };
+}
 
 type RTCStatsExtractor = (report: RTCStatsReport) => ConnectionStats;
 
@@ -9,7 +213,8 @@ type RTCStatsExtractor = (report: RTCStatsReport) => ConnectionStats;
  * `lib.dom`'s own `RTCStats` only has `id`/`timestamp`/`type` — the fields
  * below are the real, spec-defined ones this extractor reads off whichever
  * concrete stat type each belongs to (`RTCIceCandidatePairStats`,
- * `RTCIceCandidateStats`, `RTCInboundRtpStreamStats`). `forEach()`'s callback
+ * `RTCIceCandidateStats`, `RTCInboundRtpStreamStats`, `RTCOutboundRtpStreamStats`,
+ * `RTCRemoteInboundRtpStreamStats`). `forEach()`'s callback
  * is typed `any` in `lib.dom`, so annotating it with this instead is what
  * gets every access below out from under `no-unsafe-member-access`.
  *
@@ -32,6 +237,23 @@ interface RTCStatsReportEntry extends RTCStats {
   jitter?: number;
   packetsReceived?: number;
   packetsLost?: number;
+  mid?: string;
+  framesDecoded?: number;
+  framesDropped?: number;
+  frameWidth?: number;
+  frameHeight?: number;
+  nackCount?: number;
+  firCount?: number;
+  pliCount?: number;
+  codecId?: string;
+  mimeType?: string;
+  localId?: string;
+  roundTripTime?: number;
+  packetsSent?: number;
+  retransmittedPacketsSent?: number;
+  framesEncoded?: number;
+  concealedSamples?: number;
+  totalSamplesReceived?: number;
 }
 
 interface RTCStatsReportWithLookup extends RTCStatsReport {

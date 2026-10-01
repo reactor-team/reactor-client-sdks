@@ -6,7 +6,14 @@ import { Emitter } from './internal/emitter';
 import { extractFileRefs, toPublicFileRef } from './internal/file-ref';
 import { toPublicClip } from './internal/recording';
 import type { ReactorClient } from './internal/reactor-wasm.types';
-import { createRTCStatsExtractor, STATS_INTERVAL_MS } from './internal/stats';
+import {
+  CLIENT_STATS_REPORT_INTERVAL_MS,
+  createClientTrackStatsExtractor,
+  createRTCStatsExtractor,
+  type ClientTrackStatsExtractor,
+  STATS_INTERVAL_MS,
+  toClientConnectionStat,
+} from './internal/stats';
 import { loadReactorWasm } from './internal/wasm';
 import packageJson from '../package.json';
 import type { FileRef } from './file-ref';
@@ -50,10 +57,16 @@ export class Reactor implements Disposable {
   private stats: ConnectionStats | undefined;
   private connectionTimings: ConnectionTimings | undefined;
   private statsPollHandle: ReturnType<typeof setInterval> | undefined;
+  private clientStatsHandle: ReturnType<typeof setInterval> | undefined;
   /** Bumped on every `startStatsPolling()`/`stopStatsPolling()` call — lets an
    *  in-flight `getStats()` recognize it's stale once it resolves, even if
    *  `this.client` hasn't changed in the meantime. */
   private statsPollGeneration = 0;
+  /** Whether this connection has already reported its time to connect —
+   *  a one-time fact, sent on the first client-stats report after connecting
+   *  and omitted on every one after. Reset per `startStatsPolling()` call,
+   *  i.e. per connect()/reconnect(). */
+  private hasSentConnectTime = false;
   /** Set on the "connecting" status transition, cleared once `connectionTimings`
    *  is finalized on "ready" — see `handleStatusChanged()`. */
   private connectStartTime: number | undefined;
@@ -919,6 +932,69 @@ export class Reactor implements Disposable {
           // Connection may be closing.
         });
     }, STATS_INTERVAL_MS);
+    this.startClientStatsReporting(client, generation);
+  }
+
+  /** Reports a client-stats batch every `CLIENT_STATS_REPORT_INTERVAL_MS`,
+   *  from its own `getStats()` read. Its extractors are its own too: a
+   *  bitrate is averaged over the report interval, not the local sampling
+   *  one. Stopped, and its in-flight reads made stale, by the same
+   *  `stopStatsPolling()` generation bump as the sampling above. */
+  private startClientStatsReporting(client: ReactorClient, generation: number): void {
+    const extractConnection = createRTCStatsExtractor();
+    const extractTrackStats = createClientTrackStatsExtractor();
+
+    this.hasSentConnectTime = false;
+    this.clientStatsHandle = setInterval(() => {
+      const peerConnection = client.getPeerConnection();
+
+      if (!peerConnection) {
+        return;
+      }
+      peerConnection
+        .getStats()
+        .then((report) => {
+          if (generation !== this.statsPollGeneration) {
+            return;
+          }
+          const stats = { ...extractConnection(report), connectionTimings: this.connectionTimings };
+
+          this.reportClientStats(client, report, stats, extractTrackStats);
+        })
+        .catch(() => {
+          // Connection may be closing.
+        });
+    }, CLIENT_STATS_REPORT_INTERVAL_MS);
+  }
+
+  /** Report one quality batch to the runtime: a reading per negotiated
+   *  track — audio and video, sent and received — see
+   *  `createClientTrackStatsExtractor`. Silently skipped while no track has a
+   *  reading yet (none negotiated onto a named track, or no codec reported
+   *  yet) — one is due again in `CLIENT_STATS_REPORT_INTERVAL_MS`. Every
+   *  batch carries a `ClientConnectionStat`, its time to connect only the
+   *  first one actually sent for this connection — see `hasSentConnectTime`.
+   *  `sendClientStats` throws synchronously on a closing connection; caught
+   *  here for the same reason `getStats()`'s rejection is above. */
+  private reportClientStats(
+    client: ReactorClient,
+    report: RTCStatsReport,
+    stats: ConnectionStats,
+    extractTrackStats: ClientTrackStatsExtractor,
+  ): void {
+    const trackStats = extractTrackStats(report, this.trackMapping(), this.pausedTracks());
+
+    if (trackStats.length === 0) {
+      return;
+    }
+    const connectionStat = toClientConnectionStat(stats, !this.hasSentConnectTime);
+
+    try {
+      client.sendClientStats(trackStats, connectionStat);
+      this.hasSentConnectTime = true;
+    } catch {
+      // Connection may be closing.
+    }
   }
 
   private stopStatsPolling(): void {
@@ -926,6 +1002,10 @@ export class Reactor implements Disposable {
     if (this.statsPollHandle !== undefined) {
       clearInterval(this.statsPollHandle);
       this.statsPollHandle = undefined;
+    }
+    if (this.clientStatsHandle !== undefined) {
+      clearInterval(this.clientStatsHandle);
+      this.clientStatsHandle = undefined;
     }
     this.stats = undefined;
   }

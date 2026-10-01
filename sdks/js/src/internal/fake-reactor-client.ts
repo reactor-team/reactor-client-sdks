@@ -1,5 +1,7 @@
 import type {
   Capabilities as WireCapabilities,
+  ClientConnectionStat,
+  ClientTrackStat,
   Clip as WireClip,
   ConnectOptions,
   FileRef,
@@ -173,6 +175,21 @@ export class FakeReactorClient {
   requestRecording(): Promise<WireClip> {
     this.requestRecordingCalls += 1;
     return Promise.resolve(this.requestRecordingResult);
+  }
+
+  sendClientStatsCalls: Array<{
+    trackStats: ClientTrackStat[];
+    connectionStat: ClientConnectionStat | undefined;
+  }> = [];
+  // Overridable so a test can simulate `sendClientStats` throwing on a
+  // closing connection — the real binding throws synchronously, not a
+  // rejected promise.
+  sendClientStatsError: Error | undefined;
+  sendClientStats(trackStats: ClientTrackStat[], connectionStat?: ClientConnectionStat): void {
+    this.sendClientStatsCalls.push({ trackStats, connectionStat });
+    if (this.sendClientStatsError) {
+      throw this.sendClientStatsError;
+    }
   }
 
   onStatusChanged(listener: (status: ReactorStatus) => void): void {

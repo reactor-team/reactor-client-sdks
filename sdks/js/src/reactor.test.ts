@@ -11,7 +11,7 @@ import { FakeReactorClient } from './internal/fake-reactor-client';
 import { toPublicFileRef } from './internal/file-ref';
 import { FileRef } from './file-ref';
 import { toPublicClip } from './internal/recording';
-import { STATS_INTERVAL_MS } from './internal/stats';
+import { CLIENT_STATS_REPORT_INTERVAL_MS, STATS_INTERVAL_MS } from './internal/stats';
 import packageJson from '../package.json';
 import type * as RecordingModule from './recording';
 import type { ConnectOptions, ReactorMessage } from './internal/reactor-wasm.types';
@@ -1166,6 +1166,81 @@ describe('Reactor stats', () => {
     expect(reactor.getStats()).toBeUndefined();
   });
 
+  function videoStatsReport(mid: string): RTCStatsReport {
+    const entries = [
+      { id: 'ir1', type: 'inbound-rtp', kind: 'video', mid, framesPerSecond: 30, codecId: 'c1', timestamp: 1 },
+      { id: 'c1', type: 'codec', mimeType: 'video/VP9' },
+    ];
+    const map = new Map(entries.map((entry, i) => [i === 0 ? 'ir1' : 'c1', entry]));
+
+    return {
+      forEach: (cb: (value: unknown) => void) => map.forEach(cb),
+      get: (id: string) => map.get(id),
+    } as unknown as RTCStatsReport;
+  }
+
+  it('reports client stats to the runtime every CLIENT_STATS_REPORT_INTERVAL_MS, for the mapped track', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.peerConnectionResult = {
+      getStats: vi.fn().mockResolvedValue(videoStatsReport('0')),
+    } as unknown as RTCPeerConnection;
+    client.trackMappingResult = [{ name: 'main_video', kind: 'video', direction: 'recvonly', mid: '0' }];
+
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(CLIENT_STATS_REPORT_INTERVAL_MS - 1);
+    expect(client.sendClientStatsCalls).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(client.sendClientStatsCalls).toHaveLength(1);
+    expect(client.sendClientStatsCalls[0]?.trackStats).toEqual([
+      expect.objectContaining({ trackName: 'main_video', kind: 'video', codec: 'vp9' }),
+    ]);
+    expect(client.sendClientStatsCalls[0]?.connectionStat).toBeDefined();
+
+    await vi.advanceTimersByTimeAsync(CLIENT_STATS_REPORT_INTERVAL_MS);
+    expect(client.sendClientStatsCalls).toHaveLength(2);
+    // Every report carries the connection facts; only the first the time to connect.
+    expect(client.sendClientStatsCalls[1]?.connectionStat).toBeDefined();
+    expect(client.sendClientStatsCalls[1]?.connectionStat?.metrics).not.toHaveProperty('time_to_connect_ms');
+  });
+
+  it('does not report client stats when no stream has negotiated onto a named track', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.peerConnectionResult = {
+      getStats: vi.fn().mockResolvedValue(videoStatsReport('0')),
+    } as unknown as RTCPeerConnection;
+    client.trackMappingResult = []; // Not yet negotiated, or a stale mapping.
+
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(CLIENT_STATS_REPORT_INTERVAL_MS);
+
+    expect(client.sendClientStatsCalls).toHaveLength(0);
+  });
+
+  it('does not let a closing connection surface out of the stats-poll interval', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.peerConnectionResult = {
+      getStats: vi.fn().mockResolvedValue(videoStatsReport('0')),
+    } as unknown as RTCPeerConnection;
+    client.trackMappingResult = [{ name: 'main_video', kind: 'video', direction: 'recvonly', mid: '0' }];
+    client.sendClientStatsError = new Error('connection is closing');
+
+    client.emitReady();
+    // Doesn't throw and doesn't stop the interval — reportClientStats()
+    // swallows the send failure the same way getStats()'s rejection is.
+    await vi.advanceTimersByTimeAsync(CLIENT_STATS_REPORT_INTERVAL_MS);
+    expect(client.sendClientStatsCalls).toHaveLength(1);
+  });
+
   it('stops polling on any other status transition too, not just an explicit disconnect()', async () => {
     vi.useFakeTimers();
     const reactor = new Reactor({ modelName: 'test-model' });
@@ -1186,6 +1261,25 @@ describe('Reactor stats', () => {
 
     await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS * 2);
     expect(getStats).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops reporting client stats on a status transition away from "ready"', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.peerConnectionResult = {
+      getStats: vi.fn().mockResolvedValue(videoStatsReport('0')),
+    } as unknown as RTCPeerConnection;
+    client.trackMappingResult = [{ name: 'main_video', kind: 'video', direction: 'recvonly', mid: '0' }];
+
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(CLIENT_STATS_REPORT_INTERVAL_MS);
+    expect(client.sendClientStatsCalls).toHaveLength(1);
+
+    client.emitDisconnected();
+    await vi.advanceTimersByTimeAsync(CLIENT_STATS_REPORT_INTERVAL_MS * 3);
+    expect(client.sendClientStatsCalls).toHaveLength(1);
   });
 });
 
