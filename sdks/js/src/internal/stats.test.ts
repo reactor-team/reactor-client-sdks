@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  createClientTrackStatsExtractor,
-  createRTCStatsExtractor,
+  createTrackStatsExtractor,
+  createConnectionStatsExtractor,
   pollPeerStats,
   toClientConnectionStat,
 } from './stats';
@@ -17,7 +17,7 @@ function makeReport(entries: Array<[string, unknown]>) {
   } as unknown as RTCStatsReport;
 }
 
-describe('createRTCStatsExtractor()', () => {
+describe('createConnectionStatsExtractor()', () => {
   it('extracts RTT, candidate type, bitrate, FPS, jitter, and packet loss', () => {
     const report = makeReport([
       [
@@ -45,7 +45,7 @@ describe('createRTCStatsExtractor()', () => {
       ],
     ]);
 
-    const extract = createRTCStatsExtractor();
+    const extract = createConnectionStatsExtractor();
     const stats = extract(report);
 
     expect(stats.rtt).toBe(25);
@@ -61,7 +61,7 @@ describe('createRTCStatsExtractor()', () => {
   it('returns undefined fields for an empty report', () => {
     const report = makeReport([]);
 
-    const extract = createRTCStatsExtractor();
+    const extract = createConnectionStatsExtractor();
     const stats = extract(report);
 
     expect(stats.rtt).toBeUndefined();
@@ -86,7 +86,7 @@ describe('createRTCStatsExtractor()', () => {
       ['lc1', { type: 'local-candidate', candidateType: 'srflx' }],
     ]);
 
-    const extract = createRTCStatsExtractor();
+    const extract = createConnectionStatsExtractor();
     const stats = extract(report);
 
     expect(stats.rtt).toBeUndefined();
@@ -108,7 +108,7 @@ describe('createRTCStatsExtractor()', () => {
       ],
     ]);
 
-    const extract = createRTCStatsExtractor();
+    const extract = createConnectionStatsExtractor();
     const stats = extract(report);
 
     expect(stats.rtt).toBe(50);
@@ -121,7 +121,7 @@ describe('createRTCStatsExtractor()', () => {
       ['cp2', { type: 'candidate-pair', state: 'in-progress', nominated: true, currentRoundTripTime: 0.02 }],
     ]);
 
-    const extract = createRTCStatsExtractor();
+    const extract = createConnectionStatsExtractor();
     const stats = extract(report);
 
     expect(stats.rtt).toBeUndefined();
@@ -133,7 +133,7 @@ describe('createRTCStatsExtractor()', () => {
       ['cp2', { id: 'cp2', type: 'candidate-pair', state: 'succeeded', nominated: true, currentRoundTripTime: 0.09 }],
     ]);
 
-    const extract = createRTCStatsExtractor();
+    const extract = createConnectionStatsExtractor();
     const stats = extract(report);
 
     expect(stats.rtt).toBe(10);
@@ -156,7 +156,7 @@ describe('createRTCStatsExtractor()', () => {
       ['t1', { id: 't1', type: 'transport', selectedCandidatePairId: 'cp2' }],
     ]);
 
-    const extract = createRTCStatsExtractor();
+    const extract = createConnectionStatsExtractor();
     const stats = extract(report);
 
     expect(stats.rtt).toBe(2);
@@ -180,7 +180,7 @@ describe('createRTCStatsExtractor()', () => {
       ],
     ]);
 
-    const extract = createRTCStatsExtractor();
+    const extract = createConnectionStatsExtractor();
     const stats = extract(report);
 
     expect(stats.rtt).toBe(3);
@@ -206,7 +206,7 @@ describe('createRTCStatsExtractor()', () => {
         ['lc1', { type: 'local-candidate', candidateType: 'host' }],
       ]);
 
-    const extract = createRTCStatsExtractor();
+    const extract = createConnectionStatsExtractor();
 
     const first = extract(makeCandidatePairReport(baseTimestamp, 1_000_000, 1_025_000));
 
@@ -241,7 +241,7 @@ describe('createRTCStatsExtractor()', () => {
         ['lc1', { type: 'local-candidate', candidateType: 'host' }],
       ]);
 
-    const extract = createRTCStatsExtractor();
+    const extract = createConnectionStatsExtractor();
 
     extract(makeCandidatePairReport('cp1', baseTimestamp, 1_000_000, 1_025_000));
     const second = extract(makeCandidatePairReport('cp1', baseTimestamp + 1_600, 1_500_000, 1_725_000));
@@ -268,7 +268,7 @@ describe('createRTCStatsExtractor()', () => {
       ['ir2', { id: 'ir2', type: 'inbound-rtp', kind: 'video', framesPerSecond: 15 }],
     ]);
 
-    const extract = createRTCStatsExtractor();
+    const extract = createConnectionStatsExtractor();
     const stats = extract(report);
 
     expect(stats.framesPerSecond).toBe(30);
@@ -277,7 +277,7 @@ describe('createRTCStatsExtractor()', () => {
   it('ignores a non-video inbound-rtp stat', () => {
     const report = makeReport([['ir1', { type: 'inbound-rtp', kind: 'audio', framesPerSecond: 30 }]]);
 
-    const extract = createRTCStatsExtractor();
+    const extract = createConnectionStatsExtractor();
     const stats = extract(report);
 
     expect(stats.framesPerSecond).toBeUndefined();
@@ -288,7 +288,7 @@ describe('createRTCStatsExtractor()', () => {
       ['ir1', { type: 'inbound-rtp', kind: 'video', packetsReceived: 0, packetsLost: 0 }],
     ]);
 
-    const extract = createRTCStatsExtractor();
+    const extract = createConnectionStatsExtractor();
     const stats = extract(report);
 
     expect(stats.packetLossRatio).toBeUndefined();
@@ -296,7 +296,7 @@ describe('createRTCStatsExtractor()', () => {
 
 });
 
-describe('createClientTrackStatsExtractor()', () => {
+describe('createTrackStatsExtractor()', () => {
   const tracks: TrackMappingEntry[] = [
     { name: 'webcam', kind: 'video', direction: 'sendonly', mid: '0' },
     { name: 'mic', kind: 'audio', direction: 'sendonly', mid: '1' },
@@ -379,7 +379,7 @@ describe('createClientTrackStatsExtractor()', () => {
   }
 
   it('reports every negotiated track, audio and video, sent and received', () => {
-    const extract = createClientTrackStatsExtractor();
+    const extract = createTrackStatsExtractor();
     const stats = extract(fullReport(1_000, 100_000), tracks, []);
 
     expect(stats.map((s) => [s.trackName, s.kind, s.direction, s.codec])).toEqual([
@@ -391,7 +391,7 @@ describe('createClientTrackStatsExtractor()', () => {
   });
 
   it('carries each direction and kind its own metric set, in wire units', () => {
-    const extract = createClientTrackStatsExtractor();
+    const extract = createTrackStatsExtractor();
     const [webcam, mic, mainVideo, mainAudio] = extract(fullReport(1_000, 100_000), tracks, []);
 
     expect(webcam?.metrics).toEqual({
@@ -430,7 +430,7 @@ describe('createClientTrackStatsExtractor()', () => {
   });
 
   it('reports a per-stream bitrate from the second batch on, averaged since the previous one', () => {
-    const extract = createClientTrackStatsExtractor();
+    const extract = createTrackStatsExtractor();
 
     extract(fullReport(1_000, 100_000), tracks, []);
     const stats = extract(fullReport(11_000, 1_350_000), tracks, []);
@@ -442,7 +442,7 @@ describe('createClientTrackStatsExtractor()', () => {
   });
 
   it('carries the paused flag per track', () => {
-    const extract = createClientTrackStatsExtractor();
+    const extract = createTrackStatsExtractor();
     const stats = extract(fullReport(1_000, 100_000), tracks, ['webcam']);
 
     expect(stats.find((s) => s.trackName === 'webcam')?.paused).toBe(true);
@@ -450,14 +450,14 @@ describe('createClientTrackStatsExtractor()', () => {
   });
 
   it('skips a stream whose mid has not negotiated onto a named track of its direction', () => {
-    const extract = createClientTrackStatsExtractor();
+    const extract = createTrackStatsExtractor();
     const stats = extract(fullReport(1_000, 100_000), [{ ...tracks[2]!, direction: 'sendonly' }], []);
 
     expect(stats).toEqual([]);
   });
 
   it('skips a stream with no codec yet, or one the wire cannot carry, keeping the rest', () => {
-    const extract = createClientTrackStatsExtractor();
+    const extract = createTrackStatsExtractor();
     const report = makeReport([
       ['cx', { id: 'cx', type: 'codec', mimeType: 'video/X-UNKNOWN' }],
       ['ca', { id: 'ca', type: 'codec', mimeType: 'audio/opus' }],
@@ -470,7 +470,7 @@ describe('createClientTrackStatsExtractor()', () => {
   });
 
   it('reports one reading per track when several streams share its mid', () => {
-    const extract = createClientTrackStatsExtractor();
+    const extract = createTrackStatsExtractor();
     const report = makeReport([
       ['cv', { id: 'cv', type: 'codec', mimeType: 'video/VP8' }],
       ['ov1', { id: 'ov1', type: 'outbound-rtp', kind: 'video', mid: '0', codecId: 'cv', timestamp: 1_000, frameWidth: 640 }],

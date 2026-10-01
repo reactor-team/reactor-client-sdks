@@ -8,9 +8,9 @@ import { toPublicClip } from './internal/recording';
 import type { ReactorClient } from './internal/reactor-wasm.types';
 import {
   RUNTIME_REPORT_INTERVAL_MS,
-  createClientTrackStatsExtractor,
-  createRTCStatsExtractor,
-  type ClientTrackStatsExtractor,
+  createTrackStatsExtractor,
+  createConnectionStatsExtractor,
+  type TrackStatsExtractor,
   LOCAL_STATS_INTERVAL_MS,
   pollPeerStats,
   toClientConnectionStat,
@@ -904,9 +904,9 @@ export class Reactor implements Disposable {
    *  own extractors, so a bitrate covers its own poller's interval. */
   private startStatsPolling(client: ReactorClient): void {
     this.stopStatsPolling();
-    const extractStats = createRTCStatsExtractor();
-    const extractConnection = createRTCStatsExtractor();
-    const extractTrackStats = createClientTrackStatsExtractor();
+    const extractStats = createConnectionStatsExtractor();
+    const extractConnection = createConnectionStatsExtractor();
+    const extractTrackStats = createTrackStatsExtractor();
 
     this.hasSentConnectTime = false;
     this.stopStatsPollers = [
@@ -924,7 +924,7 @@ export class Reactor implements Disposable {
 
   /** Report one quality batch to the runtime: a reading per negotiated
    *  track — audio and video, sent and received — see
-   *  `createClientTrackStatsExtractor`. Silently skipped while no track has a
+   *  `createTrackStatsExtractor`. Silently skipped while no track has a
    *  reading yet (none negotiated onto a named track, or no codec reported
    *  yet) — one is due again in `RUNTIME_REPORT_INTERVAL_MS`. Every
    *  batch carries a `ClientConnectionStat`, its time to connect only the
@@ -935,7 +935,7 @@ export class Reactor implements Disposable {
     client: ReactorClient,
     report: RTCStatsReport,
     stats: ConnectionStats,
-    extractTrackStats: ClientTrackStatsExtractor,
+    extractTrackStats: TrackStatsExtractor,
   ): void {
     const trackStats = extractTrackStats(report, this.trackMapping(), this.pausedTracks());
 

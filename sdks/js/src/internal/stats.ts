@@ -79,13 +79,16 @@ interface ByteSample {
 
 /** Builds one batch of the wire's `ClientTrackStat`s from a stats report, a
  *  reading per negotiated track — audio and video, sent and received. */
-export type ClientTrackStatsExtractor = (
+export type TrackStatsExtractor = (
   report: RTCStatsReport,
   tracks: readonly TrackMappingEntry[],
   pausedTracks: readonly string[],
 ) => ClientTrackStat[];
 
 /**
+ * The per-track part of the runtime report: one reading per track, every
+ * `RUNTIME_REPORT_INTERVAL_MS`. Not used for `getStats()` / `statsUpdate`.
+ *
  * A closure over each RTP stream's previous byte counter, needed to turn the
  * cumulative `bytesReceived`/`bytesSent` into a bitrate averaged over the
  * interval since the previous batch. A stream's first batch carries no
@@ -108,7 +111,7 @@ export type ClientTrackStatsExtractor = (
  * correctly. A reading the browser hasn't produced is left out of `metrics`
  * rather than reported as `0`, so it can't pass for a real zero.
  */
-export function createClientTrackStatsExtractor(): ClientTrackStatsExtractor {
+export function createTrackStatsExtractor(): TrackStatsExtractor {
   const lastBytes = new Map<string, ByteSample>();
 
   return (report, tracks, pausedTracks) => {
@@ -252,7 +255,7 @@ export function toClientConnectionStat(
   return { timestamp: stats.timestamp, metrics };
 }
 
-type RTCStatsExtractor = (report: RTCStatsReport) => ConnectionStats;
+type ConnectionStatsExtractor = (report: RTCStatsReport) => ConnectionStats;
 
 /**
  * `lib.dom`'s own `RTCStats` only has `id`/`timestamp`/`type` — the fields
@@ -330,11 +333,16 @@ function selectedCandidatePairId(report: RTCStatsReport): string | undefined {
 }
 
 /**
+ * A summary of the whole connection, the `ConnectionStats` behind
+ * `getStats()` and `statsUpdate`. The runtime report uses it too, through
+ * its own instance, for the connection-wide part of each batch
+ * (`toClientConnectionStat`).
+ *
  * A closure over the previous sample's byte counters and timestamp, needed
  * to turn the peer connection's cumulative candidate-pair counters into a
  * real-time bitrate.
  */
-export function createRTCStatsExtractor(): RTCStatsExtractor {
+export function createConnectionStatsExtractor(): ConnectionStatsExtractor {
   let lastBytesReceived: number | undefined;
   let lastBytesSent: number | undefined;
   let lastCandPairTimestamp: number | undefined;
