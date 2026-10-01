@@ -27,10 +27,10 @@ use reactor_core::protocol::session::{
 };
 use reactor_core::protocol::upload::FileRef;
 use reactor_core::protocol::wire::v1::platform::{
-    client_track_stat, AudioCodec, ClientConnectionStat, ClientTrackStat, TrackDirection,
-    TrackKind, VideoCodec,
+    ClientConnectionStat, ClientTrackStat, TrackDirection, TrackKind,
 };
 use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions};
+use reactor_core::stats::client_track_codec;
 
 use crate::auth::WasmAuthProvider;
 use crate::http::WasmHttpClient;
@@ -859,31 +859,6 @@ struct ClientTrackStatJson {
     metrics: std::collections::HashMap<String, f64>,
 }
 
-/// Parse *codec* against the codec set *kind* allows — a video reading can
-/// only carry a `VideoCodec`, an audio one only an `AudioCodec`.
-fn parse_codec(kind: SessionTrackKind, codec: &str) -> Result<client_track_stat::Codec, String> {
-    match kind {
-        SessionTrackKind::Video => {
-            let codec = match codec {
-                "vp8" => VideoCodec::Vp8,
-                "vp9" => VideoCodec::Vp9,
-                "av1" => VideoCodec::Av1,
-                "h264" => VideoCodec::H264,
-                "h265" => VideoCodec::H265,
-                other => return Err(format!("unknown video codec: {other}")),
-            };
-            Ok(client_track_stat::Codec::VideoCodec(codec as i32))
-        }
-        SessionTrackKind::Audio => {
-            let codec = match codec {
-                "opus" => AudioCodec::Opus,
-                other => return Err(format!("unknown audio codec: {other}")),
-            };
-            Ok(client_track_stat::Codec::AudioCodec(codec as i32))
-        }
-    }
-}
-
 impl TryFrom<ClientTrackStatJson> for ClientTrackStat {
     type Error = String;
 
@@ -896,7 +871,7 @@ impl TryFrom<ClientTrackStatJson> for ClientTrackStat {
             SessionTrackDirection::Recvonly => TrackDirection::Recvonly,
             SessionTrackDirection::Sendonly => TrackDirection::Sendonly,
         };
-        let codec = parse_codec(stat.kind, &stat.codec)?;
+        let codec = client_track_codec(stat.kind, &stat.codec)?;
         Ok(ClientTrackStat {
             timestamp: stat.timestamp,
             track_name: stat.track_name,

@@ -64,7 +64,11 @@ export function pollPeerStats(
 /** The codecs the wire's `VideoCodec`/`AudioCodec` enums can carry, per
  *  track kind. `sendClientStats` rejects the whole batch over one codec
  *  outside this set, so a track negotiated onto anything else is left out
- *  of the batch rather than taking every other track's reading down with it. */
+ *  of the batch rather than taking every other track's reading down with it.
+ *
+ *  Mirrors `client_track_codec` in `crates/reactor-core/src/stats.rs`, whose
+ *  test fails when the wire gains a codec it doesn't map: add it there and
+ *  here together. */
 const WIRE_CODECS: Record<TrackKind, ReadonlySet<string>> = {
   video: new Set(['vp8', 'vp9', 'av1', 'h264', 'h265']),
   audio: new Set(['opus']),
