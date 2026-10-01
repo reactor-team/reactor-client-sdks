@@ -60,9 +60,10 @@ export class Reactor implements Disposable {
   /** The stop functions of the running stats pollers — see `pollPeerStats()`. */
   private stopStatsPollers: Array<() => void> = [];
   /** Whether this connection has already reported its time to connect —
-   *  a one-time fact, sent on the first client-stats report after connecting
-   *  and omitted on every one after. Reset per `startStatsPolling()` call,
-   *  i.e. per connect()/reconnect(). */
+   *  a one-time fact, sent on the first client-stats report that carries it
+   *  and omitted on every one after. Set only once a batch actually went out
+   *  with it, so a batch sent before the timings exist doesn't use it up.
+   *  Reset per `startStatsPolling()` call, i.e. per connect()/reconnect(). */
   private hasSentConnectTime = false;
   /** Set on the "connecting" status transition, cleared once `connectionTimings`
    *  is finalized on "ready" — see `handleStatusChanged()`. */
@@ -947,7 +948,9 @@ export class Reactor implements Disposable {
 
     try {
       client.sendClientStats(trackStats, connectionStat);
-      this.hasSentConnectTime = true;
+      if (timeToConnectMs !== undefined) {
+        this.hasSentConnectTime = true;
+      }
     } catch {
       // Connection may be closing.
     }
