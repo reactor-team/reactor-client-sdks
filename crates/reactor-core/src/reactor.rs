@@ -33,7 +33,8 @@ use crate::protocol::wire::v1::control::control_client_message::Payload as Clien
 use crate::protocol::wire::v1::control::control_server_message::Payload as ServerPayload;
 use crate::protocol::wire::v1::data::{data_client_message, data_server_message};
 use crate::protocol::wire::v1::platform::{
-    FileUploaded, Ping, RequestClip, RequestRecording, RequestSchema,
+    ClientConnectionStat, ClientStats, ClientTrackStat, FileUploaded, Ping, RequestClip,
+    RequestRecording, RequestSchema,
 };
 use crate::protocol::wire::v1::track::{PauseTrack, PublishTrack, ResumeTrack, UnpublishTrack};
 use crate::recording::{clip_failed_code, clip_from_ready, Clip};
@@ -915,6 +916,28 @@ impl Reactor {
             )))
     }
 
+    /// Report a batch of client-observed WebRTC quality readings.
+    ///
+    /// Fire-and-forget, like [`Reactor::ping`]: the runtime is the only
+    /// consumer and attaches this connection's own identity to the batch, so
+    /// nothing here needs a reply to correlate. `track_stats` holds one
+    /// reading per track; `connection_stat` holds the connection-wide
+    /// readings (bandwidth estimates, round-trip time) and is normally set on
+    /// every batch. One-time facts such as time-to-connect ride only the
+    /// first batch after connecting.
+    pub fn client_stats(
+        &self,
+        track_stats: Vec<ClientTrackStat>,
+        connection_stat: Option<ClientConnectionStat>,
+    ) -> Result<(), CoreError> {
+        self.peer.send_control(&ControlCorrelator::notification(
+            ClientPayload::ClientStats(ClientStats {
+                track_stats,
+                connection_stat,
+            }),
+        ))
+    }
+
     /// Request the model's command schema, delivered as an OpenAPI document.
     pub async fn request_schema(&self) -> Result<Value, CoreError> {
         self.ensure_ready()?;
@@ -1585,6 +1608,41 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingPeer {
+        sent_control: Mutex<Vec<Vec<u8>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl PeerTransport for RecordingPeer {
+        async fn prepare(
+            &self,
+            _: &[IceServer],
+            _: &[TrackCapability],
+        ) -> Result<PreparedOffer, CoreError> {
+            Ok(PreparedOffer {
+                sdp_offer: String::new(),
+                track_mapping: vec![],
+            })
+        }
+        async fn set_remote_description(&self, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn send_data(&self, _: &[u8], _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn send_control(&self, payload: &[u8]) -> Result<(), CoreError> {
+            self.sent_control.lock().unwrap().push(payload.to_vec());
+            Ok(())
+        }
+        async fn set_track_direction(&self, _: &str, _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn close(&self) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn make_reactor() -> Arc<Reactor> {
@@ -1616,6 +1674,18 @@ mod tests {
                 auth: Arc::new(NoAuth) as SharedAuth,
                 platform: Arc::new(TestPlatform) as SharedPlatform,
                 peer: Arc::new(NullPeer) as SharedPeer,
+            },
+            ReactorOptions::new("http://localhost", "test-model"),
+        ))
+    }
+
+    fn make_reactor_with_peer(peer: Arc<RecordingPeer>) -> Arc<Reactor> {
+        Arc::new(Reactor::new(
+            ReactorDeps {
+                http: Arc::new(PendingHttp) as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: peer as SharedPeer,
             },
             ReactorOptions::new("http://localhost", "test-model"),
         ))
@@ -2443,6 +2513,54 @@ mod tests {
         // Heartbeat wakes up after ~40 ms, sees the epoch mismatch, and exits.
         let result = tokio::time::timeout(Duration::from_millis(300), hb).await;
         assert!(result.is_ok(), "heartbeat should stop after epoch change");
+    }
+
+    // ── client_stats ──────────────────────────────────────────────────
+
+    /// `client_stats` is fire-and-forget, exactly like `ping`: no request id,
+    /// `Notification` kind, and the batch crosses whole rather than one
+    /// message per reading.
+    #[test]
+    fn client_stats_sends_the_batch_as_a_single_notification() {
+        use std::collections::HashMap;
+
+        use crate::protocol::wire::v1::control::ControlClientMessage;
+        use crate::protocol::wire::v1::platform::{
+            client_track_stat, TrackDirection, TrackKind, VideoCodec,
+        };
+
+        let peer = Arc::new(RecordingPeer::default());
+        let reactor = make_reactor_with_peer(peer.clone());
+        let stat = ClientTrackStat {
+            timestamp: 1_700_000_000_000,
+            track_name: "main_video".to_string(),
+            kind: TrackKind::Video as i32,
+            direction: TrackDirection::Recvonly as i32,
+            codec: Some(client_track_stat::Codec::VideoCodec(VideoCodec::Vp9 as i32)),
+            paused: false,
+            metrics: HashMap::from([("bitrate_bps".to_string(), 950_000.0)]),
+        };
+        let connection_stat = ClientConnectionStat {
+            timestamp: 1_700_000_000_000,
+            metrics: HashMap::from([("time_to_connect_ms".to_string(), 850.0)]),
+        };
+
+        reactor
+            .client_stats(vec![stat.clone()], Some(connection_stat.clone()))
+            .unwrap();
+
+        let sent = peer.sent_control.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        let message = ControlClientMessage::decode(sent[0].as_slice()).unwrap();
+        assert_eq!(message.request_id, "");
+        assert_eq!(message.kind, MessageKind::Notification as i32);
+        match message.payload {
+            Some(ClientPayload::ClientStats(stats)) => {
+                assert_eq!(stats.track_stats, vec![stat]);
+                assert_eq!(stats.connection_stat, Some(connection_stat));
+            }
+            other => panic!("expected a ClientStats payload, got {other:?}"),
+        }
     }
 
     // ── send_command ─────────────────────────────────────────────────
