@@ -340,6 +340,8 @@ interface RTCStatsReportWithLookup extends RTCStatsReport {
  * 2. the pair flagged `selected` (Firefox, which has no `transport` stat),
  * 3. the first `succeeded` and `nominated` pair, for a browser that marks
  *    neither.
+ *
+ * Every choice must have `succeeded`: a pair that hasn't carries no media.
  */
 function activeCandidatePair(report: RTCStatsReport): RTCStatsReportEntry | undefined {
   let namedByTransport: string | undefined;
@@ -350,11 +352,11 @@ function activeCandidatePair(report: RTCStatsReport): RTCStatsReportEntry | unde
     if (stat.type === 'transport' && stat.selectedCandidatePairId) {
       namedByTransport ??= stat.selectedCandidatePairId;
     }
-    if (stat.type === 'candidate-pair') {
+    if (stat.type === 'candidate-pair' && stat.state === 'succeeded') {
       if (stat.selected) {
         flaggedSelected ??= stat;
       }
-      if (stat.state === 'succeeded' && stat.nominated) {
+      if (stat.nominated) {
         firstNominated ??= stat;
       }
     }
@@ -362,8 +364,9 @@ function activeCandidatePair(report: RTCStatsReport): RTCStatsReportEntry | unde
 
   const named =
     namedByTransport !== undefined ? (report as RTCStatsReportWithLookup).get(namedByTransport) : undefined;
+  const namedSucceeded = named?.state === 'succeeded' ? named : undefined;
 
-  return named ?? flaggedSelected ?? firstNominated;
+  return namedSucceeded ?? flaggedSelected ?? firstNominated;
 }
 
 /**

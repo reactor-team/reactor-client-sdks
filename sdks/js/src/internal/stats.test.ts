@@ -162,6 +162,16 @@ describe('createConnectionStatsExtractor()', () => {
     expect(stats.availableOutgoingBitrate).toBe(5_465_846);
   });
 
+  it('passes over a pair the transport names when it has not succeeded', () => {
+    const report = makeReport([
+      ['cp1', { id: 'cp1', type: 'candidate-pair', state: 'succeeded', nominated: true, currentRoundTripTime: 0.01 }],
+      ['cp2', { id: 'cp2', type: 'candidate-pair', state: 'in-progress', currentRoundTripTime: 0.09 }],
+      ['t1', { id: 't1', type: 'transport', selectedCandidatePairId: 'cp2' }],
+    ]);
+
+    expect(createConnectionStatsExtractor()(report).rtt).toBe(10);
+  });
+
   it('reads the candidate-pair flagged selected when there is no transport stat', () => {
     const report = makeReport([
       ['cp1', { id: 'cp1', type: 'candidate-pair', state: 'succeeded', nominated: true, currentRoundTripTime: 0.01 }],
