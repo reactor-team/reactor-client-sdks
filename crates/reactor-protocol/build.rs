@@ -4,6 +4,12 @@
 //! Nothing is vendored into this repo — building requires network access
 //! the first time a given `WIRE_VERSION` is compiled; results are cached
 //! under `OUT_DIR` for subsequent builds.
+//!
+//! `REACTOR_RUNTIME_PROTO_DIR`, when set, points at a local `reactor-runtime`
+//! checkout's `proto` directory (the one containing `reactor_wire/v1/*.proto`)
+//! instead: no network fetch, no release tag needed. It is for developing
+//! against an unreleased wire-protocol change; normal builds leave it unset
+//! and use the pinned release.
 
 use std::fs;
 use std::io::Read;
@@ -11,10 +17,31 @@ use std::path::{Path, PathBuf};
 
 const REPO: &str = "reactor-team/reactor-runtime";
 const PROTO_FILES: &[&str] = &["common", "model", "platform", "track", "data", "control"];
+const LOCAL_PROTO_DIR_ENV: &str = "REACTOR_RUNTIME_PROTO_DIR";
 
 fn main() {
     let protoc = protoc_bin_vendored::protoc_bin_path().expect("vendored protoc binary");
     std::env::set_var("PROTOC", protoc);
+
+    println!("cargo:rerun-if-env-changed={LOCAL_PROTO_DIR_ENV}");
+    if let Ok(local_dir) = std::env::var(LOCAL_PROTO_DIR_ENV) {
+        let proto_dir = PathBuf::from(&local_dir).join("reactor_wire/v1");
+        let protos: Vec<PathBuf> = PROTO_FILES
+            .iter()
+            .map(|name| proto_dir.join(format!("{name}.proto")))
+            .collect();
+        for proto in &protos {
+            assert!(
+                proto.is_file(),
+                "{LOCAL_PROTO_DIR_ENV}={local_dir}: missing {}",
+                proto.display()
+            );
+            println!("cargo:rerun-if-changed={}", proto.display());
+        }
+        println!("cargo:warning=building reactor_wire.v1 from local checkout: {local_dir}");
+        compile(&protos, &PathBuf::from(&local_dir));
+        return;
+    }
 
     let version = fs::read_to_string("proto/WIRE_VERSION")
         .expect("read proto/WIRE_VERSION")
@@ -34,13 +61,17 @@ fn main() {
         fetch_protos(&version, &proto_dir);
     }
 
+    compile(&protos, &proto_root);
+
+    println!("cargo:rerun-if-changed=proto/WIRE_VERSION");
+}
+
+fn compile(protos: &[PathBuf], proto_root: &Path) {
     prost_build::Config::new()
         .compile_well_known_types()
         .extern_path(".google.protobuf.Struct", "::prost_types::Struct")
-        .compile_protos(&protos, &[proto_root])
+        .compile_protos(protos, &[proto_root])
         .expect("compile reactor_wire.v1 protos");
-
-    println!("cargo:rerun-if-changed=proto/WIRE_VERSION");
 }
 
 /// Downloads `reactor-wire-<version>-protos.tar.gz` from the pinned

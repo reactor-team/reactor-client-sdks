@@ -16,3 +16,10 @@ To adopt a newer protocol version: bump [`WIRE_VERSION`](WIRE_VERSION) and
 rebuild — `build.rs` fetches the new version's sources automatically.
 Building requires network access to `github.com` the first time a given
 version is compiled; results are then cached under `OUT_DIR`.
+
+To build against an unreleased wire-protocol change, point
+`REACTOR_RUNTIME_PROTO_DIR` at a local `reactor-runtime` checkout's `proto`
+directory (the one containing `reactor_wire/v1/*.proto`). `build.rs` then
+compiles those files instead of fetching the pinned release, and prints a
+cargo warning so the override is never silent. Leave it unset for anything
+you commit or release.

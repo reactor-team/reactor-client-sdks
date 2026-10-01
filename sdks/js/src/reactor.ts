@@ -6,7 +6,15 @@ import { Emitter } from './internal/emitter';
 import { extractFileRefs, toPublicFileRef } from './internal/file-ref';
 import { toPublicClip } from './internal/recording';
 import type { ReactorClient } from './internal/reactor-wasm.types';
-import { createRTCStatsExtractor, STATS_INTERVAL_MS } from './internal/stats';
+import {
+  LOCAL_STATS_INTERVAL_MS,
+  RUNTIME_REPORT_INTERVAL_MS,
+  createConnectionStatsExtractor,
+  createTrackStatsExtractor,
+  pollPeerStats,
+  toClientConnectionStat,
+  type TrackStatsExtractor,
+} from './internal/stats';
 import { loadReactorWasm } from './internal/wasm';
 import packageJson from '../package.json';
 import type { FileRef } from './file-ref';
@@ -49,11 +57,14 @@ export class Reactor implements Disposable {
 
   private stats: ConnectionStats | undefined;
   private connectionTimings: ConnectionTimings | undefined;
-  private statsPollHandle: ReturnType<typeof setInterval> | undefined;
-  /** Bumped on every `startStatsPolling()`/`stopStatsPolling()` call — lets an
-   *  in-flight `getStats()` recognize it's stale once it resolves, even if
-   *  `this.client` hasn't changed in the meantime. */
-  private statsPollGeneration = 0;
+  /** The stop functions of the running stats pollers — see `pollPeerStats()`. */
+  private stopStatsPollers: Array<() => void> = [];
+  /** Whether this connection has already reported its time to connect —
+   *  a one-time fact, sent on the first client-stats report that carries it
+   *  and omitted on every one after. Set only once a batch actually went out
+   *  with it, so a batch sent before the timings exist doesn't use it up.
+   *  Reset per `startStatsPolling()` call, i.e. per connect()/reconnect(). */
+  private hasSentConnectTime = false;
   /** Set on the "connecting" status transition, cleared once `connectionTimings`
    *  is finalized on "ready" — see `handleStatusChanged()`. */
   private connectStartTime: number | undefined;
@@ -699,7 +710,7 @@ export class Reactor implements Disposable {
     return this._lastError;
   }
 
-  /** The most recent WebRTC connection stats, polled every `STATS_INTERVAL_MS`
+  /** The most recent WebRTC connection stats, polled every `LOCAL_STATS_INTERVAL_MS`
    *  while "ready" — see `statsUpdate`. `undefined` before the first sample. */
   getStats(): ConnectionStats | undefined {
     return this.stats;
@@ -889,44 +900,67 @@ export class Reactor implements Disposable {
     }
   }
 
+  /** Starts both stats pollers: the local one updates `getStats()` and emits
+   *  `statsUpdate`, the runtime one sends a client-stats batch. Each owns the
+   *  extractor it computes bitrates with, so a bitrate covers its own
+   *  poller's interval. */
   private startStatsPolling(client: ReactorClient): void {
     this.stopStatsPolling();
-    const generation = ++this.statsPollGeneration;
-    const extractStats = createRTCStatsExtractor();
+    const extractConnectionStats = createConnectionStatsExtractor();
+    const extractTrackStats = createTrackStatsExtractor();
 
-    this.statsPollHandle = setInterval(() => {
-      const peerConnection = client.getPeerConnection();
+    this.hasSentConnectTime = false;
+    this.stopStatsPollers = [
+      pollPeerStats(client, LOCAL_STATS_INTERVAL_MS, (report) => {
+        this.stats = { ...extractConnectionStats(report), connectionTimings: this.connectionTimings };
+        this.emitter.emit('statsUpdate', this.stats);
+      }),
+      pollPeerStats(client, RUNTIME_REPORT_INTERVAL_MS, (report) => {
+        this.reportClientStats(client, report, extractTrackStats);
+      }),
+    ];
+  }
 
-      if (!peerConnection) {
-        return;
+  /** Report one quality batch to the runtime: a reading per negotiated
+   *  track — audio and video, sent and received — see
+   *  `createTrackStatsExtractor`, and the connection-wide reading — see
+   *  `toClientConnectionStat`. The connection reading goes even while no
+   *  track has one yet (none negotiated onto a named track, or no codec
+   *  reported yet), so the runtime gets the bandwidth estimate, the
+   *  round-trip time and the time to connect without waiting on the tracks.
+   *  Skipped only when there is nothing at all to say; one is due again in
+   *  `RUNTIME_REPORT_INTERVAL_MS`. The time to connect goes on the first batch
+   *  actually sent for this connection — see `hasSentConnectTime`.
+   *  `sendClientStats` throws synchronously on a closing connection; caught
+   *  here for the same reason `getStats()`'s rejection is above. */
+  private reportClientStats(
+    client: ReactorClient,
+    report: RTCStatsReport,
+    extractTrackStats: TrackStatsExtractor,
+  ): void {
+    const trackStats = extractTrackStats(report, this.trackMapping(), this.pausedTracks());
+    const timeToConnectMs = this.hasSentConnectTime ? undefined : this.connectionTimings?.totalMs;
+    const connectionStat = toClientConnectionStat(report, timeToConnectMs);
+
+    if (trackStats.length === 0 && Object.keys(connectionStat.metrics).length === 0) {
+      return;
+    }
+
+    try {
+      client.sendClientStats(trackStats, connectionStat);
+      if (timeToConnectMs !== undefined) {
+        this.hasSentConnectTime = true;
       }
-      peerConnection
-        .getStats()
-        .then((report) => {
-          // `stopStatsPolling()` only clears the interval — it can't cancel
-          // a `getStats()` call already in flight. A recoverable disconnect
-          // or a status flicker back to "ready" can leave `this.client`
-          // pointing at this same `client`, so that identity alone can't
-          // tell a stale sample from a live one; the generation bumped by
-          // every `startStatsPolling()`/`stopStatsPolling()` call can.
-          if (generation !== this.statsPollGeneration) {
-            return;
-          }
-          this.stats = { ...extractStats(report), connectionTimings: this.connectionTimings };
-          this.emitter.emit('statsUpdate', this.stats);
-        })
-        .catch(() => {
-          // Connection may be closing.
-        });
-    }, STATS_INTERVAL_MS);
+    } catch {
+      // Connection may be closing.
+    }
   }
 
   private stopStatsPolling(): void {
-    this.statsPollGeneration += 1;
-    if (this.statsPollHandle !== undefined) {
-      clearInterval(this.statsPollHandle);
-      this.statsPollHandle = undefined;
+    for (const stop of this.stopStatsPollers) {
+      stop();
     }
+    this.stopStatsPollers = [];
     this.stats = undefined;
   }
 
