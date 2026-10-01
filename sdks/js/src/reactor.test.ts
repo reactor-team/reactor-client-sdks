@@ -1202,8 +1202,28 @@ describe('Reactor stats', () => {
 
     await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS);
     expect(client.sendClientStatsCalls).toHaveLength(2);
-    // Every report carries the connection facts; only the first the time to connect.
     expect(client.sendClientStatsCalls[1]?.connectionStat).toBeDefined();
+  });
+
+  it('sends the time to connect on the first batch, and only on the first', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'performance'] });
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.peerConnectionResult = {
+      getStats: vi.fn().mockResolvedValue(videoStatsReport('0')),
+    } as unknown as RTCPeerConnection;
+    client.trackMappingResult = [{ name: 'main_video', kind: 'video', direction: 'recvonly', mid: '0' }];
+
+    client.emitConnecting();
+    vi.advanceTimersByTime(100);
+    client.emitWaiting();
+    vi.advanceTimersByTime(250);
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS * 2);
+
+    expect(client.sendClientStatsCalls).toHaveLength(2);
+    expect(client.sendClientStatsCalls[0]?.connectionStat?.metrics.time_to_connect_ms).toBe(350);
     expect(client.sendClientStatsCalls[1]?.connectionStat?.metrics).not.toHaveProperty('time_to_connect_ms');
   });
 
