@@ -225,6 +225,7 @@ type RTCStatsExtractor = (report: RTCStatsReport) => ConnectionStats;
 interface RTCStatsReportEntry extends RTCStats {
   state?: string;
   nominated?: boolean;
+  selectedCandidatePairId?: string;
   currentRoundTripTime?: number;
   availableOutgoingBitrate?: number;
   availableIncomingBitrate?: number;
@@ -261,6 +262,22 @@ interface RTCStatsReportWithLookup extends RTCStatsReport {
 }
 
 /**
+ * The candidate-pair the transport is actually sending on. Several pairs can
+ * be `succeeded` and `nominated` at once (one per local interface), and the
+ * browser only fills `availableOutgoingBitrate` on the selected one.
+ */
+function selectedCandidatePairId(report: RTCStatsReport): string | undefined {
+  let selected: string | undefined;
+
+  report.forEach((stat: RTCStatsReportEntry) => {
+    if (selected === undefined && stat.type === 'transport' && stat.selectedCandidatePairId) {
+      selected = stat.selectedCandidatePairId;
+    }
+  });
+  return selected;
+}
+
+/**
  * A closure over the previous sample's byte counters and timestamp, needed
  * to turn the peer connection's cumulative candidate-pair counters into a
  * real-time bitrate.
@@ -289,15 +306,18 @@ export function createRTCStatsExtractor(): RTCStatsExtractor {
     let candidateType: string | undefined;
 
     const reportWithLookup = report as RTCStatsReportWithLookup;
+    const selectedPairId = selectedCandidatePairId(report);
 
     report.forEach((stat: RTCStatsReportEntry) => {
       if (
         candPairId === undefined &&
         stat.type === 'candidate-pair' &&
-        stat.state === 'succeeded' &&
-        stat.nominated
+        (selectedPairId !== undefined
+          ? stat.id === selectedPairId
+          : stat.state === 'succeeded' && stat.nominated)
       ) {
-        // Extract stats from the first successful candidate-pair found.
+        // Extract stats from the transport's selected candidate-pair, or the
+        // first successful nominated one when the browser doesn't name it.
         candPairId = stat.id;
         if (stat.currentRoundTripTime !== undefined) {
           rtt = stat.currentRoundTripTime * 1000;
