@@ -68,11 +68,18 @@ export function pollPeerStats(
   };
 }
 
-/** A WebRTC duration in seconds as milliseconds for the runtime report,
- *  rounded to the microsecond. `getStats()` reports seconds as binary
- *  floats, so a plain `* 1000` sends values like `0.8109999999999999`. */
+/** A duration in milliseconds rounded to the microsecond, for the runtime
+ *  report. Durations reach it as binary floats — `getStats()` seconds times
+ *  1000, or the difference of two `performance.now()` readings — and would
+ *  otherwise travel as values like `0.8109999999999999` or
+ *  `6294.200000047684`. */
+function roundMs(ms: number): number {
+  return Math.round(ms * 1_000) / 1_000;
+}
+
+/** A WebRTC duration in seconds as milliseconds — see `roundMs()`. */
 function secondsToMs(seconds: number): number {
-  return Math.round(seconds * 1_000_000) / 1_000;
+  return roundMs(seconds * 1_000);
 }
 
 /** The codecs the wire's `VideoCodec`/`AudioCodec` enums can carry, per
@@ -270,7 +277,7 @@ export function toClientConnectionStat(report: RTCStatsReport, timeToConnectMs?:
     metrics.connection_rtt_ms = secondsToMs(pair.currentRoundTripTime);
   }
   if (timeToConnectMs !== undefined) {
-    metrics.time_to_connect_ms = timeToConnectMs;
+    metrics.time_to_connect_ms = roundMs(timeToConnectMs);
   }
   return { timestamp: Date.now(), metrics };
 }

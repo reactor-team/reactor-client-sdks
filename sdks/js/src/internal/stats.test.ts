@@ -553,6 +553,11 @@ describe('toClientConnectionStat()', () => {
     expect(toClientConnectionStat(report).metrics).toEqual(toClientConnectionStat(report).metrics);
   });
 
+  it('rounds the time to connect to the microsecond', () => {
+    // The difference of two performance.now() readings, as seen live.
+    expect(toClientConnectionStat(makeReport([]), 6294.200000047684).metrics.time_to_connect_ms).toBe(6294.2);
+  });
+
   it('leaves out what the browser has not produced yet', () => {
     expect(toClientConnectionStat(makeReport([])).metrics).toEqual({});
   });
