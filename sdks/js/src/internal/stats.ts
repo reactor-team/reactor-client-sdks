@@ -24,7 +24,9 @@ export const RUNTIME_REPORT_INTERVAL_MS = 5_000;
 
 /** Reads `getStats()` off *client*'s peer connection every *intervalMs* and
  *  hands each report to *onReport*. A tick without a peer connection, or
- *  whose read rejects (the connection may be closing), is skipped.
+ *  whose read rejects (the connection may be closing), is skipped. An error
+ *  thrown by *onReport* itself is a bug, not a closing connection, so it is
+ *  logged rather than swallowed, and polling goes on.
  *
  *  Returns the function that stops it. Clearing the interval can't cancel a
  *  `getStats()` already in flight, so a read that resolves after the stop is
@@ -43,16 +45,21 @@ export function pollPeerStats(
     if (!peerConnection) {
       return;
     }
-    peerConnection
-      .getStats()
-      .then((report) => {
-        if (!stopped) {
-          onReport(report);
+    peerConnection.getStats().then(
+      (report) => {
+        if (stopped) {
+          return;
         }
-      })
-      .catch(() => {
+        try {
+          onReport(report);
+        } catch (error) {
+          console.error('[Reactor] stats report handler threw:', error);
+        }
+      },
+      () => {
         // Connection may be closing.
-      });
+      },
+    );
   }, intervalMs);
 
   return () => {

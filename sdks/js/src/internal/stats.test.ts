@@ -597,6 +597,26 @@ describe('pollPeerStats()', () => {
     expect(onReport).not.toHaveBeenCalled();
   });
 
+  it('logs an error thrown by the handler and keeps polling', async () => {
+    const peerConnection = {
+      getStats: () => Promise.resolve(makeReport([])),
+    } as unknown as RTCPeerConnection;
+    const failure = new Error('handler bug');
+    const onReport = vi.fn(() => {
+      throw failure;
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const stop = pollPeerStats({ getPeerConnection: () => peerConnection }, 1_000, onReport);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    stop();
+
+    expect(onReport).toHaveBeenCalledTimes(2);
+    expect(consoleError).toHaveBeenCalledWith('[Reactor] stats report handler threw:', failure);
+    consoleError.mockRestore();
+  });
+
   it('skips a tick whose read rejects', async () => {
     const peerConnection = {
       getStats: () => Promise.reject(new Error('closing')),
