@@ -922,11 +922,14 @@ export class Reactor implements Disposable {
 
   /** Report one quality batch to the runtime: a reading per negotiated
    *  track — audio and video, sent and received — see
-   *  `createTrackStatsExtractor`. Silently skipped while no track has a
-   *  reading yet (none negotiated onto a named track, or no codec reported
-   *  yet) — one is due again in `RUNTIME_REPORT_INTERVAL_MS`. Every
-   *  batch carries a `ClientConnectionStat`, its time to connect only the
-   *  first one actually sent for this connection — see `hasSentConnectTime`.
+   *  `createTrackStatsExtractor`, and the connection-wide reading — see
+   *  `toClientConnectionStat`. The connection reading goes even while no
+   *  track has one yet (none negotiated onto a named track, or no codec
+   *  reported yet), so the runtime gets the bandwidth estimate, the
+   *  round-trip time and the time to connect without waiting on the tracks.
+   *  Skipped only when there is nothing at all to say; one is due again in
+   *  `RUNTIME_REPORT_INTERVAL_MS`. The time to connect goes on the first batch
+   *  actually sent for this connection — see `hasSentConnectTime`.
    *  `sendClientStats` throws synchronously on a closing connection; caught
    *  here for the same reason `getStats()`'s rejection is above. */
   private reportClientStats(
@@ -935,12 +938,12 @@ export class Reactor implements Disposable {
     extractTrackStats: TrackStatsExtractor,
   ): void {
     const trackStats = extractTrackStats(report, this.trackMapping(), this.pausedTracks());
-
-    if (trackStats.length === 0) {
-      return;
-    }
     const timeToConnectMs = this.hasSentConnectTime ? undefined : this.connectionTimings?.totalMs;
     const connectionStat = toClientConnectionStat(report, timeToConnectMs);
+
+    if (trackStats.length === 0 && Object.keys(connectionStat.metrics).length === 0) {
+      return;
+    }
 
     try {
       client.sendClientStats(trackStats, connectionStat);

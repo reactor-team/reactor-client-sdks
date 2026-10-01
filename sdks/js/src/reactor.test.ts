@@ -1207,7 +1207,7 @@ describe('Reactor stats', () => {
     expect(client.sendClientStatsCalls[1]?.connectionStat?.metrics).not.toHaveProperty('time_to_connect_ms');
   });
 
-  it('does not report client stats when no stream has negotiated onto a named track', async () => {
+  it('sends nothing while neither a track nor the connection has a reading', async () => {
     vi.useFakeTimers();
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
@@ -1221,6 +1221,43 @@ describe('Reactor stats', () => {
     await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS);
 
     expect(client.sendClientStatsCalls).toHaveLength(0);
+  });
+
+  it('sends the connection reading before any track has one', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const pairOnly = new Map([
+      [
+        'cp1',
+        {
+          id: 'cp1',
+          type: 'candidate-pair',
+          state: 'succeeded',
+          nominated: true,
+          currentRoundTripTime: 0.025,
+          availableOutgoingBitrate: 3_000_000,
+        },
+      ],
+    ]);
+
+    client.peerConnectionResult = {
+      getStats: vi.fn().mockResolvedValue({
+        forEach: (cb: (value: unknown) => void) => pairOnly.forEach(cb),
+        get: (id: string) => pairOnly.get(id),
+      }),
+    } as unknown as RTCPeerConnection;
+    client.trackMappingResult = [];
+
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS);
+
+    expect(client.sendClientStatsCalls).toHaveLength(1);
+    expect(client.sendClientStatsCalls[0]?.trackStats).toEqual([]);
+    expect(client.sendClientStatsCalls[0]?.connectionStat?.metrics).toEqual({
+      available_outgoing_bitrate_bps: 3_000_000,
+      connection_rtt_ms: 25,
+    });
   });
 
   it('does not let a closing connection surface out of the stats-poll interval', async () => {
