@@ -61,6 +61,13 @@ export function pollPeerStats(
   };
 }
 
+/** A WebRTC duration in seconds as milliseconds for the runtime report,
+ *  rounded to the microsecond. `getStats()` reports seconds as binary
+ *  floats, so a plain `* 1000` sends values like `0.8109999999999999`. */
+function secondsToMs(seconds: number): number {
+  return Math.round(seconds * 1_000_000) / 1_000;
+}
+
 /** The codecs the wire's `VideoCodec`/`AudioCodec` enums can carry, per
  *  track kind. `sendClientStats` rejects the whole batch over one codec
  *  outside this set, so a track negotiated onto anything else is left out
@@ -178,7 +185,7 @@ export function createTrackStatsExtractor(): TrackStatsExtractor {
       if (inbound) {
         put('packets_received', stat.packetsReceived);
         put('packets_lost', stat.packetsLost);
-        put('jitter_ms', stat.jitter !== undefined ? stat.jitter * 1000 : undefined);
+        put('jitter_ms', stat.jitter !== undefined ? secondsToMs(stat.jitter) : undefined);
         put('nack_count', stat.nackCount);
         if (track.kind === 'video') {
           put('frames_per_second', stat.framesPerSecond);
@@ -198,8 +205,8 @@ export function createTrackStatsExtractor(): TrackStatsExtractor {
         put('retransmitted_packets_sent', stat.retransmittedPacketsSent);
         put('nack_count', stat.nackCount);
         put('packets_lost', remote?.packetsLost);
-        put('jitter_ms', remote?.jitter !== undefined ? remote.jitter * 1000 : undefined);
-        put('round_trip_time_ms', remote?.roundTripTime !== undefined ? remote.roundTripTime * 1000 : undefined);
+        put('jitter_ms', remote?.jitter !== undefined ? secondsToMs(remote.jitter) : undefined);
+        put('round_trip_time_ms', remote?.roundTripTime !== undefined ? secondsToMs(remote.roundTripTime) : undefined);
         if (track.kind === 'video') {
           put('frames_per_second', stat.framesPerSecond);
           put('frames_encoded', stat.framesEncoded);
@@ -253,7 +260,7 @@ export function toClientConnectionStat(report: RTCStatsReport, timeToConnectMs?:
     metrics.available_incoming_bitrate_bps = pair.availableIncomingBitrate;
   }
   if (pair?.currentRoundTripTime !== undefined) {
-    metrics.connection_rtt_ms = pair.currentRoundTripTime * 1000;
+    metrics.connection_rtt_ms = secondsToMs(pair.currentRoundTripTime);
   }
   if (timeToConnectMs !== undefined) {
     metrics.time_to_connect_ms = timeToConnectMs;

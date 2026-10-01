@@ -428,6 +428,18 @@ describe('createTrackStatsExtractor()', () => {
     });
   });
 
+  it('converts durations to milliseconds without binary float noise', () => {
+    const report = makeReport([
+      ['ia', { id: 'ia', type: 'inbound-rtp', kind: 'audio', mid: '3', codecId: 'ca', timestamp: 1, jitter: 0.000811 }],
+      ['ca', { id: 'ca', type: 'codec', mimeType: 'audio/opus' }],
+    ]);
+
+    const [mainAudio] = createTrackStatsExtractor()(report, tracks, []);
+
+    // A plain `0.000811 * 1000` is 0.8109999999999999.
+    expect(mainAudio?.metrics.jitter_ms).toBe(0.811);
+  });
+
   it('reports a per-stream bitrate from the second batch on, averaged since the previous one', () => {
     const extract = createTrackStatsExtractor();
 
