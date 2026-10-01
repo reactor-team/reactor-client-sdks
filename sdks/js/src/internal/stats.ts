@@ -221,38 +221,40 @@ export function createTrackStatsExtractor(): TrackStatsExtractor {
 }
 
 /**
- * Build the wire's `ClientConnectionStat` from one local `ConnectionStats`
- * reading — the connection-wide facts, not tied to any one track.
- * `available_outgoing_bitrate_bps` is the congestion controller's current
- * estimate, so it's a reading like any other, sent on every report.
- * `available_incoming_bitrate_bps` is the receive-side one, which a browser
- * only has when it estimates as the receiver.
- * `connection_rtt_ms` is the ICE round-trip time of the pair carrying the
- * media, one value for the whole connection.
- * `time_to_connect_ms` is a one-time fact, included only when
- * *withConnectTime* — the first report after connecting. Like a track's
- * metrics, a reading the browser hasn't produced is left out rather than
- * reported as `0`, so it can't pass for a collapsed estimate.
+ * The connection-wide part of the runtime report, read straight off one stats
+ * report — the facts that belong to the connection, not to any one track.
+ * Every value is a point-in-time reading of the active candidate-pair (see
+ * `activeCandidatePair()`), so nothing here depends on a previous report.
+ *
+ * - `available_outgoing_bitrate_bps`: the congestion controller's current
+ *   send-side estimate.
+ * - `available_incoming_bitrate_bps`: the receive-side estimate, which a
+ *   browser only has when it estimates as the receiver.
+ * - `connection_rtt_ms`: the ICE round-trip time, one value for the whole
+ *   connection.
+ * - `time_to_connect_ms`: *timeToConnectMs*, a one-time fact the caller passes
+ *   only on the first report after connecting.
+ *
+ * Like a track's metrics, a reading the browser hasn't produced is left out
+ * rather than reported as `0`, so it can't pass for a collapsed estimate.
  */
-export function toClientConnectionStat(
-  stats: ConnectionStats,
-  withConnectTime: boolean,
-): ClientConnectionStat {
+export function toClientConnectionStat(report: RTCStatsReport, timeToConnectMs?: number): ClientConnectionStat {
+  const pair = activeCandidatePair(report);
   const metrics: Record<string, number> = {};
 
-  if (stats.availableOutgoingBitrate !== undefined) {
-    metrics.available_outgoing_bitrate_bps = stats.availableOutgoingBitrate;
+  if (pair?.availableOutgoingBitrate !== undefined) {
+    metrics.available_outgoing_bitrate_bps = pair.availableOutgoingBitrate;
   }
-  if (stats.availableIncomingBitrate !== undefined) {
-    metrics.available_incoming_bitrate_bps = stats.availableIncomingBitrate;
+  if (pair?.availableIncomingBitrate !== undefined) {
+    metrics.available_incoming_bitrate_bps = pair.availableIncomingBitrate;
   }
-  if (stats.rtt !== undefined) {
-    metrics.connection_rtt_ms = stats.rtt;
+  if (pair?.currentRoundTripTime !== undefined) {
+    metrics.connection_rtt_ms = pair.currentRoundTripTime * 1000;
   }
-  if (withConnectTime && stats.connectionTimings !== undefined) {
-    metrics.time_to_connect_ms = stats.connectionTimings.totalMs;
+  if (timeToConnectMs !== undefined) {
+    metrics.time_to_connect_ms = timeToConnectMs;
   }
-  return { timestamp: stats.timestamp, metrics };
+  return { timestamp: Date.now(), metrics };
 }
 
 type ConnectionStatsExtractor = (report: RTCStatsReport) => ConnectionStats;
@@ -311,36 +313,49 @@ interface RTCStatsReportWithLookup extends RTCStatsReport {
 }
 
 /**
- * The candidate-pair the transport is actually sending on. Several pairs can
- * be `succeeded` and `nominated` at once (one per local interface), and the
- * browser only fills `availableOutgoingBitrate` on the selected one. Chrome
- * and Safari name it on the `transport` stat; Firefox has no `transport` stat
- * and flags the pair itself as `selected`.
+ * The candidate-pair carrying the connection's media. Several pairs can be
+ * `succeeded` and `nominated` at once (one per local interface), and only the
+ * one the transport actually uses has a live round-trip time, a bandwidth
+ * estimate and moving byte counters. In order of preference:
+ *
+ * 1. the pair the `transport` stat names (Chrome, Safari),
+ * 2. the pair flagged `selected` (Firefox, which has no `transport` stat),
+ * 3. the first `succeeded` and `nominated` pair, for a browser that marks
+ *    neither.
  */
-function selectedCandidatePairId(report: RTCStatsReport): string | undefined {
-  let fromTransport: string | undefined;
-  let flagged: string | undefined;
+function activeCandidatePair(report: RTCStatsReport): RTCStatsReportEntry | undefined {
+  let namedByTransport: string | undefined;
+  let flaggedSelected: RTCStatsReportEntry | undefined;
+  let firstNominated: RTCStatsReportEntry | undefined;
 
   report.forEach((stat: RTCStatsReportEntry) => {
-    if (fromTransport === undefined && stat.type === 'transport' && stat.selectedCandidatePairId) {
-      fromTransport = stat.selectedCandidatePairId;
+    if (stat.type === 'transport' && stat.selectedCandidatePairId) {
+      namedByTransport ??= stat.selectedCandidatePairId;
     }
-    if (flagged === undefined && stat.type === 'candidate-pair' && stat.selected) {
-      flagged = stat.id;
+    if (stat.type === 'candidate-pair') {
+      if (stat.selected) {
+        flaggedSelected ??= stat;
+      }
+      if (stat.state === 'succeeded' && stat.nominated) {
+        firstNominated ??= stat;
+      }
     }
   });
-  return fromTransport ?? flagged;
+
+  const named =
+    namedByTransport !== undefined ? (report as RTCStatsReportWithLookup).get(namedByTransport) : undefined;
+
+  return named ?? flaggedSelected ?? firstNominated;
 }
 
 /**
- * A summary of the whole connection, the `ConnectionStats` behind
- * `getStats()` and `statsUpdate`. The runtime report uses it too, through
- * its own instance, for the connection-wide part of each batch
- * (`toClientConnectionStat`).
+ * A summary of the whole connection: the `ConnectionStats` behind
+ * `getStats()` and `statsUpdate`. Connection-wide values come from the active
+ * candidate-pair (see `activeCandidatePair()`); frame rate, jitter and loss
+ * from the first received video stream.
  *
- * A closure over the previous sample's byte counters and timestamp, needed
- * to turn the peer connection's cumulative candidate-pair counters into a
- * real-time bitrate.
+ * A closure over the previous reading's candidate-pair byte counters, needed
+ * to turn them into a bitrate — so each poller keeps its own instance.
  */
 export function createConnectionStatsExtractor(): ConnectionStatsExtractor {
   let lastBytesReceived: number | undefined;
@@ -353,7 +368,6 @@ export function createConnectionStatsExtractor(): ConnectionStatsExtractor {
   let lastCandPairId: string | undefined;
 
   return (report: RTCStatsReport) => {
-    let candPairId: string | undefined;
     let rtt: number | undefined;
     let availableOutgoingBitrate: number | undefined;
     let availableIncomingBitrate: number | undefined;
@@ -365,55 +379,44 @@ export function createConnectionStatsExtractor(): ConnectionStatsExtractor {
     let packetLossRatio: number | undefined;
     let candidateType: string | undefined;
 
-    const reportWithLookup = report as RTCStatsReportWithLookup;
-    const selectedPairId = selectedCandidatePairId(report);
+    const pair = activeCandidatePair(report);
+
+    if (pair !== undefined) {
+      if (pair.currentRoundTripTime !== undefined) {
+        rtt = pair.currentRoundTripTime * 1000;
+      }
+      availableOutgoingBitrate = pair.availableOutgoingBitrate;
+      availableIncomingBitrate = pair.availableIncomingBitrate;
+
+      const localCandidate =
+        pair.localCandidateId !== undefined
+          ? (report as RTCStatsReportWithLookup).get(pair.localCandidateId)
+          : undefined;
+
+      if (localCandidate?.candidateType) {
+        candidateType = localCandidate.candidateType;
+      }
+      const samePair = lastCandPairId === pair.id;
+      const timeDiff: number =
+        samePair && lastCandPairTimestamp !== undefined ? pair.timestamp - lastCandPairTimestamp : 0;
+
+      if (pair.bytesReceived !== undefined) {
+        if (samePair && lastBytesReceived !== undefined && timeDiff > 0) {
+          incomingBitrate = (((pair.bytesReceived - lastBytesReceived) * 8) / timeDiff) * 1000; /* Bits/Second */
+        }
+        lastBytesReceived = pair.bytesReceived;
+      }
+      if (pair.bytesSent !== undefined) {
+        if (samePair && lastBytesSent !== undefined && timeDiff > 0) {
+          outgoingBitrate = (((pair.bytesSent - lastBytesSent) * 8) / timeDiff) * 1000; /* Bits/Second */
+        }
+        lastBytesSent = pair.bytesSent;
+      }
+      lastCandPairTimestamp = pair.timestamp;
+      lastCandPairId = pair.id;
+    }
 
     report.forEach((stat: RTCStatsReportEntry) => {
-      if (
-        candPairId === undefined &&
-        stat.type === 'candidate-pair' &&
-        (selectedPairId !== undefined
-          ? stat.id === selectedPairId
-          : stat.state === 'succeeded' && stat.nominated)
-      ) {
-        // Extract stats from the transport's selected candidate-pair, or the
-        // first successful nominated one when the browser doesn't name it.
-        candPairId = stat.id;
-        if (stat.currentRoundTripTime !== undefined) {
-          rtt = stat.currentRoundTripTime * 1000;
-        }
-        if (stat.availableOutgoingBitrate !== undefined) {
-          availableOutgoingBitrate = stat.availableOutgoingBitrate;
-        }
-        if (stat.availableIncomingBitrate !== undefined) {
-          availableIncomingBitrate = stat.availableIncomingBitrate;
-        }
-        const localCandidate =
-          stat.localCandidateId !== undefined ? reportWithLookup.get(stat.localCandidateId) : undefined;
-
-        if (localCandidate?.candidateType) {
-          candidateType = localCandidate.candidateType;
-        }
-        const samePair = lastCandPairId === candPairId;
-        const timeDiff: number =
-          samePair && lastCandPairTimestamp !== undefined ? stat.timestamp - lastCandPairTimestamp : 0;
-
-        if (stat.bytesReceived !== undefined) {
-          if (samePair && lastBytesReceived !== undefined && timeDiff > 0) {
-            incomingBitrate = (((stat.bytesReceived - lastBytesReceived) * 8) / timeDiff) * 1000; /* Bits/Second */
-          }
-          lastBytesReceived = stat.bytesReceived;
-        }
-        if (stat.bytesSent !== undefined) {
-          if (samePair && lastBytesSent !== undefined && timeDiff > 0) {
-            outgoingBitrate = (((stat.bytesSent - lastBytesSent) * 8) / timeDiff) * 1000; /* Bits/Second */
-          }
-          lastBytesSent = stat.bytesSent;
-        }
-        lastCandPairTimestamp = stat.timestamp;
-        lastCandPairId = candPairId;
-      }
-
       // If there is more than one video stream the stats will be from the first one encountered.
       if (videoInboundRtpId === undefined && stat.type === 'inbound-rtp' && stat.kind === 'video') {
         videoInboundRtpId = stat.id;

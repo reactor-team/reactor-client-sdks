@@ -900,24 +900,22 @@ export class Reactor implements Disposable {
   }
 
   /** Starts both stats pollers: the local one updates `getStats()` and emits
-   *  `statsUpdate`, the runtime one sends a client-stats batch. Each has its
-   *  own extractors, so a bitrate covers its own poller's interval. */
+   *  `statsUpdate`, the runtime one sends a client-stats batch. Each owns the
+   *  extractor it computes bitrates with, so a bitrate covers its own
+   *  poller's interval. */
   private startStatsPolling(client: ReactorClient): void {
     this.stopStatsPolling();
-    const extractStats = createConnectionStatsExtractor();
-    const extractConnection = createConnectionStatsExtractor();
+    const extractConnectionStats = createConnectionStatsExtractor();
     const extractTrackStats = createTrackStatsExtractor();
 
     this.hasSentConnectTime = false;
     this.stopStatsPollers = [
       pollPeerStats(client, LOCAL_STATS_INTERVAL_MS, (report) => {
-        this.stats = { ...extractStats(report), connectionTimings: this.connectionTimings };
+        this.stats = { ...extractConnectionStats(report), connectionTimings: this.connectionTimings };
         this.emitter.emit('statsUpdate', this.stats);
       }),
       pollPeerStats(client, RUNTIME_REPORT_INTERVAL_MS, (report) => {
-        const stats = { ...extractConnection(report), connectionTimings: this.connectionTimings };
-
-        this.reportClientStats(client, report, stats, extractTrackStats);
+        this.reportClientStats(client, report, extractTrackStats);
       }),
     ];
   }
@@ -934,7 +932,6 @@ export class Reactor implements Disposable {
   private reportClientStats(
     client: ReactorClient,
     report: RTCStatsReport,
-    stats: ConnectionStats,
     extractTrackStats: TrackStatsExtractor,
   ): void {
     const trackStats = extractTrackStats(report, this.trackMapping(), this.pausedTracks());
@@ -942,7 +939,8 @@ export class Reactor implements Disposable {
     if (trackStats.length === 0) {
       return;
     }
-    const connectionStat = toClientConnectionStat(stats, !this.hasSentConnectTime);
+    const timeToConnectMs = this.hasSentConnectTime ? undefined : this.connectionTimings?.totalMs;
+    const connectionStat = toClientConnectionStat(report, timeToConnectMs);
 
     try {
       client.sendClientStats(trackStats, connectionStat);

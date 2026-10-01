@@ -6,7 +6,6 @@ import {
   toClientConnectionStat,
 } from './stats';
 import type { TrackMappingEntry } from './reactor-wasm.types';
-import type { ConnectionStats } from '../types';
 
 function makeReport(entries: Array<[string, unknown]>) {
   const map = new Map(entries);
@@ -484,39 +483,56 @@ describe('createTrackStatsExtractor()', () => {
 });
 
 describe('toClientConnectionStat()', () => {
-  const stats: ConnectionStats = {
+  const activePair = {
+    id: 'cp1',
+    type: 'candidate-pair',
+    state: 'succeeded',
+    nominated: true,
+    currentRoundTripTime: 0.025,
     availableOutgoingBitrate: 2_000_000,
-    connectionTimings: { sessionCreationMs: 100, transportConnectingMs: 750, totalMs: 850 },
-    timestamp: 1_700_000_000_000,
   };
 
-  it('carries the bandwidth estimate and, on the first report, the time to connect', () => {
-    expect(toClientConnectionStat(stats, true)).toEqual({
-      timestamp: 1_700_000_000_000,
-      metrics: { available_outgoing_bitrate_bps: 2_000_000, time_to_connect_ms: 850 },
-    });
-  });
+  it('reads the active pair on every report, and the time to connect only when given', () => {
+    const report = makeReport([['cp1', activePair]]);
 
-  it('carries only the bandwidth estimate on every report after the first', () => {
-    expect(toClientConnectionStat(stats, false).metrics).toEqual({ available_outgoing_bitrate_bps: 2_000_000 });
+    expect(toClientConnectionStat(report, 850).metrics).toEqual({
+      available_outgoing_bitrate_bps: 2_000_000,
+      connection_rtt_ms: 25,
+      time_to_connect_ms: 850,
+    });
+    expect(toClientConnectionStat(report).metrics).toEqual({
+      available_outgoing_bitrate_bps: 2_000_000,
+      connection_rtt_ms: 25,
+    });
   });
 
   it('carries the receive-side estimate when the browser has one', () => {
-    expect(toClientConnectionStat({ ...stats, availableIncomingBitrate: 5_000_000 }, false).metrics).toEqual({
+    const report = makeReport([['cp1', { ...activePair, availableIncomingBitrate: 5_000_000 }]]);
+
+    expect(toClientConnectionStat(report).metrics).toMatchObject({ available_incoming_bitrate_bps: 5_000_000 });
+  });
+
+  it("reads the transport's selected pair, not an idle nominated one", () => {
+    const report = makeReport([
+      ['cp0', { id: 'cp0', type: 'candidate-pair', state: 'succeeded', nominated: true, currentRoundTripTime: 0.001 }],
+      ['cp1', activePair],
+      ['t1', { id: 't1', type: 'transport', selectedCandidatePairId: 'cp1' }],
+    ]);
+
+    expect(toClientConnectionStat(report).metrics).toEqual({
       available_outgoing_bitrate_bps: 2_000_000,
-      available_incoming_bitrate_bps: 5_000_000,
+      connection_rtt_ms: 25,
     });
   });
 
-  it('carries the connection round-trip time, one value for every track', () => {
-    expect(toClientConnectionStat({ ...stats, rtt: 36.9 }, false).metrics).toEqual({
-      available_outgoing_bitrate_bps: 2_000_000,
-      connection_rtt_ms: 36.9,
-    });
+  it('is the same on every call: it keeps no state between reports', () => {
+    const report = makeReport([['cp1', activePair]]);
+
+    expect(toClientConnectionStat(report).metrics).toEqual(toClientConnectionStat(report).metrics);
   });
 
-  it('leaves out facts the browser/handshake has not produced yet', () => {
-    expect(toClientConnectionStat({ timestamp: 1_700_000_000_000 }, true).metrics).toEqual({});
+  it('leaves out what the browser has not produced yet', () => {
+    expect(toClientConnectionStat(makeReport([])).metrics).toEqual({});
   });
 });
 
