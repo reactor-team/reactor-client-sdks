@@ -827,6 +827,7 @@ impl Reactor {
             }
             ServerPayload::ModelSchema(_)
             | ServerPayload::PublishTrack(_)
+            | ServerPayload::SessionEnded(_)
             | ServerPayload::Error(_) => {}
         }
     }
