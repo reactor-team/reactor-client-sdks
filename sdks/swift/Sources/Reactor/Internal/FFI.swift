@@ -184,6 +184,13 @@ struct FFI: Sendable {
     var requestSchema:
         @Sendable (OpaquePointer?, reactor_completion_fn?, UnsafeMutableRawPointer?) -> Void
 
+    /// `reactor_get_stats` — a statistics snapshot for the live connection.
+    ///
+    /// Asynchronous because the engine collects the report on its own thread and
+    /// waits for it, which can take seconds in the pathological case.
+    var getStats:
+        @Sendable (OpaquePointer?, reactor_completion_fn?, UnsafeMutableRawPointer?) -> Void
+
     /// `reactor_upload_file` — upload from a path on disk.
     var uploadFile:
         @Sendable (
@@ -280,6 +287,9 @@ extension FFI {
         },
         requestSchema: { handle, completion, userdata in
             reactor_request_schema(handle, completion, userdata)
+        },
+        getStats: { handle, completion, userdata in
+            reactor_get_stats(handle, completion, userdata)
         },
         uploadFile: { handle, path, completion, userdata in
             reactor_upload_file(handle, path, completion, userdata)
