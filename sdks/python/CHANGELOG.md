@@ -9,6 +9,16 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Commands larger than 256 KiB are sent instead of failing with
+  `MESSAGE_TOO_LARGE`, up to 64 MiB, when the runtime negotiates data-channel
+  chunking. The offer asks for it (`a=x-reactor-dc-chunking`); a runtime that
+  does not answer it keeps today's 256 KiB limit, so nothing changes against
+  one that has not been updated. Messages of every size also leave in fewer
+  round trips (dcsctp's `max_burst` goes from 4 to 256). Requires
+  reactor-webrtc 0.19.
+
 ## [1.6.0] - 2026-09-15
 
 ### Added
