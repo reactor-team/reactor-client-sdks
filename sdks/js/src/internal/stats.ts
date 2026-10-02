@@ -102,9 +102,9 @@ function secondsToMs(seconds: number): number {
  *  outside this set, so a track negotiated onto anything else is left out
  *  of the batch rather than taking every other track's reading down with it.
  *
- *  Mirrors `client_track_codec` in `crates/reactor-core/src/stats.rs`, whose
- *  test fails when the wire gains a codec it doesn't map: add it there and
- *  here together. */
+ *  Mirrors `client_track_codec` in `crates/reactor-core/src/stats.rs`. A
+ *  reactor-core test compares this list with the wire's codec enums, so it
+ *  fails when the wire gains a codec: add it there and here together. */
 const WIRE_CODECS: Record<TrackKind, ReadonlySet<string>> = {
   video: new Set(['vp8', 'vp9', 'av1', 'h264', 'h265']),
   audio: new Set(['opus']),

@@ -610,6 +610,46 @@ mod tests {
         }
     }
 
+    /// The wire's codec names for each kind, from the enums themselves.
+    fn wire_codec_names() -> (Vec<String>, Vec<String>) {
+        let video = (1..)
+            .map_while(|value| VideoCodec::try_from(value).ok())
+            .map(|codec| format!("{codec:?}").to_lowercase())
+            .collect();
+        let audio = (1..)
+            .map_while(|value| AudioCodec::try_from(value).ok())
+            .map(|codec| format!("{codec:?}").to_lowercase())
+            .collect();
+        (video, audio)
+    }
+
+    /// The JS SDK filters codecs with its own `WIRE_CODECS` list before it
+    /// calls this table. A wire codec missing there would drop that track's
+    /// readings without a word, and an extra one would fail the whole batch,
+    /// so the two lists must be the same.
+    #[test]
+    fn js_sdk_codec_list_matches_the_wire() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../sdks/js/src/internal/stats.ts"
+        );
+        let source = std::fs::read_to_string(path).expect("read the JS SDK's stats.ts");
+        let set_for = |kind: &str| -> Vec<String> {
+            let start = source
+                .find(&format!("{kind}: new Set(["))
+                .unwrap_or_else(|| panic!("no {kind} codec set in stats.ts"));
+            let rest = &source[start..];
+            let list = &rest[rest.find('[').unwrap() + 1..rest.find(']').unwrap()];
+            list.split(',')
+                .map(|name| name.trim().trim_matches('\'').to_string())
+                .filter(|name| !name.is_empty())
+                .collect()
+        };
+        let (video, audio) = wire_codec_names();
+        assert_eq!(set_for("video"), video, "video codecs");
+        assert_eq!(set_for("audio"), audio, "audio codecs");
+    }
+
     #[test]
     fn client_track_codec_refuses_a_codec_of_the_other_kind() {
         assert!(client_track_codec(TrackKind::Audio, "vp9").is_err());
