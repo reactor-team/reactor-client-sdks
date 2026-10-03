@@ -9,6 +9,20 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.0.3]
+
+### Fixed
+
+- `Reactor.downloadClipAsFile()` now stops polling once this session leaves
+  `"ready"`, instead of only ever stopping via the standalone
+  `downloadClipAsFile()`'s opt-in `slackMs` / `maxRetries` — omitted by
+  default, so a clip whose boundary chunk never closes (the session stopped
+  generating before reaching it) polled a permanent `202` forever. An
+  `AbortController` internal to the call now aborts the poll the moment
+  `getStatus()` leaves `"ready"` — checked both up front and on every
+  subsequent `"statusChanged"` — while still honoring a caller's own
+  `options.signal` alongside it, whichever fires first.
+
 ## [3.0.2]
 
 ### Fixed
