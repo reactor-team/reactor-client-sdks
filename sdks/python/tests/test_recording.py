@@ -9,18 +9,21 @@ exactly that, so most of this runs a real (loopback) HTTP server instead.
 
 from __future__ import annotations
 
+import asyncio
 import http.server
 import json
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
+from pathlib import Path
 from unittest import mock
 
 import pytest
 
-from reactor_sdk import Clip, Reactor
+from reactor_sdk import Clip, Reactor, ReactorError, RequestTimeoutError, _ffi
 from reactor_sdk._recording import _retry_delay, download_clip
 
 # Distinct, length-different payloads so a swapped or duplicated segment shows
@@ -421,11 +424,12 @@ class TestRetryDelay:
 
 class TestReactorDownloadConvenience:
     """`Reactor.download_clip()` / `download_recording()` are `request_*()` +
-    the module-level `download_clip()` in one call — tested through both
-    halves for real (a real HTTP fetch of the resulting playlist), not just
-    that the delegation happens."""
+    `Reactor.download()` in one call. `_download_via_ffi` is stubbed here —
+    this class is only about the delegation (the right `Clip` and arguments
+    reaching it); `_download_via_ffi`'s own behavior, the real native
+    downloader, is `TestDownloadViaFFI`'s job below."""
 
-    def _reactor(self, monkeypatch: pytest.MonkeyPatch, server_url: str, kind: str) -> Reactor:
+    def _reactor(self, monkeypatch: pytest.MonkeyPatch, kind: str) -> Reactor:
         payload = json.dumps(
             {
                 "session_id": "s1",
@@ -434,7 +438,7 @@ class TestReactorDownloadConvenience:
                 "end_marker": 10.0,
                 "now_marker": 10.0,
                 "predicted_ready_at_ms": 0.0,
-                "playlist_url": f"{server_url}/hls/clip.m3u8",
+                "playlist_url": "https://coordinator.example/hls/clip.m3u8",
             }
         ).encode()
 
@@ -451,33 +455,167 @@ class TestReactorDownloadConvenience:
         return reactor
 
     async def test_download_clip_requests_then_downloads(
-        self, monkeypatch: pytest.MonkeyPatch, server_url: str
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        reactor = self._reactor(monkeypatch, server_url, kind="clip")
+        reactor = self._reactor(monkeypatch, kind="clip")
+        download = mock.AsyncMock(return_value=b"the-bytes")
+        monkeypatch.setattr(reactor, "_download_via_ffi", download)
+
         data = await reactor.download_clip(10)
-        assert data == _INIT + _SEG0 + _SEG1
+
+        assert data == b"the-bytes"
+        clip, path = download.call_args.args
+        assert (clip.session_id, clip.kind) == ("s1", "clip")
+        assert path is None
+        assert download.call_args.kwargs == {"on_progress": None, "ready_timeout": None}
 
     async def test_download_clip_streams_to_a_path(
-        self, monkeypatch: pytest.MonkeyPatch, server_url: str, tmp_path: object
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: object
     ) -> None:
-        reactor = self._reactor(monkeypatch, server_url, kind="clip")
+        reactor = self._reactor(monkeypatch, kind="clip")
+        download = mock.AsyncMock(return_value=None)
+        monkeypatch.setattr(reactor, "_download_via_ffi", download)
         out = tmp_path / "clip.mp4"  # type: ignore[operator]
-        result = await reactor.download_clip(10, out)
+
+        result = await reactor.download_clip(10, out, ready_timeout=5.0)
+
         assert result is None
-        assert out.read_bytes() == _INIT + _SEG0 + _SEG1
+        assert download.call_args.args[1] == out
+        assert download.call_args.kwargs["ready_timeout"] == 5.0
 
     async def test_download_recording_requests_then_downloads(
-        self, monkeypatch: pytest.MonkeyPatch, server_url: str
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        reactor = self._reactor(monkeypatch, server_url, kind="recording")
+        reactor = self._reactor(monkeypatch, kind="recording")
+        download = mock.AsyncMock(return_value=b"the-bytes")
+        monkeypatch.setattr(reactor, "_download_via_ffi", download)
+
         data = await reactor.download_recording()
-        assert data == _INIT + _SEG0 + _SEG1
+
+        assert data == b"the-bytes"
+        assert download.call_args.args[0].kind == "recording"
 
     async def test_download_recording_streams_to_a_path(
-        self, monkeypatch: pytest.MonkeyPatch, server_url: str, tmp_path: object
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: object
     ) -> None:
-        reactor = self._reactor(monkeypatch, server_url, kind="recording")
+        reactor = self._reactor(monkeypatch, kind="recording")
+        download = mock.AsyncMock(return_value=None)
+        monkeypatch.setattr(reactor, "_download_via_ffi", download)
         out = tmp_path / "recording.mp4"  # type: ignore[operator]
+
         result = await reactor.download_recording(out)
+
+        assert result is None
+        assert download.call_args.args[1] == out
+
+
+def _library_available() -> bool:
+    """Resolve the library path without loading it — see
+    `test_ffi_bindings.py`'s own copy of this for why (collection-time,
+    before caching)."""
+    try:
+        return Path(_ffi._find_lib()).is_file()
+    except FileNotFoundError:
+        return False
+
+
+@pytest.mark.skipif(
+    not _library_available(),
+    reason="libreactor_ffi not built; run `cargo build -p reactor-ffi --release`",
+)
+class TestDownloadViaFFI:
+    """`Reactor.download()` (and, through it, `download_clip()` /
+    `download_recording()`) against the real `reactor_download_clip` — the
+    same native call the C++ and Swift SDKs make. No mocked `get_lib()` here:
+    `handle=None` (this `Reactor` is never connected) exercises the FFI's own
+    documented "nothing to ask" contract for a session-less download, which is
+    what a `Clip` handed to `download()` without a live client needs to work
+    at all.
+    """
+
+    def _reactor(self) -> Reactor:
+        return Reactor("m", jwt="fake")
+
+    async def test_downloads_to_a_path(self, server_url: str, tmp_path: object) -> None:
+        reactor = self._reactor()
+        out = tmp_path / "clip.mp4"  # type: ignore[operator]
+
+        result = await reactor.download(_clip(f"{server_url}/hls/clip.m3u8"), out)
+
         assert result is None
         assert out.read_bytes() == _INIT + _SEG0 + _SEG1
+
+    async def test_downloads_without_a_path_returns_bytes_and_leaves_no_temp_file(
+        self, server_url: str, tmp_path: object
+    ) -> None:
+        reactor = self._reactor()
+        # The native call always writes somewhere — this only proves it isn't
+        # left behind once `download()` has read it back.
+        before = set(Path(tempfile.gettempdir()).glob("reactor-download-*"))
+
+        data = await reactor.download(_clip(f"{server_url}/hls/clip.m3u8"))
+
+        assert data == _INIT + _SEG0 + _SEG1
+        after = set(Path(tempfile.gettempdir()).glob("reactor-download-*"))
+        assert after == before
+
+    async def test_progress_is_reported_per_segment_in_order(self, server_url: str) -> None:
+        reactor = self._reactor()
+        calls: list[tuple[int, int]] = []
+
+        await reactor.download(
+            _clip(f"{server_url}/hls/clip.m3u8"),
+            on_progress=lambda done, total: calls.append((done, total)),
+        )
+
+        assert calls == [(1, 3), (2, 3), (3, 3)]
+
+    async def test_the_token_reaches_the_playlist_and_its_segments(self, server_url: str) -> None:
+        reactor = Reactor("m", jwt=_TOKEN)
+        data = await reactor.download(_clip(f"{server_url}/auth/clip.m3u8"))
+        assert data == _INIT + _SEG0
+
+    async def test_a_missing_playlist_raises(self, server_url: str) -> None:
+        reactor = self._reactor()
+        with pytest.raises(ReactorError):
+            await reactor.download(_clip(f"{server_url}/hls/does-not-exist.m3u8"))
+
+    async def test_a_permanent_202_raises_request_timeout_after_ready_timeout(
+        self, server_url: str
+    ) -> None:
+        reactor = self._reactor()
+        with pytest.raises(RequestTimeoutError):
+            await reactor.download(_clip(f"{server_url}/never/clip.m3u8"), ready_timeout=0.3)
+
+    async def test_closing_the_client_mid_download_raises_without_hanging_or_crashing(
+        self, server_url: str
+    ) -> None:
+        """The memory-safety case `_LIVE_DOWNLOAD_CALLBACKS` exists for: a
+        download is detached on the native side specifically so it survives
+        `reactor_destroy`, so `close()` must settle the awaiting call without
+        freeing the trampolines a still-running native fetch holds a raw
+        pointer to — freeing them here would be a use-after-free the next
+        time that fetch calls back. A wrong fix would either hang (never
+        settling the future) or crash the interpreter (a bad free) — simply
+        reaching the `pytest.raises` below, promptly, already rules out both.
+
+        Which error wins is a genuine race, not something this pins down: the
+        native side's own liveness check usually notices the destroyed handle
+        and settles the future itself before `close()`'s own
+        belt-and-suspenders settling in `_destroy_handle()` gets to it.
+        Either is the detached download behaving correctly; only a hang or a
+        crash would mean it wasn't.
+        """
+        reactor = Reactor("m", jwt="fake")
+        # Local-only: constructs the native handle without a network round trip
+        # — see its own docstring. A real handle is the point of this test:
+        # `close()` on a never-connected one (`_handle is None`) returns
+        # before touching `_pending_downloads` at all.
+        reactor._create_handle()
+
+        download = asyncio.ensure_future(reactor.download(_clip(f"{server_url}/never/clip.m3u8")))
+        await asyncio.sleep(0.1)  # let the first poll land before closing
+        reactor.close()
+
+        with pytest.raises(ReactorError):
+            await download

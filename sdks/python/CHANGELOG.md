@@ -9,6 +9,32 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-09-18
+
+### Fixed
+
+- `Reactor.download()`, `download_clip()`, and `download_recording()` now
+  fetch through the native `reactor_download_clip` — the same call the C++
+  and Swift SDKs make — instead of a pure-Python HTTP poll of their own.
+  Session liveness comes from the handle these three already hold, the way it
+  does for every other binding, rather than a separately-wired `while_live`
+  predicate two of the three had quietly stopped getting: previously only
+  `download()` passed one to the old poll, so a clip whose boundary chunk
+  never closed (e.g. because the session stopped generating) left
+  `download_clip()` / `download_recording()` polling a permanent 202
+  indefinitely instead of raising. That class of bug — a rule kept in sync by
+  hand across call sites instead of enforced by there being only one — is now
+  structurally not possible for these three: there is no Python-side poll
+  left to forget to wire it into.
+
+  Signatures and return types are unchanged, including the no-`path` case
+  (returns the assembled bytes): the native call only ever writes to disk, so
+  omitting `path` now streams to a private temporary file and reads it back,
+  rather than assembling the response in memory segment-by-segment.
+  `download_clip()` (the module-level function, for a caller with a `Clip`
+  but no live `Reactor`) is untouched — the native call needs a session
+  handle to bound its wait usefully, which this one is not given.
+
 ## [1.6.0] - 2026-09-15
 
 ### Added
