@@ -16,6 +16,7 @@ crate-type = ["cdylib", "rlib"]
 # host-side `cargo check --workspace` never builds web-sys at all.
 [target.'cfg(target_family = "wasm")'.dependencies]
 reactor-core = { workspace = true }
+reactor-webrtc-dc-chunking = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
 async-trait  = { workspace = true }

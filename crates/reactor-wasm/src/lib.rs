@@ -44,6 +44,8 @@
 #[cfg(target_family = "wasm")]
 mod auth;
 #[cfg(target_family = "wasm")]
+mod chunking;
+#[cfg(target_family = "wasm")]
 mod client;
 #[cfg(target_family = "wasm")]
 mod http;
