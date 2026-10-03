@@ -9,6 +9,15 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Commands larger than 256 KiB are sent instead of failing with
+  `MESSAGE_TOO_LARGE`, up to 64 MiB, when the runtime negotiates data-channel
+  chunking. The offer asks for it (`a=x-reactor-dc-chunking`), and messages
+  travel as 4 KiB frames, the size that measured best with the browser's own
+  SCTP settings. A runtime that does not answer it keeps today's limit, so
+  nothing changes against one that has not been updated.
+
 ## [3.0.2]
 
 ### Fixed
