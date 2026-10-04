@@ -44,6 +44,11 @@ impl Negotiation {
     pub(crate) fn on_answer(&self, answer: &str) {
         self.0.set(sdp::parse(answer));
     }
+
+    /// Forget an answer the browser rejected.
+    pub(crate) fn clear(&self) {
+        self.0.set(None);
+    }
 }
 
 struct Chunked {

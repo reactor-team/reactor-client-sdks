@@ -449,16 +449,24 @@ impl PeerTransport for WasmPeerTransport {
     }
 
     async fn set_remote_description(&self, sdp_answer: &str) -> Result<(), CoreError> {
-        let promise = {
+        let (promise, negotiation) = {
             let state = self.state.borrow();
             let state = state.as_ref().ok_or_else(not_prepared)?;
             let answer = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
             answer.set_sdp(sdp_answer);
-            state.pc.set_remote_description(&answer)
-        };
-        JsFuture::from(promise).await.map_err(js_err)?;
-        if let Some(state) = self.state.borrow().as_ref() {
+            // Recorded before the answer is applied, so the channels, which
+            // decide at `onopen`, cannot see the negotiation unset: a channel
+            // that opened on raw frames while the runtime framed would hand the
+            // core frame headers.
             state.negotiation.on_answer(sdp_answer);
+            (
+                state.pc.set_remote_description(&answer),
+                state.negotiation.clone(),
+            )
+        };
+        if let Err(error) = JsFuture::from(promise).await {
+            negotiation.clear();
+            return Err(js_err(error));
         }
         self.refresh_max_message_bytes();
         Ok(())
