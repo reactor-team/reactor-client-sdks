@@ -18,6 +18,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   one made less than 200 ms after the last, and the call throws `invalidState`
   unless the session is ready.
 
+## [1.2.0] - 2026-10-05
+
 ### Changed
 
 - Commands larger than 256 KiB are sent instead of failing with
