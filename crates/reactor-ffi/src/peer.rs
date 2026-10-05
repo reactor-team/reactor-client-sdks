@@ -22,8 +22,8 @@ use reactor_core::protocol::session::{TrackCapability, TrackDirection, TrackKind
 use reactor_core::protocol::webrtc::{IceCandidate, IceServer, TrackMappingEntry};
 
 use reactor_webrtc::{
-    AdmMode, AudioTrack, ContinualGatheringPolicy, DataChannel, DataChannelState,
-    IceCandidatePairState, IceCandidateType as RwIceCandidateType, IceGatheringState,
+    AdmMode, AudioTrack, ContinualGatheringPolicy, DataChannel, DataChannelState, DcChunking,
+    DcSendError, IceCandidatePairState, IceCandidateType as RwIceCandidateType, IceGatheringState,
     IceServer as RwIceServer, MediaKind, PeerConnection, PeerConnectionFactory,
     PeerConnectionObserver, PeerConnectionState, RelayProtocol as RwRelayProtocol, RemoteTrack,
     RtcConfiguration, SdpType, SessionDescription, StatsReport, StreamKind as RwStreamKind, Track,
@@ -57,7 +57,26 @@ fn send_on_channel(channel: &DataChannel, payload: &[u8], binary: bool) -> Resul
             channel.state()
         )));
     }
-    channel.send(payload, binary).map_err(peer_err)
+    channel.send(payload, binary).map_err(send_err)
+}
+
+/// A send the channel refused whole, as the caller can act on it.
+///
+/// A message larger than the effective limit (the smaller of this side's and
+/// the runtime's) is the same `MessageTooLarge` that `max_message_bytes` lets
+/// the core raise before sending: the core checks this side's limit, and only
+/// the channel knows the runtime's. A full chunked queue stays a transport
+/// error; it clears as the queue drains.
+fn send_err(e: reactor_webrtc::Error) -> CoreError {
+    match e {
+        reactor_webrtc::Error::DataChannel(DcSendError::TooLarge { size, max }) => {
+            CoreError::MessageTooLarge {
+                size: usize::try_from(size).unwrap_or(usize::MAX),
+                max: usize::try_from(max).unwrap_or(usize::MAX),
+            }
+        }
+        other => peer_err(other),
+    }
 }
 
 /// Which audio device module to use when the host does not say.
@@ -351,10 +370,13 @@ impl ReactorWebRtcPeerTransport {
     pub fn with_adm_mode(event_tx: UnboundedSender<PeerEvent>, mode: AdmMode) -> Self {
         info!("[peer] audio device module: {mode:?}");
         // SPED is factory-wide: libwebrtc reads it from the engine's environment
-        // rather than per connection.
+        // rather than per connection, and so is dcsctp's max_burst, which
+        // data-channel chunking sets. Chunking is offered to every connection;
+        // a runtime that does not mirror it keeps the plain channel.
         let factory = PeerConnectionFactory::builder()
             .with_adm(mode)
             .with_dtls_in_stun(true)
+            .with_dc_chunking(DcChunking::default())
             .build()
             .expect("create PeerConnectionFactory");
         Self {
@@ -429,6 +451,9 @@ impl ReactorWebRtcPeerTransport {
 /// lets the data channel skip SCTP's cookie exchange. A server that does not
 /// negotiates the ordinary handshake. The DTLS half of the same saving is
 /// factory-wide — see `with_adm_mode`.
+///
+/// Data-channel chunking rides on the offer too (`a=x-reactor-dc-chunking`),
+/// with the limits the factory was built with.
 fn offer_config(ice_servers: &[IceServer]) -> RtcConfiguration {
     RtcConfiguration {
         ice_servers: ice_servers
@@ -449,6 +474,7 @@ fn offer_config(ice_servers: &[IceServer]) -> RtcConfiguration {
             .collect(),
         continual_gathering_policy: ContinualGatheringPolicy::GatherContinually,
         sctp_snap: true,
+        dc_chunking: true,
         ..Default::default()
     }
 }
@@ -600,8 +626,8 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             track_directions.push(track.direction);
         }
 
-        let mut data_ch = pc.create_data_channel("data").map_err(peer_err)?;
-        let mut control_ch = pc.create_data_channel("control").map_err(peer_err)?;
+        let data_ch = pc.create_data_channel("data").map_err(peer_err)?;
+        let control_ch = pc.create_data_channel("control").map_err(peer_err)?;
 
         let tx = self.event_tx.clone();
         data_ch.on_open(move || {
@@ -690,6 +716,21 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
             sdp: sdp_answer.to_owned(),
         };
         pc.set_remote_description(&answer).map_err(peer_err)
+    }
+
+    /// The data channel's limit: this side's chunked limit once the channel
+    /// is chunked, the plain 256 KiB otherwise (and before it opens). A
+    /// runtime that advertised less is enforced by the channel itself, which
+    /// refuses with the same `MessageTooLarge`.
+    fn max_message_bytes(&self) -> usize {
+        let s = self.state.lock().unwrap();
+        let chunked = s.data_channel.as_ref().is_some_and(DataChannel::is_chunked);
+        match s.pc.as_ref().and_then(|pc| pc.dc_chunking()) {
+            Some(settings) if chunked => {
+                usize::try_from(settings.max_message_size).unwrap_or(usize::MAX)
+            }
+            _ => reactor_core::protocol::DEFAULT_MAX_MESSAGE_BYTES,
+        }
     }
 
     fn send_data(&self, payload: &[u8], binary: bool) -> Result<(), CoreError> {
@@ -928,6 +969,10 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
 mod audio_tests;
 
 #[cfg(test)]
+#[path = "dc_chunking_tests.rs"]
+mod dc_chunking_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1025,6 +1070,46 @@ mod tests {
     #[test]
     fn the_offer_asks_for_snap() {
         assert!(offer_config(&[]).sctp_snap);
+    }
+
+    #[test]
+    fn the_offer_asks_for_dc_chunking() {
+        assert!(offer_config(&[]).dc_chunking);
+    }
+
+    #[test]
+    fn a_message_too_large_for_the_channel_is_message_too_large() {
+        let refused = reactor_webrtc::Error::DataChannel(DcSendError::TooLarge {
+            size: 300_000,
+            max: 262_144,
+        });
+        assert!(matches!(
+            send_err(refused),
+            CoreError::MessageTooLarge {
+                size: 300_000,
+                max: 262_144
+            }
+        ));
+    }
+
+    #[test]
+    fn a_full_queue_stays_a_transport_error() {
+        let refused = reactor_webrtc::Error::DataChannel(DcSendError::QueueFull {
+            queued: 1,
+            size: 2,
+            limit: 2,
+        });
+        assert!(matches!(send_err(refused), CoreError::Peer(_)));
+    }
+
+    #[test]
+    fn before_a_connection_the_limit_is_the_plain_one() {
+        let (tx, _rx) = futures::channel::mpsc::unbounded();
+        let transport = ReactorWebRtcPeerTransport::with_adm_mode(tx, AdmMode::Synthetic);
+        assert_eq!(
+            transport.max_message_bytes(),
+            reactor_core::protocol::DEFAULT_MAX_MESSAGE_BYTES
+        );
     }
 
     /// The ICE servers the caller supplied still reach the offer alongside the WARP flag.

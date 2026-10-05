@@ -896,7 +896,12 @@ impl Reactor {
         }
         if let Err(error) = self.peer.send_data(&pending.payload, true) {
             self.data.cancel(&pending.request_id);
-            self.emit_error(error.details(Some("send_command")));
+            // A message the channel refuses as too large (the peer's limit, which
+            // only the channel knows) is the caller's to handle, as when the
+            // check above refuses it: returned, with no error event.
+            if !matches!(error, CoreError::MessageTooLarge { .. }) {
+                self.emit_error(error.details(Some("send_command")));
+            }
             return Err(error);
         }
         match timeout(&self.platform, request_timeout, command, pending.receiver).await {
@@ -1640,6 +1645,67 @@ mod tests {
         }
         async fn close(&self) -> Result<(), CoreError> {
             Ok(())
+        }
+    }
+
+    /// A command past the runtime's advertised limit, refused by the channel
+    /// itself, surfaces exactly like one refused by the size check before the
+    /// send: `MessageTooLarge` to the caller and no error event.
+    #[tokio::test]
+    async fn a_command_the_channel_refuses_as_too_large_emits_no_error_event() {
+        struct TooLargePeer;
+
+        #[async_trait::async_trait]
+        impl PeerTransport for TooLargePeer {
+            async fn prepare(
+                &self,
+                _: &[IceServer],
+                _: &[TrackCapability],
+            ) -> Result<PreparedOffer, CoreError> {
+                Ok(PreparedOffer {
+                    sdp_offer: String::new(),
+                    track_mapping: vec![],
+                })
+            }
+            async fn set_remote_description(&self, _: &str) -> Result<(), CoreError> {
+                Ok(())
+            }
+            fn send_data(&self, payload: &[u8], _: bool) -> Result<(), CoreError> {
+                Err(CoreError::MessageTooLarge {
+                    size: payload.len(),
+                    max: 1,
+                })
+            }
+            fn send_control(&self, _: &[u8]) -> Result<(), CoreError> {
+                Ok(())
+            }
+            async fn set_track_direction(&self, _: &str, _: bool) -> Result<(), CoreError> {
+                Ok(())
+            }
+            async fn close(&self) -> Result<(), CoreError> {
+                Ok(())
+            }
+        }
+
+        let reactor = Arc::new(Reactor::new(
+            ReactorDeps {
+                http: Arc::new(PendingHttp) as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: Arc::new(TooLargePeer) as SharedPeer,
+            },
+            ReactorOptions::new("http://localhost", "test-model"),
+        ));
+        reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+        let mut events = reactor.subscribe();
+
+        let refused = reactor.send_command("big", json!({}), None).await;
+        assert!(matches!(refused, Err(CoreError::MessageTooLarge { .. })));
+        while let Ok(event) = events.try_recv() {
+            assert!(
+                !matches!(event, ReactorEvent::Error(_)),
+                "a too-large refusal emitted an error event"
+            );
         }
     }
 

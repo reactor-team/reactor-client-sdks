@@ -17,6 +17,15 @@ repository = "https://github.com/reactor-team/reactor-client-sdks"
 reactor-protocol = { path = "crates/reactor-protocol" }
 reactor-core     = { path = "crates/reactor-core" }
 reactor-wasm     = { path = "crates/reactor-wasm" }
+# 0.19.1: the sys crate's source falls back to the p10 libwebrtc prebuilt, which
+# carries the max_burst patch, when WEBRTC_VERSION is not readable.
+#
+# 0.19: data-channel chunking — `PeerConnectionFactoryBuilder::with_dc_chunking`
+# and `RtcConfiguration::dc_chunking`. Messages past 256 KiB (up to 64 MiB) travel
+# as frames on channels both peers declare `a=x-reactor-dc-chunking` for, and
+# dcsctp's max_burst goes from 4 to 256. The SDK offers it; a runtime that does
+# not mirror it keeps the plain channel. DataChannel setters take `&self`.
+#
 # 0.18: the WARP connection-setup opt-ins — `RtcConfiguration::sctp_snap` and
 # `PeerConnectionFactoryBuilder::with_dtls_in_stun`. The SDK is the offerer, so
 # it is the side that has to ask for both; a runtime that does not answer them
@@ -36,7 +45,7 @@ reactor-wasm     = { path = "crates/reactor-wasm" }
 # instant the engine pushed the frame, and the field is named `capture_time_us`
 # for it (reactor-webrtc #64). 0.10 brought the outbound push that accepts a
 # capture time in the first place (#53); 0.11 is additive.
-reactor-webrtc   = "0.18"
+reactor-webrtc   = "0.19.1"
 
 serde       = { version = "1",   features = ["derive"] }
 serde_json  = "1"
