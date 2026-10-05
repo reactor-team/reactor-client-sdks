@@ -707,10 +707,17 @@ impl ClientStatsReporter {
             m.put("nack_count", Some(f64::from(s.nack_count)));
             // The far end's report about this stream — the only vantage point
             // onto its loss and round-trip time. Until one has arrived the
-            // engine reports zeroes for both, and the round-trip time is what
-            // says whether one has.
-            if s.round_trip_time_s > 0.0 {
+            // engine reports zeroes for both, and says nothing else about
+            // whether one has. A report can carry loss without a round-trip
+            // time (one sent before it has seen our sender report), so each
+            // reading stands on its own: a round-trip time or a loss count
+            // other than zero can only have come from a report, and a zero
+            // loss counts as reported once a round-trip time says a report
+            // arrived.
+            if s.round_trip_time_s > 0.0 || s.packets_lost != 0 {
                 m.put("packets_lost", Some(f64::from(s.packets_lost)));
+            }
+            if s.round_trip_time_s > 0.0 {
                 m.put(
                     "round_trip_time_ms",
                     Some(round_ms(s.round_trip_time_s * 1_000.0)),
@@ -1955,6 +1962,30 @@ mod tests {
         assert_eq!(metrics["packets_lost"], 12.0);
         assert_eq!(metrics["frames_per_second"], 30.0);
         assert_eq!(metrics["frame_width"], 640.0);
+    }
+
+    #[test]
+    fn a_sent_streams_loss_is_reported_without_a_round_trip_time() {
+        let webcam = |packets_lost| {
+            let mut s = sent(3, "2", "video/VP8", 0);
+            s.packets_lost = packets_lost;
+            let raw = TransportStats {
+                outbound: vec![s],
+                ..TransportStats::default()
+            };
+            let stats =
+                ClientStatsReporter::new().track_stats(&raw, &tracks(), &HashSet::new(), 0.0);
+            by_name(&stats, "webcam").metrics.clone()
+        };
+
+        let lossy = webcam(4);
+        assert_eq!(lossy["packets_lost"], 4.0);
+        assert!(!lossy.contains_key("round_trip_time_ms"));
+
+        // No round-trip time and no loss: nothing says a report has arrived.
+        let unreported = webcam(0);
+        assert!(!unreported.contains_key("packets_lost"));
+        assert!(!unreported.contains_key("round_trip_time_ms"));
     }
 
     #[test]
