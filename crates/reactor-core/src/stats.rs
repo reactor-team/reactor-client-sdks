@@ -35,13 +35,18 @@
 //!   browser does, because an audio-only session having no readable jitter is a
 //!   limitation rather than a definition.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use serde::Serialize;
 
 use crate::peer::{CandidatePairState, CandidatePairStats, StreamKind, TransportStats};
-use crate::protocol::session::TrackKind;
-use crate::protocol::wire::v1::platform::{client_track_stat, AudioCodec, VideoCodec};
+use crate::protocol::session::{TrackDirection, TrackKind};
+use crate::protocol::webrtc::TrackMappingEntry;
+use crate::protocol::wire::v1::platform::{
+    client_track_stat, AudioCodec, ClientConnectionStat, ClientTrackStat,
+    TrackDirection as WireTrackDirection, TrackKind as WireTrackKind, VideoCodec,
+};
 
 /// The shortest window a rate is derived over, in milliseconds.
 ///
@@ -574,6 +579,275 @@ pub fn client_track_codec(
             };
             Ok(client_track_stat::Codec::AudioCodec(codec as i32))
         }
+    }
+}
+
+// ── The runtime report ──────────────────────────────────────────────────────
+
+/// A duration in milliseconds rounded to the microsecond, so it travels as
+/// `0.811` rather than `0.8109999999999999`.
+fn round_ms(ms: f64) -> f64 {
+    (ms * 1_000.0).round() / 1_000.0
+}
+
+/// The previous reading of one RTP stream's byte counter.
+struct ByteSample {
+    bytes: u64,
+    at_ms: f64,
+}
+
+/// Builds the per-track part of the client-stats batch
+/// [`crate::reactor::Reactor::run_client_stats`] sends to the runtime: one
+/// [`ClientTrackStat`] per negotiated track, audio and video, sent and
+/// received.
+///
+/// The same readings under the same names as the browser SDK's
+/// `createTrackStatsExtractor` (`sdks/js/src/internal/stats.ts`), so the
+/// runtime sees one vocabulary whichever SDK a session came from. Where the
+/// engine has no reading the browser has — an audio stream's concealed
+/// samples, the far end's jitter on a sent stream, frames encoded — the metric
+/// is left out rather than approximated.
+///
+/// Holds each stream's previous byte counter, to turn the cumulative counter
+/// into a bitrate averaged over the interval since the previous batch; a
+/// stream's first batch carries no `bitrate_bps`. Kept apart from
+/// [`StatsSampler`]'s baseline on purpose: `get_stats()` callers poll on their
+/// own schedule, and a shared baseline would make each bitrate cover whatever
+/// window the other caller left.
+#[derive(Default)]
+pub struct ClientStatsReporter {
+    /// Keyed by direction too: one ssrc number can appear on a sent and a
+    /// received stream.
+    last_bytes: HashMap<(bool, u32), ByteSample>,
+}
+
+impl ClientStatsReporter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// One reading per track in *raw*, resolved to its track through the
+    /// stream's `mid` and *tracks*. A stream on a `mid` that hasn't negotiated
+    /// onto a named track, or whose codec isn't known yet or isn't one the
+    /// wire carries, is skipped. With several streams on one `mid` (simulcast
+    /// layers), the first one reported stands for the track.
+    ///
+    /// Counters are reported raw and cumulative (`packets_lost` and
+    /// `packets_received`, not a loss ratio), so the runtime's aggregation
+    /// across sessions stays a sum of sums. Readings the engine reports as
+    /// `0.0` for "not measured yet" — frame rate, frame size, round-trip time —
+    /// are left out while they are zero, so they can't pass for a real zero.
+    pub fn track_stats(
+        &mut self,
+        raw: &TransportStats,
+        tracks: &[TrackMappingEntry],
+        paused: &HashSet<String>,
+        now_ms: f64,
+    ) -> Vec<ClientTrackStat> {
+        let mut seen: HashSet<(bool, &str)> = HashSet::new();
+        let mut stats = Vec::new();
+
+        for s in &raw.inbound {
+            let Some((track, codec)) = resolve(
+                tracks,
+                TrackDirection::Recvonly,
+                s.mid.as_deref(),
+                s.codec_mime_type.as_deref(),
+            ) else {
+                continue;
+            };
+            if !seen.insert((true, track.mid.as_str())) {
+                continue;
+            }
+            let mut m = Metrics::default();
+            m.put(
+                "bitrate_bps",
+                self.bitrate((true, s.ssrc), s.bytes_received, now_ms),
+            );
+            m.put("packets_received", Some(f64::from(s.packets_received)));
+            m.put("packets_lost", Some(f64::from(s.packets_lost)));
+            m.put("jitter_ms", Some(round_ms(s.jitter_s * 1_000.0)));
+            m.put("nack_count", Some(f64::from(s.nack_count)));
+            if track.kind == TrackKind::Video {
+                m.put_measured("frames_per_second", s.frames_per_second);
+                m.put("frames_decoded", Some(f64::from(s.frames_decoded)));
+                m.put("frames_dropped", Some(f64::from(s.frames_dropped)));
+                m.put_measured("frame_width", f64::from(s.frame_width));
+                m.put_measured("frame_height", f64::from(s.frame_height));
+                m.put(
+                    "keyframe_requests",
+                    Some(f64::from(s.pli_count) + f64::from(s.fir_count)),
+                );
+            }
+            stats.push(track_stat(track, codec, paused, m, now_ms));
+        }
+
+        for s in &raw.outbound {
+            let Some((track, codec)) = resolve(
+                tracks,
+                TrackDirection::Sendonly,
+                s.mid.as_deref(),
+                s.codec_mime_type.as_deref(),
+            ) else {
+                continue;
+            };
+            if !seen.insert((false, track.mid.as_str())) {
+                continue;
+            }
+            let mut m = Metrics::default();
+            m.put(
+                "bitrate_bps",
+                self.bitrate((false, s.ssrc), s.bytes_sent, now_ms),
+            );
+            m.put("packets_sent", Some(s.packets_sent as f64));
+            m.put(
+                "retransmitted_packets_sent",
+                Some(s.retransmitted_packets_sent as f64),
+            );
+            m.put("nack_count", Some(f64::from(s.nack_count)));
+            // The far end's report about this stream — the only vantage point
+            // onto its loss and round-trip time. Until one has arrived the
+            // engine reports zeroes for both, and the round-trip time is what
+            // says whether one has.
+            if s.round_trip_time_s > 0.0 {
+                m.put("packets_lost", Some(f64::from(s.packets_lost)));
+                m.put(
+                    "round_trip_time_ms",
+                    Some(round_ms(s.round_trip_time_s * 1_000.0)),
+                );
+            }
+            if track.kind == TrackKind::Video {
+                m.put_measured("frames_per_second", s.frames_per_second);
+                m.put_measured("frame_width", f64::from(s.frame_width));
+                m.put_measured("frame_height", f64::from(s.frame_height));
+                m.put(
+                    "keyframe_requests",
+                    Some(f64::from(s.pli_count) + f64::from(s.fir_count)),
+                );
+            }
+            stats.push(track_stat(track, codec, paused, m, now_ms));
+        }
+
+        stats
+    }
+
+    /// The stream's bitrate since the previous batch, in bits per second, and
+    /// the baseline for the next one. `None` on a stream's first batch, and
+    /// when the counter went backwards (a reset engine) or no time passed.
+    fn bitrate(&mut self, key: (bool, u32), bytes: u64, now_ms: f64) -> Option<f64> {
+        let previous = self.last_bytes.insert(
+            key,
+            ByteSample {
+                bytes,
+                at_ms: now_ms,
+            },
+        )?;
+        if now_ms <= previous.at_ms || bytes < previous.bytes {
+            return None;
+        }
+        let bits = (bytes - previous.bytes) as f64 * 8.0;
+        Some((bits * 1_000.0 / (now_ms - previous.at_ms)).round())
+    }
+}
+
+/// The track a stream on *mid* belongs to, and its wire codec.
+fn resolve<'a>(
+    tracks: &'a [TrackMappingEntry],
+    direction: TrackDirection,
+    mid: Option<&str>,
+    mime_type: Option<&str>,
+) -> Option<(&'a TrackMappingEntry, client_track_stat::Codec)> {
+    let mid = mid?;
+    let track = tracks
+        .iter()
+        .find(|t| t.mid == mid && t.direction == direction)?;
+    // "video/VP9" -> "vp9".
+    let name = mime_type?.split('/').nth(1)?.to_ascii_lowercase();
+    let codec = client_track_codec(track.kind, &name).ok()?;
+    Some((track, codec))
+}
+
+fn track_stat(
+    track: &TrackMappingEntry,
+    codec: client_track_stat::Codec,
+    paused: &HashSet<String>,
+    metrics: Metrics,
+    now_ms: f64,
+) -> ClientTrackStat {
+    let kind = match track.kind {
+        TrackKind::Video => WireTrackKind::Video,
+        TrackKind::Audio => WireTrackKind::Audio,
+    };
+    let direction = match track.direction {
+        TrackDirection::Recvonly => WireTrackDirection::Recvonly,
+        TrackDirection::Sendonly => WireTrackDirection::Sendonly,
+    };
+    ClientTrackStat {
+        timestamp: now_ms as i64,
+        track_name: track.name.clone(),
+        kind: kind as i32,
+        direction: direction as i32,
+        codec: Some(codec),
+        paused: paused.contains(&track.name),
+        metrics: metrics.0,
+    }
+}
+
+/// A batch's named readings. A value that isn't finite is left out: the wire
+/// carries a double, and a NaN reaching the runtime's aggregation poisons
+/// every sum it lands in.
+#[derive(Default)]
+struct Metrics(HashMap<String, f64>);
+
+impl Metrics {
+    fn put(&mut self, key: &str, value: Option<f64>) {
+        if let Some(value) = value.filter(|v| v.is_finite()) {
+            self.0.insert(key.to_string(), value);
+        }
+    }
+
+    /// A reading the engine reports as `0.0` until it has measured one.
+    fn put_measured(&mut self, key: &str, value: f64) {
+        self.put(key, Some(value).filter(|v| *v > 0.0));
+    }
+}
+
+/// The connection-wide part of the client-stats batch, read off the live
+/// candidate pair (see [`live_pair`]) — the same readings as the browser SDK's
+/// `toClientConnectionStat`:
+///
+/// - `available_outgoing_bitrate_bps` / `available_incoming_bitrate_bps`: the
+///   congestion controller's estimates.
+/// - `connection_rtt_ms`: the ICE round-trip time.
+/// - `time_to_connect_ms`: *time_to_connect_ms*, a one-time fact the caller
+///   passes only on the first batch after connecting.
+///
+/// Each is left out while the engine reports `0.0` for it, which is how it
+/// says "no estimate yet".
+pub fn client_connection_stat(
+    raw: &TransportStats,
+    time_to_connect_ms: Option<f64>,
+    now_ms: f64,
+) -> ClientConnectionStat {
+    let mut m = Metrics::default();
+    if let Some(pair) = live_pair(&raw.candidate_pairs) {
+        m.put_measured(
+            "available_outgoing_bitrate_bps",
+            pair.available_outgoing_bitrate_bps,
+        );
+        m.put_measured(
+            "available_incoming_bitrate_bps",
+            pair.available_incoming_bitrate_bps,
+        );
+        m.put_measured(
+            "connection_rtt_ms",
+            round_ms(pair.current_round_trip_time_s * 1_000.0),
+        );
+    }
+    m.put("time_to_connect_ms", time_to_connect_ms.map(round_ms));
+    ClientConnectionStat {
+        timestamp: now_ms as i64,
+        metrics: m.0,
     }
 }
 
@@ -1341,5 +1615,396 @@ mod tests {
         assert_eq!(p["packets_received"], 0);
         // A 64-bit priority must survive as an integer, not round through a float.
         assert_eq!(p["priority"], 9_115_038_255_631_187_199u64);
+    }
+
+    // ── The runtime report ────────────────────────────────────────────────────
+
+    fn mapping(
+        name: &str,
+        kind: TrackKind,
+        direction: TrackDirection,
+        mid: &str,
+    ) -> TrackMappingEntry {
+        TrackMappingEntry {
+            name: name.to_string(),
+            kind,
+            direction,
+            mid: mid.to_string(),
+        }
+    }
+
+    fn received(ssrc: u32, mid: &str, mime: &str, bytes: u64) -> InboundRtpStats {
+        InboundRtpStats {
+            ssrc,
+            kind: if mime.starts_with("audio/") {
+                StreamKind::Audio
+            } else {
+                StreamKind::Video
+            },
+            mid: Some(mid.to_string()),
+            codec_mime_type: Some(mime.to_string()),
+            bytes_received: bytes,
+            ..InboundRtpStats::default()
+        }
+    }
+
+    fn sent(ssrc: u32, mid: &str, mime: &str, bytes: u64) -> OutboundRtpStats {
+        OutboundRtpStats {
+            ssrc,
+            mid: Some(mid.to_string()),
+            codec_mime_type: Some(mime.to_string()),
+            bytes_sent: bytes,
+            ..OutboundRtpStats::default()
+        }
+    }
+
+    fn tracks() -> Vec<TrackMappingEntry> {
+        vec![
+            mapping(
+                "main_video",
+                TrackKind::Video,
+                TrackDirection::Recvonly,
+                "0",
+            ),
+            mapping(
+                "main_audio",
+                TrackKind::Audio,
+                TrackDirection::Recvonly,
+                "1",
+            ),
+            mapping("webcam", TrackKind::Video, TrackDirection::Sendonly, "2"),
+        ]
+    }
+
+    fn by_name<'a>(stats: &'a [ClientTrackStat], name: &str) -> &'a ClientTrackStat {
+        stats
+            .iter()
+            .find(|s| s.track_name == name)
+            .unwrap_or_else(|| panic!("no reading for {name}"))
+    }
+
+    #[test]
+    fn each_stream_reaches_its_track_through_its_mid() {
+        let raw = TransportStats {
+            inbound: vec![
+                received(1, "0", "video/VP9", 0),
+                received(2, "1", "audio/opus", 0),
+            ],
+            outbound: vec![sent(3, "2", "video/H264", 0)],
+            ..TransportStats::default()
+        };
+        let paused = HashSet::from(["main_audio".to_string()]);
+
+        let stats = ClientStatsReporter::new().track_stats(&raw, &tracks(), &paused, 1_000.0);
+
+        assert_eq!(stats.len(), 3);
+        let video = by_name(&stats, "main_video");
+        assert_eq!(video.kind, WireTrackKind::Video as i32);
+        assert_eq!(video.direction, WireTrackDirection::Recvonly as i32);
+        assert_eq!(
+            video.codec,
+            Some(client_track_stat::Codec::VideoCodec(VideoCodec::Vp9 as i32))
+        );
+        assert_eq!(video.timestamp, 1_000);
+        assert!(!video.paused);
+        let audio = by_name(&stats, "main_audio");
+        assert_eq!(
+            audio.codec,
+            Some(client_track_stat::Codec::AudioCodec(
+                AudioCodec::Opus as i32
+            ))
+        );
+        assert!(audio.paused);
+        let webcam = by_name(&stats, "webcam");
+        assert_eq!(webcam.direction, WireTrackDirection::Sendonly as i32);
+        assert_eq!(
+            webcam.codec,
+            Some(client_track_stat::Codec::VideoCodec(
+                VideoCodec::H264 as i32
+            ))
+        );
+    }
+
+    /// The whole reason for the mid: two tracks of one kind are otherwise the
+    /// same to a reader.
+    #[test]
+    fn two_tracks_of_one_kind_are_told_apart() {
+        let tracks = vec![
+            mapping("left", TrackKind::Video, TrackDirection::Recvonly, "0"),
+            mapping("right", TrackKind::Video, TrackDirection::Recvonly, "1"),
+        ];
+        let mut left = received(1, "0", "video/VP8", 0);
+        left.packets_received = 11;
+        let mut right = received(2, "1", "video/VP8", 0);
+        right.packets_received = 22;
+        let raw = TransportStats {
+            inbound: vec![right, left],
+            ..TransportStats::default()
+        };
+
+        let stats = ClientStatsReporter::new().track_stats(&raw, &tracks, &HashSet::new(), 0.0);
+
+        assert_eq!(by_name(&stats, "left").metrics["packets_received"], 11.0);
+        assert_eq!(by_name(&stats, "right").metrics["packets_received"], 22.0);
+    }
+
+    /// A mid names a transceiver, and a sendrecv transceiver's sent and received
+    /// streams share it — so the direction has to match too.
+    #[test]
+    fn a_stream_only_matches_a_track_of_its_own_direction() {
+        let tracks = vec![mapping(
+            "webcam",
+            TrackKind::Video,
+            TrackDirection::Sendonly,
+            "0",
+        )];
+        let raw = TransportStats {
+            inbound: vec![received(1, "0", "video/VP8", 0)],
+            ..TransportStats::default()
+        };
+
+        let stats = ClientStatsReporter::new().track_stats(&raw, &tracks, &HashSet::new(), 0.0);
+
+        assert!(stats.is_empty());
+    }
+
+    #[test]
+    fn a_stream_without_a_track_or_a_wire_codec_is_left_out_and_the_rest_still_go() {
+        let mut no_mid = received(1, "0", "video/VP8", 0);
+        no_mid.mid = None;
+        let mut no_codec = received(2, "0", "video/VP8", 0);
+        no_codec.codec_mime_type = None;
+        let raw = TransportStats {
+            inbound: vec![
+                no_mid,
+                no_codec,
+                received(3, "9", "video/VP8", 0),
+                // A codec the wire has no value for.
+                received(4, "1", "audio/G722", 0),
+                received(5, "0", "video/VP8", 0),
+            ],
+            ..TransportStats::default()
+        };
+
+        let stats = ClientStatsReporter::new().track_stats(&raw, &tracks(), &HashSet::new(), 0.0);
+
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].track_name, "main_video");
+    }
+
+    /// Simulcast layers share a mid; the first one stands for the track rather
+    /// than the track being reported once per layer.
+    #[test]
+    fn one_reading_per_track_even_with_several_streams_on_its_mid() {
+        let raw = TransportStats {
+            outbound: vec![
+                sent(1, "2", "video/VP8", 100),
+                sent(2, "2", "video/VP8", 900),
+            ],
+            ..TransportStats::default()
+        };
+
+        let stats = ClientStatsReporter::new().track_stats(&raw, &tracks(), &HashSet::new(), 0.0);
+
+        assert_eq!(stats.len(), 1);
+    }
+
+    #[test]
+    fn a_bitrate_needs_a_previous_batch_and_covers_the_time_since_it() {
+        let mut reporter = ClientStatsReporter::new();
+        let at = |bytes| TransportStats {
+            inbound: vec![received(1, "0", "video/VP8", bytes)],
+            outbound: vec![sent(1, "2", "video/VP8", bytes * 2)],
+            ..TransportStats::default()
+        };
+
+        let first = reporter.track_stats(&at(10_000), &tracks(), &HashSet::new(), 0.0);
+        assert!(first.iter().all(|s| !s.metrics.contains_key("bitrate_bps")));
+
+        // 50 000 bytes over 5 s is 80 kbps; the sent stream, keyed apart from
+        // the received one despite the same ssrc, did twice that.
+        let second = reporter.track_stats(&at(60_000), &tracks(), &HashSet::new(), 5_000.0);
+        assert_eq!(
+            by_name(&second, "main_video").metrics["bitrate_bps"],
+            80_000.0
+        );
+        assert_eq!(by_name(&second, "webcam").metrics["bitrate_bps"], 160_000.0);
+
+        // A counter that went backwards is a reset, not a negative rate.
+        let third = reporter.track_stats(&at(1_000), &tracks(), &HashSet::new(), 10_000.0);
+        assert!(!by_name(&third, "main_video")
+            .metrics
+            .contains_key("bitrate_bps"));
+    }
+
+    #[test]
+    fn a_received_video_stream_carries_the_browsers_readings() {
+        let mut s = received(1, "0", "video/VP8", 0);
+        s.packets_received = 900;
+        s.packets_lost = -2;
+        s.jitter_s = 0.004_321_9;
+        s.nack_count = 3;
+        s.pli_count = 2;
+        s.fir_count = 1;
+        s.frames_per_second = 29.5;
+        s.frames_decoded = 300;
+        s.frames_dropped = 4;
+        s.frame_width = 1280;
+        s.frame_height = 720;
+        let raw = TransportStats {
+            inbound: vec![s],
+            ..TransportStats::default()
+        };
+
+        let stats = ClientStatsReporter::new().track_stats(&raw, &tracks(), &HashSet::new(), 0.0);
+
+        let metrics = &stats[0].metrics;
+        assert_eq!(metrics["packets_received"], 900.0);
+        // Signed: duplicates can take it below zero.
+        assert_eq!(metrics["packets_lost"], -2.0);
+        assert_eq!(metrics["jitter_ms"], 4.322);
+        assert_eq!(metrics["nack_count"], 3.0);
+        assert_eq!(metrics["keyframe_requests"], 3.0);
+        assert_eq!(metrics["frames_per_second"], 29.5);
+        assert_eq!(metrics["frames_decoded"], 300.0);
+        assert_eq!(metrics["frames_dropped"], 4.0);
+        assert_eq!(metrics["frame_width"], 1280.0);
+        assert_eq!(metrics["frame_height"], 720.0);
+    }
+
+    #[test]
+    fn video_only_readings_stay_off_an_audio_track() {
+        let raw = TransportStats {
+            inbound: vec![received(2, "1", "audio/opus", 0)],
+            ..TransportStats::default()
+        };
+
+        let stats = ClientStatsReporter::new().track_stats(&raw, &tracks(), &HashSet::new(), 0.0);
+
+        let mut keys: Vec<_> = stats[0].metrics.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "jitter_ms",
+                "nack_count",
+                "packets_lost",
+                "packets_received"
+            ]
+        );
+    }
+
+    /// The engine says "not measured yet" with a zero; the browser says it by
+    /// leaving the field out. The runtime gets the browser's answer from both.
+    #[test]
+    fn an_unmeasured_reading_is_left_out_rather_than_sent_as_zero() {
+        let raw = TransportStats {
+            inbound: vec![received(1, "0", "video/VP8", 0)],
+            outbound: vec![sent(3, "2", "video/VP8", 0)],
+            ..TransportStats::default()
+        };
+
+        let stats = ClientStatsReporter::new().track_stats(&raw, &tracks(), &HashSet::new(), 0.0);
+
+        for s in &stats {
+            for key in [
+                "frames_per_second",
+                "frame_width",
+                "frame_height",
+                "round_trip_time_ms",
+            ] {
+                assert!(
+                    !s.metrics.contains_key(key),
+                    "{} reported {key}",
+                    s.track_name
+                );
+            }
+        }
+        // Before the far end's first report there is no loss figure for a sent
+        // stream either: zero would claim nothing was lost.
+        assert!(!by_name(&stats, "webcam")
+            .metrics
+            .contains_key("packets_lost"));
+    }
+
+    #[test]
+    fn a_sent_stream_reports_the_far_ends_numbers_once_it_has_them() {
+        let mut s = sent(3, "2", "video/VP8", 0);
+        s.packets_sent = 1_000;
+        s.retransmitted_packets_sent = 7;
+        s.nack_count = 5;
+        s.pli_count = 1;
+        s.round_trip_time_s = 0.031_5;
+        s.packets_lost = 12;
+        s.frames_per_second = 30.0;
+        s.frame_width = 640;
+        s.frame_height = 480;
+        let raw = TransportStats {
+            outbound: vec![s],
+            ..TransportStats::default()
+        };
+
+        let stats = ClientStatsReporter::new().track_stats(&raw, &tracks(), &HashSet::new(), 0.0);
+
+        let metrics = &stats[0].metrics;
+        assert_eq!(metrics["packets_sent"], 1_000.0);
+        assert_eq!(metrics["retransmitted_packets_sent"], 7.0);
+        assert_eq!(metrics["nack_count"], 5.0);
+        assert_eq!(metrics["keyframe_requests"], 1.0);
+        assert_eq!(metrics["round_trip_time_ms"], 31.5);
+        assert_eq!(metrics["packets_lost"], 12.0);
+        assert_eq!(metrics["frames_per_second"], 30.0);
+        assert_eq!(metrics["frame_width"], 640.0);
+    }
+
+    #[test]
+    fn a_nan_reading_is_left_out() {
+        let mut s = received(1, "0", "video/VP8", 0);
+        s.jitter_s = f64::NAN;
+        let raw = TransportStats {
+            inbound: vec![s],
+            ..TransportStats::default()
+        };
+
+        let stats = ClientStatsReporter::new().track_stats(&raw, &tracks(), &HashSet::new(), 0.0);
+
+        assert!(!stats[0].metrics.contains_key("jitter_ms"));
+    }
+
+    #[test]
+    fn the_connection_reading_comes_from_the_live_pair() {
+        let mut live = nominated(5, 0, 0);
+        live.current_round_trip_time_s = 0.024_567_8;
+        live.available_outgoing_bitrate_bps = 2_500_000.0;
+        let mut dead = pair(0.9, 9, CandidatePairState::Failed);
+        dead.nominated = true;
+        dead.available_outgoing_bitrate_bps = 1.0;
+        let raw = TransportStats {
+            candidate_pairs: vec![dead, live],
+            ..TransportStats::default()
+        };
+
+        let stat = client_connection_stat(&raw, Some(812.345_6), 2_000.0);
+
+        assert_eq!(stat.timestamp, 2_000);
+        assert_eq!(stat.metrics["connection_rtt_ms"], 24.568);
+        assert_eq!(stat.metrics["available_outgoing_bitrate_bps"], 2_500_000.0);
+        // No receive-side estimate yet: left out, not a collapsed zero.
+        assert!(!stat.metrics.contains_key("available_incoming_bitrate_bps"));
+        assert_eq!(stat.metrics["time_to_connect_ms"], 812.346);
+    }
+
+    #[test]
+    fn without_a_live_pair_only_the_time_to_connect_is_left() {
+        let raw = TransportStats {
+            candidate_pairs: vec![pair(0.02, 1, CandidatePairState::InProgress)],
+            ..TransportStats::default()
+        };
+
+        assert!(client_connection_stat(&raw, None, 0.0).metrics.is_empty());
+        assert_eq!(
+            client_connection_stat(&raw, Some(100.0), 0.0).metrics.len(),
+            1
+        );
     }
 }
