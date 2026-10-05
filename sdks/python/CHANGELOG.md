@@ -9,6 +9,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-05
+
 ### Changed
 
 - Commands larger than 256 KiB are sent instead of failing with
