@@ -119,6 +119,13 @@ pub struct InboundRtpStats {
     pub ssrc: u32,
     /// Audio or video. See [`StreamKind`].
     pub kind: StreamKind,
+    /// The transceiver this stream belongs to — what tells two tracks of the
+    /// same kind apart, matched against [`TrackMappingEntry::mid`]. `None`
+    /// before the stream is negotiated.
+    pub mid: Option<String>,
+    /// The codec's mime type, e.g. `"video/VP9"`. `None` until the stream has
+    /// a codec.
+    pub codec_mime_type: Option<String>,
     /// 32-bit because `RTCReceivedRtpStreamStats` reports it that way; the
     /// candidate pair's own counter is 64-bit.
     pub packets_received: u32,
@@ -128,7 +135,12 @@ pub struct InboundRtpStats {
     /// Cumulative packets lost. Signed, and the sign is meaningful: RFC 3550
     /// allows it to go negative when duplicates arrive.
     pub packets_lost: i32,
+    /// Retransmissions this endpoint asked the sender for.
     pub nack_count: u32,
+    /// Keyframe requests this endpoint sent: Picture Loss Indications and Full
+    /// Intra Refresh requests. Which one a decoder sends depends on the codec.
+    pub pli_count: u32,
+    pub fir_count: u32,
     /// Cumulative decode time in seconds.
     pub total_decode_time_s: f64,
     /// Decoded frames per second; `0.0` when not measured. Video only.
@@ -149,6 +161,13 @@ pub struct OutboundRtpStats {
     pub ssrc: u32,
     /// Audio or video. See [`StreamKind`].
     pub kind: StreamKind,
+    /// The transceiver this stream belongs to — what tells two tracks of the
+    /// same kind apart, matched against [`TrackMappingEntry::mid`]. `None`
+    /// before the stream is negotiated.
+    pub mid: Option<String>,
+    /// The codec's mime type, e.g. `"video/VP9"`. `None` until the stream has
+    /// a codec.
+    pub codec_mime_type: Option<String>,
     /// 64-bit: `RTCSentRtpStreamStats` reports it that way, and a 32-bit counter
     /// wraps after ~4.3 billion packets — about seven weeks at a thousand a
     /// second — after which a cumulative counter appears to go backwards.
@@ -169,6 +188,11 @@ pub struct OutboundRtpStats {
     pub packets_lost: i32,
     /// 64-bit, for the same reason as [`OutboundRtpStats::packets_sent`].
     pub retransmitted_packets_sent: u64,
+    /// Retransmissions the receiver asked this endpoint for.
+    pub nack_count: u32,
+    /// Keyframe requests the receiver sent, as on [`InboundRtpStats::pli_count`].
+    pub pli_count: u32,
+    pub fir_count: u32,
     /// Encoded frames per second; `0.0` when not measured. Video only.
     pub frames_per_second: f64,
     pub frames_sent: u32,

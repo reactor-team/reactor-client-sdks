@@ -8,6 +8,17 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- While connected, the SDK reports its own view of connection quality to the
+  runtime every 5 seconds over the control channel: one reading per track
+  (audio and video, sent and received) with bitrate, packet loss, jitter,
+  frame rate and size, keyframe requests and similar values, plus
+  connection-wide readings such as the available bandwidth estimate,
+  round-trip time and time to connect. It runs on its own timer, needs no
+  configuration, and doesn't change `get_stats()`. A runtime that doesn't read these
+  reports ignores them.
+
 ## [2.2.0] - 2026-10-05
 
 ### Changed

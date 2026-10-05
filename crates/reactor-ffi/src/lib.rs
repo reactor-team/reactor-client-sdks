@@ -279,8 +279,9 @@ impl HostThreads {
 ///
 /// Without this the handle leaks: the peer-event pump holds an `Arc<Reactor>`, and
 /// `Reactor` owns the `Dispatcher` whose sender feeds the event pump, so neither
-/// stream ever ends and neither task ever exits. The heartbeat leaks the same way —
-/// it stops on a session epoch change, which destroying a handle does not cause.
+/// stream ever ends and neither task ever exits. The heartbeat and the client-stats
+/// reporter leak the same way — they stop on a session epoch change, which
+/// destroying a handle does not cause.
 type TaskSet = Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>;
 
 pub struct ReactorHandle {
@@ -295,7 +296,8 @@ pub struct ReactorHandle {
 /// Spawn a task the handle will stop on destroy.
 ///
 /// Finished handles are reaped first: `connect` and `reconnect` each add a
-/// heartbeat, and a long-lived client should not accumulate them.
+/// heartbeat and a client-stats reporter, and a long-lived client should not
+/// accumulate them.
 fn spawn_tracked(tasks: &TaskSet, future: impl std::future::Future<Output = ()> + Send + 'static) {
     let handle = runtime().spawn(future);
     let mut tasks = tasks.lock().unwrap();
@@ -1092,7 +1094,7 @@ pub unsafe extern "C" fn reactor_destroy(handle: *mut ReactorHandle) -> c_int {
     // aborted mid-callback would leave the count non-zero forever.
     let quiescence = handle.gate.retire();
 
-    // Then stop the pumps and the heartbeat. Nothing here can re-enter the host,
+    // Then stop the pumps, the heartbeat and the stats reporter. Nothing here can re-enter the host,
     // because the gate now turns every attempt away.
     for task in handle.tasks.lock().unwrap().drain(..) {
         task.abort();
@@ -1121,8 +1123,9 @@ pub unsafe extern "C" fn reactor_destroy(handle: *mut ReactorHandle) -> c_int {
 /// Run `$body` on the runtime and hand its result to the completion.
 ///
 /// The body receives the reactor and the handle's [`TaskSet`], so an operation that
-/// spawns something long-lived — `connect` and `reconnect` start a heartbeat —
-/// registers it for `reactor_destroy` to stop rather than leaking it.
+/// spawns something long-lived — `connect` and `reconnect` start a heartbeat and a
+/// client-stats reporter — registers it for `reactor_destroy` to stop rather than
+/// leaking it.
 macro_rules! async_op {
     ($name:literal, $handle:expr, $completion:expr, $userdata:expr, $body:expr) => {{
         if $handle.is_null() {
@@ -1186,6 +1189,8 @@ pub unsafe extern "C" fn reactor_connect(
             .await?;
             let r2 = r.clone();
             spawn_tracked(&tasks, async move { r2.run_heartbeat().await });
+            let r3 = r.clone();
+            spawn_tracked(&tasks, async move { r3.run_client_stats().await });
             Ok(None)
         }
     );
@@ -1237,6 +1242,8 @@ pub unsafe extern "C" fn reactor_reconnect(
             r.reconnect(None).await?;
             let r2 = r.clone();
             spawn_tracked(&tasks, async move { r2.run_heartbeat().await });
+            let r3 = r.clone();
+            spawn_tracked(&tasks, async move { r3.run_client_stats().await });
             Ok(None)
         }
     );

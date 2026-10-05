@@ -41,7 +41,7 @@ use crate::recording::{clip_failed_code, clip_from_ready, Clip};
 use crate::runtime::timeout;
 use crate::signaling::WebRtcSignaling;
 use crate::state::ReactorStatus;
-use crate::stats::{ConnectionStats, StatsSampler};
+use crate::stats::{client_connection_stat, ClientStatsReporter, ConnectionStats, StatsSampler};
 use crate::{SharedAuth, SharedHttp, SharedPeer, SharedPlatform};
 
 /// Host-supplied platform implementations.
@@ -90,6 +90,10 @@ pub struct ReactorOptions {
     /// disconnected between pings no matter when the first one goes out.
     /// Set to `Duration::ZERO` to disable the heartbeat.
     pub heartbeat_interval: Duration,
+    /// How often [`Reactor::run_client_stats`] sends a quality batch to the
+    /// runtime while the session is ready. Each batch's bitrates cover the
+    /// interval since the previous one. Set to `Duration::ZERO` to disable it.
+    pub client_stats_interval: Duration,
 }
 
 impl ReactorOptions {
@@ -109,6 +113,7 @@ impl ReactorOptions {
             preset_tracks: None,
             local: false,
             heartbeat_interval: Duration::from_secs(10),
+            client_stats_interval: Duration::from_secs(5),
         }
     }
 }
@@ -164,8 +169,14 @@ struct State {
     /// attempt's teardown as the cause of a later one's.
     teardown_reason: Option<PeerConnectionState>,
     /// Incremented on every `connect()` / `reconnect()`.  Each `run_heartbeat`
-    /// instance captures the epoch at spawn time and exits when it changes.
+    /// and `run_client_stats` instance captures the epoch at spawn time and
+    /// exits when it changes.
     heartbeat_epoch: u64,
+    /// When the current `connect()` / `reconnect()` started, epoch ms.
+    connect_started_ms: Option<f64>,
+    /// From `connect_started_ms` to `Ready`, for the first client-stats batch.
+    /// `None` until this connection is ready.
+    time_to_connect_ms: Option<f64>,
     /// Effective values for the current connection: the [`ReactorOptions`]
     /// defaults unless the last `connect()` overrode them.
     auto_resume_tracks: bool,
@@ -304,6 +315,8 @@ impl Reactor {
             state.teardown_reason = None;
             state.status = ReactorStatus::Connecting;
             state.heartbeat_epoch = state.heartbeat_epoch.wrapping_add(1);
+            state.connect_started_ms = Some(self.platform.now_ms());
+            state.time_to_connect_ms = None;
             if let Some(auto_resume) = connect_options.auto_resume_tracks {
                 state.auto_resume_tracks = auto_resume;
             }
@@ -455,6 +468,8 @@ impl Reactor {
             state.ice_ready = false;
             state.status = ReactorStatus::Connecting;
             state.heartbeat_epoch = state.heartbeat_epoch.wrapping_add(1);
+            state.connect_started_ms = Some(self.platform.now_ms());
+            state.time_to_connect_ms = None;
             sid
         };
         self.dispatcher
@@ -1391,6 +1406,77 @@ impl Reactor {
     }
 
     // ------------------------------------------------------------------
+    // Client stats
+    // ------------------------------------------------------------------
+
+    /// Send a client-stats batch to the runtime every
+    /// [`ReactorOptions::client_stats_interval`] for the lifetime of the
+    /// current connection: a reading per negotiated track and the
+    /// connection-wide reading, built by [`ClientStatsReporter`] and
+    /// [`client_connection_stat`]. The time to connect rides the first batch
+    /// actually sent.
+    ///
+    /// Spawned alongside [`Reactor::run_heartbeat`], on the same terms: after
+    /// `connect()` or `reconnect()` returns `Ok`, exiting when the connection
+    /// closes or a new `connect`/`reconnect` starts. The browser SDK reads
+    /// `getStats()` itself and does not run this.
+    ///
+    /// Waits an interval before the first batch, so it has a baseline to take
+    /// bitrates against. A tick whose engine read fails is skipped; a batch with
+    /// nothing in it at all is not sent.
+    pub async fn run_client_stats(&self) {
+        let interval = self.options.client_stats_interval;
+        if interval.is_zero() {
+            return;
+        }
+        let my_epoch = self.state.lock().unwrap().heartbeat_epoch;
+        let current = || {
+            let state = self.state.lock().unwrap();
+            state.heartbeat_epoch == my_epoch
+                && !state.closing
+                && state.status == ReactorStatus::Ready
+        };
+        let mut reporter = ClientStatsReporter::new();
+        let mut sent_connect_time = false;
+        loop {
+            self.platform.sleep(interval).await;
+            if !current() {
+                break;
+            }
+            let raw = match self.peer.get_stats().await {
+                Ok(raw) => raw,
+                Err(e) => {
+                    log::debug!("[reactor] client stats read skipped: {e}");
+                    continue;
+                }
+            };
+            // The read awaited: a reconnect in the meantime means this report
+            // is the old connection's, and must not go out on the new one.
+            if !current() {
+                break;
+            }
+            let (tracks, paused, time_to_connect_ms) = {
+                let state = self.state.lock().unwrap();
+                (
+                    state.track_mapping.clone(),
+                    state.paused_tracks.clone(),
+                    state.time_to_connect_ms.filter(|_| !sent_connect_time),
+                )
+            };
+            let now = self.platform.now_ms();
+            let track_stats = reporter.track_stats(&raw, &tracks, &paused, now);
+            let connection_stat = client_connection_stat(&raw, time_to_connect_ms, now);
+            if track_stats.is_empty() && connection_stat.metrics.is_empty() {
+                continue;
+            }
+            match self.client_stats(track_stats, Some(connection_stat)) {
+                Ok(()) => sent_connect_time |= time_to_connect_ms.is_some(),
+                Err(e) => log::debug!("[reactor] client stats send skipped: {e}"),
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Internals
     // ------------------------------------------------------------------
 
@@ -1461,6 +1547,12 @@ impl Reactor {
                 false
             } else {
                 state.status = status;
+                if status == ReactorStatus::Ready {
+                    let now = self.platform.now_ms();
+                    state.time_to_connect_ms = state
+                        .connect_started_ms
+                        .map(|started| (now - started).max(0.0));
+                }
                 true
             }
         };
@@ -2627,6 +2719,189 @@ mod tests {
             }
             other => panic!("expected a ClientStats payload, got {other:?}"),
         }
+    }
+
+    // ── run_client_stats ──────────────────────────────────────────────
+
+    /// A peer whose engine reports one received video stream on mid `"0"`, and
+    /// records every control message sent through it.
+    #[derive(Default)]
+    struct StatsPeer {
+        sent_control: Mutex<Vec<Vec<u8>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl PeerTransport for StatsPeer {
+        async fn prepare(
+            &self,
+            _: &[IceServer],
+            _: &[TrackCapability],
+        ) -> Result<PreparedOffer, CoreError> {
+            Ok(PreparedOffer {
+                sdp_offer: String::new(),
+                track_mapping: vec![],
+            })
+        }
+        async fn set_remote_description(&self, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn send_data(&self, _: &[u8], _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn send_control(&self, payload: &[u8]) -> Result<(), CoreError> {
+            self.sent_control.lock().unwrap().push(payload.to_vec());
+            Ok(())
+        }
+        async fn set_track_direction(&self, _: &str, _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn get_stats(&self) -> Result<crate::peer::TransportStats, CoreError> {
+            Ok(crate::peer::TransportStats {
+                inbound: vec![crate::peer::InboundRtpStats {
+                    ssrc: 7,
+                    kind: crate::peer::StreamKind::Video,
+                    mid: Some("0".to_string()),
+                    codec_mime_type: Some("video/VP8".to_string()),
+                    packets_received: 10,
+                    ..crate::peer::InboundRtpStats::default()
+                }],
+                candidate_pairs: vec![crate::peer::CandidatePairStats {
+                    current_round_trip_time_s: 0.02,
+                    state: crate::peer::CandidatePairState::Succeeded,
+                    nominated: true,
+                    ..crate::peer::CandidatePairStats::default()
+                }],
+                ..crate::peer::TransportStats::default()
+            })
+        }
+        async fn close(&self) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    fn make_reactor_with_stats_peer(peer: Arc<StatsPeer>, interval: Duration) -> Arc<Reactor> {
+        let mut options = ReactorOptions::new("http://localhost", "test-model");
+        options.client_stats_interval = interval;
+        let reactor = Arc::new(Reactor::new(
+            ReactorDeps {
+                http: Arc::new(PendingHttp) as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: peer as SharedPeer,
+            },
+            options,
+        ));
+        {
+            let mut state = reactor.state.lock().unwrap();
+            state.status = ReactorStatus::Ready;
+            state.track_mapping = vec![TrackMappingEntry {
+                name: "main_video".to_string(),
+                kind: crate::protocol::session::TrackKind::Video,
+                direction: crate::protocol::session::TrackDirection::Recvonly,
+                mid: "0".to_string(),
+            }];
+            state.time_to_connect_ms = Some(812.345_6);
+        }
+        reactor
+    }
+
+    fn sent_client_stats(peer: &StatsPeer) -> Vec<ClientStats> {
+        use crate::protocol::wire::v1::control::ControlClientMessage;
+
+        peer.sent_control
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(
+                |bytes| match ControlClientMessage::decode(bytes.as_slice()) {
+                    Ok(message) => match message.payload {
+                        Some(ClientPayload::ClientStats(stats)) => Some(stats),
+                        _ => None,
+                    },
+                    Err(_) => None,
+                },
+            )
+            .collect()
+    }
+
+    /// A batch every interval, each with the track's reading and the
+    /// connection's — and the time to connect on the first one only, since it is
+    /// a fact about the connection rather than a reading that moves.
+    #[tokio::test]
+    async fn client_stats_report_every_interval_with_the_connect_time_once() {
+        let peer = Arc::new(StatsPeer::default());
+        let reactor = make_reactor_with_stats_peer(peer.clone(), Duration::from_millis(20));
+
+        let r = reactor.clone();
+        let task = tokio::spawn(async move { r.run_client_stats().await });
+        tokio::time::sleep(Duration::from_millis(110)).await;
+        // A new connection ends this one's reporter.
+        reactor.state.lock().unwrap().heartbeat_epoch += 1;
+        tokio::time::timeout(Duration::from_millis(200), task)
+            .await
+            .expect("the reporter exits when the epoch changes")
+            .unwrap();
+
+        let batches = sent_client_stats(&peer);
+        assert!(batches.len() >= 2, "got {} batch(es)", batches.len());
+        for (i, batch) in batches.iter().enumerate() {
+            assert_eq!(batch.track_stats.len(), 1);
+            assert_eq!(batch.track_stats[0].track_name, "main_video");
+            let metrics = &batch.connection_stat.as_ref().unwrap().metrics;
+            assert_eq!(metrics.get("connection_rtt_ms"), Some(&20.0));
+            let expected = (i == 0).then_some(&812.346);
+            assert_eq!(metrics.get("time_to_connect_ms"), expected, "batch {i}");
+        }
+    }
+
+    /// Nothing goes out before an interval has passed, and nothing at all once
+    /// the session is no longer ready.
+    #[tokio::test]
+    async fn client_stats_wait_an_interval_and_stop_when_not_ready() {
+        let peer = Arc::new(StatsPeer::default());
+        let reactor = make_reactor_with_stats_peer(peer.clone(), Duration::from_millis(50));
+
+        let r = reactor.clone();
+        let task = tokio::spawn(async move { r.run_client_stats().await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(sent_client_stats(&peer).is_empty());
+
+        reactor.state.lock().unwrap().status = ReactorStatus::Disconnected;
+        tokio::time::timeout(Duration::from_millis(200), task)
+            .await
+            .expect("the reporter exits when not ready")
+            .unwrap();
+        assert!(sent_client_stats(&peer).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_zero_client_stats_interval_disables_the_reporter() {
+        let peer = Arc::new(StatsPeer::default());
+        let reactor = make_reactor_with_stats_peer(peer.clone(), Duration::ZERO);
+
+        tokio::time::timeout(Duration::from_millis(100), reactor.run_client_stats())
+            .await
+            .expect("returns at once");
+        assert!(sent_client_stats(&peer).is_empty());
+    }
+
+    /// Measured from the start of `connect()`/`reconnect()` to `Ready`.
+    #[test]
+    fn reaching_ready_measures_the_time_to_connect() {
+        let reactor = make_reactor();
+        {
+            let mut state = reactor.state.lock().unwrap();
+            state.status = ReactorStatus::Waiting;
+            // `TestPlatform`'s clock is frozen at zero.
+            state.connect_started_ms = Some(-1_250.0);
+        }
+
+        reactor.set_status(ReactorStatus::Ready);
+
+        assert_eq!(
+            reactor.state.lock().unwrap().time_to_connect_ms,
+            Some(1_250.0)
+        );
     }
 
     // ── send_command ─────────────────────────────────────────────────

@@ -13,6 +13,15 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- While connected, the SDK reports its own view of connection quality to the
+  runtime every 5 seconds over the control channel: one reading per track
+  (audio and video, sent and received) with bitrate, packet loss, jitter,
+  frame rate and size, keyframe requests and similar values, plus
+  connection-wide readings such as the available bandwidth estimate,
+  round-trip time and time to connect. It runs on its own timer, needs no
+  configuration, and doesn't change `getStats()`. A runtime that doesn't read these
+  reports ignores them.
+
 - `ReactorOptions.apiKey`: hand the client a key and it exchanges one itself
   on `connect()`, scoped to the model it was built for — the shape Python,
   C++ and Swift have always had, where `Reactor.fetchJwt` was previously the

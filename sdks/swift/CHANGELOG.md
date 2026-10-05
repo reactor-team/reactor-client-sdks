@@ -17,6 +17,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
   rather than zero, the two measured bitrates are `nil` on the first call and on
   one made less than 200 ms after the last, and the call throws `invalidState`
   unless the session is ready.
+- While connected, the SDK reports its own view of connection quality to the
+  runtime every 5 seconds over the control channel: one reading per track
+  (audio and video, sent and received) with bitrate, packet loss, jitter,
+  frame rate and size, keyframe requests and similar values, plus
+  connection-wide readings such as the available bandwidth estimate,
+  round-trip time and time to connect. It runs on its own timer, needs no
+  configuration, and doesn't change the public API. A runtime that doesn't read these
+  reports ignores them.
 
 ## [1.2.0] - 2026-10-05
 
