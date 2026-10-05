@@ -29,6 +29,7 @@ use reactor_core::protocol::session::{TrackCapability, TrackDirection, TrackKind
 use reactor_core::protocol::webrtc::{IceCandidate, IceServer, TrackMappingEntry};
 use reactor_core::protocol::DEFAULT_MAX_MESSAGE_BYTES;
 
+use crate::chunking::{self, Framing, Negotiation, Received};
 use crate::http::{describe, js_err};
 
 /// A remote track and the stream it arrived on, kept together because the JS
@@ -55,6 +56,11 @@ struct PeerState {
     pc: RtcPeerConnection,
     data_channel: RtcDataChannel,
     control_channel: RtcDataChannel,
+    /// Whether the runtime's answer declared data-channel chunking, and each
+    /// channel's framing, decided when it opens.
+    negotiation: Negotiation,
+    data_framing: Framing,
+    control_framing: Framing,
     /// track name → transceiver, for pause/resume and for attaching senders.
     transceivers: HashMap<String, RtcRtpTransceiver>,
     /// track name → the direction it was negotiated with, restored on resume.
@@ -341,11 +347,15 @@ impl PeerTransport for WasmPeerTransport {
         }
 
         // ── Channels ──────────────────────────────────────────────────────────
+        let negotiation = Negotiation::default();
+        let data_framing = Framing::default();
+        let control_framing = Framing::default();
         wire_channel(
             &data_channel,
             &self.event_tx,
             PeerEvent::DataChannelOpen,
             PeerEvent::DataChannelMessage,
+            (&data_framing, &negotiation),
             &mut closures,
         );
         wire_channel(
@@ -353,6 +363,7 @@ impl PeerTransport for WasmPeerTransport {
             &self.event_tx,
             PeerEvent::ControlChannelOpen,
             PeerEvent::ControlChannelMessage,
+            (&control_framing, &negotiation),
             &mut closures,
         );
 
@@ -421,26 +432,42 @@ impl PeerTransport for WasmPeerTransport {
             pc,
             data_channel,
             control_channel,
+            negotiation,
+            data_framing,
+            control_framing,
             transceivers,
             track_directions,
             _closures: closures,
         });
 
+        // The coordinator gets the offer declaring data-channel chunking; the
+        // browser keeps the description it wrote (see `chunking`).
         Ok(PreparedOffer {
-            sdp_offer,
+            sdp_offer: chunking::declare(&sdp_offer),
             track_mapping,
         })
     }
 
     async fn set_remote_description(&self, sdp_answer: &str) -> Result<(), CoreError> {
-        let promise = {
+        let (promise, negotiation) = {
             let state = self.state.borrow();
             let state = state.as_ref().ok_or_else(not_prepared)?;
             let answer = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
             answer.set_sdp(sdp_answer);
-            state.pc.set_remote_description(&answer)
+            // Recorded before the answer is applied, so the channels, which
+            // decide at `onopen`, cannot see the negotiation unset: a channel
+            // that opened on raw frames while the runtime framed would hand the
+            // core frame headers.
+            state.negotiation.on_answer(sdp_answer);
+            (
+                state.pc.set_remote_description(&answer),
+                state.negotiation.clone(),
+            )
         };
-        JsFuture::from(promise).await.map_err(js_err)?;
+        if let Err(error) = JsFuture::from(promise).await {
+            negotiation.clear();
+            return Err(js_err(error));
+        }
         self.refresh_max_message_bytes();
         Ok(())
     }
@@ -448,13 +475,18 @@ impl PeerTransport for WasmPeerTransport {
     fn send_data(&self, payload: &[u8], binary: bool) -> Result<(), CoreError> {
         let state = self.state.borrow();
         let state = state.as_ref().ok_or_else(not_prepared)?;
-        send(&state.data_channel, payload, binary)
+        send(&state.data_channel, &state.data_framing, payload, binary)
     }
 
     fn send_control(&self, payload: &[u8]) -> Result<(), CoreError> {
         let state = self.state.borrow();
         let state = state.as_ref().ok_or_else(not_prepared)?;
-        send(&state.control_channel, payload, true)
+        send(
+            &state.control_channel,
+            &state.control_framing,
+            payload,
+            true,
+        )
     }
 
     async fn set_track_direction(&self, track_name: &str, active: bool) -> Result<(), CoreError> {
@@ -532,8 +564,18 @@ impl PeerTransport for WasmPeerTransport {
         Ok(())
     }
 
+    /// The data channel's limit: the chunked one once the channel is
+    /// chunked, SCTP's negotiated `maxMessageSize` otherwise.
     fn max_message_bytes(&self) -> usize {
-        self.max_message_bytes.get()
+        let chunked = self
+            .state
+            .borrow()
+            .as_ref()
+            .and_then(|state| state.data_framing.max_message_size());
+        match chunked {
+            Some(max) => usize::try_from(max).unwrap_or(usize::MAX),
+            None => self.max_message_bytes.get(),
+        }
     }
 }
 
@@ -572,26 +614,58 @@ fn ice_configuration(ice_servers: &[IceServer]) -> RtcConfiguration {
 }
 
 /// Wire a channel's `onopen` / `onmessage` to the core's peer-event channel.
+///
+/// The channel's framing is decided when it opens. A chunked channel also
+/// refills the browser's buffer from `onbufferedamountlow`, and reassembles
+/// what arrives before the core sees it.
 fn wire_channel(
     channel: &RtcDataChannel,
     event_tx: &UnboundedSender<PeerEvent>,
     open: PeerEvent,
     message: fn(Vec<u8>) -> PeerEvent,
+    (framing, negotiation): (&Framing, &Negotiation),
     closures: &mut Vec<JsValue>,
 ) {
     {
         let tx = event_tx.clone();
+        let channel_for_open = channel.clone();
+        let framing = framing.clone();
+        let negotiation = negotiation.clone();
         let callback = Closure::<dyn FnMut()>::new(move || {
+            framing.decide(&channel_for_open, &negotiation);
             let _ = tx.unbounded_send(open.clone());
         });
         channel.set_onopen(Some(callback.as_ref().unchecked_ref()));
         closures.push(callback.into_js_value());
     }
     {
+        let channel_for_low = channel.clone();
+        let framing = framing.clone();
+        let callback = Closure::<dyn FnMut()>::new(move || {
+            if let Err(error) = framing.pump(&channel_for_low) {
+                log::warn!("[reactor-wasm] data-channel send failed: {error}");
+            }
+        });
+        channel.set_onbufferedamountlow(Some(callback.as_ref().unchecked_ref()));
+        closures.push(callback.into_js_value());
+    }
+    {
         let tx = event_tx.clone();
+        let channel_for_message = channel.clone();
+        let framing = framing.clone();
         let callback = Closure::<dyn FnMut(_)>::new(move |event: MessageEvent| {
-            if let Some(payload) = message_bytes(&event.data()) {
-                let _ = tx.unbounded_send(message(payload));
+            let data = event.data();
+            let Some(payload) = message_bytes(&data) else {
+                return;
+            };
+            match framing.receive(&channel_for_message, &payload, data.is_string()) {
+                None => {
+                    let _ = tx.unbounded_send(message(payload));
+                }
+                Some(Received::Message(whole)) => {
+                    let _ = tx.unbounded_send(message(whole));
+                }
+                Some(Received::Nothing | Received::Broken) => {}
             }
         });
         channel.set_onmessage(Some(callback.as_ref().unchecked_ref()));
@@ -625,12 +699,22 @@ fn message_bytes(data: &JsValue) -> Option<Vec<u8>> {
 /// on a single-threaded JS event loop nothing can flip the channel's state
 /// between this check and the synchronous `send` call below, so the check is
 /// race-free.
-fn send(channel: &RtcDataChannel, payload: &[u8], binary: bool) -> Result<(), CoreError> {
+fn send(
+    channel: &RtcDataChannel,
+    framing: &Framing,
+    payload: &[u8],
+    binary: bool,
+) -> Result<(), CoreError> {
     if channel.ready_state() != RtcDataChannelState::Open {
         return Err(CoreError::InvalidState(format!(
             "data channel not open (state: {:?})",
             channel.ready_state()
         )));
+    }
+    // A chunked channel queues the message and feeds it to the browser in
+    // frames, as its buffer drains.
+    if let Some(sent) = framing.send(channel, payload, binary) {
+        return sent;
     }
     if !binary {
         let text = std::str::from_utf8(payload)

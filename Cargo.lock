@@ -1221,6 +1221,7 @@ dependencies = [
  "js-sys",
  "log",
  "reactor-core",
+ "reactor-webrtc-dc-chunking",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
