@@ -26,7 +26,7 @@ versioning follows [Semantic Versioning](https://semver.org/).
   does not answer it keeps today's 256 KiB limit, so nothing changes against
   one that has not been updated. Messages of every size also leave in fewer
   round trips (dcsctp's `max_burst` goes from 4 to 256). Requires
-  reactor-webrtc 0.19.
+  reactor-webrtc 0.19.1.
 
 - The native client is now created on the first `connect()` rather than by
   `Reactor.open()`, because that is where the token it is handed is settled.

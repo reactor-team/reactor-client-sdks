@@ -16,7 +16,7 @@ versioning follows [Semantic Versioning](https://semver.org/).
   does not answer it keeps today's 256 KiB limit, so nothing changes against
   one that has not been updated. Messages of every size also leave in fewer
   round trips (dcsctp's `max_burst` goes from 4 to 256). Requires
-  reactor-webrtc 0.19.
+  reactor-webrtc 0.19.1.
 
 ## [2.1.0] - 2026-09-15
 
