@@ -83,9 +83,10 @@ belt and suspenders, not the primary defense. A `RATE_LIMITED`/"no available cap
 that survives four attempts is a real, transient platform condition, not this suite's bug —
 rerun rather than debug the harness.
 
-## The seven scenarios
+## The eight scenarios
 
-Ported from [`Examples/`](../Examples/), one file each, same numbering:
+01–07 are ported from [`Examples/`](../Examples/), one file each, same numbering. 08 has
+no example counterpart:
 
 | # | File | What it pins |
 |---|---|---|
@@ -96,6 +97,7 @@ Ported from [`Examples/`](../Examples/), one file each, same numbering:
 | 05 | `05_MultiConnectionTests.swift` | A session-scoped token cannot adopt a session it did not create — both clients share one minted token; the joiner observes state the creator set before it connected |
 | 06 | `06_RecordClipTests.swift` | A clip of generated media downloads to a real fragmented-MP4 file |
 | 07 | `07_FrameMetadataTests.swift` | A tag pushed on `webcam` loops back on `main_video`'s `userData` (REA-5972) — `frameID`/`captureTimeUs` are read but not asserted on content, since Python's own suite found `echo`'s values for both unreliable across independent live runs |
+| 08 | `08_ConnectionStatsTests.swift` | `stats()` on a live session: the first call has no measured bitrates, a later one has both, plus RTT, a succeeded nominated pair and inbound/outbound video streams; a disconnected client throws `invalidState` rather than reporting zeroes |
 
 ## Fixtures
 

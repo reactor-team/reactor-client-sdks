@@ -9,6 +9,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.1.0]
+
 ### Added
 
 - While connected, the SDK reports the browser's own view of connection

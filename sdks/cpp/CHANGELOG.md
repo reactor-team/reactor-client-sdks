@@ -19,6 +19,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   configuration, and doesn't change `get_stats()`. A runtime that doesn't read these
   reports ignores them.
 
+## [2.2.0] - 2026-10-05
+
 ### Changed
 
 - Commands larger than 256 KiB are sent instead of failing with

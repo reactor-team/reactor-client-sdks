@@ -9,6 +9,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `Reactor.stats()`, an on-demand statistics snapshot for the live connection:
+  RTT, jitter, packet loss, measured and estimated bitrates, the candidate pair
+  carrying the media, and the engine's per-stream inbound, outbound and
+  candidate-pair counters, as a `ConnectionStats` value. Same fields and rules
+  as the other native SDKs: anything the engine has not measured yet is `nil`
+  rather than zero, the two measured bitrates are `nil` on the first call and on
+  one made less than 200 ms after the last, and the call throws `invalidState`
+  unless the session is ready.
 - While connected, the SDK reports its own view of connection quality to the
   runtime every 5 seconds over the control channel: one reading per track
   (audio and video, sent and received) with bitrate, packet loss, jitter,
@@ -17,6 +25,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   round-trip time and time to connect. It runs on its own timer, needs no
   configuration, and doesn't change the public API. A runtime that doesn't read these
   reports ignores them.
+
+## [1.2.0] - 2026-10-05
 
 ### Changed
 
