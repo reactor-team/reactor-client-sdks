@@ -42,14 +42,14 @@ granted to one module rather than to everything.
 One dependency line, on Gradle and on Maven alike, and nothing configured:
 
 ```kotlin
-implementation("inc.reactor:reactor-sdk:1.0.0")
+implementation("inc.reactor:reactor-sdk:1.1.0")
 ```
 
 ```xml
 <dependency>
   <groupId>inc.reactor</groupId>
   <artifactId>reactor-sdk</artifactId>
-  <version>1.0.0</version>
+  <version>1.1.0</version>
 </dependency>
 ```
 
@@ -71,10 +71,10 @@ A build that knows exactly what it runs on — a container image, usually — ta
 the classifier it wants instead:
 
 ```kotlin
-implementation("inc.reactor:reactor-sdk:1.0.0") {
+implementation("inc.reactor:reactor-sdk:1.1.0") {
     exclude(group = "inc.reactor", module = "reactor-sdk-natives")
 }
-runtimeOnly("inc.reactor:reactor-sdk-natives:1.0.0:macos-arm64")
+runtimeOnly("inc.reactor:reactor-sdk-natives:1.1.0:macos-arm64")
 ```
 
 The classifiers are `linux-x86_64`, `linux-aarch64`, `macos-arm64`,
@@ -130,7 +130,7 @@ there — and every method forwards to the Java client underneath, which is what
 keeps the two from being able to disagree.
 
 ```kotlin
-implementation("inc.reactor:reactor-sdk-kotlin:1.0.0")
+implementation("inc.reactor:reactor-sdk-kotlin:1.1.0")
 ```
 
 ```kotlin
