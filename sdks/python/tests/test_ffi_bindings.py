@@ -51,6 +51,15 @@ def test_every_declared_function_resolves_in_the_library() -> None:
     assert isinstance(lib, ctypes.CDLL)
 
 
+def test_the_loaded_library_speaks_the_abi_these_bindings_declare() -> None:
+    """The other half of the far-less-clever unit tests in `test_ffi_abi.py`:
+    against the real library, the gate accepts and the two version constants
+    agree.
+    """
+    lib = _ffi.get_lib()
+    assert lib.reactor_abi_version() == _ffi.ABI_VERSION
+
+
 def test_status_of_a_null_handle_is_disconnected() -> None:
     assert _ffi.get_lib().reactor_status(None) == b"disconnected"
 

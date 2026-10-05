@@ -814,6 +814,25 @@ TEST_CASE("auto_resume_tracks set false is forwarded as 0") {
   CHECK(fixture.library.created_with_auto_resume_tracks == 0);
 }
 
+// `auto_resume_tracks` sits after `executor` in `Options` so an aggregate
+// initializer written before the field existed keeps its meaning: the third
+// position still selects the executor, never the flag.
+TEST_CASE("an aggregate initializer from before auto_resume_tracks still selects the executor") {
+  const reactor::Options empty_executor{"http://localhost:9000", false, {}};
+  CHECK_FALSE(empty_executor.executor);
+  CHECK(empty_executor.auto_resume_tracks);
+
+  bool ran = false;
+  const reactor::Options with_executor{"http://localhost:9000", false,
+                                       [&ran](std::function<void()> work) {
+                                         ran = true;
+                                         work();
+                                       }};
+  CHECK(with_executor.auto_resume_tracks);
+  with_executor.executor([] {});
+  CHECK(ran);
+}
+
 TEST_CASE("a local client can connect without credentials") {
   Fixture fixture;
   reactor::Options options;
