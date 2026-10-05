@@ -40,6 +40,8 @@ use std::sync::Mutex;
 use serde::Serialize;
 
 use crate::peer::{CandidatePairState, CandidatePairStats, StreamKind, TransportStats};
+use crate::protocol::session::TrackKind;
+use crate::protocol::wire::v1::platform::{client_track_stat, AudioCodec, VideoCodec};
 
 /// The shortest window a rate is derived over, in milliseconds.
 ///
@@ -541,9 +543,78 @@ fn live_pair(pairs: &[CandidatePairStats]) -> Option<&CandidatePairStats> {
         .find(|p| p.nominated && p.state == CandidatePairState::Succeeded)
 }
 
+/// The wire codec for one client track reading, from the codec's lowercase
+/// name (`"vp9"`, `"h264"`, `"opus"`). *kind* decides which enum it must come
+/// from: a video reading can only carry a [`VideoCodec`], an audio one only an
+/// [`AudioCodec`].
+///
+/// This is the one table from codec names to the wire's codec enums. A binding
+/// that filters codecs before calling it (the JS SDK does, to keep one track's
+/// unknown codec from failing the whole batch) mirrors this list.
+pub fn client_track_codec(
+    kind: TrackKind,
+    codec: &str,
+) -> Result<client_track_stat::Codec, String> {
+    match kind {
+        TrackKind::Video => {
+            let codec = match codec {
+                "vp8" => VideoCodec::Vp8,
+                "vp9" => VideoCodec::Vp9,
+                "av1" => VideoCodec::Av1,
+                "h264" => VideoCodec::H264,
+                "h265" => VideoCodec::H265,
+                other => return Err(format!("unknown video codec: {other}")),
+            };
+            Ok(client_track_stat::Codec::VideoCodec(codec as i32))
+        }
+        TrackKind::Audio => {
+            let codec = match codec {
+                "opus" => AudioCodec::Opus,
+                other => return Err(format!("unknown audio codec: {other}")),
+            };
+            Ok(client_track_stat::Codec::AudioCodec(codec as i32))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A codec added to the wire's `VideoCodec`/`AudioCodec` without an arm in
+    /// `client_track_codec` fails here, instead of having that track's readings
+    /// dropped without a word. Value `0` is each enum's `UNSPECIFIED`, never a
+    /// real codec; the expected name is the variant's own (`Vp9` → `"vp9"`), so
+    /// this test doesn't repeat the table.
+    #[test]
+    fn client_track_codec_accepts_every_wire_codec() {
+        for value in 1.. {
+            let Ok(codec) = VideoCodec::try_from(value) else {
+                break;
+            };
+            let name = format!("{codec:?}").to_lowercase();
+            assert!(
+                client_track_codec(TrackKind::Video, &name).is_ok(),
+                "video codec {name}"
+            );
+        }
+        for value in 1.. {
+            let Ok(codec) = AudioCodec::try_from(value) else {
+                break;
+            };
+            let name = format!("{codec:?}").to_lowercase();
+            assert!(
+                client_track_codec(TrackKind::Audio, &name).is_ok(),
+                "audio codec {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn client_track_codec_refuses_a_codec_of_the_other_kind() {
+        assert!(client_track_codec(TrackKind::Audio, "vp9").is_err());
+        assert!(client_track_codec(TrackKind::Video, "opus").is_err());
+    }
     // Only the tests build raw snapshots; the module itself reads them through
     // `TransportStats`, so importing these at the top would be an unused import.
     use crate::peer::{IceCandidateType, InboundRtpStats, OutboundRtpStats, RelayProtocol};

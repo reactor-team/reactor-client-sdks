@@ -22,19 +22,26 @@ use reactor_core::error::{CoreError, ErrorDetails, ReactorError};
 use reactor_core::events::ReactorEvent;
 use reactor_core::peer::{PeerEvent, PeerTransport};
 use reactor_core::protocol::session::TrackCapability;
+use reactor_core::protocol::session::{
+    TrackDirection as SessionTrackDirection, TrackKind as SessionTrackKind,
+};
 use reactor_core::protocol::upload::FileRef;
+use reactor_core::protocol::wire::v1::platform::{
+    ClientConnectionStat, ClientTrackStat, TrackDirection, TrackKind,
+};
 use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions};
+use reactor_core::stats::client_track_codec;
 
 use crate::auth::WasmAuthProvider;
 use crate::http::WasmHttpClient;
 use crate::peer::WasmPeerTransport;
 use crate::platform::WasmPlatform;
 use crate::types::{
-    CapabilitiesListener, CapabilitiesOutput, ClientOptionsInput, ClipOutput, CommandData,
-    CommandReply, ConnectOptionsInput, ErrorListener, FileRefOutput, JwtSourceInput,
-    MessageListener, ReactorErrorOutput, SchemaOutput, SessionIdListener, SessionInfoOutput,
-    Status, StatusListener, StringsOutput, TrackListener, TrackMappingOutput, TracksOutput,
-    UploadsInput,
+    CapabilitiesListener, CapabilitiesOutput, ClientConnectionStatInput, ClientOptionsInput,
+    ClientTrackStatsInput, ClipOutput, CommandData, CommandReply, ConnectOptionsInput,
+    ErrorListener, FileRefOutput, JwtSourceInput, MessageListener, ReactorErrorOutput,
+    SchemaOutput, SessionIdListener, SessionInfoOutput, Status, StatusListener, StringsOutput,
+    TrackListener, TrackMappingOutput, TracksOutput, UploadsInput,
 };
 
 /// Coordinator URL used when none is given.
@@ -548,6 +555,36 @@ impl ReactorClient {
         cast(&clip)
     }
 
+    // ── Stats ─────────────────────────────────────────────────────────────────
+
+    /// Report a batch of client-observed WebRTC quality readings to the runtime.
+    ///
+    /// Fire-and-forget, like the automatic heartbeat: this returns once the
+    /// frame is handed to the control channel, not once the runtime has
+    /// processed it. The runtime attaches this connection's own session and
+    /// connection identity to the batch — nothing here needs to (or can)
+    /// carry that itself. `connectionStat` carries the connection-wide
+    /// readings and is normally present on every batch.
+    #[wasm_bindgen(js_name = sendClientStats)]
+    pub fn send_client_stats(
+        &self,
+        track_stats: ClientTrackStatsInput,
+        connection_stat: ClientConnectionStatInput,
+    ) -> Result<(), JsValue> {
+        let track_stats: Vec<ClientTrackStatJson> =
+            from_optional(Some(track_stats), "client track stats")?;
+        let track_stats = track_stats
+            .into_iter()
+            .map(ClientTrackStat::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| invalid(&e))?;
+        let connection_stat: Option<ClientConnectionStatJson> =
+            from_optional(Some(connection_stat), "client connection stat")?;
+        self.reactor
+            .client_stats(track_stats, connection_stat.map(ClientConnectionStat::from))
+            .map_err(|e| error_value(&e.details(Some("sendClientStats"))))
+    }
+
     // ── Uploads ───────────────────────────────────────────────────────────────
 
     /// Upload a `File` or `Blob` to the session's object store and resolve with
@@ -803,6 +840,66 @@ fn to_js<T: serde::Serialize + ?Sized>(value: &T) -> Result<JsValue, JsValue> {
 /// Serialize a core type into the TypeScript type the signature promises.
 fn cast<T: serde::Serialize + ?Sized, R: JsCast>(value: &T) -> Result<R, JsValue> {
     to_js(value).map(JsCast::unchecked_from_js)
+}
+
+/// The JSON shape of one `ClientTrackStat` array entry, exactly as the
+/// `ClientTrackStat` TypeScript interface declares it (camelCase). `kind`/
+/// `direction` reuse the same session-level enums `TrackCapability` already
+/// exposes to JS as `"video"`/`"audio"` and `"recvonly"`/`"sendonly"` — same
+/// vocabulary, so one conversion serves both.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClientTrackStatJson {
+    timestamp: i64,
+    track_name: String,
+    kind: SessionTrackKind,
+    direction: SessionTrackDirection,
+    codec: String,
+    paused: bool,
+    metrics: std::collections::HashMap<String, f64>,
+}
+
+impl TryFrom<ClientTrackStatJson> for ClientTrackStat {
+    type Error = String;
+
+    fn try_from(stat: ClientTrackStatJson) -> Result<Self, Self::Error> {
+        let kind = match stat.kind {
+            SessionTrackKind::Video => TrackKind::Video,
+            SessionTrackKind::Audio => TrackKind::Audio,
+        };
+        let direction = match stat.direction {
+            SessionTrackDirection::Recvonly => TrackDirection::Recvonly,
+            SessionTrackDirection::Sendonly => TrackDirection::Sendonly,
+        };
+        let codec = client_track_codec(stat.kind, &stat.codec)?;
+        Ok(ClientTrackStat {
+            timestamp: stat.timestamp,
+            track_name: stat.track_name,
+            kind: kind as i32,
+            direction: direction as i32,
+            codec: Some(codec),
+            paused: stat.paused,
+            metrics: stat.metrics,
+        })
+    }
+}
+
+/// The JSON shape of `ClientConnectionStat`, exactly as its TypeScript
+/// interface declares it (camelCase).
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ClientConnectionStatJson {
+    timestamp: i64,
+    metrics: std::collections::HashMap<String, f64>,
+}
+
+impl From<ClientConnectionStatJson> for ClientConnectionStat {
+    fn from(stat: ClientConnectionStatJson) -> Self {
+        ClientConnectionStat {
+            timestamp: stat.timestamp,
+            metrics: stat.metrics,
+        }
+    }
 }
 
 /// Deserialize an optional JS argument, treating `null`/`undefined` as absent.

@@ -11,7 +11,7 @@ import { FakeReactorClient } from './internal/fake-reactor-client';
 import { toPublicFileRef } from './internal/file-ref';
 import { FileRef } from './file-ref';
 import { toPublicClip } from './internal/recording';
-import { STATS_INTERVAL_MS } from './internal/stats';
+import { LOCAL_STATS_INTERVAL_MS, RUNTIME_REPORT_INTERVAL_MS } from './internal/stats';
 import packageJson from '../package.json';
 import type * as RecordingModule from './recording';
 import type { ConnectOptions, ReactorMessage } from './internal/reactor-wasm.types';
@@ -1056,7 +1056,7 @@ describe('Reactor stats', () => {
     });
   });
 
-  it('polls getPeerConnection().getStats() every STATS_INTERVAL_MS once ready, emitting statsUpdate', async () => {
+  it('polls getPeerConnection().getStats() every LOCAL_STATS_INTERVAL_MS once ready, emitting statsUpdate', async () => {
     vi.useFakeTimers();
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
@@ -1071,12 +1071,12 @@ describe('Reactor stats', () => {
     client.emitReady();
     expect(getStats).not.toHaveBeenCalled();
 
-    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS);
     expect(getStats).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(onStatsUpdate).toHaveBeenCalledTimes(1));
     expect(reactor.getStats()).toEqual(onStatsUpdate.mock.calls[0]?.[0]);
 
-    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS);
     expect(getStats).toHaveBeenCalledTimes(2);
   });
 
@@ -1092,7 +1092,7 @@ describe('Reactor stats', () => {
     client.emitWaiting();
     client.emitReady();
 
-    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS);
 
     expect(reactor.getStats()?.connectionTimings).toBe(reactor.getConnectionTimings());
   });
@@ -1107,14 +1107,14 @@ describe('Reactor stats', () => {
     client.peerConnectionResult = { getStats } as unknown as RTCPeerConnection;
 
     client.emitReady();
-    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS);
     expect(getStats).toHaveBeenCalledTimes(1);
 
     await reactor.disconnect();
     expect(reactor.getStats()).toBeUndefined();
     expect(reactor.getConnectionTimings()).toBeUndefined();
 
-    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS * 2);
+    await vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS * 2);
     expect(getStats).toHaveBeenCalledTimes(1);
   });
 
@@ -1131,7 +1131,7 @@ describe('Reactor stats', () => {
     reactor.on('statsUpdate', onStatsUpdate);
 
     client.emitReady();
-    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS);
     expect(getStats).toHaveBeenCalledTimes(1); // in flight, not yet resolved
 
     // Recoverable: stops polling but keeps this same `client` (and its
@@ -1160,10 +1160,142 @@ describe('Reactor stats', () => {
     reactor.on('statsUpdate', onStatsUpdate);
 
     client.emitReady();
-    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS * 2);
+    await vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS * 2);
 
     expect(onStatsUpdate).not.toHaveBeenCalled();
     expect(reactor.getStats()).toBeUndefined();
+  });
+
+  function videoStatsReport(mid: string): RTCStatsReport {
+    const entries = [
+      { id: 'ir1', type: 'inbound-rtp', kind: 'video', mid, framesPerSecond: 30, codecId: 'c1', timestamp: 1 },
+      { id: 'c1', type: 'codec', mimeType: 'video/VP9' },
+    ];
+    const map = new Map(entries.map((entry, i) => [i === 0 ? 'ir1' : 'c1', entry]));
+
+    return {
+      forEach: (cb: (value: unknown) => void) => map.forEach(cb),
+      get: (id: string) => map.get(id),
+    } as unknown as RTCStatsReport;
+  }
+
+  it('reports client stats to the runtime every RUNTIME_REPORT_INTERVAL_MS, for the mapped track', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.peerConnectionResult = {
+      getStats: vi.fn().mockResolvedValue(videoStatsReport('0')),
+    } as unknown as RTCPeerConnection;
+    client.trackMappingResult = [{ name: 'main_video', kind: 'video', direction: 'recvonly', mid: '0' }];
+
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS - 1);
+    expect(client.sendClientStatsCalls).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(client.sendClientStatsCalls).toHaveLength(1);
+    expect(client.sendClientStatsCalls[0]?.trackStats).toEqual([
+      expect.objectContaining({ trackName: 'main_video', kind: 'video', codec: 'vp9' }),
+    ]);
+    expect(client.sendClientStatsCalls[0]?.connectionStat).toBeDefined();
+
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS);
+    expect(client.sendClientStatsCalls).toHaveLength(2);
+    expect(client.sendClientStatsCalls[1]?.connectionStat).toBeDefined();
+  });
+
+  it('sends the time to connect on the first batch, and only on the first', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'performance'] });
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.peerConnectionResult = {
+      getStats: vi.fn().mockResolvedValue(videoStatsReport('0')),
+    } as unknown as RTCPeerConnection;
+    client.trackMappingResult = [{ name: 'main_video', kind: 'video', direction: 'recvonly', mid: '0' }];
+
+    client.emitConnecting();
+    vi.advanceTimersByTime(100);
+    client.emitWaiting();
+    vi.advanceTimersByTime(250);
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS * 2);
+
+    expect(client.sendClientStatsCalls).toHaveLength(2);
+    expect(client.sendClientStatsCalls[0]?.connectionStat?.metrics.time_to_connect_ms).toBe(350);
+    expect(client.sendClientStatsCalls[1]?.connectionStat?.metrics).not.toHaveProperty('time_to_connect_ms');
+  });
+
+  it('sends nothing while neither a track nor the connection has a reading', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.peerConnectionResult = {
+      getStats: vi.fn().mockResolvedValue(videoStatsReport('0')),
+    } as unknown as RTCPeerConnection;
+    client.trackMappingResult = []; // Not yet negotiated, or a stale mapping.
+
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS);
+
+    expect(client.sendClientStatsCalls).toHaveLength(0);
+  });
+
+  it('sends the connection reading before any track has one', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const pairOnly = new Map([
+      [
+        'cp1',
+        {
+          id: 'cp1',
+          type: 'candidate-pair',
+          state: 'succeeded',
+          nominated: true,
+          currentRoundTripTime: 0.025,
+          availableOutgoingBitrate: 3_000_000,
+        },
+      ],
+    ]);
+
+    client.peerConnectionResult = {
+      getStats: vi.fn().mockResolvedValue({
+        forEach: (cb: (value: unknown) => void) => pairOnly.forEach(cb),
+        get: (id: string) => pairOnly.get(id),
+      }),
+    } as unknown as RTCPeerConnection;
+    client.trackMappingResult = [];
+
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS);
+
+    expect(client.sendClientStatsCalls).toHaveLength(1);
+    expect(client.sendClientStatsCalls[0]?.trackStats).toEqual([]);
+    expect(client.sendClientStatsCalls[0]?.connectionStat?.metrics).toEqual({
+      available_outgoing_bitrate_bps: 3_000_000,
+      connection_rtt_ms: 25,
+    });
+  });
+
+  it('does not let a closing connection surface out of the stats-poll interval', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.peerConnectionResult = {
+      getStats: vi.fn().mockResolvedValue(videoStatsReport('0')),
+    } as unknown as RTCPeerConnection;
+    client.trackMappingResult = [{ name: 'main_video', kind: 'video', direction: 'recvonly', mid: '0' }];
+    client.sendClientStatsError = new Error('connection is closing');
+
+    client.emitReady();
+    // Doesn't throw and doesn't stop the interval — reportClientStats()
+    // swallows the send failure the same way getStats()'s rejection is.
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS);
+    expect(client.sendClientStatsCalls).toHaveLength(1);
   });
 
   it('stops polling on any other status transition too, not just an explicit disconnect()', async () => {
@@ -1176,7 +1308,7 @@ describe('Reactor stats', () => {
     client.peerConnectionResult = { getStats } as unknown as RTCPeerConnection;
 
     client.emitReady();
-    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS);
     expect(getStats).toHaveBeenCalledTimes(1);
 
     // e.g. a transport error dropping straight to "disconnected" without
@@ -1184,8 +1316,68 @@ describe('Reactor stats', () => {
     client.emitDisconnected();
     expect(reactor.getStats()).toBeUndefined();
 
-    await vi.advanceTimersByTimeAsync(STATS_INTERVAL_MS * 2);
+    await vi.advanceTimersByTimeAsync(LOCAL_STATS_INTERVAL_MS * 2);
     expect(getStats).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops reporting client stats on a status transition away from "ready"', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+
+    client.peerConnectionResult = {
+      getStats: vi.fn().mockResolvedValue(videoStatsReport('0')),
+    } as unknown as RTCPeerConnection;
+    client.trackMappingResult = [{ name: 'main_video', kind: 'video', direction: 'recvonly', mid: '0' }];
+
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS);
+    expect(client.sendClientStatsCalls).toHaveLength(1);
+
+    client.emitDisconnected();
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS * 3);
+    expect(client.sendClientStatsCalls).toHaveLength(1);
+  });
+
+  it('replaces its pollers instead of adding to them when "ready" repeats', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const getStats = vi.fn().mockResolvedValue(videoStatsReport('0'));
+
+    client.peerConnectionResult = { getStats } as unknown as RTCPeerConnection;
+    client.trackMappingResult = [{ name: 'main_video', kind: 'video', direction: 'recvonly', mid: '0' }];
+
+    client.emitReady();
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS);
+
+    expect(client.sendClientStatsCalls).toHaveLength(1);
+    // One local read per elapsed LOCAL_STATS_INTERVAL_MS, plus the one report read.
+    expect(getStats).toHaveBeenCalledTimes(Math.floor(RUNTIME_REPORT_INTERVAL_MS / LOCAL_STATS_INTERVAL_MS) + 1);
+  });
+
+  it('reads the new peer connection after a reconnect, never the previous one', async () => {
+    vi.useFakeTimers();
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const firstGetStats = vi.fn().mockResolvedValue(videoStatsReport('0'));
+    const secondGetStats = vi.fn().mockResolvedValue(videoStatsReport('0'));
+
+    client.trackMappingResult = [{ name: 'main_video', kind: 'video', direction: 'recvonly', mid: '0' }];
+    client.peerConnectionResult = { getStats: firstGetStats } as unknown as RTCPeerConnection;
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS);
+    const firstReads = firstGetStats.mock.calls.length;
+
+    client.emitDisconnected();
+    client.peerConnectionResult = { getStats: secondGetStats } as unknown as RTCPeerConnection;
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(RUNTIME_REPORT_INTERVAL_MS);
+
+    expect(firstGetStats).toHaveBeenCalledTimes(firstReads);
+    expect(secondGetStats).toHaveBeenCalled();
+    expect(client.sendClientStatsCalls).toHaveLength(2);
   });
 });
 

@@ -159,6 +159,36 @@ export interface ReactorError {
   timestamp_ms: number;
 }
 
+/** One track's WebRTC quality reading taken from `getStats()`, for
+ *  `sendClientStats`. */
+export interface ClientTrackStat {
+  /** When this reading was taken, epoch milliseconds (e.g. `Date.now()`). */
+  timestamp: number;
+  trackName: string;
+  kind: TrackKind;
+  direction: TrackDirection;
+  /** The codec in use for this track, e.g. "vp9", "h264", "opus". */
+  codec: string;
+  /** Whether the client currently has this track paused. */
+  paused: boolean;
+  /** Named numeric readings, keyed by W3C webrtc-stats names in snake_case,
+   *  e.g. bitrate_bps, frames_per_second, packets_lost, packets_received,
+   *  jitter_ms, round_trip_time_ms, frames_decoded, frames_dropped,
+   *  frame_width, frame_height, nack_count, keyframe_requests. A reading the
+   *  client couldn't take is left out, never sent as 0. */
+  metrics: Record<string, number>;
+}
+
+/** A connection-wide reading, not tied to any one track — for
+ *  `sendClientStats`. Sent on every batch; one-time facts such as
+ *  time_to_connect_ms ride only the first batch after connecting. */
+export interface ClientConnectionStat {
+  timestamp: number;
+  /** Named numeric readings, e.g. available_outgoing_bitrate_bps,
+   *  connection_rtt_ms, time_to_connect_ms. */
+  metrics: Record<string, number>;
+}
+
 export type StatusListener = (status: ReactorStatus) => void;
 export type SessionIdListener = (sessionId: string | undefined) => void;
 export type MessageListener = (message: ReactorMessage) => void;
@@ -183,6 +213,12 @@ extern "C" {
 
     #[wasm_bindgen(typescript_type = "Record<string, FileRef>")]
     pub type UploadsInput;
+
+    #[wasm_bindgen(typescript_type = "ClientTrackStat[]")]
+    pub type ClientTrackStatsInput;
+
+    #[wasm_bindgen(typescript_type = "ClientConnectionStat | undefined")]
+    pub type ClientConnectionStatInput;
 
     #[wasm_bindgen(typescript_type = "ReactorMessage | undefined")]
     pub type CommandReply;

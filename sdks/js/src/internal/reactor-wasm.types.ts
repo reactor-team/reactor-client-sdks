@@ -94,6 +94,36 @@ export interface FileRef {
   size: number;
 }
 
+/** One track's WebRTC quality reading taken from `getStats()`, for
+ *  `sendClientStats`. */
+export interface ClientTrackStat {
+  /** When this reading was taken, epoch milliseconds (e.g. `Date.now()`). */
+  timestamp: number;
+  trackName: string;
+  kind: TrackKind;
+  direction: TrackDirection;
+  /** The codec in use for this track, e.g. "vp9", "h264", "opus". */
+  codec: string;
+  /** Whether the client currently has this track paused. */
+  paused: boolean;
+  /** Named numeric readings, keyed by W3C webrtc-stats names in snake_case,
+   *  e.g. bitrate_bps, frames_per_second, packets_lost, packets_received,
+   *  jitter_ms, round_trip_time_ms, frames_decoded, frames_dropped,
+   *  frame_width, frame_height, nack_count, keyframe_requests. A reading the
+   *  client couldn't take is left out, never sent as 0. */
+  metrics: Record<string, number>;
+}
+
+/** A connection-wide reading, not tied to any one track — for
+ *  `sendClientStats`. Sent on every batch; one-time facts such as
+ *  time_to_connect_ms ride only the first batch after connecting. */
+export interface ClientConnectionStat {
+  timestamp: number;
+  /** Named numeric readings, e.g. available_outgoing_bitrate_bps,
+   *  connection_rtt_ms, time_to_connect_ms. */
+  metrics: Record<string, number>;
+}
+
 export interface Clip {
   session_id: string;
   kind: string;
@@ -162,6 +192,11 @@ export declare class ReactorClient {
 
   requestClip(durationSeconds: number): Promise<Clip>;
   requestRecording(): Promise<Clip>;
+
+  /** Fire-and-forget: returns once the batch is handed to the control
+   *  channel, not once the runtime has processed it. Throws synchronously
+   *  if the batch is malformed or the channel can't take it. */
+  sendClientStats(trackStats: ClientTrackStat[], connectionStat?: ClientConnectionStat): void;
 
   uploadFile(file: Blob, name?: string): Promise<FileRef>;
 
