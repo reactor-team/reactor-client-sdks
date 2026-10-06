@@ -1232,9 +1232,9 @@ dependencies = [
 
 [[package]]
 name = "reactor-webrtc"
-version = "0.20.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "088ddeb371a647e094ebd92dcc1c44f6ec35cd705b00f27273971dc3d307d247"
+checksum = "a315d00b3d86688340192513ceb8454c0452cb1da013527a41294f9224911143"
 dependencies = [
  "prost",
  "reactor-webrtc-dc-chunking",
@@ -1243,15 +1243,15 @@ dependencies = [
 
 [[package]]
 name = "reactor-webrtc-dc-chunking"
-version = "0.20.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "692558c995aea172b1b3189148aebc0e28514cc7bb2b5707da186df869ca2a7e"
+checksum = "d0a43fddfd5986207350b25eb0070eea3192f8f461364a60e30149c28fbdc3d5"
 
 [[package]]
 name = "reactor-webrtc-sys"
-version = "0.20.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "108c91121b83b04275d79b8b9a20edcdc3856ff2500d47a94a5ca3ab81e3ae4f"
+checksum = "41c79bbc6bd13b4d0d88596fda0cdc99d48fe6600a9f3200ecf875c349ec2d03"
 dependencies = [
  "cc",
 ]
