@@ -9,6 +9,15 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-06
+
+### Fixed
+
+- Per-frame metadata stays on the frame it was sent with. When a frame was
+  dropped before it was shown (a decode error, the wait for a keyframe, or a
+  late frame), every later frame was handed its predecessor's metadata; it is
+  now matched to the decoded frame itself. Requires reactor-webrtc 0.21.
+
 ## [1.1.0] - 2026-10-05
 
 ### Added
