@@ -12,6 +12,7 @@ struct ReactorLifetimeTests {
         fake: FakeLibrary,
         eventQueue: DispatchQueue? = nil,
         local: Bool = false,
+        autoResumeTracks: Bool = true,
         jwt: String? = nil,
         apiURL: String = Reactor.defaultAPIURL
     ) throws -> Reactor {
@@ -20,6 +21,7 @@ struct ReactorLifetimeTests {
             jwt: jwt,
             apiURL: apiURL,
             local: local,
+            autoResumeTracks: autoResumeTracks,
             eventQueue: eventQueue,
             ffi: fake.table)
     }
@@ -59,6 +61,24 @@ struct ReactorLifetimeTests {
         defer { client.close() }
 
         #expect(fake.createCalls.first?.apiURL == "http://10.0.0.2:8080")
+    }
+
+    @Test("auto-resume of recvonly tracks defaults to on")
+    func autoResumeTracksDefaultsToOn() throws {
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+
+        #expect(fake.createCalls.first?.autoResumeTracks == 1)
+    }
+
+    @Test("auto-resume of recvonly tracks can be turned off at creation")
+    func autoResumeTracksCanBeDisabled() throws {
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake, autoResumeTracks: false)
+        defer { client.close() }
+
+        #expect(fake.createCalls.first?.autoResumeTracks == 0)
     }
 
     @Test("a library speaking another ABI is refused before anything is created")

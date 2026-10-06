@@ -230,6 +230,7 @@ class Reactor:
         jwt: str | None = None,
         api_url: str = DEFAULT_API_URL,
         local: bool = False,
+        auto_resume_tracks: bool = True,
         max_session_duration_seconds: int | None = None,
     ) -> None:
         """
@@ -240,6 +241,9 @@ class Reactor:
             jwt: A token to authenticate with.
             api_url: Coordinator base URL. Defaults to production.
             local: Local-dev mode — relaxes TLS verification and skips auth.
+            auto_resume_tracks: Resume every recvonly track on connect and reconnect.
+                Defaults to True; pass False to leave recvonly tracks paused until the
+                host resumes them itself.
             max_session_duration_seconds: Force-terminates every session a token this
                 client mints creates after this many seconds (1-86400), independent of
                 the token's own expiry. Only takes effect on the model-scoped token
@@ -264,6 +268,7 @@ class Reactor:
         self._jwt = jwt
         self._api_key = api_key
         self._local = local
+        self._auto_resume_tracks = auto_resume_tracks
         self._max_session_duration_seconds = max_session_duration_seconds
 
         # A token the caller handed us is theirs: never replaced. One we minted from an
@@ -700,6 +705,7 @@ class Reactor:
 
         jwt_bytes = self._jwt.encode() if self._jwt else None
         local_int = 1 if self._local else 0
+        auto_resume_tracks_int = 1 if self._auto_resume_tracks else 0
 
         # Named rather than defaulted: `reactor_create` would take the mode from
         # the REACTOR_WEBRTC_ADM environment variable, and an environment variable
@@ -709,6 +715,7 @@ class Reactor:
             self._model_name.encode(),
             jwt_bytes,
             local_int,
+            auto_resume_tracks_int,
             ctypes.byref(cbs),
             ctypes.c_int(_SYNTHETIC_ADM),
             __version__.encode(),

@@ -17,6 +17,22 @@ from pathlib import Path
 # Library loading
 # ---------------------------------------------------------------------------
 
+# The ABI these signatures describe, equal to REACTOR_ABI_VERSION in
+# reactor_ffi.h — the Rust side keeps its own copy pinned to that header with a
+# test, so a release that bumps the ABI bumps all three in one change.
+ABI_VERSION = 3
+
+
+class AbiMismatchError(RuntimeError):
+    """The loaded libreactor_ffi speaks an ABI version this SDK cannot use.
+
+    ctypes resolves every `reactor_` symbol by name, so a library one version
+    behind loads cleanly and then reads these `argtypes` one position off — an
+    older build takes the callbacks pointer where `auto_resume_tracks` sits now,
+    which looks like a crash or a hang rather than a version error. Checking the
+    version first is what makes it the latter.
+    """
+
 
 def _find_lib() -> str:
     if path := os.environ.get("REACTOR_FFI_LIB"):
@@ -48,8 +64,36 @@ def _find_lib() -> str:
     )
 
 
+def _check_abi_version(lib: ctypes.CDLL) -> None:
+    """Refuse a library that does not speak ABI_VERSION, before a signature is used.
+
+    Runs first in `_load()` so a stale library found through `REACTOR_FFI_LIB` or
+    an old local build is rejected at load time, not at the first `reactor_create`
+    call. The same gate exists in the Java and C++ bindings for the same reason.
+    """
+    try:
+        abi_version = lib.reactor_abi_version
+    except AttributeError:
+        raise AbiMismatchError(
+            f"reactor_sdk speaks reactor-ffi ABI version {ABI_VERSION}, and the "
+            f"loaded library exports no reactor_abi_version — it predates it. "
+            f"Rebuild it with `cargo build -p reactor-ffi --release`."
+        ) from None
+    abi_version.restype = ctypes.c_uint32
+    abi_version.argtypes = []
+    actual = abi_version()
+    if actual != ABI_VERSION:
+        raise AbiMismatchError(
+            f"reactor_sdk speaks reactor-ffi ABI version {ABI_VERSION}, the loaded "
+            f"library speaks {actual}. They are not compatible; rebuild it with "
+            f"`cargo build -p reactor-ffi --release` or point REACTOR_FFI_LIB at "
+            f"the rebuilt library."
+        )
+
+
 def _load() -> ctypes.CDLL:
     lib = ctypes.CDLL(_find_lib())
+    _check_abi_version(lib)
 
     # void*-returning functions need explicit restype
     lib.reactor_create.restype = ctypes.c_void_p
@@ -58,6 +102,7 @@ def _load() -> ctypes.CDLL:
         ctypes.c_char_p,  # model_name
         ctypes.c_char_p,  # jwt (nullable)
         ctypes.c_int,  # local
+        ctypes.c_int,  # auto_resume_tracks
         ctypes.c_void_p,  # callbacks (nullable)
         ctypes.c_char_p,  # sdk_version (nullable)
         ctypes.c_char_p,  # sdk_type (nullable)
@@ -69,6 +114,7 @@ def _load() -> ctypes.CDLL:
         ctypes.c_char_p,
         ctypes.c_char_p,
         ctypes.c_int,
+        ctypes.c_int,  # auto_resume_tracks
         ctypes.c_void_p,
         ctypes.c_int,  # adm_mode
         ctypes.c_char_p,  # sdk_version (nullable)

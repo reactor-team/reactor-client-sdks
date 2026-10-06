@@ -76,6 +76,21 @@ final class ClientPeerTest {
                     ReactorSdk.version(),
                     fake.sdkVersion,
                     "the version reported must be this artifact's own, not reactor-core's");
+            assertEquals(1, fake.autoResumeTracks, "auto-resume tracks defaults to true");
+            client.close();
+        }
+    }
+
+    @Test
+    @DisplayName("autoResumeTracks(false) is forwarded to reactor_create_with_adm")
+    void autoResumeTracksCanBeDisabled() {
+        try (FakeNativeLibrary fake = new FakeNativeLibrary()) {
+            ReactorOptions options = ReactorOptions.builder("https://api.example.test", "owner/model")
+                    .autoResumeTracks(false)
+                    .build();
+            ClientPeer client = connected(fake, options);
+
+            assertEquals(0, fake.autoResumeTracks, "auto-resume tracks must be off when the caller opts out");
             client.close();
         }
     }

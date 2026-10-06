@@ -65,6 +65,9 @@ public final class FakeNativeLibrary implements AutoCloseable {
     /** The audio device mode {@code reactor_create_with_adm} was asked for. */
     public int admMode = -1;
 
+    /** The {@code auto_resume_tracks} flag {@code reactor_create_with_adm} was called with. */
+    public int autoResumeTracks = -1;
+
     /** What the client reported about itself. */
     @Nullable
     String sdkVersion;
@@ -197,10 +200,12 @@ public final class FakeNativeLibrary implements AutoCloseable {
             MemorySegment modelName,
             MemorySegment jwt,
             int local,
+            int autoResumeTracks,
             MemorySegment callbacksStruct,
             int adm,
             MemorySegment version,
             MemorySegment type) {
+        this.autoResumeTracks = autoResumeTracks;
         this.admMode = adm;
         this.sdkVersion = readString(version);
         this.sdkType = readString(type);

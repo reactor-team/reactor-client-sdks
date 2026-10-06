@@ -113,6 +113,13 @@ struct Options {
 
   /// Where control events run. Empty means the SDK's own dispatcher thread.
   Executor executor;
+
+  /// Resume every recvonly track on connect and reconnect. Set false to leave
+  /// recvonly tracks paused until the host resumes them itself. Appended after
+  /// `executor` so an aggregate initializer written before this field existed
+  /// — `Options{url, local, executor}` — still selects the executor rather
+  /// than silently becoming the flag.
+  bool auto_resume_tracks = true;
 };
 
 /// What `connect` may adopt instead of creating.
