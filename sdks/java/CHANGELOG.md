@@ -11,15 +11,6 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [1.1.1] - 2026-10-06
 
-### Fixed
-
-- Per-frame metadata stays on the frame it was sent with. When a frame was
-  dropped before it was shown (a decode error, the wait for a keyframe, or a
-  late frame), every later frame was handed its predecessor's metadata; it is
-  now matched to the decoded frame itself. Requires reactor-webrtc 0.21.
-
-## [1.1.0] - 2026-10-05
-
 ### Added
 
 - While connected, the SDK reports its own view of connection quality to the
@@ -30,6 +21,17 @@ versioning follows [Semantic Versioning](https://semver.org/).
   round-trip time and time to connect. It runs on its own timer, needs no
   configuration, and doesn't change `getStats()`. A runtime that doesn't read these
   reports ignores them.
+
+### Fixed
+
+- Per-frame metadata stays on the frame it was sent with. When a frame was
+  dropped before it was shown (a decode error, the wait for a keyframe, or a
+  late frame), every later frame was handed its predecessor's metadata; it is
+  now matched to the decoded frame itself. Requires reactor-webrtc 0.21.
+
+## [1.1.0] - 2026-10-05
+
+### Added
 
 - `ReactorOptions.apiKey`: hand the client a key and it exchanges one itself
   on `connect()`, scoped to the model it was built for — the shape Python,
