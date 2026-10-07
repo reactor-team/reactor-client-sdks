@@ -67,7 +67,16 @@ android {
 // "highest wins" resolution mix a 2.2 stdlib from AGP with the 2.4 one buildSrc's `kotlin-dsl`
 // brings. See the note in gradle/libs.versions.toml for why the version is Gradle's and not
 // AGP's.
-val kotlinVersion = "2.4.0"
+// Read from the catalog, not restated. A literal here is the same two-copies-to-drift hazard
+// pinnedVersion() above exists to prevent — bump the catalog entry and this one silently stays
+// behind, which is precisely the mixed-stdlib failure the forcing below is for.
+val kotlinVersion =
+    extensions
+        .getByType<VersionCatalogsExtension>()
+        .named("libs")
+        .findVersion("kotlin")
+        .orElseThrow { error("No `kotlin` version in gradle/libs.versions.toml") }
+        .requiredVersion
 configurations.configureEach {
     resolutionStrategy.force(
         "org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion",
