@@ -113,4 +113,71 @@ class ErrorsTest {
             )
         assertEquals("connect", error.operation)
     }
+
+    // ── Recoverability ───────────────────────────────────────────────────────
+
+    /**
+     * What the platform said wins over what the local table thinks.
+     *
+     * `recoverable` is a non-optional field of the core's ErrorDetails, and `code_is_recoverable()`
+     * is the single place that decides it. The table here used to be consulted instead, which made
+     * it a second copy of that classification — and `check-error-codes-parity.py` explicitly does
+     * not check recoverability, on the stated grounds that no binding keeps such a copy.
+     */
+    @Test
+    fun `recoverable comes from the payload when the payload carries it`() {
+        // Against the table in both directions, so neither answer can be the table's by accident.
+        val notRetryable =
+            ErrorPayloads.toException(
+                """{"code":"SERVER_ERROR","message":"gone for good","recoverable":false}""",
+                "connect",
+            )
+        assertEquals("SERVER_ERROR", notRetryable.code)
+        assertTrue(
+            "the table says SERVER_ERROR is recoverable; the payload said otherwise",
+            !notRetryable.recoverable,
+        )
+
+        val retryable =
+            ErrorPayloads.toException(
+                """{"code":"BAD_REQUEST","message":"try again","recoverable":true}""",
+                "connect",
+            )
+        assertTrue(
+            "the table says BAD_REQUEST is not recoverable; the payload said otherwise",
+            retryable.recoverable,
+        )
+    }
+
+    /** A payload without the field falls back to the table rather than guessing. */
+    @Test
+    fun `recoverable falls back to the table when the payload omits it`() {
+        val error = ErrorPayloads.toException("""{"code":"REQUEST_TIMEOUT","message":"slow"}""", "connect")
+        assertTrue("a timeout is worth retrying", error.recoverable)
+
+        val permanent = ErrorPayloads.toException("""{"code":"UNAUTHORIZED","message":"no"}""", "connect")
+        assertTrue("a refused key is not", !permanent.recoverable)
+    }
+
+    /** An error this SDK raised itself never crossed the FFI, so it has only the table. */
+    @Test
+    fun `a locally raised refusal uses the table`() {
+        val refusal =
+            ErrorCode.toException(
+                wire = "INVALID_STATE",
+                message = "push before publish",
+                operation = "pushFrame",
+            )
+        assertTrue(!refusal.recoverable)
+    }
+
+    /** An unknown code with no payload field stays not-recoverable: a retry loop is worse. */
+    @Test
+    fun `an unknown code is not recoverable unless the payload says so`() {
+        val unknown = ErrorPayloads.toException("""{"code":"SOMETHING_NEW","message":"?"}""", "connect")
+        assertTrue(!unknown.recoverable)
+
+        val saidSo = ErrorPayloads.toException("""{"code":"SOMETHING_NEW","message":"?","recoverable":true}""", "connect")
+        assertTrue("the platform is allowed to tell us about its own codes", saidSo.recoverable)
+    }
 }
