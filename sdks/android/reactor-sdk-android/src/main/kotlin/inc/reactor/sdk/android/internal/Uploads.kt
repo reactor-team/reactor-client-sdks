@@ -2,6 +2,7 @@ package inc.reactor.sdk.android.internal
 
 import inc.reactor.sdk.android.ErrorCode
 import inc.reactor.sdk.android.FileRef
+import kotlinx.coroutines.ensureActive
 import java.io.File
 import java.io.InputStream
 
@@ -31,6 +32,41 @@ internal object Uploads {
     }
 
     /**
+     * A MIME type for [name], from its extension, never null.
+     *
+     * The ABI will not take null: `reactor_upload_bytes` dereferences `mime_type` with
+     * `CStr::from_ptr` unconditionally, and only `send_command`'s args and uploads are documented
+     * nullable. So the public `mimeType = null` default has to become something here rather than
+     * crossing the boundary.
+     *
+     * `android.webkit.MimeTypeMap` would know more types, but it is a framework class with no
+     * value outside an instrumented test, and this binding's unit suite runs on the host JVM.
+     * This covers what an upload to a model actually carries; anything else is the generic type,
+     * which is the honest answer rather than a guess.
+     */
+    fun mimeTypeFor(name: String): String =
+        when (name.substringAfterLast('.', "").lowercase()) {
+            "png" -> "image/png"
+            "jpg", "jpeg" -> "image/jpeg"
+            "webp" -> "image/webp"
+            "gif" -> "image/gif"
+            "bmp" -> "image/bmp"
+            "heic" -> "image/heic"
+            "mp4" -> "video/mp4"
+            "webm" -> "video/webm"
+            "mov" -> "video/quicktime"
+            "mp3" -> "audio/mpeg"
+            "wav" -> "audio/wav"
+            "ogg" -> "audio/ogg"
+            "m4a" -> "audio/mp4"
+            "flac" -> "audio/flac"
+            "json" -> "application/json"
+            "txt" -> "text/plain"
+            "csv" -> "text/csv"
+            else -> "application/octet-stream"
+        }
+
+    /**
      * Copy a stream into [directory], bounded by [maxBytes].
      *
      * Streamed in chunks rather than read into a ByteArray: the source is a file the *user*
@@ -40,7 +76,7 @@ internal object Uploads {
      * The bound is enforced while copying, not checked afterwards — by then the bytes are already
      * on disk, which is the thing being avoided. The partial file is removed on the way out.
      */
-    fun stage(
+    suspend fun stage(
         name: String,
         directory: File,
         maxBytes: Long,
@@ -54,6 +90,11 @@ internal object Uploads {
                 staged.outputStream().use { output ->
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
+                        // Between chunks, because `read` is not interruptible. Without this the
+                        // copy runs to completion after its caller has been cancelled and walked
+                        // away, leaving a staged file nobody holds a reference to — the `catch`
+                        // below never fires, so nothing deletes it.
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
                         val read = input.read(buffer)
                         if (read < 0) break
                         copied += read
