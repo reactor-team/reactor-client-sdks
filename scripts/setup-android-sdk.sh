@@ -52,7 +52,12 @@ fi
 # comments in sdk-packages.txt are the part that tells the next reader why each version is what
 # it is.
 PACKAGES=()
-while IFS= read -r line; do
+# `|| [ -n "$line" ]` because `read` returns non-zero on a final line with no trailing newline,
+# and the loop would silently drop it. Both the install and the verification below read this
+# array, so a pin whose file lost its last newline was never installed *and* never missed — the
+# one shape where the check cannot catch its own gap. SdkPackagesTest parses the same file with
+# readLines(), which has no such hole, so the two would disagree precisely here.
+while IFS= read -r line || [ -n "$line" ]; do
   line="${line%%#*}"
   line="$(printf '%s' "$line" | tr -d '[:space:]')"
   [ -n "$line" ] && PACKAGES+=("$line")

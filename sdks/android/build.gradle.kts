@@ -6,8 +6,7 @@
  * sdks/java's root project has.
  */
 
-tasks.register("scaffoldCheck") {
-    group = "verification"
-    description = "Build and test every module — what `mise run test:android` calls"
-    dependsOn(subprojects.map { "${it.path}:test" })
-}
+// No scaffoldCheck task. It used to be registered here, described as "what `mise run
+// test:android` calls" — and nothing called it: that task runs `gradle test`, which already
+// aggregates the subprojects from this root. An alias nobody invokes is a second name for the
+// build that will drift from the first one, and its description was already wrong.

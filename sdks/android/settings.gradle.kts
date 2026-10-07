@@ -1,8 +1,15 @@
 // The Android SDK's Gradle build.
 //
 // Deliberately without a Gradle wrapper, exactly as sdks/java is: mise.toml's [tools] table is
-// the only place this repository pins a toolchain, checksummed per platform in mise.lock. A
-// wrapper would be a second source of truth for the Gradle version, unlocked and unchecked.
+// the only place this repository pins a toolchain, and mise.lock pins the exact artifact per
+// platform. A wrapper would be a second source of truth for the Gradle version, unlocked.
+//
+// One caveat worth stating rather than leaving a reader to infer: most tools are locked *with a
+// sha256*, but the four `android-sdk` entries carry a URL and no checksum. That is the vfox
+// backend's limit, not an omission here — mise regenerates them without one. The command-line
+// tools zip is therefore pinned by URL and served over TLS by Google, which is weaker than the
+// rest of the table, and the SDK components it then fetches are verified by
+// scripts/setup-android-sdk.sh against sdk-packages.txt.
 // `mise run build:android` and CI both call the pinned `gradle`.
 //
 // There is one exception to "[tools] is the only place a version lives", and it is worth stating

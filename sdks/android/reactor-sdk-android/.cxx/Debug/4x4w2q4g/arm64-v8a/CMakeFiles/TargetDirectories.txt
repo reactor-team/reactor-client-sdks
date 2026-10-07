@@ -1,0 +1,3 @@
+/Users/douglas/reactor-workspace/reactor-client-sdks/sdks/android/reactor-sdk-android/.cxx/Debug/4x4w2q4g/arm64-v8a/CMakeFiles/reactor_jni.dir
+/Users/douglas/reactor-workspace/reactor-client-sdks/sdks/android/reactor-sdk-android/.cxx/Debug/4x4w2q4g/arm64-v8a/CMakeFiles/edit_cache.dir
+/Users/douglas/reactor-workspace/reactor-client-sdks/sdks/android/reactor-sdk-android/.cxx/Debug/4x4w2q4g/arm64-v8a/CMakeFiles/rebuild_cache.dir

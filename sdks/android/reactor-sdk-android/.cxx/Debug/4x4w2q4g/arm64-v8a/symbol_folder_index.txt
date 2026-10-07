@@ -1,0 +1,1 @@
+/Users/douglas/reactor-workspace/reactor-client-sdks/sdks/android/reactor-sdk-android/build/intermediates/cxx/Debug/4x4w2q4g/obj/arm64-v8a
