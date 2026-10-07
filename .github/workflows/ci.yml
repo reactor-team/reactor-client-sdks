@@ -648,9 +648,9 @@ jobs:
       # need. `requireNativeArtifacts` fails the build rather than packaging an empty AAR, which
       # is exactly what it did here before this comment existed.
       #
-      # The AAR is assembled on the instrumented job below, which stages the natives because it
-      # has to run them on a device. So "does the AAR package correctly" is still answered on
-      # every pull request, just once rather than twice.
+      # The AAR is assembled by `android-native` below, which stages the natives anyway — so
+      # "does the AAR package correctly", and "does the JNI bridge compile for Android at all",
+      # are both answered on every pull request, once rather than twice.
       #
       # Compiles with allWarningsAsErrors as well as running the tests — kotlinc is the other
       # half of this binding's lint gate, so there is no separate step for it.
@@ -684,6 +684,15 @@ jobs:
           key: android-sdk-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'mise.lock') }}
       - run: mise run setup:android
       - run: mise run build:android:native
+      # Assembled here, and this is the only place anything compiles the JNI bridge for Android
+      # at all. The `android` job skips assemble on purpose (it has no native artifacts), and the
+      # sanitizer harness builds client.cpp for the *host*. Between them, a construct the NDK's
+      # jni.h rejects and the JDK's accepts compiled clean in CI and failed on a device — which is
+      # exactly what happened to AttachCurrentThread.
+      #
+      # It also puts the packaging path back under a pull request: requireNativeArtifacts, the
+      # 16 KB alignment check and the AAR's own layout are all on this task.
+      - run: mise run build:android
       # The AAR's payload, handed to the emulator job rather than rebuilt there. Staging it is
       # minutes and gigabytes; downloading it is seconds.
       - uses: actions/upload-artifact@v4
