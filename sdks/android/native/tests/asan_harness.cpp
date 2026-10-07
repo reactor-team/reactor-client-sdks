@@ -49,6 +49,7 @@ void fake_fire_video_frame_on_foreign_thread(const char* track, uint32_t width, 
 void fake_set_unpublish_fails(int fails);
 uint32_t fake_pushed_video_frames(void);
 size_t fake_uploaded_checksum(void);
+const char* fake_last_upload_mime(void);
 const char* fake_last_command_args(void);
 void Java_inc_reactor_sdk_android_internal_NativeClient_nativeUploadBytes(
     JNIEnv*, jobject, jlong, jobject, jint, jstring, jstring, jlong);
@@ -310,11 +311,25 @@ void uploaded_bytes_are_read_whole_while_borrowed() {
   jobject buffer = g_env->NewDirectByteBuffer(raw, size);
   jstring name = g_env->NewStringUTF("payload.bin");
 
+  jstring mime = g_env->NewStringUTF("application/octet-stream");
   Java_inc_reactor_sdk_android_internal_NativeClient_nativeUploadBytes(
-      g_env, nullptr, context, buffer, size, name, nullptr, /*ticket=*/11);
+      g_env, nullptr, context, buffer, size, name, mime, /*ticket=*/11);
   check(fake_uploaded_checksum() == static_cast<size_t>(size),
         "every byte of the uploaded buffer was read, and none beyond it");
+  check(std::strcmp(fake_last_upload_mime(), "application/octet-stream") == 0,
+        "the MIME type reached the ABI intact");
 
+  // The call the public API's own default used to make. reactor_upload_bytes dereferences
+  // mime_type unconditionally, so this must be refused here rather than crossing — and the fake
+  // now dereferences it too, so a regression is a crash in this harness rather than a crash on
+  // somebody's phone.
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeUploadBytes(
+      g_env, nullptr, context, buffer, size, name, nullptr, /*ticket=*/12);
+  check(g_env->ExceptionCheck() == JNI_TRUE,
+        "a null MIME type is refused at the boundary, not passed to a nonnull ABI argument");
+  g_env->ExceptionClear();
+
+  g_env->DeleteLocalRef(mime);
   g_env->DeleteLocalRef(name);
   g_env->DeleteLocalRef(buffer);
   std::free(raw);

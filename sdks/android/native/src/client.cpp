@@ -553,6 +553,17 @@ Java_inc_reactor_sdk_android_internal_NativeClient_nativeUploadBytes(
 
   JavaString file_name(env, name);
   JavaString mime(env, mime_type);
+  // Neither is nullable on the other side: reactor_upload_bytes dereferences both with
+  // CStr::from_ptr unconditionally, and the header marks only send_command's args and uploads as
+  // nullable. Kotlin resolves the MIME type before calling, so a null here is a bug in this
+  // binding rather than bad input — which is exactly why it is worth saying so instead of
+  // dereferencing null inside Rust and taking the app with it.
+  if (file_name.get() == nullptr || mime.get() == nullptr) {
+    reactor_jni::fail(env, "java/lang/IllegalArgumentException",
+                      "uploadBytes reached the native layer with a null name or MIME type; both "
+                      "are required by the ABI and the binding is supposed to resolve them");
+    return;
+  }
   reactor_upload_bytes(context->handle, bytes, static_cast<size_t>(length), file_name.get(),
                        mime.get(), completion_trampoline,
                        reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));

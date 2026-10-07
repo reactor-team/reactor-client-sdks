@@ -434,7 +434,20 @@ public class Reactor(
         require(data.isDirect) {
             "uploadBytes needs a direct ByteBuffer — ByteBuffer.allocateDirect(), not allocate()"
         }
-        return requireHandle("upload_bytes").uploadBytes(data, data.remaining(), name, mimeType)
+        // Sliced, not passed as-is. GetDirectBufferAddress returns the buffer's *base* address,
+        // unadjusted for position — so a buffer that was filled and not flipped would upload
+        // `remaining()` bytes starting at offset 0, which is neither what the caller wrote nor an
+        // error anything would catch. A slice re-bases the address onto the current position,
+        // which is the contract ByteBuffer.slice() documents.
+        val window = data.slice()
+        // Resolved here because the ABI will not take null: reactor_upload_bytes dereferences
+        // mime_type unconditionally (CStr::from_ptr), and the header marks only send_command's
+        // args and uploads as nullable. Passing the public default through was a null dereference
+        // on the simplest possible call.
+        val resolved =
+            mimeType ?: inc.reactor.sdk.android.internal.Uploads
+                .mimeTypeFor(name)
+        return requireHandle("upload_bytes").uploadBytes(window, window.remaining(), name, resolved)
     }
 
     /**
@@ -446,9 +459,19 @@ public class Reactor(
      *
      * Copied in chunks and bounded by [maxBytes]: the source is a file the *user* chose, and an
      * SDK that read it whole would be deciding the memory ceiling of an app it knows nothing
-     * about. The staged copy is deleted once the upload settles — **after**, never during,
-     * because the native layer is reading it until then. The `finally` is what makes cancellation
-     * behave like failure instead of leaving the copy behind.
+     * about.
+     *
+     * **Cancellable while staging, not while uploading, and that asymmetry is the ABI's.**
+     * `reactor_upload_file` opens the path inside a task of its own, after returning, and nothing
+     * in the ABI cancels it. So the two halves get different treatment:
+     *
+     *  * The copy is cancellable, and is the half worth cancelling — it is the one that takes
+     *    time for a large file. It checks for cancellation between chunks and deletes its partial
+     *    file on the way out.
+     *  * The upload runs under [kotlinx.coroutines.NonCancellable]. A cancelled wait here used to
+     *    run the `finally` immediately and delete a file the native task had not opened yet,
+     *    which is a failed upload the caller is never told about. Waiting is the only thing that
+     *    makes the delete safe, because there is nothing to cancel on the other side.
      */
     public suspend fun uploadStream(
         name: String,
@@ -462,7 +485,9 @@ public class Reactor(
                     .stage(name, cacheDirectory, maxBytes, open)
             }
         return try {
-            requireHandle("upload_file").uploadFile(staged.absolutePath)
+            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                requireHandle("upload_file").uploadFile(staged.absolutePath)
+            }
         } finally {
             staged.delete()
         }
