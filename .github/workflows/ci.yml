@@ -130,6 +130,10 @@ jobs:
               - 'scripts/check-android-native.py'
               - 'scripts/asan-android-jni.sh'
               - 'scripts/require-android-device.sh'
+              # The integration task wraps its test invocation in this, so a change to the
+              # retry policy has to run the suite that consumes it. (The other SDKs' filters have
+              # the same gap; this is the one wiring retry.sh into an Android task.)
+              - 'scripts/retry.sh'
             # Package.swift is at the repository root — SwiftPM will not resolve
             # a package in a subdirectory — so it is named here alongside the
             # sources it points at.
