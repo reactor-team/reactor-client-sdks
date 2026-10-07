@@ -142,4 +142,90 @@ class TrendsTest {
         val checked = Trends.standardResourceMetrics(samples, true).first { it.name == "live clients" }
         assertFalse("a churn scenario holding a client open is a failure", checked.passed)
     }
+
+    // ── CPU ──────────────────────────────────────────────────────────────────
+
+    /**
+     * A run whose per-cycle CPU doubles must fail, startup cost notwithstanding.
+     *
+     * This is the case the old metric got backwards. `cpuNanos` is a process counter that
+     * includes every millisecond burned before cycle 1 — JVM startup, class loading, the native
+     * library coming up. Dividing it by the cycle number gives a running average, and a running
+     * average with ten seconds of startup in the numerator *falls* for a long time no matter what
+     * each cycle is actually costing. A scenario getting steadily slower read as improving.
+     */
+    private fun withCpu(
+        perCycleMillis: (Int) -> Double,
+        startupMillis: Double,
+    ): List<Sample> {
+        var cumulative = startupMillis
+        return (1..60).map { cycle ->
+            cumulative += perCycleMillis(cycle)
+            Sample(
+                cycle = cycle,
+                elapsedSeconds = cycle.toDouble(),
+                rssBytes = 100L * 1_048_576,
+                cpuNanos = (cumulative * 1_000_000).toLong(),
+                threads = 10,
+                openFds = 20,
+                liveClients = 0,
+                orphanedGlobals = 0,
+                nativeHeapBytes = 40L * 1_048_576,
+            )
+        }
+    }
+
+    /**
+     * The reviewer's own shape: 136.9ms per cycle at the start, 280.9ms at the end, behind ten
+     * seconds of startup CPU. Note what last-versus-middle does to a *linear* ramp — the ratio it
+     * sees is +18%, not the +105% the endpoints suggest, because the middle third is already most
+     * of the way up. That is the comparison working as intended, and it is why the threshold for
+     * this metric had to be re-derived when the metric stopped being a damped average.
+     */
+    @Test
+    fun `cpu per cycle fails when each cycle costs steadily more`() {
+        val samples = withCpu({ cycle -> 130.0 + cycle * 2.5 }, startupMillis = 10_000.0)
+        val cpu = Trends.standardResourceMetrics(samples, false).first { it.name == "cpu per cycle" }
+        assertFalse(
+            "a run whose per-cycle cost doubles must not pass: ${cpu.detail}",
+            cpu.passed,
+        )
+    }
+
+    /**
+     * And the same shape read the old way passes, which is why this is a test and not a comment.
+     *
+     * Cumulative-over-cycle on the identical samples: still falling at the end of the run, so a
+     * trend check on it sees improvement.
+     */
+    @Test
+    fun `the cumulative average would have called that same run flat`() {
+        val samples = withCpu({ cycle -> 130.0 + cycle * 2.5 }, startupMillis = 10_000.0)
+        val cumulativeAverage =
+            Trends.assertNoSustainedGrowth(samples, "cpu (old)", " ms", 0.50, 5.0, true) {
+                it.cpuNanos / 1_000_000.0 / it.cycle
+            }
+        assertTrue(
+            "if this ever fails the defect is gone and the test above is redundant",
+            cumulativeAverage.passed,
+        )
+    }
+
+    @Test
+    fun `cpu per cycle passes when each cycle costs the same`() {
+        val samples = withCpu({ 150.0 }, startupMillis = 10_000.0)
+        val cpu = Trends.standardResourceMetrics(samples, false).first { it.name == "cpu per cycle" }
+        assertTrue(cpu.detail, cpu.passed)
+    }
+
+    /** A reading that failed (-1) must not be averaged in as negative work. */
+    @Test
+    fun `a counter that went backwards is skipped rather than averaged`() {
+        val samples =
+            withCpu({ 150.0 }, startupMillis = 0.0).mapIndexed { index, sample ->
+                if (index == 30) sample.copy(cpuNanos = -1) else sample
+            }
+        val cpu = Trends.standardResourceMetrics(samples, false).first { it.name == "cpu per cycle" }
+        assertTrue(cpu.detail, cpu.passed)
+    }
 }

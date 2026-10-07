@@ -37,8 +37,17 @@ public object Trends {
         minAbsoluteDelta: Double,
         useMedian: Boolean,
         value: (Sample) -> Double,
+    ): MetricResult = trend(afterWarmup(samples.map(value)), name, unit, maxGrowthRatio, minAbsoluteDelta, useMedian)
+
+    /** The thirds comparison itself, over values already extracted and warmed up. */
+    private fun trend(
+        values: List<Double>,
+        name: String,
+        unit: String,
+        maxGrowthRatio: Double,
+        minAbsoluteDelta: Double,
+        useMedian: Boolean,
     ): MetricResult {
-        val values = afterWarmup(samples, value)
         if (values.size < 6) {
             return MetricResult(
                 name,
@@ -140,7 +149,7 @@ public object Trends {
             assertNoSustainedGrowth(samples, "open fds", "", 0.10, 4.0, true) {
                 it.openFds.toDouble()
             }
-        results += assertNoSustainedGrowth(samples, "cpu per cycle", " ms", 0.50, 5.0, true, ::cpuPerCycleMillis)
+        results += cpuPerCycle(samples)
         // The native heap on its own. On Android, RSS moves with ART's managed heap underneath it,
         // so a native leak can hide inside ordinary GC behaviour; this is the number that does not
         // have that problem. ART has no NMT, and this is the equivalent question the platform can
@@ -159,16 +168,53 @@ public object Trends {
         return results
     }
 
-    private fun cpuPerCycleMillis(sample: Sample): Double =
-        // A delta would need the previous sample; the scenario records cpuNanos cumulatively and
-        // this divides by the cycle, which is the same question asked of one reading. A raw
-        // cumulative counter grows by construction and proves nothing.
-        if (sample.cycle == 0) 0.0 else sample.cpuNanos / 1_000_000.0 / sample.cycle
+    /**
+     * CPU spent *in each interval*, not cumulative CPU divided by cycle count.
+     *
+     * The difference is the whole metric. `cpuNanos` is a process counter: it includes every
+     * millisecond burned before the first cycle — JVM startup, class loading, the native library
+     * coming up — and it only ever rises. Dividing it by the cycle number produces a running
+     * average, and a running average with a large constant in the numerator **falls** for a long
+     * time no matter what the per-cycle cost is doing. A scenario whose real work per cycle
+     * doubles over a run reads as comfortably improving.
+     *
+     * A difference between consecutive samples asks the actual question: is a cycle costing more
+     * now than it did in the middle of the run.
+     */
+    private fun cpuPerCycle(samples: List<Sample>): MetricResult {
+        val deltas = mutableListOf<Double>()
+        for (i in 1 until samples.size) {
+            val cycles = samples[i].cycle - samples[i - 1].cycle
+            if (cycles <= 0) continue
+            val nanos = samples[i].cpuNanos - samples[i - 1].cpuNanos
+            // A counter that went backwards is not something to average in. It means the reading
+            // failed (-1) rather than that the process un-spent CPU.
+            if (nanos < 0) continue
+            deltas += nanos / 1_000_000.0 / cycles
+        }
+        // 15%, not the 50% this inherited, and the number deserves its reasoning stated.
+        //
+        // 50% was calibrated for the cumulative average it replaces, which is heavily damped: a
+        // constant startup cost in the numerator makes the whole series move slowly, so only a
+        // very large ratio meant anything. A per-interval delta is undamped. Keeping 50% would
+        // have left the check *less* sensitive than before, precisely because the metric got
+        // better — so the threshold had to be re-derived, not inherited.
+        //
+        // What set it at 15% specifically: the shape this metric exists to catch — per-cycle cost
+        // climbing linearly, 137ms to 281ms over a five-minute run — reads as +18% from the
+        // middle third to the last, not the +105% its endpoints suggest, because last-versus-
+        // middle discounts a ramp the middle third is already most of the way up. That run is a
+        // leak and has to fail, so the bar sits below it. Being explicit that a counterexample
+        // informed the number, rather than presenting it as derived from noise alone.
+        //
+        // It is still looser than the 10% the memory and descriptor checks use, because
+        // scheduling and thermal throttling move CPU per cycle in a way they do not move RSS. The
+        // medians over a third of the run absorb most of that, and the 5ms floor keeps a scenario
+        // whose cycles are nearly free from failing on a ratio between two tiny numbers.
+        return trend(afterWarmup(deltas), "cpu per cycle", " ms", 0.15, 5.0, true)
+    }
 
-    private fun afterWarmup(
-        samples: List<Sample>,
-        value: (Sample) -> Double,
-    ): List<Double> = samples.drop((samples.size * WARMUP_FRACTION).toInt()).map(value)
+    private fun afterWarmup(values: List<Double>): List<Double> = values.drop((values.size * WARMUP_FRACTION).toInt())
 
     private fun middle(
         values: List<Double>,
