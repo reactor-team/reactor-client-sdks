@@ -5,6 +5,8 @@ import inc.reactor.sdk.android.Reactor
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Before
+import org.junit.Rule
+import org.junit.rules.Timeout
 
 /**
  * One connected client for the whole run.
@@ -82,6 +84,17 @@ internal object LiveSession {
 /** A test class that wants the shared session, repaired before each test. */
 internal abstract class LiveFixture {
     protected lateinit var reactor: Reactor
+
+    /**
+     * A ceiling on every test in this suite, matching the Java suite's `@Timeout(240)`.
+     *
+     * AndroidJUnitRunner enforces no bound of its own, and several calls here — `sendCommand`,
+     * `stats`, `requestSchema`, `requestClip`, `downloadClip` — are awaited without an explicit
+     * `withTimeout`. One hanging call would otherwise hold until the job's own 60-minute timeout,
+     * and then `retry.sh` would pay for the whole suite again, three more times.
+     */
+    @get:Rule
+    public val timeout: Timeout = Timeout.seconds(240)
 
     @Before
     fun takeTheSharedSession() {
