@@ -12,11 +12,19 @@ package inc.reactor.sdk.android
  * The recoverable ones are the ones where nothing about the *request* was wrong: the connection
  * went, the network did not answer, the platform was busy or slow. Everything else describes the
  * request, and repeating it unchanged fails the same way.
+ *
+ * **This column is a fallback, not the answer.** `recoverable` rides on every error payload the
+ * core sends and `code_is_recoverable()` is the single place that decides it, so an exception
+ * built from a payload uses what the payload said — see [ReactorException.recoverable]. These
+ * values are for errors this SDK raises itself, which never crossed the FFI and have no payload
+ * to read. Keeping them as the primary source made them a second copy of the core's
+ * classification that nothing checks: `check-error-codes-parity.py` deliberately does not cover
+ * recoverability, on the stated grounds that no binding keeps such a copy.
  */
 internal enum class ErrorCode(
     val wire: String,
     val recoverable: Boolean,
-    val create: (String, String, Int?, String?, Long?, Throwable?) -> ReactorException,
+    val create: (String, String, Int?, String?, Long?, Throwable?, Boolean?) -> ReactorException,
 ) {
     INVALID_STATE("INVALID_STATE", false, ::InvalidStateException),
     DISCONNECTED("DISCONNECTED", true, ::DisconnectedException),
@@ -64,9 +72,16 @@ internal enum class ErrorCode(
             operation: String? = null,
             retryAfterMs: Long? = null,
             cause: Throwable? = null,
+            /**
+             * What the payload said, when there was one.
+             *
+             * Null for an error this SDK raised itself — a refusal that never crossed the FFI
+             * has no payload to read. See [ReactorException.recoverable].
+             */
+            wireRecoverable: Boolean? = null,
         ): ReactorException {
             val factory = byWire[wire]?.create ?: ::UnknownReactorException
-            return factory(wire, message, status, operation, retryAfterMs, cause)
+            return factory(wire, message, status, operation, retryAfterMs, cause, wireRecoverable)
         }
     }
 }

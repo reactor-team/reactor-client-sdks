@@ -24,6 +24,8 @@ public open class ReactorException internal constructor(
     /** How long to wait before retrying, when the platform said. */
     public val retryAfterMs: Long? = null,
     cause: Throwable? = null,
+    /** What the payload said, or null for an error this SDK raised without one. See [recoverable]. */
+    internal val wireRecoverable: Boolean? = null,
 ) : Exception(message, cause) {
     /**
      * Whether the same call could succeed later, unchanged.
@@ -31,9 +33,20 @@ public open class ReactorException internal constructor(
      * True is about the moment rather than the request: the connection went, the network did not
      * answer, the platform was busy. Everything else describes the request, and repeating it
      * unchanged fails the same way.
+     *
+     * **What the platform said, when it said anything.** `recoverable` is a non-optional field of
+     * the core's own `ErrorDetails` and rides on every error payload, and the core's
+     * `code_is_recoverable()` is the single place that decides it. Reading it off the wire is
+     * what the other bindings do, and it is why `check-error-codes-parity.py` does not check
+     * recoverability — its reasoning is that no SDK keeps a copy to drift.
+     *
+     * The table below is the fallback, for an error this SDK raised itself: a refusal like
+     * pushing into an unpublished track never crossed the FFI and so has no payload. Keeping the
+     * table as the *primary* source made it a second, unchecked copy of the core's
+     * classification — one the parity script explicitly does not cover.
      */
     public val recoverable: Boolean
-        get() = ErrorCode.isRecoverable(code)
+        get() = wireRecoverable ?: ErrorCode.isRecoverable(code)
 
     override fun toString(): String =
         buildString {
@@ -55,7 +68,8 @@ public class InvalidStateException internal constructor(
     operation: String? = null,
     retryAfterMs: Long? = null,
     cause: Throwable? = null,
-) : ReactorException(code, message, status, operation, retryAfterMs, cause)
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
 /** The session is gone. Recoverable: reconnect and try again. */
 public class DisconnectedException internal constructor(
@@ -65,7 +79,8 @@ public class DisconnectedException internal constructor(
     operation: String? = null,
     retryAfterMs: Long? = null,
     cause: Throwable? = null,
-) : ReactorException(code, message, status, operation, retryAfterMs, cause)
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
 /** The network did not answer. */
 public class NetworkException internal constructor(
@@ -75,7 +90,8 @@ public class NetworkException internal constructor(
     operation: String? = null,
     retryAfterMs: Long? = null,
     cause: Throwable? = null,
-) : ReactorException(code, message, status, operation, retryAfterMs, cause)
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
 /** The reply did not arrive in time. */
 public class RequestTimeoutException internal constructor(
@@ -85,7 +101,8 @@ public class RequestTimeoutException internal constructor(
     operation: String? = null,
     retryAfterMs: Long? = null,
     cause: Throwable? = null,
-) : ReactorException(code, message, status, operation, retryAfterMs, cause)
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
 /** The WebRTC transport failed. */
 public class TransportException internal constructor(
@@ -95,7 +112,8 @@ public class TransportException internal constructor(
     operation: String? = null,
     retryAfterMs: Long? = null,
     cause: Throwable? = null,
-) : ReactorException(code, message, status, operation, retryAfterMs, cause)
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
 /** The key or token was rejected. Not recoverable: the same credentials fail the same way. */
 public class UnauthorizedException internal constructor(
@@ -105,7 +123,8 @@ public class UnauthorizedException internal constructor(
     operation: String? = null,
     retryAfterMs: Long? = null,
     cause: Throwable? = null,
-) : ReactorException(code, message, status, operation, retryAfterMs, cause)
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
 /** No such model, session or clip. */
 public class NotFoundException internal constructor(
@@ -115,7 +134,8 @@ public class NotFoundException internal constructor(
     operation: String? = null,
     retryAfterMs: Long? = null,
     cause: Throwable? = null,
-) : ReactorException(code, message, status, operation, retryAfterMs, cause)
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
 /** The request conflicts with the session's current state. */
 public class ConflictException internal constructor(
@@ -125,7 +145,8 @@ public class ConflictException internal constructor(
     operation: String? = null,
     retryAfterMs: Long? = null,
     cause: Throwable? = null,
-) : ReactorException(code, message, status, operation, retryAfterMs, cause)
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
 /** Too many requests. Recoverable, and [retryAfterMs] says when. */
 public class RateLimitedException internal constructor(
@@ -135,7 +156,8 @@ public class RateLimitedException internal constructor(
     operation: String? = null,
     retryAfterMs: Long? = null,
     cause: Throwable? = null,
-) : ReactorException(code, message, status, operation, retryAfterMs, cause)
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
 /** The request was malformed. */
 public class BadRequestException internal constructor(
@@ -145,7 +167,8 @@ public class BadRequestException internal constructor(
     operation: String? = null,
     retryAfterMs: Long? = null,
     cause: Throwable? = null,
-) : ReactorException(code, message, status, operation, retryAfterMs, cause)
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
 /** The platform failed. Recoverable: a 5xx is about the moment. */
 public class ServerException internal constructor(
@@ -155,7 +178,8 @@ public class ServerException internal constructor(
     operation: String? = null,
     retryAfterMs: Long? = null,
     cause: Throwable? = null,
-) : ReactorException(code, message, status, operation, retryAfterMs, cause)
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
 /** This SDK and the platform disagree about the protocol. */
 public class VersionMismatchException internal constructor(
@@ -165,7 +189,8 @@ public class VersionMismatchException internal constructor(
     operation: String? = null,
     retryAfterMs: Long? = null,
     cause: Throwable? = null,
-) : ReactorException(code, message, status, operation, retryAfterMs, cause)
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
 /**
  * A payload did not parse.
@@ -181,7 +206,8 @@ public class DecodeFailedException internal constructor(
     operation: String? = null,
     retryAfterMs: Long? = null,
     cause: Throwable? = null,
-) : ReactorException(code, message, status, operation, retryAfterMs, cause)
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
 /** The session ended and will not come back. */
 public class SessionTerminalException internal constructor(
@@ -191,7 +217,8 @@ public class SessionTerminalException internal constructor(
     operation: String? = null,
     retryAfterMs: Long? = null,
     cause: Throwable? = null,
-) : ReactorException(code, message, status, operation, retryAfterMs, cause)
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
 /** The message exceeded the channel's limit. */
 public class MessageTooLargeException internal constructor(
@@ -201,7 +228,8 @@ public class MessageTooLargeException internal constructor(
     operation: String? = null,
     retryAfterMs: Long? = null,
     cause: Throwable? = null,
-) : ReactorException(code, message, status, operation, retryAfterMs, cause)
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
 /** The operation was cancelled or the client went away before it finished. */
 public class AbortedException internal constructor(
@@ -211,7 +239,8 @@ public class AbortedException internal constructor(
     operation: String? = null,
     retryAfterMs: Long? = null,
     cause: Throwable? = null,
-) : ReactorException(code, message, status, operation, retryAfterMs, cause)
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
 /** Recording is not enabled for this model or session. */
 public class RecorderDisabledException internal constructor(
@@ -221,7 +250,8 @@ public class RecorderDisabledException internal constructor(
     operation: String? = null,
     retryAfterMs: Long? = null,
     cause: Throwable? = null,
-) : ReactorException(code, message, status, operation, retryAfterMs, cause)
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
 /**
  * A code this SDK does not know.
@@ -237,4 +267,5 @@ public class UnknownReactorException internal constructor(
     operation: String? = null,
     retryAfterMs: Long? = null,
     cause: Throwable? = null,
-) : ReactorException(code, message, status, operation, retryAfterMs, cause)
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)

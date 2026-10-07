@@ -57,6 +57,13 @@ internal object ErrorPayloads {
             status = (fields["status"] as? Double)?.toInt(),
             operation = fields["operation"] as? String ?: fallbackOperation,
             retryAfterMs = (fields["retry_after_ms"] as? Double)?.toLong(),
+            // Read, not re-derived. `recoverable` is a non-optional field of the core's
+            // ErrorDetails and the core is the only place that decides it; dropping it here and
+            // consulting a local table instead made that table a second, unchecked copy of
+            // `code_is_recoverable()`. Still nullable: a payload this SDK cannot find it in falls
+            // back to the table rather than guessing false, which would make every unknown
+            // platform error look permanent.
+            wireRecoverable = fields["recoverable"] as? Boolean,
         )
     }
 }
