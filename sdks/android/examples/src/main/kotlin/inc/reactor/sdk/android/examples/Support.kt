@@ -3,6 +3,9 @@ package inc.reactor.sdk.android.examples
 import inc.reactor.sdk.android.Reactor
 import inc.reactor.sdk.android.ReactorOptions
 import inc.reactor.sdk.android.VideoFrame
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /*
  * The spine every example shares, and nothing else.
@@ -38,8 +41,18 @@ public suspend fun withReactor(
         log("connected")
         body(reactor)
     } finally {
-        runCatching { reactor.disconnect() }
-        reactor.close()
+        // NonCancellable, because this `finally` usually runs *because* the job was cancelled —
+        // the Activity tore down, or a different scenario was picked. In a cancelled context
+        // `disconnect()` is cancelled at its first suspension point and `close()` then destroys
+        // the handle before the disconnect has reached the platform, which leaves the session
+        // alive server-side for the rest of its lease. The next run of any scenario is what pays
+        // for that, which is a confusing way to learn this SDK.
+        //
+        // Bounded, so a platform that will not answer cannot hold teardown open for ever.
+        withContext(NonCancellable) {
+            withTimeoutOrNull(10_000) { runCatching { reactor.disconnect() } }
+            reactor.close()
+        }
         log("disconnected")
     }
 }
