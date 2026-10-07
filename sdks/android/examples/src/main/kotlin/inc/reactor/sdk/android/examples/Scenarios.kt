@@ -178,14 +178,51 @@ public object Scenarios {
             val height = 480
             val frame = ByteBuffer.allocateDirect(width * height * 4)
             repeat(150) { i ->
+                // Something a human can see moving, not an all-zero buffer.
+                //
+                // This pushed pure black before, and X2 dutifully edited 150 frames of it. The
+                // set's own rule is that a frame count is not proof — and a black input gives the
+                // model nothing to work with and the reader nothing to judge the result by. A bar
+                // that moves across the frame makes "is this scenario working" answerable by
+                // looking at the screen.
+                drawMovingBar(frame, width, height, step = i)
                 // A tag rides with the frame and comes back in the trailer on the far side — see
                 // 07. It is dropped unless the peer declared that it reads tags, so tagging is
                 // safe whatever the model supports.
                 input.pushFrame(frame, width, height, userData = "frame-$i".toByteArray())
                 delay(33)
             }
-            log("pushed 150 tagged frames")
+            log("pushed 150 tagged frames carrying a moving bar")
         }
+    }
+
+    /**
+     * A vertical bar sweeping left to right over a dark background, in BGRA.
+     *
+     * Deliberately trivial to read on screen: if the far side is echoing or editing what it was
+     * sent, the bar is there and moving. A still image would not distinguish "the stream works"
+     * from "one frame arrived and the rest were dropped".
+     */
+    private fun drawMovingBar(
+        frame: ByteBuffer,
+        width: Int,
+        height: Int,
+        step: Int,
+    ) {
+        val barWidth = width / 16
+        val barAt = (step * (width / 50)) % width
+        frame.clear()
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val lit = x >= barAt && x < barAt + barWidth
+                // BGRA, which is what the ABI carries.
+                frame.put(if (lit) 0xF0.toByte() else 0x10)
+                frame.put(if (lit) 0xC0.toByte() else 0x10)
+                frame.put(if (lit) 0x40.toByte() else 0x18)
+                frame.put(0xFF.toByte())
+            }
+        }
+        frame.rewind()
     }
 
     /**

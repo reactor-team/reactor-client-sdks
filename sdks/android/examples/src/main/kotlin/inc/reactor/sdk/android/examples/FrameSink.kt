@@ -18,8 +18,23 @@ import java.nio.ByteBuffer
 public class FrameSink(
     private val view: ImageView,
 ) {
-    private var bitmap: Bitmap? = null
+    /**
+     * Two bitmaps, written and displayed alternately.
+     *
+     * One would be wrong: `setPixels` runs on the FFI thread while the previous `post` may still
+     * have that same Bitmap attached to the ImageView, so the UI can draw a half-converted frame.
+     * With two, a tear needs the UI thread to be a whole frame behind rather than merely late.
+     *
+     * It is not a guarantee, and this is the honest limit of rendering a video stream into an
+     * ImageView at all — a renderer that must never tear wants a SurfaceView and its own
+     * synchronisation. This is an example teaching the SDK's frame callback, so it uses the
+     * simplest widget that works and says where the line is.
+     */
+    private var buffers: Array<Bitmap>? = null
+    private var next = 0
     private var pixels: IntArray = IntArray(0)
+    private var width = 0
+    private var height = 0
 
     /**
      * Draw one frame.
@@ -29,13 +44,20 @@ public class FrameSink(
      * else, which is the bargain the inline callback makes.
      */
     public fun render(frame: VideoFrame) {
-        val width = frame.width
-        val height = frame.height
-        if (pixels.size != width * height) {
+        // Keyed on both dimensions, not on their product. 640x480 and 480x640 have the same area,
+        // so an area key reuses a bitmap of the wrong shape and setPixels then writes past its
+        // end — an IllegalStateException on a resolution change that happens to be a transpose.
+        if (frame.width != width || frame.height != height) {
+            width = frame.width
+            height = frame.height
             pixels = IntArray(width * height)
-            bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            buffers =
+                Array(2) { Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888) }
+            next = 0
         }
-        val target = bitmap ?: return
+        val target = buffers?.get(next) ?: return
+        next = (next + 1) % 2
+
         toArgb(frame.pixels, pixels)
         target.setPixels(pixels, 0, width, 0, 0, width, height)
         view.post { view.setImageBitmap(target) }
