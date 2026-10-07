@@ -58,34 +58,61 @@ public class Microphone(
     private val running = AtomicBoolean(false)
 
     /**
+     * Serialises the two lifecycle transitions, and **only** those.
+     *
+     * The atomic alone is not enough, and the gap is not theoretical: `running` used to be
+     * committed before `device.start()` returned, so a `stop()` landing in that window cleared the
+     * flag and stopped a backend that had not started — and then the pending `start` brought it
+     * up. Every later `stop()` returned early on the flag, leaving the microphone live with
+     * `isCapturing` reading false. Nothing could turn it off again.
+     *
+     * Holding this across `device.stop()` is safe precisely because the capture callback takes no
+     * lock: it reads the atomic and returns. That is the whole reason the flag stays an atomic
+     * rather than becoming a second mutex — see the class note above.
+     */
+    private val lifecycle = ReentrantLock()
+
+    /**
      * Start capturing, handing mono samples at [targetSampleRate] to [onSamples].
      *
      * [onSamples] runs on the device's capture thread. Push straight into a track from it —
      * queueing instead is what turns a bounded drop into unbounded latency.
      */
     public fun start(onSamples: (ShortArray) -> Unit) {
-        check(running.compareAndSet(false, true)) { "This Microphone is already capturing" }
-        device.start { raw ->
-            // Checked inside the callback, without a lock. A buffer captured while stopping is
-            // dropped rather than delivered — which is the difference between a clean stop and a
-            // push into a track the caller has already torn down.
-            if (!running.get()) return@start
-            onSamples(
-                PcmConversion.resample(
-                    PcmConversion.toMono(raw, channels),
-                    deviceSampleRate,
-                    targetSampleRate,
-                ),
-            )
+        lifecycle.withLock {
+            check(!running.get()) { "This Microphone is already capturing" }
+            running.set(true)
+            // One resampler for the whole capture, not one per buffer. A stateless resample
+            // restarts its phase at every buffer boundary, which at 44.1k to 48k drops or repeats
+            // a sample every few milliseconds — inaudible per buffer and a drifting, artefacted
+            // stream over a long capture.
+            val resampler = PcmConversion.Resampler(deviceSampleRate, targetSampleRate)
+            try {
+                device.start { raw ->
+                    // Checked inside the callback, without a lock. A buffer captured while
+                    // stopping is dropped rather than delivered — which is the difference between
+                    // a clean stop and a push into a track the caller has already torn down.
+                    if (!running.get()) return@start
+                    onSamples(resampler.resample(PcmConversion.toMono(raw, channels)))
+                }
+            } catch (failedToStart: Throwable) {
+                // Rolled back, or a device that refused to open leaves this Microphone claiming to
+                // capture forever: start() would refuse as "already capturing" and stop() would
+                // call stop() on a backend that never started.
+                running.set(false)
+                throw failedToStart
+            }
         }
     }
 
     /** Stop capturing. Idempotent. */
     public fun stop() {
-        if (!running.compareAndSet(true, false)) return
-        // Safe to call even though a callback may be running: that callback takes no lock, so
-        // waiting for it here cannot deadlock.
-        device.stop()
+        lifecycle.withLock {
+            if (!running.compareAndSet(true, false)) return
+            // Safe to call under the lock even though a callback may be running: that callback
+            // takes no lock, so waiting for it here cannot deadlock.
+            device.stop()
+        }
     }
 
     public val isCapturing: Boolean

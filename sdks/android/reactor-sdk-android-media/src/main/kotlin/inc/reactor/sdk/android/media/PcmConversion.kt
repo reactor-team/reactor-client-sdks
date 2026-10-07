@@ -33,7 +33,59 @@ public object PcmConversion {
     }
 
     /**
-     * Resample by nearest-neighbour.
+     * Nearest-neighbour resampling that remembers where it was.
+     *
+     * [resample] is correct for one buffer and wrong for a stream of them: it restarts at source
+     * index 0 every call, so at a non-integer ratio — 44.1k to 48k is the common one — the
+     * fractional part of the position is thrown away at every buffer boundary. Each buffer is
+     * individually plausible and the stream drifts, repeating or dropping a sample every few
+     * milliseconds for as long as the capture lasts.
+     *
+     * This carries the position across calls. Not thread-safe, and does not need to be: one
+     * instance belongs to one capture, and a capture delivers its buffers in order on one thread.
+     *
+     * The position is kept as an integer numerator over [toRate] rather than as a float. A double
+     * accumulating `fromRate / toRate` per output sample drifts measurably over an hour of audio,
+     * which is exactly the timescale this class exists for.
+     */
+    public class Resampler(
+        private val fromRate: Int,
+        private val toRate: Int,
+    ) {
+        init {
+            require(fromRate > 0 && toRate > 0) { "sample rates must be positive" }
+        }
+
+        /** Source position for the next output sample, scaled by [toRate]. */
+        private var position = 0L
+
+        public fun resample(samples: ShortArray): ShortArray {
+            if (fromRate == toRate || samples.isEmpty()) return samples
+            val span = samples.size.toLong() * toRate - position
+            if (span <= 0) {
+                // The carried position is already past this buffer: it contributed no output
+                // sample of its own, which is ordinary at a downward ratio with small buffers.
+                position -= samples.size.toLong() * toRate
+                return ShortArray(0)
+            }
+            val count = ((span + fromRate - 1) / fromRate).toInt()
+            val out = ShortArray(count)
+            for (i in 0 until count) {
+                out[i] = samples[(position / toRate).toInt()]
+                position += fromRate
+            }
+            // Rebase onto the next buffer, keeping the fraction. This is the line the stateless
+            // version does not have.
+            position -= samples.size.toLong() * toRate
+            return out
+        }
+    }
+
+    /**
+     * Resample by nearest-neighbour, from the beginning.
+     *
+     * For a caller holding one complete buffer. **A stream of buffers wants [Resampler]** — see
+     * its note for why calling this per buffer drifts.
      *
      * Deliberately the cheap algorithm, and deliberately documented as such. This runs on the
      * capture thread on a phone; a windowed-sinc resampler there costs battery the caller did not

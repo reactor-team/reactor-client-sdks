@@ -135,4 +135,71 @@ class ConversionTest {
             PcmConversion.toMono(shortArrayOf(1), 0)
         }
     }
+
+    // ── Streaming resample ───────────────────────────────────────────────────
+
+    /**
+     * The defect a stateless resampler has and this one does not.
+     *
+     * Called once per capture buffer, `PcmConversion.resample` restarts at source index 0 every
+     * time, so the fractional part of the position is discarded at every boundary. At 44.1k to
+     * 48k that is a repeated or dropped sample every few milliseconds, for as long as the capture
+     * lasts — each buffer individually plausible, the stream drifting.
+     *
+     * Measured as output length against what the ratio demands over a second of audio, because
+     * that is where the lost fractions accumulate into whole samples.
+     */
+    @Test
+    fun `a streaming resample keeps its phase across buffers`() {
+        val from = 44_100
+        val to = 48_000
+        // 1024, an ordinary AudioRecord buffer, and deliberately *not* a whole number of
+        // milliseconds. 441 samples is exactly 10ms and resamples to exactly 480 — it divides
+        // evenly, hides the defect entirely, and was this test's first buffer size.
+        val bufferSize = 1024
+        val buffers = 100
+        val buffer = ShortArray(bufferSize) { it.toShort() }
+
+        val streaming = PcmConversion.Resampler(from, to)
+        var streamed = 0
+        var perBuffer = 0
+        repeat(buffers) {
+            streamed += streaming.resample(buffer).size
+            perBuffer += PcmConversion.resample(buffer, from, to).size
+        }
+
+        val input = bufferSize.toLong() * buffers
+        val expected = ((input * to + from - 1) / from).toInt()
+        assertEquals("the stream must hold the ratio across boundaries", expected, streamed)
+        assertTrue(
+            "the per-buffer resample must be the one that drifts, or this test proves nothing",
+            perBuffer != expected,
+        )
+        assertTrue(
+            "the drift must be whole samples, not a rounding tie: lost $expected - $perBuffer",
+            expected - perBuffer > 10,
+        )
+    }
+
+    @Test
+    fun `a streaming resample is a no-op when the rates match`() {
+        val resampler = PcmConversion.Resampler(48_000, 48_000)
+        val samples = shortArrayOf(1, 2, 3, 4)
+        assertTrue(samples.contentEquals(resampler.resample(samples)))
+    }
+
+    /** Downward too: 48k to 16k is exactly one sample in three, buffer boundaries notwithstanding. */
+    @Test
+    fun `a streaming resample holds its ratio downward`() {
+        val resampler = PcmConversion.Resampler(48_000, 16_000)
+        var total = 0
+        repeat(50) { total += resampler.resample(ShortArray(480)).size }
+        assertEquals(50 * 160, total)
+    }
+
+    @Test
+    fun `a streaming resample refuses a non-positive rate`() {
+        assertThrows(IllegalArgumentException::class.java) { PcmConversion.Resampler(0, 48_000) }
+        assertThrows(IllegalArgumentException::class.java) { PcmConversion.Resampler(48_000, -1) }
+    }
 }
