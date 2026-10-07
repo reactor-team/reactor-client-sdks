@@ -2,7 +2,12 @@ package inc.reactor.sdk.android.integration
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.FixMethodOrder
@@ -65,13 +70,29 @@ internal class LiveTransferTest : LiveFixture() {
             // playlist with nothing in it, which is a different — and much less useful — test.
             val outgoing = reactor.track(Live.VIDEO_IN)
             outgoing.publish()
-            val pixels = ByteBuffer.allocateDirect(64 * 64 * 4)
-            try {
-                repeat(90) {
-                    pixels.rewind()
-                    outgoing.pushFrame(pixels, 64, 64)
-                    kotlinx.coroutines.delay(33)
+
+            // Kept running until the download finishes, not stopped before requestClip.
+            //
+            // A snap clip includes the recording chunk that is still open when it is asked for,
+            // and echo only advances media time when it is *receiving* frames. Stop pushing and
+            // that chunk never reaches a boundary, so the clip never becomes ready and the
+            // download waits as long as the session lives — which, now that readiness is bounded
+            // by session lifetime rather than by a wall-clock guess, is a hang rather than a
+            // failure. The Java recording test keeps a producer alive for the same reason.
+            val producer =
+                launch {
+                    val pixels = ByteBuffer.allocateDirect(64 * 64 * 4)
+                    while (isActive) {
+                        pixels.rewind()
+                        // The track may be unpublished under us during teardown; that is the
+                        // producer's cue to stop, not a test failure.
+                        if (runCatching { outgoing.pushFrame(pixels, 64, 64) }.isFailure) break
+                        delay(33)
+                    }
                 }
+
+            try {
+                delay(3_000) // enough media to clip
 
                 val clip = reactor.requestClip(durationSeconds = 2.0)
                 assertTrue("a clip must name its playlist", clip.playlistUrl.isNotBlank())
@@ -88,6 +109,9 @@ internal class LiveTransferTest : LiveFixture() {
                     out.delete()
                 }
             } finally {
+                // Bounded: the producer must not outlive the test and push into the next one's
+                // session. cancelAndJoin rather than cancel, so teardown is ordered.
+                withTimeoutOrNull(5_000) { producer.cancelAndJoin() }
                 runCatching { outgoing.unpublish() }
             }
         }
