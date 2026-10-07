@@ -174,9 +174,14 @@ void completion_trampoline(int ok, const char* result_json, const char* error_js
   // Java strings here and not a moment later.
   jstring result = to_jstring(env, result_json);
   jstring error = to_jstring(env, error_json);
+  // Success is 1, not "not zero". reactor_send_command reports invalid args_json or
+  // uploads_json by calling back with -1 and an error_json, and `ok != 0` turned that into a
+  // successful completion carrying no result — so a malformed command answered with an empty
+  // reply and the caller never learned nothing had been sent. Only a positive status is success.
+  const jboolean succeeded = ok > 0 ? JNI_TRUE : JNI_FALSE;
   env->CallStaticVoidMethod(g_completions_class, g_settle,
                             static_cast<jlong>(reinterpret_cast<intptr_t>(userdata)),
-                            ok != 0 ? JNI_TRUE : JNI_FALSE, result, error);
+                            succeeded, result, error);
   if (env->ExceptionCheck()) {
     env->ExceptionDescribe();
     env->ExceptionClear();

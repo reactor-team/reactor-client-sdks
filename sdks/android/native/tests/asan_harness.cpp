@@ -357,6 +357,26 @@ void completions_cross_from_a_foreign_thread() {
   check(g_env->GetStaticObjectField(completions, error_id) == nullptr,
         "a null error_json arrives as Java null rather than as \"\"");
 
+  jfieldID ok_id = g_env->GetStaticFieldID(completions, "lastOk", "Z");
+  check(g_env->GetStaticBooleanField(completions, ok_id) == JNI_TRUE,
+        "status 1 settles as success");
+
+  // The status reactor_send_command uses for invalid args_json or uploads_json. It arrives with
+  // an error and no result, and `ok != 0` used to turn it into a *successful* completion — so a
+  // malformed command answered with an empty reply and the caller never learned nothing had been
+  // sent. Only a positive status is success.
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeConnect(g_env, nullptr, context,
+                                                                  nullptr, /*ticket=*/4243);
+  fake_complete_last_on_foreign_thread(-1, nullptr, "{\"code\":\"BAD_REQUEST\"}");
+  check(g_env->GetStaticBooleanField(completions, ok_id) == JNI_FALSE,
+        "status -1 settles as a failure, not as an empty success");
+
+  auto failure = static_cast<jstring>(g_env->GetStaticObjectField(completions, error_id));
+  const char* why = failure == nullptr ? nullptr : g_env->GetStringUTFChars(failure, nullptr);
+  check(why != nullptr && std::strstr(why, "BAD_REQUEST") != nullptr,
+        "and carries the error the ABI sent with it");
+  if (why != nullptr) g_env->ReleaseStringUTFChars(failure, why);
+
   fake_set_destroy_result(0);
   Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, context);
   g_env->DeleteGlobalRef(completions);
