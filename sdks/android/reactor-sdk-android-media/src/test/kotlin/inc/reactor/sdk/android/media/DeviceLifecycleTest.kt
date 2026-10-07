@@ -171,6 +171,84 @@ class DeviceLifecycleTest {
         assertEquals("a buffer arriving during teardown must be dropped", 0, delivered)
     }
 
+    /**
+     * The window the lifecycle lock exists for.
+     *
+     * `stop()` used to be able to land between `running` being set and `device.start()` returning:
+     * it cleared the flag and stopped a backend that had not started, the pending start then
+     * brought it up, and every later `stop()` returned early on the flag. The microphone stayed
+     * live with `isCapturing` false and nothing could turn it off.
+     */
+    @Test(timeout = 10_000)
+    fun `a stop racing an in-flight start cannot leave the backend running`() {
+        val startEntered = java.util.concurrent.CountDownLatch(1)
+        val releaseStart = java.util.concurrent.CountDownLatch(1)
+        val device =
+            object : CaptureDevice {
+                @Volatile var backendLive = false
+
+                override fun start(onData: (ShortArray) -> Unit) {
+                    startEntered.countDown()
+                    // Held open so stop() is guaranteed to arrive mid-start rather than by luck.
+                    releaseStart.await(5, TimeUnit.SECONDS)
+                    backendLive = true
+                }
+
+                override fun stop() {
+                    backendLive = false
+                }
+            }
+
+        val mic = Microphone(device, 48000, 48000, 1)
+        val starter = Thread { mic.start { } }
+        starter.start()
+        assertTrue(startEntered.await(5, TimeUnit.SECONDS))
+
+        val stopper = Thread { mic.stop() }
+        stopper.start()
+        // Let the stopper reach the lock — it must wait rather than overtake the start.
+        Thread.sleep(200)
+        releaseStart.countDown()
+
+        starter.join(5_000)
+        stopper.join(5_000)
+
+        assertFalse("isCapturing must agree with the backend", mic.isCapturing)
+        assertFalse("a stopped Microphone must not leave its device live", device.backendLive)
+    }
+
+    /**
+     * A device that refuses to open must not leave the Microphone claiming to capture.
+     *
+     * Without the rollback, `start()` answers "already capturing" forever and `stop()` calls
+     * `stop()` on a backend that never started.
+     */
+    @Test
+    fun `a device that fails to start leaves the microphone startable again`() {
+        var failNext = true
+        val device =
+            object : CaptureDevice {
+                var starts = 0
+
+                override fun start(onData: (ShortArray) -> Unit) {
+                    starts++
+                    if (failNext) throw IllegalStateException("AudioRecord would not open")
+                }
+
+                override fun stop() = Unit
+            }
+        val mic = Microphone(device, 48000, 48000, 1)
+
+        assertThrows(IllegalStateException::class.java) { mic.start { } }
+        assertFalse("a failed start must not leave the flag set", mic.isCapturing)
+
+        failNext = false
+        mic.start { }
+        assertTrue("the microphone must be startable after a failed attempt", mic.isCapturing)
+        assertEquals(2, device.starts)
+        mic.stop()
+    }
+
     @Test
     fun `starting twice is refused rather than silently reopening the device`() {
         val mic = Microphone(FakeCapture(), 48000, 48000, 1)
