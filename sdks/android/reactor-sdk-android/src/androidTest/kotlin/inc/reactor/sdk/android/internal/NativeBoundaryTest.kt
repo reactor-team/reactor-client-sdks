@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -114,7 +115,12 @@ class NativeBoundaryTest {
             listener.received.await(5, TimeUnit.SECONDS)
         }
         synchronized(listener.statuses) {
-            assertNotNull("no control event crossed back into Kotlin", listener.statuses)
+            // The *contents*, not the list. assertNotNull on a list that is constructed non-null
+            // passes whether or not anything ever crossed — which is the whole claim.
+            assertTrue(
+                "no control event crossed back into Kotlin within 5s",
+                listener.statuses.isNotEmpty(),
+            )
         }
     }
 
@@ -125,18 +131,46 @@ class NativeBoundaryTest {
      */
     @Test
     fun aThrowingHandlerDoesNotKillTheProcess() {
+        // Counted, because the containment claim is only tested if a handler actually threw. With
+        // a bare sleep and no count this passes when *no event arrives at all* — it proves the
+        // process is alive, which it would be either way.
+        val threw =
+            java.util.concurrent.atomic
+                .AtomicInteger()
         val throwing =
             object : NativeEvents {
-                override fun onStatus(status: String?) = throw RuntimeException("handler bug")
+                override fun onStatus(status: String?): Unit = fail()
 
-                override fun onError(errorJson: String?) = throw RuntimeException("handler bug")
+                override fun onError(errorJson: String?): Unit = fail()
 
-                override fun onSessionId(sessionId: String?) = throw RuntimeException("handler bug")
+                override fun onSessionId(sessionId: String?): Unit = fail()
+
+                private fun fail(): Nothing {
+                    threw.incrementAndGet()
+                    throw RuntimeException("handler bug")
+                }
             }
         handle(throwing).use { client ->
-            Thread.sleep(500)
+            Live.await("a handler to throw") { threw.get() > 0 }
             // Still usable: the exception was the handler's, not the client's.
             assertNotNull(client.status)
+        }
+        assertTrue("no handler ever threw, so nothing was contained", threw.get() > 0)
+    }
+
+    /** Polls for something the native side produces when it is ready to. */
+    private object Live {
+        fun await(
+            what: String,
+            timeoutMs: Long = 5_000,
+            condition: () -> Boolean,
+        ) {
+            val deadline = System.currentTimeMillis() + timeoutMs
+            while (System.currentTimeMillis() < deadline) {
+                if (condition()) return
+                Thread.sleep(25)
+            }
+            throw AssertionError("waited ${timeoutMs}ms for $what and it never happened")
         }
     }
 

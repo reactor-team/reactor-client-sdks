@@ -56,17 +56,39 @@ internal object NativeClient {
     ) : AutoCloseable {
         private val closed = AtomicBoolean(false)
 
+        /**
+         * Held across a getter and across [close], and nothing else.
+         *
+         * `checkOpen` alone only rules out a handle that is *already* closed. It does not stop a
+         * getter that passed the check and then lost the race: `nativeDestroy` frees the Context
+         * the getter is about to hand to `nativeStatus`, which is a use-after-free at exactly the
+         * boundary this class exists to make safe. The class doc used to say the object model
+         * serialised this; nothing enforced that, and a comment is not a lock.
+         *
+         * Cheap because it is only ever contended at teardown: these four getters are reads of a
+         * pointer the native side answers immediately, and the suspend operations do not take it
+         * — they are serialised by their own `checkOpen` and by the FFI.
+         */
+        private val lifecycle = Any()
+
         val status: String?
-            get() = checkOpen().let { nativeStatus(context) }
+            get() = withOpenHandle { nativeStatus(context) }
 
         val sessionId: String?
-            get() = checkOpen().let { nativeSessionId(context) }
+            get() = withOpenHandle { nativeSessionId(context) }
 
         val tracks: String?
-            get() = checkOpen().let { nativeTracks(context) }
+            get() = withOpenHandle { nativeTracks(context) }
 
         val pausedTracks: String?
-            get() = checkOpen().let { nativePausedTracks(context) }
+            get() = withOpenHandle { nativePausedTracks(context) }
+
+        /** Check and read under one lock, so the answer cannot be about a freed Context. */
+        private inline fun <T> withOpenHandle(read: () -> T): T =
+            synchronized(lifecycle) {
+                checkOpen()
+                read()
+            }
 
         private fun checkOpen() {
             check(!closed.get()) { "This Reactor handle is closed" }
@@ -77,8 +99,12 @@ internal object NativeClient {
          * which at this boundary is a process death rather than an exception.
          */
         override fun close() {
-            if (!closed.compareAndSet(false, true)) return
-            if (nativeDestroy(context) != 0) recordOrphan()
+            synchronized(lifecycle) {
+                if (!closed.compareAndSet(false, true)) return
+                // Inside the lock, not after it: a getter that has already passed checkOpen must
+                // not still be holding the Context when this frees it.
+                if (nativeDestroy(context) != 0) recordOrphan()
+            }
         }
     }
 
