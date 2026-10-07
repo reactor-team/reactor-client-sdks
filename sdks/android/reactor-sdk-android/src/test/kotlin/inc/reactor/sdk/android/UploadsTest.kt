@@ -2,6 +2,12 @@ package inc.reactor.sdk.android
 
 import inc.reactor.sdk.android.internal.JsonException
 import inc.reactor.sdk.android.internal.Uploads
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -65,7 +71,7 @@ class UploadsTest {
     @Test
     fun `a stream is staged verbatim`() {
         val payload = ByteArray(200_000) { (it % 251).toByte() }
-        val staged = Uploads.stage("pic.png", temp.root, 1_000_000, stream(payload))
+        val staged = runBlocking { Uploads.stage("pic.png", temp.root, 1_000_000, stream(payload)) }
         assertTrue(staged.isFile)
         assertTrue(payload.contentEquals(staged.readBytes()))
         assertTrue("the extension has to survive — MIME is inferred from it", staged.name.endsWith("pic.png"))
@@ -80,7 +86,9 @@ class UploadsTest {
         val before = temp.root.listFiles()!!.size
         val error =
             assertThrows(MessageTooLargeException::class.java) {
-                Uploads.stage("big.bin", temp.root, maxBytes = 1024, open = stream(ByteArray(64 * 1024)))
+                runBlocking {
+                    Uploads.stage("big.bin", temp.root, maxBytes = 1024, open = stream(ByteArray(64 * 1024)))
+                }
             }
         assertTrue(error.message!!.contains("1024"))
         assertEquals("the partial copy must not survive the refusal", before, temp.root.listFiles()!!.size)
@@ -90,19 +98,21 @@ class UploadsTest {
     fun `a stream that fails mid-copy leaves nothing behind`() {
         val before = temp.root.listFiles()!!.size
         assertThrows(IOException::class.java) {
-            Uploads.stage("broken.bin", temp.root, 1_000_000) {
-                object : InputStream() {
-                    var served = 0
+            runBlocking {
+                Uploads.stage("broken.bin", temp.root, 1_000_000) {
+                    object : InputStream() {
+                        var served = 0
 
-                    override fun read(): Int = throw IOException("device went away")
+                        override fun read(): Int = throw IOException("device went away")
 
-                    override fun read(
-                        b: ByteArray,
-                        off: Int,
-                        len: Int,
-                    ): Int {
-                        if (served++ == 0) return len // one good chunk, then fail
-                        throw IOException("device went away")
+                        override fun read(
+                            b: ByteArray,
+                            off: Int,
+                            len: Int,
+                        ): Int {
+                            if (served++ == 0) return len // one good chunk, then fail
+                            throw IOException("device went away")
+                        }
                     }
                 }
             }
@@ -112,14 +122,82 @@ class UploadsTest {
 
     @Test
     fun `an empty stream stages an empty file rather than failing`() {
-        val staged = Uploads.stage("empty.txt", temp.root, 1024, stream(ByteArray(0)))
+        val staged = runBlocking { Uploads.stage("empty.txt", temp.root, 1024, stream(ByteArray(0))) }
         assertEquals(0L, staged.length())
     }
 
     @Test
     fun `a non-positive limit is a caller error`() {
         assertThrows(IllegalArgumentException::class.java) {
-            Uploads.stage("x", temp.root, 0, stream(ByteArray(1)))
+            runBlocking { Uploads.stage("x", temp.root, 0, stream(ByteArray(1))) }
         }
+    }
+
+    /**
+     * A cancelled copy stops and takes its partial file with it.
+     *
+     * `read` is not interruptible, so without a check between chunks the copy runs to completion
+     * after its caller has walked away — and the caller is gone, so nothing deletes what it wrote.
+     * That orphan is invisible: no exception, no log, just a cache directory that grows.
+     *
+     * The timeout is the assertion that matters. Without the check between chunks this does not
+     * fail — `cancelAndJoin` waits for a loop that never ends, and the test hangs until something
+     * else kills it. A regression has to be a red test, not a stuck runner.
+     */
+    @Test(timeout = 15_000)
+    fun `a cancelled copy stops between chunks and leaves nothing behind`() {
+        val before = temp.root.listFiles()!!.size
+        val slow =
+            object : InputStream() {
+                override fun read(): Int = 0
+
+                override fun read(
+                    b: ByteArray,
+                    off: Int,
+                    len: Int,
+                ): Int = len // never ends on its own
+            }
+        assertThrows(CancellationException::class.java) {
+            runBlocking {
+                val job =
+                    launch(Dispatchers.IO) {
+                        Uploads.stage("endless.bin", temp.root, Long.MAX_VALUE) { slow }
+                    }
+                // Long enough for the copy to be well inside its loop rather than not yet started.
+                delay(200)
+                job.cancelAndJoin()
+            }
+            throw CancellationException("the copy was cancelled")
+        }
+        assertEquals(
+            "a cancelled copy must not leave its partial file behind",
+            before,
+            temp.root.listFiles()!!.size,
+        )
+    }
+
+    // ── MIME types ───────────────────────────────────────────────────────────
+
+    /**
+     * The ABI will not take null.
+     *
+     * `reactor_upload_bytes` dereferences `mime_type` with `CStr::from_ptr` unconditionally, so
+     * the public `mimeType = null` default has to become something before it crosses. It used not
+     * to, which made the simplest possible call a null dereference on a real device.
+     */
+    @Test
+    fun `a MIME type is resolved from the extension and never null`() {
+        assertEquals("image/png", Uploads.mimeTypeFor("cat.png"))
+        assertEquals("image/jpeg", Uploads.mimeTypeFor("holiday.JPEG"))
+        assertEquals("video/mp4", Uploads.mimeTypeFor("/tmp/a.b/clip.mp4"))
+        assertEquals("audio/wav", Uploads.mimeTypeFor("take.wav"))
+    }
+
+    @Test
+    fun `an unknown or absent extension falls back to the generic type rather than guessing`() {
+        assertEquals("application/octet-stream", Uploads.mimeTypeFor("payload.qqq"))
+        assertEquals("application/octet-stream", Uploads.mimeTypeFor("README"))
+        assertEquals("application/octet-stream", Uploads.mimeTypeFor(""))
+        assertEquals("application/octet-stream", Uploads.mimeTypeFor("trailing."))
     }
 }
