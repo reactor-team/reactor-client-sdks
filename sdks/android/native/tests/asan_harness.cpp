@@ -20,6 +20,10 @@
 #include <cstring>
 #include <string>
 
+// The string converters are the thing under test in strings_round_trip_outside_the_bmp, so they
+// come from the real header rather than being restated here.
+#include "jni_support.hpp"
+
 extern "C" {
 jint JNI_OnLoad(JavaVM* vm, void* reserved);
 
@@ -164,6 +168,53 @@ void destroy_minus_one_keeps_the_references_alive() {
 
 }  // namespace
 
+/// Strings survive the crossing in both directions, including outside the BMP.
+///
+/// This is the check that would have caught the bug it was written for. `GetStringUTFChars` and
+/// `NewStringUTF` speak *modified* UTF-8, where a character above U+FFFF is two separately
+/// encoded surrogate halves; Rust decodes standard UTF-8, where it is one four-byte sequence and
+/// an encoded surrogate is invalid. Everything in ASCII round-trips either way, which is why
+/// every other test here passed while an emoji in a prompt or a filename arrived at the model as
+/// replacement characters.
+///
+/// Nothing fails on the way. That is the whole reason this is pinned rather than assumed.
+void strings_round_trip_outside_the_bmp() {
+  struct Case {
+    const char* name;
+    const char* utf8;
+  };
+  // Each is standard UTF-8 as a C literal: ASCII, Latin-1, CJK, then four non-BMP characters
+  // whose encodings are exactly what modified UTF-8 gets wrong.
+  const Case cases[] = {
+      {"ascii", "plain.txt"},
+      {"latin", "r\xC3\xA9sum\xC3\xA9.pdf"},
+      {"cjk", "\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E"},
+      {"emoji", "a \xF0\x9F\x8C\xB2 forest"},
+      {"supplementary cjk", "\xF0\xA0\x80\x8B"},
+      {"musical", "\xF0\x9D\x84\x9E"},
+      {"mixed", "\xF0\x9F\x8E\xA5 cam \xE2\x80\x94 \xF0\x9F\x8E\xA4 mic"},
+  };
+
+  for (const Case& one : cases) {
+    // C -> Java -> C, which is the path a model name or a filename takes.
+    jstring java = reactor_jni::to_jstring(g_env, one.utf8);
+    check(java != nullptr, "a non-null string crossed into Java");
+    reactor_jni::JavaString back(g_env, java);
+    const bool same = back.get() != nullptr && std::strcmp(back.get(), one.utf8) == 0;
+    if (!same) {
+      std::printf("    %s: expected %s, got %s\n", one.name, one.utf8,
+                  back.get() == nullptr ? "(null)" : back.get());
+    }
+    check(same, one.name);
+    g_env->DeleteLocalRef(java);
+  }
+
+  // A null is still a null, not an empty string: the ABI distinguishes them.
+  check(reactor_jni::to_jstring(g_env, nullptr) == nullptr, "a null C string stays null in Java");
+  reactor_jni::JavaString absent(g_env, nullptr);
+  check(absent.get() == nullptr, "a null jstring stays null crossing the other way");
+}
+
 int main() {
   const char* classpath = std::getenv("REACTOR_ASAN_CLASSPATH");
   if (classpath == nullptr) {
@@ -200,6 +251,7 @@ int main() {
   events_cross_from_a_foreign_thread();
   a_throwing_handler_is_contained();
   destroy_minus_one_keeps_the_references_alive();
+  strings_round_trip_outside_the_bmp();
 
   std::printf("%s\n", g_failures == 0 ? "all checks passed" : "CHECKS FAILED");
   return g_failures == 0 ? 0 : 1;
