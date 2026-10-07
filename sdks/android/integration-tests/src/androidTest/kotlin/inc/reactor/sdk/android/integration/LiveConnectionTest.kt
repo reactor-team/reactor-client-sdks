@@ -6,7 +6,9 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 import org.junit.runner.RunWith
 
 /**
@@ -18,6 +20,10 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 internal class LiveConnectionTest {
+    /** Its own, because this class does not take the shared session and so is not a LiveFixture. */
+    @get:Rule
+    public val timeout: Timeout = Timeout.seconds(240)
+
     /** An API key handed straight to the client, which is the development path the SDK documents. */
     @Test
     fun anApiKeyConnects() =
