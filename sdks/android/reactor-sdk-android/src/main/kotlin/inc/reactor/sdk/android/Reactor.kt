@@ -4,6 +4,7 @@ import inc.reactor.sdk.android.internal.Completions
 import inc.reactor.sdk.android.internal.ErrorPayloads
 import inc.reactor.sdk.android.internal.NativeClient
 import inc.reactor.sdk.android.internal.NativeEvents
+import inc.reactor.sdk.android.internal.TrackParsing
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -233,7 +234,7 @@ public class Reactor(
                 audioHandlers.remove(track)
             }
 
-            override fun isPaused(track: String): Boolean = handle?.pausedTracks?.let { it.contains("\"" + track + "\"") } ?: false
+            override fun isPaused(track: String): Boolean = track in TrackParsing.parsePaused(handle?.pausedTracks)
         }
 
     private fun deliverStatus(status: ConnectionStatus) {

@@ -168,4 +168,97 @@ class TracksTest {
         assertEquals("0", parsed[0].mid)
         assertNull(tracks()[0].mid)
     }
+
+    /**
+     * The empty-filter message must name what the *session* declared.
+     *
+     * Reported from the filtered list it said "nothing" on a session that declared four tracks —
+     * sending a reader to a model manifest to look for an emptiness that was never there.
+     */
+    @Test
+    fun `an empty filter names the session's own tracks, not the filtered none`() {
+        val declaredOnlyVideo =
+            TrackParsing.parse(
+                """[{"name":"webcam","kind":"video","direction":"sendonly"},
+                    {"name":"main_video","kind":"video","direction":"recvonly"}]""",
+                owner,
+            )
+        val error =
+            assertThrows(InvalidStateException::class.java) {
+                declaredOnlyVideo.withKind(TrackKind.AUDIO).one()
+            }
+        assertTrue(
+            "the message must list the declared tracks: ${error.message}",
+            error.message!!.contains("webcam") && error.message!!.contains("main_video"),
+        )
+        assertTrue(
+            "and must not claim the session declared nothing",
+            !error.message!!.contains("nothing"),
+        )
+    }
+
+    /** Chained filters must not lose it either. */
+    @Test
+    fun `the declared set survives a chain of filters`() {
+        val error =
+            assertThrows(InvalidStateException::class.java) {
+                tracks()
+                    .withKind(TrackKind.AUDIO)
+                    .withDirection(TrackDirection.SENDONLY)
+                    .withKind(TrackKind.VIDEO)
+                    .one()
+            }
+        assertTrue(error.message!!.contains("webcam"))
+    }
+
+    // ── Wrong-shaped payloads ────────────────────────────────────────────────
+
+    /**
+     * A well-formed payload of the wrong shape is a platform bug, not an empty session.
+     *
+     * It used to become "no tracks declared", silently, while a malformed one raised — the same
+     * class of fault reported two different ways, and the quiet one sends a reader to the model
+     * manifest for an answer that is not there.
+     */
+    @Test
+    fun `a well-formed payload of the wrong shape is a decode failure`() {
+        for (payload in listOf("{}", "\"webcam\"", "42", "true")) {
+            val error =
+                assertThrows(
+                    "a $payload track list must not read as an empty session",
+                    DecodeFailedException::class.java,
+                ) { TrackParsing.parse(payload, owner) }
+            assertEquals("DECODE_FAILED", error.code)
+        }
+    }
+
+    // ── Paused tracks ────────────────────────────────────────────────────────
+
+    @Test
+    fun `the paused list is parsed, not substring-matched`() {
+        assertEquals(setOf("main_video"), TrackParsing.parsePaused("""["main_video"]"""))
+        assertEquals(emptySet<String>(), TrackParsing.parsePaused(null))
+        assertEquals(emptySet<String>(), TrackParsing.parsePaused(""))
+    }
+
+    /**
+     * The two cases a substring match gets wrong, and they fail in opposite directions.
+     *
+     * A name the encoder escapes never matches its own entry; a name that is a substring of
+     * another matches a track that is not paused.
+     */
+    @Test
+    fun `an escaped name matches itself and a shorter name does not match a longer one`() {
+        val paused = TrackParsing.parsePaused("""["a\"b", "webcam"]""")
+        assertTrue("an escaped name must match itself", """a"b""" in paused)
+        assertTrue("cam must not match webcam", "cam" !in paused)
+        assertTrue("webcam must match webcam", "webcam" in paused)
+    }
+
+    /** Advisory, not structural: this feeds a property read, so a bad list is "none paused". */
+    @Test
+    fun `an unparseable paused list reads as none rather than raising`() {
+        assertEquals(emptySet<String>(), TrackParsing.parsePaused("{not json"))
+        assertEquals(emptySet<String>(), TrackParsing.parsePaused("{}"))
+    }
 }
