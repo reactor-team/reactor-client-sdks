@@ -30,7 +30,14 @@ public class VideoFrame internal constructor(
      * a local clock, and subtracting it from `System.currentTimeMillis()` is meaningless.
      */
     public val timestampUs: Long,
-    /** The sender's opaque tag, or null when there was none. Borrowed, like [pixels]. */
+    /**
+     * The sender's opaque tag, or null when there was none.
+     *
+     * **Owned, unlike [pixels].** The bridge copies it into this array on the way across —
+     * NewByteArray then SetByteArrayRegion — so it is safe to keep past the callback. Saying
+     * "borrowed" here was wrong, and wrong in the one class whose whole subject is which buffers
+     * outlive the call.
+     */
     public val userData: ByteArray?,
 ) {
     /** A copy of [pixels] that outlives the callback. */
