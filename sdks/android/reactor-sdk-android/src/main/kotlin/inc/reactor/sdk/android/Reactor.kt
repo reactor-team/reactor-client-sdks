@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import java.lang.ref.WeakReference
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -48,6 +49,9 @@ public class Reactor(
 ) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private val closed = AtomicBoolean(false)
+
+    /** Serialises creating the native handle. See [connect]. */
+    private val handleLock = kotlinx.coroutines.sync.Mutex()
 
     private val _status = MutableStateFlow(ConnectionStatus.DISCONNECTED)
 
@@ -133,17 +137,26 @@ public class Reactor(
             "Model names are owner/name — '$modelName' would resolve under reactor/ and answer " +
                 "403 for a model owned by anyone else"
         }
-        val existing = handle
+        // Creation under a mutex, because the read-check-assign below is not atomic and the
+        // consequence is not a lost update. Two concurrent connect() calls both saw a null handle
+        // and each created a native client; the last write won, and the other client's Context,
+        // its listener's global references and its *session* were never closed — leaked for the
+        // life of the process, with a session holding quota nobody could release. @Volatile makes
+        // the read fresh, which is not the same as making the sequence exclusive.
+        //
+        // connect() is a suspend function, so this is a coroutine Mutex rather than a monitor.
         val client =
-            existing ?: NativeClient
-                .create(
-                    apiUrl = options.apiUrl,
-                    modelName = modelName,
-                    jwt = options.jwt,
-                    local = options.local,
-                    listener = Events(this),
-                    sdkVersion = SDK_VERSION,
-                ).also { handle = it }
+            handleLock.withLock {
+                handle ?: NativeClient
+                    .create(
+                        apiUrl = options.apiUrl,
+                        modelName = modelName,
+                        jwt = options.jwt,
+                        local = options.local,
+                        listener = Events(this),
+                        sdkVersion = SDK_VERSION,
+                    ).also { handle = it }
+            }
         client.connect(sessionId)
     }
 
