@@ -79,9 +79,10 @@ for abi in "${ABIS[@]}"; do
   mkdir -p "$STAGE/jniLibs/$abi"
   cp "$so" "$STAGE/jniLibs/$abi/"
 
-  # The JAR is architecture-independent, but it is produced per target directory. Take it from
-  # the first ABI built and require every later one to agree, so a stale target dir cannot pair
-  # this .so with someone else's JAR.
+  # The JAR is architecture-independent, but it is produced per target directory. Taken from the
+  # first ABI built; every later one must agree, which is checked below rather than promised.
+  # The loop used to repack over the same path on every pass, so with a second ABI the last one
+  # would simply have won — harmless with arm64-v8a alone and wrong the moment REA-6551 lands.
   jar="$(find "$REPO_ROOT/target/$target/release/build" -name libwebrtc.jar -print -quit)"
   [ -n "$jar" ] || { echo "error: no libwebrtc.jar under target/$target — did reactor-webrtc-sys build?" >&2; exit 1; }
 
@@ -99,7 +100,25 @@ for abi in "${ABIS[@]}"; do
   repack="$(mktemp -d)"
   ( cd "$repack" && unzip -q "$jar" 'inc/*' )
   [ -d "$repack/inc" ] || { echo "error: $jar contains no inc/ — has the JNI package prefix changed?" >&2; exit 1; }
-  ( cd "$repack" && jar --create --file "$STAGE/libs/libwebrtc.jar" inc )
+  ( cd "$repack" && jar --create --file "$repack/libwebrtc.jar" inc )
+
+  if [ -f "$STAGE/libs/libwebrtc.jar" ]; then
+    # A second ABI must carry the same Java half. If it does not, the .so and the JAR in the AAR
+    # came from different libwebrtc builds, and the mismatch is invisible until WebRTC bootstrap
+    # aborts on a device (REA-6249). Compared by content, because a rebuilt jar is not
+    # byte-identical.
+    if ! unzip -l "$STAGE/libs/libwebrtc.jar" | awk '{print $1, $4}' | sort > "$repack/staged.list" \
+       || ! unzip -l "$repack/libwebrtc.jar" | awk '{print $1, $4}' | sort > "$repack/new.list" \
+       || ! diff -q "$repack/staged.list" "$repack/new.list" >/dev/null; then
+      echo "error: $abi's libwebrtc.jar differs from the one already staged — the .so and the" >&2
+      echo "       Java half would come from different libwebrtc builds." >&2
+      diff "$repack/staged.list" "$repack/new.list" >&2 || true
+      rm -rf "$repack"
+      exit 1
+    fi
+  else
+    cp "$repack/libwebrtc.jar" "$STAGE/libs/libwebrtc.jar"
+  fi
   rm -rf "$repack"
 
   echo "==> Checking $abi artifacts"
