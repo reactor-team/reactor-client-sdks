@@ -8,8 +8,10 @@
 
 #include <jni.h>
 
+#include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 
 // Not wrapped in an `extern "C"` block: the header carries its own `#ifdef __cplusplus` guard,
 // and wrapping it again declares the same functions a second time — which is exactly what
@@ -102,36 +104,140 @@ class OwnedString {
   char* raw_;
 };
 
-/// A Java string from a C string, or null for nullptr.
+/// JNI's string encoding is **not** the one on the other side of this boundary, and the
+/// difference is silent.
+///
+/// `GetStringUTFChars` and `NewStringUTF` speak *modified* UTF-8: a JVM encoding in which a
+/// character outside the Basic Multilingual Plane is emitted as its two UTF-16 surrogate halves,
+/// each encoded separately as three bytes. Standard UTF-8 — which is what Rust's `str` is, and
+/// what every `CStr::from_ptr(...).to_string_lossy()` on the other side decodes — encodes that
+/// same character as one four-byte sequence, and treats an encoded surrogate as invalid.
+///
+/// So the naive pair round-trips everything a test is likely to contain and corrupts emoji,
+/// historic scripts, and the CJK extension blocks: a prompt or a filename carrying one arrives at
+/// the model with replacement characters in it, with nothing failing anywhere. These two
+/// functions convert explicitly through UTF-16, which is the encoding both sides agree on.
+///
+/// Unpaired surrogates and malformed sequences become U+FFFD rather than propagating: they have
+/// no standard-UTF-8 encoding at all, and a Java `String` is free to contain one.
+inline std::string utf16_to_utf8(const jchar* chars, jsize length) {
+  std::string out;
+  out.reserve(static_cast<size_t>(length) + static_cast<size_t>(length) / 2 + 4);
+  for (jsize i = 0; i < length; ++i) {
+    uint32_t code = chars[i];
+    if (code >= 0xD800 && code <= 0xDBFF && i + 1 < length) {
+      const uint32_t low = chars[i + 1];
+      if (low >= 0xDC00 && low <= 0xDFFF) {
+        code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+        ++i;
+      }
+    }
+    if (code >= 0xD800 && code <= 0xDFFF) code = 0xFFFD;  // unpaired half
+
+    if (code < 0x80) {
+      out.push_back(static_cast<char>(code));
+    } else if (code < 0x800) {
+      out.push_back(static_cast<char>(0xC0 | (code >> 6)));
+      out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+    } else if (code < 0x10000) {
+      out.push_back(static_cast<char>(0xE0 | (code >> 12)));
+      out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+    } else {
+      out.push_back(static_cast<char>(0xF0 | (code >> 18)));
+      out.push_back(static_cast<char>(0x80 | ((code >> 12) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+    }
+  }
+  return out;
+}
+
+/// The reverse: standard UTF-8 to UTF-16, for `NewString` rather than `NewStringUTF`.
+inline std::vector<jchar> utf8_to_utf16(const char* bytes) {
+  std::vector<jchar> out;
+  const auto* cursor = reinterpret_cast<const unsigned char*>(bytes);
+  while (*cursor != 0) {
+    const unsigned char lead = *cursor++;
+    uint32_t code;
+    int continuations;
+    if (lead < 0x80) {
+      code = lead;
+      continuations = 0;
+    } else if ((lead & 0xE0) == 0xC0) {
+      code = lead & 0x1Fu;
+      continuations = 1;
+    } else if ((lead & 0xF0) == 0xE0) {
+      code = lead & 0x0Fu;
+      continuations = 2;
+    } else if ((lead & 0xF8) == 0xF0) {
+      code = lead & 0x07u;
+      continuations = 3;
+    } else {
+      code = 0xFFFD;  // a stray continuation byte, or 0xF8..0xFF
+      continuations = 0;
+    }
+    for (int i = 0; i < continuations; ++i) {
+      const unsigned char next = *cursor;
+      if ((next & 0xC0) != 0x80) {
+        // Truncated. Stop here rather than consuming a byte that starts the next character.
+        code = 0xFFFD;
+        break;
+      }
+      code = (code << 6) | (next & 0x3Fu);
+      ++cursor;
+    }
+    if (code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF)) code = 0xFFFD;
+
+    if (code < 0x10000) {
+      out.push_back(static_cast<jchar>(code));
+    } else {
+      code -= 0x10000;
+      out.push_back(static_cast<jchar>(0xD800 + (code >> 10)));
+      out.push_back(static_cast<jchar>(0xDC00 + (code & 0x3FF)));
+    }
+  }
+  return out;
+}
+
+/// A Java string from a **standard** UTF-8 C string, or null for nullptr.
 ///
 /// Null is meaningful in this ABI rather than an error: `reactor_session_id` returns it when
 /// there is no session, and `on_session_id` receives it when the session is cleared. Mapping it
 /// to "" would lose that.
+///
+/// `NewString` rather than `NewStringUTF`, because what arrives here is standard UTF-8 and
+/// `NewStringUTF` reads modified UTF-8 — see [utf16_to_utf8] above.
 inline jstring to_jstring(JNIEnv* env, const char* value) {
-  return value == nullptr ? nullptr : env->NewStringUTF(value);
+  if (value == nullptr) return nullptr;
+  const std::vector<jchar> utf16 = utf8_to_utf16(value);
+  return env->NewString(utf16.data(), static_cast<jsize>(utf16.size()));
 }
 
-/// A borrowed C string copied out of a JNI string, valid for the scope.
+/// A standard-UTF-8 copy of a JNI string, valid for the scope.
+///
+/// Copied rather than borrowed through `GetStringUTFChars`, which would hand back modified UTF-8
+/// — see [utf16_to_utf8].
 class JavaString {
  public:
-  JavaString(JNIEnv* env, jstring value) : env_(env), value_(value) {
-    if (value_ != nullptr) chars_ = env_->GetStringUTFChars(value_, nullptr);
-  }
-
-  ~JavaString() {
-    if (chars_ != nullptr) env_->ReleaseStringUTFChars(value_, chars_);
+  JavaString(JNIEnv* env, jstring value) {
+    if (value == nullptr) return;
+    const jsize length = env->GetStringLength(value);
+    std::vector<jchar> utf16(static_cast<size_t>(length));
+    if (length > 0) env->GetStringRegion(value, 0, length, utf16.data());
+    chars_ = utf16_to_utf8(utf16.data(), length);
+    present_ = true;
   }
 
   JavaString(const JavaString&) = delete;
   JavaString& operator=(const JavaString&) = delete;
 
   /// nullptr for a null jstring — the ABI's nullable arguments take it directly.
-  const char* get() const { return chars_; }
+  const char* get() const { return present_ ? chars_.c_str() : nullptr; }
 
  private:
-  JNIEnv* env_;
-  jstring value_;
-  const char* chars_ = nullptr;
+  std::string chars_;
+  bool present_ = false;
 };
 
 }  // namespace reactor_jni
