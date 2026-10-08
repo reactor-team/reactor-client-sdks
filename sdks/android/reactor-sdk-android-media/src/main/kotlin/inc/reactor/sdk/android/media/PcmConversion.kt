@@ -108,4 +108,53 @@ public object PcmConversion {
         }
         return out
     }
+
+    /**
+     * Copy [samples] into [into], as little-endian interleaved s16 — what `Track.pushFrame` takes.
+     *
+     * The bridge between the two halves of this module: [Microphone] hands its caller a
+     * `ShortArray` and the ABI takes a **direct** `ByteBuffer`, so without this every consumer
+     * writes the same loop, and writes it with the platform's byte order rather than the wire's.
+     *
+     * [into] is reused across calls on purpose. Allocating a direct buffer per 10ms frame is
+     * megabytes a second of garbage, and direct buffers are the kind the collector reclaims
+     * last — see [directBufferFor] for making one once.
+     *
+     * @return [into], positioned at 0 and limited to the bytes written, ready to push.
+     */
+    public fun toDirectBuffer(
+        samples: ShortArray,
+        into: java.nio.ByteBuffer,
+    ): java.nio.ByteBuffer {
+        require(into.isDirect) {
+            "pushFrame needs a direct ByteBuffer — use directBufferFor(), not ByteBuffer.allocate()"
+        }
+        require(into.capacity() >= samples.size * 2) {
+            "the buffer holds ${into.capacity()} bytes, which is not enough for " +
+                "${samples.size} samples (${samples.size * 2} bytes)"
+        }
+        into.clear()
+        // Little-endian explicitly, not nativeOrder(): the ABI's PCM is little-endian, and every
+        // Android device being little-endian today is a fact about the present, not a contract.
+        into.order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        for (sample in samples) into.putShort(sample)
+        into.flip()
+        return into
+    }
+
+    /**
+     * A direct buffer big enough for [frames] frames at [channels] channels.
+     *
+     * Allocate one per track and reuse it — see [toDirectBuffer].
+     */
+    public fun directBufferFor(
+        frames: Int,
+        channels: Int = 1,
+    ): java.nio.ByteBuffer {
+        require(frames > 0) { "frames must be positive, got $frames" }
+        require(channels > 0) { "channels must be positive, got $channels" }
+        return java.nio.ByteBuffer
+            .allocateDirect(frames * channels * 2)
+            .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+    }
 }
