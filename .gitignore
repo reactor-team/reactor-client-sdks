@@ -62,6 +62,17 @@ replay_pid*.log
 /sdks/java/.gradle/
 /sdks/java/buildSrc/.gradle/
 
+# Android SDK: Gradle's build output and per-project state, for every module and
+# for buildSrc. There is no Gradle wrapper to ignore — mise pins Gradle instead,
+# see sdks/android/settings.gradle.kts. local.properties is Android Studio's, and
+# would pin an sdk.dir that only exists on the machine that wrote it; the SDK root
+# comes from ANDROID_HOME, which the mise android-sdk tool exports.
+/sdks/android/**/build/
+/sdks/android/.gradle/
+/sdks/android/buildSrc/.gradle/
+/sdks/android/.kotlin/
+/sdks/android/local.properties
+
 # Java SDK: native libraries staged for packaging. Built by `mise run build:ffi`
 # locally and by the release workflow's matrix in CI — tens of megabytes each,
 # and never something to commit.
