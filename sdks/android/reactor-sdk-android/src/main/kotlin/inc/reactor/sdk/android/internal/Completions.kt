@@ -54,6 +54,34 @@ internal object Completions {
         settle(ticket, ok, resultJson, errorJson)
     }
 
+    private val progressHandlers =
+        ConcurrentHashMap<Long, (Int, Int) -> Unit>()
+
+    /**
+     * Report download progress from the native trampoline.
+     *
+     * Silently ignores a ticket with no handler, which is the ordinary case after the caller
+     * cancelled or the client closed — a download outlives the handle it was given, and its
+     * progress callbacks keep arriving. That they find nothing and return is precisely what makes
+     * them safe: there is no object here whose lifetime could have ended.
+     */
+    @JvmStatic
+    fun progressFromNative(
+        ticket: Long,
+        done: Int,
+        total: Int,
+    ) {
+        progressHandlers[ticket]?.invoke(done, total)
+    }
+
+    /** Register a progress handler for [ticket], for the life of the operation. */
+    fun watchProgress(
+        ticket: Long,
+        handler: (Int, Int) -> Unit,
+    ) {
+        progressHandlers[ticket] = handler
+    }
+
     /** How many completions are outstanding. Zero at rest; the endurance suite watches it. */
     val pendingCount: Int
         get() = pending.size
@@ -82,6 +110,7 @@ internal object Completions {
         return try {
             deferred.await()
         } finally {
+            progressHandlers.remove(ticket)
             // On cancellation the ticket is dropped here, but the *native* operation keeps
             // running — nothing in this ABI can cancel one. A late completion for a ticket that
             // is gone is dropped by settle(), which is the correct outcome and not a leak: the
@@ -101,6 +130,8 @@ internal object Completions {
         resultJson: String?,
         errorJson: String?,
     ) {
+        progressHandlers.remove(ticket)
+
         @Suppress("UNCHECKED_CAST")
         val entry = pending.remove(ticket) as? Pending<Any?> ?: return
 
@@ -133,6 +164,8 @@ internal object Completions {
     fun abandonAll(reason: String) {
         val snapshot = pending.keys.toList()
         for (ticket in snapshot) {
+            progressHandlers.remove(ticket)
+
             @Suppress("UNCHECKED_CAST")
             val entry = pending.remove(ticket) as? Pending<Any?> ?: continue
             entry.deferred.completeExceptionally(
