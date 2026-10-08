@@ -42,6 +42,33 @@ class TracksTest {
             }
 
             override fun isPaused(track: String): Boolean = false
+
+            // Publishing is PublishingTest's subject; these exist so this suite can construct Tracks.
+            override fun publishState(track: String) = PublishState.UNPUBLISHED
+
+            override suspend fun publish(track: String) = Unit
+
+            override suspend fun unpublish(track: String) = Unit
+
+            override suspend fun pause(track: String) = Unit
+
+            override suspend fun resume(track: String) = Unit
+
+            override fun pushVideoFrame(
+                track: String,
+                pixels: java.nio.ByteBuffer,
+                width: Int,
+                height: Int,
+                userData: ByteArray?,
+            ) = Unit
+
+            override fun pushAudioFrame(
+                track: String,
+                pcm: java.nio.ByteBuffer,
+                samplesPerChannel: Int,
+                sampleRate: Int,
+                channels: Int,
+            ) = Unit
         }
 
     /** Deliberately not alphabetical: that is the whole point of the assertion. */
