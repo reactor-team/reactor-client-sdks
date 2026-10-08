@@ -71,6 +71,9 @@ replay_pid*.log
 /sdks/android/.gradle/
 /sdks/android/buildSrc/.gradle/
 /sdks/android/.kotlin/
+# AGP's externalNativeBuild scratch: per-ABI CMake configuration, compile_commands.json and
+# ninja state, regenerated on every build.
+/sdks/android/**/.cxx/
 /sdks/android/local.properties
 
 # Java SDK: native libraries staged for packaging. Built by `mise run build:ffi`
