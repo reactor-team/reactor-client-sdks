@@ -27,7 +27,7 @@ name: Endurance tests
 # alongside `inputs.sdk`'s own `options:` list above when adding a new SDK
 # (an SDK not yet mapped here falls back to showing its raw option value).
 run-name: >-
-  Endurance tests: ${{ inputs.sdk == 'python' && 'Python' || inputs.sdk == 'cpp' && 'C++' || inputs.sdk == 'swift' && 'Swift' || inputs.sdk }} SDK
+  Endurance tests: ${{ inputs.sdk == 'python' && 'Python' || inputs.sdk == 'cpp' && 'C++' || inputs.sdk == 'swift' && 'Swift' || inputs.sdk == 'android' && 'Android' || inputs.sdk }} SDK
 
 on:
   workflow_dispatch:
@@ -40,6 +40,7 @@ on:
           - cpp
           - swift
           - java
+          - android
         default: python
       duration_minutes:
         description: "How long each scenario loops for, in minutes"
@@ -103,6 +104,7 @@ jobs:
       swift_timeout_minutes: ${{ steps.compute-swift.outputs.timeout_minutes }}
       swift_scenarios: ${{ steps.swift-scenarios.outputs.scenarios }}
       java_scenarios: ${{ steps.java-scenarios.outputs.scenarios }}
+      android_scenarios: ${{ steps.android-scenarios.outputs.scenarios }}
     steps:
       # Needed by "Discover endurance scenarios"/"Discover cpp endurance
       # scenarios"/"Discover swift endurance scenarios" below, which read
@@ -263,6 +265,17 @@ jobs:
             | sort | jq -R -s -c 'split("\n") | map(select(length > 0))')
           echo "scenarios=$scenarios" >> "$GITHUB_OUTPUT"
           echo "::notice::java scenarios: $scenarios"
+      # Globbed, not hand-listed, for the same reason as every other SDK here: a scenario added
+      # later shows up in the matrix for free.
+      - name: Discover android endurance scenarios
+        id: android-scenarios
+        run: |
+          set -euo pipefail
+          scenarios=$(find sdks/android/endurance-tests/src/androidTest/kotlin/inc/reactor/sdk/android/endurance \
+            -name '*Test.kt' -exec basename {} .kt \; \
+            | sort | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "scenarios=$scenarios" >> "$GITHUB_OUTPUT"
+          echo "::notice::android scenarios: $scenarios"
 
   python:
     name: Python SDK endurance tests (${{ matrix.scenario }})
@@ -1123,9 +1136,100 @@ jobs:
           path: sdks/java/endurance-tests/endurance-results/
           retention-days: 14
 
+  android:
+    name: Android · ${{ matrix.scenario }}
+    needs: setup
+    if: inputs.sdk == 'android' || inputs.sdk == 'all'
+    # Needs a runner with a working arm64 hypervisor, named by the repository variable
+    # ANDROID_EMULATOR_RUNNER. No GitHub-hosted runner is one — hosted macOS runners are VMs
+    # without Hypervisor.framework and hosted arm64 Linux runners have no /dev/kvm, both tried.
+    # Skipped rather than failing when it is unset: this suite gates nothing, so a dispatch that
+    # cannot run is a no-op rather than a false alarm. The step below says so out loud, because a
+    # matrix of skipped jobs otherwise looks like a matrix of passing ones.
+    strategy:
+      # One scenario's real leak must not cancel the others: which one failed is the answer this
+      # suite exists to give.
+      fail-fast: false
+      matrix:
+        scenario: ${{ fromJSON(needs.setup.outputs.android_scenarios) }}
+    runs-on: ${{ vars.ANDROID_EMULATOR_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: ${{ fromJSON(needs.setup.outputs.timeout_minutes) }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Say plainly when there is no runner for this
+        if: vars.ANDROID_EMULATOR_RUNNER == ''
+        run: |
+          echo "::warning::No ANDROID_EMULATOR_RUNNER is configured, so this scenario did not run." \
+               "An arm64 Android emulator needs a hypervisor and no GitHub-hosted runner has one." \
+               "Set that variable to a self-hosted label, or run it locally:" \
+               "mise run test:android:endurance -- ${{ matrix.scenario }}"
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        if: vars.ANDROID_EMULATOR_RUNNER != ''
+        with:
+          cache-on-failure: true
+      - uses: jdx/mise-action@v4
+        if: vars.ANDROID_EMULATOR_RUNNER != ''
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - name: Cache the pinned Android SDK components
+        if: vars.ANDROID_EMULATOR_RUNNER != ''
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/mise/installs/android-sdk
+          key: android-sdk-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'mise.lock') }}
+      - run: mise run setup:android:emulator
+        if: vars.ANDROID_EMULATOR_RUNNER != ''
+      - run: mise run build:android:native
+        if: vars.ANDROID_EMULATOR_RUNNER != ''
+
+      # No debugger wrapper, unlike every other SDK's job here, and it is not an omission. The
+      # suite runs inside an app process on a device; a host debugger cannot be its parent. What
+      # Android has instead is the tombstone debuggerd writes on a native crash, collected by
+      # scripts/android-endurance-diagnostics.sh into the same native-crash-diagnostics.json the
+      # other suites produce.
+      - name: Run the scenario
+        if: vars.ANDROID_EMULATOR_RUNNER != ''
+        env:
+          ENDURANCE_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+          ENDURANCE_DURATION_MINUTES: ${{ inputs.duration_minutes }}
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis_ps16k
+          arch: arm64-v8a
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: mise run test:android:endurance -- ${{ matrix.scenario }}
+
+      # if: always(), because the run that needs reading is the one that failed.
+      - name: Render the report into the job summary
+        if: always()
+        run: |
+          set -euo pipefail
+          # nullglob, so a run that produced nothing — no runner, or a crash before the first
+          # cycle — leaves the pattern expanding to nothing instead of to itself, which under
+          # `set -e` would fail this step for having nothing to say.
+          shopt -s nullglob
+          reports=(sdks/android/endurance-tests/endurance-results/*-report.md)
+          if [ ${#reports[@]} -eq 0 ]; then
+            echo "No endurance report was produced." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          cat "${reports[@]}" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          # Suffixed per scenario: two matrix jobs uploading one name in a run is a hard error.
+          name: endurance-test-results-android-${{ matrix.scenario }}
+          path: sdks/android/endurance-tests/endurance-results/
+          retention-days: 14
+          if-no-files-found: ignore
+
   notify-slack-failure:
     name: "Notify #sdk-releases on failure"
-    needs: [setup, python, cpp, swift, java]
+    needs: [setup, python, cpp, swift, java, android]
     if: failure()
     runs-on: ubuntu-latest
     steps:
@@ -1135,6 +1239,6 @@ jobs:
           webhook-url: ${{ secrets.SLACK_WEBHOOK_SDK_RELEASES }}
           status: failure
           title: >-
-            ${{ inputs.sdk == 'python' && 'Python' || inputs.sdk == 'cpp' && 'C++' || inputs.sdk == 'swift' && 'Swift' || inputs.sdk }} SDK endurance tests FAILED
+            ${{ inputs.sdk == 'python' && 'Python' || inputs.sdk == 'cpp' && 'C++' || inputs.sdk == 'swift' && 'Swift' || inputs.sdk == 'android' && 'Android' || inputs.sdk }} SDK endurance tests FAILED
           message: |
             Ran for ${{ inputs.duration_minutes }} minute(s) per scenario.
