@@ -7,6 +7,23 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-08
+
+### Added
+
+- `Reactor(..., autoResumeTracks: ...)` chooses whether the SDK resumes every receive-only track when
+  it connects and reconnects. It defaults to on, which is what the SDK always
+  did, so nothing changes unless you turn it off. The JS SDK already had it.
+
+### Fixed
+
+- A connection no longer loses every command and message it sends when the
+  runtime negotiates data-channel chunking. A channel that opened while the
+  session description was still being applied could decide it was not chunked
+  while the runtime's end of it was, and from then on nothing sent on it
+  arrived, with no error on either side. Both ends now always agree. Requires
+  reactor-webrtc 0.22.1.
+
 ## [1.3.0] - 2026-10-06
 
 ### Added

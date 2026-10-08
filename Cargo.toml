@@ -17,6 +17,12 @@ repository = "https://github.com/reactor-team/reactor-client-sdks"
 reactor-protocol = { path = "crates/reactor-protocol" }
 reactor-core     = { path = "crates/reactor-core" }
 reactor-wasm     = { path = "crates/reactor-wasm" }
+# 0.22.1: both ends of a data channel agree on chunking. 0.22.0 recorded the
+# negotiation only after libwebrtc applied the description, so a channel that
+# opened in between stayed plain while the runtime's end chunked, and every
+# message on it was lost (REA-6981). The floor is 0.22.1, not 0.22, for that.
+# 0.22.0 itself is additive (per-stage latency stats and the timing frame).
+#
 # 0.21: per-frame metadata is matched to the decoded frame by SSRC and RTP
 # timestamp, so it stays on its own frame when libwebrtc drops one before render
 # (it was matched by queue order, and every later frame got its predecessor's).
@@ -53,10 +59,10 @@ reactor-wasm     = { path = "crates/reactor-wasm" }
 # instant the engine pushed the frame, and the field is named `capture_time_us`
 # for it (reactor-webrtc #64). 0.10 brought the outbound push that accepts a
 # capture time in the first place (#53); 0.11 is additive.
-reactor-webrtc   = "0.21"
+reactor-webrtc   = "0.22.1"
 # The sans-I/O framing reactor-webrtc uses for chunked data channels, for the
 # browser, which never links libwebrtc. Released in lockstep with it.
-reactor-webrtc-dc-chunking = "0.21"
+reactor-webrtc-dc-chunking = "0.22.1"
 
 serde       = { version = "1",   features = ["derive"] }
 serde_json  = "1"
