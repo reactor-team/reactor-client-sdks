@@ -13,6 +13,7 @@ internal object NativeClient {
         modelName: String,
         jwt: String?,
         local: Boolean,
+        autoResumeTracks: Boolean,
         listener: NativeEvents,
         sdkVersion: String?,
         sdkType: String?,
@@ -120,12 +121,14 @@ internal object NativeClient {
         modelName: String,
         jwt: String? = null,
         local: Boolean = false,
+        autoResumeTracks: Boolean = true,
         listener: NativeEvents,
         sdkVersion: String? = null,
         sdkType: String? = "android",
     ): Handle {
         NativeLibrary.ensureLoaded()
-        val context = nativeCreate(apiUrl, modelName, jwt, local, listener, sdkVersion, sdkType)
+        val context =
+            nativeCreate(apiUrl, modelName, jwt, local, autoResumeTracks, listener, sdkVersion, sdkType)
         check(context != 0L) { "The native layer refused to create a client for $modelName" }
         // One pointer: the context owns the ReactorHandle, so there are not two things that
         // have to agree about which client this is.

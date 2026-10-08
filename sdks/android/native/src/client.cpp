@@ -87,7 +87,7 @@ jstring owned_to_jstring(JNIEnv* env, char* raw) {
 
 extern "C" JNIEXPORT jlong JNICALL Java_inc_reactor_sdk_android_internal_NativeClient_nativeCreate(
     JNIEnv* env, jobject, jstring api_url, jstring model_name, jstring jwt, jboolean local,
-    jobject listener, jstring sdk_version, jstring sdk_type) {
+    jboolean auto_resume_tracks, jobject listener, jstring sdk_version, jstring sdk_type) {
   auto context = std::make_unique<Context>();
 
   context->listener = env->NewGlobalRef(listener);
@@ -129,9 +129,9 @@ extern "C" JNIEXPORT jlong JNICALL Java_inc_reactor_sdk_android_internal_NativeC
   // adm_mode 0 — synthetic, pinned. The platform module opens a real microphone, and a library
   // whose audience is applications must never do that because a model happened to declare a
   // sendonly audio track. reactor_create's env-var default is exactly what this avoids.
-  ReactorHandle* handle = reactor_create_with_adm(url.get(), model.get(), token.get(),
-                                                  local ? 1 : 0, &callbacks, /*adm_mode=*/0,
-                                                  version.get(), type.get());
+  ReactorHandle* handle = reactor_create_with_adm(
+      url.get(), model.get(), token.get(), local ? 1 : 0, auto_resume_tracks ? 1 : 0, &callbacks,
+      /*adm_mode=*/0, version.get(), type.get());
   if (handle == nullptr) {
     context->release(env);
     return 0;

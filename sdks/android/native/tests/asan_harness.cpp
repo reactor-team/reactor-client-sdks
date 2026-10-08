@@ -28,7 +28,7 @@ extern "C" {
 jint JNI_OnLoad(JavaVM* vm, void* reserved);
 
 jlong Java_inc_reactor_sdk_android_internal_NativeClient_nativeCreate(
-    JNIEnv*, jobject, jstring, jstring, jstring, jboolean, jobject, jstring, jstring);
+    JNIEnv*, jobject, jstring, jstring, jstring, jboolean, jboolean, jobject, jstring, jstring);
 jint Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(JNIEnv*, jobject, jlong);
 jstring Java_inc_reactor_sdk_android_internal_NativeClient_nativeStatus(JNIEnv*, jobject, jlong);
 jstring Java_inc_reactor_sdk_android_internal_NativeClient_nativeSessionId(JNIEnv*, jobject, jlong);
@@ -37,6 +37,7 @@ jstring Java_inc_reactor_sdk_android_internal_NativeClient_nativePausedTracks(JN
                                                                              jlong);
 
 void fake_set_destroy_result(int result);
+int fake_last_auto_resume(void);
 void fake_fire_status_on_foreign_thread(const char* status);
 void fake_fire_session_id_on_foreign_thread(const char* session_id);
 }
@@ -72,13 +73,21 @@ void set_static_bool(const char* field, bool value) {
   g_env->SetStaticBooleanField(g_listener_class, id, value ? JNI_TRUE : JNI_FALSE);
 }
 
-jlong create() {
+/// The parameter ABI v3 added, and which this binding did not pass for two days.
+///
+/// It is a *boolean in the middle of an argument list*, which is the shape that goes unnoticed:
+/// C++ caught the arity at compile time, but nothing in CI compiled this file for Android — and
+/// the object files committed by mistake let ninja skip even the local build. Pinned here so the
+/// value, not merely the arity, has to be right.
+void auto_resume_tracks_crosses_as_the_caller_set_it();
+
+jlong create(jboolean auto_resume = JNI_TRUE) {
   jstring url = g_env->NewStringUTF("https://api.invalid");
   jstring model = g_env->NewStringUTF("reactor/echo");
   jstring version = g_env->NewStringUTF("0.0.0-asan");
   jstring type = g_env->NewStringUTF("android");
   jlong context = Java_inc_reactor_sdk_android_internal_NativeClient_nativeCreate(
-      g_env, nullptr, url, model, nullptr, JNI_FALSE, new_listener(), version, type);
+      g_env, nullptr, url, model, nullptr, JNI_FALSE, auto_resume, new_listener(), version, type);
   g_env->DeleteLocalRef(url);
   g_env->DeleteLocalRef(model);
   g_env->DeleteLocalRef(version);
@@ -88,6 +97,18 @@ jlong create() {
 
 /// The owned strings, read enough times that a missing free is a leak ASan reports at exit and a
 /// double free is an immediate error.
+void auto_resume_tracks_crosses_as_the_caller_set_it() {
+  jlong on = create(JNI_TRUE);
+  check(fake_last_auto_resume() == 1, "autoResumeTracks=true reaches the ABI as 1");
+  fake_set_destroy_result(0);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, on);
+
+  jlong off = create(JNI_FALSE);
+  check(fake_last_auto_resume() == 0, "autoResumeTracks=false reaches the ABI as 0");
+  fake_set_destroy_result(0);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, off);
+}
+
 void owned_strings_are_freed_exactly_once() {
   jlong context = create();
   for (int i = 0; i < 500; ++i) {
@@ -246,6 +267,7 @@ int main() {
   g_env->DeleteLocalRef(local);
 
   std::printf("JNI boundary, under AddressSanitizer:\n");
+  auto_resume_tracks_crosses_as_the_caller_set_it();
   owned_strings_are_freed_exactly_once();
   the_static_string_is_never_freed();
   events_cross_from_a_foreign_thread();
