@@ -202,4 +202,70 @@ class ConversionTest {
         assertThrows(IllegalArgumentException::class.java) { PcmConversion.Resampler(0, 48_000) }
         assertThrows(IllegalArgumentException::class.java) { PcmConversion.Resampler(48_000, -1) }
     }
+
+    // ── The bridge to pushFrame ──────────────────────────────────────────────
+
+    @Test
+    fun `samples become little-endian s16 ready to push`() {
+        val buffer = PcmConversion.directBufferFor(frames = 4)
+        val out = PcmConversion.toDirectBuffer(shortArrayOf(1, -2, 256, Short.MIN_VALUE), buffer)
+
+        assertEquals("the buffer must be positioned for a read", 0, out.position())
+        assertEquals("and limited to what was written", 8, out.limit())
+        assertEquals(1.toShort(), out.getShort(0))
+        assertEquals((-2).toShort(), out.getShort(2))
+        assertEquals(256.toShort(), out.getShort(4))
+        assertEquals(Short.MIN_VALUE, out.getShort(6))
+    }
+
+    /**
+     * Little-endian explicitly, not nativeOrder(). Every Android device is little-endian today,
+     * which is a fact about the present rather than a contract — and a buffer written in the wrong
+     * order is white noise, not an error.
+     */
+    @Test
+    fun `the byte order is the wire's, whatever the buffer arrived as`() {
+        val buffer =
+            java.nio.ByteBuffer
+                .allocateDirect(4)
+                .order(java.nio.ByteOrder.BIG_ENDIAN)
+        val out = PcmConversion.toDirectBuffer(shortArrayOf(0x0102, 0x0304), buffer)
+        assertEquals(0x02.toByte(), out.get(0))
+        assertEquals(0x01.toByte(), out.get(1))
+    }
+
+    @Test
+    fun `a heap buffer is refused, naming the fix`() {
+        val error =
+            assertThrows(IllegalArgumentException::class.java) {
+                PcmConversion.toDirectBuffer(shortArrayOf(1), java.nio.ByteBuffer.allocate(2))
+            }
+        assertTrue(error.message!!.contains("directBufferFor"))
+    }
+
+    @Test
+    fun `a buffer too small for the samples is refused with both numbers`() {
+        val error =
+            assertThrows(IllegalArgumentException::class.java) {
+                PcmConversion.toDirectBuffer(ShortArray(10), PcmConversion.directBufferFor(4))
+            }
+        assertTrue(error.message!!.contains("8"))
+        assertTrue(error.message!!.contains("20"))
+    }
+
+    @Test
+    fun `the buffer is reusable across frames`() {
+        val buffer = PcmConversion.directBufferFor(frames = 480)
+        repeat(3) { round ->
+            val out = PcmConversion.toDirectBuffer(ShortArray(480) { round.toShort() }, buffer)
+            assertEquals(960, out.limit())
+            assertEquals(round.toShort(), out.getShort(0))
+        }
+    }
+
+    @Test
+    fun `a non-positive buffer request is a caller error`() {
+        assertThrows(IllegalArgumentException::class.java) { PcmConversion.directBufferFor(0) }
+        assertThrows(IllegalArgumentException::class.java) { PcmConversion.directBufferFor(10, 0) }
+    }
 }
