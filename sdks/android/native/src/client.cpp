@@ -77,6 +77,42 @@ void on_session_id(const char* session_id_or_null, void* userdata) {
   dispatch(userdata, static_cast<Context*>(userdata)->on_session_id, session_id_or_null);
 }
 
+/// Where completions are settled: Completions.settleFromNative, resolved once at load.
+///
+/// Cached rather than looked up per completion, and cached from a thread that has an application
+/// class loader — a FindClass from an FFI-owned thread finds the system loader, which cannot see
+/// this class.
+jclass g_completions_class = nullptr;
+jmethodID g_settle = nullptr;
+
+/// Settle one async operation.
+///
+/// `userdata` carries the ticket and nothing else — no pointer, no reference. A ticket whose
+/// entry has already gone (the caller was cancelled, or the client was torn down) is a no-op on
+/// the Kotlin side, so a late completion is harmless by construction rather than by timing.
+void completion_trampoline(int ok, const char* result_json, const char* error_json,
+                           void* userdata) {
+  if (g_completions_class == nullptr || g_settle == nullptr) return;
+
+  ScopedEnv scoped;
+  if (!scoped) return;
+  JNIEnv* env = scoped.get();
+
+  // Both strings are borrowed: the FFI frees them when this returns, so they are copied into
+  // Java strings here and not a moment later.
+  jstring result = to_jstring(env, result_json);
+  jstring error = to_jstring(env, error_json);
+  env->CallStaticVoidMethod(g_completions_class, g_settle,
+                            static_cast<jlong>(reinterpret_cast<intptr_t>(userdata)),
+                            ok != 0 ? JNI_TRUE : JNI_FALSE, result, error);
+  if (env->ExceptionCheck()) {
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+  }
+  if (result != nullptr) env->DeleteLocalRef(result);
+  if (error != nullptr) env->DeleteLocalRef(error);
+}
+
 /// An owned string from the FFI, handed to Java and freed here.
 jstring owned_to_jstring(JNIEnv* env, char* raw) {
   OwnedString owned(raw);
@@ -194,3 +230,52 @@ extern "C" JNIEXPORT jstring JNICALL Java_inc_reactor_sdk_android_internal_Nativ
   return owned_to_jstring(env, reactor_paused_tracks(context->handle));
 }
 
+
+/**
+ * Cache the completion entry point. Called once, from Kotlin, on a thread with a class loader
+ * that can see application classes.
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitCompletions(JNIEnv* env, jobject,
+                                                                        jclass completions) {
+  g_completions_class = static_cast<jclass>(env->NewGlobalRef(completions));
+  g_settle = env->GetStaticMethodID(g_completions_class, "settleFromNative",
+                                    "(JZLjava/lang/String;Ljava/lang/String;)V");
+  if (g_settle == nullptr) {
+    reactor_jni::fail(env, "java/lang/NoSuchMethodError",
+                      "Completions.settleFromNative is missing — the Kotlin registry and "
+                      "client.cpp have drifted apart");
+  }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeConnect(JNIEnv* env, jobject,
+                                                                 jlong context_ptr,
+                                                                 jstring session_id,
+                                                                 jlong ticket) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return;
+  JavaString session(env, session_id);
+  reactor_connect(context->handle, session.get(), /*connection_id=*/nullptr,
+                  completion_trampoline, reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeDisconnect(JNIEnv*, jobject,
+                                                                    jlong context_ptr,
+                                                                    jlong ticket) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return;
+  reactor_disconnect(context->handle, completion_trampoline,
+                     reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeReconnect(JNIEnv*, jobject,
+                                                                   jlong context_ptr,
+                                                                   jlong ticket) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return;
+  reactor_reconnect(context->handle, completion_trampoline,
+                    reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}
