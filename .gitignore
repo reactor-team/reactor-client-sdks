@@ -80,3 +80,7 @@ replay_pid*.log
 # locally and by the release workflow's matrix in CI — tens of megabytes each,
 # and never something to commit.
 /sdks/java/reactor-sdk-natives/natives/
+
+# Scratch git worktrees an agent session creates. Nested repositories, never part of this one —
+# `git add -A` after a build will otherwise stage one as a gitlink.
+/.claude/worktrees/
