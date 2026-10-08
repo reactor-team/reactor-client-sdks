@@ -31,13 +31,15 @@ extern "C" {
 
 static ReactorCallbacks g_callbacks;
 static int g_destroy_result = 0;
+static int g_last_auto_resume = -1;
 static ReactorHandle g_handle = {0xBEEF};
 
 uint32_t reactor_abi_version(void) { return REACTOR_ABI_VERSION; }
 
 ReactorHandle* reactor_create_with_adm(const char*, const char*, const char*, int,
-                                       const ReactorCallbacks* callbacks, int adm_mode,
-                                       const char*, const char*) {
+                                       int auto_resume_tracks, const ReactorCallbacks* callbacks,
+                                       int adm_mode, const char*, const char*) {
+    g_last_auto_resume = auto_resume_tracks;
     // The binding must always ask for synthetic. A test that let this through would be the one
     // place a live microphone could reach the wire unnoticed.
     if (adm_mode != 0) return nullptr;
@@ -64,6 +66,8 @@ void reactor_free_string(char* s) { free(s); }
 // far as check-abi-parity.py is concerned.
 
 void fake_set_destroy_result(int result) { g_destroy_result = result; }
+
+int fake_last_auto_resume(void) { return g_last_auto_resume; }
 
 /// Fire a status event from a thread the "FFI" owns — one the JVM has never seen, which is the
 /// only way to exercise ScopedEnv's attach and detach.
