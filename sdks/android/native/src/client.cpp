@@ -516,3 +516,55 @@ Java_inc_reactor_sdk_android_internal_NativeClient_nativeGetStats(JNIEnv*, jobje
   reactor_get_stats(context->handle, completion_trampoline,
                     reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
 }
+
+// ── Uploads ──────────────────────────────────────────────────────────────────
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeUploadFile(JNIEnv* env, jobject,
+                                                                    jlong context_ptr, jstring path,
+                                                                    jlong ticket) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return;
+  JavaString file(env, path);
+  reactor_upload_file(context->handle, file.get(), completion_trampoline,
+                      reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}
+
+/**
+ * Upload bytes the caller already holds.
+ *
+ * `data` is borrowed for the call only, which is why this takes a direct ByteBuffer and reads it
+ * in place: copying would double the peak memory for exactly the case — a large in-memory
+ * payload — where that matters most.
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeUploadBytes(
+    JNIEnv* env, jobject, jlong context_ptr, jobject data, jint length, jstring name,
+    jstring mime_type, jlong ticket) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr || data == nullptr) return;
+
+  auto* bytes = static_cast<const uint8_t*>(env->GetDirectBufferAddress(data));
+  if (bytes == nullptr) {
+    reactor_jni::fail(env, "java/lang/IllegalArgumentException",
+                      "uploadBytes needs a direct ByteBuffer — allocateDirect(), not allocate()");
+    return;
+  }
+
+  JavaString file_name(env, name);
+  JavaString mime(env, mime_type);
+  // Neither is nullable on the other side: reactor_upload_bytes dereferences both with
+  // CStr::from_ptr unconditionally, and the header marks only send_command's args and uploads as
+  // nullable. Kotlin resolves the MIME type before calling, so a null here is a bug in this
+  // binding rather than bad input — which is exactly why it is worth saying so instead of
+  // dereferencing null inside Rust and taking the app with it.
+  if (file_name.get() == nullptr || mime.get() == nullptr) {
+    reactor_jni::fail(env, "java/lang/IllegalArgumentException",
+                      "uploadBytes reached the native layer with a null name or MIME type; both "
+                      "are required by the ABI and the binding is supposed to resolve them");
+    return;
+  }
+  reactor_upload_bytes(context->handle, bytes, static_cast<size_t>(length), file_name.get(),
+                       mime.get(), completion_trampoline,
+                       reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}

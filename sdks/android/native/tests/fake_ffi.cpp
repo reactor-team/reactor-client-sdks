@@ -117,6 +117,33 @@ void reactor_get_stats(ReactorHandle*, reactor_completion_fn completion, void* u
     remember(completion, userdata);
 }
 
+static size_t g_uploaded_bytes = 0;
+static std::string g_last_upload_name;
+static std::string g_last_upload_mime;
+
+void reactor_upload_file(ReactorHandle*, const char*, reactor_completion_fn completion,
+                         void* userdata) {
+    remember(completion, userdata);
+}
+
+/// Reads the whole borrowed buffer, so a binding that handed over a wrong length — or a
+/// non-direct buffer whose address is not the bytes — is a read past the end under the sanitizer
+/// rather than a truncated upload nobody notices.
+// name and mime_type are dereferenced here on purpose, exactly as reactor_upload_bytes does with
+// CStr::from_ptr. The fake used to ignore both, which is why a binding that passed a null MIME
+// type — the public API's own default — survived every ASan run and would have dereferenced null
+// on a real device. A fake that is laxer than the ABI it stands in for cannot catch the one class
+// of bug this harness exists for.
+void reactor_upload_bytes(ReactorHandle*, const uint8_t* data, size_t len, const char* name,
+                          const char* mime_type, reactor_completion_fn completion,
+                          void* userdata) {
+    g_last_upload_name = name;       // std::string from const char*: a null here is the crash.
+    g_last_upload_mime = mime_type;  // Same.
+    g_uploaded_bytes = 0;
+    for (size_t i = 0; i < len; ++i) g_uploaded_bytes += data[i];
+    remember(completion, userdata);
+}
+
 void reactor_pause_track(ReactorHandle*, const char*, reactor_completion_fn completion,
                          void* userdata) {
     remember(completion, userdata);
@@ -177,6 +204,10 @@ int fake_last_auto_resume(void) { return g_last_auto_resume; }
 void fake_set_unpublish_fails(int fails) { g_unpublish_fails = fails; }
 
 uint32_t fake_pushed_video_frames(void) { return g_pushed_video; }
+
+size_t fake_uploaded_checksum(void) { return g_uploaded_bytes; }
+
+const char* fake_last_upload_mime(void) { return g_last_upload_mime.c_str(); }
 
 const char* fake_last_command_args(void) { return g_last_args.c_str(); }
 
