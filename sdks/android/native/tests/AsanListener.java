@@ -23,6 +23,29 @@ public class AsanListener {
         if (throwFromHandlers) throw new RuntimeException("handler bug");
     }
 
+    public static volatile int videoFrameCount = 0;
+    public static volatile int lastWidth = 0;
+    public static volatile int lastHeight = 0;
+    public static volatile long lastFrameId = 0;
+    public static volatile int lastPixelCapacity = 0;
+    public static volatile boolean lastBufferWasDirect = false;
+    public static volatile int lastTagLength = -1;
+
+    public void onVideoFrame(String trackName, java.nio.ByteBuffer pixels, int width, int height,
+                             long frameId, long timestampUs, byte[] userData) {
+        videoFrameCount++;
+        lastWidth = width;
+        lastHeight = height;
+        lastFrameId = frameId;
+        lastPixelCapacity = pixels == null ? -1 : pixels.capacity();
+        lastBufferWasDirect = pixels != null && pixels.isDirect();
+        lastTagLength = userData == null ? -1 : userData.length;
+    }
+
+    public void onAudioFrame(String trackName, java.nio.ByteBuffer pcm, int sampleCount,
+                             int sampleRate, int channels) {
+    }
+
     public void onSessionId(String sessionId) {
         sessionIdCount++;
         lastSessionIdWasNull = sessionId == null;

@@ -670,10 +670,19 @@ depends = ["build:android:native"]
 run = "gradle --project-dir sdks/android --console=plain :reactor-sdk-android:connectedDebugAndroidTest"
 
 [tasks."test:android"]
-description = "[Testing] Android SDK unit tests"
-# Unit tests only — the JVM ones. The instrumented suites need a device or an emulator and arrive
-# with A02 (the native load check) and A13 (the live integration gate).
-run = "gradle --project-dir sdks/android --console=plain test"
+description = "[Testing] Android SDK unit tests, and a compile of everything that needs a device"
+# Unit tests only — the JVM ones. The instrumented suites need a device or an emulator, so they
+# cannot run here.
+#
+# They are *compiled* here, though, and that is not a nicety. NativeEvents gained two members and
+# NativeBoundaryTest — which implements it — went on not compiling for several PRs, because
+# nothing anywhere built the androidTest source set. An instrumented test that does not compile is
+# an instrumented test that never runs, and it fails at the one moment you are relying on it.
+# Compiling costs seconds and needs no device; kotlinc is already this binding's other lint gate.
+run = [
+  "gradle --project-dir sdks/android --console=plain test",
+  "gradle --project-dir sdks/android --console=plain compileDebugAndroidTestKotlin",
+]
 
 [tasks."lint:abi"]
 description = "[Quality] Verify lib.rs, reactor_ffi.h and _ffi.py declare the same ABI"
