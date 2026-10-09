@@ -31,6 +31,7 @@ pub mod reactor;
 pub mod recording;
 pub mod runtime;
 pub mod signaling;
+pub mod stage_times;
 pub mod state;
 pub mod stats;
 
