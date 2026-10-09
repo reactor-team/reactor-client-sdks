@@ -880,6 +880,7 @@ impl TryFrom<ClientTrackStatJson> for ClientTrackStat {
             codec: Some(codec),
             paused: stat.paused,
             metrics: stat.metrics,
+            frame_stages: Vec::new(),
         })
     }
 }
