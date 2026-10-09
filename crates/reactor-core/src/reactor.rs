@@ -7,8 +7,8 @@
 //! corresponding status update always happen in the **same** lock
 //! acquisition so that two concurrent callers cannot both pass the guard.
 
-use std::collections::{BTreeMap, HashSet};
-use std::sync::Mutex;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::channel::oneshot;
@@ -33,13 +33,14 @@ use crate::protocol::wire::v1::control::control_client_message::Payload as Clien
 use crate::protocol::wire::v1::control::control_server_message::Payload as ServerPayload;
 use crate::protocol::wire::v1::data::{data_client_message, data_server_message};
 use crate::protocol::wire::v1::platform::{
-    ClientConnectionStat, ClientStats, ClientTrackStat, FileUploaded, Ping, RequestClip,
-    RequestRecording, RequestSchema,
+    ClientConnectionStat, ClientStats, ClientTrackStat, FileUploaded, FrameStage, Ping,
+    RequestClip, RequestRecording, RequestSchema,
 };
 use crate::protocol::wire::v1::track::{PauseTrack, PublishTrack, ResumeTrack, UnpublishTrack};
 use crate::recording::{clip_failed_code, clip_from_ready, Clip};
 use crate::runtime::timeout;
 use crate::signaling::WebRtcSignaling;
+use crate::stage_times::{sort_stages, StageTimes, SUBMIT};
 use crate::state::ReactorStatus;
 use crate::stats::{client_connection_stat, ClientStatsReporter, ConnectionStats, StatsSampler};
 use crate::{SharedAuth, SharedHttp, SharedPeer, SharedPlatform};
@@ -220,6 +221,8 @@ pub struct Reactor {
     state: Mutex<State>,
     /// Holds the previous stats sample, so `get_stats` can answer with rates.
     stats: StatsSampler,
+    /// The stages the SDK times itself, reported with the client stats.
+    stage_times: Arc<StageTimes>,
 }
 
 impl Reactor {
@@ -254,6 +257,7 @@ impl Reactor {
             control: ControlCorrelator::new(),
             data: DataCorrelator::new(),
             stats: StatsSampler::new(),
+            stage_times: Arc::new(StageTimes::new()),
             state: Mutex::new(State {
                 auto_resume_tracks: options.auto_resume_tracks,
                 sdp_max_attempts: options.sdp_poll.max_attempts,
@@ -1022,8 +1026,23 @@ impl Reactor {
         self.peer.send_control(&payload)
     }
 
+    /// Share the [`StageTimes`] the host adds the stages it times to: a
+    /// decoded frame reaches the app outside the core.
+    pub fn with_stage_times(mut self, stage_times: Arc<StageTimes>) -> Self {
+        self.stage_times = stage_times;
+        self
+    }
+
+    /// Time one frame's hand-off to the engine, from *started_ms*.
+    fn submitted(&self, track_name: &str, started_ms: f64) {
+        self.stage_times
+            .add(track_name, SUBMIT, self.platform.now_ms() - started_ms);
+    }
+
     pub fn push_video_frame(&self, track_name: &str, data: &[u8], width: u32, height: u32) {
+        let started = self.platform.now_ms();
         self.peer.push_video_frame(track_name, data, width, height);
+        self.submitted(track_name, started);
     }
 
     /// Push a frame tagged with `user_data`, which reaches the far end as the
@@ -1036,8 +1055,10 @@ impl Reactor {
         height: u32,
         user_data: &[u8],
     ) {
+        let started = self.platform.now_ms();
         self.peer
             .push_video_frame_with_metadata(track_name, data, width, height, user_data);
+        self.submitted(track_name, started);
     }
 
     /// Push a tagged frame stamped with `capture_time_us` (microseconds), the
@@ -1053,6 +1074,7 @@ impl Reactor {
         user_data: &[u8],
         capture_time_us: i64,
     ) {
+        let started = self.platform.now_ms();
         self.peer.push_video_frame_with_metadata_at(
             track_name,
             data,
@@ -1061,6 +1083,7 @@ impl Reactor {
             user_data,
             capture_time_us,
         );
+        self.submitted(track_name, started);
     }
 
     /// Push interleaved PCM with its capture format, before transport resampling.
@@ -1438,6 +1461,8 @@ impl Reactor {
         };
         let mut reporter = ClientStatsReporter::new();
         let mut sent_connect_time = false;
+        // Frames timed before this connection belong to no batch of it.
+        self.stage_times.take();
         loop {
             self.platform.sleep(interval).await;
             if !current() {
@@ -1464,7 +1489,8 @@ impl Reactor {
                 )
             };
             let now = self.platform.now_ms();
-            let track_stats = reporter.track_stats(&raw, &tracks, &paused, now);
+            let mut track_stats = reporter.track_stats(&raw, &tracks, &paused, now);
+            add_sdk_stages(&mut track_stats, self.stage_times.take());
             let connection_stat = client_connection_stat(&raw, time_to_connect_ms, now);
             if track_stats.is_empty() && connection_stat.metrics.is_empty() {
                 continue;
@@ -1580,6 +1606,18 @@ impl Reactor {
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
+
+/// Add the stages the SDK timed to the reading of the track they belong to,
+/// in trip order. A stage of a track with no reading in the batch has nothing
+/// to go with, and is dropped.
+fn add_sdk_stages(stats: &mut [ClientTrackStat], mut sdk: HashMap<String, Vec<FrameStage>>) {
+    for stat in stats.iter_mut() {
+        if let Some(stages) = sdk.remove(&stat.track_name) {
+            stat.frame_stages.extend(stages);
+            sort_stages(&mut stat.frame_stages);
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -3540,5 +3578,36 @@ mod tests {
             .await;
 
         assert!(reactor.state.lock().unwrap().auto_resume_tracks);
+    }
+
+    #[test]
+    fn the_sdks_stages_join_their_tracks_reading_in_trip_order() {
+        use crate::protocol::wire::v1::platform::{FrameStage, TrackDirection};
+        use crate::stage_times::DELIVERY;
+
+        let stage = |name: &str, frames: u64| FrameStage {
+            name: name.to_string(),
+            total_ms: 1.0,
+            frames,
+        };
+        let mut stats = vec![ClientTrackStat {
+            track_name: "main_video".to_string(),
+            direction: TrackDirection::Recvonly as i32,
+            frame_stages: vec![stage("jitter_buffer", 150), stage("decode", 150)],
+            ..ClientTrackStat::default()
+        }];
+        let sdk = HashMap::from([
+            ("main_video".to_string(), vec![stage(DELIVERY, 149)]),
+            ("gone".to_string(), vec![stage(DELIVERY, 1)]),
+        ]);
+
+        add_sdk_stages(&mut stats, sdk);
+
+        let names: Vec<&str> = stats[0]
+            .frame_stages
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names, ["jitter_buffer", "decode", DELIVERY]);
     }
 }

@@ -58,6 +58,7 @@ use reactor_core::protocol::upload::FileRef;
 use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions};
 use reactor_core::recording::{clip_segment_requests, Readiness};
 use reactor_core::runtime::TokioPlatform;
+use reactor_core::stage_times::{StageTimes, DELIVERY};
 use reactor_core::state::ReactorStatus;
 use reactor_core::{SharedHttp, SharedPlatform};
 use reactor_webrtc::AdmMode;
@@ -224,6 +225,8 @@ struct VideoFrame {
     frame_id: u64,
     timestamp_us: u64,
     user_data: Vec<u8>,
+    /// When the decoder handed the frame over, to time its trip to the host.
+    decoded_at: std::time::Instant,
 }
 
 /// A decoded remote audio frame, likewise copied.
@@ -897,12 +900,14 @@ unsafe fn create_impl(
         Some(mode) => ReactorWebRtcPeerTransport::with_adm_mode(peer_event_tx, mode),
         None => ReactorWebRtcPeerTransport::new(peer_event_tx),
     };
+    let stage_times = Arc::new(StageTimes::new());
     let mut video: Option<HostThread<VideoFrame>> = None;
     let mut audio: Option<HostThread<AudioFrame>> = None;
     if !callbacks.is_null() {
         let c = &*callbacks;
         if let Some(frame_fn) = c.on_frame {
             let userdata_usize = c.userdata as usize;
+            let delivered = stage_times.clone();
             // Capacity one, newest wins: a frame the host could not keep up with is
             // stale by the time it would be delivered, so queueing it would only add
             // latency. This is also what bounds memory when the host falls behind.
@@ -912,6 +917,11 @@ unsafe fn create_impl(
                 Overflow::DropOldest,
                 gate.clone(),
                 move |frame: VideoFrame| unsafe {
+                    delivered.add(
+                        &frame.track.to_string_lossy(),
+                        DELIVERY,
+                        frame.decoded_at.elapsed().as_secs_f64() * 1_000.0,
+                    );
                     frame_fn(
                         frame.track.as_ptr(),
                         frame.bgra.as_ptr(),
@@ -942,6 +952,7 @@ unsafe fn create_impl(
                         frame_id,
                         timestamp_us: ts,
                         user_data: ud.to_vec(),
+                        decoded_at: std::time::Instant::now(),
                     });
                 });
             video = Some(thread);
@@ -995,7 +1006,7 @@ unsafe fn create_impl(
         platform,
         peer: peer_transport,
     };
-    let reactor = Arc::new(Reactor::new(deps, options));
+    let reactor = Arc::new(Reactor::new(deps, options).with_stage_times(stage_times));
     let tasks: TaskSet = Arc::new(Mutex::new(Vec::new()));
 
     let reactor2 = reactor.clone();
