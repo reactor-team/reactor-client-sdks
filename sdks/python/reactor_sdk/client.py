@@ -720,6 +720,7 @@ class Reactor:
             ctypes.c_int(_SYNTHETIC_ADM),
             __version__.encode(),
             _SDK_TYPE,
+            None,  # client_id
         )
 
         self._handle = handle

@@ -757,6 +757,7 @@ class TestNoAudioDeviceIsOpened:
             adm_mode,
             sdk_version,
             sdk_type,
+            client_id,
         ):
             captured["adm_mode"] = adm_mode
             captured["auto_resume_tracks"] = auto_resume_tracks

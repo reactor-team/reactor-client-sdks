@@ -198,7 +198,7 @@ public final class Reactor: @unchecked Sendable {
             // model happened to declare a sendonly audio track.
             ffi.createWithADM(
                 resolvedURL, model, jwt, local ? 1 : 0, autoResumeTracks ? 1 : 0,
-                callbacksPointer, 0, ReactorSDK.version, Reactor.sdkType)
+                callbacksPointer, 0, ReactorSDK.version, Reactor.sdkType, nil)
         }
 
         guard let handle else {

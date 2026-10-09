@@ -61,6 +61,8 @@ pub struct ReactorOptions {
     /// Reported in `client_info`; bindings set their own SDK version/type.
     pub sdk_version: String,
     pub sdk_type: String,
+    /// The application using the SDK, reported in `client_info` when set.
+    pub client_id: Option<String>,
     /// Resume all recvonly tracks once connected (default true).
     pub auto_resume_tracks: bool,
     /// Free-form model arguments forwarded on session creation.
@@ -103,6 +105,7 @@ impl ReactorOptions {
             model_name: model_name.into(),
             sdk_version: crate::CORE_VERSION.to_string(),
             sdk_type: crate::DEFAULT_SDK_TYPE.to_string(),
+            client_id: None,
             auto_resume_tracks: true,
             extra_args: None,
             ready_timeout: Duration::from_secs(30),
@@ -227,6 +230,7 @@ impl Reactor {
         let client_info = ClientInfo {
             sdk_version: options.sdk_version.clone(),
             sdk_type: options.sdk_type.clone(),
+            client_id: options.client_id.clone(),
         };
         let coordinator = CoordinatorClient::new(
             deps.http.clone(),
@@ -3232,6 +3236,54 @@ mod tests {
         assert_eq!(session.cluster.as_deref(), Some("test-cluster"));
 
         connecting.abort();
+    }
+
+    /// Records the body of the session-create request, then fails every call so
+    /// the connect ends right after it.
+    #[derive(Default)]
+    struct SessionBodyHttp {
+        session_body: std::sync::Mutex<Option<serde_json::Value>>,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpClient for SessionBodyHttp {
+        async fn request(&self, req: HttpRequest) -> Result<HttpResponse, CoreError> {
+            if req.method == Method::Post && req.url.ends_with("/sessions") {
+                let body = req.body.as_deref().unwrap_or_default();
+                *self.session_body.lock().unwrap() = serde_json::from_slice(body).ok();
+            }
+            Err(CoreError::Http("SessionBodyHttp: stop after create".into()))
+        }
+    }
+
+    /// The `client_id` option reaches the session-create `client_info`, and an
+    /// unset one leaves the wire shape exactly as it was before the field existed.
+    #[tokio::test]
+    async fn client_id_is_sent_in_client_info_only_when_set() {
+        async fn session_client_info(client_id: Option<&str>) -> serde_json::Value {
+            let http = Arc::new(SessionBodyHttp::default());
+            let mut options = ReactorOptions::new("http://localhost", "test-model");
+            options.client_id = client_id.map(str::to_string);
+            let reactor = Reactor::new(
+                ReactorDeps {
+                    http: http.clone() as SharedHttp,
+                    auth: Arc::new(NoAuth) as SharedAuth,
+                    platform: Arc::new(TestPlatform) as SharedPlatform,
+                    peer: Arc::new(NullPeer) as SharedPeer,
+                },
+                options,
+            );
+            let _ = reactor.connect(ConnectOptions::default()).await;
+            let body = http.session_body.lock().unwrap().clone();
+            body.expect("session-create body was captured")["client_info"].clone()
+        }
+
+        let with = session_client_info(Some("my-app/2.1.0")).await;
+        assert_eq!(with["client_id"], "my-app/2.1.0");
+
+        let without = session_client_info(None).await;
+        assert!(without.get("client_id").is_none());
+        assert_eq!(without.as_object().unwrap().len(), 2);
     }
 
     // ── preset_tracks fast path ─────────────────────────────────────────────

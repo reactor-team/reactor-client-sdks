@@ -386,7 +386,7 @@ fn fallback_error_json(message: &str) -> String {
 /// type changed, a return value repurposed. Do **not** bump it when a function is
 /// added: a binding built against the older version calls every function it knows
 /// about exactly as before, so refusing to run would strand it for no reason.
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 
 /// The ABI version, so a binding can refuse a library it was not built for.
 ///
@@ -763,8 +763,8 @@ async fn write_segments<L: Fn() -> bool>(
 /// `api_url` and `model_name` must be NUL-terminated C strings. `jwt` may be null
 /// (unauthenticated local dev). `callbacks` may be null (no events); when
 /// non-null it must point to a readable [`ReactorCallbacks`], which is copied
-/// during the call. `sdk_version` and `sdk_type` may be null; see
-/// [`create_impl`] for what null defaults to.
+/// during the call. `sdk_version`, `sdk_type` and `client_id` may be null; see
+/// [`create_impl`] for what null means.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_create(
     api_url: *const c_char,
@@ -775,6 +775,7 @@ pub unsafe extern "C" fn reactor_create(
     callbacks: *const ReactorCallbacks,
     sdk_version: *const c_char,
     sdk_type: *const c_char,
+    client_id: *const c_char,
 ) -> *mut ReactorHandle {
     create_impl(
         api_url,
@@ -786,6 +787,7 @@ pub unsafe extern "C" fn reactor_create(
         None,
         sdk_version,
         sdk_type,
+        client_id,
     )
 }
 
@@ -810,6 +812,7 @@ pub unsafe extern "C" fn reactor_create_with_adm(
     adm_mode: c_int,
     sdk_version: *const c_char,
     sdk_type: *const c_char,
+    client_id: *const c_char,
 ) -> *mut ReactorHandle {
     let adm = match adm_mode {
         0 => Some(AdmMode::Synthetic),
@@ -826,6 +829,7 @@ pub unsafe extern "C" fn reactor_create_with_adm(
         adm,
         sdk_version,
         sdk_type,
+        client_id,
     )
 }
 
@@ -836,6 +840,9 @@ pub unsafe extern "C" fn reactor_create_with_adm(
 /// language tag (`"python"`, `"cpp"`, …) so the coordinator sees what actually
 /// shipped instead of `reactor-core`'s internal crate version and a `sdk_type`
 /// that cannot tell one language from another.
+///
+/// `client_id` is the application's own identifier (e.g. `"my-app/2.1.0"`),
+/// set by the developer. Null, or an empty string, sends none.
 #[allow(clippy::too_many_arguments)]
 unsafe fn create_impl(
     api_url: *const c_char,
@@ -847,6 +854,7 @@ unsafe fn create_impl(
     adm: Option<AdmMode>,
     sdk_version: *const c_char,
     sdk_type: *const c_char,
+    client_id: *const c_char,
 ) -> *mut ReactorHandle {
     let api_url = CStr::from_ptr(api_url).to_string_lossy().into_owned();
     let model_name = CStr::from_ptr(model_name).to_string_lossy().into_owned();
@@ -865,6 +873,12 @@ unsafe fn create_impl(
     } else {
         Some(CStr::from_ptr(sdk_type).to_string_lossy().into_owned())
     };
+    let client_id = if client_id.is_null() {
+        None
+    } else {
+        Some(CStr::from_ptr(client_id).to_string_lossy().into_owned())
+    }
+    .filter(|id| !id.is_empty());
 
     // Guards every host pointer below, including the media callbacks and the
     // completions of operations still in flight when the handle is destroyed.
@@ -986,6 +1000,7 @@ unsafe fn create_impl(
     if let Some(version) = sdk_version {
         options.sdk_version = version;
     }
+    options.client_id = client_id;
     options.local = local != 0;
     options.auto_resume_tracks = auto_resume_tracks != 0;
 

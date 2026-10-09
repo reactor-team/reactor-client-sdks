@@ -114,6 +114,7 @@ mod tests {
             client_info: Some(ClientInfo {
                 sdk_version: "0.1.0".into(),
                 sdk_type: "rust".into(),
+                client_id: None,
             }),
             track_mapping: vec![TrackMappingEntry {
                 name: "main_video".into(),

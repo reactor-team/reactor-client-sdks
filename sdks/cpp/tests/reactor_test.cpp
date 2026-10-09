@@ -186,7 +186,8 @@ class FakeLibrary {
   static ReactorHandle* create_with_adm(const char* api_url, const char* model, const char* jwt,
                                         int local, int auto_resume_tracks,
                                         const ReactorCallbacks* callbacks, int adm_mode,
-                                        const char* sdk_version, const char* sdk_type) {
+                                        const char* sdk_version, const char* sdk_type,
+                                        const char* /*client_id*/) {
     auto& self = current();
     ++self.creates;
     self.adm_mode = adm_mode;

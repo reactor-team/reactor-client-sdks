@@ -76,6 +76,10 @@ public final class FakeNativeLibrary implements AutoCloseable {
     @Nullable
     String sdkType;
 
+    /** The client_id the client passed, or null when it passed none. */
+    @Nullable
+    String clientId;
+
     /** The ReactorCallbacks struct the client handed over, so a test can call back through it. */
     @Nullable
     MemorySegment callbacks;
@@ -204,11 +208,13 @@ public final class FakeNativeLibrary implements AutoCloseable {
             MemorySegment callbacksStruct,
             int adm,
             MemorySegment version,
-            MemorySegment type) {
+            MemorySegment type,
+            MemorySegment clientId) {
         this.autoResumeTracks = autoResumeTracks;
         this.admMode = adm;
         this.sdkVersion = readString(version);
         this.sdkType = readString(type);
+        this.clientId = readString(clientId);
         this.createdWithJwt.add(readString(jwt));
         // Kept so a test can call back through the struct the way the FFI would.
         this.callbacks = callbacksStruct.reinterpret(Ffi.Callbacks.LAYOUT.byteSize());

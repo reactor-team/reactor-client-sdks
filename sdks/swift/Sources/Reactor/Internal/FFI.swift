@@ -72,7 +72,8 @@ struct FFI: Sendable {
     /// `sdkVersion` and `sdkType` are reported to the coordinator as
     /// `client_info`. Every binding shares this entry point, which would
     /// otherwise report `ffi` for all of them — Python sends `python`, so this
-    /// sends `swift`.
+    /// sends `swift`. `clientID` is the application's own identifier (e.g.
+    /// `my-app/2.1.0`), or nil to send none.
     var createWithADM:
         @Sendable (
             _ apiURL: UnsafePointer<CChar>?,
@@ -83,7 +84,8 @@ struct FFI: Sendable {
             _ callbacks: UnsafePointer<ReactorCallbacks>?,
             _ admMode: Int32,
             _ sdkVersion: UnsafePointer<CChar>?,
-            _ sdkType: UnsafePointer<CChar>?
+            _ sdkType: UnsafePointer<CChar>?,
+            _ clientID: UnsafePointer<CChar>?
         ) -> OpaquePointer?
 
     /// `reactor_destroy` — 0 when no callback is running and none will start,
@@ -251,10 +253,11 @@ extension FFI {
             reactor_fetch_jwt(apiURL, apiKey, optionsJSON, local, completion, userdata)
         },
         createWithADM: {
-            apiURL, model, jwt, local, autoResumeTracks, callbacks, admMode, sdkVersion, sdkType in
+            apiURL, model, jwt, local, autoResumeTracks, callbacks, admMode, sdkVersion, sdkType,
+            clientID in
             reactor_create_with_adm(
                 apiURL, model, jwt, local, autoResumeTracks, callbacks, admMode, sdkVersion,
-                sdkType)
+                sdkType, clientID)
         },
         destroy: { handle in reactor_destroy(handle) },
         connect: { handle, sessionID, connectionID, completion, userdata in

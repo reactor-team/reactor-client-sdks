@@ -7,6 +7,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-10-09
+
+### Changed
+
+- The SDK now builds against ABI 4 of the native library, so the XCFramework the
+  package resolves matches the C header the Swift code is compiled against.
+  Nothing changes for apps.
+
 ## [1.4.0] - 2026-10-08
 
 ### Added
