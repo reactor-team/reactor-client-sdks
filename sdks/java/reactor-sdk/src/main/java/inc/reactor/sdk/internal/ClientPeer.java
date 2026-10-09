@@ -377,7 +377,8 @@ public final class ClientPeer implements Runnable {
                             callbacks,
                             admMode,
                             sdkVersion,
-                            sdkType);
+                            sdkType,
+                            MemorySegment.NULL);
         } catch (Throwable t) {
             throw new IllegalStateException("reactor_create_with_adm could not be called", t);
         }

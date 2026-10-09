@@ -32,6 +32,10 @@ impl SessionState {
 pub struct ClientInfo {
     pub sdk_version: String,
     pub sdk_type: String,
+    /// The application using the SDK, e.g. `my-app/2.1.0`; set by the
+    /// developer, never by the SDK. Left out of the wire JSON when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
 }
 
 /// A transport protocol the client supports / the server selected.
@@ -206,6 +210,27 @@ mod tests {
     }
 
     #[test]
+    fn client_info_sends_client_id_only_when_set() {
+        let mut info = ClientInfo {
+            sdk_version: "1.0.0".into(),
+            sdk_type: "python".into(),
+            client_id: None,
+        };
+        let unset = serde_json::to_value(&info).unwrap();
+        assert!(unset.get("client_id").is_none());
+        assert_eq!(unset.as_object().unwrap().len(), 2);
+
+        info.client_id = Some("my-app/2.1.0".into());
+        let set = serde_json::to_value(&info).unwrap();
+        assert_eq!(set["client_id"], "my-app/2.1.0");
+
+        // A peer that never sends the field still deserializes.
+        let back: ClientInfo =
+            serde_json::from_str(r#"{"sdk_version":"1","sdk_type":"js"}"#).unwrap();
+        assert_eq!(back.client_id, None);
+    }
+
+    #[test]
     fn create_session_request_shape() {
         let req = CreateSessionRequest {
             model: ModelConfig {
@@ -215,6 +240,7 @@ mod tests {
             client_info: ClientInfo {
                 sdk_version: "0.1.0".into(),
                 sdk_type: "rust".into(),
+                client_id: None,
             },
             supported_transports: vec![TransportDeclaration::webrtc()],
             extra_args: None,

@@ -20,7 +20,7 @@ from pathlib import Path
 # The ABI these signatures describe, equal to REACTOR_ABI_VERSION in
 # reactor_ffi.h — the Rust side keeps its own copy pinned to that header with a
 # test, so a release that bumps the ABI bumps all three in one change.
-ABI_VERSION = 3
+ABI_VERSION = 4
 
 
 class AbiMismatchError(RuntimeError):
@@ -106,6 +106,7 @@ def _load() -> ctypes.CDLL:
         ctypes.c_void_p,  # callbacks (nullable)
         ctypes.c_char_p,  # sdk_version (nullable)
         ctypes.c_char_p,  # sdk_type (nullable)
+        ctypes.c_char_p,  # client_id (nullable)
     ]
 
     lib.reactor_create_with_adm.restype = ctypes.c_void_p
@@ -119,6 +120,7 @@ def _load() -> ctypes.CDLL:
         ctypes.c_int,  # adm_mode
         ctypes.c_char_p,  # sdk_version (nullable)
         ctypes.c_char_p,  # sdk_type (nullable)
+        ctypes.c_char_p,  # client_id (nullable)
     ]
 
     # 0 = quiesced, -1 = a callback is still running (see reactor_ffi.h).

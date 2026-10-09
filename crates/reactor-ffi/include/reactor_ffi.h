@@ -86,7 +86,7 @@ extern "C" {
  * it knows about exactly as before, and refusing to run would strand it for no
  * reason.
  */
-#define REACTOR_ABI_VERSION 3
+#define REACTOR_ABI_VERSION 4
 
 uint32_t reactor_abi_version(void);
 
@@ -271,6 +271,9 @@ void reactor_fetch_jwt(
  *                        "ffi". Pass a language tag ("python", "cpp", …) so the
  *                        coordinator can tell bindings apart; every FFI binding
  *                        defaults to the same "ffi" otherwise.
+ *   client_id          — reported as client_info.client_id, or NULL (or "") to send
+ *                        none. The application's own identifier, e.g.
+ *                        "my-app/2.1.0"; set by the developer, never by the SDK.
  *
  * Returns NULL only on allocation failure (extremely unlikely).
  * The returned handle must be destroyed with reactor_destroy().
@@ -283,7 +286,8 @@ ReactorHandle *reactor_create(
     int                   auto_resume_tracks,
     const ReactorCallbacks *callbacks, /* nullable */
     const char           *sdk_version, /* nullable */
-    const char           *sdk_type     /* nullable */
+    const char           *sdk_type,    /* nullable */
+    const char           *client_id    /* nullable */
 );
 
 /*
@@ -298,7 +302,7 @@ ReactorHandle *reactor_create(
  * ask for it with 1.  A model declaring a sendonly audio track is not you asking —
  * under the platform module that alone put live microphone audio on the wire.
  *
- * sdk_version and sdk_type: see reactor_create.
+ * sdk_version, sdk_type and client_id: see reactor_create.
  */
 ReactorHandle *reactor_create_with_adm(
     const char           *api_url,
@@ -309,7 +313,8 @@ ReactorHandle *reactor_create_with_adm(
     const ReactorCallbacks *callbacks, /* nullable */
     int                   adm_mode,
     const char           *sdk_version, /* nullable */
-    const char           *sdk_type     /* nullable */
+    const char           *sdk_type,    /* nullable */
+    const char           *client_id    /* nullable */
 );
 
 /*

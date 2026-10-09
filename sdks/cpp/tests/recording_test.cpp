@@ -118,7 +118,8 @@ class FakeRecorder {
                                         const char* /*jwt*/, int /*local*/,
                                         int /*auto_resume_tracks*/,
                                         const ReactorCallbacks* callbacks, int /*adm_mode*/,
-                                        const char* /*sdk_version*/, const char* /*sdk_type*/) {
+                                        const char* /*sdk_version*/, const char* /*sdk_type*/,
+                                        const char* /*client_id*/) {
     auto& self = current();
     if (callbacks != nullptr) {
       self.callbacks_ = *callbacks;
