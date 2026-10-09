@@ -110,6 +110,24 @@ impl RelayProtocol {
     }
 }
 
+/// The sender's stages for one timing frame, in milliseconds.
+///
+/// The sender stamps a timing frame at each stage and the stamps travel with
+/// the frame, so these are the far end's stages, read on the receiving side.
+/// Each is the difference between two of the sender's own stamps, in whole
+/// milliseconds.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TimingFrame {
+    /// Tells one timing frame from the next: a read can repeat the last one.
+    pub rtp_timestamp: u32,
+    /// From capture to the start of the encode.
+    pub encode_wait_ms: f64,
+    /// From the end of the encode to the last RTP packet.
+    pub packetize_ms: f64,
+    /// From the last RTP packet to the pacer sending it.
+    pub pacer_ms: f64,
+}
+
 /// One receive stream's counters, as the engine reports them.
 ///
 /// A subset of `RTCInboundRtpStreamStats` — the subset `reactor-webrtc` carries
@@ -150,6 +168,14 @@ pub struct InboundRtpStats {
     /// Decoded frame size; `0` for audio and before the first frame.
     pub frame_width: u32,
     pub frame_height: u32,
+    /// Cumulative time frames waited in the jitter buffer, in seconds, over
+    /// [`InboundRtpStats::jitter_buffer_emitted_count`] frames.
+    pub jitter_buffer_delay_s: f64,
+    /// Frames that have left the jitter buffer.
+    pub jitter_buffer_emitted_count: u64,
+    /// The sender's stages for the slowest timing frame of the last second.
+    /// Video only, and `None` before the first.
+    pub timing_frame: Option<TimingFrame>,
 }
 
 /// One send stream's counters, as the engine reports them.
@@ -199,6 +225,11 @@ pub struct OutboundRtpStats {
     /// Encoded frame size; `0` for audio and before the first frame.
     pub frame_width: u32,
     pub frame_height: u32,
+    /// Frames the encoder produced, which
+    /// [`OutboundRtpStats::total_encode_time_s`] covers. Video only.
+    pub frames_encoded: u32,
+    /// Cumulative encode time, in seconds.
+    pub total_encode_time_s: f64,
 }
 
 /// State of an ICE candidate pair — mirror of `RTCIceCandidatePairStats::state`.

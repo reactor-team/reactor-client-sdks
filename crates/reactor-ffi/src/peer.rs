@@ -16,7 +16,7 @@ use reactor_core::error::CoreError;
 use reactor_core::peer::{
     CandidatePairState, CandidatePairStats, IceCandidateType, InboundRtpStats, OutboundRtpStats,
     PeerConnectionState as CorePeerConnectionState, PeerEvent, PeerTransport, PreparedOffer,
-    RelayProtocol, StreamKind, TransportStats,
+    RelayProtocol, StreamKind, TimingFrame, TransportStats,
 };
 use reactor_core::protocol::session::{TrackCapability, TrackDirection, TrackKind};
 use reactor_core::protocol::webrtc::{IceCandidate, IceServer, TrackMappingEntry};
@@ -195,6 +195,20 @@ fn map_stats(report: StatsReport) -> TransportStats {
                 frames_dropped: s.frames_dropped,
                 frame_width: s.frame_width,
                 frame_height: s.frame_height,
+                jitter_buffer_delay_s: s.jitter_buffer_delay_s,
+                jitter_buffer_emitted_count: s.jitter_buffer_emitted_count,
+                timing_frame: s.timing_frame.map(|t| {
+                    let ms = |from: i64, to: i64| (to - from).max(0) as f64;
+                    TimingFrame {
+                        rtp_timestamp: t.rtp_timestamp,
+                        encode_wait_ms: ms(t.sender.capture_ms, t.sender.encode_start_ms),
+                        packetize_ms: ms(
+                            t.sender.encode_finish_ms,
+                            t.sender.packetization_finish_ms,
+                        ),
+                        pacer_ms: ms(t.sender.packetization_finish_ms, t.sender.pacer_exit_ms),
+                    }
+                }),
             })
             .collect(),
         outbound: report
@@ -220,6 +234,8 @@ fn map_stats(report: StatsReport) -> TransportStats {
                 frames_sent: s.frames_sent,
                 frame_width: s.frame_width,
                 frame_height: s.frame_height,
+                frames_encoded: s.frames_encoded,
+                total_encode_time_s: s.total_encode_time_s,
             })
             .collect(),
         candidate_pairs: report
