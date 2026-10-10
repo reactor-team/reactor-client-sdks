@@ -1,8 +1,10 @@
-import type { JwtSource } from './types';
+import type { JwtRequestContext, JwtSource } from './types';
 
 /** Lazy resolver for a Coordinator/runtime bearer token, called immediately
- *  before each authenticated request — see `JwtSource`. */
-export type JwtResolver = () => string | Promise<string>;
+ *  before each authenticated request with the session that request is for —
+ *  see `JwtSource` and `JwtRequestContext`. A resolver that ignores the
+ *  context keeps working. */
+export type JwtResolver = (context?: JwtRequestContext) => string | Promise<string>;
 
 /**
  * Wraps a `JwtSource` into a `JwtResolver`: a static string becomes a

@@ -30,7 +30,7 @@ import { Reactor } from "@reactor-team/js-sdk";
 
 const reactor = new Reactor({
   modelName: "my-model",
-  jwt: () => fetchToken(), // or a plain string; omit for an unauthenticated local runtime
+  jwt: fetchToken, // your resolver, or a plain string; omit for an unauthenticated local runtime
 });
 
 reactor.on("statusChanged", (status) => {
@@ -78,6 +78,45 @@ const { jwt } = await result.json();
 See [Authentication](https://docs.reactor.inc/authentication) for the full request shape,
 including `max_session_duration_seconds` and other constraints.
 
+### Refreshing a token mid-session
+
+A scoped token reaches only the sessions it created or was bound to. When a session outlives
+its token, a fresh token minted the same way cannot reach it: uploads, reconnects, the session
+delete and clip reads all return `403`. So the SDK tells the resolver what each request is for:
+
+```ts
+async function fetchToken({ sessionId }: JwtRequestContext = {}): Promise<string> {
+  // ask your backend for a token, and pass sessionId along when it is set
+}
+```
+
+`sessionId` is set for every request that targets an existing session and unset for session
+creation. Keep returning the token that created the session until shortly before it expires.
+Then mint a replacement bound to that session, which lets it act on the session and create
+nothing else:
+
+```ts
+body: JSON.stringify({
+  authorization_details: [
+    {
+      type: "session",
+      resources: { models: { match: ["my-model"] }, sessions: { bind: [sessionId] } },
+    },
+  ],
+}),
+```
+
+Reactor only binds a session the API key owns, so the question your backend must answer is
+whether *this* browser may hold a token for *that* session. The simplest answer is to create the
+session on the backend and hand the browser `{ jwt, sessionId }` to adopt with
+`connect(jwt, { sessionId })`: the backend then knows the owner. When the browser creates the
+session itself, have it register the session id as soon as the SDK first names it to the
+resolver, which is right after creation, with the token that created it; check that token
+against `GET /sessions/{id}` (Reactor answers only for a token bound to it), and remember the
+session for that browser. Registering only after `connect()` returns is too late when a slow
+model keeps the connect open past the token's expiry. The bundled examples do exactly that in
+`examples/shared/token-server.ts`.
+
 ## Events
 
 `on(event, handler)` / `off(event, handler)` / `once(event, handler)`. The ones you'll reach
@@ -109,8 +148,13 @@ matching `schemaReceived`/`capabilitiesReceived` events. See
 
 ```ts
 const clip = await reactor.requestClip(10); // last 10 seconds
-await reactor.downloadClipAsFile(clip, "clip.mp4", { jwt: await fetchToken() });
+await reactor.downloadClipAsFile(clip, "clip.mp4", { jwt: reactor.getJwtResolver() });
 ```
+
+`jwt` takes a token or a resolver. A resolver is called before every poll of the manifest with
+`{ sessionId: clip.sessionId }`, so a clip that takes a while to become ready still downloads
+after the token that created the session has expired. The same goes for `getJwt` on
+`<ClipPlayer>`, `<ClipDownloadButton>` and `useClipDownload`.
 
 `requestClip()`/`requestRecording()`/`downloadClipAsFile()` live directly on `Reactor`, and the
 same three are bound on the React store. For a preview or download button instead, drop in
@@ -119,8 +163,8 @@ same three are bound on the React store. For a preview or download button instea
 ```tsx
 import { ClipPlayer, ClipDownloadButton } from "@reactor-team/js-sdk";
 
-<ClipPlayer clip={clip} getJwt={() => fetchToken()} />
-<ClipDownloadButton clip={clip} getJwt={() => fetchToken()} filename="clip.mp4" />
+<ClipPlayer clip={clip} getJwt={fetchToken} />
+<ClipDownloadButton clip={clip} getJwt={fetchToken} filename="clip.mp4" />
 ```
 
 Full API, playback details, and the `useClipDownload` hook: [Recordings](https://docs.reactor.inc/concepts/recordings).
@@ -160,16 +204,13 @@ try {
 ## React
 
 ```tsx
-import { useCallback } from "react";
 import { ReactorProvider, ReactorView, useReactor } from "@reactor-team/js-sdk";
 
 function App() {
-  // Stable across renders — see the note on ReactorProvider below for why
-  // this matters.
-  const jwt = useCallback(() => fetchToken(), []);
-
+  // A module-level fetchToken is stable across renders — see the note on
+  // ReactorProvider below for why this matters.
   return (
-    <ReactorProvider modelName="my-model" jwtToken={jwt}>
+    <ReactorProvider modelName="my-model" jwtToken={fetchToken}>
       <Status />
     </ReactorProvider>
   );

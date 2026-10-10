@@ -12,7 +12,8 @@
  */
 
 import type * as MP4BoxTypes from 'mp4box';
-import type { Clip } from './types';
+import { resolveJwtSource } from './internal/jwt-resolver';
+import type { Clip, JwtRequestContext, JwtSource } from './types';
 
 /**
  * Error thrown when a clip's playlist or chunks can't be fetched, parsed, or
@@ -85,10 +86,14 @@ export interface FetchPlaylistOptions {
    */
   signal?: AbortSignal;
   /**
-   * Coordinator JWT, attached as `Authorization: Bearer <jwt>` on the
-   * manifest GET. Omit in local mode (HttpRuntime).
+   * Coordinator JWT for the manifest GET: a string, or a resolver called
+   * before every poll with `{ sessionId }`, so a long 202 wait can cross a
+   * token refresh. Omit in local mode (HttpRuntime).
    */
-  jwt?: string;
+  jwt?: JwtSource;
+  /** The clip's session, handed to a resolver `jwt`. `downloadClipAsFile()`
+   *  fills it from `clip.sessionId`. */
+  sessionId?: string;
 }
 
 /**
@@ -118,18 +123,22 @@ export async function fetchPlaylist(
     : undefined;
   const maxRetries = typeof options.maxRetries === 'number' ? options.maxRetries : undefined;
 
-  const init: RequestInit = {};
-
-  if (options.signal) {
-    init.signal = options.signal;
-  }
-  if (options.jwt) {
-    init.headers = { Authorization: `Bearer ${options.jwt}` };
-  }
-
   let attempt = 0;
 
   while (true) {
+    const init: RequestInit = {};
+
+    if (options.signal) {
+      init.signal = options.signal;
+    }
+    // Resolved per poll, not once: a 202 wait can outlive the token it
+    // started with, and the resolver is where a fresh one comes from.
+    const jwt = await resolveManifestJwt(options);
+
+    if (jwt) {
+      init.headers = { Authorization: `Bearer ${jwt}` };
+    }
+
     let response: Response;
 
     try {
@@ -276,9 +285,10 @@ function absolutizeManifestUrls(manifestBody: string, playlistUrl: string): stri
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface DownloadClipOptions {
-  /** Coordinator JWT for the manifest GET. The chunks it references are S3
-   *  presigned URLs, fetched unauthenticated. */
-  jwt?: string;
+  /** Coordinator JWT for the manifest GET: a string, or a resolver called
+   *  per poll with `{ sessionId: clip.sessionId }`. The chunks the manifest
+   *  references are S3 presigned URLs, fetched unauthenticated. */
+  jwt?: JwtSource;
   /** Cancels both the playlist poll and any in-flight chunk fetches. */
   signal?: AbortSignal;
   /** Called after each chunk completes — useful for progress UI. */
@@ -297,7 +307,10 @@ export async function downloadClipAsFile(
   filename: string | null = 'reactor-clip.mp4',
   options: DownloadClipOptions = {},
 ): Promise<Blob> {
-  const playlistOptions: FetchPlaylistOptions = { predictedReadyAtMs: clip.predictedReadyAtMs };
+  const playlistOptions: FetchPlaylistOptions = {
+    predictedReadyAtMs: clip.predictedReadyAtMs,
+    sessionId: clip.sessionId,
+  };
 
   if (options.signal) {
     playlistOptions.signal = options.signal;
@@ -673,6 +686,33 @@ function parseRetryAfter(header: string | null, fallbackMs: number): number {
     return Math.max(0, dateMs - Date.now());
   }
   return fallbackMs;
+}
+
+async function resolveManifestJwt(options: FetchPlaylistOptions): Promise<string | undefined> {
+  if (options.jwt === undefined) {
+    return undefined;
+  }
+  const context: JwtRequestContext = options.sessionId === undefined ? {} : { sessionId: options.sessionId };
+
+  return abortable(resolveJwtSource(options.jwt, context), options.signal);
+}
+
+// Settles with `promise`, or rejects as soon as `signal` aborts. The resolver
+// itself keeps running; nothing here can stop it.
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) {
+    return promise;
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(new DOMException('Aborted', 'AbortError'));
+
+    if (signal.aborted) {
+      onAbort();
+    } else {
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+    void promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

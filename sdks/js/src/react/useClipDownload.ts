@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { resolveJwtSource } from '../internal/jwt-resolver';
+import type { JwtResolver } from '../jwt';
 import { RecordingError, downloadClipAsFile } from '../recording';
 import { ReactorContext } from './ReactorProvider';
 import type { Clip } from '../types';
@@ -30,13 +30,14 @@ export interface UseClipDownloadOptions {
   filename?: string | null;
   /**
    * Lazy resolver for the Coordinator JWT used on the manifest GET. Called
-   * on every {@link UseClipDownloadResult.download} invocation, so token
-   * refreshes are picked up automatically.
+   * before every poll of a {@link UseClipDownloadResult.download} with
+   * `{ sessionId: clip.sessionId }`, so token refreshes are picked up
+   * automatically.
    *
    * Optional inside a `ReactorProvider` (inherits the provider's resolver)
    * and in local-dev mode.
    */
-  getJwt?: () => string | Promise<string>;
+  getJwt?: JwtResolver;
 }
 
 export interface UseClipDownloadResult {
@@ -105,12 +106,11 @@ export function useClipDownload(clip: Clip, options: UseClipDownloadOptions = {}
     abortRef.current = abort;
     setState({ kind: 'downloading', fetched: 0, total: 0 });
     try {
-      // Explicit `options.getJwt` wins; fall back to the provider's
-      // resolver. Reading at click time picks up provider swaps without
-      // re-running this callback.
-      const explicit = getJwtRef.current;
-      const fallback = storeRef.current?.getState().internal.reactor.getJwtResolver();
-      const jwt = explicit ? await explicit() : fallback !== undefined ? await resolveJwtSource(fallback) : undefined;
+      // Explicit `options.getJwt` wins; fall back to the provider's source.
+      // Read at click time, so a provider swap is picked up without
+      // re-running this callback, and handed over unresolved so every poll
+      // asks for a current token.
+      const jwt = getJwtRef.current ?? storeRef.current?.getState().internal.reactor.getJwtResolver();
       const downloadOptions: Parameters<typeof downloadClipAsFile>[2] = {
         signal: abort.signal,
         onProgress: ({ fetched, total }) => setState({ kind: 'downloading', fetched, total }),

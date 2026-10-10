@@ -231,29 +231,44 @@ skill's word — both halves are open source:
   (`sendCommand`) is where "never rejects, failures land on
   `getLastError()`" is implemented.
 
-### JWT resolvers: the token must stay stable for a session's whole life
+### JWT resolvers: every request on a session needs a token bound to it
 
 3.0.0 invokes a `JwtSource` resolver on **every authenticated request** (by
 design — short-lived tokens refresh without reconnecting). That interacts
 with session-scoped tokens (`POST /tokens` with `authorization_details`) in
 a way 2.x-era token plumbing gets wrong: a scoped token can only operate
-sessions **it created**, so every hop of a session — uploads, clip
-manifests, ICE refreshes — must present the *same* JWT that created it.
+sessions **it created or was bound to**, so every hop of a session — uploads,
+clip manifests, ICE refreshes, the session delete — must present a JWT bound
+to that session.
 
-- A resolver that mints (or can mint) a fresh token per call breaks with
-  `403 … this token is session-scoped and is not authorized for this
+- A resolver that mints (or can mint) a fresh unbound token per call breaks
+  with `403 … this token is session-scoped and is not authorized for this
   resource; mint it again with authorization_details.resources.sessions.bind …`
   on the first upload or clip call that gets a different token than the
   session-creating one.
-- **Memoize the token inside the resolver until shortly before its real
-  expiry** (have the token endpoint return `expires_at` alongside the JWT),
-  and fetch it with `cache: "no-store"`. Do not rely on the browser HTTP
-  cache to keep the token stable — a `Cache-Control: max-age` scheme breaks
-  under DevTools "Disable cache", cache eviction, and sessions created near
-  the cached entry's expiry.
-- Residual edge to know about: a session created just before the memoized
-  token expires is orphaned at the re-mint. Covering it requires re-minting
-  with `resources.sessions.bind` naming the live session.
+- Releases after 3.1.0 pass the resolver `{ sessionId }` on every call: the
+  session the request is for, or none for session creation. **Memoize the
+  token that created the session until shortly before its real expiry** (have
+  the token endpoint return `expires_at` alongside the JWT), and fetch it with
+  `cache: "no-store"`. Do not rely on the browser HTTP cache to keep the token
+  stable — a `Cache-Control: max-age` scheme breaks under DevTools "Disable
+  cache", cache eviction, and sessions created near the cached entry's expiry.
+- Shortly before that token expires, mint the replacement with
+  `resources.sessions.bind: [sessionId]`. It can act on the session and create
+  nothing else. Use a wide margin only when choosing a token to create a
+  session with, and a small one for requests on a session it created, and
+  register the session with your backend the moment the SDK first names it,
+  which is right after creation: a slow connect can otherwise outlive the
+  token before the bind is possible. `sessionAuth()` in
+  `sdks/js/examples/shared/fetch-token.ts` is a complete resolver, one
+  instance per connection so the pairing of a session with the token that
+  created it is never a guess, and `examples/shared/token-server.ts` is the
+  route that binds only sessions the caller proved it owns.
+- The clip surfaces (`fetchPlaylist`, `downloadClipAsFile`, `<ClipPlayer>`,
+  `<ClipDownloadButton>`, `useClipDownload`) take the same resolver as
+  `jwt`/`getJwt` and call it before every manifest poll with
+  `{ sessionId: clip.sessionId }`. Pass `reactor.getJwtResolver()` or the
+  resolver itself, not a token resolved once.
 
 ### Recording: no `.recording`, no `RecordingClient`
 
@@ -354,8 +369,9 @@ tell people to download instead," that workaround is no longer needed.
   in `Reactor::on_data_message`, pinned by
   `a_correlated_reply_also_dispatches_a_message_event`.)
 - **Token plumbing that re-mints per call compiles and then 403s mid-session.** The resolver
-  runs on every authenticated request; with session-scoped tokens the same JWT must serve the
-  session's whole life. The failure signature is a 403 naming
+  runs on every authenticated request; with session-scoped tokens every token a session sees
+  must be bound to it: the one that created it, or a replacement minted with
+  `resources.sessions.bind`. The failure signature is a 403 naming
   `authorization_details.resources.sessions.bind` on uploads/clips. See the JWT-resolver
   section above.
 
@@ -378,9 +394,10 @@ tell people to download instead," that workaround is no longer needed.
    response declares move to the awaited call site; only genuinely broadcast messages stay in
    listeners. While there, delete post-command settle sleeps — the resolved await already means
    the handler ran ("Commands reply now" above).
-7. Audit the JWT resolver: it must return the same token for a session's whole life. Memoize
-   until expiry inside the resolver; don't rely on the browser HTTP cache (JWT-resolver section
-   above).
+7. Audit the JWT resolver: it must return the token that created the session while that token
+   lives, and a replacement bound with `resources.sessions.bind` after it expires. Use the
+   `{ sessionId }` argument to tell the two apart; don't rely on the browser HTTP cache
+   (JWT-resolver section above).
 8. Run the target codebase's own type-check (`tsc --noEmit`) and test suite. If there's no test
    suite, at minimum exercise connect → send a command → publish/receive a track → request a clip
    → disconnect once against `local: true` or a real key. `tsc --noEmit` alone catches most of
@@ -401,7 +418,9 @@ tell people to download instead," that workaround is no longer needed.
   it against production: the ack-listener migration, the settle-sleep deletions, the
   `undefined`-vs-`getLastError()` discrimination (including a session landing on a replica
   serving an older model release), and the session-scoped-token 403 were each hit and fixed in
-  that port, not derived from reading source.
+  that port, not derived from reading source. The bound-replacement flow in the JWT-resolver
+  section was verified 2026-10-09 by running examples 05 and 06 against production with a
+  token minted through `?session_id=`.
 - The tables above were verified by reading `reactor-team/js-sdk`'s actual source (local clone,
   not the published package) against this repo's `sdks/js` as of 2026-08-24 — `sendCommand()`'s
   await behavior, the full `ReactorError` hierarchy and `ConflictError`/`AbortedError` naming,

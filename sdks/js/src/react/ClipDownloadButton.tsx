@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { useClipDownload } from './useClipDownload';
 import type { ClipDownloadState, UseClipDownloadOptions } from './useClipDownload';
+import type { JwtResolver } from '../jwt';
 import type { Clip } from '../types';
 
 /**
@@ -24,7 +25,7 @@ export interface ClipDownloadButtonProps {
   clip: Clip;
   /** Lazy JWT resolver. Optional inside a `ReactorProvider` (inherits the
    *  provider's resolver) and in local-dev mode. See `ClipPlayerProps.getJwt`. */
-  getJwt?: () => string | Promise<string>;
+  getJwt?: JwtResolver;
   /** Filename for the saved MP4. Default `"reactor-clip.mp4"`. */
   filename?: string;
   /**

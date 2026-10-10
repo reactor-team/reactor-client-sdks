@@ -1,6 +1,7 @@
 import type {
   ClientOptions as WasmClientOptions,
   ConnectOptions,
+  JwtRequestContext,
   JwtSource,
   ReactorMessage,
   ReactorStatus,
@@ -14,6 +15,7 @@ import type { ReactorError } from './errors';
 
 export type {
   ConnectOptions,
+  JwtRequestContext,
   JwtSource,
   ReactorMessage,
   ReactorStatus,

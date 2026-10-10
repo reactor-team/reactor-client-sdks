@@ -170,11 +170,18 @@ describe('ClipPlayer', () => {
     expect(within(container).getByText('CLIP_GONE: chunks aged out')).toBeTruthy();
   });
 
-  it("passes an explicit getJwt's resolved token to fetchPlaylist", async () => {
-    render(<ClipPlayer clip={CLIP} getJwt={() => 'explicit-jwt'} />);
+  it("hands an explicit getJwt to fetchPlaylist unresolved, with the clip's session", async () => {
+    const getJwt = () => 'explicit-jwt';
 
+    render(<ClipPlayer clip={CLIP} getJwt={getJwt} />);
+
+    // Unresolved on purpose: fetchPlaylist calls it before every poll, so a
+    // wait that outlives the first token still gets a current one.
     await waitFor(() =>
-      expect(fetchPlaylist).toHaveBeenCalledWith(CLIP.playlistUrl, expect.objectContaining({ jwt: 'explicit-jwt' })),
+      expect(fetchPlaylist).toHaveBeenCalledWith(
+        CLIP.playlistUrl,
+        expect.objectContaining({ jwt: getJwt, sessionId: CLIP.sessionId }),
+      ),
     );
   });
 
@@ -182,7 +189,10 @@ describe('ClipPlayer', () => {
     render(<ClipPlayer clip={CLIP} />, { wrapper: withProvider });
 
     await waitFor(() =>
-      expect(fetchPlaylist).toHaveBeenCalledWith(CLIP.playlistUrl, expect.objectContaining({ jwt: 'provider-jwt' })),
+      expect(fetchPlaylist).toHaveBeenCalledWith(
+        CLIP.playlistUrl,
+        expect.objectContaining({ jwt: 'provider-jwt', sessionId: CLIP.sessionId }),
+      ),
     );
   });
 

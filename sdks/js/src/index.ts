@@ -39,6 +39,7 @@ export type {
   ConnectionStats,
   ConnectionTimings,
   ConnectOptions,
+  JwtRequestContext,
   JwtSource,
   MessageScope,
   ModelSchema,
