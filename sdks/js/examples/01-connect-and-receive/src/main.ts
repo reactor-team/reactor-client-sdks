@@ -1,6 +1,6 @@
 import { Reactor } from '@reactor-team/js-sdk';
 import { log } from '../../shared/log';
-import { fetchToken } from '../../shared/fetch-token';
+import { sessionAuth } from '../../shared/fetch-token';
 
 // 01 — Connect, send the model's first command, receive frames. The spine
 // every other example builds on.
@@ -23,6 +23,7 @@ const statusEl = document.querySelector<HTMLParagraphElement>('#status')!;
 const videoEl = document.querySelector<HTMLVideoElement>('video')!;
 const button = document.querySelector<HTMLButtonElement>('#connect')!;
 
+const auth = sessionAuth();
 const reactor = new Reactor({ modelName: MODEL_NAME });
 
 reactor.on('statusChanged', (status) => {
@@ -74,8 +75,11 @@ button.addEventListener('click', async () => {
   }
 
   log(`connecting to ${MODEL_NAME}...`);
-  await reactor.connect(await fetchToken());
+  await reactor.connect(auth.jwt);
   log(`session ${reactor.getSessionId() ?? '?'} is ready`);
+  // Registration started when the SDK first named the session; awaiting it
+  // here reports a failure — see shared/token-server.ts.
+  await auth.register(reactor.getSessionId()!);
 
   // Helios' own minimum, in its own order.
   log(`sending set_prompt: "${PROMPT}"`);
