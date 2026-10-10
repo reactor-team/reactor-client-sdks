@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::backoff::PollConfig;
 use crate::error::CoreError;
-use crate::http::{check_status, HttpRequest, Method};
+use crate::http::{check_status, AuthRequest, HttpRequest, Method};
 use crate::protocol::session::{
     ClientInfo, CreateSessionRequest, ModelConfig, SessionResponse, TransportDeclaration,
 };
@@ -81,7 +81,11 @@ impl CoordinatorClient {
         )
     }
 
-    async fn headers(&self, json_body: bool) -> Result<Vec<(String, String)>, CoreError> {
+    async fn headers(
+        &self,
+        json_body: bool,
+        session_id: Option<&str>,
+    ) -> Result<Vec<(String, String)>, CoreError> {
         let mut headers = vec![
             (
                 API_VERSION_HEADER.to_string(),
@@ -95,7 +99,10 @@ impl CoordinatorClient {
         if json_body {
             headers.push(("Content-Type".to_string(), "application/json".to_string()));
         }
-        if let Some(jwt) = self.auth.jwt().await? {
+        let request = AuthRequest {
+            session_id: session_id.map(str::to_string),
+        };
+        if let Some(jwt) = self.auth.jwt(&request).await? {
             headers.push(("Authorization".to_string(), format!("Bearer {jwt}")));
         }
         Ok(headers)
@@ -134,7 +141,7 @@ impl CoordinatorClient {
             .request(HttpRequest {
                 method: Method::Post,
                 url: format!("{}/sessions", self.config.api_url),
-                headers: self.headers(true).await?,
+                headers: self.headers(true, None).await?,
                 body: Some(serde_json::to_vec(&body).map_err(CoreError::decode)?),
             })
             .await?;
@@ -202,7 +209,7 @@ impl CoordinatorClient {
             .request(HttpRequest {
                 method: Method::Get,
                 url: format!("{}/sessions/{session_id}", self.config.api_url),
-                headers: self.headers(false).await?,
+                headers: self.headers(false, Some(session_id)).await?,
                 body: None,
             })
             .await?;
@@ -260,7 +267,7 @@ impl CoordinatorClient {
             .request(HttpRequest {
                 method: Method::Delete,
                 url: format!("{}/sessions/{session_id}", self.config.api_url),
-                headers: self.headers(false).await?,
+                headers: self.headers(false, Some(session_id)).await?,
                 body: None,
             })
             .await?;
@@ -280,11 +287,70 @@ impl CoordinatorClient {
             .request(HttpRequest {
                 method: Method::Post,
                 url: format!("{}/sessions/{session_id}/uploads", self.config.api_url),
-                headers: self.headers(true).await?,
+                headers: self.headers(true, Some(session_id)).await?,
                 body: Some(serde_json::to_vec(request).map_err(CoreError::decode)?),
             })
             .await?;
         check_status(&response, "create upload")?;
         response.json()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::http::testing::{NoSleep, NotFoundHttp, RecordingAuth};
+    use std::sync::Arc;
+
+    fn client(auth: Arc<RecordingAuth>) -> CoordinatorClient {
+        CoordinatorClient::new(
+            Arc::new(NotFoundHttp),
+            auth,
+            Arc::new(NoSleep),
+            CoordinatorConfig {
+                api_url: "https://api.reactor.inc".into(),
+                model: ModelConfig {
+                    name: "reactor/helios".into(),
+                    version: None,
+                },
+                client_info: ClientInfo {
+                    sdk_version: "0.0.0".into(),
+                    sdk_type: "test".into(),
+                },
+                extra_args: None,
+                poll: PollConfig::session(),
+                local: false,
+            },
+        )
+    }
+
+    /// The host's resolver can only bind a replacement token to the right
+    /// session if every call names the session it is for, and creation
+    /// names none.
+    #[tokio::test]
+    async fn each_call_tells_the_auth_provider_which_session_it_is_for() {
+        let auth = Arc::new(RecordingAuth::default());
+        let client = client(auth.clone());
+
+        let _ = client.create_session().await;
+        client.terminate_session("sid-1").await.unwrap();
+        let _ = client.get_session("sid-2").await;
+        let upload = CreateUploadRequest {
+            name: "frame.png".into(),
+            size: 1,
+            mime_type: "image/png".into(),
+        };
+        let _ = client.create_upload("sid-3", &upload).await;
+
+        let requests = auth.requests.lock().unwrap().clone();
+        assert_eq!(
+            requests,
+            vec![
+                AuthRequest::default(),
+                AuthRequest::for_session("sid-1"),
+                AuthRequest::for_session("sid-2"),
+                AuthRequest::for_session("sid-3"),
+            ]
+        );
     }
 }
