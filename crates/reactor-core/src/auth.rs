@@ -45,8 +45,10 @@ pub struct TokenRequest {
     /// so a leak is worth a handful of sessions rather than everything the key can
     /// reach.
     pub models: Option<Vec<String>>,
-    /// How many sessions a scoped token may ever create. Ignored by the server for
-    /// an unscoped one, so setting it without `models` buys nothing.
+    /// How many sessions a scoped token may ever hold, counting any in `sessions`.
+    /// Ignored by the server for an unscoped one. With `sessions` and no `models`
+    /// the token is scoped to every model, so a budget here lets it create
+    /// sessions on any of them; leave it unset to bind only.
     pub max_sessions: Option<u32>,
     /// Force-terminates every session the token creates after this many seconds,
     /// independent of the token's own expiry. 1–86400 (24h); the server rejects
@@ -56,6 +58,12 @@ pub struct TokenRequest {
     /// Lifetime in seconds. The server clamps it to its own ceiling, so asking for
     /// a year gets whatever the ceiling is rather than an error.
     pub expires_after: Option<u64>,
+    /// Existing sessions the token may act on, by id. Each must belong to the
+    /// key's user and account and still be open, or the server rejects the mint.
+    /// This is how a replacement token keeps a live session and how a second
+    /// client joins one. Without `models` and `max_sessions` the token can reach
+    /// only these and create nothing.
+    pub sessions: Option<Vec<String>>,
 }
 
 impl TokenRequest {
@@ -67,6 +75,14 @@ impl TokenRequest {
         }
     }
 
+    /// A token bound to `sessions` and able to create none.
+    pub fn bound(sessions: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            sessions: Some(sessions.into_iter().map(Into::into).collect()),
+            ..Self::default()
+        }
+    }
+
     /// The request body, or `None` when there is nothing to constrain.
     ///
     /// An unconstrained request sends the JSON literal `null` rather than `{}` —
@@ -74,11 +90,21 @@ impl TokenRequest {
     fn body(&self) -> Option<serde_json::Value> {
         let mut body = serde_json::Map::new();
 
-        if let Some(models) = &self.models {
+        if self.models.is_some() || self.sessions.is_some() {
+            // A session detail must name a model scope. Binding alone widens it
+            // to every model, which costs nothing: with no `max_sessions` the
+            // budget is exactly the bound sessions, so the token creates none.
+            let models = match &self.models {
+                Some(models) => serde_json::json!({ "match": models }),
+                None => serde_json::json!({ "all": true }),
+            };
             let mut detail = serde_json::json!({
                 "type": "session",
-                "resources": { "models": { "match": models } },
+                "resources": { "models": models },
             });
+            if let Some(sessions) = &self.sessions {
+                detail["resources"]["sessions"] = serde_json::json!({ "bind": sessions });
+            }
             let mut constraints = serde_json::Map::new();
             if let Some(max_sessions) = self.max_sessions {
                 constraints.insert("max_sessions".into(), max_sessions.into());
@@ -392,6 +418,68 @@ mod tests {
 
         assert_eq!(error.code(), codes::NETWORK_ERROR);
         assert!(error.recoverable());
+    }
+
+    /// A bind with no `models` still has to name a model scope, and `all` is the
+    /// one that adds no reach: with `max_sessions` omitted the budget is the
+    /// bound sessions, so the token can operate them and create nothing.
+    #[test]
+    fn a_bound_request_names_its_sessions_and_can_create_nothing() {
+        let http = FakeHttp::returning(200, r#"{"jwt":"token"}"#);
+
+        block_on(fetch_jwt(
+            &(http.clone() as SharedHttp),
+            "https://api.reactor.inc",
+            "key",
+            &TokenRequest::bound(["0d0c4d41-9f0a-4a8e-8f5e-0d2a2e1a1b2c"]),
+        ))
+        .unwrap();
+
+        assert_eq!(
+            http.body_json(),
+            serde_json::json!({
+                "authorization_details": [{
+                    "type": "session",
+                    "resources": {
+                        "models": { "all": true },
+                        "sessions": { "bind": ["0d0c4d41-9f0a-4a8e-8f5e-0d2a2e1a1b2c"] },
+                    },
+                }],
+            })
+        );
+    }
+
+    /// Binding and scoping compose: the model list stays as given, and the
+    /// session cap buys room to create beyond the bound ones.
+    #[test]
+    fn a_scoped_request_can_also_bind_sessions() {
+        let http = FakeHttp::returning(200, r#"{"jwt":"token"}"#);
+
+        block_on(fetch_jwt(
+            &(http.clone() as SharedHttp),
+            "https://api.reactor.inc",
+            "key",
+            &TokenRequest {
+                sessions: Some(vec!["sid-1".into()]),
+                max_sessions: Some(2),
+                ..TokenRequest::scoped(["reactor/helios"])
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(
+            http.body_json(),
+            serde_json::json!({
+                "authorization_details": [{
+                    "type": "session",
+                    "resources": {
+                        "models": { "match": ["reactor/helios"] },
+                        "sessions": { "bind": ["sid-1"] },
+                    },
+                    "constraints": { "max_sessions": 2 },
+                }],
+            })
+        );
     }
 
     /// A binding hands these fields over as JSON it built from its own caller's

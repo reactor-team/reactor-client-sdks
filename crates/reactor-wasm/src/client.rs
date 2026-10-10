@@ -270,9 +270,10 @@ impl ReactorClient {
     /// Create a client.
     ///
     /// * `options` — see the `ClientOptions` fields; `modelName` is required.
-    /// * `jwt` — a token string, a `() => string | Promise<string>` resolver
-    ///   called before every authenticated request, or `null` for an
-    ///   unauthenticated local runtime. Replaceable later with `setJwt`.
+    /// * `jwt` — a token string, a `(context) => string | Promise<string>`
+    ///   resolver called before every authenticated request with the session
+    ///   it is for, or `null` for an unauthenticated local runtime.
+    ///   Replaceable later with `setJwt`.
     #[wasm_bindgen(constructor)]
     // The dependencies below are `Arc`s without being `Send` or `Sync` — see the
     // note on the struct's fields.

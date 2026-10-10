@@ -5,7 +5,7 @@
 
 use crate::backoff::PollConfig;
 use crate::error::CoreError;
-use crate::http::{check_status, HttpRequest, Method};
+use crate::http::{check_status, AuthRequest, HttpRequest, Method};
 use crate::protocol::session::ClientInfo;
 use crate::protocol::webrtc::{
     IceCandidate, IceCandidatesRequest, IceServer, IceServersResponse, RegisterConnectionResponse,
@@ -22,6 +22,7 @@ pub struct WebRtcSignaling {
     http: SharedHttp,
     auth: SharedAuth,
     platform: SharedPlatform,
+    session_id: String,
     base_url: String,
     client_info: ClientInfo,
     poll: PollConfig,
@@ -32,6 +33,7 @@ impl WebRtcSignaling {
         http: SharedHttp,
         auth: SharedAuth,
         platform: SharedPlatform,
+        session_id: String,
         base_url: String,
         client_info: ClientInfo,
         poll: PollConfig,
@@ -40,6 +42,7 @@ impl WebRtcSignaling {
             http,
             auth,
             platform,
+            session_id,
             base_url: base_url.trim_end_matches('/').to_string(),
             client_info,
             poll,
@@ -64,7 +67,8 @@ impl WebRtcSignaling {
         if json_body {
             headers.push(("Content-Type".to_string(), "application/json".to_string()));
         }
-        if let Some(jwt) = self.auth.jwt().await? {
+        let request = AuthRequest::for_session(&self.session_id);
+        if let Some(jwt) = self.auth.jwt(&request).await? {
             headers.push(("Authorization".to_string(), format!("Bearer {jwt}")));
         }
         Ok(headers)
@@ -176,5 +180,42 @@ impl WebRtcSignaling {
             })
             .await?;
         check_status(&response, "send ice candidates")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::http::testing::{NoSleep, NotFoundHttp, RecordingAuth};
+    use std::sync::Arc;
+
+    /// Every signaling call is for the session the client was built for, so
+    /// the host's resolver can keep answering with a token bound to it.
+    #[tokio::test]
+    async fn every_call_names_the_signaling_session() {
+        let auth = Arc::new(RecordingAuth::default());
+        let signaling = WebRtcSignaling::new(
+            Arc::new(NotFoundHttp),
+            auth.clone(),
+            Arc::new(NoSleep),
+            "sid-1".into(),
+            "https://api.reactor.inc/sessions/sid-1/transport/webrtc".into(),
+            ClientInfo {
+                sdk_version: "0.0.0".into(),
+                sdk_type: "test".into(),
+            },
+            PollConfig::session(),
+        );
+
+        let _ = signaling.ice_servers().await;
+        let _ = signaling.register_connection().await;
+
+        assert_eq!(
+            auth.requests.lock().unwrap().clone(),
+            vec![
+                AuthRequest::for_session("sid-1"),
+                AuthRequest::for_session("sid-1"),
+            ]
+        );
     }
 }

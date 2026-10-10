@@ -74,9 +74,17 @@ export interface ConnectOptions {
   maxAttempts?: number;
 }
 
-/** A token, or a resolver called before every authenticated request.
- *  Returning "" sends no Authorization header. */
-export type JwtSource = string | (() => string | Promise<string>);
+/** What a token is being resolved for. `sessionId` is set for every request
+ *  that targets an existing session and unset for session creation. A
+ *  resolver that mints a replacement token must bind it to that session
+ *  (`resources.sessions.bind`), or the token cannot reach the session. */
+export interface JwtRequestContext {
+  sessionId?: string;
+}
+
+/** A token, or a resolver called before every authenticated request with a
+ *  `JwtRequestContext`. Returning "" sends no Authorization header. */
+export type JwtSource = string | ((context?: JwtRequestContext) => string | Promise<string>);
 
 export interface TrackCapability {
   name: string;

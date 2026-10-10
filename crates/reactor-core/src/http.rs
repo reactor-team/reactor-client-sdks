@@ -78,13 +78,29 @@ pub trait HttpClient {
     async fn request(&self, request: HttpRequest) -> Result<HttpResponse, CoreError>;
 }
 
+/// What the request about to be authenticated is for. `session_id` is set for
+/// every call that targets an existing session and unset for session creation,
+/// so a host that mints a replacement token can bind it to the right session.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AuthRequest {
+    pub session_id: Option<String>,
+}
+
+impl AuthRequest {
+    pub fn for_session(session_id: &str) -> Self {
+        Self {
+            session_id: Some(session_id.to_string()),
+        }
+    }
+}
+
 /// Yields the JWT to attach to a request, called once per request so hosts
 /// can lazily mint short-lived tokens. Return `Ok(None)` for unauthenticated
 /// (local development) setups.
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 pub trait AuthProvider {
-    async fn jwt(&self) -> Result<Option<String>, CoreError>;
+    async fn jwt(&self, request: &AuthRequest) -> Result<Option<String>, CoreError>;
 }
 
 /// [`AuthProvider`] for a fixed (or absent) token.
@@ -94,7 +110,7 @@ pub struct StaticAuth(pub Option<String>);
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl AuthProvider for StaticAuth {
-    async fn jwt(&self) -> Result<Option<String>, CoreError> {
+    async fn jwt(&self, _request: &AuthRequest) -> Result<Option<String>, CoreError> {
         Ok(self.0.clone())
     }
 }
@@ -211,5 +227,60 @@ mod tests {
     #[test]
     fn a_success_is_not_an_error() {
         assert!(check_status(&response(204, &[]), "terminate session").is_ok());
+    }
+}
+
+/// Doubles shared by the client tests: an auth provider that records what it
+/// is asked for, an HTTP client that answers 404, and a platform that never
+/// sleeps.
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    use super::{AuthProvider, AuthRequest, HttpClient, HttpRequest, HttpResponse};
+    use crate::error::CoreError;
+    use crate::runtime::Platform;
+    use crate::BoxFut;
+
+    /// Records every `AuthRequest` it is asked for, so a test can see which
+    /// session each call said it was for.
+    #[derive(Default)]
+    pub(crate) struct RecordingAuth {
+        pub(crate) requests: Mutex<Vec<AuthRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl AuthProvider for RecordingAuth {
+        async fn jwt(&self, request: &AuthRequest) -> Result<Option<String>, CoreError> {
+            self.requests.lock().unwrap().push(request.clone());
+            Ok(Some("token".into()))
+        }
+    }
+
+    /// Answers every request with 404: enough to get past the auth step, and
+    /// what `terminate_session` treats as already gone.
+    pub(crate) struct NotFoundHttp;
+
+    #[async_trait::async_trait]
+    impl HttpClient for NotFoundHttp {
+        async fn request(&self, _request: HttpRequest) -> Result<HttpResponse, CoreError> {
+            Ok(HttpResponse {
+                status: 404,
+                headers: Vec::new(),
+                body: Vec::new(),
+            })
+        }
+    }
+
+    pub(crate) struct NoSleep;
+
+    impl Platform for NoSleep {
+        fn sleep(&self, _duration: Duration) -> BoxFut<'static, ()> {
+            Box::pin(async {})
+        }
+        fn now_ms(&self) -> f64 {
+            0.0
+        }
     }
 }

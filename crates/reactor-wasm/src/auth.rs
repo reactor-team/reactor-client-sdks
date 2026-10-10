@@ -13,7 +13,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
 use reactor_core::error::CoreError;
-use reactor_core::http::AuthProvider;
+use reactor_core::http::{AuthProvider, AuthRequest};
 
 use crate::http::describe;
 
@@ -22,7 +22,7 @@ enum JwtSource {
     /// No token: local development against an unauthenticated runtime.
     None,
     Static(String),
-    /// `() => string | Promise<string>`
+    /// `(context?: { sessionId?: string }) => string | Promise<string>`
     Resolver(js_sys::Function),
 }
 
@@ -68,7 +68,7 @@ impl Default for WasmAuthProvider {
 
 #[async_trait::async_trait(?Send)]
 impl AuthProvider for WasmAuthProvider {
-    async fn jwt(&self) -> Result<Option<String>, CoreError> {
+    async fn jwt(&self, request: &AuthRequest) -> Result<Option<String>, CoreError> {
         // Clone the resolver out and drop the borrow before awaiting: the JS
         // callback can call back into this client (a `setJwt` from inside a
         // resolver is legal), and a live `RefCell` borrow would panic.
@@ -79,7 +79,7 @@ impl AuthProvider for WasmAuthProvider {
         };
 
         let resolved = resolver
-            .call0(&JsValue::null())
+            .call1(&JsValue::null(), &request_context(request))
             .map_err(|e| CoreError::Http(format!("jwt resolver threw: {}", describe(&e))))?;
 
         let value = if resolved.has_type::<js_sys::Promise>() {
@@ -105,4 +105,18 @@ impl AuthProvider for WasmAuthProvider {
 /// while signed out keeps working instead of sending `Bearer `.
 fn non_empty(token: String) -> Option<String> {
     (!token.is_empty()).then_some(token)
+}
+
+/// The resolver's one argument, `{ sessionId }`, with the key left out rather
+/// than set to `undefined` when the request is not for a session.
+fn request_context(request: &AuthRequest) -> JsValue {
+    let context = js_sys::Object::new();
+    if let Some(session_id) = &request.session_id {
+        let _ = js_sys::Reflect::set(
+            &context,
+            &JsValue::from_str("sessionId"),
+            &JsValue::from_str(session_id),
+        );
+    }
+    context.into()
 }

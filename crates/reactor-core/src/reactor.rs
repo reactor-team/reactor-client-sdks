@@ -1485,6 +1485,7 @@ impl Reactor {
             self.http.clone(),
             self.auth.clone(),
             self.platform.clone(),
+            session_id.to_string(),
             self.coordinator.transport_base_url(session_id),
             self.coordinator.client_info().clone(),
             PollConfig {
@@ -1589,7 +1590,7 @@ mod tests {
 
     use futures::StreamExt;
 
-    use crate::http::{AuthProvider, HttpClient, HttpRequest, HttpResponse, Method};
+    use crate::http::{AuthProvider, AuthRequest, HttpClient, HttpRequest, HttpResponse, Method};
     use crate::peer::{PeerTransport, PreparedOffer};
     use crate::protocol::session::TrackCapability;
     use crate::protocol::webrtc::IceServer;
@@ -1615,7 +1616,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AuthProvider for NoAuth {
-        async fn jwt(&self) -> Result<Option<String>, CoreError> {
+        async fn jwt(&self, _request: &AuthRequest) -> Result<Option<String>, CoreError> {
             Ok(None)
         }
     }
