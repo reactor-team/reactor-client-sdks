@@ -9,6 +9,27 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- A `jwt` resolver now receives a `JwtRequestContext`, `{ sessionId }`, on
+  every call: the session the request is for, or none for session creation.
+  A resolver that mints a replacement token mid-session can bind it to that
+  session with `resources.sessions.bind`, which is the only way a fresh token
+  reaches a session it did not create. Resolvers that ignore the argument
+  keep working.
+- `fetchPlaylist()`, `downloadClipAsFile()`, `ClipPlayer`, `ClipDownloadButton`
+  and `useClipDownload` accept a resolver for `jwt`/`getJwt` and call it
+  before every manifest poll with the clip's session, so a long `202` wait
+  can cross a token refresh. An abort also ends the wait on the resolver.
+  `FetchPlaylistOptions.sessionId` names the session for a resolver;
+  `downloadClipAsFile()` fills it from the clip.
+
+### Changed
+
+- `ClipPlayer` and `useClipDownload` no longer resolve the token once up
+  front. They hand the resolver to the manifest poll, which resolves it per
+  attempt.
+
 ## [3.1.0]
 
 ### Added

@@ -3,7 +3,7 @@
 import { useContext, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { type ClipPlayback, attachClipPlayback } from '../clip-playback';
-import { resolveJwtSource } from '../internal/jwt-resolver';
+import type { JwtResolver } from '../jwt';
 import { RecordingError, assembleClipBlob, createPlayableManifestUrl, fetchPlaylist } from '../recording';
 import { ReactorContext } from './ReactorProvider';
 import type { Clip } from '../types';
@@ -35,13 +35,14 @@ export interface ClipPlayerProps {
   clip: Clip;
   /**
    * Lazy resolver for the Coordinator JWT used on the manifest GET, called
-   * at request time so token refreshes are picked up automatically.
+   * before every poll with `{ sessionId: clip.sessionId }` so token refreshes
+   * are picked up automatically.
    *
    * Required outside a `ReactorProvider` in production; optional inside one
    * (inherits the provider's resolver). Omit in local-dev mode (HttpRuntime)
    * — the manifest endpoint there is auth-free.
    */
-  getJwt?: () => string | Promise<string>;
+  getJwt?: JwtResolver;
   /**
    * Opt into a bounded wait: give up polling the manifest with
    * `CLIP_NOT_READY` once `max(clip.predictedReadyAtMs, pollStart) + slackMs`
@@ -145,16 +146,12 @@ export function ClipPlayer({
     const setup = async () => {
       try {
         setPhase({ kind: 'waiting' });
-        // Explicit `getJwt` wins; fall back to the provider's resolver.
-        const explicit = getJwtRef.current;
-        const fallback = storeRef.current?.getState().internal.reactor.getJwtResolver();
-        const jwt = explicit ? await explicit() : fallback !== undefined ? await resolveJwtSource(fallback) : undefined;
-
-        if (cancelled) {
-          return;
-        }
+        // Explicit `getJwt` wins; fall back to the provider's source. Handed
+        // over unresolved so every poll asks for a current token.
+        const jwt = getJwtRef.current ?? storeRef.current?.getState().internal.reactor.getJwtResolver();
         const playlistOptions: Parameters<typeof fetchPlaylist>[1] = {
           predictedReadyAtMs: clip.predictedReadyAtMs,
+          sessionId: clip.sessionId,
           signal: abort.signal,
         };
 
