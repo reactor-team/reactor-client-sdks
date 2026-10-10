@@ -238,6 +238,51 @@ describe('fetchPlaylist', () => {
     expect(calls).toBe(2);
   });
 
+  it('asks a resolver jwt for a token before every poll, naming the session', async () => {
+    const mockFetch = vi.fn().mockImplementation(() => {
+      if (mockFetch.mock.calls.length === 1) {
+        return Promise.resolve(new Response(null, { status: 202, headers: { 'Retry-After': '0' } }));
+      }
+      return Promise.resolve(new Response(SAMPLE_MANIFEST, { status: 200 }));
+    });
+
+    globalThis.fetch = mockFetch as never;
+    let minted = 0;
+    const jwt = vi.fn(() => `token-${++minted}`);
+
+    const body = await fetchPlaylist(SAMPLE_CLIP.playlistUrl, {
+      jwt,
+      sessionId: SAMPLE_CLIP.sessionId,
+      minRetryDelayMs: 0,
+      maxRetryDelayMs: 0,
+    });
+
+    expect(body).toBe(SAMPLE_MANIFEST);
+    expect(jwt).toHaveBeenCalledTimes(2);
+    expect(jwt).toHaveBeenNthCalledWith(1, { sessionId: SAMPLE_CLIP.sessionId });
+    const calls = mockFetch.mock.calls as Array<[string, RequestInit | undefined]>;
+
+    expect(calls[0]?.[1]?.headers).toEqual({ Authorization: 'Bearer token-1' });
+    expect(calls[1]?.[1]?.headers).toEqual({ Authorization: 'Bearer token-2' });
+  });
+
+  it('sends no Authorization header for a resolver that returns "" or a string jwt that is empty', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockImplementation(() => Promise.resolve(new Response(SAMPLE_MANIFEST, { status: 200 })));
+
+    globalThis.fetch = mockFetch as never;
+
+    await fetchPlaylist('http://localhost/clips?x=1', { jwt: () => '' });
+    await fetchPlaylist('http://localhost/clips?x=1', { jwt: '' });
+    await fetchPlaylist('http://localhost/clips?x=1', { jwt: 'static-token' });
+    const calls = mockFetch.mock.calls as Array<[string, RequestInit | undefined]>;
+
+    expect(calls[0]?.[1]?.headers).toBeUndefined();
+    expect(calls[1]?.[1]?.headers).toBeUndefined();
+    expect(calls[2]?.[1]?.headers).toEqual({ Authorization: 'Bearer static-token' });
+  });
+
   it('throws CLIP_GONE on 410', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 410 })) as never;
 
@@ -365,6 +410,26 @@ describe('fetchPlaylist', () => {
     await expect(promise).rejects.toBeInstanceOf(DOMException);
     expect(calls).toBeGreaterThan(5);
   });
+
+  it('rejects when the signal aborts while the jwt resolver is still pending', async () => {
+    globalThis.fetch = vi.fn() as never;
+
+    const controller = new AbortController();
+    const promise = fetchPlaylist('http://localhost/clips?x=1', {
+      jwt: () => new Promise<string>(() => {}),
+      signal: controller.signal,
+    });
+
+    controller.abort();
+
+    const outcome = await Promise.race([
+      promise.then(() => 'resolved', (error: unknown) => error),
+      new Promise<string>((r) => setTimeout(() => r('still pending'), 50)),
+    ]);
+
+    expect(outcome).toBeInstanceOf(DOMException);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
 });
 
 describe('downloadClipAsFile', () => {
@@ -419,6 +484,21 @@ describe('downloadClipAsFile', () => {
     expect(blob.size).toBe(concatSize);
     expect(onProgress).toHaveBeenCalledTimes(3);
     expect(onProgress).toHaveBeenLastCalledWith(expect.objectContaining({ fetched: 3, total: 3 }));
+  });
+
+  it("hands a resolver jwt the clip's session, and sends the token to the manifest only", async () => {
+    const mockFetch = installChunkFetchMock();
+    const jwt = vi.fn(() => 'session-token');
+
+    await downloadClipAsFile(SAMPLE_CLIP, null, { jwt });
+
+    expect(jwt).toHaveBeenCalledWith({ sessionId: SAMPLE_CLIP.sessionId });
+    const [manifestCall, ...chunkCalls] = mockFetch.mock.calls as Array<[string, RequestInit | undefined]>;
+
+    expect(manifestCall?.[1]?.headers).toEqual({ Authorization: 'Bearer session-token' });
+    for (const call of chunkCalls) {
+      expect(call[1]?.headers).toBeUndefined();
+    }
   });
 
   it('rejects with CHUNK_FETCH_FAILED when a chunk 5xxs', async () => {

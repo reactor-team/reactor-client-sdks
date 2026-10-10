@@ -14,4 +14,11 @@ describe('normalizeJwtSource', () => {
 
     expect(normalizeJwtSource(resolver)).toBe(resolver);
   });
+
+  it('forwards the request context to a resolver that reads it', async () => {
+    const resolver = normalizeJwtSource((context) => `token-for-${context?.sessionId ?? 'create'}`);
+
+    expect(await resolver({ sessionId: 'sid-1' })).toBe('token-for-sid-1');
+    expect(await resolver()).toBe('token-for-create');
+  });
 });

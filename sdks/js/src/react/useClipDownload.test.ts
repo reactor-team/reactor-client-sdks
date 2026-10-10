@@ -166,20 +166,19 @@ describe('useClipDownload', () => {
     expect(result.current.state).toEqual({ kind: 'idle' });
   });
 
-  it("passes an explicit getJwt's resolved token through to downloadClipAsFile", async () => {
+  it('hands an explicit getJwt to downloadClipAsFile unresolved', async () => {
     vi.mocked(downloadClipAsFile).mockResolvedValue(new Blob());
+    const getJwt = () => 'explicit-jwt';
 
-    const { result } = renderHook(() => useClipDownload(CLIP, { getJwt: () => 'explicit-jwt' }));
+    const { result } = renderHook(() => useClipDownload(CLIP, { getJwt }));
 
     await act(async () => {
       await result.current.download();
     });
 
-    expect(downloadClipAsFile).toHaveBeenCalledWith(
-      CLIP,
-      'reactor-clip.mp4',
-      expect.objectContaining({ jwt: 'explicit-jwt' }),
-    );
+    // Unresolved on purpose: the manifest poll calls it before every attempt
+    // with the clip's session, so a long wait still gets a current token.
+    expect(downloadClipAsFile).toHaveBeenCalledWith(CLIP, 'reactor-clip.mp4', expect.objectContaining({ jwt: getJwt }));
   });
 
   it("falls back to the ReactorProvider's jwt when getJwt is omitted", async () => {
