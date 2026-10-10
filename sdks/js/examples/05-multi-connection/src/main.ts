@@ -1,6 +1,6 @@
 import { Reactor } from '@reactor-team/js-sdk';
 import { log } from '../../shared/log';
-import { fetchToken } from '../../shared/fetch-token';
+import { sessionAuth } from '../../shared/fetch-token';
 
 // 05 — Two clients, one session.
 //
@@ -42,7 +42,9 @@ function client(label: string, video: HTMLVideoElement): Reactor {
   return reactor;
 }
 
+const creatorAuth = sessionAuth();
 const creator = client('creator', creatorVideoEl);
+const joinerAuth = sessionAuth();
 const joiner = client('joiner', joinerVideoEl);
 let connected = false;
 
@@ -64,24 +66,25 @@ button.addEventListener('click', async () => {
     return;
   }
 
-  // Both clients connect with this same token: reading a session back
-  // requires the *same* token that created it, so the joiner can't mint its
-  // own — see https://docs.reactor.inc/concepts/sessions#adopting-an-existing-session.
-  const token = await fetchToken();
-
+  // One resolver per client: a session can only be reached by the token that
+  // created it, or one bound to it, so the joiner's mints one bound to the
+  // session the creator registered — see https://docs.reactor.inc/concepts/sessions#adopting-an-existing-session.
   log(`connecting creator to ${MODEL_NAME}...`);
-  await creator.connect(token);
+  await creator.connect(creatorAuth.jwt);
   const sessionId = creator.getSessionId();
 
   statusEl.textContent = `session: ${sessionId ?? '?'}`;
   log(`session: ${sessionId ?? '?'}`);
+  // Registration started when the SDK first named the session; awaiting it
+  // here reports a failure — see shared/token-server.ts.
+  await creatorAuth.register(sessionId!);
 
   await creator.sendCommand('set_prompt', { prompt: PROMPT });
   await creator.sendCommand('start');
 
   log('joiner adopting the same session...');
   // The id is the whole handoff — no second session, no coordination.
-  await joiner.connect(token, { sessionId });
+  await joiner.connect(joinerAuth.jwt, { sessionId });
   log('joiner is ready');
 
   connected = true;

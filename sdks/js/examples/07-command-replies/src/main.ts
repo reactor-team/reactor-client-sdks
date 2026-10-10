@@ -1,6 +1,6 @@
 import { Reactor } from '@reactor-team/js-sdk';
 import { log } from '../../shared/log';
-import { fetchToken } from '../../shared/fetch-token';
+import { sessionAuth } from '../../shared/fetch-token';
 
 // 07 — Read a command's reply, not just send it. `sendCommand()` resolves
 // with the model's correlated reply — every other example either
@@ -33,6 +33,7 @@ const labelInput = document.querySelector<HTMLInputElement>('#label')!;
 const saveButton = document.querySelector<HTMLButtonElement>('#save')!;
 const snapshotsEl = document.querySelector<HTMLDivElement>('#snapshots')!;
 
+const auth = sessionAuth();
 const reactor = new Reactor({ modelName: MODEL_NAME });
 
 function renderSnapshots(snapshots: Snapshot[]): void {
@@ -144,8 +145,11 @@ connectButton.addEventListener('click', async () => {
   }
 
   log(`connecting to ${MODEL_NAME}...`);
-  await reactor.connect(await fetchToken());
+  await reactor.connect(auth.jwt);
   log(`session ${reactor.getSessionId() ?? '?'} is ready`);
+  // Registration started when the SDK first named the session; awaiting it
+  // here reports a failure — see shared/token-server.ts.
+  await auth.register(reactor.getSessionId()!);
   await reactor.sendCommand('set_prompt', { prompt: PROMPT });
   await reactor.sendCommand('start');
 });

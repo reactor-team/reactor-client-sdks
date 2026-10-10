@@ -58,26 +58,46 @@ management — while the JWT it mints is scoped to one model and expires in
 an hour; putting the key behind a route instead of a plain input on the page
 is what keeps that account-wide credential off the browser entirely.
 
-Each `main.ts` calls `fetchToken()` once per `connect()` and hands the
-result to it as a plain string, not as `fetchToken` itself. Passed as a
-resolver, the SDK would call it again on later hops (session create, the
-poll-until-ready GET, ...) and mint a *different* token each time — reading
-a session back requires the *same* token that created it, so a second,
-independently minted token with identical scope 403s. A plain string
-sidesteps that: it's the same value on every call by construction, no cache
-needed. [`05-multi-connection`](05-multi-connection) is the one place this
-spans two clients instead of just two hops — see its own comment.
+Each `main.ts` makes one `sessionAuth()` per connection and hands its `jwt`
+resolver to `connect()`. The SDK calls it before every authenticated request
+and says which session the request is for. A scoped token can only reach
+sessions it created or was bound to, so the resolver returns the token that
+created the connection's session until shortly before that token expires,
+then asks the backend for a replacement bound to the session
+(`authorization_details.resources.sessions.bind`). One instance per
+connection is what makes "the token that created it" certain: the next
+session the SDK names is the one that instance just created.
+
+The backend binds a session only for a browser that registered it. The
+instance registers a session by itself the first time the SDK names it, which
+is right after creating it, by sending the session id with the token that
+created it; each `main.ts` awaits `register()` after `connect()` so a failure
+is reported. The backend checks that token against Reactor
+(`GET /sessions/{id}` answers only for a token bound to the session) and
+remembers the session for that browser's cookie. The cookie is an opaque id
+over a server-side list, so there is nothing in it to edit, and the proof of
+ownership is Reactor's own binding check. Without that step a page that
+learned another visitor's session id could ask for a token to it, which is
+what the recording of that session is protected against. The cookie is set
+by the first request that arrives without one, so two tabs opened at the
+same instant on a first visit can each get their own, and the browser keeps
+only the last; a real app hands out the visitor id on page load instead.
+
+A backend that creates the session itself and hands the browser
+`{ jwt, sessionId }` to adopt (`connect(jwt, { sessionId })`, as in
+[`05-multi-connection`](05-multi-connection)) knows the owner without a
+registration call. That is the simpler shape for a real app; these examples
+keep the browser-side `connect()` because it is what they teach.
 
 ## What's shared, and what isn't
 
-`log()` and `fetchToken()` live in `shared/` — pure boilerplate, byte-identical
-across all seven, and reading them teaches nothing about the SDK. Everything
-else stays local: each `src/main.ts` is still the whole lesson, and the
-`vite.config.ts` token-minting middleware is duplicated across all of them on
-purpose — it's dev-server plumbing keyed to that example's own model scope
-(`authorization_details.resources.models.match`), not SDK usage, and folding
-it into a shared helper would hide a real per-example difference behind one
-more file to read.
+`log()`, `sessionAuth()` and the `reactorTokenPlugin`
+dev-server routes live in `shared/` — boilerplate that is identical across
+all seven, and reading it teaches nothing about the SDK. Everything else
+stays local: each `src/main.ts` is still the whole lesson, and each
+`vite.config.ts` names the model scope the plugin mints for
+(`authorization_details.resources.models.match`), which is the one real
+per-example difference.
 
 Tracks are asked for by name — `reactor.on('trackReceived', (name, track) => ...)`
 filtered on `name === 'main_video'` — the way an app that knows its model

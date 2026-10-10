@@ -5,7 +5,7 @@ import {
   fetchPlaylist,
 } from '@reactor-team/js-sdk';
 import { log } from '../../shared/log';
-import { fetchToken } from '../../shared/fetch-token';
+import { sessionAuth } from '../../shared/fetch-token';
 
 // 06 — Ask for a clip, then download it.
 //
@@ -28,6 +28,7 @@ const connectButton = document.querySelector<HTMLButtonElement>('#connect')!;
 const secondsInput = document.querySelector<HTMLInputElement>('#seconds')!;
 const recordButton = document.querySelector<HTMLButtonElement>('#record')!;
 
+const auth = sessionAuth();
 const reactor = new Reactor({ modelName: MODEL_NAME });
 let frameCount = 0;
 // Cancels an in-flight download so a disconnect doesn't leave it polling forever.
@@ -92,8 +93,11 @@ connectButton.addEventListener('click', async () => {
   }
 
   log(`connecting to ${MODEL_NAME}...`);
-  await reactor.connect(await fetchToken());
+  await reactor.connect(auth.jwt);
   log(`session ${reactor.getSessionId() ?? '?'} is ready`);
+  // Registration started when the SDK first named the session; awaiting it
+  // here reports a failure — see shared/token-server.ts.
+  await auth.register(reactor.getSessionId()!);
   await reactor.sendCommand('set_prompt', { prompt: PROMPT });
   await reactor.sendCommand('start');
 });
@@ -111,18 +115,19 @@ recordButton.addEventListener('click', async () => {
       log('warning: the session has less video than the window asked for');
     }
 
-    const jwt = await fetchToken();
-
     downloadController = new AbortController();
     // Bounded first pass — downloadClipAsFile() itself polls with no limit.
+    // The resolver, not a token: each poll asks for a current one for this
+    // clip's session, so a long wait survives the token's expiry.
     await fetchPlaylist(clip.playlistUrl, {
       predictedReadyAtMs: clip.predictedReadyAtMs,
       slackMs: DEFAULT_PLAYLIST_POLL_SLACK_MS,
       signal: downloadController.signal,
-      jwt,
+      jwt: auth.jwt,
+      sessionId: clip.sessionId,
     });
     await downloadClipAsFile(clip, 'reactor-clip.mp4', {
-      jwt,
+      jwt: auth.jwt,
       signal: downloadController.signal,
       onProgress: ({ fetched, total }) => log(`fetched chunk ${fetched}/${total}`),
     });

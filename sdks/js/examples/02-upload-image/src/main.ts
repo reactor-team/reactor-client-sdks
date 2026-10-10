@@ -1,6 +1,6 @@
 import { Reactor } from '@reactor-team/js-sdk';
 import { log } from '../../shared/log';
-import { fetchToken } from '../../shared/fetch-token';
+import { sessionAuth } from '../../shared/fetch-token';
 
 // 02 — Upload a file, then pass the reference into a command.
 //
@@ -25,6 +25,7 @@ const videoEl = document.querySelector<HTMLVideoElement>('video')!;
 const fileInput = document.querySelector<HTMLInputElement>('#file')!;
 const button = document.querySelector<HTMLButtonElement>('#go')!;
 
+const auth = sessionAuth();
 const reactor = new Reactor({ modelName: MODEL_NAME });
 
 function updateButton(): void {
@@ -73,8 +74,11 @@ button.addEventListener('click', async () => {
   }
 
   log(`connecting to ${MODEL_NAME}...`);
-  await reactor.connect(await fetchToken());
+  await reactor.connect(auth.jwt);
   log(`session ${reactor.getSessionId() ?? '?'} is ready`);
+  // Registration started when the SDK first named the session; awaiting it
+  // here reports a failure — see shared/token-server.ts.
+  await auth.register(reactor.getSessionId()!);
 
   // Needs a ready session: the bytes go to that session's own object store.
   // Name and MIME type are inferred from the `File`.
