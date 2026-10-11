@@ -109,6 +109,30 @@ describe('reactorTokenPlugin', () => {
     expect(reply.status).toBe(400);
   });
 
+  // The route is reachable by any client once the dev server listens on a
+  // network interface, so a body it never stops reading is a way to exhaust
+  // the process. 10 MiB in 1 KiB chunks; the route must stop near its limit.
+  it('answers 413 to a body over the limit and stops reading it', async () => {
+    const { '/api/session': register } = routes();
+    let pulled = 0;
+    const flood = new Readable({
+      read() {
+        pulled++;
+        this.push(pulled > 10_240 ? null : Buffer.alloc(1024, 'x'));
+      },
+    });
+    const req = Object.assign(flood, {
+      method: 'POST',
+      url: '/',
+      headers: { host: 'localhost:5173', authorization: 'Bearer creator-1' },
+    }) as unknown as IncomingMessage;
+    const reply = await respond(register, req);
+
+    expect(reply.status).toBe(413);
+    expect(reply.headers.connection).toBe('close');
+    expect(pulled).toBeLessThan(100);
+  });
+
   it('answers 502 when Reactor cannot be reached', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
     const { '/api/session': register } = routes();
