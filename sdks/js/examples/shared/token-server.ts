@@ -13,6 +13,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 const COOKIE = 'reactor_visitor';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Larger than any registration body. The route stops reading past this
+// rather than buffer whatever a reachable client sends.
+const MAX_BODY_BYTES = 4096;
 
 type Middleware = (req: IncomingMessage, res: ServerResponse, next: () => void) => void;
 
@@ -109,8 +112,13 @@ export function reactorTokenPlugin({ modelName, apiUrl = 'https://api.reactor.in
 
     try {
       body = await readJson(req);
-    } catch {
-      reply(res, 400, { error: 'the body is not JSON' });
+    } catch (error) {
+      if (error instanceof BodyTooLarge) {
+        res.setHeader('connection', 'close');
+        reply(res, 413, { error: `the body is larger than ${MAX_BODY_BYTES} bytes` });
+      } else {
+        reply(res, 400, { error: 'the body is not JSON' });
+      }
       return;
     }
     const sessionId = (body as { sessionId?: unknown } | null)?.sessionId;
@@ -177,11 +185,22 @@ function fail(res: ServerResponse, error: unknown): void {
   }
 }
 
+class BodyTooLarge extends Error {}
+
 function readJson(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
+    let size = 0;
 
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        req.pause();
+        reject(new BodyTooLarge());
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on('error', reject);
     req.on('end', () => {
       try {
