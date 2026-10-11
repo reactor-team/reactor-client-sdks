@@ -1,6 +1,6 @@
 import { Reactor } from '@reactor-team/js-sdk';
 import { log } from '../../shared/log';
-import { fetchToken } from '../../shared/fetch-token';
+import { sessionAuth } from '../../shared/fetch-token';
 
 // 04 — Publish an input track, and see it edited.
 //
@@ -30,6 +30,7 @@ const localVideoEl = document.querySelector<HTMLVideoElement>('#local')!;
 const remoteVideoEl = document.querySelector<HTMLVideoElement>('#remote')!;
 const button = document.querySelector<HTMLButtonElement>('#go')!;
 
+const auth = sessionAuth();
 const reactor = new Reactor({ modelName: MODEL_NAME });
 let localStream: MediaStream | undefined;
 
@@ -67,8 +68,11 @@ button.addEventListener('click', async () => {
   }
 
   log(`connecting to ${MODEL_NAME}...`);
-  await reactor.connect(await fetchToken());
+  await reactor.connect(auth.jwt);
   log(`session ${reactor.getSessionId() ?? '?'} is ready`);
+  // Registration started when the SDK first named the session; awaiting it
+  // here reports a failure — see shared/token-server.ts.
+  await auth.register(reactor.getSessionId()!);
 
   log('requesting the webcam...');
   localStream = await navigator.mediaDevices.getUserMedia({ video: true });

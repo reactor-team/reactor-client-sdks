@@ -23,6 +23,13 @@ versioning follows [Semantic Versioning](https://semver.org/).
   can cross a token refresh. An abort also ends the wait on the resolver.
   `FetchPlaylistOptions.sessionId` names the session for a resolver;
   `downloadClipAsFile()` fills it from the clip.
+- The examples' token route accepts `?session_id=` and mints a token bound
+  to that session, but only for a browser that registered the session
+  through the new `POST /api/session` route, which proves ownership against
+  Reactor itself. The browser side is `sessionAuth()`, one instance per
+  connection: its resolver keeps the creating token until shortly before it
+  expires, registers the session as soon as the SDK names it, and asks for a
+  bound one after.
 
 ### Changed
 

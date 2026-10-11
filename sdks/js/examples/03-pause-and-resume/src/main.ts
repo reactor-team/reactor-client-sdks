@@ -1,6 +1,6 @@
 import { Reactor } from '@reactor-team/js-sdk';
 import { log } from '../../shared/log';
-import { fetchToken } from '../../shared/fetch-token';
+import { sessionAuth } from '../../shared/fetch-token';
 
 // 03 — Pause a track, then resume it.
 //
@@ -26,6 +26,7 @@ const pauseButton = document.querySelector<HTMLButtonElement>('#pause')!;
 const resumeButton = document.querySelector<HTMLButtonElement>('#resume')!;
 const fpsEl = document.querySelector<HTMLParagraphElement>('#fps')!;
 
+const auth = sessionAuth();
 const reactor = new Reactor({ modelName: MODEL_NAME });
 
 let framesThisSecond = 0;
@@ -89,8 +90,11 @@ connectButton.addEventListener('click', async () => {
   }
 
   log(`connecting to ${MODEL_NAME}...`);
-  await reactor.connect(await fetchToken());
+  await reactor.connect(auth.jwt);
   log(`session ${reactor.getSessionId() ?? '?'} is ready`);
+  // Registration started when the SDK first named the session; awaiting it
+  // here reports a failure — see shared/token-server.ts.
+  await auth.register(reactor.getSessionId()!);
   await reactor.sendCommand('set_prompt', { prompt: PROMPT });
   await reactor.sendCommand('start');
 });
