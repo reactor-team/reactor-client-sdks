@@ -14,6 +14,15 @@
 # rather than a single combined job, mirroring endurance-tests.yml's own
 # one-job-per-SDK shape — adding a fourth SDK here later is "add a job", not
 # a restructure of this file.
+#
+# Every `gh` call below names the repository explicitly. None of these jobs
+# checks out the source — they have no need of it — so `gh` has no git remote
+# to infer from, and a bare `gh workflow run` dies with "fatal: not a git
+# repository" after the release has already published. That is not theoretical:
+# it silently cost the Swift release of 2026-09-16 and Java 1.0.0 their
+# endurance runs, and neither failure was visible from the release itself. The
+# `gh api` calls never hit it only because a fully-qualified `repos/{owner}/
+# {repo}/...` path needs no inference.
 name: Endurance tests after release
 
 on:
@@ -77,7 +86,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh workflow run endurance-tests.yml --ref main \
+          gh workflow run endurance-tests.yml --repo "$GITHUB_REPOSITORY" --ref main \
             -f sdk=python \
             -f duration_minutes="$RELEASE_ENDURANCE_DURATION_MINUTES"
 
@@ -115,7 +124,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh workflow run endurance-tests.yml --ref main \
+          gh workflow run endurance-tests.yml --repo "$GITHUB_REPOSITORY" --ref main \
             -f sdk=cpp \
             -f duration_minutes="$RELEASE_ENDURANCE_DURATION_MINUTES"
 
@@ -146,7 +155,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh workflow run endurance-tests.yml --ref main \
+          gh workflow run endurance-tests.yml --repo "$GITHUB_REPOSITORY" --ref main \
             -f sdk=swift \
             -f duration_minutes="$RELEASE_ENDURANCE_DURATION_MINUTES"
 
@@ -185,6 +194,6 @@ jobs:
           RELEASE_ENDURANCE_DURATION_MINUTES: ${{ vars.RELEASE_ENDURANCE_DURATION_MINUTES || '120' }}
         run: |
           set -euo pipefail
-          gh workflow run endurance-tests.yml --ref main \
+          gh workflow run endurance-tests.yml --repo "$GITHUB_REPOSITORY" --ref main \
             -f sdk=java \
             -f duration_minutes="$RELEASE_ENDURANCE_DURATION_MINUTES"
