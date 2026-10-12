@@ -27,8 +27,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - `ClipPlayer` and `useClipDownload` no longer resolve the token once up
-  front. They hand the resolver to the manifest poll, which resolves it per
-  attempt.
+  front. They hand the manifest poll a resolver that reads the current
+  `getJwt` on every attempt, so a rerender that swaps the prop during a
+  `202` wait reaches the next poll.
 
 ## [3.1.0]
 

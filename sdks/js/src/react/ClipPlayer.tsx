@@ -3,6 +3,7 @@
 import { useContext, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { type ClipPlayback, attachClipPlayback } from '../clip-playback';
+import { resolveJwtSource } from '../internal/jwt-resolver';
 import type { JwtResolver } from '../jwt';
 import { RecordingError, assembleClipBlob, createPlayableManifestUrl, fetchPlaylist } from '../recording';
 import { ReactorContext } from './ReactorProvider';
@@ -146,9 +147,10 @@ export function ClipPlayer({
     const setup = async () => {
       try {
         setPhase({ kind: 'waiting' });
-        // Explicit `getJwt` wins; fall back to the provider's source. Handed
-        // over unresolved so every poll asks for a current token.
-        const jwt = getJwtRef.current ?? storeRef.current?.getState().internal.reactor.getJwtResolver();
+        // Explicit `getJwt` wins; fall back to the provider's source. Read
+        // through the refs on every poll, so a rerender with a new `getJwt`
+        // reaches a wait already in progress.
+        const source = () => getJwtRef.current ?? storeRef.current?.getState().internal.reactor.getJwtResolver();
         const playlistOptions: Parameters<typeof fetchPlaylist>[1] = {
           predictedReadyAtMs: clip.predictedReadyAtMs,
           sessionId: clip.sessionId,
@@ -158,8 +160,8 @@ export function ClipPlayer({
         if (slackMsRef.current !== undefined) {
           playlistOptions.slackMs = slackMsRef.current;
         }
-        if (jwt !== undefined) {
-          playlistOptions.jwt = jwt;
+        if (source() !== undefined) {
+          playlistOptions.jwt = (context) => resolveJwtSource(source() ?? '', context);
         }
 
         const body = await fetchPlaylist(clip.playlistUrl, playlistOptions);

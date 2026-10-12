@@ -4,6 +4,7 @@ import { createElement } from 'react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeReactorClient } from '../internal/fake-reactor-client';
+import { resolveJwtSource } from '../internal/jwt-resolver';
 import { RecordingError, assembleClipBlob, createPlayableManifestUrl, fetchPlaylist } from '../recording';
 import type * as RecordingModule from '../recording';
 import type { Clip } from '../types';
@@ -170,30 +171,45 @@ describe('ClipPlayer', () => {
     expect(within(container).getByText('CLIP_GONE: chunks aged out')).toBeTruthy();
   });
 
-  it("hands an explicit getJwt to fetchPlaylist unresolved, with the clip's session", async () => {
-    const getJwt = () => 'explicit-jwt';
+  it("hands an explicit getJwt to fetchPlaylist as a resolver, with the clip's session", async () => {
+    const getJwt = vi.fn(() => 'explicit-jwt');
 
     render(<ClipPlayer clip={CLIP} getJwt={getJwt} />);
 
-    // Unresolved on purpose: fetchPlaylist calls it before every poll, so a
-    // wait that outlives the first token still gets a current one.
-    await waitFor(() =>
-      expect(fetchPlaylist).toHaveBeenCalledWith(
-        CLIP.playlistUrl,
-        expect.objectContaining({ jwt: getJwt, sessionId: CLIP.sessionId }),
-      ),
-    );
+    // A resolver, not a string: fetchPlaylist calls it before every poll, so
+    // a wait that outlives the first token still gets a current one.
+    await waitFor(() => expect(fetchPlaylist).toHaveBeenCalledWith(CLIP.playlistUrl, expect.anything()));
+    const options = vi.mocked(fetchPlaylist).mock.calls[0]![1]!;
+
+    expect(options.sessionId).toBe(CLIP.sessionId);
+    await expect(resolveJwtSource(options.jwt!, { sessionId: CLIP.sessionId })).resolves.toBe('explicit-jwt');
+    expect(getJwt).toHaveBeenCalledWith({ sessionId: CLIP.sessionId });
+  });
+
+  it('reads a getJwt swapped in by a rerender on the next poll', async () => {
+    // A poll in progress: the manifest keeps answering 202 for as long as
+    // this promise stays pending.
+    vi.mocked(fetchPlaylist).mockImplementation(() => new Promise(() => {}));
+    const { rerender } = render(<ClipPlayer clip={CLIP} getJwt={() => 'old'} />);
+
+    await waitFor(() => expect(fetchPlaylist).toHaveBeenCalledTimes(1));
+    const options = vi.mocked(fetchPlaylist).mock.calls[0]![1]!;
+
+    rerender(<ClipPlayer clip={CLIP} getJwt={() => 'new'} />);
+
+    // The effect did not restart; the poll it started reads the new prop.
+    expect(fetchPlaylist).toHaveBeenCalledTimes(1);
+    await expect(resolveJwtSource(options.jwt!, { sessionId: CLIP.sessionId })).resolves.toBe('new');
   });
 
   it("falls back to the ReactorProvider's jwt when getJwt is omitted", async () => {
     render(<ClipPlayer clip={CLIP} />, { wrapper: withProvider });
 
-    await waitFor(() =>
-      expect(fetchPlaylist).toHaveBeenCalledWith(
-        CLIP.playlistUrl,
-        expect.objectContaining({ jwt: 'provider-jwt', sessionId: CLIP.sessionId }),
-      ),
-    );
+    await waitFor(() => expect(fetchPlaylist).toHaveBeenCalledWith(CLIP.playlistUrl, expect.anything()));
+    const options = vi.mocked(fetchPlaylist).mock.calls[0]![1]!;
+
+    expect(options.sessionId).toBe(CLIP.sessionId);
+    await expect(resolveJwtSource(options.jwt!, { sessionId: CLIP.sessionId })).resolves.toBe('provider-jwt');
   });
 
   it('tears down the hls.js instance and revokes the manifest blob URL on unmount', async () => {

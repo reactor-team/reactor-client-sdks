@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { resolveJwtSource } from '../internal/jwt-resolver';
 import type { JwtResolver } from '../jwt';
 import { RecordingError, downloadClipAsFile } from '../recording';
 import { ReactorContext } from './ReactorProvider';
@@ -107,17 +108,16 @@ export function useClipDownload(clip: Clip, options: UseClipDownloadOptions = {}
     setState({ kind: 'downloading', fetched: 0, total: 0 });
     try {
       // Explicit `options.getJwt` wins; fall back to the provider's source.
-      // Read at click time, so a provider swap is picked up without
-      // re-running this callback, and handed over unresolved so every poll
-      // asks for a current token.
-      const jwt = getJwtRef.current ?? storeRef.current?.getState().internal.reactor.getJwtResolver();
+      // Read through the refs on every poll, so a rerender with a new
+      // `getJwt` during a `202` wait reaches the next poll.
+      const source = () => getJwtRef.current ?? storeRef.current?.getState().internal.reactor.getJwtResolver();
       const downloadOptions: Parameters<typeof downloadClipAsFile>[2] = {
         signal: abort.signal,
         onProgress: ({ fetched, total }) => setState({ kind: 'downloading', fetched, total }),
       };
 
-      if (jwt !== undefined) {
-        downloadOptions.jwt = jwt;
+      if (source() !== undefined) {
+        downloadOptions.jwt = (context) => resolveJwtSource(source() ?? '', context);
       }
 
       const blob = await downloadClipAsFile(clipRef.current, filenameRef.current, downloadOptions);
