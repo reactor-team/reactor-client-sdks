@@ -18,6 +18,10 @@ export {
   RequestTimeoutError,
   AbortedError,
   RecorderDisabledError,
+  GenerationModeMismatchError,
+  StepRefusedError,
+  StepResultTooLargeError,
+  UnsupportedFrameEncodingError,
 } from './errors';
 export {
   DEFAULT_PLAYLIST_POLL_SLACK_MS,
