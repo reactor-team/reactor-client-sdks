@@ -40,6 +40,7 @@ def fetch_jwt(
     api_url: str = DEFAULT_API_URL,
     *,
     models: list[str] | None = None,
+    sessions: list[str] | None = None,
     max_sessions: int | None = None,
     max_session_duration_seconds: int | None = None,
     expires_after: int | None = None,
@@ -55,12 +56,18 @@ def fetch_jwt(
     permissions the key's roles allow — fine server-to-server, wrong to hand to a
     client you do not control.
 
-    ``max_sessions`` caps how many sessions a scoped token may ever create, and is
-    ignored for unscoped ones. ``max_session_duration_seconds`` force-terminates every
-    session the token creates after that long (1-86400, i.e. up to 24h), independent of
-    the token's own expiry, and is likewise ignored for unscoped ones; the server
-    rejects an out-of-range value at mint rather than clamping it. ``expires_after`` is
-    a lifetime in seconds, which the server clamps to its own ceiling.
+    Pass ``sessions`` to bind the token to sessions that already exist, by id. Each
+    must belong to the key's user and account and still be open, or the coordinator
+    rejects the mint. Without ``models`` and ``max_sessions``, such a token can act
+    only on those sessions and create none.
+
+    ``max_sessions`` caps how many sessions a scoped token may ever hold, counting any
+    in ``sessions``, and is ignored for unscoped ones. ``max_session_duration_seconds``
+    force-terminates every session the token creates after that long (1-86400, i.e. up
+    to 24h), independent of the token's own expiry, and is likewise ignored for
+    unscoped ones; the server rejects an out-of-range value at mint rather than
+    clamping it. ``expires_after`` is a lifetime in seconds, which the server clamps to
+    its own ceiling.
 
     Raises:
         AuthError: if the exchange fails for any reason, including a response that
@@ -69,11 +76,15 @@ def fetch_jwt(
     url = f"{api_url.rstrip('/')}{_TOKENS_PATH}"
 
     body: dict[str, Any] = {}
-    if models is not None:
-        detail: dict[str, Any] = {
-            "type": "session",
-            "resources": {"models": {"match": list(models)}},
+    if models is not None or sessions is not None:
+        # A session detail must name a model scope. A bind alone widens it to every
+        # model, which costs nothing: with no `max_sessions` the token creates none.
+        resources: dict[str, Any] = {
+            "models": {"match": list(models)} if models is not None else {"all": True}
         }
+        if sessions is not None:
+            resources["sessions"] = {"bind": list(sessions)}
+        detail: dict[str, Any] = {"type": "session", "resources": resources}
         constraints: dict[str, Any] = {}
         if max_sessions is not None:
             constraints["max_sessions"] = max_sessions
@@ -119,5 +130,7 @@ def fetch_jwt(
     if not isinstance(token, str) or not token:
         raise AuthError(f"{url} returned no token")
 
-    _log.debug("exchanged the API key for a %s token", "scoped" if models else "unscoped")
+    _log.debug(
+        "exchanged the API key for a %s token", "scoped" if models or sessions else "unscoped"
+    )
     return token

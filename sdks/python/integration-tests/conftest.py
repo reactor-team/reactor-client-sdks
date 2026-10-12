@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import numpy as np
 import pytest
 
-from reactor_sdk import DEFAULT_API_URL, Reactor, fetch_jwt
+from reactor_sdk import DEFAULT_API_URL, Reactor
 
 # ── configuration ────────────────────────────────────────────────────────────
 #
@@ -65,11 +65,7 @@ def new_reactor(*, model_name: str = MODEL_NAME, jwt: str | None = None) -> Reac
     the key away from, so the key is simply handed to the constructor.
 
     Pass `jwt` to opt out of that and hand the client an already-minted token
-    instead — required for session adoption (see `test_multi_connection.py`'s
-    module docstring): the coordinator only accepts the token that *created*
-    a session for a second connection to adopt it by id, not a fresh one
-    minted per client, so a joiner needs the creator's own token, not its own
-    `api_key`.
+    instead.
     """
     if jwt is not None:
         return Reactor(model_name=model_name, jwt=jwt, api_url=API_URL, local=LOCAL)
@@ -153,16 +149,6 @@ async def reactor(reactor_factory: Callable[..., Reactor]) -> AsyncIterator[Reac
     r = reactor_factory()
     await paced_connect(r)
     yield r
-
-
-async def mint_jwt(*, model_name: str = MODEL_NAME) -> str:
-    """Mint one token from `API_KEY`, for callers that need to hand the
-    *same* token to more than one `Reactor` — session adoption, specifically
-    (see `new_reactor`'s docstring for why a joiner can't just mint its own).
-    Synchronous under the hood (`fetch_jwt` is one blocking HTTP POST), run
-    off the loop the same way `client.py`'s own `_resolve_token` does.
-    """
-    return await asyncio.to_thread(fetch_jwt, API_KEY, API_URL, models=[model_name])
 
 
 async def wait_until(

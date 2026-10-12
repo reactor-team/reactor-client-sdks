@@ -247,8 +247,8 @@ class Reactor:
             max_session_duration_seconds: Force-terminates every session a token this
                 client mints creates after this many seconds (1-86400), independent of
                 the token's own expiry. Only takes effect on the model-scoped token
-                minted to create a session — the unscoped one minted to adopt an
-                existing session ignores it, the same as the server does. Has no effect
+                minted to create a session. The token minted to adopt an existing
+                session is bound to it and creates none, so it carries no limit. Has no effect
                 when `jwt` is given: that token is already minted, and this client never
                 re-mints one it did not create itself.
 
@@ -275,7 +275,7 @@ class Reactor:
         # API key is ours, and `_minted_for` records the scope it was minted with, so a
         # later connect needing a different scope knows to mint again.
         self._caller_supplied_jwt = jwt is not None
-        self._minted_for: list[str] | None = None
+        self._minted_for: tuple[str, str] | None = None
 
         self._handle: int | None = None
 
@@ -947,13 +947,13 @@ class Reactor:
         Scoped to this model when we are creating the session, which is the safer
         default: such a token can only start sessions on this model, so a leak is worth
         that rather than everything the key can reach. Adopting a session created
-        elsewhere needs the broader token, because a scoped one cannot reach a session
-        it did not create.
+        elsewhere needs a token bound to that session, because a scoped token reaches
+        only the sessions it created or was bound to. That token creates none.
 
         So the scope depends on the *call*, not on the client: a token minted for one
         connect is not necessarily right for the next, and this mints again when the
         requirement changes. Caching regardless would quietly hand a model-scoped token
-        to a connect that needs an unscoped one.
+        to a connect that adopts a session, or one session's token to another's.
 
         The exchange is a blocking HTTP call, so it runs in a thread rather than
         stalling the loop. Skipped in local mode, which does not authenticate, and for a
@@ -965,7 +965,7 @@ class Reactor:
         if self._local or self._api_key is None or self._caller_supplied_jwt:
             return False
 
-        wanted = [self._model_name] if session_id is None else None
+        wanted = ("models", self._model_name) if session_id is None else ("session", session_id)
         if self._jwt is not None and self._minted_for == wanted:
             return False
 
@@ -973,8 +973,11 @@ class Reactor:
             fetch_jwt,
             self._api_key,
             self._api_url,
-            models=wanted,
-            max_session_duration_seconds=self._max_session_duration_seconds,
+            models=[self._model_name] if session_id is None else None,
+            sessions=None if session_id is None else [session_id],
+            max_session_duration_seconds=(
+                self._max_session_duration_seconds if session_id is None else None
+            ),
         )
         self._minted_for = wanted
         return True

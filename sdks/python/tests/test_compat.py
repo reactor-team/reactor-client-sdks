@@ -390,6 +390,33 @@ class TestFetchJwt:
             {"type": "session", "resources": {"models": {"match": ["hy-world"]}}}
         ]
 
+    def test_binding_sessions_alone_widens_the_model_scope_and_sets_no_budget(self) -> None:
+        """The coordinator requires a model scope on a session detail. With no
+        `max_sessions` the budget is the bound count, so the token creates nothing."""
+        with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
+            urlopen.return_value = self._response({"jwt": "tok"})
+            fetch_jwt("secret", "https://api.reactor.inc", sessions=["sess-1"])
+
+        body = json.loads(urlopen.call_args[0][0].data)
+        assert body["authorization_details"] == [
+            {
+                "type": "session",
+                "resources": {"models": {"all": True}, "sessions": {"bind": ["sess-1"]}},
+            }
+        ]
+
+    def test_binding_sessions_keeps_a_model_match(self) -> None:
+        with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
+            urlopen.return_value = self._response({"jwt": "tok"})
+            fetch_jwt("s", "https://x.invalid", models=["m"], sessions=["sess-1"], max_sessions=2)
+
+        detail = json.loads(urlopen.call_args[0][0].data)["authorization_details"][0]
+        assert detail["resources"] == {
+            "models": {"match": ["m"]},
+            "sessions": {"bind": ["sess-1"]},
+        }
+        assert detail["constraints"] == {"max_sessions": 2}
+
     def test_max_sessions_is_a_constraint_on_a_scoped_token(self) -> None:
         with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
             urlopen.return_value = self._response({"jwt": "tok"})
@@ -449,13 +476,26 @@ class TestTokenResolution:
         assert reactor._jwt == "tok"
         assert fetch.call_args.kwargs["models"] == ["hy-world"]
 
-    async def test_adopting_a_session_mints_an_unscoped_token(self) -> None:
-        """A model-scoped token cannot operate a session it did not create."""
-        reactor = Reactor(model_name="hy-world", api_key="k")
+    async def test_adopting_a_session_mints_a_token_bound_to_it(self) -> None:
+        """A scoped token reaches only the sessions it created or was bound to, and a
+        mint without a scope is bound to nothing. The duration limit applies only to
+        sessions a token creates, and this one creates none."""
+        reactor = Reactor(model_name="hy-world", api_key="k", max_session_duration_seconds=1800)
         with mock.patch("reactor_sdk.client.fetch_jwt", return_value="tok") as fetch:
             await reactor._resolve_token(session_id="sess-1")
 
+        assert fetch.call_args.kwargs["sessions"] == ["sess-1"]
         assert fetch.call_args.kwargs["models"] is None
+        assert fetch.call_args.kwargs["max_session_duration_seconds"] is None
+
+    async def test_adopting_another_session_mints_again(self) -> None:
+        reactor = Reactor(model_name="m", api_key="k")
+        with mock.patch("reactor_sdk.client.fetch_jwt", side_effect=["a", "b"]) as fetch:
+            await reactor._resolve_token(session_id="sess-1")
+            assert await reactor._resolve_token(session_id="sess-1") is False
+            assert await reactor._resolve_token(session_id="sess-2") is True
+
+        assert [c.kwargs["sessions"] for c in fetch.call_args_list] == [["sess-1"], ["sess-2"]]
 
     async def test_an_explicit_jwt_is_left_alone(self) -> None:
         """A token the caller supplied is theirs, not ours to replace."""
@@ -490,17 +530,16 @@ class TestTokenResolution:
 
     async def test_a_changed_scope_mints_again(self) -> None:
         """The scope depends on the call, not the client: creating a session wants a
-        model-scoped token and adopting one wants an unscoped token, so a cached token
+        model-scoped token and adopting one wants a token bound to it, so a cached token
         from the first is wrong for the second."""
         reactor = Reactor(model_name="m", api_key="k")
-        with mock.patch(
-            "reactor_sdk.client.fetch_jwt", side_effect=["scoped", "unscoped"]
-        ) as fetch:
+        with mock.patch("reactor_sdk.client.fetch_jwt", side_effect=["scoped", "bound"]) as fetch:
             await reactor._resolve_token(session_id=None)
             assert await reactor._resolve_token(session_id="sess-1") is True
 
-        assert reactor._jwt == "unscoped"
+        assert reactor._jwt == "bound"
         assert [c.kwargs["models"] for c in fetch.call_args_list] == [["m"], None]
+        assert [c.kwargs["sessions"] for c in fetch.call_args_list] == [None, ["sess-1"]]
 
     async def test_going_back_to_creating_mints_again(self) -> None:
         reactor = Reactor(model_name="m", api_key="k")

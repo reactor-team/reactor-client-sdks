@@ -6,21 +6,11 @@ that asymmetry is the point of adoption (a joiner's tab can close at any
 moment without taking the session down), and is what this file actually
 checks, not just that adoption connects.
 
-**Both clients must share one already-minted token.** Confirmed against prod
-with a standalone script: constructing each `Reactor` the convenient way
-(`api_key=...`, letting `_resolve_token` mint a token per instance) 403s the
-joiner every time — `UnauthorizedError: ... "this token is session-scoped and
-is not authorized for this resource"`. `sdks/js/integration-tests/`'s own
-multi-connection spec hit this first and documents the fix inline: "reading a
-session back requires the token that created it, so the joiner can't mint its
-own." Minting once via `fetch_jwt`/`conftest.py`'s `mint_jwt` and handing that
-same token to both `Reactor(jwt=...)` constructors (mirroring the JS harness's
-`fetchToken()` reused across both `connect()` calls) reproduces success
-locally — see `_shared_pair` below. This was never a coordinator/API-key
-provisioning problem, and `sdks/python/examples/05_multi_connection.py`
-constructs its `joiner` with `api_key=` the same way this file originally
-did — worth checking whether that example still actually works today, or
-bit-rotted the same way.
+Each client mints its own token from the API key, the way
+`sdks/python/examples/05_multi_connection.py` builds them. The joiner's token
+is bound to the creator's session (`client.py`'s `_resolve_token`): a scoped
+token reaches only the sessions it created or was bound to, so a joiner that
+minted an unbound one would get a 403 on its first session call.
 """
 
 from __future__ import annotations
@@ -29,10 +19,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 
 from conftest import (
-    LOCAL,
-    MODEL_NAME,
     assert_dominant_color,
-    mint_jwt,
     paced_connect,
     solid_rgb_frame,
     wait_until,
@@ -46,19 +33,14 @@ async def _shared_pair(
 ) -> tuple[Reactor, Callable[[], Awaitable[Reactor]]]:
     """A connected creator, and a callable that connects a joiner to it.
 
-    Both are built from one token minted up front — the whole point of this
-    file's module docstring finding. In local mode there's no coordinator
-    auth to satisfy in the first place (`Reactor(local=True)` skips it — see
-    `client.py`'s `_resolve_token`), and no `API_KEY` is guaranteed to exist
-    to mint from (`conftest.py` only requires one when not local) — so both
-    clients are built with no token at all and rely on `local=True` alone.
+    Each mints its own token from the suite's API key, or none in local mode,
+    which skips auth.
     """
-    jwt = None if LOCAL else await mint_jwt(model_name=MODEL_NAME)
-    creator: Reactor = reactor_factory(jwt=jwt)
+    creator: Reactor = reactor_factory()
     await paced_connect(creator)
 
     async def join() -> Reactor:
-        joiner: Reactor = reactor_factory(jwt=jwt)
+        joiner: Reactor = reactor_factory()
         await paced_connect(joiner, session_id=creator.session_id)
         return joiner
 
