@@ -242,7 +242,9 @@ Subclasses: `InvalidStateError`, `DisconnectedError`, `NetworkError`,
 `RequestTimeoutError`, `TransportError`, `UnauthorizedError`, `NotFoundError`,
 `ConflictError`, `RateLimitedError`, `BadRequestError`, `ServerError`,
 `VersionMismatchError`, `DecodeError`, `SessionTerminalError`,
-`MessageTooLargeError`, `AbortedError`.
+`MessageTooLargeError`, `AbortedError`, `RecorderDisabledError`, and for stepped
+sessions `GenerationModeMismatchError`, `StepRefusedError`,
+`StepResultTooLargeError` and `UnsupportedFrameEncodingError`.
 
 A command the model itself rejects reports the model's own code, which this package
 cannot enumerate — match on `error.code` for anything outside that list.
@@ -260,6 +262,45 @@ try:
 except AuthError:
     ...                       # the key itself was refused, or the auth host is unreachable
 ```
+
+## Stepped generation
+
+A model that supports it can generate one step at a time instead of streaming.
+Ask for it when creating the client, then call `step()`: it runs the state, the
+commands and every input frame pushed since the previous step as one unit, and
+returns what the model produced on each output track.
+
+```python
+from reactor_sdk import Reactor, StepCommand
+
+reactor = Reactor("owner/model", api_key=key, generation="stepped")
+
+@reactor.on_step_accepted
+def accepted(index):
+    print("generating step", index)
+
+await reactor.connect()          # GenerationModeMismatchError if the runtime cannot
+
+camera = await reactor.track("camera").publish()
+camera.push_frame(frame)         # buffered for the next step, not sent
+
+result = await reactor.step(
+    state={"prompt": "a red fox"},
+    commands=[StepCommand("advance", {"frames": 4})],
+)
+for out in result.track("main_video").frames:
+    out.array                    # numpy (height, width, 3) uint8 RGB
+    out.metadata, out.capture_time_us
+```
+
+`Track.push_frame` keeps its signature: in a stepped session it buffers the frame
+for the next step instead of sending it. Audio comes back as `(channels, samples)`
+`int16`. A step the runtime refuses raises `StepRefusedError`; one whose output
+does not fit in a message raises `StepResultTooLargeError`; a request too large to
+send raises `MessageTooLargeError` and keeps the pushed frames, which
+`clear_step_inputs()` drops. `step_timeout=` bounds a step (default 300 s).
+`numpy` is needed to read `.array`; `.data`, `.dtype` and `.shape` are there
+without it. See [`examples/09_stepped_generation.py`](examples/09_stepped_generation.py).
 
 ## Recordings
 
