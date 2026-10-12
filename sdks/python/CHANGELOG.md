@@ -9,6 +9,19 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Stepped generation. `Reactor(..., generation="stepped")` asks for a session
+  that generates one step at a time, and `await reactor.step(state=...,
+  commands=[...])` runs one and returns a `StepResult`: per output track, the
+  frames it produced, each readable as a numpy array (`frame.array`) with its
+  metadata and capture time. `Track.push_frame` buffers into the next step in
+  such a session. `on_step_accepted` reports a step the runtime started, and
+  `clear_step_inputs()` drops buffered frames. New errors:
+  `GenerationModeMismatchError` (the runtime did not start the session stepped),
+  `StepRefusedError`, `StepResultTooLargeError`, `UnsupportedFrameEncodingError`.
+  Needs a `libreactor_ffi` with `reactor_create_with_options`.
+
 ## [1.11.0] - 2026-10-14
 
 ### Added
