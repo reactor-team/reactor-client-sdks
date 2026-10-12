@@ -45,6 +45,20 @@ versioning follows [Semantic Versioning](https://semver.org/).
   connection: its resolver keeps the creating token until shortly before it
   expires, registers the session as soon as the SDK names it, and asks for a
   bound one after.
+- Stepped generation. `new Reactor({ generation: "stepped" })` asks the runtime
+  to start a session that generates one step at a time, and `connect()` fails
+  with the new `GenerationModeMismatchError` when it does not. `step({ state,
+  commands })` runs one step and resolves with its output per track, frame
+  data as typed arrays; `pushFrame(track, frame)` buffers a `VideoFrame`,
+  `ImageData`, raw RGB(A) pixels or `Int16Array` PCM for the next step, which
+  carries them in its own request — a stepped session's input never uses RTP.
+  A `stepAccepted` event reports when a step starts generating, and
+  `stepFrameToImageData()` turns a video frame into something a canvas draws.
+  Step failures are typed: `StepRefusedError`, `StepResultTooLargeError`,
+  `UnsupportedFrameEncodingError`.
+- `publishTrack(name)` without a `MediaStreamTrack` claims an input track of a
+  stepped session. Passing a `MediaStreamTrack` there is rejected with an
+  `InvalidStateError`: feeding a browser track into steps is not supported yet.
 
 ### Changed
 
