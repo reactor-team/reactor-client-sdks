@@ -85,8 +85,8 @@ auth-failure error path (`UnauthorizedError`, ...) against a local runtime.
 ## Issues found building this suite
 
 Found by running this suite against prod for real, all fixed. Session
-adoption needing a shared token (see `test_multi_connection.py`'s module
-docstring), `Reactor.close()` abandoning in-flight operations (fixed in
+adoption needing a token bound to the session (see `test_multi_connection.py`'s
+module docstring), `Reactor.close()` abandoning in-flight operations (fixed in
 #139; see `test_concurrency_and_races.py`'s module docstring), and
 `reactor/echo`'s own per-session state leak (`effect`, `intensity`,
 `_overlay` bleeding across sessions that should be isolated — REA-5931,
