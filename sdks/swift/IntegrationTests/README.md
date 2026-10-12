@@ -94,7 +94,7 @@ no example counterpart:
 | 02 | `02_UploadImageTests.swift` | An uploaded `FileRef` travels via `uploads:`, not embedded in the command's JSON; `set_overlay_image` visibly takes over the frame |
 | 03 | `03_PauseAndResumeTests.swift` | Nothing is delivered while paused (after a short transport-level grace window); resuming restarts delivery |
 | 04 | `04_PublishTrackTests.swift` | Pushing before `publish()` is refused; a published, pushed frame reaches `main_video` |
-| 05 | `05_MultiConnectionTests.swift` | A session-scoped token cannot adopt a session it did not create — both clients share one minted token; the joiner observes state the creator set before it connected |
+| 05 | `05_MultiConnectionTests.swift` | A session-scoped token cannot adopt a session it did not create — the joiner mints its own token, bound to the creator's session; the joiner observes state the creator set before it connected |
 | 06 | `06_RecordClipTests.swift` | A clip of generated media downloads to a real fragmented-MP4 file |
 | 07 | `07_FrameMetadataTests.swift` | A tag pushed on `webcam` loops back on `main_video`'s `userData` (REA-5972) — `frameID`/`captureTimeUs` are read but not asserted on content, since Python's own suite found `echo`'s values for both unreliable across independent live runs |
 | 08 | `08_ConnectionStatsTests.swift` | `stats()` on a live session: the first call has no measured bitrates, a later one has both, plus RTT, a succeeded nominated pair and inbound/outbound video streams; a disconnected client throws `invalidState` rather than reporting zeroes |
