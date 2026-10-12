@@ -9,7 +9,8 @@
 // Each client mints its own token from the API key, the way
 // `sdks/cpp/examples/05_multi_connection.cpp` builds them. The joiner's token is
 // bound to the creator's session: a scoped token reaches only the sessions it
-// created or was bound to, so an unbound one would get a 403 on `get session`.
+// created or was bound to, so a token not bound to the session would get a 403
+// on `get session`.
 
 #include <array>
 #include <chrono>
