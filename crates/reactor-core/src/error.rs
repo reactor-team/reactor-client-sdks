@@ -75,6 +75,10 @@ pub mod codes {
     /// fix — a structured field on `ClipFailed` — which should replace this
     /// once it lands.
     pub const RECORDER_DISABLED: &str = "RECORDER_DISABLED";
+    /// The runtime did not start the session in the generation mode this
+    /// client asked for — most often a runtime without stepped generation,
+    /// which ignores the request rather than refusing it.
+    pub const GENERATION_MODE_MISMATCH: &str = "GENERATION_MODE_MISMATCH";
     /// A failure that fits none of the above.
     pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
 }
@@ -217,6 +221,16 @@ pub enum CoreError {
     #[error("operation aborted")]
     Aborted,
 
+    /// The session did not start in the requested generation mode. `echoed`
+    /// is the mode the runtime reported, `None` when it reported none — which
+    /// is what a runtime without stepped generation does.
+    #[error("requested {requested} generation, but the runtime started the session in {}",
+        echoed.as_deref().unwrap_or("a mode it did not report (no stepped generation support?)"))]
+    GenerationModeMismatch {
+        requested: crate::protocol::session::GenerationMode,
+        echoed: Option<String>,
+    },
+
     /// `ReactorOptions::preset_tracks` disagreed with the coordinator's real
     /// `capabilities.tracks` once `poll_session_ready()` resolved. The SDP
     /// offer built from the preset (concurrently, as the optimization this
@@ -274,6 +288,7 @@ impl CoreError {
             // An argument (the preset track list) rejected here before anything
             // built from it was sent — same category as a rejected 4xx.
             CoreError::PresetTracksMismatch { .. } => codes::BAD_REQUEST,
+            CoreError::GenerationModeMismatch { .. } => codes::GENERATION_MODE_MISMATCH,
         }
     }
 
