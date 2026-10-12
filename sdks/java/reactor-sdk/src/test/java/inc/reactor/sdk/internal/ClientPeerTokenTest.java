@@ -124,7 +124,7 @@ final class ClientPeerTokenTest {
             fake.clearPendingCall();
 
             // A scoped token reaches only the sessions it created or was bound to, so this connect
-            // needs one bound to the session — and the client built with the old token goes with it.
+            // needs a token bound to the session, and the client built with the old token is replaced.
             fake.nextMintedJwt = "bound-token";
             client.connect("session-1", null);
 

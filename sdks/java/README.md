@@ -117,12 +117,13 @@ yours: the SDK never replaces it, and never mints over it even if a key is
 also set. Pass a key to a client you do not control and you have shipped the
 key.
 
-One case needs a different token and gets it without being asked:
-`connect(sessionId, connectionId)` adopts a session this client did not
-create, which a model-scoped token cannot reach, so a client holding a key
-mints one bound to that session for that connect and rebuilds itself around
-it. That token creates no session of its own. To mint one yourself, pass
-`{"sessions": ["<id>"]}` as the options of `Reactor.fetchJwt`.
+One case needs a different token, and the client mints it without being
+asked. `connect(sessionId, connectionId)` adopts a session this client did not
+create, and a model-scoped token cannot reach that session. So a client
+holding a key mints a token bound to that session for that connect, and
+rebuilds its native client with the new token. That token cannot create
+sessions. To mint one yourself, pass `{"sessions": ["<id>"]}` as the options
+of `Reactor.fetchJwt`.
 
 ## From Kotlin
 

@@ -435,7 +435,7 @@ public final class ClientPeer implements Runnable {
      * <p>The scope depends on the <em>call</em> rather than on the client: a token minted for one
      * connect is not necessarily right for the next, and this mints again when the requirement
      * changes. Caching regardless would quietly hand a model-scoped token to a connect that adopts
-     * a session, or one session's token to another's.
+     * a session, or a token bound to one session to a connect that adopts another.
      *
      * <p>Skipped in local mode, which does not authenticate, and for a token the caller supplied,
      * which is theirs rather than this client's to replace.
@@ -475,9 +475,10 @@ public final class ClientPeer implements Runnable {
                 return CompletableFuture.completedFuture(null);
             }
         }
-        // Naming the model narrows the token to one that can only start sessions here; naming a
-        // session binds it to that one. `max_sessions` is deliberately left out: the server's own
-        // default is what every other binding gets, and a bound token with no budget creates none.
+        // Naming the model narrows the token to one that can only start sessions here. Naming a
+        // session binds the token to that session. `max_sessions` is deliberately left out: the
+        // server's own default is what every other binding gets, and with no budget a bound token
+        // cannot create sessions.
         @Nullable String bound = wanted.sessionId();
         String mintOptions = bound == null
                 ? JsonValue.object()

@@ -12,10 +12,10 @@ versioning follows [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - `connect(sessionId, connectionId)` on a client built with
-  `ReactorOptions.apiKey` no longer fails with 403. The token it minted to
-  adopt the session was bound to no session at all. It is now bound to the
-  session it adopts, and it creates none. `Reactor.fetchJwt` accepts the same
-  `"sessions"` key in its options to mint such a token yourself.
+  `ReactorOptions.apiKey` no longer fails with 403. The client now mints a
+  token bound to the session it adopts. Before, the token it minted could not
+  reach that session. To mint a bound token yourself, pass
+  `{"sessions": ["<id>"]}` as the options of `Reactor.fetchJwt`.
 
 ## [1.2.0] - 2026-10-08
 
