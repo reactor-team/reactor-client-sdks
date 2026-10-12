@@ -19,6 +19,9 @@ const TYPESCRIPT_DECLARATIONS: &'static str = r#"
 export type ReactorStatus = "disconnected" | "connecting" | "waiting" | "ready";
 export type TrackKind = "audio" | "video";
 export type TrackDirection = "recvonly" | "sendonly";
+export type GenerationMode = "streamed" | "stepped";
+/** Byte layout of a frame given to `pushVideoFrame`. */
+export type PixelFormat = "rgba" | "rgb" | "bgra";
 
 /** Construction options. Only `modelName` is required. */
 export interface ClientOptions {
@@ -54,6 +57,14 @@ export interface ClientOptions {
   /** Preset tracks, when known ahead of time — builds the SDP offer
    *  concurrently with the session-ready poll rather than after. */
   modelTracks?: TrackCapability[];
+  /** How the session generates: "streamed" (the default), continuously over
+   *  media tracks, or "stepped", one `step()` at a time. `connect()` fails
+   *  with GENERATION_MODE_MISMATCH when the runtime did not start the
+   *  session in this mode. */
+  generation?: GenerationMode;
+  /** How long `step()` waits for a step's result, generation included.
+   *  Default 300000. */
+  stepTimeoutMs?: number;
   /** Console log level. Default "warn". */
   logLevel?: "off" | "error" | "warn" | "info" | "debug" | "trace";
 }
@@ -222,12 +233,62 @@ export interface ClientConnectionStat {
   metrics: Record<string, number>;
 }
 
+/** One command of a step, run after its state, in order. */
+export interface StepCommand {
+  command: string;
+  /** The command's arguments. Omitted or null for none. */
+  data?: Record<string, unknown> | null;
+}
+
+/** One frame a step produced. Hand-built by the binding rather than
+ *  serialized, so camelCase, unlike the wire payloads above. */
+export interface StepFrame {
+  /** How the frame travelled; "raw" is the only one decoded today. */
+  encoding: "raw" | "unspecified";
+  /** Element type, in NumPy notation: "uint8" (video), "int16" (audio). */
+  dtype: string;
+  /** (height, width, 3) RGB for video, (channels, samples) planar PCM for
+   *  audio. */
+  shape: number[];
+  /** The array, row-major, as the typed array `dtype` names — a Uint8Array
+   *  for video, an Int16Array for audio, raw bytes for a dtype with no
+   *  typed-array counterpart. */
+  data:
+    | Uint8Array
+    | Int8Array
+    | Uint16Array
+    | Int16Array
+    | Uint32Array
+    | Int32Array
+    | Float32Array
+    | Float64Array;
+  /** What the model attached to the frame. */
+  metadata?: Uint8Array;
+  /** When the model says the frame was captured, in microseconds. */
+  captureTimeUs?: number;
+}
+
+/** The frames one output track produced in a step, in production order. */
+export interface StepTrack {
+  track: string;
+  kind: TrackKind;
+  frames: StepFrame[];
+}
+
+/** What one step produced. */
+export interface StepResult {
+  /** The step's number in the session, counted from 1. */
+  index: number;
+  tracks: StepTrack[];
+}
+
 export type StatusListener = (status: ReactorStatus) => void;
 export type SessionIdListener = (sessionId: string | undefined) => void;
 export type MessageListener = (message: ReactorMessage) => void;
 export type TrackListener = (name: string, mid: string | undefined) => void;
 export type ErrorListener = (error: ReactorError) => void;
 export type CapabilitiesListener = (capabilities: Capabilities) => void;
+export type StepAcceptedListener = (index: number) => void;
 "#;
 
 #[wasm_bindgen]
@@ -304,4 +365,19 @@ extern "C" {
 
     #[wasm_bindgen(typescript_type = "CapabilitiesListener")]
     pub type CapabilitiesListener;
+
+    #[wasm_bindgen(typescript_type = "StepAcceptedListener")]
+    pub type StepAcceptedListener;
+
+    #[wasm_bindgen(typescript_type = "Record<string, unknown> | null")]
+    pub type StepStateInput;
+
+    #[wasm_bindgen(typescript_type = "StepCommand[]")]
+    pub type StepCommandsInput;
+
+    #[wasm_bindgen(typescript_type = "StepResult")]
+    pub type StepResultOutput;
+
+    #[wasm_bindgen(typescript_type = "PixelFormat")]
+    pub type PixelFormatInput;
 }
