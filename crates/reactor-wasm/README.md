@@ -47,16 +47,26 @@ rather than `any`:
 | Lifecycle | `connect(options?)`, `disconnect()`, `reconnect()` |
 | Configuration | `setJwt(jwt)` |
 | Messaging | `sendCommand(command, data?, uploads?)`, `requestSchema()` |
-| Tracks | `publishTrack(name, track)`, `unpublishTrack(name)`, `pauseTrack(name)`, `resumeTrack(name)`, `tracks()`, `trackMapping()`, `pausedTracks()` |
+| Tracks | `publishTrack(name, track?)`, `unpublishTrack(name)`, `pauseTrack(name)`, `resumeTrack(name)`, `tracks()`, `trackMapping()`, `pausedTracks()` |
+| Stepped generation | `step(state?, commands?)`, `pushVideoFrame(name, data, width, height, format?, metadata?, captureTimeUs?)`, `pushAudioFrame(name, samples, sampleRate, channels)`, `clearStepInputs()` |
 | Recording | `requestClip(seconds)`, `requestRecording()` |
 | Uploads | `uploadFile(file, name?)` |
 | Introspection | `status()`, `sessionId()`, `sessionInfo()`, `capabilities()`, `lastError()` |
 | Browser handles | `getPeerConnection()`, `getTrackByMid(mid)`, `getStreamByMid(mid)`, `getTrackByName(name)`, `getStreamByName(name)` |
-| Events | `onStatusChanged`, `onSessionIdChanged`, `onMessage`, `onRuntimeMessage`, `onTrackReceived`, `onError`, `onCapabilitiesReceived` |
+| Events | `onStatusChanged`, `onSessionIdChanged`, `onMessage`, `onRuntimeMessage`, `onTrackReceived`, `onError`, `onCapabilitiesReceived`, `onStepAccepted` |
 
 Payloads that come out of the core keep their wire names (`protocol_version`,
 `retry_after_ms`, `playlist_url`); the options this crate defines itself are
-camelCase, because nothing on the wire constrains them.
+camelCase, because nothing on the wire constrains them. So is a step's result:
+it is built by hand rather than serialized, because its frame data are typed
+arrays (`Uint8Array` video, `Int16Array` audio) and serde has no word for one.
+
+A client created with `generation: "stepped"` sends no input media over RTP.
+`publishTrack(name)` only claims an input track (a `MediaStreamTrack` is
+refused), `pushVideoFrame` / `pushAudioFrame` buffer frames in the core, and
+the next `step()` carries them inside its one `RequestStep`. Video arrives as
+RGBA, RGB or BGRA and is converted here to the BGRA the core's push API takes;
+the core sends it as RGB.
 
 ```js
 import init, { ReactorClient } from "./pkg/reactor_wasm.js";

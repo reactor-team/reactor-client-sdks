@@ -39,7 +39,9 @@
 //!
 //! Under a non-wasm target this crate is deliberately empty, so a host-side
 //! `cargo check --workspace` neither builds `web-sys` nor fails on the browser
-//! APIs. Lint the real thing with `mise run clippy:wasm`.
+//! APIs. Lint the real thing with `mise run clippy:wasm`. The one exception is
+//! `pixels`, plain Rust with no browser dependency, kept on every target so
+//! its tests run with the rest of the workspace's.
 
 #[cfg(target_family = "wasm")]
 mod auth;
@@ -51,8 +53,11 @@ mod client;
 mod http;
 #[cfg(target_family = "wasm")]
 mod peer;
+mod pixels;
 #[cfg(target_family = "wasm")]
 mod platform;
+#[cfg(target_family = "wasm")]
+mod step;
 #[cfg(target_family = "wasm")]
 mod types;
 
