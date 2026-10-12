@@ -802,6 +802,8 @@ fn dispatch(callbacks: &SharedCallbacks, event: ReactorEvent) {
             ReactorEvent::TrackReceived { .. } => callbacks.track_received.clone(),
             ReactorEvent::Error(_) => callbacks.error.clone(),
             ReactorEvent::CapabilitiesReceived(_) => callbacks.capabilities_received.clone(),
+            // Stepped generation is not exposed to JS yet (REA-7102).
+            ReactorEvent::StepAccepted { .. } => return,
         }
     };
     if callback.is_none() {
@@ -833,6 +835,7 @@ fn dispatch(callbacks: &SharedCallbacks, event: ReactorEvent) {
                 call(&callback, &[value]);
             }
         }
+        ReactorEvent::StepAccepted { .. } => {}
     }
 }
 

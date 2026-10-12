@@ -1122,6 +1122,8 @@ fn dispatch_event(cbs: &CallbackSet, event: ReactorEvent) {
         ReactorEvent::SessionIdChanged(sid) => {
             cbs.fire_opt_str(cbs.on_session_id, &sid);
         }
+        // Stepped generation is not exposed over the C ABI yet (REA-7101).
+        ReactorEvent::StepAccepted { .. } => {}
     }
 }
 

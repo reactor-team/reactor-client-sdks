@@ -10,6 +10,12 @@
 //! unprompted broadcast rather than a reply to any request — it matches
 //! nothing and is dispatched as a `message` event.
 //!
+//! A stepped session's `StepAccepted` is the one inbound message that carries
+//! a pending request's `request_id` without answering it: it is progress on
+//! that step, ahead of the `StepResult` or `Error` that resolves it. It is
+//! returned uncorrelated and leaves the request pending, so a request still
+//! gets exactly one response.
+//!
 //! Correlation decides who gets an *awaited* value, not who gets an event:
 //! a correlated reply carrying a message is dispatched as a `message` event
 //! as well, so a listener sees it alongside the resolved call. Only a
@@ -73,6 +79,16 @@ impl DataCorrelator {
 
     /// Build a request and register it for correlation.
     pub fn begin(&self, payload: data_client_message::Payload) -> PendingData {
+        self.begin_returning(payload).0
+    }
+
+    /// As [`DataCorrelator::begin`], also handing the payload back once it is
+    /// encoded, for a caller that must recover what it held if the send
+    /// fails — a step's buffered input frames.
+    pub fn begin_returning(
+        &self,
+        payload: data_client_message::Payload,
+    ) -> (PendingData, data_client_message::Payload) {
         let command = match &payload {
             data_client_message::Payload::Command(c) => c.r#type.clone(),
             data_client_message::Payload::RequestStep(_) => "request_step".to_string(),
@@ -90,11 +106,16 @@ impl DataCorrelator {
             .lock()
             .unwrap()
             .insert(request_id.clone(), (command, tx));
-        PendingData {
-            payload: message.encode_to_vec(),
-            request_id,
-            receiver,
-        }
+        let encoded = message.encode_to_vec();
+        let payload = message.payload.expect("set above");
+        (
+            PendingData {
+                payload: encoded,
+                request_id,
+                receiver,
+            },
+            payload,
+        )
     }
 
     /// Feed an inbound data-channel payload. Resolves the pending request it
@@ -116,7 +137,8 @@ impl DataCorrelator {
         // correlation below instead of being silently dropped.
         let payload = message.payload;
         let mut correlated = false;
-        if !message.request_id.is_empty() {
+        let progress = matches!(payload, Some(data_server_message::Payload::StepAccepted(_)));
+        if !message.request_id.is_empty() && !progress {
             match self.pending.lock().unwrap().remove(&message.request_id) {
                 Some((_, tx)) => {
                     let _ = tx.send(Ok(payload.clone()));
@@ -284,6 +306,48 @@ mod tests {
         );
         let handled = c.handle_message(&bytes).unwrap();
         assert!(!handled.correlated);
+    }
+
+    /// `StepAccepted` names its step's request_id but is not the response:
+    /// the step stays pending until the `StepResult` arrives.
+    #[test]
+    fn step_accepted_does_not_resolve_the_step() {
+        use crate::protocol::wire::v1::step::{RequestStep, StepAccepted, StepResult};
+
+        let c = DataCorrelator::new();
+        let mut pending = c.begin(data_client_message::Payload::RequestStep(
+            RequestStep::default(),
+        ));
+        let accepted = DataServerMessage {
+            request_id: pending.request_id.clone(),
+            kind: MessageKind::Notification as i32,
+            payload: Some(data_server_message::Payload::StepAccepted(StepAccepted {
+                index: 1,
+            })),
+        }
+        .encode_to_vec();
+        let handled = c.handle_message(&accepted).unwrap();
+        assert!(!handled.correlated);
+        assert!(matches!(
+            handled.payload,
+            Some(data_server_message::Payload::StepAccepted(StepAccepted {
+                index: 1
+            }))
+        ));
+        assert!(pending.receiver.try_recv().unwrap().is_none());
+
+        let result = encode_response(
+            &pending.request_id,
+            data_server_message::Payload::StepResult(StepResult {
+                index: 1,
+                tracks: vec![],
+            }),
+        );
+        assert!(c.handle_message(&result).unwrap().correlated);
+        assert!(matches!(
+            pending.receiver.try_recv().unwrap().unwrap(),
+            Ok(Some(data_server_message::Payload::StepResult(_)))
+        ));
     }
 
     #[test]
