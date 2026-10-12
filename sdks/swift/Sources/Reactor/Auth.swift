@@ -5,20 +5,30 @@ extension Reactor {
 
     /// What a minted token is allowed to do.
     ///
-    /// The three keys the platform accepts, and no others: the header is explicit
+    /// Keys the platform accepts, and no others: the header is explicit
     /// that an **unrecognised key in this object is an error**, precisely so a
     /// misspelt `models` cannot be dropped in silence and mint exactly the
-    /// unscoped token the caller was avoiding. A struct with three fields makes
+    /// unscoped token the caller was avoiding. A struct of known fields makes
     /// that impossible to get wrong.
     public struct TokenOptions: Sendable, Hashable, Encodable {
 
         /// The models this token may reach, as `owner/name`.
         ///
-        /// Left empty, the token carries everything the key's roles allow — fine
-        /// server-to-server, wrong to hand to a client you do not control.
+        /// Left empty with no `sessions`, the token carries everything the key's
+        /// roles allow — fine server-to-server, wrong to hand to a client you do
+        /// not control.
         public var models: [String]?
 
-        /// How many sessions the token may open. Scoped tokens only.
+        /// Existing sessions to bind the token to, by id.
+        ///
+        /// A scoped token reaches only the sessions it created or was bound to, so
+        /// a client that adopts a session it did not create needs one bound to it:
+        /// `.init(sessions: [sessionID])`. Without `models` and `maxSessions`, the
+        /// token can act only on these sessions and create none.
+        public var sessions: [String]?
+
+        /// How many sessions the token may hold, counting any in `sessions`.
+        /// Scoped tokens only.
         public var maxSessions: Int?
 
         /// How long the token should live, in seconds. The server clamps it.
@@ -27,13 +37,18 @@ extension Reactor {
         /// The wire spelling, which is the platform's rather than Swift's.
         private enum CodingKeys: String, CodingKey {
             case models
+            case sessions
             case maxSessions = "max_sessions"
             case expiresAfter = "expires_after"
         }
 
         /// Scope a token.
-        public init(models: [String]? = nil, maxSessions: Int? = nil, expiresAfter: Int? = nil) {
+        public init(
+            models: [String]? = nil, sessions: [String]? = nil, maxSessions: Int? = nil,
+            expiresAfter: Int? = nil
+        ) {
             self.models = models
+            self.sessions = sessions
             self.maxSessions = maxSessions
             self.expiresAfter = expiresAfter
         }

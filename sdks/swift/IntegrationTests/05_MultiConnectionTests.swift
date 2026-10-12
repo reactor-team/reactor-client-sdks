@@ -7,11 +7,10 @@ import Testing
 /// Scenario 05, scripted: two clients on one session, the second adopting it by
 /// id. Mirrors `sdks/python/integration-tests/tests/test_multi_connection.py`.
 ///
-/// **A session-scoped token cannot adopt a session it did not create** — a
-/// joiner minting its own token gets a fresh session rather than adopting the
-/// creator's (403, "this token is session-scoped"), confirmed against
-/// production by the other three SDKs. So both clients here are built from one
-/// minted token, not one each.
+/// Each client mints its own token from the suite's key. The joiner's is bound
+/// to the creator's session (`TokenOptions.sessions`): a scoped token reaches
+/// only the sessions it created or was bound to, so a joiner with a
+/// model-scoped token of its own would get a 403 on its first session call.
 ///
 /// Teardown is asymmetric on purpose: only the creator ends the session; the
 /// observer just leaves. Not concurrently, either — the JS suite's own
@@ -19,20 +18,14 @@ import Testing
 @Suite("05 - multi connection")
 struct MultiConnectionTests {
 
-    /// A connected creator, and a callable that connects a joiner to it — both
-    /// built from one token minted up front, the whole point of this suite.
+    /// A connected creator, and a callable that connects a joiner to it, each
+    /// with a token of its own.
     private func sharedPair() async throws -> (creator: Reactor, join: () async throws -> Reactor) {
-        // No key to mint from in local mode, and none needed: `makeReactor`'s
-        // own local branch ignores `jwt` and connects to the local
-        // coordinator directly. Minting unconditionally here made both tests
-        // in this suite fail during setup on every local run — found by
-        // Codex review on this PR.
-        let token = IntegrationConfig.local ? nil : try await IntegrationConfig.mintJWT()
-        let creator = try await IntegrationConfig.makeReactor(jwt: token)
+        let creator = try await IntegrationConfig.makeReactor()
         try await pacedConnect(creator)
 
         func join() async throws -> Reactor {
-            let joiner = try await IntegrationConfig.makeReactor(jwt: token)
+            let joiner = try await IntegrationConfig.makeReactor(adopting: creator.sessionID)
             try await pacedConnect(joiner, sessionID: creator.sessionID)
             return joiner
         }

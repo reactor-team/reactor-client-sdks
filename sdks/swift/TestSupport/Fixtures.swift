@@ -77,12 +77,11 @@ package enum IntegrationConfig {
     /// A `Reactor` for this suite's configuration, not yet connected.
     ///
     /// Pass `jwt` to opt out of the key exchange and hand the client an already
-    /// minted token instead — required for session adoption (scenario 05): the
-    /// coordinator only accepts the token that *created* a session for a second
-    /// connection to adopt it by id, not a fresh one minted per client, so a
-    /// joiner needs the creator's own token, not its own key.
+    /// minted token instead. Pass `adopting` for a client that will adopt that
+    /// session: its token is bound to it, because a scoped token reaches only the
+    /// sessions it created or was bound to.
     package static func makeReactor(
-        model: String = defaultModel, jwt: String? = nil
+        model: String = defaultModel, jwt: String? = nil, adopting sessionID: String? = nil
     ) async throws
         -> Reactor
     {
@@ -94,20 +93,15 @@ package enum IntegrationConfig {
                 model: model, jwt: jwt, apiURL: apiURL, local: false, eventQueue: nil)
         }
         let key = try requiredAPIKey()
-        // Scoped to this model: a token that can reach everything the key can is
-        // fine server-to-server and wrong everywhere else — same reasoning as
-        // ExampleSupport's connectedClient(model:).
+        // Scoped to this model, or bound to the session it adopts: a token that can
+        // reach everything the key can is fine server-to-server and wrong
+        // everywhere else — same reasoning as ExampleSupport's
+        // connectedClient(model:).
         return try await Reactor(
             model: model, apiKey: key, apiURL: apiURL,
-            options: .init(models: [model]), local: false, eventQueue: nil)
-    }
-
-    /// Mint one token from this suite's key, for a caller that needs to hand the
-    /// *same* token to more than one `Reactor` (session adoption).
-    package static func mintJWT(model: String = defaultModel) async throws -> String {
-        try await Reactor.fetchJWT(
-            apiKey: requiredAPIKey(), apiURL: apiURL,
-            options: .init(models: [model]), local: local)
+            options: sessionID.map { Reactor.TokenOptions(sessions: [$0]) }
+                ?? Reactor.TokenOptions(models: [model]),
+            local: false, eventQueue: nil)
     }
 
     private static func value(_ name: String) -> String? {

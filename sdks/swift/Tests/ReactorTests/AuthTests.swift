@@ -41,7 +41,7 @@ struct AuthTests {
         #expect(call.optionsJSON == nil)
     }
 
-    @Test("options carry exactly the three keys the platform accepts")
+    @Test("options carry the keys the platform accepts, in its spelling")
     func optionsCarryOnlyDocumentedKeys() async throws {
         let fake = FakeLibrary()
 
@@ -58,9 +58,22 @@ struct AuthTests {
         // An unrecognised key in this object is an error on the platform's side,
         // deliberately — so that a misspelt `models` cannot be dropped in silence
         // and mint the unscoped token the caller was avoiding. Nothing this SDK
-        // sends can be misspelt, because there are three fields and no dictionary.
+        // sends can be misspelt, because every key is a field and none is a string.
         #expect(!json.contains("maxSessions"))
         #expect(!json.contains("expiresAfter"))
+    }
+
+    @Test("sessions bind the token to existing sessions, with no model scope or budget")
+    func sessionsBindTheToken() async throws {
+        let fake = FakeLibrary()
+
+        _ = try await fetching(
+            fake, result: #"{"jwt":"t"}"#, options: .init(sessions: ["session-1"]))
+
+        // The library fills in the model scope a bind needs. With no
+        // `max_sessions`, the coordinator gives the token no room to create one.
+        let json = try #require(fake.jwtCalls.first?.optionsJSON)
+        #expect(json == #"{"sessions":["session-1"]}"#)
     }
 
     @Test("an omitted option is omitted rather than sent as null")
