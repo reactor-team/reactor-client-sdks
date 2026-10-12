@@ -802,6 +802,12 @@ impl Reactor {
                 // is the only signal callers get that it failed.
                 self.emit_error(ErrorDetails::new(error.code, error.message, true));
             }
+            Some(
+                data_server_message::Payload::StepAccepted(_)
+                | data_server_message::Payload::StepResult(_),
+            ) => {
+                log::debug!("ignoring step traffic: this client does not step yet");
+            }
         }
     }
 
@@ -891,6 +897,12 @@ impl Reactor {
                 code: e.code,
                 message: e.message,
             }),
+            Some(
+                data_server_message::Payload::StepAccepted(_)
+                | data_server_message::Payload::StepResult(_),
+            ) => Err(CoreError::decode(format!(
+                "unexpected step reply to command '{command}'"
+            ))),
         }
     }
 

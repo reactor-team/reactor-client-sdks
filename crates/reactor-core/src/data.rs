@@ -75,6 +75,7 @@ impl DataCorrelator {
     pub fn begin(&self, payload: data_client_message::Payload) -> PendingData {
         let command = match &payload {
             data_client_message::Payload::Command(c) => c.r#type.clone(),
+            data_client_message::Payload::RequestStep(_) => "request_step".to_string(),
             data_client_message::Payload::Error(_) => "command".to_string(),
         };
         let id = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
