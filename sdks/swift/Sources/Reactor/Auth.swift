@@ -5,7 +5,7 @@ extension Reactor {
 
     /// What a minted token is allowed to do.
     ///
-    /// Keys the platform accepts, and no others: the header is explicit
+    /// Each field maps to a key the platform accepts. The header is explicit
     /// that an **unrecognised key in this object is an error**, precisely so a
     /// misspelt `models` cannot be dropped in silence and mint exactly the
     /// unscoped token the caller was avoiding. A struct of known fields makes
@@ -22,9 +22,10 @@ extension Reactor {
         /// Existing sessions to bind the token to, by id.
         ///
         /// A scoped token reaches only the sessions it created or was bound to, so
-        /// a client that adopts a session it did not create needs one bound to it:
-        /// `.init(sessions: [sessionID])`. Without `models` and `maxSessions`, the
-        /// token can act only on these sessions and create none.
+        /// a client that adopts a session it did not create needs a token bound to
+        /// that session: `.init(sessions: [sessionID])`. Without `models` and
+        /// `maxSessions`, the token can act only on these sessions and cannot
+        /// create new ones.
         public var sessions: [String]?
 
         /// How many sessions the token may hold, counting any in `sessions`.

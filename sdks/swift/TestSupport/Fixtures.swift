@@ -77,9 +77,9 @@ package enum IntegrationConfig {
     /// A `Reactor` for this suite's configuration, not yet connected.
     ///
     /// Pass `jwt` to opt out of the key exchange and hand the client an already
-    /// minted token instead. Pass `adopting` for a client that will adopt that
-    /// session: its token is bound to it, because a scoped token reaches only the
-    /// sessions it created or was bound to.
+    /// minted token instead. Pass `adopting` with the id of a session the client
+    /// will adopt, and its token is bound to that session: a scoped token reaches
+    /// only the sessions it created or was bound to.
     package static func makeReactor(
         model: String = defaultModel, jwt: String? = nil, adopting sessionID: String? = nil
     ) async throws

@@ -58,7 +58,8 @@ struct AuthTests {
         // An unrecognised key in this object is an error on the platform's side,
         // deliberately — so that a misspelt `models` cannot be dropped in silence
         // and mint the unscoped token the caller was avoiding. Nothing this SDK
-        // sends can be misspelt, because every key is a field and none is a string.
+        // sends can be misspelt, because every key is a struct field rather than a
+        // dictionary key.
         #expect(!json.contains("maxSessions"))
         #expect(!json.contains("expiresAfter"))
     }
@@ -70,8 +71,8 @@ struct AuthTests {
         _ = try await fetching(
             fake, result: #"{"jwt":"t"}"#, options: .init(sessions: ["session-1"]))
 
-        // The library fills in the model scope a bind needs. With no
-        // `max_sessions`, the coordinator gives the token no room to create one.
+        // The native library adds the model scope that a bind needs. With no
+        // `max_sessions`, the token cannot create sessions.
         let json = try #require(fake.jwtCalls.first?.optionsJSON)
         #expect(json == #"{"sessions":["session-1"]}"#)
     }
