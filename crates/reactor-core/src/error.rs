@@ -79,6 +79,15 @@ pub mod codes {
     /// client asked for — most often a runtime without stepped generation,
     /// which ignores the request rather than refusing it.
     pub const GENERATION_MODE_MISMATCH: &str = "GENERATION_MODE_MISMATCH";
+    /// The runtime refused a step — the request or the model turned it down —
+    /// and changed no state. Platform-sent; lowercase because it is the
+    /// runtime's own code, passed through.
+    pub const STEP_REFUSED: &str = "step_refused";
+    /// A step ran, but its result does not fit in one data-channel message.
+    /// Platform-sent, as [`STEP_REFUSED`].
+    pub const STEP_RESULT_TOO_LARGE: &str = "step_result_too_large";
+    /// A step result carried a frame in an encoding this client cannot decode.
+    pub const UNSUPPORTED_FRAME_ENCODING: &str = "UNSUPPORTED_FRAME_ENCODING";
     /// A failure that fits none of the above.
     pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
 }
@@ -231,6 +240,26 @@ pub enum CoreError {
         echoed: Option<String>,
     },
 
+    /// The runtime refused the step (`step_refused`): the request or the model
+    /// turned it down, and no state changed.
+    #[error("step refused: {message}")]
+    StepRefused { message: String },
+
+    /// The step ran, but its result did not fit in one data-channel message
+    /// (`step_result_too_large`).
+    #[error("step result too large: {message}")]
+    StepResultTooLarge { message: String },
+
+    /// Any other failed step: an error the runtime answered with, or the
+    /// connection dropping while the step was in flight (`DISCONNECTED`).
+    #[error("step failed ({code}): {message}")]
+    StepFailed { code: String, message: String },
+
+    /// A step result carried a frame in an encoding with no registered
+    /// decoder (see `step::FrameDecoders`).
+    #[error("step result track '{track}' has a frame in unsupported encoding {encoding}")]
+    UnsupportedFrameEncoding { track: String, encoding: i32 },
+
     /// `ReactorOptions::preset_tracks` disagreed with the coordinator's real
     /// `capabilities.tracks` once `poll_session_ready()` resolved. The SDP
     /// offer built from the preset (concurrently, as the optimization this
@@ -259,13 +288,18 @@ impl CoreError {
             CoreError::ControlRequest { code, .. }
             | CoreError::CommandRequest { code, .. }
             | CoreError::Recording { code, .. }
+            | CoreError::StepFailed { code, .. }
                 if !code.is_empty() =>
             {
                 code
             }
             CoreError::ControlRequest { .. }
             | CoreError::CommandRequest { .. }
-            | CoreError::Recording { .. } => codes::INTERNAL_ERROR,
+            | CoreError::Recording { .. }
+            | CoreError::StepFailed { .. } => codes::INTERNAL_ERROR,
+            CoreError::StepRefused { .. } => codes::STEP_REFUSED,
+            CoreError::StepResultTooLarge { .. } => codes::STEP_RESULT_TOO_LARGE,
+            CoreError::UnsupportedFrameEncoding { .. } => codes::UNSUPPORTED_FRAME_ENCODING,
             CoreError::Http(_) => codes::NETWORK_ERROR,
             CoreError::Status { status, .. } => match status {
                 401 | 403 => codes::UNAUTHORIZED,
@@ -525,6 +559,35 @@ mod tests {
         assert!(!status(501).recoverable());
         assert!(!status(426).recoverable());
         assert!(!CoreError::VersionMismatch("too old".into()).recoverable());
+    }
+
+    /// Each step failure a caller handles differently arrives as its own
+    /// variant and code, so a binding can branch without reading messages.
+    #[test]
+    fn step_failures_have_their_own_codes() {
+        let refused = CoreError::StepRefused {
+            message: "no".into(),
+        };
+        assert_eq!(refused.code(), codes::STEP_REFUSED);
+        assert!(!refused.recoverable());
+
+        let too_large = CoreError::StepResultTooLarge {
+            message: "big".into(),
+        };
+        assert_eq!(too_large.code(), codes::STEP_RESULT_TOO_LARGE);
+
+        let dropped = CoreError::StepFailed {
+            code: codes::DISCONNECTED.into(),
+            message: "gone".into(),
+        };
+        assert_eq!(dropped.code(), codes::DISCONNECTED);
+        assert!(dropped.recoverable());
+
+        let unknown = CoreError::UnsupportedFrameEncoding {
+            track: "v".into(),
+            encoding: 7,
+        };
+        assert_eq!(unknown.code(), codes::UNSUPPORTED_FRAME_ENCODING);
     }
 
     #[test]
