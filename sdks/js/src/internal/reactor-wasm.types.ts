@@ -20,6 +20,9 @@
 export type ReactorStatus = 'disconnected' | 'connecting' | 'waiting' | 'ready';
 export type TrackKind = 'audio' | 'video';
 export type TrackDirection = 'recvonly' | 'sendonly';
+export type GenerationMode = 'streamed' | 'stepped';
+/** Byte layout of a frame given to `pushVideoFrame`. */
+export type PixelFormat = 'rgba' | 'rgb' | 'bgra';
 
 export interface ClientOptions {
   modelName: string;
@@ -39,6 +42,11 @@ export interface ClientOptions {
   sdpBackoffMaxMs?: number;
   sdpBackoffMultiplier?: number;
   modelTracks?: TrackCapability[];
+  /** "streamed" (the default) or "stepped". */
+  generation?: GenerationMode;
+  /** How long `step()` waits for a step's result, generation included.
+   *  Default 300000. */
+  stepTimeoutMs?: number;
   logLevel?: 'off' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
 }
 
@@ -185,12 +193,62 @@ export interface ReactorError {
   timestamp_ms: number;
 }
 
+/** One command of a step, run after its state, in order. */
+export interface StepCommand {
+  command: string;
+  /** The command's arguments. Omitted or null for none. */
+  data?: Record<string, unknown> | null;
+}
+
+/** One frame a step produced. Hand-built by the binding rather than
+ *  serialized, so camelCase, unlike the wire payloads above. */
+export interface StepFrame {
+  /** How the frame travelled; "raw" is the only one decoded today. */
+  encoding: 'raw' | 'unspecified';
+  /** Element type, in NumPy notation: "uint8" (video), "int16" (audio). */
+  dtype: string;
+  /** (height, width, 3) RGB for video, (channels, samples) planar PCM for
+   *  audio. */
+  shape: number[];
+  /** The array, row-major, as the typed array `dtype` names — a Uint8Array
+   *  for video, an Int16Array for audio, raw bytes for a dtype with no
+   *  typed-array counterpart. */
+  data:
+    | Uint8Array
+    | Int8Array
+    | Uint16Array
+    | Int16Array
+    | Uint32Array
+    | Int32Array
+    | Float32Array
+    | Float64Array;
+  /** What the model attached to the frame. */
+  metadata?: Uint8Array;
+  /** When the model says the frame was captured, in microseconds. */
+  captureTimeUs?: number;
+}
+
+/** The frames one output track produced in a step, in production order. */
+export interface StepTrack {
+  track: string;
+  kind: TrackKind;
+  frames: StepFrame[];
+}
+
+/** What one step produced. */
+export interface StepResult {
+  /** The step's number in the session, counted from 1. */
+  index: number;
+  tracks: StepTrack[];
+}
+
 export type StatusListener = (status: ReactorStatus) => void;
 export type SessionIdListener = (sessionId: string | undefined) => void;
 export type MessageListener = (message: ReactorMessage) => void;
 export type TrackListener = (name: string, mid: string | undefined) => void;
 export type ErrorListener = (error: ReactorError) => void;
 export type CapabilitiesListener = (capabilities: Capabilities) => void;
+export type StepAcceptedListener = (index: number) => void;
 
 /** The `#[wasm_bindgen]` class itself, as JavaScript sees it. */
 export declare class ReactorClient {
@@ -211,7 +269,9 @@ export declare class ReactorClient {
   ): Promise<ReactorMessage | undefined>;
   requestSchema(): Promise<unknown>;
 
-  publishTrack(name: string, track: MediaStreamTrack): Promise<void>;
+  /** In a stepped session `track` must be omitted: the call only claims the
+   *  track, whose frames come from `pushVideoFrame`/`pushAudioFrame`. */
+  publishTrack(name: string, track?: MediaStreamTrack | null): Promise<void>;
   unpublishTrack(name: string): Promise<void>;
   pauseTrack(name: string): Promise<void>;
   resumeTrack(name: string): Promise<void>;
@@ -223,6 +283,24 @@ export declare class ReactorClient {
   tracks(): TrackCapability[];
   trackMapping(): TrackMappingEntry[];
   pausedTracks(): string[];
+
+  /** Stepped sessions only. Rejects with the core's code (`step_refused`,
+   *  `step_result_too_large`, `MESSAGE_TOO_LARGE`, ...). */
+  step(state?: Record<string, unknown> | null, commands?: StepCommand[] | null): Promise<StepResult>;
+  /** Stepped sessions only. Buffers the frame for the next `step()`; throws
+   *  synchronously on a frame that does not match its dimensions. */
+  pushVideoFrame(
+    name: string,
+    data: Uint8Array,
+    width: number,
+    height: number,
+    format?: PixelFormat | null,
+    metadata?: Uint8Array | null,
+    captureTimeUs?: number | null,
+  ): void;
+  /** Stepped sessions only. Interleaved PCM, `channels` samples per frame. */
+  pushAudioFrame(name: string, samples: Int16Array, sampleRate: number, channels: number): void;
+  clearStepInputs(): void;
 
   requestClip(durationSeconds: number): Promise<Clip>;
   requestRecording(): Promise<Clip>;
@@ -253,6 +331,7 @@ export declare class ReactorClient {
   onTrackReceived(listener: TrackListener): void;
   onError(listener: ErrorListener): void;
   onCapabilitiesReceived(listener: CapabilitiesListener): void;
+  onStepAccepted(listener: StepAcceptedListener): void;
 
   /** Generated by `wasm-bindgen` for every exported class. Cancels the pump,
    *  the dispatcher and the heartbeat, and closes the peer connection — see
