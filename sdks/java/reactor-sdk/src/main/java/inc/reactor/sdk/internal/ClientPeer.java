@@ -169,15 +169,14 @@ public final class ClientPeer implements Runnable {
     /**
      * What a token is allowed to reach.
      *
-     * <p>Creating a session takes the narrower one, which can only start sessions on this model, so
-     * a leak is worth that rather than everything the key can reach. Adopting a session created
-     * elsewhere takes the broader one, because a scoped token cannot reach a session it did not
-     * create — a 403 on `get session`, and exactly what the multi-connection example hits.
+     * <p>Creating a session takes a token that can only start sessions on this model, so a leak is
+     * worth that rather than everything the key can reach. Adopting a session created elsewhere
+     * takes a token bound to that session, because a scoped token reaches only the sessions it
+     * created or was bound to — anything else is a 403 on `get session`.
+     *
+     * @param sessionId the session the token is bound to, or {@code null} for this model
      */
-    private enum TokenScope {
-        THIS_MODEL,
-        UNSCOPED
-    }
+    private record TokenScope(@Nullable String sessionId) {}
 
     final Events<ConnectionStatus> statusEvents = new Events<>("status");
     final Events<ReactorException> errorEvents = new Events<>("error");
@@ -435,8 +434,8 @@ public final class ClientPeer implements Runnable {
      *
      * <p>The scope depends on the <em>call</em> rather than on the client: a token minted for one
      * connect is not necessarily right for the next, and this mints again when the requirement
-     * changes. Caching regardless would quietly hand a model-scoped token to a connect that needs
-     * an unscoped one.
+     * changes. Caching regardless would quietly hand a model-scoped token to a connect that adopts
+     * a session, or one session's token to another's.
      *
      * <p>Skipped in local mode, which does not authenticate, and for a token the caller supplied,
      * which is theirs rather than this client's to replace.
@@ -448,9 +447,9 @@ public final class ClientPeer implements Runnable {
         if (apiKey == null || callerSuppliedJwt || options.local()) {
             return CompletableFuture.completedFuture(null);
         }
-        TokenScope wanted = sessionId == null ? TokenScope.THIS_MODEL : TokenScope.UNSCOPED;
+        TokenScope wanted = new TokenScope(sessionId);
         synchronized (handleLock) {
-            if (jwt != null && mintedFor == wanted) {
+            if (jwt != null && wanted.equals(mintedFor)) {
                 return CompletableFuture.completedFuture(null);
             }
             // Behind whatever is already queued, and the scope is checked again when this runs:
@@ -472,20 +471,23 @@ public final class ClientPeer implements Runnable {
      */
     private CompletableFuture<Void> mint(TokenScope wanted) {
         synchronized (handleLock) {
-            if (jwt != null && mintedFor == wanted) {
+            if (jwt != null && wanted.equals(mintedFor)) {
                 return CompletableFuture.completedFuture(null);
             }
         }
-        // Null options mint the token the key's roles allow; naming the model narrows it to one
-        // that can only start sessions here. `max_sessions` is deliberately left out: the server's
-        // own default is what every other binding gets, and asking for more would make this SDK
-        // the one that quietly raised the ceiling.
-        String mintOptions = wanted == TokenScope.THIS_MODEL
+        // Naming the model narrows the token to one that can only start sessions here; naming a
+        // session binds it to that one. `max_sessions` is deliberately left out: the server's own
+        // default is what every other binding gets, and a bound token with no budget creates none.
+        @Nullable String bound = wanted.sessionId();
+        String mintOptions = bound == null
                 ? JsonValue.object()
                         .putArray("models", List.of(JsonValue.of(options.modelName())))
                         .build()
                         .toJsonString()
-                : null;
+                : JsonValue.object()
+                        .putArray("sessions", List.of(JsonValue.of(bound)))
+                        .build()
+                        .toJsonString();
         return Authentication.fetchJwt(ffi, options.apiUrl(), apiKey, mintOptions, options.local())
                 .thenAccept(minted -> adoptMintedToken(minted, wanted));
     }

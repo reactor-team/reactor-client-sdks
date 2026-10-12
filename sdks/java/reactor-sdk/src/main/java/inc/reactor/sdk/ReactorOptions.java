@@ -108,8 +108,8 @@ public final class ReactorOptions {
          * <p>Use this or {@link #jwt}, not both — a token you supplied is yours, and wins. The
          * token this mints is scoped to {@code modelName}, so a leak is worth sessions on that
          * model rather than everything the key can reach. Adopting a session someone else created
-         * needs a broader token, and {@code connect(sessionId, ...)} mints one, because a scoped
-         * token cannot reach a session it did not create.
+         * needs a token bound to that session, and {@code connect(sessionId, ...)} mints one,
+         * because a scoped token reaches only the sessions it created or was bound to.
          *
          * <p>A key belongs on a machine you control. Handing one to a client you do not is what
          * {@link Reactor#fetchJwt} and a backend of your own are for.

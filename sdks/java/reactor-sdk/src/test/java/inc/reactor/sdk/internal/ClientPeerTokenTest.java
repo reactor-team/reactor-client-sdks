@@ -114,8 +114,8 @@ final class ClientPeerTokenTest {
     }
 
     @Test
-    @DisplayName("adopting a session mints an unscoped token, and replaces the client built with the old one")
-    void adoptingASessionNeedsABroaderToken() {
+    @DisplayName("adopting a session mints a token bound to it, and replaces the client built with the old one")
+    void adoptingASessionNeedsATokenBoundToIt() {
         try (FakeNativeLibrary fake = new FakeNativeLibrary()) {
             fake.nextMintedJwt = "scoped-token";
             ClientPeer client = peer(fake, withKey());
@@ -123,20 +123,43 @@ final class ClientPeerTokenTest {
             fake.settleLastCall(true, "{}", null);
             fake.clearPendingCall();
 
-            // A scoped token cannot reach a session it did not create, so this connect needs the
-            // broader one — and the client built with the old token has to go with it.
-            fake.nextMintedJwt = "unscoped-token";
+            // A scoped token reaches only the sessions it created or was bound to, so this connect
+            // needs one bound to the session — and the client built with the old token goes with it.
+            fake.nextMintedJwt = "bound-token";
             client.connect("session-1", null);
 
             assertEquals(
-                    java.util.Arrays.asList("{\"models\":[\"owner/model\"]}", null),
+                    List.of("{\"models\":[\"owner/model\"]}", "{\"sessions\":[\"session-1\"]}"),
                     fake.jwtRequests,
-                    "adopting a session must ask for a token that is not scoped to one model");
+                    "adopting a session must ask for a token bound to it, with no budget to create one");
             assertEquals(
-                    List.of("scoped-token", "unscoped-token"),
+                    List.of("scoped-token", "bound-token"),
                     fake.createdWithJwt,
                     "a token only reaches the native client through a new one");
             assertEquals(1, fake.destroyCalls, "the client built with the stale token must be destroyed");
+            client.close();
+        }
+    }
+
+    @Test
+    @DisplayName("a token bound to one session is reused for it and replaced for another")
+    void aTokenBoundToOneSessionDoesNotReachAnother() {
+        try (FakeNativeLibrary fake = new FakeNativeLibrary()) {
+            ClientPeer client = peer(fake, withKey());
+            client.connect("session-1", null);
+            fake.settleLastCall(true, "{}", null);
+            fake.clearPendingCall();
+            client.connect("session-1", null);
+            fake.settleLastCall(true, "{}", null);
+            fake.clearPendingCall();
+
+            fake.nextMintedJwt = "bound-token-2";
+            client.connect("session-2", null);
+
+            assertEquals(
+                    List.of("{\"sessions\":[\"session-1\"]}", "{\"sessions\":[\"session-2\"]}"),
+                    fake.jwtRequests,
+                    "the same session reuses its token, and another session needs its own");
             client.close();
         }
     }
@@ -233,7 +256,7 @@ final class ClientPeerTokenTest {
             CompletableFuture<?> outstanding = client.sendCommand("get_status", null, null);
             assertFalse(outstanding.isDone(), "the library is holding this one");
 
-            fake.nextMintedJwt = "unscoped-token";
+            fake.nextMintedJwt = "bound-token";
             client.connect("session-1", null);
 
             // reactor_destroy ended the old client's right to call back, so this completion is one
@@ -261,7 +284,7 @@ final class ClientPeerTokenTest {
             CompletableFuture<?> outstanding = client.sendCommand("get_status", null, null);
             outstanding.whenComplete((ignored, failed) -> client.close());
 
-            fake.nextMintedJwt = "unscoped-token";
+            fake.nextMintedJwt = "bound-token";
             CompletableFuture<Void> adopting = client.connect("session-1", null);
 
             assertTrue(adopting.isCompletedExceptionally(), "the connect cannot proceed on a closed client");
@@ -297,9 +320,9 @@ final class ClientPeerTokenTest {
             fake.settleHeldJwt("scoped-token");
             assertEquals(1, fake.heldJwtCount(), "the second mint starts only once the first is done");
 
-            fake.settleHeldJwt("unscoped-token");
+            fake.settleHeldJwt("bound-token");
             assertEquals(
-                    java.util.Arrays.asList("{\"models\":[\"owner/model\"]}", null),
+                    List.of("{\"models\":[\"owner/model\"]}", "{\"sessions\":[\"session-1\"]}"),
                     fake.jwtRequests,
                     "and each asks for the scope its own connect needed");
             client.close();
@@ -330,7 +353,7 @@ final class ClientPeerTokenTest {
             // -1: a callback is still running against the arena the next handle would share, so
             // there is no rebuilding this client.
             fake.destroyResult = -1;
-            fake.nextMintedJwt = "unscoped-token";
+            fake.nextMintedJwt = "bound-token";
             CompletableFuture<Void> adopting = client.connect("session-1", null);
 
             assertTrue(adopting.isCompletedExceptionally(), "the client cannot be rebuilt, so the connect fails");

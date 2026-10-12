@@ -9,6 +9,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `connect(sessionId, connectionId)` on a client built with
+  `ReactorOptions.apiKey` no longer fails with 403. The token it minted to
+  adopt the session was bound to no session at all. It is now bound to the
+  session it adopts, and it creates none. `Reactor.fetchJwt` accepts the same
+  `"sessions"` key in its options to mint such a token yourself.
+
 ## [1.2.0] - 2026-10-08
 
 ### Added
