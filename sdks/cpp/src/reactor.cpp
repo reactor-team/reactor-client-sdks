@@ -492,7 +492,7 @@ void ClientImpl::begin_connect(std::unique_ptr<Pending> op, ConnectOptions optio
     if (wanted.kind == TokenScope::Kind::ThisModel) {
       token_options["models"] = Json::array({model_});
     } else {
-      // With no `max_sessions`, a token bound to the session creates none.
+      // With no `max_sessions`, a token bound to the session cannot create sessions.
       token_options["sessions"] = Json::array({wanted.session_id});
     }
     const std::string options_json = token_options.dump();

@@ -29,8 +29,8 @@ namespace {
 constexpr std::uint32_t WIDTH = 64;
 constexpr std::uint32_t HEIGHT = 64;
 
-/// A connected creator, and a callable that joins it to a fresh client of its
-/// own. Mirrors sdks/python/integration-tests/tests/
+/// A connected creator, and a callable that connects a second client to the
+/// same session. Mirrors sdks/python/integration-tests/tests/
 /// test_multi_connection.py's `_shared_pair`.
 struct SharedPair {
   reactor::Reactor& creator;

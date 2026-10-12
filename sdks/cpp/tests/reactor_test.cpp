@@ -411,7 +411,7 @@ TEST_CASE("an API key is exchanged for a token scoped to the model") {
 }
 
 // A scoped token reaches only the sessions it created or was bound to, so the
-// token minted to adopt one is bound to it, and creates none.
+// token minted to adopt a session is bound to it and cannot create sessions.
 TEST_CASE("an API key is exchanged for a token bound to the session it adopts") {
   Fixture fixture;
 

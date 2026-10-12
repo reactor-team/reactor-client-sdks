@@ -141,9 +141,9 @@ reactor::Reactor client{"owner/model", reactor::Jwt{token}};
 ```
 
 Omitting `models` and `sessions` mints an unscoped token. `sessions` binds the token
-to existing sessions by id; without `models` and `max_sessions`, it can act only on
-those and create none. A client built with an `ApiKey` mints such a token itself when
-it adopts a session. `FetchJwtOptions::api_url` selects the
+to existing sessions by id. Without `models` and `max_sessions`, that token can act
+only on those sessions and cannot create new ones. A client built with an `ApiKey`
+mints such a token itself when it adopts a session. `FetchJwtOptions::api_url` selects the
 coordinator; its `local` flag allows a development certificate for that explicit
 exchange. Errors reach the future as typed `ReactorError` subclasses.
 
