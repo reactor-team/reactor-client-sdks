@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use crate::backoff::PollConfig;
 use crate::control::ControlCorrelator;
 use crate::coordinator::{CoordinatorClient, CoordinatorConfig};
-use crate::data::DataCorrelator;
+use crate::data::{DataCorrelator, PendingData};
 use crate::error::{codes, CoreError, ErrorDetails, ReactorError};
 use crate::events::{Dispatcher, ReactorEvent};
 use crate::messaging::build_command_payload;
@@ -44,6 +44,7 @@ use crate::signaling::WebRtcSignaling;
 use crate::stage_times::{sort_stages, StageTimes, SUBMIT};
 use crate::state::ReactorStatus;
 use crate::stats::{client_connection_stat, ClientStatsReporter, ConnectionStats, StatsSampler};
+use crate::step::{build_request_step, FrameDecoders, StepCommand, StepInputs, StepOutput};
 use crate::{SharedAuth, SharedHttp, SharedPeer, SharedPlatform};
 
 /// Host-supplied platform implementations.
@@ -78,6 +79,9 @@ pub struct ReactorOptions {
     pub ready_timeout: Duration,
     pub control_request_timeout: Duration,
     pub clip_request_timeout: Duration,
+    /// How long [`Reactor::step`] waits for a step's result. Covers the whole
+    /// step, generation included, so it is far longer than a command's.
+    pub step_timeout: Duration,
     pub session_poll: PollConfig,
     pub sdp_poll: PollConfig,
     /// When the caller already knows the model's track list ahead of time,
@@ -117,6 +121,7 @@ impl ReactorOptions {
             ready_timeout: Duration::from_secs(30),
             control_request_timeout: Duration::from_secs(10),
             clip_request_timeout: Duration::from_secs(10),
+            step_timeout: Duration::from_secs(300),
             session_poll: PollConfig::session(),
             sdp_poll: PollConfig::sdp(),
             preset_tracks: None,
@@ -255,6 +260,10 @@ pub struct Reactor {
     stats: StatsSampler,
     /// The stages the SDK times itself, reported with the client stats.
     stage_times: Arc<StageTimes>,
+    /// Stepped mode: input frames pushed since the last step, per track.
+    step_inputs: StepInputs,
+    /// Stepped mode: how a step result's frames are decoded, per encoding.
+    frame_decoders: FrameDecoders,
 }
 
 impl Reactor {
@@ -291,6 +300,8 @@ impl Reactor {
             data: DataCorrelator::new(),
             stats: StatsSampler::new(),
             stage_times: Arc::new(StageTimes::new()),
+            step_inputs: StepInputs::new(),
+            frame_decoders: FrameDecoders::default(),
             state: Mutex::new(State {
                 auto_resume_tracks: options.auto_resume_tracks,
                 sdp_max_attempts: options.sdp_poll.max_attempts,
@@ -847,11 +858,17 @@ impl Reactor {
                 // is the only signal callers get that it failed.
                 self.emit_error(ErrorDetails::new(error.code, error.message, true));
             }
-            Some(
-                data_server_message::Payload::StepAccepted(_)
-                | data_server_message::Payload::StepResult(_),
-            ) => {
-                log::debug!("ignoring step traffic: this client does not step yet");
+            Some(data_server_message::Payload::StepAccepted(accepted)) => {
+                self.dispatcher.dispatch(ReactorEvent::StepAccepted {
+                    index: accepted.index,
+                });
+            }
+            Some(data_server_message::Payload::StepResult(result)) if !handled.correlated => {
+                // Its step() already gave up (timeout) — nobody to hand it to.
+                log::warn!("dropping uncorrelated result of step {}", result.index);
+            }
+            Some(data_server_message::Payload::StepResult(_)) => {
+                // Delivered to the awaiting step() call.
             }
         }
     }
@@ -929,7 +946,12 @@ impl Reactor {
         self.ensure_ready()?;
         let payload = build_command_payload(command, data, uploads)?;
         let response = self
-            .data_request(command, payload, self.options.control_request_timeout)
+            .data_request(
+                "send_command",
+                command,
+                payload,
+                self.options.control_request_timeout,
+            )
             .await?;
         match response {
             None => Ok(None),
@@ -953,11 +975,20 @@ impl Reactor {
 
     async fn data_request(
         &self,
-        command: &str,
+        operation: &str,
+        label: &str,
         payload: data_client_message::Payload,
         request_timeout: Duration,
     ) -> Result<Option<data_server_message::Payload>, CoreError> {
         let pending = self.data.begin(payload);
+        self.send_pending(operation, &pending)?;
+        self.await_data_response(label, pending, request_timeout)
+            .await
+    }
+
+    /// Check a registered data request against the channel's limit and send
+    /// it. On failure nothing was sent and the correlation is cancelled.
+    fn send_pending(&self, operation: &str, pending: &PendingData) -> Result<(), CoreError> {
         let max_bytes = self.peer.max_message_bytes();
         if pending.payload.len() > max_bytes {
             self.data.cancel(&pending.request_id);
@@ -972,11 +1003,20 @@ impl Reactor {
             // only the channel knows) is the caller's to handle, as when the
             // check above refuses it: returned, with no error event.
             if !matches!(error, CoreError::MessageTooLarge { .. }) {
-                self.emit_error(error.details(Some("send_command")));
+                self.emit_error(error.details(Some(operation)));
             }
             return Err(error);
         }
-        match timeout(&self.platform, request_timeout, command, pending.receiver).await {
+        Ok(())
+    }
+
+    async fn await_data_response(
+        &self,
+        label: &str,
+        pending: PendingData,
+        request_timeout: Duration,
+    ) -> Result<Option<data_server_message::Payload>, CoreError> {
+        match timeout(&self.platform, request_timeout, label, pending.receiver).await {
             Ok(Ok(result)) => result,
             Ok(Err(_cancelled)) => Err(CoreError::Aborted),
             Err(timeout_error) => {
@@ -984,6 +1024,96 @@ impl Reactor {
                 Err(timeout_error)
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Stepped generation
+    // ------------------------------------------------------------------
+
+    /// Run one step of a stepped session and return what it produced.
+    ///
+    /// Sends one `RequestStep` on the data channel: `state` (a JSON object of
+    /// the model's state fields, or `null`), then `commands` in order, then
+    /// every input frame pushed since the last step, per track in push order.
+    /// The runtime runs it as one unit. A `StepAccepted` notification may
+    /// arrive first and is published as [`ReactorEvent::StepAccepted`]; this
+    /// call does not wait for it, only for the step's one response.
+    ///
+    /// Fails, with nothing sent and the input frames kept for the next step,
+    /// when the session is not a ready stepped session, when `state` or a
+    /// command's data is not an object, or when the encoded request exceeds
+    /// the data channel's `max_message_bytes()` ([`CoreError::MessageTooLarge`];
+    /// see [`Reactor::clear_step_inputs`]). Once sent, the frames belong to
+    /// that step whatever its outcome. The runtime's refusal is
+    /// [`CoreError::StepRefused`], an oversized result
+    /// [`CoreError::StepResultTooLarge`], any other failure
+    /// [`CoreError::StepFailed`].
+    ///
+    /// The step is not checked against the model's command schema here: the
+    /// core holds no schema to check it against (the runtime validates it,
+    /// and refuses it as `step_refused`).
+    pub async fn step(
+        &self,
+        state: Value,
+        commands: Vec<StepCommand>,
+    ) -> Result<StepOutput, CoreError> {
+        if self.options.generation != GenerationMode::Stepped {
+            return Err(CoreError::InvalidState(
+                "step() needs a session connected with generation: stepped".into(),
+            ));
+        }
+        self.ensure_ready()?;
+        let mut request = build_request_step(state, commands, Vec::new())?;
+        request.inputs = self.step_inputs.take();
+
+        let (pending, payload) = self
+            .data
+            .begin_returning(data_client_message::Payload::RequestStep(request));
+        if let Err(error) = self.send_pending("step", &pending) {
+            if let data_client_message::Payload::RequestStep(request) = payload {
+                self.step_inputs.restore(request.inputs);
+            }
+            return Err(error);
+        }
+        drop(payload);
+
+        let response = match self
+            .await_data_response("step", pending, self.options.step_timeout)
+            .await
+        {
+            Ok(response) => response,
+            // Rejected from outside the reply path: the connection dropped
+            // with the step in flight (`fail_all`).
+            Err(CoreError::CommandRequest { code, message, .. }) => {
+                return Err(CoreError::StepFailed { code, message })
+            }
+            Err(error) => return Err(error),
+        };
+        match response {
+            Some(data_server_message::Payload::StepResult(result)) => {
+                self.frame_decoders.decode_result(result)
+            }
+            Some(data_server_message::Payload::Error(e)) => Err(match e.code.as_str() {
+                codes::STEP_REFUSED => CoreError::StepRefused { message: e.message },
+                codes::STEP_RESULT_TOO_LARGE => {
+                    CoreError::StepResultTooLarge { message: e.message }
+                }
+                _ => CoreError::StepFailed {
+                    code: e.code,
+                    message: e.message,
+                },
+            }),
+            Some(other) => Err(CoreError::decode(format!(
+                "unexpected reply to a step: {other:?}"
+            ))),
+            None => Err(CoreError::decode("empty reply to a step")),
+        }
+    }
+
+    /// Drop every input frame buffered for the next step — the way out when a
+    /// step was refused as [`CoreError::MessageTooLarge`] and kept its frames.
+    pub fn clear_step_inputs(&self) {
+        self.step_inputs.clear();
     }
 
     pub fn ping(&self) -> Result<(), CoreError> {
@@ -4160,5 +4290,383 @@ mod tests {
                 echoed: Some(_),
             })
         ));
+    }
+
+    // ── Stepped generation: step() ──────────────────────────────────────────
+
+    use crate::protocol::wire::v1::data::DataClientMessage;
+    use crate::protocol::wire::v1::platform::TrackKind as WireTrackKind;
+    use crate::protocol::wire::v1::step::{
+        Frame, FrameEncoding, StepAccepted, StepResult, TrackFrames,
+    };
+
+    /// Records every data-channel send and advertises `max` as its limit.
+    struct DataPeer {
+        sent_data: Mutex<Vec<Vec<u8>>>,
+        max: usize,
+    }
+
+    impl DataPeer {
+        fn new(max: usize) -> Self {
+            Self {
+                sent_data: Mutex::new(vec![]),
+                max,
+            }
+        }
+
+        fn sent(&self) -> Vec<DataClientMessage> {
+            self.sent_data
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|raw| DataClientMessage::decode(raw.as_slice()).unwrap())
+                .collect()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PeerTransport for DataPeer {
+        async fn prepare(
+            &self,
+            _: &[IceServer],
+            _: &[TrackCapability],
+        ) -> Result<PreparedOffer, CoreError> {
+            Ok(PreparedOffer {
+                sdp_offer: String::new(),
+                track_mapping: vec![],
+            })
+        }
+        async fn set_remote_description(&self, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn send_data(&self, payload: &[u8], _: bool) -> Result<(), CoreError> {
+            self.sent_data.lock().unwrap().push(payload.to_vec());
+            Ok(())
+        }
+        fn send_control(&self, _: &[u8]) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn set_track_direction(&self, _: &str, _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn close(&self) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn max_message_bytes(&self) -> usize {
+            self.max
+        }
+    }
+
+    /// A ready reactor in `generation` mode on a [`DataPeer`].
+    fn make_ready_reactor(peer: Arc<DataPeer>, generation: GenerationMode) -> Arc<Reactor> {
+        let mut opts = ReactorOptions::new("http://localhost", "test-model");
+        opts.generation = generation;
+        let reactor = Arc::new(Reactor::new(
+            ReactorDeps {
+                http: Arc::new(PendingHttp) as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: peer as SharedPeer,
+            },
+            opts,
+        ));
+        reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+        reactor
+    }
+
+    fn raw_frame(byte: u8) -> Frame {
+        Frame {
+            encoding: FrameEncoding::Raw as i32,
+            dtype: "uint8".into(),
+            shape: vec![1, 1, 3],
+            data: vec![byte; 3],
+            metadata: None,
+            capture_time_us: None,
+        }
+    }
+
+    /// Spawn a step and wait until its request is on the wire.
+    async fn start_step(
+        reactor: &Arc<Reactor>,
+        peer: &DataPeer,
+        state: Value,
+        commands: Vec<StepCommand>,
+    ) -> (
+        tokio::task::JoinHandle<Result<StepOutput, CoreError>>,
+        DataClientMessage,
+    ) {
+        let before = peer.sent().len();
+        let r = reactor.clone();
+        let stepping = tokio::spawn(async move { r.step(state, commands).await });
+        let sent = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let sent = peer.sent();
+                if sent.len() > before {
+                    return sent.last().unwrap().clone();
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("step should send its request");
+        (stepping, sent)
+    }
+
+    async fn feed(
+        reactor: &Reactor,
+        request_id: &str,
+        kind: MessageKind,
+        payload: data_server_message::Payload,
+    ) {
+        let raw = DataServerMessage {
+            request_id: request_id.to_string(),
+            kind: kind as i32,
+            payload: Some(payload),
+        }
+        .encode_to_vec();
+        reactor
+            .handle_peer_event(PeerEvent::DataChannelMessage(raw))
+            .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_step_sends_one_request_with_state_commands_and_buffered_inputs() {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        reactor
+            .step_inputs
+            .push("cam", WireTrackKind::Video, raw_frame(1));
+        reactor
+            .step_inputs
+            .push("mic", WireTrackKind::Audio, raw_frame(2));
+        reactor
+            .step_inputs
+            .push("cam", WireTrackKind::Video, raw_frame(3));
+
+        let (stepping, sent) = start_step(
+            &reactor,
+            &peer,
+            json!({"prompt": "a cat"}),
+            vec![StepCommand::new("set_seed", json!({"seed": 7}))],
+        )
+        .await;
+
+        assert_eq!(sent.kind, MessageKind::Request as i32);
+        let Some(data_client_message::Payload::RequestStep(request)) = sent.payload else {
+            panic!("expected a RequestStep, got {:?}", sent.payload);
+        };
+        assert_eq!(
+            struct_to_value(request.state.unwrap()),
+            json!({"prompt": "a cat"})
+        );
+        assert_eq!(request.commands.len(), 1);
+        assert_eq!(request.commands[0].r#type, "set_seed");
+        assert_eq!(
+            request
+                .inputs
+                .iter()
+                .map(|t| (
+                    t.track.as_str(),
+                    t.frames.iter().map(|f| f.data[0]).collect::<Vec<_>>()
+                ))
+                .collect::<Vec<_>>(),
+            [("cam", vec![1, 3]), ("mic", vec![2])]
+        );
+        assert!(
+            reactor.step_inputs.is_empty(),
+            "a sent step owns its inputs; the buffer starts over"
+        );
+
+        feed(
+            &reactor,
+            &sent.request_id,
+            MessageKind::Response,
+            data_server_message::Payload::StepResult(StepResult {
+                index: 1,
+                tracks: vec![TrackFrames {
+                    track: "out".into(),
+                    kind: WireTrackKind::Video as i32,
+                    frames: vec![raw_frame(9)],
+                }],
+            }),
+        )
+        .await;
+        let output = stepping.await.unwrap().unwrap();
+        assert_eq!(output.index, 1);
+        assert_eq!(output.tracks[0].track, "out");
+        assert_eq!(output.tracks[0].frames[0].data, [9, 9, 9]);
+        assert_eq!(output.tracks[0].frames[0].shape, [1, 1, 3]);
+    }
+
+    /// `StepAccepted` is a state event, not the response: it is published,
+    /// and the step keeps waiting for its result.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn step_accepted_is_an_event_and_does_not_resolve_the_step() {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        let mut events = reactor.subscribe();
+        let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+
+        feed(
+            &reactor,
+            &sent.request_id,
+            MessageKind::Notification,
+            data_server_message::Payload::StepAccepted(StepAccepted { index: 4 }),
+        )
+        .await;
+        let accepted = tokio::time::timeout(Duration::from_secs(1), async {
+            while let Some(event) = events.next().await {
+                if let ReactorEvent::StepAccepted { index } = event {
+                    return index;
+                }
+            }
+            panic!("event stream ended");
+        })
+        .await
+        .expect("StepAccepted should be published");
+        assert_eq!(accepted, 4);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!stepping.is_finished(), "StepAccepted resolved the step");
+
+        feed(
+            &reactor,
+            &sent.request_id,
+            MessageKind::Response,
+            data_server_message::Payload::StepResult(StepResult {
+                index: 4,
+                tracks: vec![],
+            }),
+        )
+        .await;
+        assert_eq!(stepping.await.unwrap().unwrap().index, 4);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn step_errors_map_to_their_own_variants() {
+        type IsExpected = fn(&CoreError) -> bool;
+        let cases: [(&str, IsExpected); 3] = [
+            ("step_refused", |e| {
+                matches!(e, CoreError::StepRefused { .. })
+            }),
+            ("step_result_too_large", |e| {
+                matches!(e, CoreError::StepResultTooLarge { .. })
+            }),
+            (
+                "model_crashed",
+                |e| matches!(e, CoreError::StepFailed { code, .. } if code == "model_crashed"),
+            ),
+        ];
+        for (code, expected) in cases {
+            let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+            let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+            let mut events = reactor.subscribe();
+            let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+            feed(
+                &reactor,
+                &sent.request_id,
+                MessageKind::Response,
+                data_server_message::Payload::Error(crate::protocol::wire::v1::common::Error {
+                    code: code.into(),
+                    message: "no".into(),
+                }),
+            )
+            .await;
+            let error = stepping.await.unwrap().unwrap_err();
+            assert!(expected(&error), "{code}: got {error:?}");
+            assert_eq!(error.code(), code);
+            while let Ok(event) = events.try_recv() {
+                assert!(
+                    !matches!(event, ReactorEvent::Error(_)),
+                    "a correlated step error is the caller's, not an event"
+                );
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_step_result_in_an_unknown_encoding_fails_typed() {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+        feed(
+            &reactor,
+            &sent.request_id,
+            MessageKind::Response,
+            data_server_message::Payload::StepResult(StepResult {
+                index: 1,
+                tracks: vec![TrackFrames {
+                    track: "out".into(),
+                    kind: WireTrackKind::Video as i32,
+                    frames: vec![Frame {
+                        encoding: 42,
+                        ..raw_frame(0)
+                    }],
+                }],
+            }),
+        )
+        .await;
+        assert!(matches!(
+            stepping.await.unwrap(),
+            Err(CoreError::UnsupportedFrameEncoding { encoding: 42, .. })
+        ));
+    }
+
+    /// Over the channel's limit, nothing is sent and the inputs stay buffered
+    /// for the next step (or for `clear_step_inputs`).
+    #[tokio::test]
+    async fn an_oversized_step_is_refused_before_sending_and_keeps_its_inputs() {
+        let peer = Arc::new(DataPeer::new(64));
+        let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        reactor.step_inputs.push(
+            "cam",
+            WireTrackKind::Video,
+            Frame {
+                data: vec![0; 1024],
+                ..raw_frame(0)
+            },
+        );
+
+        let result = reactor.step(Value::Null, vec![]).await;
+        assert!(matches!(
+            result,
+            Err(CoreError::MessageTooLarge { max: 64, .. })
+        ));
+        assert!(peer.sent().is_empty());
+        assert_eq!(reactor.step_inputs.len(), 1);
+
+        reactor.clear_step_inputs();
+        assert!(reactor.step_inputs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn step_is_refused_outside_a_ready_stepped_session() {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let streamed = make_ready_reactor(peer.clone(), GenerationMode::Streamed);
+        assert!(matches!(
+            streamed.step(Value::Null, vec![]).await,
+            Err(CoreError::InvalidState(_))
+        ));
+
+        let stepped = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        stepped.state.lock().unwrap().status = ReactorStatus::Disconnected;
+        assert!(matches!(
+            stepped.step(Value::Null, vec![]).await,
+            Err(CoreError::InvalidState(_))
+        ));
+        assert!(peer.sent().is_empty());
+    }
+
+    /// A disconnect with a step in flight rejects it as a recoverable step
+    /// failure rather than as a command's.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_disconnect_fails_the_step_in_flight() {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        let (stepping, _) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+        reactor.data.fail_all("disconnected");
+        let error = stepping.await.unwrap().unwrap_err();
+        assert!(matches!(error, CoreError::StepFailed { .. }));
+        assert_eq!(error.code(), codes::DISCONNECTED);
+        assert!(error.recoverable());
     }
 }
