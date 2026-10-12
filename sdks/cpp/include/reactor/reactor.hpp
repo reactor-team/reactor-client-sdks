@@ -76,15 +76,16 @@ struct FetchJwtOptions {
   /// Unset with no `sessions` mints an unscoped token; set (even empty) scopes it
   /// to these models.
   std::optional<std::vector<std::string>> models;
-  /// Existing sessions to bind the token to, by id. Without `models` and
-  /// `max_sessions`, the token can act only on these and create none.
-  std::optional<std::vector<std::string>> sessions;
   /// Session limits apply only when models or sessions is set.
   std::optional<std::uint32_t> max_sessions;
   /// 1–86400 seconds; validated by the coordinator.
   std::optional<std::uint32_t> max_session_duration_seconds;
   /// Token lifetime in seconds; clamped by the coordinator.
   std::optional<std::uint64_t> expires_after;
+  /// Existing sessions to bind the token to, by id. Without `models` and
+  /// `max_sessions`, the token can act only on these and create none. Last, so
+  /// an aggregate initializer written before this field existed keeps its meaning.
+  std::optional<std::vector<std::string>> sessions = std::nullopt;
 };
 
 /// Exchange an API key without creating a client or session. The returned future

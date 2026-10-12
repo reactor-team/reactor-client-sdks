@@ -923,6 +923,16 @@ TEST_CASE("fetch_jwt forwards all token constraints and preserves an empty model
                                  {"expires_after", 3600}});
 }
 
+// A field added to this public aggregate goes last, so an initializer written
+// before it existed keeps compiling with the same meaning.
+TEST_CASE("FetchJwtOptions keeps its field order for positional initializers") {
+  const reactor::FetchJwtOptions options{
+      "https://dev.example.test", true, std::vector<std::string>{"owner/model"}, 2, 600, 3600};
+  CHECK(options.max_sessions == 2u);
+  CHECK(options.max_session_duration_seconds == 600u);
+  CHECK(options.expires_after == 3600u);
+}
+
 TEST_CASE("fetch_jwt forwards a session bind") {
   Fixture fixture;
   reactor::FetchJwtOptions options;
