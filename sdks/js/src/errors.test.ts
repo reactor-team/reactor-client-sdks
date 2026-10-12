@@ -6,6 +6,7 @@ import {
   DecodeError,
   DisconnectedError,
   errorForCode,
+  GenerationModeMismatchError,
   InvalidStateError,
   MessageTooLargeError,
   NetworkError,
@@ -16,9 +17,12 @@ import {
   RequestTimeoutError,
   ServerError,
   SessionTerminalError,
+  StepRefusedError,
+  StepResultTooLargeError,
   toReactorError,
   TransportError,
   UnauthorizedError,
+  UnsupportedFrameEncodingError,
   VersionMismatchError,
 } from './errors';
 
@@ -133,6 +137,10 @@ describe('typed subclasses', () => {
     [RequestTimeoutError, 'REQUEST_TIMEOUT'],
     [AbortedError, 'ABORTED'],
     [RecorderDisabledError, 'RECORDER_DISABLED'],
+    [GenerationModeMismatchError, 'GENERATION_MODE_MISMATCH'],
+    [StepRefusedError, 'step_refused'],
+    [StepResultTooLargeError, 'step_result_too_large'],
+    [UnsupportedFrameEncodingError, 'UNSUPPORTED_FRAME_ENCODING'],
   ];
 
   it.each(cases)('%s defaults its code and extends ReactorError', (ErrorClass, code) => {
@@ -159,6 +167,11 @@ describe('errorForCode', () => {
   it('returns the matching subclass for a known code', () => {
     expect(errorForCode('UNAUTHORIZED')).toBe(UnauthorizedError);
     expect(errorForCode('DISCONNECTED')).toBe(DisconnectedError);
+  });
+
+  it("matches the runtime's lowercase step codes exactly as reactor-core passes them through", () => {
+    expect(errorForCode('step_refused')).toBe(StepRefusedError);
+    expect(errorForCode('step_result_too_large')).toBe(StepResultTooLargeError);
   });
 
   it('falls back to the base class for an unknown or missing code', () => {
