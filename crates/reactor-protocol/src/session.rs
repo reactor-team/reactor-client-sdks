@@ -119,6 +119,44 @@ pub struct ServerInfo {
     pub server_version: String,
 }
 
+/// How a session generates its output.
+///
+/// Requested on session creation — the platform's `extra_configs.generation`,
+/// or the top-level `generation` key of a local runtime's `/start_session`
+/// body — and echoed back as the session descriptor's top-level
+/// [`GENERATION_KEY`] by a runtime that started in that mode. A runtime that
+/// predates stepped generation ignores the key and echoes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GenerationMode {
+    /// Continuous generation over media tracks. What every session did before
+    /// the mode existed, and what a session without the key still does.
+    #[default]
+    Streamed,
+    /// One step per request: the client sends a `RequestStep` on the data
+    /// channel and gets that step's output back as one `StepResult`.
+    Stepped,
+}
+
+impl GenerationMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GenerationMode::Streamed => "streamed",
+            GenerationMode::Stepped => "stepped",
+        }
+    }
+}
+
+impl std::fmt::Display for GenerationMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Key naming the [`GenerationMode`] in a session-creation request and in the
+/// session descriptor that echoes it.
+pub const GENERATION_KEY: &str = "generation";
+
 /// `POST /sessions` request body.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreateSessionRequest {
@@ -159,6 +197,13 @@ impl SessionResponse {
     /// selected and capabilities are published.
     pub fn is_ready(&self) -> bool {
         self.capabilities.is_some() && self.selected_transport.is_some()
+    }
+
+    /// The generation mode the runtime reports it started in, as sent: the
+    /// descriptor's top-level [`GENERATION_KEY`]. `None` from a runtime that
+    /// does not echo one — which is every runtime without stepped generation.
+    pub fn generation(&self) -> Option<&str> {
+        self.extra.get(GENERATION_KEY).and_then(Value::as_str)
     }
 }
 
@@ -224,5 +269,31 @@ mod tests {
         assert_eq!(v["model"]["name"], "my-model");
         assert_eq!(v["supported_transports"][0]["protocol"], "webrtc");
         assert!(v.get("extra_args").is_none());
+    }
+
+    #[test]
+    fn generation_mode_wire_names() {
+        assert_eq!(
+            serde_json::to_value(GenerationMode::Stepped).unwrap(),
+            "stepped"
+        );
+        assert_eq!(
+            serde_json::to_value(GenerationMode::Streamed).unwrap(),
+            "streamed"
+        );
+        assert_eq!(GenerationMode::default(), GenerationMode::Streamed);
+    }
+
+    #[test]
+    fn the_echoed_generation_is_read_from_the_descriptor() {
+        let echoed: SessionResponse = serde_json::from_str(
+            r#"{"session_id": "s", "state": "ACTIVE", "generation": "stepped"}"#,
+        )
+        .unwrap();
+        assert_eq!(echoed.generation(), Some("stepped"));
+
+        let silent: SessionResponse =
+            serde_json::from_str(r#"{"session_id": "s", "state": "ACTIVE"}"#).unwrap();
+        assert_eq!(silent.generation(), None);
     }
 }

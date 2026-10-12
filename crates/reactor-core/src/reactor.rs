@@ -24,7 +24,8 @@ use crate::messaging::build_command_payload;
 use crate::peer::{PeerConnectionState, PeerEvent, PreparedOffer};
 use crate::protocol::recording::message_type;
 use crate::protocol::session::{
-    Capabilities, ClientInfo, ModelConfig, SessionResponse, TrackCapability, TrackDirection,
+    Capabilities, ClientInfo, GenerationMode, ModelConfig, SessionResponse, TrackCapability,
+    TrackDirection,
 };
 use crate::protocol::upload::{CreateUploadRequest, FileRef};
 use crate::protocol::webrtc::{IceCandidate, TrackMappingEntry};
@@ -65,6 +66,12 @@ pub struct ReactorOptions {
     pub auto_resume_tracks: bool,
     /// Free-form model arguments forwarded on session creation.
     pub extra_args: Option<Value>,
+    /// How the session generates: [`GenerationMode::Streamed`] (the default)
+    /// over media tracks, or [`GenerationMode::Stepped`], one
+    /// [`Reactor::step`] at a time. `connect()` fails with
+    /// [`CoreError::GenerationModeMismatch`] when the runtime does not report
+    /// starting in the requested mode.
+    pub generation: GenerationMode,
     /// How long to wait for the transport readiness gate (peer connected +
     /// both channels open) after applying the SDP answer.
     pub ready_timeout: Duration,
@@ -105,6 +112,7 @@ impl ReactorOptions {
             sdk_type: crate::DEFAULT_SDK_TYPE.to_string(),
             auto_resume_tracks: true,
             extra_args: None,
+            generation: GenerationMode::Streamed,
             ready_timeout: Duration::from_secs(30),
             control_request_timeout: Duration::from_secs(10),
             clip_request_timeout: Duration::from_secs(10),
@@ -206,6 +214,30 @@ fn tracks_match(a: &[TrackCapability], b: &[TrackCapability]) -> bool {
     true
 }
 
+/// Whether the runtime started `session` in the `requested` generation mode.
+///
+/// A runtime that supports the mode echoes it as the descriptor's top-level
+/// `generation`; one that does not ignores the request and echoes nothing,
+/// which for a stepped request is the failure this exists to catch — the
+/// session would otherwise stream while the client waits for steps. A
+/// streamed request accepts silence (every runtime before the mode existed)
+/// but not an echo of a different mode, as when adopting a stepped session.
+fn check_generation(requested: GenerationMode, session: &SessionResponse) -> Result<(), CoreError> {
+    let echoed = session.generation();
+    let matches = match echoed {
+        Some(mode) => mode == requested.as_str(),
+        None => requested == GenerationMode::Streamed,
+    };
+    if matches {
+        Ok(())
+    } else {
+        Err(CoreError::GenerationModeMismatch {
+            requested,
+            echoed: echoed.map(str::to_string),
+        })
+    }
+}
+
 /// The Reactor client core. See the crate docs for the host contract.
 pub struct Reactor {
     coordinator: CoordinatorClient,
@@ -240,6 +272,7 @@ impl Reactor {
                 },
                 client_info,
                 extra_args: options.extra_args.clone(),
+                generation: options.generation,
                 poll: options.session_poll,
                 local: options.local,
             },
@@ -372,6 +405,7 @@ impl Reactor {
                 })
                 .await;
             let session = session_result?;
+            check_generation(self.options.generation, &session)?;
             let capabilities = session
                 .capabilities
                 .clone()
@@ -404,6 +438,7 @@ impl Reactor {
                 .await?;
         } else {
             let session = self.coordinator.poll_session_ready(&session_id).await?;
+            check_generation(self.options.generation, &session)?;
             let capabilities = session
                 .capabilities
                 .clone()
@@ -3547,5 +3582,189 @@ mod tests {
             .await;
 
         assert!(reactor.state.lock().unwrap().auto_resume_tracks);
+    }
+
+    // ── Generation mode ─────────────────────────────────────────────────────
+
+    /// A coordinator whose ready session echoes `echo` as its `generation`
+    /// (or nothing), with one output and one input track. ICE servers resolve
+    /// empty and connection registration parks, so a connect that passes the
+    /// mode check stops there.
+    struct GenerationHttp {
+        echo: Option<&'static str>,
+        requests: std::sync::Mutex<Vec<(Method, String)>>,
+    }
+
+    impl GenerationHttp {
+        fn new(echo: Option<&'static str>) -> Self {
+            Self {
+                echo,
+                requests: Default::default(),
+            }
+        }
+
+        fn saw(&self, method: Method, url_suffix: &str) -> bool {
+            self.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(m, u)| *m == method && u.ends_with(url_suffix))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HttpClient for GenerationHttp {
+        async fn request(&self, req: HttpRequest) -> Result<HttpResponse, CoreError> {
+            self.requests
+                .lock()
+                .unwrap()
+                .push((req.method, req.url.clone()));
+            let json = |body: String| {
+                Ok(HttpResponse {
+                    status: 200,
+                    headers: vec![],
+                    body: body.into_bytes(),
+                })
+            };
+            if req.url.ends_with("/ice_servers") {
+                return json(r#"{"ice_servers": []}"#.to_string());
+            }
+            if req.method == Method::Post && req.url.ends_with("/sessions") {
+                return json(r#"{"session_id": "sess_1", "state": "CREATED"}"#.to_string());
+            }
+            if req.method == Method::Get && req.url.ends_with("/sessions/sess_1") {
+                let echo = self
+                    .echo
+                    .map(|mode| format!(r#""generation": "{mode}","#))
+                    .unwrap_or_default();
+                return json(format!(
+                    r#"{{
+                        "session_id": "sess_1",
+                        "state": "ACTIVE",
+                        {echo}
+                        "selected_transport": {{"protocol": "webrtc", "version": "1.0"}},
+                        "capabilities": {{"protocol_version": "1.0", "tracks": [
+                            {{"name": "output", "kind": "video", "direction": "recvonly"}},
+                            {{"name": "input", "kind": "video", "direction": "sendonly"}}
+                        ]}}
+                    }}"#
+                ));
+            }
+            if req.method == Method::Post && req.url.ends_with("/connections") {
+                std::future::pending::<()>().await;
+                unreachable!()
+            }
+            Err(CoreError::Http(format!(
+                "GenerationHttp: no route for {:?} {}",
+                req.method, req.url
+            )))
+        }
+    }
+
+    fn make_generation_reactor(
+        http: Arc<GenerationHttp>,
+        peer: Arc<SpyPeer>,
+        generation: GenerationMode,
+    ) -> Arc<Reactor> {
+        let mut opts = ReactorOptions::new("http://localhost", "test-model");
+        opts.generation = generation;
+        Arc::new(Reactor::new(
+            ReactorDeps {
+                http: http as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: peer as SharedPeer,
+            },
+            opts,
+        ))
+    }
+
+    /// Connect until the session reaches connection registration, returning
+    /// the parked connect for the caller to abort.
+    async fn connect_until_registration(
+        reactor: &Arc<Reactor>,
+        http: &GenerationHttp,
+    ) -> tokio::task::JoinHandle<Result<(), CoreError>> {
+        let r = reactor.clone();
+        let connecting = tokio::spawn(async move { r.connect(ConnectOptions::default()).await });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !http.saw(Method::Post, "/connections") {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("connect should reach connection registration");
+        connecting
+    }
+
+    /// A runtime without stepped generation ignores the request and echoes no
+    /// mode. Connecting anyway would leave the client waiting on steps from a
+    /// streaming session, so it fails, typed, before any transport exists.
+    #[tokio::test]
+    async fn a_stepped_connect_fails_when_the_runtime_does_not_echo_the_mode() {
+        let http = Arc::new(GenerationHttp::new(None));
+        let peer = Arc::new(SpyPeer::default());
+        let reactor = make_generation_reactor(http.clone(), peer.clone(), GenerationMode::Stepped);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            reactor.connect(ConnectOptions::default()),
+        )
+        .await
+        .expect("a missing echo should fail fast");
+
+        match result {
+            Err(error @ CoreError::GenerationModeMismatch { .. }) => {
+                assert_eq!(error.code(), codes::GENERATION_MODE_MISMATCH);
+                assert!(!error.recoverable());
+                assert!(matches!(
+                    error,
+                    CoreError::GenerationModeMismatch {
+                        requested: GenerationMode::Stepped,
+                        echoed: None,
+                    }
+                ));
+            }
+            other => panic!("expected GenerationModeMismatch, got {other:?}"),
+        }
+        assert!(peer.prepared_tracks.lock().unwrap().is_none());
+        assert!(!http.saw(Method::Post, "/connections"));
+        assert_eq!(reactor.status(), ReactorStatus::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn a_stepped_connect_proceeds_when_the_runtime_echoes_the_mode() {
+        let http = Arc::new(GenerationHttp::new(Some("stepped")));
+        let peer = Arc::new(SpyPeer::default());
+        let reactor = make_generation_reactor(http.clone(), peer, GenerationMode::Stepped);
+        connect_until_registration(&reactor, &http).await.abort();
+    }
+
+    /// Streamed is what every runtime did before the mode existed, so silence
+    /// is fine; an echo of a different mode is not.
+    #[tokio::test]
+    async fn a_streamed_connect_accepts_silence_but_not_a_stepped_session() {
+        let http = Arc::new(GenerationHttp::new(None));
+        let reactor = make_generation_reactor(
+            http.clone(),
+            Arc::new(SpyPeer::default()),
+            GenerationMode::Streamed,
+        );
+        connect_until_registration(&reactor, &http).await.abort();
+
+        let http = Arc::new(GenerationHttp::new(Some("stepped")));
+        let reactor = make_generation_reactor(
+            http.clone(),
+            Arc::new(SpyPeer::default()),
+            GenerationMode::Streamed,
+        );
+        let result = reactor.connect(ConnectOptions::default()).await;
+        assert!(matches!(
+            result,
+            Err(CoreError::GenerationModeMismatch {
+                requested: GenerationMode::Streamed,
+                echoed: Some(_),
+            })
+        ));
     }
 }
