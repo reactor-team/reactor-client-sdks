@@ -19,7 +19,8 @@ use crate::backoff::PollConfig;
 use crate::error::CoreError;
 use crate::http::{check_status, AuthRequest, HttpRequest, Method};
 use crate::protocol::session::{
-    ClientInfo, CreateSessionRequest, ModelConfig, SessionResponse, TransportDeclaration,
+    ClientInfo, CreateSessionRequest, GenerationMode, ModelConfig, SessionResponse,
+    TransportDeclaration, GENERATION_KEY,
 };
 use crate::protocol::upload::{CreateUploadRequest, CreateUploadResponse};
 use crate::protocol::{API_ACCEPT_VERSION_HEADER, API_VERSION_HEADER, REACTOR_API_VERSION};
@@ -34,6 +35,10 @@ pub struct CoordinatorConfig {
     pub client_info: ClientInfo,
     /// Free-form model arguments forwarded on session creation.
     pub extra_args: Option<Value>,
+    /// Generation mode to request. [`GenerationMode::Streamed`] sends nothing,
+    /// exactly as before the mode existed; [`GenerationMode::Stepped`] asks for
+    /// it under [`GENERATION_KEY`].
+    pub generation: GenerationMode,
     pub poll: PollConfig,
     /// When true, use the local HTTP runtime API (`/start_session`, `/session`,
     /// `/stop_session`) instead of the cloud coordinator API.
@@ -134,7 +139,7 @@ impl CoordinatorClient {
             client_info: self.config.client_info.clone(),
             supported_transports: vec![TransportDeclaration::webrtc()],
             extra_args: self.config.extra_args.clone(),
-            extra_configs: None,
+            extra_configs: self.extra_configs(),
         };
         let response = self
             .http
@@ -149,10 +154,27 @@ impl CoordinatorClient {
         response.json()
     }
 
+    /// The platform's `extra_configs` for this session: the requested
+    /// generation mode, when it is not the default. The coordinator forwards
+    /// `extra_configs` to the runtime as a string map, so the value is the
+    /// mode's wire name.
+    fn extra_configs(&self) -> Option<Value> {
+        match self.config.generation {
+            GenerationMode::Streamed => None,
+            mode => Some(serde_json::json!({ GENERATION_KEY: mode.as_str() })),
+        }
+    }
+
     async fn local_start_session(&self) -> Result<SessionResponse, CoreError> {
         let mut body = serde_json::Map::new();
         if let Some(extra_args) = &self.config.extra_args {
             body.insert("extra_args".to_string(), extra_args.clone());
+        }
+        if self.config.generation != GenerationMode::Streamed {
+            body.insert(
+                GENERATION_KEY.to_string(),
+                Value::String(self.config.generation.as_str().to_string()),
+            );
         }
         let response = self
             .http
@@ -298,29 +320,36 @@ impl CoordinatorClient {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::http::testing::{NoSleep, NotFoundHttp, RecordingAuth};
-    use std::sync::Arc;
+    use crate::http::{HttpClient, HttpResponse};
+
+    fn config(local: bool, generation: GenerationMode) -> CoordinatorConfig {
+        CoordinatorConfig {
+            api_url: "https://api.reactor.inc".into(),
+            model: ModelConfig {
+                name: "reactor/helios".into(),
+                version: None,
+            },
+            client_info: ClientInfo {
+                sdk_version: "0.0.0".into(),
+                sdk_type: "test".into(),
+            },
+            extra_args: Some(serde_json::json!({"seed": 1})),
+            generation,
+            poll: PollConfig::session(),
+            local,
+        }
+    }
 
     fn client(auth: Arc<RecordingAuth>) -> CoordinatorClient {
         CoordinatorClient::new(
             Arc::new(NotFoundHttp),
             auth,
             Arc::new(NoSleep),
-            CoordinatorConfig {
-                api_url: "https://api.reactor.inc".into(),
-                model: ModelConfig {
-                    name: "reactor/helios".into(),
-                    version: None,
-                },
-                client_info: ClientInfo {
-                    sdk_version: "0.0.0".into(),
-                    sdk_type: "test".into(),
-                },
-                extra_args: None,
-                poll: PollConfig::session(),
-                local: false,
-            },
+            config(false, GenerationMode::Streamed),
         )
     }
 
@@ -352,5 +381,100 @@ mod tests {
                 AuthRequest::for_session("sid-3"),
             ]
         );
+    }
+
+    /// Answers every request with a minimal session and keeps each body.
+    #[derive(Default)]
+    struct BodyHttp {
+        bodies: Mutex<Vec<(String, Value)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpClient for BodyHttp {
+        async fn request(&self, req: HttpRequest) -> Result<HttpResponse, CoreError> {
+            let body = req
+                .body
+                .as_deref()
+                .map(|b| serde_json::from_slice(b).unwrap())
+                .unwrap_or(Value::Null);
+            self.bodies.lock().unwrap().push((req.url, body));
+            Ok(HttpResponse {
+                status: 200,
+                headers: vec![],
+                body: br#"{"session_id": "sess_1", "state": "CREATED"}"#.to_vec(),
+            })
+        }
+    }
+
+    fn body_client(
+        http: Arc<BodyHttp>,
+        local: bool,
+        generation: GenerationMode,
+    ) -> CoordinatorClient {
+        CoordinatorClient::new(
+            http,
+            Arc::new(RecordingAuth::default()),
+            Arc::new(NoSleep),
+            config(local, generation),
+        )
+    }
+
+    fn only_body(http: &BodyHttp) -> (String, Value) {
+        let bodies = http.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        bodies[0].clone()
+    }
+
+    #[tokio::test]
+    async fn a_stepped_session_asks_the_platform_in_extra_configs() {
+        let http = Arc::new(BodyHttp::default());
+        body_client(http.clone(), false, GenerationMode::Stepped)
+            .create_session()
+            .await
+            .unwrap();
+        let (url, body) = only_body(&http);
+        assert!(url.ends_with("/sessions"));
+        assert_eq!(
+            body["extra_configs"],
+            serde_json::json!({"generation": "stepped"})
+        );
+        assert_eq!(body["extra_args"], serde_json::json!({"seed": 1}));
+    }
+
+    #[tokio::test]
+    async fn a_streamed_session_sends_no_extra_configs() {
+        let http = Arc::new(BodyHttp::default());
+        body_client(http.clone(), false, GenerationMode::Streamed)
+            .create_session()
+            .await
+            .unwrap();
+        let (_, body) = only_body(&http);
+        assert!(body.get("extra_configs").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_stepped_local_session_names_the_mode_at_the_top_of_the_body() {
+        let http = Arc::new(BodyHttp::default());
+        body_client(http.clone(), true, GenerationMode::Stepped)
+            .create_session()
+            .await
+            .unwrap();
+        let (url, body) = only_body(&http);
+        assert!(url.ends_with("/start_session"));
+        assert_eq!(
+            body,
+            serde_json::json!({"extra_args": {"seed": 1}, "generation": "stepped"})
+        );
+    }
+
+    #[tokio::test]
+    async fn a_streamed_local_session_body_is_unchanged() {
+        let http = Arc::new(BodyHttp::default());
+        body_client(http.clone(), true, GenerationMode::Streamed)
+            .create_session()
+            .await
+            .unwrap();
+        let (_, body) = only_body(&http);
+        assert_eq!(body, serde_json::json!({"extra_args": {"seed": 1}}));
     }
 }
