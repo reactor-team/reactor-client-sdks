@@ -392,7 +392,8 @@ class TestFetchJwt:
 
     def test_binding_sessions_alone_widens_the_model_scope_and_sets_no_budget(self) -> None:
         """The coordinator requires a model scope on a session detail. With no
-        `max_sessions` the budget is the bound count, so the token creates nothing."""
+        `max_sessions`, the budget is the number of bound sessions, so the token
+        cannot create new ones."""
         with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
             urlopen.return_value = self._response({"jwt": "tok"})
             fetch_jwt("secret", "https://api.reactor.inc", sessions=["sess-1"])
@@ -478,8 +479,8 @@ class TestTokenResolution:
 
     async def test_adopting_a_session_mints_a_token_bound_to_it(self) -> None:
         """A scoped token reaches only the sessions it created or was bound to, and a
-        mint without a scope is bound to nothing. The duration limit applies only to
-        sessions a token creates, and this one creates none."""
+        mint without a scope is bound to no session. The duration limit applies only
+        to sessions a token creates, and this token cannot create any."""
         reactor = Reactor(model_name="hy-world", api_key="k", max_session_duration_seconds=1800)
         with mock.patch("reactor_sdk.client.fetch_jwt", return_value="tok") as fetch:
             await reactor._resolve_token(session_id="sess-1")

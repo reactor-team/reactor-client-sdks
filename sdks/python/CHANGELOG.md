@@ -12,14 +12,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 ### Added
 
 - `fetch_jwt(..., sessions=[...])` mints a token bound to sessions that already
-  exist. Without `models` and `max_sessions`, the token can act on those
-  sessions and create none.
+  exist. Without `models` and `max_sessions`, the token can act only on those
+  sessions and cannot create new ones.
 
 ### Fixed
 
-- `connect(session_id=...)` with an `api_key` no longer fails with 403. The
-  token it minted to adopt the session was bound to no session at all. It is
-  now bound to the session it adopts, and it creates none.
+- `connect(session_id=...)` on a client given an `api_key` no longer fails
+  with 403. The client now mints a token bound to the session it adopts.
+  Before, the token it minted could not reach that session.
 
 ## [1.9.0] - 2026-10-08
 

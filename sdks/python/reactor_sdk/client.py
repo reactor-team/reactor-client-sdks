@@ -248,7 +248,7 @@ class Reactor:
                 client mints creates after this many seconds (1-86400), independent of
                 the token's own expiry. Only takes effect on the model-scoped token
                 minted to create a session. The token minted to adopt an existing
-                session is bound to it and creates none, so it carries no limit. Has no effect
+                session cannot create sessions, so the limit does not apply. Has no effect
                 when `jwt` is given: that token is already minted, and this client never
                 re-mints one it did not create itself.
 
@@ -948,12 +948,13 @@ class Reactor:
         default: such a token can only start sessions on this model, so a leak is worth
         that rather than everything the key can reach. Adopting a session created
         elsewhere needs a token bound to that session, because a scoped token reaches
-        only the sessions it created or was bound to. That token creates none.
+        only the sessions it created or was bound to. That token cannot create sessions.
 
         So the scope depends on the *call*, not on the client: a token minted for one
         connect is not necessarily right for the next, and this mints again when the
         requirement changes. Caching regardless would quietly hand a model-scoped token
-        to a connect that adopts a session, or one session's token to another's.
+        to a connect that adopts a session, or a token bound to one session to a connect
+        that adopts another.
 
         The exchange is a blocking HTTP call, so it runs in a thread rather than
         stalling the loop. Skipped in local mode, which does not authenticate, and for a

@@ -9,8 +9,8 @@ checks, not just that adoption connects.
 Each client mints its own token from the API key, the way
 `sdks/python/examples/05_multi_connection.py` builds them. The joiner's token
 is bound to the creator's session (`client.py`'s `_resolve_token`): a scoped
-token reaches only the sessions it created or was bound to, so a joiner that
-minted an unbound one would get a 403 on its first session call.
+token reaches only the sessions it created or was bound to, so a joiner with a
+token not bound to the session would get a 403 on its first session call.
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ async def _shared_pair(
 ) -> tuple[Reactor, Callable[[], Awaitable[Reactor]]]:
     """A connected creator, and a callable that connects a joiner to it.
 
-    Each mints its own token from the suite's API key, or none in local mode,
-    which skips auth.
+    Each client mints its own token from the suite's API key. In local mode,
+    neither client mints a token, because local mode skips auth.
     """
     creator: Reactor = reactor_factory()
     await paced_connect(creator)

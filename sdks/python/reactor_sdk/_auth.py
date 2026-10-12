@@ -59,7 +59,7 @@ def fetch_jwt(
     Pass ``sessions`` to bind the token to sessions that already exist, by id. Each
     must belong to the key's user and account and still be open, or the coordinator
     rejects the mint. Without ``models`` and ``max_sessions``, such a token can act
-    only on those sessions and create none.
+    only on those sessions and cannot create new ones.
 
     ``max_sessions`` caps how many sessions a scoped token may ever hold, counting any
     in ``sessions``, and is ignored for unscoped ones. ``max_session_duration_seconds``
@@ -77,8 +77,9 @@ def fetch_jwt(
 
     body: dict[str, Any] = {}
     if models is not None or sessions is not None:
-        # A session detail must name a model scope. A bind alone widens it to every
-        # model, which costs nothing: with no `max_sessions` the token creates none.
+        # The coordinator requires a model scope here. A bind alone gets the all-models
+        # scope, which grants nothing extra: with no `max_sessions`, the token cannot
+        # create sessions.
         resources: dict[str, Any] = {
             "models": {"match": list(models)} if models is not None else {"all": True}
         }
