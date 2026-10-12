@@ -217,6 +217,7 @@ typedef void (*reactor_completion_fn)(
  *   options_json — nullable.  JSON object:
  *                    {
  *                      "models":                        ["owner/name", …],  // scopes the token
+ *                      "sessions":                      ["id", …],          // binds it to existing sessions
  *                      "max_sessions":                  n,   // scoped tokens only
  *                      "max_session_duration_seconds":  n,   // scoped tokens only; 1-86400
  *                      "expires_after":                 seconds             // server clamps it
