@@ -18,6 +18,7 @@ import pytest
 
 from reactor_sdk import (
     ConflictError,
+    GenerationModeMismatchError,
     InvalidStateError,
     MessageTooLargeError,
     RateLimitedError,
@@ -26,7 +27,10 @@ from reactor_sdk import (
     RecorderDisabledError,
     RequestTimeoutError,
     ServerError,
+    StepRefusedError,
+    StepResultTooLargeError,
     UnauthorizedError,
+    UnsupportedFrameEncodingError,
 )
 from reactor_sdk.errors import ERROR_CLASSES, error_for_code, error_from_payload
 
@@ -53,6 +57,10 @@ class TestCodeToClass:
             ("INVALID_STATE", InvalidStateError),
             ("MESSAGE_TOO_LARGE", MessageTooLargeError),
             ("RECORDER_DISABLED", RecorderDisabledError),
+            ("GENERATION_MODE_MISMATCH", GenerationModeMismatchError),
+            ("UNSUPPORTED_FRAME_ENCODING", UnsupportedFrameEncodingError),
+            ("step_refused", StepRefusedError),
+            ("step_result_too_large", StepResultTooLargeError),
         ],
     )
     def test_a_known_code_raises_its_own_class(self, code: str, expected: type) -> None:

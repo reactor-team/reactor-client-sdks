@@ -245,6 +245,43 @@ class RecorderDisabledError(ReactorError):
     code = "RECORDER_DISABLED"
 
 
+class GenerationModeMismatchError(ReactorError):
+    """`connect()` asked for a generation mode the runtime did not start the session in.
+
+    Most often a stepped request reaching a runtime without stepped generation,
+    which ignores the request rather than refusing it — connecting anyway would
+    leave the client waiting on steps from a streaming session.
+    """
+
+    code = "GENERATION_MODE_MISMATCH"
+
+
+class UnsupportedFrameEncodingError(ReactorError):
+    """A step result carried a frame in an encoding this client cannot decode."""
+
+    code = "UNSUPPORTED_FRAME_ENCODING"
+
+
+class StepRefusedError(ReactorError):
+    """The runtime refused a step — the request or the model turned it down.
+
+    No state changed, and the step's input frames are gone with it. Lowercase
+    because it is the runtime's own code, passed through.
+    """
+
+    code = "step_refused"
+
+
+class StepResultTooLargeError(ReactorError):
+    """A step ran, but its result does not fit in one data-channel message.
+
+    The model did generate it; ask for less per step — fewer frames, a smaller
+    resolution.
+    """
+
+    code = "step_result_too_large"
+
+
 #: Every code this package has a class for. Anything else — a platform code for a
 #: rejected request — falls back to `ReactorError` with `code` set to it.
 ERROR_CLASSES: tuple[type[ReactorError], ...] = (
@@ -265,6 +302,10 @@ ERROR_CLASSES: tuple[type[ReactorError], ...] = (
     RequestTimeoutError,
     AbortedError,
     RecorderDisabledError,
+    GenerationModeMismatchError,
+    UnsupportedFrameEncodingError,
+    StepRefusedError,
+    StepResultTooLargeError,
 )
 
 _BY_CODE: dict[str, type[ReactorError]] = {cls.code: cls for cls in ERROR_CLASSES}

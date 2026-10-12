@@ -187,6 +187,31 @@ export class RecorderDisabledError extends ReactorError {
   static override readonly code = 'RECORDER_DISABLED';
 }
 
+/** The runtime did not start the session in the requested `generation` —
+ *  most often a runtime without stepped generation, which ignores the
+ *  request rather than refusing it. Not recoverable: the same `connect()`
+ *  against the same runtime fails the same way. */
+export class GenerationModeMismatchError extends ReactorError {
+  static override readonly code = 'GENERATION_MODE_MISMATCH';
+}
+
+/** The runtime refused a `step()` — the request or the model turned it down
+ *  — and no state changed. The code is the runtime's own, passed through,
+ *  hence lowercase. */
+export class StepRefusedError extends ReactorError {
+  static override readonly code = 'step_refused';
+}
+
+/** A `step()` ran, but its result did not fit in one data-channel message. */
+export class StepResultTooLargeError extends ReactorError {
+  static override readonly code = 'step_result_too_large';
+}
+
+/** A `step()` result carried a frame in an encoding this SDK cannot decode. */
+export class UnsupportedFrameEncodingError extends ReactorError {
+  static override readonly code = 'UNSUPPORTED_FRAME_ENCODING';
+}
+
 /** Every code this package has a class for. Anything else — a platform code
  *  for a rejected request — falls back to `ReactorError` with `code` set to
  *  it. */
@@ -208,6 +233,10 @@ const ERROR_CLASSES = [
   RequestTimeoutError,
   AbortedError,
   RecorderDisabledError,
+  GenerationModeMismatchError,
+  StepRefusedError,
+  StepResultTooLargeError,
+  UnsupportedFrameEncodingError,
 ] as const;
 
 interface ReactorErrorClass {

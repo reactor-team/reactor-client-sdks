@@ -179,6 +179,23 @@ extension ReactorError {
         /// REA-5403 replaces that with a structured field; the code stays.
         public static let recorderDisabled = Code(rawValue: "RECORDER_DISABLED")
 
+        /// The runtime did not start the session in the requested generation
+        /// mode — most often a runtime without stepped generation, which
+        /// ignores the request rather than refusing it.
+        public static let generationModeMismatch = Code(rawValue: "GENERATION_MODE_MISMATCH")
+
+        /// A step result carried a frame in an encoding this client cannot decode.
+        public static let unsupportedFrameEncoding = Code(rawValue: "UNSUPPORTED_FRAME_ENCODING")
+
+        /// The runtime refused a step — the request or the model turned it
+        /// down — and no state changed. Lowercase because it is the runtime's
+        /// own code, passed through.
+        public static let stepRefused = Code(rawValue: "step_refused")
+
+        /// A step ran, but its result does not fit in one data-channel message.
+        /// Ask for less per step — fewer frames, a smaller resolution.
+        public static let stepResultTooLarge = Code(rawValue: "step_result_too_large")
+
         /// A failure with no better classification.
         public static let internalError = Code(rawValue: "INTERNAL_ERROR")
     }
@@ -242,6 +259,18 @@ extension ReactorError {
 
     /// Matches an error whose code is ``Code/recorderDisabled``.
     public static var recorderDisabled: Code { .recorderDisabled }
+
+    /// Matches an error whose code is ``Code/generationModeMismatch``.
+    public static var generationModeMismatch: Code { .generationModeMismatch }
+
+    /// Matches an error whose code is ``Code/unsupportedFrameEncoding``.
+    public static var unsupportedFrameEncoding: Code { .unsupportedFrameEncoding }
+
+    /// Matches an error whose code is ``Code/stepRefused``.
+    public static var stepRefused: Code { .stepRefused }
+
+    /// Matches an error whose code is ``Code/stepResultTooLarge``.
+    public static var stepResultTooLarge: Code { .stepResultTooLarge }
 
     /// Matches an error whose code is ``Code/internalError``.
     public static var internalError: Code { .internalError }

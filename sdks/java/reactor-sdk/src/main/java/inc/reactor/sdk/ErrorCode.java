@@ -59,7 +59,15 @@ public enum ErrorCode {
     /** @see AbortedException */
     ABORTED("ABORTED", false, AbortedException::new),
     /** @see RecorderDisabledException */
-    RECORDER_DISABLED("RECORDER_DISABLED", false, RecorderDisabledException::new);
+    RECORDER_DISABLED("RECORDER_DISABLED", false, RecorderDisabledException::new),
+    /** @see GenerationModeMismatchException */
+    GENERATION_MODE_MISMATCH("GENERATION_MODE_MISMATCH", false, GenerationModeMismatchException::new),
+    /** @see UnsupportedFrameEncodingException */
+    UNSUPPORTED_FRAME_ENCODING("UNSUPPORTED_FRAME_ENCODING", false, UnsupportedFrameEncodingException::new),
+    /** @see StepRefusedException */
+    STEP_REFUSED("step_refused", false, StepRefusedException::new),
+    /** @see StepResultTooLargeException */
+    STEP_RESULT_TOO_LARGE("step_result_too_large", false, StepResultTooLargeException::new);
 
     /** Builds the exception for one code. */
     @FunctionalInterface

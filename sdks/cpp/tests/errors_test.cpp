@@ -48,6 +48,11 @@ TEST_CASE("each documented code parses into its own class") {
   CHECK(parses_as<reactor::RequestTimeoutError>(payload_for("REQUEST_TIMEOUT")));
   CHECK(parses_as<reactor::AbortedError>(payload_for("ABORTED")));
   CHECK(parses_as<reactor::RecorderDisabledError>(payload_for("RECORDER_DISABLED")));
+  CHECK(parses_as<reactor::GenerationModeMismatchError>(payload_for("GENERATION_MODE_MISMATCH")));
+  CHECK(
+      parses_as<reactor::UnsupportedFrameEncodingError>(payload_for("UNSUPPORTED_FRAME_ENCODING")));
+  CHECK(parses_as<reactor::StepRefusedError>(payload_for("step_refused")));
+  CHECK(parses_as<reactor::StepResultTooLargeError>(payload_for("step_result_too_large")));
 }
 
 TEST_CASE("catching the base class catches every one of them") {
