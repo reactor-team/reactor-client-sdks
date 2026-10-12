@@ -33,6 +33,7 @@ use crate::protocol::wire::struct_convert::struct_to_value;
 use crate::protocol::wire::v1::control::control_client_message::Payload as ClientPayload;
 use crate::protocol::wire::v1::control::control_server_message::Payload as ServerPayload;
 use crate::protocol::wire::v1::data::{data_client_message, data_server_message};
+use crate::protocol::wire::v1::platform::TrackKind as WireTrackKind;
 use crate::protocol::wire::v1::platform::{
     ClientConnectionStat, ClientStats, ClientTrackStat, FileUploaded, Ping, RequestClip,
     RequestRecording, RequestSchema,
@@ -43,7 +44,10 @@ use crate::runtime::timeout;
 use crate::signaling::WebRtcSignaling;
 use crate::state::ReactorStatus;
 use crate::stats::{client_connection_stat, ClientStatsReporter, ConnectionStats, StatsSampler};
-use crate::step::{build_request_step, FrameDecoders, StepCommand, StepInputs, StepOutput};
+use crate::step::{
+    build_request_step, raw_audio_frame, raw_video_frame, FrameDecoders, StepCommand, StepInputs,
+    StepOutput,
+};
 use crate::{SharedAuth, SharedHttp, SharedPeer, SharedPlatform};
 
 /// Host-supplied platform implementations.
@@ -412,7 +416,9 @@ impl Reactor {
             let (session_result, prepared_result) =
                 futures::future::join(self.coordinator.poll_session_ready(&session_id), async {
                     let ice_servers = signaling.ice_servers().await?;
-                    self.peer.prepare(&ice_servers, &preset).await
+                    self.peer
+                        .prepare(&ice_servers, &self.media_tracks(&preset))
+                        .await
                 })
                 .await;
             let session = session_result?;
@@ -556,10 +562,25 @@ impl Reactor {
     ) -> Result<(), CoreError> {
         let signaling = self.signaling(session_id);
         let ice_servers = signaling.ice_servers().await?;
-        let tracks = self.state.lock().unwrap().tracks.clone();
+        let tracks = self.media_tracks(&self.state.lock().unwrap().tracks);
         let prepared = self.peer.prepare(&ice_servers, &tracks).await?;
         self.finish_transport(session_id, reconnect, adopt_connection_id, prepared)
             .await
+    }
+
+    /// The tracks that get an RTP transceiver. All of them when streamed; in a
+    /// stepped session the input (sendonly) tracks have none, because their
+    /// frames ride each `RequestStep` instead — publishing one claims it on
+    /// the runtime, and [`Reactor::push_video_frame`] buffers into it.
+    fn media_tracks(&self, tracks: &[TrackCapability]) -> Vec<TrackCapability> {
+        match self.options.generation {
+            GenerationMode::Streamed => tracks.to_vec(),
+            GenerationMode::Stepped => tracks
+                .iter()
+                .filter(|t| t.direction != TrackDirection::Sendonly)
+                .cloned()
+                .collect(),
+        }
     }
 
     /// Registers the connection and exchanges the SDP offer/answer for a peer
@@ -712,6 +733,8 @@ impl Reactor {
                 state.connection_id = None;
                 state.capabilities = None;
                 state.tracks.clear();
+                // Frames buffered for a session that is gone.
+                self.step_inputs.clear();
                 true
             }
         };
@@ -1199,12 +1222,24 @@ impl Reactor {
         self.peer.send_control(&payload)
     }
 
+    /// Push a BGRA frame (`width * height * 4` bytes) into a sendonly video
+    /// track.
+    ///
+    /// Streamed: sent on the track's RTP sender. Stepped: converted to a RAW
+    /// RGB frame and buffered for the next [`Reactor::step`]; a frame whose
+    /// size does not match its dimensions is dropped with a warning.
     pub fn push_video_frame(&self, track_name: &str, data: &[u8], width: u32, height: u32) {
+        if self.is_stepped() {
+            self.buffer_video_frame(track_name, data, width, height, None, None);
+            return;
+        }
         self.peer.push_video_frame(track_name, data, width, height);
     }
 
     /// Push a frame tagged with `user_data`, which reaches the far end as the
-    /// frame's metadata when both peers negotiated support for it.
+    /// frame's metadata when both peers negotiated support for it. Stepped:
+    /// buffered as for [`Reactor::push_video_frame`], with `user_data` as the
+    /// frame's metadata.
     pub fn push_video_frame_with_metadata(
         &self,
         track_name: &str,
@@ -1213,6 +1248,10 @@ impl Reactor {
         height: u32,
         user_data: &[u8],
     ) {
+        if self.is_stepped() {
+            self.buffer_video_frame(track_name, data, width, height, Some(user_data), None);
+            return;
+        }
         self.peer
             .push_video_frame_with_metadata(track_name, data, width, height, user_data);
     }
@@ -1221,6 +1260,7 @@ impl Reactor {
     /// timestamp the far end reads as the frame's own rather than the one the
     /// transport would assign on push. Pass the same value for every track of one
     /// capture and they arrive as one moment; `user_data` may be empty.
+    /// Stepped: buffered with the metadata and the capture time.
     pub fn push_video_frame_with_metadata_at(
         &self,
         track_name: &str,
@@ -1230,6 +1270,17 @@ impl Reactor {
         user_data: &[u8],
         capture_time_us: i64,
     ) {
+        if self.is_stepped() {
+            self.buffer_video_frame(
+                track_name,
+                data,
+                width,
+                height,
+                Some(user_data),
+                Some(capture_time_us),
+            );
+            return;
+        }
         self.peer.push_video_frame_with_metadata_at(
             track_name,
             data,
@@ -1241,6 +1292,10 @@ impl Reactor {
     }
 
     /// Push interleaved PCM with its capture format, before transport resampling.
+    ///
+    /// Stepped: buffered for the next step as a RAW planar `(channels,
+    /// samples)` `int16` frame. The wire frame carries no sample rate, so the
+    /// samples must already be at the rate the model's track declares.
     pub fn push_audio_frame(
         &self,
         track_name: &str,
@@ -1248,8 +1303,44 @@ impl Reactor {
         sample_rate: u32,
         num_channels: u32,
     ) {
+        if self.is_stepped() {
+            match raw_audio_frame(data, num_channels) {
+                Some(frame) => self
+                    .step_inputs
+                    .push(track_name, WireTrackKind::Audio, frame),
+                None => log::warn!(
+                    "dropping audio frame for '{track_name}': {} samples do not divide into {num_channels} channels",
+                    data.len()
+                ),
+            }
+            return;
+        }
         self.peer
             .push_audio_frame(track_name, data, sample_rate, num_channels);
+    }
+
+    fn is_stepped(&self) -> bool {
+        self.options.generation == GenerationMode::Stepped
+    }
+
+    fn buffer_video_frame(
+        &self,
+        track_name: &str,
+        data: &[u8],
+        width: u32,
+        height: u32,
+        metadata: Option<&[u8]>,
+        capture_time_us: Option<i64>,
+    ) {
+        match raw_video_frame(data, width, height, metadata, capture_time_us) {
+            Some(frame) => self
+                .step_inputs
+                .push(track_name, WireTrackKind::Video, frame),
+            None => log::warn!(
+                "dropping video frame for '{track_name}': {} bytes is not {width}x{height} BGRA",
+                data.len()
+            ),
+        }
     }
 
     pub async fn pause_track(&self, name: &str) -> Result<(), CoreError> {
@@ -3910,6 +4001,8 @@ mod tests {
     struct DataPeer {
         sent_data: Mutex<Vec<Vec<u8>>>,
         max: usize,
+        /// Tracks pushed to as media (the streamed path), in push order.
+        pushed: Mutex<Vec<String>>,
     }
 
     impl DataPeer {
@@ -3917,6 +4010,7 @@ mod tests {
             Self {
                 sent_data: Mutex::new(vec![]),
                 max,
+                pushed: Mutex::new(vec![]),
             }
         }
 
@@ -3960,6 +4054,12 @@ mod tests {
         }
         fn max_message_bytes(&self) -> usize {
             self.max
+        }
+        fn push_video_frame(&self, track_name: &str, _: &[u8], _: u32, _: u32) {
+            self.pushed.lock().unwrap().push(track_name.to_string());
+        }
+        fn push_audio_frame(&self, track_name: &str, _: &[i16], _: u32, _: u32) {
+            self.pushed.lock().unwrap().push(track_name.to_string());
         }
     }
 
@@ -4274,5 +4374,146 @@ mod tests {
         assert!(matches!(error, CoreError::StepFailed { .. }));
         assert_eq!(error.code(), codes::DISCONNECTED);
         assert!(error.recoverable());
+    }
+
+    // ── Stepped generation: input buffering ─────────────────────────────────
+
+    /// In a stepped session the push calls buffer instead of reaching the
+    /// media transport, and the next step carries the buffer, per track in
+    /// push order, as RAW frames — then starts over empty.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stepped_pushes_are_buffered_and_ride_the_next_step() {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        // 1x1 BGRA pixels.
+        reactor.push_video_frame("cam", &[1, 2, 3, 255], 1, 1);
+        reactor.push_audio_frame("mic", &[10, 20, 11, 21], 48_000, 2);
+        reactor.push_video_frame_with_metadata_at("cam", &[4, 5, 6, 255], 1, 1, b"t", 99);
+        // Wrong size for 2x2: dropped, not buffered.
+        reactor.push_video_frame("cam", &[0; 4], 2, 2);
+
+        assert!(
+            peer.pushed.lock().unwrap().is_empty(),
+            "nothing went to RTP"
+        );
+        assert_eq!(reactor.step_inputs.len(), 3);
+
+        let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+        let Some(data_client_message::Payload::RequestStep(request)) = sent.payload else {
+            panic!("expected a RequestStep");
+        };
+        assert_eq!(request.inputs.len(), 2);
+        let cam = &request.inputs[0];
+        assert_eq!(cam.track, "cam");
+        assert_eq!(cam.kind, WireTrackKind::Video as i32);
+        assert_eq!(cam.frames.len(), 2);
+        assert_eq!(cam.frames[0].data, [3, 2, 1]);
+        assert_eq!(cam.frames[0].shape, [1, 1, 3]);
+        assert_eq!(cam.frames[1].data, [6, 5, 4]);
+        assert_eq!(cam.frames[1].metadata.as_deref(), Some(&b"t"[..]));
+        assert_eq!(cam.frames[1].capture_time_us, Some(99));
+        let mic = &request.inputs[1];
+        assert_eq!(mic.track, "mic");
+        assert_eq!(mic.kind, WireTrackKind::Audio as i32);
+        assert_eq!(mic.frames[0].dtype, "int16");
+        assert_eq!(mic.frames[0].shape, [2, 2]);
+        assert!(reactor.step_inputs.is_empty());
+
+        feed(
+            &reactor,
+            &sent.request_id,
+            MessageKind::Response,
+            data_server_message::Payload::StepResult(StepResult {
+                index: 1,
+                tracks: vec![],
+            }),
+        )
+        .await;
+        stepping.await.unwrap().unwrap();
+
+        // The next step starts from an empty buffer.
+        let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+        let Some(data_client_message::Payload::RequestStep(request)) = sent.payload else {
+            panic!("expected a RequestStep");
+        };
+        assert!(request.inputs.is_empty());
+        stepping.abort();
+    }
+
+    #[test]
+    fn streamed_pushes_go_to_the_media_transport_as_before() {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let reactor = make_ready_reactor(peer.clone(), GenerationMode::Streamed);
+        reactor.push_video_frame("cam", &[1, 2, 3, 255], 1, 1);
+        reactor.push_audio_frame("mic", &[1, 2], 48_000, 2);
+        assert_eq!(*peer.pushed.lock().unwrap(), ["cam", "mic"]);
+        assert!(reactor.step_inputs.is_empty());
+    }
+
+    /// A stepped session's input tracks get no RTP transceiver; its output
+    /// tracks keep theirs. Streamed negotiates every track, as before.
+    #[tokio::test]
+    async fn a_stepped_connect_negotiates_no_transceiver_for_input_tracks() {
+        let prepared = |generation, echo| async move {
+            let http = Arc::new(GenerationHttp::new(echo));
+            let peer = Arc::new(SpyPeer::default());
+            let reactor = make_generation_reactor(http.clone(), peer.clone(), generation);
+            connect_until_registration(&reactor, &http).await.abort();
+            let tracks = peer.prepared_tracks.lock().unwrap().clone().unwrap();
+            tracks.into_iter().map(|t| t.name).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            prepared(GenerationMode::Stepped, Some("stepped")).await,
+            ["output"]
+        );
+        assert_eq!(
+            prepared(GenerationMode::Streamed, None).await,
+            ["output", "input"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stepped_preset_connect_negotiates_no_transceiver_for_input_tracks() {
+        let http = Arc::new(GenerationHttp::new(Some("stepped")));
+        let peer = Arc::new(SpyPeer::default());
+        let mut opts = ReactorOptions::new("http://localhost", "test-model");
+        opts.generation = GenerationMode::Stepped;
+        opts.preset_tracks = Some(vec![
+            output_track("output"),
+            TrackCapability {
+                name: "input".into(),
+                kind: crate::protocol::session::TrackKind::Video,
+                direction: TrackDirection::Sendonly,
+            },
+        ]);
+        let reactor = Arc::new(Reactor::new(
+            ReactorDeps {
+                http: http.clone() as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: peer.clone() as SharedPeer,
+            },
+            opts,
+        ));
+        connect_until_registration(&reactor, &http).await.abort();
+        let names: Vec<_> = peer
+            .prepared_tracks
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(names, ["output"]);
+    }
+
+    #[tokio::test]
+    async fn disconnecting_drops_frames_buffered_for_the_session() {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let reactor = make_ready_reactor(peer, GenerationMode::Stepped);
+        reactor.push_video_frame("cam", &[1, 2, 3, 255], 1, 1);
+        reactor.disconnect(false).await.unwrap();
+        assert!(reactor.step_inputs.is_empty());
     }
 }
