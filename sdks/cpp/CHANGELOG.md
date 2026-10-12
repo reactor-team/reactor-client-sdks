@@ -8,6 +8,19 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `FetchJwtOptions::sessions` mints a token bound to sessions that already
+  exist. Without `models` and `max_sessions`, the token can act on those
+  sessions and create none.
+
+### Fixed
+
+- Adopting a session with `ConnectOptions::session_id` on a client built with
+  an `ApiKey` no longer fails with 403. The token it minted for the adopt was
+  bound to no session at all. It is now bound to the session it adopts, and it
+  creates none.
+
 ## [2.4.0] - 2026-10-08
 
 ### Added

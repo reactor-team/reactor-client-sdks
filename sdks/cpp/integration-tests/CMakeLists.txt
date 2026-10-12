@@ -31,14 +31,6 @@ add_executable(
   audio_test.cpp
 )
 
-# Reaches past the public headers on purpose, same as tests/CMakeLists.txt:
-# fixtures.cpp's mint_jwt() calls reactor_fetch_jwt() directly, because session
-# adoption needs the token itself and the public API never hands one back.
-target_include_directories(
-  reactor_sdk_integration_tests
-  PRIVATE "${REACTOR_FFI_INCLUDE_DIR}"
-)
-
 target_link_libraries(
   reactor_sdk_integration_tests
   PRIVATE reactor::sdk reactor::ffi Catch2::Catch2WithMain

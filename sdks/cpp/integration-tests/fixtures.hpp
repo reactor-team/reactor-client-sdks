@@ -42,19 +42,9 @@ extern const std::string API_KEY;  // empty when LOCAL, required otherwise
 /// A `Reactor` configured from this suite's env, not yet connected.
 ///
 /// Pass `jwt` to hand the client an already-minted token instead of letting it
-/// exchange `API_KEY` for one itself — required for session adoption (see
-/// multi_connection_test.cpp): the coordinator only accepts the token that
-/// *created* a session for a second connection to adopt it by id, not a fresh
-/// one minted per client.
+/// exchange `API_KEY` for one itself.
 reactor::Reactor new_reactor(std::optional<reactor::Jwt> jwt = std::nullopt,
                              std::string model_name = MODEL_NAME);
-
-/// Mint one token from `API_KEY`, for callers that need to hand the *same*
-/// token to more than one `Reactor`. Calls `reactor_fetch_jwt` directly —
-/// reaching past the public header on purpose, the same way the unit suite
-/// reaches past it for teardown, because the public API has no other way to
-/// get at a token it did not mint for you. Blocks the calling thread.
-std::string mint_jwt(const std::string& model_name = MODEL_NAME);
 
 /// `client.connect(options).get()`, paced against every other call to this
 /// function in the process — not just other calls on `client` itself.

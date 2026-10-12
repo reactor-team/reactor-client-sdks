@@ -345,7 +345,7 @@ struct TokenExchange {
   ConnectOptions options;
   /// What this token is being minted for, so the client can tell later whether
   /// the one it holds is still the right one.
-  ClientImpl::TokenScope scope = ClientImpl::TokenScope::ThisModel;
+  ClientImpl::TokenScope scope{ClientImpl::TokenScope::Kind::ThisModel, {}};
 };
 
 void settle_exchange_as_aborted(TokenExchange& exchange) {
@@ -467,11 +467,11 @@ void ClientImpl::begin_connect(std::unique_ptr<Pending> op, ConnectOptions optio
   // The scope depends on the *call*, not on the client. Creating a session wants a
   // model-scoped token: a leak is then worth a handful of sessions on one model
   // rather than everything the key can reach. Adopting a session created
-  // elsewhere needs the broader one, because a scoped token cannot reach a session
-  // it did not create — which is a 403 on `get session`, and exactly what the
-  // multi-connection example hit.
-  const TokenScope wanted =
-      options.session_id.has_value() ? TokenScope::Unscoped : TokenScope::ThisModel;
+  // elsewhere needs a token bound to it, because a scoped token reaches only the
+  // sessions it created or was bound to — anything else is a 403 on `get session`.
+  const TokenScope wanted = options.session_id.has_value()
+                                ? TokenScope{TokenScope::Kind::Session, *options.session_id}
+                                : TokenScope{TokenScope::Kind::ThisModel, {}};
 
   bool needs_token = false;
   std::string key;
@@ -489,8 +489,11 @@ void ClientImpl::begin_connect(std::unique_ptr<Pending> op, ConnectOptions optio
 
   if (needs_token) {
     Json token_options = Json::object();
-    if (wanted == TokenScope::ThisModel) {
+    if (wanted.kind == TokenScope::Kind::ThisModel) {
       token_options["models"] = Json::array({model_});
+    } else {
+      // With no `max_sessions`, a token bound to the session creates none.
+      token_options["sessions"] = Json::array({wanted.session_id});
     }
     const std::string options_json = token_options.dump();
 

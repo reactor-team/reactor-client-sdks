@@ -34,14 +34,6 @@ add_executable(
 target_sources(reactor_sdk_endurance_tests PRIVATE ../integration-tests/fixtures.cpp)
 target_include_directories(reactor_sdk_endurance_tests PRIVATE ../integration-tests)
 
-# fixtures.cpp's mint_jwt() reaches past the public header, straight to
-# reactor_fetch_jwt() — same reason ../integration-tests/CMakeLists.txt
-# itself adds this same include dir for the same file.
-target_include_directories(
-  reactor_sdk_endurance_tests
-  PRIVATE "${REACTOR_FFI_INCLUDE_DIR}"
-)
-
 target_link_libraries(
   reactor_sdk_endurance_tests
   PRIVATE reactor::sdk Catch2::Catch2WithMain

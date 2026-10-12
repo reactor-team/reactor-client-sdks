@@ -6,16 +6,10 @@
 // exit at any moment without taking the session down), and is what this file
 // actually checks, not just that adoption connects.
 //
-// **Both clients must share one already-minted token.** Confirmed against
-// prod while building sdks/python/integration-tests/tests/
-// test_multi_connection.py, which this file mirrors: constructing each client
-// the convenient way (an API key, letting each `Reactor` mint its own token)
-// 403s the joiner — the coordinator only accepts the token that *created* a
-// session for a second connection to adopt it by id. `integration::mint_jwt` mints
-// one token up front and hands it to both clients via `reactor::Jwt`, the same
-// fix `sdks/cpp/examples/05_multi_connection.cpp` should double check it still
-// needs — it currently constructs both clients with an API key each, the
-// same bit-rotted shape the Python example was found carrying.
+// Each client mints its own token from the API key, the way
+// `sdks/cpp/examples/05_multi_connection.cpp` builds them. The joiner's token is
+// bound to the creator's session: a scoped token reaches only the sessions it
+// created or was bound to, so an unbound one would get a 403 on `get session`.
 
 #include <array>
 #include <chrono>
@@ -35,8 +29,8 @@ namespace {
 constexpr std::uint32_t WIDTH = 64;
 constexpr std::uint32_t HEIGHT = 64;
 
-/// A connected creator, and a callable that joins it to a fresh client sharing
-/// its token. Mirrors sdks/python/integration-tests/tests/
+/// A connected creator, and a callable that joins it to a fresh client of its
+/// own. Mirrors sdks/python/integration-tests/tests/
 /// test_multi_connection.py's `_shared_pair`.
 struct SharedPair {
   reactor::Reactor& creator;
@@ -44,18 +38,11 @@ struct SharedPair {
 };
 
 SharedPair make_shared_pair(integration::ReactorFactory& factory) {
-  // In local mode there's no coordinator auth to satisfy, and no API key is
-  // guaranteed to exist to mint from — mirrors integration::new_reactor's own
-  // handling of LOCAL.
-  const std::optional<reactor::Jwt> jwt =
-      integration::LOCAL ? std::nullopt
-                         : std::optional<reactor::Jwt>{reactor::Jwt{integration::mint_jwt()}};
-
-  auto& creator = factory.create(jwt);
+  auto& creator = factory.create();
   integration::paced_connect(creator);
 
-  return SharedPair{creator, [&factory, jwt, &creator]() -> reactor::Reactor& {
-                      auto& joiner = factory.create(jwt);
+  return SharedPair{creator, [&factory, &creator]() -> reactor::Reactor& {
+                      auto& joiner = factory.create();
                       reactor::ConnectOptions adopt;
                       adopt.session_id = creator.session_id();
                       integration::paced_connect(joiner, adopt);

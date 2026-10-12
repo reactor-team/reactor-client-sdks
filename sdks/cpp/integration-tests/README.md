@@ -86,11 +86,6 @@ audio test here publishes and pumps both.
   apart; every test routes through it rather than calling `connect()`
   directly. `RateLimitedError` also gets one retry as a second line of
   defense — the pacing gate is the primary one.
-- **A shared token for session adoption.** `mint_jwt()` calls
-  `reactor_fetch_jwt` directly — reaching past the public header, the same way
-  the unit suite already reaches past it for teardown tests — because the
-  public C++ API has no other way to get at a token it did not mint for you,
-  and adoption needs the *same* token handed to two clients.
 - **Synthetic media fixtures.** `solid_bgra_frame`/`solid_rgb_png` build
   deterministic pixels rather than reading a webcam, matching the JS harness's
   and Python conftest's own synthetic fixtures.

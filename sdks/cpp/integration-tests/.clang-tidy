@@ -3,10 +3,7 @@
 # Not run by `mise run lint:cpp` today (its glob is `src/**` and `tests/*.cpp`
 # only, the same as `examples/` is left out) — kept here anyway so an editor
 # running clang-tidy live against this directory sees the same relaxations
-# `sdks/cpp/tests/.clang-tidy` grants the unit suite, for the same reason:
-# `fixtures.cpp` reaches past the public header to mint a shared token
-# (`reactor_fetch_jwt`) and hands its own promise across that boundary as a raw
-# pointer, exactly the shape the checks below exist to flag everywhere else.
+# `sdks/cpp/tests/.clang-tidy` grants the unit suite.
 InheritParentConfig: true
 
 Checks: >

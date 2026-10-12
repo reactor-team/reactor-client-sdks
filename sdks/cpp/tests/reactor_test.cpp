@@ -410,6 +410,44 @@ TEST_CASE("an API key is exchanged for a token scoped to the model") {
   CHECK(fixture.library.fetch_jwt_options.find("models") != std::string::npos);
 }
 
+// A scoped token reaches only the sessions it created or was bound to, so the
+// token minted to adopt one is bound to it, and creates none.
+TEST_CASE("an API key is exchanged for a token bound to the session it adopts") {
+  Fixture fixture;
+
+  {
+    reactor::Reactor client{"reactor/helios", reactor::ApiKey{"key-123"}};
+    reactor::ConnectOptions options;
+    options.session_id = "existing-session";
+    client.connect(std::move(options)).get();
+  }
+
+  CHECK(fixture.library.connect_session_id == "existing-session");
+  CHECK(reactor::Json::parse(fixture.library.fetch_jwt_options) ==
+        reactor::Json{{"sessions", {"existing-session"}}});
+}
+
+TEST_CASE("a token bound to one session is reused for it and replaced for another") {
+  Fixture fixture;
+
+  {
+    reactor::Reactor client{"reactor/helios", reactor::ApiKey{"key-123"}};
+    const auto adopt = [&client](const char* session) {
+      reactor::ConnectOptions options;
+      options.session_id = session;
+      client.connect(std::move(options)).get();
+    };
+    adopt("session-1");
+    adopt("session-1");
+    CHECK(fixture.library.token_requests == 1);
+    adopt("session-2");
+  }
+
+  CHECK(fixture.library.token_requests == 2);
+  CHECK(reactor::Json::parse(fixture.library.fetch_jwt_options) ==
+        reactor::Json{{"sessions", {"session-2"}}});
+}
+
 TEST_CASE("adopting a session passes its id to connect") {
   Fixture fixture;
 
@@ -883,6 +921,15 @@ TEST_CASE("fetch_jwt forwards all token constraints and preserves an empty model
                                  {"max_sessions", 2},
                                  {"max_session_duration_seconds", 600},
                                  {"expires_after", 3600}});
+}
+
+TEST_CASE("fetch_jwt forwards a session bind") {
+  Fixture fixture;
+  reactor::FetchJwtOptions options;
+  options.sessions = std::vector<std::string>{"session-1"};
+  CHECK(reactor::fetch_jwt(reactor::ApiKey{"secret"}, options).get() == "minted-token");
+  CHECK(reactor::Json::parse(fixture.library.fetch_jwt_options) ==
+        reactor::Json{{"sessions", {"session-1"}}});
 }
 
 TEST_CASE("fetch_jwt reports typed failures and rejects malformed success payloads") {

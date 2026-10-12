@@ -73,9 +73,13 @@ struct FetchJwtOptions {
   /// Accept a dev coordinator's self-signed certificate. This explicit exchange
   /// still mints a token, unlike a local Reactor connection, which skips auth.
   bool local = false;
-  /// Unset mints an unscoped token; set (even empty) scopes it to these models.
+  /// Unset with no `sessions` mints an unscoped token; set (even empty) scopes it
+  /// to these models.
   std::optional<std::vector<std::string>> models;
-  /// Session limits apply only when models is set.
+  /// Existing sessions to bind the token to, by id. Without `models` and
+  /// `max_sessions`, the token can act only on these and create none.
+  std::optional<std::vector<std::string>> sessions;
+  /// Session limits apply only when models or sessions is set.
   std::optional<std::uint32_t> max_sessions;
   /// 1–86400 seconds; validated by the coordinator.
   std::optional<std::uint32_t> max_session_duration_seconds;

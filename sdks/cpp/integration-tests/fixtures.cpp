@@ -1,14 +1,10 @@
 #include "fixtures.hpp"
 
-#include <reactor_ffi.h>
-
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
-#include <future>
 #include <mutex>
 #include <reactor/errors.hpp>
-#include <reactor/json.hpp>
 #include <stdexcept>
 #include <thread>
 
@@ -50,57 +46,6 @@ reactor::Reactor new_reactor(std::optional<reactor::Jwt> jwt, std::string model_
         "sdks/cpp/integration-tests/README.md.");
   }
   return reactor::Reactor{std::move(model_name), reactor::ApiKey{API_KEY}, options};
-}
-
-std::string mint_jwt(const std::string& model_name) {
-  if (!LOCAL && API_KEY.empty()) {
-    throw std::runtime_error(
-        "INTEGRATION_TESTS_REACTOR_API_KEY is required unless REACTOR_LOCAL=true — see "
-        "sdks/cpp/integration-tests/README.md.");
-  }
-
-  // `reactor_fetch_jwt` takes no handle and is not part of the public C++
-  // surface — the object model deliberately never hands a caller a raw token,
-  // only a `Reactor` built from one. Session adoption needs the token itself,
-  // shared between two clients, so this reaches past the header the same way
-  // the unit suite reaches past it for teardown (see tests/reactor_test.cpp).
-  struct Pending {
-    std::promise<std::string> promise;
-  };
-  // Freed by the completion below, exactly once — mirrors how every other
-  // completion trampoline in this SDK crosses the FFI boundary as a raw
-  // pointer (see client_impl.hpp's own NOLINT'd `new`/`delete` pair).
-  auto* pending = new Pending();  // NOLINT(cppcoreguidelines-owning-memory)
-  auto future = pending->promise.get_future();
-
-  const std::string options_json = R"({"models":[")" + model_name + R"("]})";
-
-  reactor_fetch_jwt(
-      API_URL.c_str(), API_KEY.c_str(), options_json.c_str(), LOCAL ? 1 : 0,
-      [](int ok, const char* result_json, const char* error_json, void* userdata) {
-        auto* pending = static_cast<Pending*>(userdata);
-        if (ok != 0) {
-          try {
-            const auto parsed = reactor::Json::parse(result_json);
-            pending->promise.set_value(parsed.at("jwt").get<std::string>());
-          } catch (...) {
-            pending->promise.set_exception(std::current_exception());
-          }
-        } else {
-          // Reuses the SDK's own error decoding, so a rejected key surfaces as
-          // the same typed `UnauthorizedError` a failed `connect()` would.
-          const auto error = reactor::error_from_payload(error_json, "mint_jwt");
-          try {
-            error->rethrow();
-          } catch (...) {
-            pending->promise.set_exception(std::current_exception());
-          }
-        }
-        delete pending;  // NOLINT(cppcoreguidelines-owning-memory)
-      },
-      pending);
-
-  return future.get();
 }
 
 namespace {

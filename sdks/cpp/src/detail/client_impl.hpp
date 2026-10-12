@@ -320,13 +320,23 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
 
   /// What a token was minted for.
   ///
-  /// A session-scoped token cannot reach a session it did not create, so the scope
-  /// depends on the *call* rather than on the client: creating a session wants a
-  /// model-scoped token — a leak is then worth a handful of sessions on one model
-  /// rather than everything the key can reach — while adopting one created
-  /// elsewhere needs the broader token. A token minted for one connect is
-  /// therefore not necessarily right for the next.
-  enum class TokenScope : std::uint8_t { None, ThisModel, Unscoped };
+  /// A session-scoped token reaches only the sessions it created or was bound to,
+  /// so the scope depends on the *call* rather than on the client: creating a
+  /// session wants a model-scoped token — a leak is then worth a handful of
+  /// sessions on one model rather than everything the key can reach — while
+  /// adopting one created elsewhere needs a token bound to that session. A token
+  /// minted for one connect is therefore not necessarily right for the next.
+  struct TokenScope {
+    enum class Kind : std::uint8_t { None, ThisModel, Session };
+    Kind kind = Kind::None;
+    /// The session a `Session` token is bound to.
+    std::string session_id;
+
+    bool operator==(const TokenScope& other) const {
+      return kind == other.kind && session_id == other.session_id;
+    }
+    bool operator!=(const TokenScope& other) const { return !(*this == other); }
+  };
 
   void set_api_key(std::string key) { api_key_ = std::move(key); }
 
@@ -338,7 +348,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     jwt_ = std::move(jwt);
     // A token the caller supplied is theirs, and its scope is not ours to reason
     // about: whatever it can reach, it can reach.
-    minted_for_ = TokenScope::Unscoped;
+    minted_for_ = TokenScope{};
     caller_supplied_jwt_ = true;
   }
 
@@ -357,7 +367,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
       // stale answer.
       changed = !jwt_.has_value() || *jwt_ != jwt;
       jwt_ = std::move(jwt);
-      minted_for_ = scope;
+      minted_for_ = std::move(scope);
     }
     if (changed) {
       destroy_handle();
@@ -845,7 +855,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   /// At most one of these: whichever constructor was used.
   std::optional<std::string> api_key_;
   std::optional<std::string> jwt_;
-  TokenScope minted_for_ = TokenScope::None;
+  TokenScope minted_for_;
   bool caller_supplied_jwt_ = false;
 
   Dispatcher dispatcher_;

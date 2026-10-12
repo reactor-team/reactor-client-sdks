@@ -46,6 +46,9 @@ std::future<std::string> fetch_jwt(const ApiKey& key, const FetchJwtOptions& opt
     if (options.models) {
       request["models"] = *options.models;
     }
+    if (options.sessions) {
+      request["sessions"] = *options.sessions;
+    }
     if (options.max_sessions) {
       request["max_sessions"] = *options.max_sessions;
     }
