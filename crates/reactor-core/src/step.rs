@@ -5,9 +5,15 @@
 //! `RequestStep` on the data channel — state, then commands, then the input
 //! frames buffered per track since the previous step — and gets exactly one
 //! reply with the same `request_id`: a `StepResult`, or an `Error`
-//! (`step_refused`, `step_result_too_large`, ...). A `StepAccepted { index }`
-//! notification may arrive first under the same `request_id`; it reports
-//! progress and never resolves the request (see [`crate::data`]).
+//! (`step_refused`, `step_result_too_large`, ...). Nothing else is sent for a
+//! step: the result is its one answer, and an error is its refusal. A step
+//! that ran but that the model reported as failed is still a result, with the
+//! reason in [`StepOutput::error`].
+//!
+//! A result names the extra files the model kept with the step
+//! ([`StepFile`]) but does not carry them; their bytes are fetched over HTTP
+//! from the session's step results (`GET /sessions/{id}/steps/{index}`), as
+//! in a streamed session.
 //!
 //! Frames travel as [`FrameEncoding::Raw`] today. Decoding goes through
 //! [`FrameDecoders`], keyed by encoding, so a compressed encoding is a new
@@ -23,7 +29,9 @@ use crate::protocol::session::TrackKind;
 use crate::protocol::wire::struct_convert::value_to_struct;
 use crate::protocol::wire::v1::model::Command;
 use crate::protocol::wire::v1::platform::TrackKind as WireTrackKind;
-use crate::protocol::wire::v1::step::{Frame, FrameEncoding, RequestStep, StepResult, TrackFrames};
+use crate::protocol::wire::v1::step::{
+    Frame, FrameEncoding, RequestStep, StepFileRef, StepResult, TrackFrames,
+};
 
 /// `dtype` of a raw video frame: RGB, one byte per channel.
 pub const VIDEO_DTYPE: &str = "uint8";
@@ -222,6 +230,39 @@ pub struct StepOutput {
     /// Seconds the step's `generate()` took, or the time the model reported
     /// for the step.
     pub elapsed: f64,
+    /// The extra files the model kept with the step, in the order the runtime
+    /// listed them. Empty when the step kept none, or when its result was not
+    /// saved.
+    pub files: Vec<StepFile>,
+    /// Why the step failed, when it ran and the model reported a failure;
+    /// `None` when it worked. A refused step never runs: it gets no result,
+    /// and [`crate::reactor::Reactor::step`] fails with
+    /// [`CoreError::StepRefused`] instead.
+    pub error: Option<String>,
+}
+
+/// A reference to one extra file a model kept with a step. The result carries
+/// the reference, not the bytes: they are fetched over HTTP from the session's
+/// step results (`GET /sessions/{id}/steps/{index}`), by the step's index and
+/// the file's name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepFile {
+    /// The file's name, one path segment.
+    pub name: String,
+    /// The file's media type, guessed from its name.
+    pub content_type: String,
+    /// The file's size in bytes.
+    pub size: u64,
+}
+
+impl From<StepFileRef> for StepFile {
+    fn from(file: StepFileRef) -> Self {
+        Self {
+            name: file.name,
+            content_type: file.content_type,
+            size: file.size,
+        }
+    }
 }
 
 /// The frames one output track produced in a step, in production order.
@@ -362,6 +403,8 @@ impl FrameDecoders {
             index: result.index,
             tracks,
             elapsed: result.elapsed,
+            files: result.files.into_iter().map(StepFile::from).collect(),
+            error: result.error,
         })
     }
 }
@@ -527,6 +570,8 @@ mod tests {
                 },
             ],
             elapsed: 0.25,
+            files: vec![],
+            error: None,
         };
         let output = FrameDecoders::default().decode_result(result).unwrap();
         assert_eq!(output.index, 3);
@@ -541,6 +586,96 @@ mod tests {
         assert_eq!(frame.capture_time_us, Some(7));
         assert_eq!(output.tracks[1].kind, TrackKind::Audio);
         assert_eq!(output.tracks[1].frames[0].dtype, "int16");
+        assert!(output.files.is_empty());
+        assert!(output.error.is_none());
+    }
+
+    /// A step that ran and failed is still a result: its frames and files, as
+    /// far as it got, with the model's reason beside them.
+    #[test]
+    fn a_failed_step_is_a_result_that_says_why() {
+        let result = StepResult {
+            index: 5,
+            tracks: vec![],
+            elapsed: 0.1,
+            files: vec![],
+            error: Some("out of memory".into()),
+        };
+        let output = FrameDecoders::default().decode_result(result).unwrap();
+        assert_eq!(output.index, 5);
+        assert_eq!(output.error.as_deref(), Some("out of memory"));
+    }
+
+    #[test]
+    fn decodes_the_files_a_step_kept_in_order() {
+        let result = StepResult {
+            index: 2,
+            tracks: vec![],
+            elapsed: 1.5,
+            files: vec![
+                StepFileRef {
+                    name: "depth.npy".into(),
+                    content_type: "application/octet-stream".into(),
+                    size: 4096,
+                },
+                StepFileRef {
+                    name: "caption.txt".into(),
+                    content_type: "text/plain".into(),
+                    size: u64::MAX,
+                },
+            ],
+            error: None,
+        };
+        let output = FrameDecoders::default().decode_result(result).unwrap();
+        assert_eq!(output.elapsed, 1.5);
+        assert_eq!(
+            output.files,
+            [
+                StepFile {
+                    name: "depth.npy".into(),
+                    content_type: "application/octet-stream".into(),
+                    size: 4096,
+                },
+                StepFile {
+                    name: "caption.txt".into(),
+                    content_type: "text/plain".into(),
+                    size: u64::MAX,
+                },
+            ]
+        );
+    }
+
+    /// The files (`StepResult.files`, field 4) and the failure
+    /// (`StepResult.error`, field 5) come back out of a real protobuf round
+    /// trip, not just a struct literal.
+    #[test]
+    fn files_survive_the_wire_encoding() {
+        use prost::Message;
+
+        let bytes = StepResult {
+            index: 1,
+            tracks: vec![],
+            elapsed: 0.5,
+            files: vec![StepFileRef {
+                name: "mask.png".into(),
+                content_type: "image/png".into(),
+                size: 12,
+            }],
+            error: Some("partial".into()),
+        }
+        .encode_to_vec();
+        let decoded = StepResult::decode(bytes.as_slice()).unwrap();
+        assert_eq!(decoded.error.as_deref(), Some("partial"));
+        let output = FrameDecoders::default().decode_result(decoded).unwrap();
+        assert_eq!(output.error.as_deref(), Some("partial"));
+        assert_eq!(
+            output.files,
+            [StepFile {
+                name: "mask.png".into(),
+                content_type: "image/png".into(),
+                size: 12,
+            }]
+        );
     }
 
     #[test]
@@ -556,6 +691,8 @@ mod tests {
                 }],
             }],
             elapsed: 0.0,
+            files: vec![],
+            error: None,
         };
         match FrameDecoders::default().decode_result(result) {
             Err(CoreError::UnsupportedFrameEncoding { track, encoding }) => {
