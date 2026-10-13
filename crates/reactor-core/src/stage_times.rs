@@ -37,8 +37,9 @@ pub const STAGES: &[&str] = &[
     "output_queue",
 ];
 
-/// Time in milliseconds and frames counted, per track and stage.
-type Totals = HashMap<(String, &'static str), (f64, u64)>;
+/// Time in milliseconds and frames counted, per stage, per track. Keyed by
+/// track first, so a frame of a known track is added without allocating.
+type Totals = HashMap<String, HashMap<&'static str, (f64, u64)>>;
 
 /// The time each track's frames spent in each stage the SDK times, since the
 /// last [`StageTimes::take`]. Frames are timed from the threads that move
@@ -60,23 +61,31 @@ impl StageTimes {
             return;
         }
         let mut totals = self.totals.lock().unwrap();
-        let entry = totals.entry((track.to_string(), stage)).or_default();
+        let stages = match totals.get_mut(track) {
+            Some(stages) => stages,
+            None => totals.entry(track.to_string()).or_default(),
+        };
+        let entry = stages.entry(stage).or_default();
         entry.0 += ms;
         entry.1 += 1;
     }
 
     /// Each track's stages since the previous take, and start a new window.
     pub fn take(&self) -> HashMap<String, Vec<FrameStage>> {
-        let totals = std::mem::take(&mut *self.totals.lock().unwrap());
-        let mut stages: HashMap<String, Vec<FrameStage>> = HashMap::new();
-        for ((track, stage), (total_ms, frames)) in totals {
-            stages.entry(track).or_default().push(FrameStage {
-                name: stage.to_string(),
-                total_ms,
-                frames,
-            });
-        }
-        stages
+        std::mem::take(&mut *self.totals.lock().unwrap())
+            .into_iter()
+            .map(|(track, by_stage)| {
+                let stages = by_stage
+                    .into_iter()
+                    .map(|(stage, (total_ms, frames))| FrameStage {
+                        name: stage.to_string(),
+                        total_ms,
+                        frames,
+                    })
+                    .collect();
+                (track, stages)
+            })
+            .collect()
     }
 }
 

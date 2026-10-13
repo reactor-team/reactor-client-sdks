@@ -945,7 +945,9 @@ unsafe fn create_impl(
             peer_transport =
                 peer_transport.with_frame_callback(move |track, data, w, h, frame_id, ts, ud| {
                     // Runs on a libwebrtc decode thread. Copy and hand off; the one
-                    // thing not to do here is wait for the host.
+                    // thing not to do here is wait for the host. Timed before the
+                    // copy, so the copy counts toward delivery.
+                    let decoded_at = std::time::Instant::now();
                     tx.send(VideoFrame {
                         track: CString::new(track).unwrap_or_default(),
                         bgra: data.to_vec(),
@@ -954,7 +956,7 @@ unsafe fn create_impl(
                         frame_id,
                         timestamp_us: ts,
                         user_data: ud.to_vec(),
-                        decoded_at: std::time::Instant::now(),
+                        decoded_at,
                     });
                 });
             video = Some(thread);

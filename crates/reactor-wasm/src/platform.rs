@@ -84,4 +84,21 @@ impl Platform for WasmPlatform {
     fn now_ms(&self) -> f64 {
         js_sys::Date::now()
     }
+
+    /// `performance.now()`, on a page or in a worker alike; the wall clock
+    /// where the global has no `performance`.
+    fn monotonic_ms(&self) -> f64 {
+        use wasm_bindgen::JsCast;
+        let performance = js_sys::Reflect::get(&js_sys::global(), &"performance".into()).ok();
+        performance
+            .and_then(|p| {
+                let now = js_sys::Reflect::get(&p, &"now".into()).ok()?;
+                now.dyn_into::<js_sys::Function>()
+                    .ok()?
+                    .call0(&p)
+                    .ok()?
+                    .as_f64()
+            })
+            .unwrap_or_else(js_sys::Date::now)
+    }
 }

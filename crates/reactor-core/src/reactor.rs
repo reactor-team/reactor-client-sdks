@@ -1039,14 +1039,18 @@ impl Reactor {
         self
     }
 
-    /// Time one frame's hand-off to the engine, from *started_ms*.
+    /// Time one frame's hand-off to the engine, from *started_ms* on the
+    /// platform's monotonic clock.
     fn submitted(&self, track_name: &str, started_ms: f64) {
-        self.stage_times
-            .add(track_name, SUBMIT, self.platform.now_ms() - started_ms);
+        self.stage_times.add(
+            track_name,
+            SUBMIT,
+            self.platform.monotonic_ms() - started_ms,
+        );
     }
 
     pub fn push_video_frame(&self, track_name: &str, data: &[u8], width: u32, height: u32) {
-        let started = self.platform.now_ms();
+        let started = self.platform.monotonic_ms();
         self.peer.push_video_frame(track_name, data, width, height);
         self.submitted(track_name, started);
     }
@@ -1061,7 +1065,7 @@ impl Reactor {
         height: u32,
         user_data: &[u8],
     ) {
-        let started = self.platform.now_ms();
+        let started = self.platform.monotonic_ms();
         self.peer
             .push_video_frame_with_metadata(track_name, data, width, height, user_data);
         self.submitted(track_name, started);
@@ -1080,7 +1084,7 @@ impl Reactor {
         user_data: &[u8],
         capture_time_us: i64,
     ) {
-        let started = self.platform.now_ms();
+        let started = self.platform.monotonic_ms();
         self.peer.push_video_frame_with_metadata_at(
             track_name,
             data,

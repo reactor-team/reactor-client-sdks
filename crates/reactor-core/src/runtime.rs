@@ -18,6 +18,13 @@ pub trait Platform {
     fn sleep(&self, duration: Duration) -> BoxFut<'static, ()>;
     /// Current wall-clock time, Unix epoch milliseconds.
     fn now_ms(&self) -> f64;
+    /// Milliseconds on a clock that never steps back or jumps, from an
+    /// arbitrary start: for timing a duration, which a wall-clock step (NTP)
+    /// would corrupt. Only differences between two readings mean anything.
+    /// Defaults to [`Platform::now_ms`] for a platform with no such clock.
+    fn monotonic_ms(&self) -> f64 {
+        self.now_ms()
+    }
 }
 
 /// Race `fut` against a platform sleep.
@@ -54,5 +61,14 @@ impl Platform for TokioPlatform {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs_f64() * 1000.0)
             .unwrap_or(0.0)
+    }
+
+    fn monotonic_ms(&self) -> f64 {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        START
+            .get_or_init(std::time::Instant::now)
+            .elapsed()
+            .as_secs_f64()
+            * 1000.0
     }
 }
