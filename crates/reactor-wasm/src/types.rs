@@ -185,6 +185,20 @@ export interface ClientTrackStat {
    *  frame_width, frame_height, nack_count, keyframe_requests. A reading the
    *  client couldn't take is left out, never sent as 0. */
   metrics: Record<string, number>;
+  /** Where this track's frames spent their time since the previous batch,
+   *  one entry per stage (e.g. "encode", "jitter_buffer", "decode"). Optional;
+   *  an entry with no frames or a time that is not a finite, non-negative
+   *  number is left out. */
+  frameStages?: FrameStage[];
+}
+
+/** The time a track's frames spent in one stage of their trip, over one
+ *  batch's window. The average per frame is `totalMs / frames`. */
+export interface FrameStage {
+  name: string;
+  /** The time all `frames` frames spent in the stage together. */
+  totalMs: number;
+  frames: number;
 }
 
 /** A connection-wide reading, not tied to any one track — for

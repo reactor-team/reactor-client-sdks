@@ -27,7 +27,7 @@ use reactor_core::protocol::session::{
 };
 use reactor_core::protocol::upload::FileRef;
 use reactor_core::protocol::wire::v1::platform::{
-    ClientConnectionStat, ClientTrackStat, TrackDirection, TrackKind,
+    ClientConnectionStat, ClientTrackStat, FrameStage, TrackDirection, TrackKind,
 };
 use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions};
 use reactor_core::stats::client_track_codec;
@@ -858,6 +858,18 @@ struct ClientTrackStatJson {
     codec: String,
     paused: bool,
     metrics: std::collections::HashMap<String, f64>,
+    /// Optional, so a caller that has no stage times sends none.
+    #[serde(default)]
+    frame_stages: Vec<FrameStageJson>,
+}
+
+/// The JSON shape of `FrameStage`, as its TypeScript interface declares it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FrameStageJson {
+    name: String,
+    total_ms: f64,
+    frames: u64,
 }
 
 impl TryFrom<ClientTrackStatJson> for ClientTrackStat {
@@ -881,9 +893,24 @@ impl TryFrom<ClientTrackStatJson> for ClientTrackStat {
             codec: Some(codec),
             paused: stat.paused,
             metrics: stat.metrics,
-            frame_stages: Vec::new(),
+            frame_stages: stage_times(stat.frame_stages),
         })
     }
+}
+
+/// The stages a caller passed, keeping only those the wire allows: a name, at
+/// least one frame, and a time that is a finite number, never negative.
+fn stage_times(stages: Vec<FrameStageJson>) -> Vec<FrameStage> {
+    stages
+        .into_iter()
+        .filter(|s| !s.name.is_empty() && s.frames > 0)
+        .filter(|s| s.total_ms.is_finite() && s.total_ms >= 0.0)
+        .map(|s| FrameStage {
+            name: s.name,
+            total_ms: s.total_ms,
+            frames: s.frames,
+        })
+        .collect()
 }
 
 /// The JSON shape of `ClientConnectionStat`, exactly as its TypeScript
