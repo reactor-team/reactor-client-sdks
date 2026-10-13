@@ -85,7 +85,8 @@ final class StepResults {
             }
             tracks.add(new StepTrackOutput(name, kind, frames));
         }
-        return new StepResult(index, tracks);
+        double elapsed = (double) ffi.handle(Ffi.Symbol.STEP_RESULT_ELAPSED).invokeExact(result);
+        return new StepResult(index, tracks, elapsed);
     }
 
     @SuppressWarnings("restricted") // reinterpret: bounded by the lengths the accessors report

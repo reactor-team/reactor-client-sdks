@@ -146,10 +146,12 @@ final class SteppedGenerationTest {
                         new StepTrackSpec(
                                 "speech",
                                 "audio",
-                                List.of(new StepFrameSpec("raw", "int16", new int[] {2, 2}, pcm, null, null)))));
+                                List.of(new StepFrameSpec("raw", "int16", new int[] {2, 2}, pcm, null, null)))),
+                0.25);
 
         StepResult result = pending.get();
         assertEquals(3, result.index());
+        assertEquals(0.25, result.elapsed());
         assertEquals(
                 List.of("main_video", "speech"),
                 result.tracks().stream().map(StepTrackOutput::name).toList());
@@ -247,6 +249,13 @@ final class SteppedGenerationTest {
         NotFoundException thrown = assertThrows(NotFoundException.class, () -> result.track("main_vidoe"));
         assertTrue(thrown.getMessage().contains("main_video"), thrown.getMessage());
         assertTrue(result.findTrack("main_vidoe").isEmpty());
+    }
+
+    @Test
+    @DisplayName("a result built without an elapsed time defaults it to zero, as the other SDKs do")
+    void aResultBuiltWithoutElapsedDefaultsToZero() {
+        StepResult result = new StepResult(3, List.of());
+        assertEquals(new StepResult(3, List.of(), 0.0), result);
     }
 
     @Test

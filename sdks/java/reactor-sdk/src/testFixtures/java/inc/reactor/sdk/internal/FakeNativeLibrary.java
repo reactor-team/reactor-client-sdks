@@ -155,6 +155,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
         bind("reactor_step", Ffi.Symbol.STEP.descriptor(), "step");
         bind("reactor_clear_step_inputs", Ffi.Symbol.CLEAR_STEP_INPUTS.descriptor(), "clearStepInputs");
         bind("reactor_step_result_index", Ffi.Symbol.STEP_RESULT_INDEX.descriptor(), "stepResultIndex");
+        bind("reactor_step_result_elapsed", Ffi.Symbol.STEP_RESULT_ELAPSED.descriptor(), "stepResultElapsed");
         bind(
                 "reactor_step_result_track_count",
                 Ffi.Symbol.STEP_RESULT_TRACK_COUNT.descriptor(),
@@ -766,7 +767,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
     public record StepTrackSpec(String name, String kind, List<StepFrameSpec> frames) {}
 
     /** The native side of a result: everything its accessors hand out, allocated once. */
-    private record NativeStepResult(long index, List<NativeTrack> tracks) {}
+    private record NativeStepResult(long index, List<NativeTrack> tracks, double elapsed) {}
 
     private record NativeTrack(MemorySegment name, MemorySegment kind, List<NativeFrame> frames) {}
 
@@ -838,7 +839,13 @@ public final class FakeNativeLibrary implements AutoCloseable {
      */
     @SuppressWarnings("restricted") // downcallHandle: calling the client's own completion stub
     public long settleLastStep(long index, List<StepTrackSpec> tracks) {
-        MemorySegment result = buildResult(index, tracks);
+        return settleLastStep(index, tracks, 0.0);
+    }
+
+    /** As {@link #settleLastStep(long, List)}, with the seconds the step's {@code generate()} took. */
+    @SuppressWarnings("restricted") // downcallHandle: calling the client's own completion stub
+    public long settleLastStep(long index, List<StepTrackSpec> tracks, double elapsed) {
+        MemorySegment result = buildResult(index, tracks, elapsed);
         callStepCompletion(1, result, MemorySegment.NULL);
         return result.address();
     }
@@ -886,7 +893,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
         }
     }
 
-    private MemorySegment buildResult(long index, List<StepTrackSpec> specs) {
+    private MemorySegment buildResult(long index, List<StepTrackSpec> specs, double elapsed) {
         List<NativeTrack> tracks = new ArrayList<>();
         for (StepTrackSpec spec : specs) {
             List<NativeFrame> frames = new ArrayList<>();
@@ -918,7 +925,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
             tracks.add(new NativeTrack(arena.allocateFrom(spec.name()), arena.allocateFrom(spec.kind()), frames));
         }
         MemorySegment address = arena.allocate(8);
-        liveResults.put(address.address(), new NativeStepResult(index, tracks));
+        liveResults.put(address.address(), new NativeStepResult(index, tracks, elapsed));
         return address;
     }
 
@@ -951,6 +958,11 @@ public final class FakeNativeLibrary implements AutoCloseable {
     private long stepResultIndex(MemorySegment result) {
         NativeStepResult found = live(result);
         return found == null ? 0 : found.index();
+    }
+
+    private double stepResultElapsed(MemorySegment result) {
+        NativeStepResult found = live(result);
+        return found == null ? 0.0 : found.elapsed();
     }
 
     private int stepResultTrackCount(MemorySegment result) {
