@@ -51,6 +51,7 @@ for frame in try result.track("main_video").frames {
     frame.metadata  // what the sender attached, if anything
     frame.captureTimeUs
 }
+result.elapsed      // Duration — how long the step's generate() took (or the model reported)
 ```
 
 `Track.pushFrame` keeps its signatures: in a stepped session it buffers the frame

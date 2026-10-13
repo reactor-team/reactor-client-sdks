@@ -287,6 +287,9 @@ struct FFI: Sendable {
     /// `reactor_step_result_index` — the step's number in the session, from 1.
     var stepResultIndex: @Sendable (OpaquePointer?) -> UInt64
 
+    /// `reactor_step_result_elapsed` — the seconds the step's `generate()` took.
+    var stepResultElapsed: @Sendable (OpaquePointer?) -> Double
+
     /// `reactor_step_result_track_count`.
     var stepResultTrackCount: @Sendable (OpaquePointer?) -> UInt32
 
@@ -425,6 +428,7 @@ extension FFI {
         },
         clearStepInputs: { handle in reactor_clear_step_inputs(handle) },
         stepResultIndex: { result in reactor_step_result_index(result) },
+        stepResultElapsed: { result in reactor_step_result_elapsed(result) },
         stepResultTrackCount: { result in reactor_step_result_track_count(result) },
         stepResultTrackName: { result, track in reactor_step_result_track_name(result, track) },
         stepResultTrackKind: { result, track in reactor_step_result_track_kind(result, track) },

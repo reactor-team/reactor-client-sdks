@@ -93,10 +93,12 @@ final class FakeStepResult: @unchecked Sendable {
 
     let index: UInt64
     let tracks: [CTrack]
+    let elapsed: Double
 
-    init(index: UInt64, tracks: [Track]) {
+    init(index: UInt64, tracks: [Track], elapsed: Double = 0) {
         self.index = index
         self.tracks = tracks.map(CTrack.init)
+        self.elapsed = elapsed
     }
 
     func track(_ index: UInt32) -> CTrack? {

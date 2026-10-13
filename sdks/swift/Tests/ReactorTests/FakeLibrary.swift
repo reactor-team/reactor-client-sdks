@@ -709,6 +709,7 @@ final class FakeLibrary: @unchecked Sendable {
             },
             clearStepInputs: { [self] _ in state.withLock { $0.clearStepInputsCalls += 1 } },
             stepResultIndex: { FakeStepResult.from($0)?.index ?? 0 },
+            stepResultElapsed: { FakeStepResult.from($0)?.elapsed ?? 0 },
             stepResultTrackCount: { UInt32(FakeStepResult.from($0)?.tracks.count ?? 0) },
             stepResultTrackName: {
                 FakeStepResult.from($0)?.track($1).map { UnsafePointer($0.name) }

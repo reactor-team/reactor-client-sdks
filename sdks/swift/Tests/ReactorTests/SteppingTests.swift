@@ -60,7 +60,8 @@ struct SteppingTests {
                             dtype: "int16", shape: [2, 3], data: Array(repeating: 1, count: 12),
                             metadata: [])
                     ]),
-            ])
+            ],
+            elapsed: 0.25)
     }
 
     // MARK: - Creation
@@ -233,6 +234,7 @@ struct SteppingTests {
         #expect(watched == nil, "the SDK kept the library's result alive past the step")
 
         #expect(result.index == 7)
+        #expect(result.elapsed == .milliseconds(250))
         #expect(result.tracks.map(\.name) == ["main_video", "main_audio"])
 
         let video = try result.track("main_video")
@@ -290,6 +292,19 @@ struct SteppingTests {
             // like every other code.
         }
         #expect(fake.freedStepResults == 0)
+    }
+
+    @Test("an elapsed a Duration cannot hold comes back as zero")
+    func nonFiniteElapsedIsZero() async throws {
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+
+        let nonFinite = try await stepping(
+            fake, result: FakeStepResult(index: 3, tracks: [], elapsed: .nan)
+        ) { try await client.step() }
+        #expect(nonFinite.index == 3)
+        #expect(nonFinite.elapsed == .zero)
     }
 
     @Test("a frame whose bytes disagree with its shape fails the step, and is still freed")

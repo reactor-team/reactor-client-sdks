@@ -109,11 +109,17 @@ public struct StepResult: Sendable {
     /// sent them.
     public let tracks: [StepTrackOutput]
 
+    /// How long the step's `generate()` took, or the time the model reported
+    /// for the step. `.zero` if the runtime sent a value a `Duration` cannot
+    /// hold (a NaN or an infinity).
+    public let elapsed: Duration
+
     /// Assemble a result — for tests and previews; ``Reactor/step(state:commands:)``
     /// is where real ones come from.
-    public init(index: UInt64, tracks: [StepTrackOutput]) {
+    public init(index: UInt64, tracks: [StepTrackOutput], elapsed: Duration = .zero) {
         self.index = index
         self.tracks = tracks
+        self.elapsed = elapsed
     }
 
     /// The output of the track called `name`.
