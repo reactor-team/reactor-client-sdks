@@ -4,7 +4,9 @@
 A client created with `generation="stepped"` asks for a session that generates
 only when told to. Each `step()` sends the model's state, a list of commands and
 every frame pushed since the previous step, and resolves with what the model
-produced on each output track — as numpy arrays, not a video stream.
+produced on each output track — as numpy arrays, not a video stream. A step
+the model ran but failed still resolves, with `error` set; `files` names any
+extra files the model kept with it.
 
 Pushing into an input track does not send anything in a stepped session: the
 frame waits for the next step. A runtime without stepped generation ignores the
@@ -57,10 +59,6 @@ async def main() -> None:
         generation="stepped",
     )
 
-    @reactor.on_step_accepted
-    def accepted(index: int) -> None:
-        print(f"step {index}: accepted, generating")
-
     async with reactor:
         await reactor.connect()
         print(f"session: {reactor.session_id}")
@@ -77,12 +75,16 @@ async def main() -> None:
                 state={"prompt": PROMPT} if seq == 0 else None,
                 commands=[StepCommand(COMMAND)] if COMMAND else [],
             )
+            if result.error is not None:
+                print(f"step {result.index}: the model failed it: {result.error}")
             for track in result.tracks:
                 shapes = ", ".join(str(f.array.shape) for f in track.frames)
                 print(
                     f"step {result.index}: {track.name} ({track.kind.value}) "
                     f"{len(track.frames)} frame(s) {shapes}"
                 )
+            for file in result.files:
+                print(f"step {result.index}: kept {file.name} ({file.content_type}, {file.size} B)")
 
 
 if __name__ == "__main__":

@@ -325,13 +325,20 @@ def _load() -> ctypes.CDLL:
 #: The functions stepped generation added. They arrived without an ABI bump —
 #: adding a function changes nothing an older binding calls — so a library
 #: reporting `ABI_VERSION` may still predate them. Bound only when present;
-#: `has_stepped()` is what a caller asks before using one.
+#: `has_stepped()` is what a caller asks before using one. Requiring the
+#: result's error and file accessors also turns away an early build of this
+#: surface whose `reactor_create_with_options` took one more parameter.
 STEPPED_FUNCTIONS = (
     "reactor_create_with_options",
     "reactor_step",
     "reactor_clear_step_inputs",
     "reactor_step_result_index",
     "reactor_step_result_elapsed",
+    "reactor_step_result_error",
+    "reactor_step_result_file_count",
+    "reactor_step_result_file_name",
+    "reactor_step_result_file_content_type",
+    "reactor_step_result_file_size",
     "reactor_step_result_track_count",
     "reactor_step_result_track_name",
     "reactor_step_result_track_kind",
@@ -361,7 +368,6 @@ def _bind_stepped(lib: ctypes.CDLL) -> None:
         ctypes.c_char_p,  # model_name
         ctypes.c_char_p,  # jwt (nullable)
         ctypes.c_void_p,  # callbacks (nullable)
-        ctypes.c_void_p,  # on_step_accepted (nullable)
         ctypes.c_char_p,  # options_json (nullable)
         ctypes.POINTER(ctypes.c_void_p),  # error_out (nullable): heap JSON to free
     ]
@@ -383,10 +389,20 @@ def _bind_stepped(lib: ctypes.CDLL) -> None:
     lib.reactor_step_result_index.argtypes = [result]
     lib.reactor_step_result_elapsed.restype = ctypes.c_double
     lib.reactor_step_result_elapsed.argtypes = [result]
+    # c_char_p: every string accessor borrows from the result, so ctypes copying
+    # the bytes out is exactly right, and nothing is freed through them.
+    lib.reactor_step_result_error.restype = ctypes.c_char_p
+    lib.reactor_step_result_error.argtypes = [result]
+    lib.reactor_step_result_file_count.restype = ctypes.c_uint32
+    lib.reactor_step_result_file_count.argtypes = [result]
+    lib.reactor_step_result_file_name.restype = ctypes.c_char_p
+    lib.reactor_step_result_file_name.argtypes = [result, ctypes.c_uint32]
+    lib.reactor_step_result_file_content_type.restype = ctypes.c_char_p
+    lib.reactor_step_result_file_content_type.argtypes = [result, ctypes.c_uint32]
+    lib.reactor_step_result_file_size.restype = ctypes.c_uint64
+    lib.reactor_step_result_file_size.argtypes = [result, ctypes.c_uint32]
     lib.reactor_step_result_track_count.restype = ctypes.c_uint32
     lib.reactor_step_result_track_count.argtypes = [result]
-    # c_char_p: these borrow from the result, so ctypes copying the bytes out
-    # is exactly right, and nothing is freed through them.
     lib.reactor_step_result_track_name.restype = ctypes.c_char_p
     lib.reactor_step_result_track_name.argtypes = [result, ctypes.c_uint32]
     lib.reactor_step_result_track_kind.restype = ctypes.c_char_p
@@ -465,9 +481,6 @@ COMPLETION_FN = ctypes.CFUNCTYPE(
     None, ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p
 )
 
-
-# (uint64_t index, void*) -> void  [on_step_accepted]
-ON_STEP_ACCEPTED_FN = ctypes.CFUNCTYPE(None, ctypes.c_uint64, ctypes.c_void_p)
 
 # (int ok, ReactorStepResult* result, const char* error_json, void*) -> void.
 # `result` is c_void_p, not a pointer type ctypes would wrap: it arrives owned,

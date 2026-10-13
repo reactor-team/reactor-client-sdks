@@ -266,19 +266,16 @@ except AuthError:
 ## Stepped generation
 
 A model that supports it can generate one step at a time instead of streaming.
-Ask for it when creating the client, then call `step()`: it runs the state, the
-commands and every input frame pushed since the previous step as one unit, and
-returns what the model produced on each output track.
+Ask for it when creating the client, then call `step()`: the runtime applies the
+state (each key as the model's `set_<key>` command), then the commands, then every
+input frame pushed since the previous step, generates, and the call returns what
+the model produced on each output track. These are applied one by one, in that
+order; a failure part-way does not undo the ones before it.
 
 ```python
 from reactor_sdk import Reactor, StepCommand
 
 reactor = Reactor("owner/model", api_key=key, generation="stepped")
-
-@reactor.on_step_accepted
-def accepted(index):
-    print("generating step", index)
-
 await reactor.connect()          # GenerationModeMismatchError if the runtime cannot
 
 camera = await reactor.track("camera").publish()
@@ -292,11 +289,26 @@ for out in result.track("main_video").frames:
     out.array                    # numpy (height, width, 3) uint8 RGB
     out.metadata, out.capture_time_us
 result.elapsed                   # seconds the step's generate() took (or the model reported)
+result.error                     # None, or why the model failed a step that ran
+for f in result.files:           # extra files the model kept with the step
+    f.name, f.content_type, f.size
+
+await reactor.step()             # no arguments: a step on the model's current state
 ```
 
 `Track.push_frame` keeps its signature: in a stepped session it buffers the frame
 for the next step instead of sending it. Audio comes back as `(channels, samples)`
-`int16`. A step the runtime refuses raises `StepRefusedError`; one whose output
+`int16`. `send_command` keeps working between steps, and what it changes is what
+the next step uses. A file goes into a step the way it goes into a command: upload
+it with `upload_file()` and put the `FileRef` in a command's data, or as the value
+of an upload-typed state field.
+
+A step that ran but that the model reported as failed returns normally, with
+`result.error` set. `result.files` names the files the model kept with the step;
+their bytes are fetched over HTTP from the session's step results
+(`GET /sessions/{id}/steps/{index}`, which lists each with a download URL and
+answers 202 while they are still being stored). A step the runtime refuses raises
+`StepRefusedError`; one whose output
 does not fit in a message raises `StepResultTooLargeError`; a request too large to
 send raises `MessageTooLargeError` and keeps the pushed frames, which
 `clear_step_inputs()` drops. `step_timeout=` bounds a step (default 300 s).

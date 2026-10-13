@@ -22,7 +22,6 @@ from ._ffi import (
     COMPLETION_FN,
     ON_AUDIO_FN,
     ON_FRAME_FN,
-    ON_STEP_ACCEPTED_FN,
     ON_STRING_FN,
     ON_TRACK_FN,
     STEP_COMPLETION_FN,
@@ -445,17 +444,6 @@ class Reactor:
         self.on("track_received", func)
         return func
 
-    def on_step_accepted(self, func: Callable) -> Callable:
-        """Register a handler for a stepped session accepting a step.
-
-        The handler receives the step's index — its number in the session, counted
-        from 1, the same as the `StepResult.index` the step resolves with. It fires
-        when the runtime starts generating the step, never for a refused one, and
-        normally before :meth:`step` returns; do not rely on that order.
-        """
-        self.on("step_accepted", func)
-        return func
-
     def off(self, event: str, handler: Callable) -> None:
         """Unregister a handler."""
         handlers = self._handlers.get(event, [])
@@ -725,12 +713,6 @@ class Reactor:
             pcm = bytes(arr)
             r._fire_on_track("audio", track_bytes, pcm, num_samples, sample_rate, channels)
 
-        def _on_step_accepted(index: int, _ud: Any) -> None:
-            r = weak()
-            if r is None:
-                return
-            r._fire_on_loop("step_accepted", int(index))
-
         # Wrap with ctypes CFUNCTYPE
         s_cb = ON_STRING_FN(_on_status)
         e_cb = ON_STRING_FN(_on_error)
@@ -760,9 +742,7 @@ class Reactor:
         jwt_bytes = self._jwt.encode() if self._jwt else None
 
         if self._generation == "stepped":
-            handle = self._create_stepped_handle(
-                lib, jwt_bytes, cbs, ON_STEP_ACCEPTED_FN(_on_step_accepted)
-            )
+            handle = self._create_stepped_handle(lib, jwt_bytes, cbs)
         else:
             # Named rather than defaulted: `reactor_create` would take the mode from
             # the REACTOR_WEBRTC_ADM environment variable, and an environment variable
@@ -784,13 +764,12 @@ class Reactor:
         _LIVE_CLIENTS.add(self)
 
     def _create_stepped_handle(
-        self, lib: Any, jwt_bytes: bytes | None, cbs: ReactorCallbacks, step_accepted: Any
+        self, lib: Any, jwt_bytes: bytes | None, cbs: ReactorCallbacks
     ) -> int:
         """Create the handle for a stepped session, through the options-taking entry.
 
         The generation mode is a creation option rather than a connect one, and
-        only `reactor_create_with_options` takes it — along with the step-accepted
-        callback, which `ReactorCallbacks` has no slot for.
+        only `reactor_create_with_options` takes it.
         """
         if not has_stepped(lib):
             raise RuntimeError(
@@ -798,7 +777,6 @@ class Reactor:
                 "reactor_create_with_options). Rebuild it with "
                 "`cargo build -p reactor-ffi --release`."
             )
-        self._cb_refs.append(step_accepted)
         options: dict[str, Any] = {
             "local": self._local,
             "auto_resume_tracks": self._auto_resume_tracks,
@@ -815,7 +793,6 @@ class Reactor:
             self._model_name.encode(),
             jwt_bytes,
             ctypes.byref(cbs),
-            step_accepted,
             json.dumps(options).encode(),
             ctypes.byref(error),
         )
@@ -1169,10 +1146,12 @@ class Reactor:
     ) -> StepResult:
         """Run one step of a stepped session and return what it produced.
 
-        The runtime runs, as one unit: `state` (each key as the model's
-        ``set_<key>`` command), then `commands` in order, then every input frame
-        pushed since the previous step — :meth:`Track.push_frame` does not send in a
-        stepped session, it buffers for the next step::
+        The runtime applies `state` (each key as the model's ``set_<key>``
+        command), then `commands` in order, then every input frame pushed since the
+        previous step, and then generates — :meth:`Track.push_frame` does not send
+        in a stepped session, it buffers for the next step. These are individual
+        calls, applied in that order; a failure part-way does not undo the ones
+        before it::
 
             reactor = Reactor("owner/model", api_key=key, generation="stepped")
             await reactor.connect()
@@ -1185,13 +1164,22 @@ class Reactor:
             for out in result.track("main_video").frames:
                 show(out.array)  # (height, width, 3) uint8 RGB
 
+        Both arguments are optional: ``await reactor.step()`` runs a step on the
+        model's current state. :meth:`send_command` keeps working in a stepped
+        session, and what it changes is what the next step uses.
+
         `commands` entries are `StepCommand`s or ``{"command": ..., "data": ...}``
-        mappings. Raises `StepRefusedError` when the runtime refuses the step (no
-        state changed), `StepResultTooLargeError` when its output does not fit in one
-        message, `MessageTooLargeError` when the request does not — nothing was sent
-        then, and the pushed frames are kept for the next step (see
-        :meth:`clear_step_inputs`) — and `InvalidStateError` outside a ready stepped
-        session.
+        mappings. A file goes in the way it does for :meth:`send_command`: upload it
+        with :meth:`upload_file` and put the `FileRef` in a command's data, or as
+        the value of an upload-typed state field.
+
+        A step that ran but that the model reported as failed returns its result
+        with `StepResult.error` set. Raises `StepRefusedError` when the runtime
+        refuses the step (no state changed), `StepResultTooLargeError` when its
+        output does not fit in one message, `MessageTooLargeError` when the request
+        does not — nothing was sent then, and the pushed frames are kept for the
+        next step (see :meth:`clear_step_inputs`) — and `InvalidStateError` outside
+        a ready stepped session.
         """
         if self._generation != "stepped":
             raise InvalidStateError(
