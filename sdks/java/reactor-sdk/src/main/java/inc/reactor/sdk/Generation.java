@@ -14,9 +14,9 @@ public enum Generation {
     STREAMED("streamed"),
 
     /**
-     * One {@link Reactor#step step} at a time. Each step runs the model's state, a list of commands
-     * and every input frame pushed since the previous step as one unit, and answers with what the
-     * model produced on each output track — arrays, not a video stream.
+     * One {@link Reactor#step step} at a time. Each step applies the model's state, a list of
+     * commands and every input frame pushed since the previous step, in that order, then generates
+     * and answers with what the model produced on each output track — arrays, not a video stream.
      *
      * <p>A runtime without stepped generation ignores the request rather than refusing it, so
      * {@link Reactor#connect()} checks what the runtime reports and fails with {@link

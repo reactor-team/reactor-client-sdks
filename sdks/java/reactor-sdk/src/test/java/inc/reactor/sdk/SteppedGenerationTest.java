@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import inc.reactor.sdk.internal.FakeNativeLibrary;
+import inc.reactor.sdk.internal.FakeNativeLibrary.StepFileSpec;
 import inc.reactor.sdk.internal.FakeNativeLibrary.StepFrameSpec;
 import inc.reactor.sdk.internal.FakeNativeLibrary.StepTrackSpec;
 import inc.reactor.sdk.internal.Ffi;
@@ -23,7 +24,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Stepped generation, end to end through the binding's real downcalls and upcalls against a fake
- * library: the creation call that asks for it, step() and its owned result, the step-accepted event,
+ * library: the creation call that asks for it, step() and its owned result with its files and error,
  * and the refusals that keep a stepped client from failing quietly.
  */
 final class SteppedGenerationTest {
@@ -191,7 +192,10 @@ final class SteppedGenerationTest {
         assertEquals(null, fake.lastStepState);
         assertEquals("[]", fake.lastStepCommands);
         fake.settleLastStep(1, List.of());
-        assertEquals(List.of(), pending.get().tracks());
+        StepResult result = pending.get();
+        assertEquals(List.of(), result.tracks());
+        assertEquals(List.of(), result.files());
+        assertTrue(result.error().isEmpty());
     }
 
     @Test
@@ -252,10 +256,13 @@ final class SteppedGenerationTest {
     }
 
     @Test
-    @DisplayName("a result built without an elapsed time defaults it to zero, as the other SDKs do")
+    @DisplayName("a result built without elapsed, files or error defaults them to zero and empty, as the other SDKs do")
     void aResultBuiltWithoutElapsedDefaultsToZero() {
         StepResult result = new StepResult(3, List.of());
         assertEquals(new StepResult(3, List.of(), 0.0), result);
+        assertEquals(new StepResult(3, List.of(), 0.0, List.of(), java.util.Optional.empty()), result);
+        assertEquals(List.of(), result.files());
+        assertTrue(result.error().isEmpty());
     }
 
     @Test
@@ -383,19 +390,50 @@ final class SteppedGenerationTest {
     }
 
     @Test
-    @DisplayName("step accepted is delivered through the dispatcher with the step's index, until unsubscribed")
-    void stepAcceptedIsDelivered() {
-        List<Long> accepted = new ArrayList<>();
-        int before = FakeClients.controlHandlerCount(reactor);
-        Subscription subscription = reactor.onStepAccepted(accepted::add);
-        assertEquals(before + 1, FakeClients.controlHandlerCount(reactor));
+    @DisplayName("the files a step kept arrive on its result, in order, with their types and sizes")
+    void aStepResultNamesItsFiles() throws Exception {
+        CompletableFuture<StepResult> pending = reactor.step();
+        fake.settleLastStep(
+                2,
+                List.of(),
+                0.5,
+                List.of(
+                        new StepFileSpec("depth.npy", "application/octet-stream", 4096),
+                        new StepFileSpec("caption.txt", "text/plain", 12)),
+                null);
 
-        fake.fireStepAccepted(7);
-        subscription.close();
-        fake.fireStepAccepted(8);
+        StepResult result = pending.get();
+        assertEquals(
+                List.of(
+                        new StepFile("depth.npy", "application/octet-stream", 4096),
+                        new StepFile("caption.txt", "text/plain", 12)),
+                result.files());
+        assertTrue(result.error().isEmpty(), "a step that worked carries no error");
+        assertTrue(fake.stepResultsFreedExactlyOnce());
+    }
 
-        assertEquals(List.of(7L), accepted);
-        assertEquals(before, FakeClients.controlHandlerCount(reactor));
+    @Test
+    @DisplayName("a step that ran but failed resolves, with the model's error, rather than throwing")
+    void aRanButFailedStepResolvesWithItsError() throws Exception {
+        CompletableFuture<StepResult> pending = reactor.step();
+        fake.settleLastStep(5, List.of(), 0.1, List.of(), "out of memory");
+
+        StepResult result = pending.get();
+        assertEquals(5, result.index());
+        assertEquals("out of memory", result.error().orElseThrow());
+        assertEquals(List.of(), result.files());
+        assertTrue(fake.stepResultsFreedExactlyOnce());
+    }
+
+    @Test
+    @DisplayName("there is no step-accepted event: the result is the step's one answer")
+    void thereIsNoStepAcceptedEvent() {
+        assertTrue(
+                java.util.Arrays.stream(Reactor.class.getMethods())
+                        .noneMatch(method -> method.getName()
+                                .toLowerCase(java.util.Locale.ROOT)
+                                .contains("accepted")),
+                "Reactor exposes no accepted listener");
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

@@ -4,11 +4,13 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * What one {@link Reactor#step step} produced: its index in the session and, per output track, the
- * frames it generated.
+ * What one {@link Reactor#step step} produced: its index in the session, per output track the
+ * frames it generated, the files the model kept with it, and — when the step ran but the model
+ * reported a failure — why.
  *
  * <pre>{@code
  * StepResult result = reactor.step(state, List.of()).join();
+ * result.error().ifPresent(why -> System.err.println("step " + result.index() + " failed: " + why));
  * for (StepFrame frame : result.track("main_video").frames()) {
  *     show(frame.data(), frame.shape());      // (height, width, 3) uint8 RGB
  * }
@@ -17,21 +19,40 @@ import java.util.Optional;
  * <p>Copied out of the native library once, when the step completed; nothing here points into
  * native memory, so it can be kept and shared freely.
  *
- * @param index the step's number in the session, counted from 1 — the same number {@link
- *     Reactor#onStepAccepted} reported for it
+ * @param index the step's number in the session, counted from 1
  * @param tracks the output tracks, in the order the runtime sent them
  * @param elapsed seconds the step's {@code generate()} took, or the time the model reported for the
  *     step
+ * @param files the extra files the model kept with the step, in the order the runtime listed them;
+ *     empty when it kept none or the result was not saved. Only named here: see {@link StepFile}
+ *     for fetching their bytes
+ * @param error why the step failed, when it ran and the model reported a failure; empty when it
+ *     worked. A refused step has no result: its future fails with {@link StepRefusedException}
  */
-public record StepResult(long index, List<StepTrackOutput> tracks, double elapsed) {
+public record StepResult(
+        long index, List<StepTrackOutput> tracks, double elapsed, List<StepFile> files, Optional<String> error) {
 
-    /** Copies {@code tracks}, so the record is as immutable as it looks. */
+    /** Copies {@code tracks} and {@code files}, so the record is as immutable as it looks. */
     public StepResult {
         tracks = List.copyOf(tracks);
+        files = List.copyOf(files);
+        java.util.Objects.requireNonNull(error, "error");
     }
 
     /**
-     * A result with an {@code elapsed} of zero, as the other SDKs default it.
+     * A result that kept no files and did not fail.
+     *
+     * @param index the step's number in the session, counted from 1
+     * @param tracks the output tracks, in the order the runtime sent them
+     * @param elapsed seconds the step took
+     */
+    public StepResult(long index, List<StepTrackOutput> tracks, double elapsed) {
+        this(index, tracks, elapsed, List.of(), Optional.empty());
+    }
+
+    /**
+     * A result with an {@code elapsed} of zero, as the other SDKs default it, that kept no files and
+     * did not fail.
      *
      * @param index the step's number in the session, counted from 1
      * @param tracks the output tracks, in the order the runtime sent them

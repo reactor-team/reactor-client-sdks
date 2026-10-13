@@ -184,9 +184,14 @@ public class ReactorClient(
     /**
      * Runs one step of a stepped session and returns what it produced.
      *
-     * The runtime runs, as one unit: [state] (each key as the model's `set_<key>` command), then
-     * [commands] in order, then every input frame pushed since the previous step — in a stepped
-     * session [ReactorTrack.pushFrame] buffers for the next step instead of sending.
+     * The runtime applies, in order: [state] (each key as the model's `set_<key>` command), then
+     * [commands], then every input frame pushed since the previous step — in a stepped session
+     * [ReactorTrack.pushFrame] buffers for the next step instead of sending — and then generates.
+     * These are separate calls, not a transaction: nothing applied is rolled back if a later one
+     * fails. Both parameters are optional; `step()` with neither runs on the model's current state.
+     *
+     * A step the model reported as failed still returns, with [StepResult.error] saying why; only a
+     * refused step throws. [StepResult.files] names the files the model kept with the step.
      *
      * ```kotlin
      * val client = ReactorClient.open(reactorOptions(apiUrl, "owner/model") {
@@ -207,7 +212,8 @@ public class ReactorClient(
      * @param state the model's state fields as a JSON object, or null to change none
      * @param commands what to run after the state, in order
      * @return the step's result, copied onto the heap
-     * @throws inc.reactor.sdk.StepRefusedException when the runtime turns the step down
+     * @throws inc.reactor.sdk.StepRefusedException when the runtime or the model turns the step
+     *   down
      * @throws inc.reactor.sdk.StepResultTooLargeException when its output does not fit in a message
      * @throws inc.reactor.sdk.MessageTooLargeException when the request does not; see
      *   [clearStepInputs]

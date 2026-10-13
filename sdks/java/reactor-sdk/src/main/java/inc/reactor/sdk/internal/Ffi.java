@@ -142,11 +142,17 @@ public final class Ffi {
 
         CREATE_WITH_OPTIONS(
                 "reactor_create_with_options",
-                FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS)),
+                FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS)),
         STEP("reactor_step", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS)),
         CLEAR_STEP_INPUTS("reactor_clear_step_inputs", FunctionDescriptor.ofVoid(ADDRESS)),
         STEP_RESULT_INDEX("reactor_step_result_index", FunctionDescriptor.of(JAVA_LONG, ADDRESS)),
         STEP_RESULT_ELAPSED("reactor_step_result_elapsed", FunctionDescriptor.of(JAVA_DOUBLE, ADDRESS)),
+        STEP_RESULT_ERROR("reactor_step_result_error", FunctionDescriptor.of(ADDRESS, ADDRESS)),
+        STEP_RESULT_FILE_COUNT("reactor_step_result_file_count", FunctionDescriptor.of(JAVA_INT, ADDRESS)),
+        STEP_RESULT_FILE_NAME("reactor_step_result_file_name", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT)),
+        STEP_RESULT_FILE_CONTENT_TYPE(
+                "reactor_step_result_file_content_type", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT)),
+        STEP_RESULT_FILE_SIZE("reactor_step_result_file_size", FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_INT)),
         STEP_RESULT_TRACK_COUNT("reactor_step_result_track_count", FunctionDescriptor.of(JAVA_INT, ADDRESS)),
         STEP_RESULT_TRACK_NAME("reactor_step_result_track_name", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT)),
         STEP_RESULT_TRACK_KIND("reactor_step_result_track_kind", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT)),
@@ -240,9 +246,6 @@ public final class Ffi {
          */
         public static final FunctionDescriptor STEP_COMPLETION =
                 FunctionDescriptor.ofVoid(JAVA_INT, ADDRESS, ADDRESS, ADDRESS);
-
-        /** {@code (uint64_t index, void *userdata)} — not a member of the callbacks struct. */
-        public static final FunctionDescriptor ON_STEP_ACCEPTED = FunctionDescriptor.ofVoid(JAVA_LONG, ADDRESS);
 
         /** {@code (uint32_t done, uint32_t total, void *userdata)} */
         public static final FunctionDescriptor PROGRESS = FunctionDescriptor.ofVoid(JAVA_INT, JAVA_INT, ADDRESS);

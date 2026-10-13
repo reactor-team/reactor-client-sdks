@@ -42,7 +42,7 @@ examples share a file for.
 | 06 | Request a clip and download it | `reactor/helios` |
 | 07 | Read the per-frame trailer: frame id, sender timestamp, tag | `reactor/helios` |
 | 08 | Read what `sendCommand` actually hands back | `reactor/helios` |
-| 09 | A stepped session: `generation(Generation.STEPPED)`, frames pushed into a step, `step()` and its per-track arrays | any model with stepped generation (`REACTOR_MODEL`) |
+| 09 | A stepped session: `generation(Generation.STEPPED)`, frames pushed into a step, `step()` and its per-track arrays, kept files and model error | any model with stepped generation (`REACTOR_MODEL`) |
 
 04 uses a different model because it needs one that declares a **sendonly**
 track to push into; Helios only produces. 09 has no default model at all: it needs

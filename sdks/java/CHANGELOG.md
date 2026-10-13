@@ -19,16 +19,21 @@ versioning follows [Semantic Versioning](https://semver.org/).
   `dtype()`, `shape()`, `metadata()` and `captureTimeUs()`. Video comes back as
   `(height, width, 3)` `uint8` RGB and audio as `(channels, samples)` `int16`.
   `elapsed()` is the seconds the step's `generate()` took, or the time the model
-  reported for the step.
+  reported for the step. `files()` names the extra files the model kept with
+  the step (`StepFile`: name, content type, size; fetch their bytes from the
+  session's step results over HTTP), and `error()` is set when the step ran but
+  the model reported a failure — such a step completes normally, only a refused
+  one fails. `step()` takes no arguments too, running on the model's current
+  state.
   The result is copied onto the heap once and the native one freed straight
   away, so it can be kept. `Track.pushFrame` buffers into the next step in such
-  a session, `onStepAccepted` reports a step the runtime started,
+  a session,
   `clearStepInputs()` drops buffered frames, and `stepTimeoutSeconds(...)`
   bounds a step (default 300 s). A frame handler on a stepped session's track
   is refused, since nothing streams there. `connect()` fails with
   `GenerationModeMismatchException` when the runtime does not start the session
   stepped. The Kotlin facade gains `suspend fun step(...)`, `clearStepInputs()`,
-  `generation` and `stepAcceptedFlow()`.
+  and `generation`.
 
 ### Changed
 

@@ -56,7 +56,6 @@ public final class ClientPeer implements Runnable {
     private static final MethodHandle ON_SESSION_ID;
     private static final MethodHandle ON_FRAME;
     private static final MethodHandle ON_AUDIO;
-    private static final MethodHandle ON_STEP_ACCEPTED;
 
     static {
         try {
@@ -96,10 +95,6 @@ public final class ClientPeer implements Runnable {
                             int.class,
                             int.class,
                             MemorySegment.class));
-            ON_STEP_ACCEPTED = lookup.findVirtual(
-                    ClientPeer.class,
-                    "onStepAccepted",
-                    MethodType.methodType(void.class, long.class, MemorySegment.class));
         } catch (ReflectiveOperationException e) {
             throw new ExceptionInInitializerError(e);
         }
@@ -121,15 +116,6 @@ public final class ClientPeer implements Runnable {
      * struct it registered has to still be there for the next one.
      */
     private final MemorySegment callbacks;
-
-    /**
-     * The {@code on_step_accepted} stub, for a stepped client, or {@code NULL}.
-     *
-     * <p>Not a slot in {@link #callbacks}: the header keeps that struct unchanged so no binding's
-     * layout moves, and hands this one to {@code reactor_create_with_options} beside it. Built once
-     * in the arena for the same reason the struct is — every handle this peer creates gets it.
-     */
-    private final MemorySegment stepAccepted;
 
     /**
      * The native client, or {@code NULL} before the first connect and between a token change and
@@ -202,7 +188,6 @@ public final class ClientPeer implements Runnable {
     final Events<TrackAnnouncement> trackEvents = new Events<>("track");
     final Events<JsonValue> capabilitiesEvents = new Events<>("capabilities");
     final Events<Optional<String>> sessionIdEvents = new Events<>("sessionId");
-    final Events<Long> stepAcceptedEvents = new Events<>("stepAccepted");
 
     /**
      * Clients that exist and have not been closed.
@@ -268,9 +253,6 @@ public final class ClientPeer implements Runnable {
         this.completions = new Completions(arena, this::freeStepResult);
         this.dispatch = Dispatch.of(options.dispatcher());
         this.callbacks = buildCallbacks();
-        this.stepAccepted = options.generation() == Generation.STEPPED
-                ? stub(ON_STEP_ACCEPTED, Ffi.Callbacks.ON_STEP_ACCEPTED)
-                : MemorySegment.NULL;
         this.apiKey = options.apiKey();
         this.jwt = options.jwt();
         this.callerSuppliedJwt = options.jwt() != null;
@@ -418,8 +400,7 @@ public final class ClientPeer implements Runnable {
      * Builds a stepped client, through the one creation call that takes the generation mode.
      *
      * <p>{@code reactor_create_with_options} takes everything {@code reactor_create_with_adm} does,
-     * as JSON, plus {@code generation} and the {@code on_step_accepted} callback the struct has no
-     * slot for. The audio device module is named here exactly as it is there — {@code synthetic} —
+     * as JSON, plus {@code generation} and {@code step_timeout_seconds}. The audio device module is named here exactly as it is there — {@code synthetic} —
      * so this path cannot be the one an environment variable opens a microphone through.
      *
      * <p>An options object the library refuses comes back as a {@code NULL} handle and an error
@@ -449,7 +430,7 @@ public final class ClientPeer implements Runnable {
             errorOut.set(java.lang.foreign.ValueLayout.ADDRESS, 0, MemorySegment.NULL);
             try {
                 created = (MemorySegment) ffi.handle(Ffi.Symbol.CREATE_WITH_OPTIONS)
-                        .invokeExact(apiUrl, modelName, jwtArg, callbacks, stepAccepted, optionsJson, errorOut);
+                        .invokeExact(apiUrl, modelName, jwtArg, callbacks, optionsJson, errorOut);
             } catch (Throwable t) {
                 throw new IllegalStateException("reactor_create_with_options could not be called", t);
             }
@@ -877,8 +858,7 @@ public final class ClientPeer implements Runnable {
                 + runtimeMessageEvents.size()
                 + trackEvents.size()
                 + capabilitiesEvents.size()
-                + sessionIdEvents.size()
-                + stepAcceptedEvents.size();
+                + sessionIdEvents.size();
     }
 
     /**
@@ -931,11 +911,6 @@ public final class ClientPeer implements Runnable {
     /** @return a subscription that removes the handler */
     public Subscription onSessionId(Consumer<Optional<String>> handler) {
         return sessionIdEvents.add(handler);
-    }
-
-    /** @return a subscription that removes the handler */
-    public Subscription onStepAccepted(Consumer<Long> handler) {
-        return stepAcceptedEvents.add(handler);
     }
 
     // ── Callbacks, on the FFI's own threads ─────────────────────────────────
@@ -1014,10 +989,6 @@ public final class ClientPeer implements Runnable {
     private void onSessionId(MemorySegment sessionId, MemorySegment userdata) {
         Optional<String> id = Optional.ofNullable(NativeStrings.borrow(sessionId));
         dispatch.run(() -> sessionIdEvents.emit(id));
-    }
-
-    private void onStepAccepted(long index, MemorySegment userdata) {
-        dispatch.run(() -> stepAcceptedEvents.emit(index));
     }
 
     // ── Media, inline on the FFI's own delivery threads ─────────────────────

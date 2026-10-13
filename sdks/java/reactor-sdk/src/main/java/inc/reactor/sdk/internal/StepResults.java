@@ -3,6 +3,7 @@ package inc.reactor.sdk.internal;
 import inc.reactor.sdk.ErrorCode;
 import inc.reactor.sdk.Media;
 import inc.reactor.sdk.ReactorException;
+import inc.reactor.sdk.StepFile;
 import inc.reactor.sdk.StepFrame;
 import inc.reactor.sdk.StepResult;
 import inc.reactor.sdk.StepTrackOutput;
@@ -13,6 +14,7 @@ import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -86,7 +88,21 @@ final class StepResults {
             tracks.add(new StepTrackOutput(name, kind, frames));
         }
         double elapsed = (double) ffi.handle(Ffi.Symbol.STEP_RESULT_ELAPSED).invokeExact(result);
-        return new StepResult(index, tracks, elapsed);
+        int fileCount = (int) ffi.handle(Ffi.Symbol.STEP_RESULT_FILE_COUNT).invokeExact(result);
+        List<StepFile> files = new ArrayList<>(Math.max(fileCount, 0));
+        for (int f = 0; f < fileCount; f++) {
+            MemorySegment nameText =
+                    (MemorySegment) ffi.handle(Ffi.Symbol.STEP_RESULT_FILE_NAME).invokeExact(result, f);
+            MemorySegment typeText = (MemorySegment)
+                    ffi.handle(Ffi.Symbol.STEP_RESULT_FILE_CONTENT_TYPE).invokeExact(result, f);
+            long size = (long) ffi.handle(Ffi.Symbol.STEP_RESULT_FILE_SIZE).invokeExact(result, f);
+            files.add(new StepFile(
+                    orEmpty(NativeStrings.borrow(nameText)), orEmpty(NativeStrings.borrow(typeText)), size));
+        }
+        MemorySegment errorText =
+                (MemorySegment) ffi.handle(Ffi.Symbol.STEP_RESULT_ERROR).invokeExact(result);
+        Optional<String> error = Optional.ofNullable(NativeStrings.borrow(errorText));
+        return new StepResult(index, tracks, elapsed, files, error);
     }
 
     @SuppressWarnings("restricted") // reinterpret: bounded by the lengths the accessors report

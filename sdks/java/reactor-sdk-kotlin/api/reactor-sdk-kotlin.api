@@ -14,7 +14,6 @@ public final class inc/reactor/sdk/kotlin/FlowsKt {
 	public static final fun runtimeMessageFlow (Linc/reactor/sdk/kotlin/ReactorClient;)Lkotlinx/coroutines/flow/Flow;
 	public static final fun sessionIdFlow (Linc/reactor/sdk/kotlin/ReactorClient;)Lkotlinx/coroutines/flow/Flow;
 	public static final fun statusFlow (Linc/reactor/sdk/kotlin/ReactorClient;)Lkotlinx/coroutines/flow/Flow;
-	public static final fun stepAcceptedFlow (Linc/reactor/sdk/kotlin/ReactorClient;)Lkotlinx/coroutines/flow/Flow;
 	public static final fun videoFrames (Linc/reactor/sdk/kotlin/ReactorTrack;)Lkotlinx/coroutines/flow/Flow;
 }
 

@@ -156,6 +156,14 @@ public final class FakeNativeLibrary implements AutoCloseable {
         bind("reactor_clear_step_inputs", Ffi.Symbol.CLEAR_STEP_INPUTS.descriptor(), "clearStepInputs");
         bind("reactor_step_result_index", Ffi.Symbol.STEP_RESULT_INDEX.descriptor(), "stepResultIndex");
         bind("reactor_step_result_elapsed", Ffi.Symbol.STEP_RESULT_ELAPSED.descriptor(), "stepResultElapsed");
+        bind("reactor_step_result_error", Ffi.Symbol.STEP_RESULT_ERROR.descriptor(), "stepResultError");
+        bind("reactor_step_result_file_count", Ffi.Symbol.STEP_RESULT_FILE_COUNT.descriptor(), "stepResultFileCount");
+        bind("reactor_step_result_file_name", Ffi.Symbol.STEP_RESULT_FILE_NAME.descriptor(), "stepResultFileName");
+        bind(
+                "reactor_step_result_file_content_type",
+                Ffi.Symbol.STEP_RESULT_FILE_CONTENT_TYPE.descriptor(),
+                "stepResultFileContentType");
+        bind("reactor_step_result_file_size", Ffi.Symbol.STEP_RESULT_FILE_SIZE.descriptor(), "stepResultFileSize");
         bind(
                 "reactor_step_result_track_count",
                 Ffi.Symbol.STEP_RESULT_TRACK_COUNT.descriptor(),
@@ -725,10 +733,6 @@ public final class FakeNativeLibrary implements AutoCloseable {
      */
     public @Nullable String createOptionsError;
 
-    /** The {@code on_step_accepted} pointer the last stepped create was handed. */
-    @Nullable
-    MemorySegment stepAcceptedCallback;
-
     /** The state and commands JSON of the last {@code reactor_step}. */
     public @Nullable String lastStepState;
 
@@ -767,7 +771,13 @@ public final class FakeNativeLibrary implements AutoCloseable {
     public record StepTrackSpec(String name, String kind, List<StepFrameSpec> frames) {}
 
     /** The native side of a result: everything its accessors hand out, allocated once. */
-    private record NativeStepResult(long index, List<NativeTrack> tracks, double elapsed) {}
+    private record NativeStepResult(
+            long index, List<NativeTrack> tracks, double elapsed, List<NativeFile> files, MemorySegment error) {}
+
+    /** One file a fake step result names, as a test describes it. */
+    public record StepFileSpec(String name, String contentType, long size) {}
+
+    private record NativeFile(MemorySegment name, MemorySegment contentType, long size) {}
 
     private record NativeTrack(MemorySegment name, MemorySegment kind, List<NativeFrame> frames) {}
 
@@ -788,7 +798,6 @@ public final class FakeNativeLibrary implements AutoCloseable {
             MemorySegment modelName,
             MemorySegment jwt,
             MemorySegment callbacksStruct,
-            MemorySegment onStepAccepted,
             MemorySegment optionsJson,
             MemorySegment errorOut) {
         createdWithOptions.add(readString(optionsJson));
@@ -805,7 +814,6 @@ public final class FakeNativeLibrary implements AutoCloseable {
         this.callbacks = callbacksStruct.equals(MemorySegment.NULL)
                 ? null
                 : callbacksStruct.reinterpret(Ffi.Callbacks.LAYOUT.byteSize());
-        this.stepAcceptedCallback = onStepAccepted.equals(MemorySegment.NULL) ? null : onStepAccepted;
         return arena.allocate(8);
     }
 
@@ -845,7 +853,17 @@ public final class FakeNativeLibrary implements AutoCloseable {
     /** As {@link #settleLastStep(long, List)}, with the seconds the step's {@code generate()} took. */
     @SuppressWarnings("restricted") // downcallHandle: calling the client's own completion stub
     public long settleLastStep(long index, List<StepTrackSpec> tracks, double elapsed) {
-        MemorySegment result = buildResult(index, tracks, elapsed);
+        return settleLastStep(index, tracks, elapsed, List.of(), null);
+    }
+
+    /**
+     * As {@link #settleLastStep(long, List, double)}, with the files the model kept and, for a step
+     * that ran but failed, its error — still an {@code ok} completion, as the header says.
+     */
+    @SuppressWarnings("restricted") // downcallHandle: calling the client's own completion stub
+    public long settleLastStep(
+            long index, List<StepTrackSpec> tracks, double elapsed, List<StepFileSpec> files, @Nullable String error) {
+        MemorySegment result = buildResult(index, tracks, elapsed, files, error);
         callStepCompletion(1, result, MemorySegment.NULL);
         return result.address();
     }
@@ -853,19 +871,6 @@ public final class FakeNativeLibrary implements AutoCloseable {
     /** Fails the last step with an error object, and no result. */
     public void failLastStep(String errorJson) {
         callStepCompletion(0, MemorySegment.NULL, arena.allocateFrom(errorJson));
-    }
-
-    /** Calls the step-accepted callback the client handed to the stepped create. */
-    @SuppressWarnings("restricted") // downcallHandle: calling the client's own stub
-    public void fireStepAccepted(long index) {
-        MethodHandle call = linker.downcallHandle(
-                java.util.Objects.requireNonNull(stepAcceptedCallback, "the client registered no on_step_accepted"),
-                Ffi.Callbacks.ON_STEP_ACCEPTED);
-        try {
-            call.invokeWithArguments(index, MemorySegment.NULL);
-        } catch (Throwable t) {
-            throw new AssertionError("on_step_accepted threw out of the stub", t);
-        }
     }
 
     /** @return whether every result handed out came back to {@code reactor_step_result_free} exactly once */
@@ -893,7 +898,12 @@ public final class FakeNativeLibrary implements AutoCloseable {
         }
     }
 
-    private MemorySegment buildResult(long index, List<StepTrackSpec> specs, double elapsed) {
+    private MemorySegment buildResult(
+            long index,
+            List<StepTrackSpec> specs,
+            double elapsed,
+            List<StepFileSpec> fileSpecs,
+            @Nullable String error) {
         List<NativeTrack> tracks = new ArrayList<>();
         for (StepTrackSpec spec : specs) {
             List<NativeFrame> frames = new ArrayList<>();
@@ -925,7 +935,13 @@ public final class FakeNativeLibrary implements AutoCloseable {
             tracks.add(new NativeTrack(arena.allocateFrom(spec.name()), arena.allocateFrom(spec.kind()), frames));
         }
         MemorySegment address = arena.allocate(8);
-        liveResults.put(address.address(), new NativeStepResult(index, tracks, elapsed));
+        List<NativeFile> files = new ArrayList<>();
+        for (StepFileSpec file : fileSpecs) {
+            files.add(new NativeFile(
+                    arena.allocateFrom(file.name()), arena.allocateFrom(file.contentType()), file.size()));
+        }
+        MemorySegment errorText = error == null ? MemorySegment.NULL : arena.allocateFrom(error);
+        liveResults.put(address.address(), new NativeStepResult(index, tracks, elapsed, files, errorText));
         return address;
     }
 
@@ -963,6 +979,38 @@ public final class FakeNativeLibrary implements AutoCloseable {
     private double stepResultElapsed(MemorySegment result) {
         NativeStepResult found = live(result);
         return found == null ? 0.0 : found.elapsed();
+    }
+
+    private MemorySegment stepResultError(MemorySegment result) {
+        NativeStepResult found = live(result);
+        return found == null ? MemorySegment.NULL : found.error();
+    }
+
+    private @Nullable NativeFile file(MemorySegment result, int f) {
+        NativeStepResult found = live(result);
+        return found == null || f < 0 || f >= found.files().size()
+                ? null
+                : found.files().get(f);
+    }
+
+    private int stepResultFileCount(MemorySegment result) {
+        NativeStepResult found = live(result);
+        return found == null ? 0 : found.files().size();
+    }
+
+    private MemorySegment stepResultFileName(MemorySegment result, int f) {
+        NativeFile found = file(result, f);
+        return found == null ? MemorySegment.NULL : found.name();
+    }
+
+    private MemorySegment stepResultFileContentType(MemorySegment result, int f) {
+        NativeFile found = file(result, f);
+        return found == null ? MemorySegment.NULL : found.contentType();
+    }
+
+    private long stepResultFileSize(MemorySegment result, int f) {
+        NativeFile found = file(result, f);
+        return found == null ? 0 : found.size();
     }
 
     private int stepResultTrackCount(MemorySegment result) {
