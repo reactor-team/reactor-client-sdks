@@ -341,6 +341,7 @@ mod tests {
             data_server_message::Payload::StepResult(StepResult {
                 index: 1,
                 tracks: vec![],
+                elapsed: 0.0,
             }),
         );
         assert!(c.handle_message(&result).unwrap().correlated);
