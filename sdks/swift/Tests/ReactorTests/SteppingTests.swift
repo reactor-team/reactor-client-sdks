@@ -88,7 +88,6 @@ struct SteppingTests {
         let call = try #require(fake.createOptionsCalls.first)
         #expect(call.model == "owner/model")
         #expect(call.jwt == "token")
-        #expect(call.hadStepAccepted, "the step-accepted callback has no other way in")
 
         let options = call.options
         #expect(options["generation"] as? String == "stepped")
@@ -388,60 +387,121 @@ struct SteppingTests {
         #expect(fake.freedStepResults == 1)
     }
 
-    // MARK: - The step-accepted event
+    // MARK: - Files and errors
 
-    @Test("an accepted step reaches handlers on the event queue, with its index")
-    func stepAcceptedIsDelivered() async throws {
+    @Test("the files a step kept come back named, typed and sized, in order")
+    func filesAreCopiedOut() async throws {
         let fake = FakeLibrary()
-        let queue = DispatchQueue(label: "test.events")
-        let key = DispatchSpecificKey<Bool>()
-        queue.setSpecific(key: key, value: true)
-        let client = try makeClient(fake: fake, eventQueue: queue)
+        let client = try makeClient(fake: fake)
         defer { client.close() }
 
-        let seen = Locked<[(UInt64, Bool)]>([])
-        let subscription = client.onStepAccepted { index in
-            seen.withLock { $0.append((index, DispatchQueue.getSpecific(key: key) == true)) }
+        let native = FakeStepResult(
+            index: 4, tracks: [],
+            files: [
+                .init(name: "depth.npy", contentType: "application/octet-stream", size: 4096),
+                .init(name: "notes.json", contentType: "application/json", size: 12),
+            ])
+        let result = try await stepping(fake, result: native) { try await client.step() }
+
+        #expect(
+            result.files == [
+                StepFile(name: "depth.npy", contentType: "application/octet-stream", size: 4096),
+                StepFile(name: "notes.json", contentType: "application/json", size: 12),
+            ])
+        #expect(result.error == nil)
+        #expect(fake.freedStepResults == 1)
+    }
+
+    @Test("a step that kept nothing has no files")
+    func noFilesIsEmpty() async throws {
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+
+        let result = try await stepping(fake, result: sampleResult()) { try await client.step() }
+        #expect(result.files.isEmpty)
+        #expect(result.error == nil)
+    }
+
+    @Test("a step that ran but failed returns its result with the model's error, not a throw")
+    func ranButFailedResolvesWithError() async throws {
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+
+        let failed = FakeStepResult(
+            index: 9, tracks: [], elapsed: 0.5,
+            files: [.init(name: "trace.txt", contentType: "text/plain", size: 3)],
+            error: "generate() raised: out of memory")
+        let result = try await stepping(fake, result: failed) { try await client.step() }
+
+        #expect(result.index == 9)
+        #expect(result.error == "generate() raised: out of memory")
+        #expect(result.elapsed == .milliseconds(500))
+        #expect(result.files.map(\.name) == ["trace.txt"])
+        #expect(fake.freedStepResults == 1)
+    }
+
+    @Test("an uploaded file goes into a step's state as the upload reference")
+    func fileRefInState() async throws {
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+
+        let photo = FileRef(uploadID: "up_1", name: "fox.png", mimeType: "image/png", size: 10)
+        _ = try await stepping(fake, result: sampleResult()) {
+            try await client.step(
+                state: ["image": JSONValue(photo)],
+                commands: [try StepCommand("set_mask", arguments: ["mask": photo])])
         }
-        defer { subscription.cancel() }
 
-        fake.fireStepAccepted(3)
+        let call = try #require(fake.stepCalls.first)
+        let state = try #require(
+            JSONSerialization.jsonObject(with: Data((call.stateJSON ?? "").utf8))
+                as? [String: Any])
+        let image = try #require(state["image"] as? [String: Any])
+        #expect(image["upload_id"] as? String == "up_1")
+        #expect(image["name"] as? String == "fox.png")
+        #expect(image["mime_type"] as? String == "image/png")
+        #expect(image["size"] as? Double == 10)
 
-        #expect(await waitUntil { !seen.withLock { $0 }.isEmpty })
-        let first = try #require(seen.withLock { $0 }.first)
-        #expect(first.0 == 3)
-        #expect(first.1, "a control event ran off the event queue")
+        // The same object a FileRef encodes as inside a command's arguments.
+        let commands = try #require(
+            JSONSerialization.jsonObject(with: Data((call.commandsJSON ?? "").utf8))
+                as? [[String: Any]])
+        let mask = try #require(
+            (commands.first?["data"] as? [String: Any])?["mask"] as? [String: Any])
+        #expect(NSDictionary(dictionary: mask).isEqual(to: image))
     }
 
-    @Test("accepted steps arrive in order on the stream")
-    func stepsAcceptedStream() async throws {
+    // MARK: - Pushing into a step
+
+    @Test("a frame pushed without a capture time is buffered without one, not with 0")
+    func unstampedPushHasNoCaptureTime() async throws {
         let fake = FakeLibrary()
+        fake.setTracks([(name: "camera", kind: "video", direction: "sendonly")])
+        fake.setStatus("ready")
         let client = try makeClient(fake: fake)
         defer { client.close() }
 
-        let stream = client.stepsAccepted
-        var iterator = stream.makeAsyncIterator()
-        // The stream registers its handler when it is built, so these are seen.
-        fake.fireStepAccepted(1)
-        fake.fireStepAccepted(2)
+        let camera = try client.track("camera")
+        let publishing = Task { try await camera.publish() }
+        #expect(await waitUntil { fake.hasPendingCompletion })
+        fake.completeLastCall(ok: true)
+        try await publishing.value
 
-        #expect(await iterator.next() == 1)
-        #expect(await iterator.next() == 2)
-    }
+        let pixels = Data(repeating: 0x10, count: 2 * 2 * 4)
+        try camera.pushFrame(pixels, width: 2, height: 2)
+        try camera.pushFrame(pixels, width: 2, height: 2, userData: Data("tag".utf8))
+        try camera.pushFrame(pixels, width: 2, height: 2, captureTimeUs: 0)
 
-    @Test("a cancelled subscription hears nothing more")
-    func cancelledStepAcceptedHandlerStops() async throws {
-        let fake = FakeLibrary()
-        let client = try makeClient(fake: fake)
-        defer { client.close() }
-
-        let count = Locked(0)
-        let subscription = client.onStepAccepted { _ in count.withLock { $0 += 1 } }
-        subscription.cancel()
-        fake.fireStepAccepted(1)
-
-        try await Task.sleep(for: .milliseconds(50))
-        #expect(count.withLock { $0 } == 0)
+        let pushed = fake.pushedFrames
+        #expect(pushed.count == 3)
+        #expect(pushed[0].captureTimeUs == nil)
+        #expect(pushed[1].captureTimeUs == nil)
+        #expect(pushed[1].userData == "tag")
+        // An explicit 0 is a time the caller chose, and goes through as one.
+        #expect(pushed[2].captureTimeUs == 0)
     }
 
     // MARK: - clearStepInputs()

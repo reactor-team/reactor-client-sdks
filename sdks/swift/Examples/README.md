@@ -38,7 +38,7 @@ consumer gets the library from the XCFramework. This is the development loop.
 | 05 | two clients on one session, the second adopting it by id | `reactor/helios` |
 | 06 | request a clip and download it | `reactor/helios` |
 | 07 | read the per-frame trailer | `reactor/helios` |
-| 09 | stepped generation: `generation: .stepped`, push into the next step, `step(state:commands:)`, the step-accepted event | any model with stepped generation, via `REACTOR_MODEL` |
+| 09 | stepped generation: `generation: .stepped`, push into the next step, `step(state:commands:)`, a result's `error` and `files` | any model with stepped generation, via `REACTOR_MODEL` |
 
 09 is beyond the seven, numbered as its Python counterpart (Python's 08 has no
 Swift counterpart yet). It has no default model: set `REACTOR_MODEL`, and

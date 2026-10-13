@@ -93,7 +93,6 @@ public final class Reactor: @unchecked Sendable {
         var statusHandlers: [UUID: @Sendable (ReactorStatus) -> Void] = [:]
         var errorHandlers: [UUID: @Sendable (ReactorError) -> Void] = [:]
         var pending: [ObjectIdentifier: any PendingOperation] = [:]
-        var stepAcceptedHandlers: [UUID: @Sendable (UInt64) -> Void] = [:]
 
         /// One `Track` per name, so handlers registered on it stay registered —
         /// including across a reconnect, which renegotiates everything else.
@@ -232,8 +231,7 @@ public final class Reactor: @unchecked Sendable {
                         callbacksPointer, 0, ReactorSDK.version, Reactor.sdkType))
             case .stepped:
                 // The generation mode is a creation option, and only the
-                // options-taking entry takes it — along with the step-accepted
-                // callback, which ReactorCallbacks has no slot for.
+                // options-taking entry takes it.
                 return Reactor.createStepped(
                     ffi: ffi, apiURL: resolvedURL, model: model, jwt: jwt,
                     callbacks: callbacksPointer,
@@ -323,7 +321,6 @@ public final class Reactor: @unchecked Sendable {
             state.publishStates = [:]
             state.messageHandlers = [:]
             state.runtimeMessageHandlers = [:]
-            state.stepAcceptedHandlers = [:]
             state.publishGeneration &+= 1
             return (handle, context, pending)
         }

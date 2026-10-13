@@ -86,8 +86,9 @@ public struct StepCommand: Sendable, Hashable, Encodable {
     }
 }
 
-/// What one step produced: its index in the session and, per output track, the
-/// frames it generated.
+/// What one step produced: its index in the session, per output track the
+/// frames it generated, the files the model kept with it, and — when the model
+/// reported the step failed — why.
 ///
 /// ```swift
 /// let result = try await reactor.step(state: ["prompt": "a red fox"])
@@ -101,8 +102,7 @@ public struct StepCommand: Sendable, Hashable, Encodable {
 /// kept, sent across tasks, and outlive the client.
 public struct StepResult: Sendable {
 
-    /// The step's number in the session, counted from 1 — the same number
-    /// ``Reactor/onStepAccepted(_:)`` reported for it.
+    /// The step's number in the session, counted from 1.
     public let index: UInt64
 
     /// Every output track that produced something, in the order the runtime
@@ -114,12 +114,36 @@ public struct StepResult: Sendable {
     /// hold (a NaN or an infinity).
     public let elapsed: Duration
 
+    /// The extra files the model kept with the step, in the order the runtime
+    /// listed them. Empty when it kept none or the result was not saved.
+    ///
+    /// The result names them; it does not carry them. Fetch a file's bytes over
+    /// HTTP from the session's step results, `GET /sessions/{id}/steps/{index}`,
+    /// which lists each file with a download URL (and answers 202 while the
+    /// step is not stored yet).
+    public let files: [StepFile]
+
+    /// Why the step failed, when it ran and the model reported a failure;
+    /// `nil` when it worked.
+    ///
+    /// A failed step is still a result — ``Reactor/step(state:commands:)``
+    /// returns it rather than throwing. Only a step that never ran throws.
+    public let error: String?
+
     /// Assemble a result — for tests and previews; ``Reactor/step(state:commands:)``
     /// is where real ones come from.
-    public init(index: UInt64, tracks: [StepTrackOutput], elapsed: Duration = .zero) {
+    public init(
+        index: UInt64,
+        tracks: [StepTrackOutput],
+        elapsed: Duration = .zero,
+        files: [StepFile] = [],
+        error: String? = nil
+    ) {
         self.index = index
         self.tracks = tracks
         self.elapsed = elapsed
+        self.files = files
+        self.error = error
     }
 
     /// The output of the track called `name`.
@@ -136,6 +160,27 @@ public struct StepResult: Sendable {
             .notFound,
             "step \(index) produced no output on '\(name)' (tracks: \(produced))",
             operation: "step")
+    }
+}
+
+/// A file the model kept with a step: named, not carried. See
+/// ``StepResult/files`` for where its bytes are.
+public struct StepFile: Sendable, Hashable {
+
+    /// The file's name, one path segment.
+    public let name: String
+
+    /// The file's media type, guessed from its name.
+    public let contentType: String
+
+    /// The file's size in bytes.
+    public let size: UInt64
+
+    /// Assemble a file entry — for tests and previews.
+    public init(name: String, contentType: String, size: UInt64) {
+        self.name = name
+        self.contentType = contentType
+        self.size = size
     }
 }
 
