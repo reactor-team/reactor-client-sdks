@@ -1,0 +1,334 @@
+import CReactorFFI
+import Foundation
+
+extension Reactor {
+
+    // MARK: - Stepped generation
+
+    /// Run one step of a stepped session and return what it produced.
+    ///
+    /// The runtime runs, as one unit: `state` (each key as the model's
+    /// `set_<key>` command), then `commands` in order, then every input frame
+    /// pushed since the previous step — ``Track/pushFrame(_:width:height:userData:captureTimeUs:)``
+    /// does not send in a stepped session, it buffers for the next step.
+    ///
+    /// ```swift
+    /// let reactor = try await Reactor(model: "owner/model", apiKey: key, generation: .stepped)
+    /// try await reactor.connect()
+    ///
+    /// let camera = try reactor.track("camera")
+    /// try await camera.publish()
+    /// try camera.pushFrame(pixels, width: 640, height: 360)   // buffered, not sent
+    ///
+    /// let result = try await reactor.step(
+    ///     state: ["prompt": "a red fox"],
+    ///     commands: [StepCommand("advance", ["frames": 4])])
+    /// for frame in try result.track("main_video").frames {
+    ///     show(frame.data, shape: frame.shape)                 // (height, width, 3) uint8 RGB
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - state: the model's state fields to set before the commands run, or
+    ///     `nil` to leave the state as it is. The model keeps it until changed.
+    ///   - commands: commands to run after the state, in order.
+    ///
+    /// - Throws: ``ReactorError``:
+    ///   - ``ReactorError/Code/stepRefused`` — the runtime or the model turned
+    ///     the step down; no state changed.
+    ///   - ``ReactorError/Code/stepResultTooLarge`` — the step ran, but its
+    ///     output does not fit in one message. Ask for less per step.
+    ///   - ``ReactorError/Code/messageTooLarge`` — the request does not fit.
+    ///     Nothing was sent, and the pushed frames are kept for the next step;
+    ///     ``clearStepInputs()`` drops them.
+    ///   - ``ReactorError/Code/unsupportedFrameEncoding`` — the result carries a
+    ///     frame this library cannot decode.
+    ///   - ``ReactorError/Code/requestTimeout`` — the step took longer than the
+    ///     client's `stepTimeout`.
+    ///   - ``ReactorError/Code/invalidState`` — not a stepped client, or not a
+    ///     ready session.
+    ///   - ``ReactorError/Code/badRequest`` — a command with an empty name.
+    ///
+    ///   Once sent, the pushed frames belong to that step whatever its outcome.
+    public func step(
+        state: [String: JSONValue]? = nil,
+        commands: [StepCommand] = []
+    ) async throws -> StepResult {
+        guard generation == .stepped else {
+            throw ReactorError(
+                .invalidState,
+                "step() needs a stepped session: create the client with generation: .stepped",
+                operation: "step")
+        }
+        if let unnamed = commands.firstIndex(where: { $0.command.isEmpty }) {
+            throw ReactorError(
+                .badRequest, "commands[\(unnamed)] has an empty name", operation: "step")
+        }
+
+        let stateJSON = try state.map { try encodeJSON(JSONValue.object($0), operation: "step") }
+        let commandsJSON = try encodeJSON(commands, operation: "step")
+
+        return try await perform(
+            PendingStep(owner: self, ffi: ffi), completion: stepCompletionTrampoline
+        ) { handle, completion, userdata in
+            withOptionalCString(stateJSON) { statePointer in
+                commandsJSON.withCString { commandsPointer in
+                    self.ffi.step(handle, statePointer, commandsPointer, completion, userdata)
+                }
+            }
+        }
+    }
+
+    /// Drop every frame pushed since the last step.
+    ///
+    /// The way out after a ``ReactorError/Code/messageTooLarge`` from
+    /// ``step(state:commands:)``, which keeps the frames it could not send. A
+    /// no-op on a streamed or closed client.
+    public func clearStepInputs() {
+        guard generation == .stepped else { return }
+        withHandle(else: ()) { handle in ffi.clearStepInputs(handle) }
+    }
+
+    /// Register a handler for the runtime accepting a step and starting to
+    /// generate it.
+    ///
+    /// The handler receives the step's index — its number in the session,
+    /// counted from 1, the same as the ``StepResult/index`` the step returns.
+    /// Never called for a refused step, and never on a streamed client. It
+    /// normally runs before ``step(state:commands:)`` returns, but the two
+    /// travel separately, so do not rely on that order.
+    ///
+    /// Runs on the event queue, like every control event. Keep the returned
+    /// ``Subscription``: it cancels when released.
+    public func onStepAccepted(_ handler: @escaping @Sendable (UInt64) -> Void) -> Subscription {
+        let id = UUID()
+        state.withLock { $0.stepAcceptedHandlers[id] = handler }
+        return Subscription { [weak self] in
+            self?.state.withLock { $0.stepAcceptedHandlers[id] = nil }
+        }
+    }
+
+    /// Accepted step indexes, as a stream.
+    ///
+    /// Buffers a backlog rather than the newest only: each step is its own
+    /// event, and dropping one loses which steps started.
+    public var stepsAccepted: AsyncStream<UInt64> {
+        AsyncStream(bufferingPolicy: .bufferingNewest(64)) { continuation in
+            let subscription = onStepAccepted { continuation.yield($0) }
+            continuation.onTermination = { _ in subscription.cancel() }
+        }
+    }
+
+    /// Deliver a step the library reported accepted. Called on an FFI thread.
+    func deliver(stepAccepted index: UInt64) {
+        let handlers = state.withLock { Array($0.stepAcceptedHandlers.values) }
+        guard !handlers.isEmpty else { return }
+        dispatch { for handler in handlers { handler(index) } }
+    }
+
+    // MARK: - Creating a stepped client
+
+    /// What `reactor_create_with_options` is handed. Every key is spelled out,
+    /// because the library refuses one it does not know rather than ignoring it.
+    struct CreateOptions: Encodable {
+        var local: Bool
+        var autoResumeTracks: Bool
+        var stepTimeoutSeconds: Double?
+        // Named rather than defaulted, for the reason createWithADM passes 0.
+        let adm = "synthetic"
+        let sdkVersion = ReactorSDK.version
+        let sdkType = Reactor.sdkType
+        let generation = Generation.stepped.rawValue
+
+        private enum CodingKeys: String, CodingKey {
+            case local
+            case autoResumeTracks = "auto_resume_tracks"
+            case stepTimeoutSeconds = "step_timeout_seconds"
+            case adm
+            case sdkVersion = "sdk_version"
+            case sdkType = "sdk_type"
+            case generation
+        }
+    }
+
+    /// Create a stepped client's handle.
+    ///
+    /// `.success(nil)` is the allocation failure `reactor_create_with_adm` also
+    /// reports; `.failure` is the library refusing the options, with its reason.
+    static func createStepped(
+        ffi: FFI,
+        apiURL: String,
+        model: String,
+        jwt: String?,
+        callbacks: UnsafePointer<ReactorCallbacks>,
+        options: CreateOptions
+    ) -> Result<OpaquePointer?, ReactorError> {
+        let json: String
+        do {
+            json = String(decoding: try JSON.encoder().encode(options), as: UTF8.self)
+        } catch {
+            return .failure(
+                ReactorError(
+                    .internalError, "could not encode the create options: \(error)",
+                    operation: "create"))
+        }
+
+        var errorOut: UnsafeMutablePointer<CChar>?
+        let handle = json.withCString { optionsPointer in
+            ffi.createWithOptions(
+                apiURL, model, jwt, callbacks, stepAcceptedTrampoline, optionsPointer, &errorOut)
+        }
+        // Heap-allocated for this caller, and only on a refusal.
+        if let payload = String(takingOwnership: errorOut, freeing: ffi.freeString) {
+            return handle == nil
+                ? .failure(ReactorError.decode(payload: payload)) : .success(handle)
+        }
+        return .success(handle)
+    }
+
+    /// The step timeout in seconds, as the library takes it, after refusing
+    /// what it would refuse less helpfully.
+    static func validateStepTimeout(
+        _ timeout: Duration?, for generation: Generation
+    ) throws -> Double? {
+        guard let timeout else { return nil }
+        guard generation == .stepped else {
+            throw ReactorError(
+                .badRequest,
+                "stepTimeout only applies to generation: .stepped — a streamed session has "
+                    + "no steps to time out",
+                operation: "create")
+        }
+        let seconds = timeout.seconds
+        guard seconds > 0 else {
+            throw ReactorError(
+                .badRequest, "stepTimeout must be positive, got \(seconds)s", operation: "create")
+        }
+        return seconds
+    }
+}
+
+// MARK: - Reading a result
+
+extension StepResult {
+
+    /// Copy a library-owned `ReactorStepResult` into a value. Does not free it.
+    init(reading result: OpaquePointer, from ffi: FFI) throws {
+        var tracks: [StepTrackOutput] = []
+        for track in 0..<ffi.stepResultTrackCount(result) {
+            let name = String(borrowing: ffi.stepResultTrackName(result, track)) ?? ""
+            let kindText = String(borrowing: ffi.stepResultTrackKind(result, track)) ?? ""
+            guard let kind = TrackKind(rawValue: kindText) else {
+                throw ReactorError(
+                    .decodeFailed,
+                    "step output track '\(name)' has kind '\(kindText)', which is neither video "
+                        + "nor audio",
+                    operation: "step")
+            }
+
+            var frames: [StepFrame] = []
+            for frame in 0..<ffi.stepResultFrameCount(result, track) {
+                var ndim: UInt32 = 0
+                let shape =
+                    ffi.stepResultFrameShape(result, track, frame, &ndim).map { pointer in
+                        UnsafeBufferPointer(start: pointer, count: Int(ndim)).map(Int.init)
+                    } ?? []
+
+                // The one copy of the frame's bytes: out of the library's result,
+                // which is freed as soon as this returns.
+                var length = 0
+                let data =
+                    ffi.stepResultFrameData(result, track, frame, &length).map {
+                        Data(bytes: $0, count: length)
+                    } ?? Data()
+
+                var metadataLength = 0
+                let metadata = ffi.stepResultFrameMetadata(result, track, frame, &metadataLength)
+                    .map { Data(bytes: $0, count: metadataLength) }
+
+                var captured: Int64 = 0
+                let hasCaptureTime =
+                    ffi.stepResultFrameCaptureTimeUs(result, track, frame, &captured) == 1
+
+                frames.append(
+                    try StepFrame(
+                        data: data,
+                        dtype: String(borrowing: ffi.stepResultFrameDtype(result, track, frame))
+                            ?? "",
+                        shape: shape,
+                        encoding: String(
+                            borrowing: ffi.stepResultFrameEncoding(result, track, frame)) ?? "",
+                        metadata: metadata,
+                        captureTimeUs: hasCaptureTime ? captured : nil))
+            }
+            tracks.append(StepTrackOutput(name: name, kind: kind, frames: frames))
+        }
+        self.init(index: ffi.stepResultIndex(result), tracks: tracks)
+    }
+}
+
+// MARK: - Completion
+
+/// A step waiting on `reactor_step`'s completion.
+///
+/// Carries the library table itself rather than reaching it through the
+/// client: the result it is handed is owned, and has to be freed through the
+/// same table that made it even when the client is already on its way out.
+final class PendingStep: PendingCompletion<StepResult>, @unchecked Sendable {
+
+    let ffi: FFI
+
+    init(owner: Reactor, ffi: FFI) {
+        self.ffi = ffi
+        super.init(operation: "step", owner: owner)
+    }
+
+    /// Settle from `reactor_step`'s completion: copy the result out, free it,
+    /// then settle — decode first, claim second, as every completion does.
+    func complete(ok: Int32, result: OpaquePointer?, errorJSON: UnsafePointer<CChar>?) {
+        let outcome: Result<StepResult, any Error>
+        if ok == 1, let result {
+            outcome = Result { try StepResult(reading: result, from: ffi) }
+            // Copied out above; the library's result has no further use.
+            ffi.stepResultFree(result)
+        } else if ok == 1 {
+            outcome = .failure(
+                ReactorError(.decodeFailed, "a step succeeded with no result", operation: "step"))
+        } else {
+            // NULL on failure, the header says; freed anyway if it is not, since
+            // it would be ours and nobody else's.
+            if let result { ffi.stepResultFree(result) }
+            outcome = .failure(ReactorError.decode(payload: String(borrowing: errorJSON)))
+        }
+        complete(outcome)
+    }
+}
+
+/// The C function the library calls when a step finishes.
+let stepCompletionTrampoline: reactor_step_completion_fn = { ok, result, errorJSON, userdata in
+    // Unreachable without userdata — step() always passes one — and without it
+    // there is neither a caller to settle nor a table to free the result with.
+    guard let userdata else { return }
+    let unmanaged = Unmanaged<PendingStep>.fromOpaque(userdata)
+    let pending = unmanaged.takeUnretainedValue()
+    let ffi = pending.ffi
+
+    // The same claim completionTrampoline makes, for the same reason. Losing it
+    // means teardown has already settled the caller — but the result is still
+    // this callback's, and nothing else will ever free it.
+    guard pending.claimRetainedReference() else {
+        if let result { ffi.stepResultFree(result) }
+        return
+    }
+    defer { unmanaged.release() }
+
+    pending.complete(ok: ok, result: result, errorJSON: errorJSON)
+}
+
+/// The C function the library calls when the runtime accepts a step.
+///
+/// Receives `ReactorCallbacks.userdata` — the client's callback context — like
+/// every other control event.
+let stepAcceptedTrampoline: reactor_on_step_accepted_fn = { index, userdata in
+    CallbackContext.from(userdata)?.client?.deliver(stepAccepted: index)
+}
