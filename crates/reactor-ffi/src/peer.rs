@@ -198,7 +198,10 @@ fn map_stats(report: StatsReport) -> TransportStats {
                 jitter_buffer_delay_s: s.jitter_buffer_delay_s,
                 jitter_buffer_emitted_count: s.jitter_buffer_emitted_count,
                 timing_frame: s.timing_frame.map(|t| {
-                    let ms = |from: i64, to: i64| (to - from).max(0) as f64;
+                    // Not clamped: a stage the sender never stamped comes out
+                    // negative, and the reporter drops it rather than count a
+                    // zero that never happened.
+                    let ms = |from: i64, to: i64| (to - from) as f64;
                     TimingFrame {
                         rtp_timestamp: t.rtp_timestamp,
                         encode_wait_ms: ms(t.sender.capture_ms, t.sender.encode_start_ms),
