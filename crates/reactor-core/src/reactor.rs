@@ -328,6 +328,10 @@ impl Reactor {
                 state.sdp_max_attempts = attempts;
             }
         }
+        // Frames timed before this connection belong to no batch of it. Cleared
+        // here, at the boundary, not when the reporter task first runs: the host
+        // can push frames before that.
+        self.stage_times.take();
         self.dispatcher
             .dispatch(ReactorEvent::StatusChanged(ReactorStatus::Connecting));
 
@@ -476,6 +480,8 @@ impl Reactor {
             state.time_to_connect_ms = None;
             sid
         };
+        // As in connect(): the previous connection's frames end here.
+        self.stage_times.take();
         self.dispatcher
             .dispatch(ReactorEvent::StatusChanged(ReactorStatus::Connecting));
         self.set_status(ReactorStatus::Waiting);
@@ -1461,8 +1467,6 @@ impl Reactor {
         };
         let mut reporter = ClientStatsReporter::new();
         let mut sent_connect_time = false;
-        // Frames timed before this connection belong to no batch of it.
-        self.stage_times.take();
         loop {
             self.platform.sleep(interval).await;
             if !current() {
@@ -2899,6 +2903,34 @@ mod tests {
             let expected = (i == 0).then_some(&812.346);
             assert_eq!(metrics.get("time_to_connect_ms"), expected, "batch {i}");
         }
+    }
+
+    /// A frame the SDK timed before the reporter task first ran belongs to this
+    /// connection, so it goes out in the first batch.
+    #[tokio::test]
+    async fn stage_times_from_before_the_reporter_ran_reach_the_first_batch() {
+        let peer = Arc::new(StatsPeer::default());
+        let reactor = make_reactor_with_stats_peer(peer.clone(), Duration::from_millis(20));
+        reactor
+            .stage_times
+            .add("main_video", crate::stage_times::DELIVERY, 1.5);
+
+        let r = reactor.clone();
+        let task = tokio::spawn(async move { r.run_client_stats().await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        reactor.state.lock().unwrap().heartbeat_epoch += 1;
+        tokio::time::timeout(Duration::from_millis(200), task)
+            .await
+            .expect("the reporter exits when the epoch changes")
+            .unwrap();
+
+        let first = &sent_client_stats(&peer)[0].track_stats[0];
+        let delivery = first
+            .frame_stages
+            .iter()
+            .find(|s| s.name == crate::stage_times::DELIVERY)
+            .expect("the delivery timed before the reporter ran");
+        assert_eq!(delivery.frames, 1);
     }
 
     /// Nothing goes out before an interval has passed, and nothing at all once
