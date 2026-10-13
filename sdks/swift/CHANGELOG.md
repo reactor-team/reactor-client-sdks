@@ -13,7 +13,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
   that generates one step at a time, and `try await reactor.step(state: ...,
   commands: [...])` runs one and returns a `StepResult`: per output track, the
   frames it produced, each as `Data` with its `dtype`, `shape`, metadata and
-  capture time. `Track.pushFrame` buffers into the next step in such a session.
+  capture time, and `elapsed`, the `Duration` the step's `generate()` took (or
+  the time the model reported for the step). `Track.pushFrame` buffers into the
+  next step in such a session.
   `onStepAccepted` (and the `stepsAccepted` stream) reports a step the runtime
   started, `clearStepInputs()` drops buffered frames, and `stepTimeout:` bounds a
   step. `connect()` throws `generationModeMismatch` when the runtime did not

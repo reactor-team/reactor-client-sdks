@@ -263,7 +263,11 @@ extension StepResult {
             }
             tracks.append(StepTrackOutput(name: name, kind: kind, frames: frames))
         }
-        self.init(index: ffi.stepResultIndex(result), tracks: tracks)
+        // `Duration` cannot hold a NaN or an infinity (`.seconds(_:)` traps on
+        // one); a runtime that sent one measured nothing usable.
+        let seconds = ffi.stepResultElapsed(result)
+        let elapsed: Duration = seconds.isFinite ? .seconds(seconds) : .zero
+        self.init(index: ffi.stepResultIndex(result), tracks: tracks, elapsed: elapsed)
     }
 }
 
