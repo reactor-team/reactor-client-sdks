@@ -3,7 +3,8 @@ package inc.reactor.sdk;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The runtime refused a step — the request or the model turned it down — and no state changed.
+ * The runtime refused a step — the request or the model turned it down. The calls it applied
+ * before the refusal stay applied: nothing is rolled back.
  *
  * <p>Code {@code step_refused}: lowercase because it is the runtime's own code, passed through.
  */
