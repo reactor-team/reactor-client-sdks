@@ -7,6 +7,20 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Stepped generation. `Reactor(..., generation: .stepped)` asks for a session
+  that generates one step at a time, and `try await reactor.step(state: ...,
+  commands: [...])` runs one and returns a `StepResult`: per output track, the
+  frames it produced, each as `Data` with its `dtype`, `shape`, metadata and
+  capture time. `Track.pushFrame` buffers into the next step in such a session.
+  `onStepAccepted` (and the `stepsAccepted` stream) reports a step the runtime
+  started, `clearStepInputs()` drops buffered frames, and `stepTimeout:` bounds a
+  step. `connect()` throws `generationModeMismatch` when the runtime did not
+  start the session stepped; a step can throw `stepRefused`,
+  `stepResultTooLarge`, `messageTooLarge` or `unsupportedFrameEncoding`. New
+  example: `09_stepped_generation`.
+
 ## [1.5.0] - 2026-10-13
 
 ### Added

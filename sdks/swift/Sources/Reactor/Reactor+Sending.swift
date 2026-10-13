@@ -341,6 +341,13 @@ extension Track {
     ///     one capture and the far end reads them as the one moment they are.
     ///     Without it the frame is stamped as it is pushed, so several tracks
     ///     capturing one moment arrive stamped microseconds apart.
+    ///
+    /// **Stepped sessions.** On a client created with `generation: .stepped`
+    /// this sends nothing: the frame is buffered, with its tag and capture time,
+    /// as an `(height, width, 3)` `uint8` RGB frame, and the next
+    /// ``Reactor/step(state:commands:)`` carries every frame pushed since the one
+    /// before — per track, in push order. Publish the track first, as for a
+    /// streamed session.
     public func pushFrame(
         _ pixels: Data,
         width: UInt32,
@@ -385,6 +392,12 @@ extension Track {
     /// blocks are buffered and discarded on format change or disconnect.
     /// Local audio tracks still share the synthetic capture device.
     /// Unsupported rates or channel counts throw a `badRequest` error.
+    ///
+    /// **Stepped sessions.** On a client created with `generation: .stepped`
+    /// each push is buffered as one planar `(channels, samples)` `int16` frame
+    /// for the next ``Reactor/step(state:commands:)`` instead of being sent. A
+    /// step frame carries no sample rate, so push at the rate the model's track
+    /// declares.
     public func pushFrame(
         _ samples: [Int16],
         sampleRate: UInt32 = 48000,

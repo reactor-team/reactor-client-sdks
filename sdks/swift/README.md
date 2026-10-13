@@ -26,6 +26,45 @@ does. `reactor.tracks` and its `.withKind`/`.withDirection` filters are for
 *discovering* what a session declares, not for everyday use. See
 [Examples/](Examples/) for the seven scenarios every Reactor SDK ships.
 
+## Stepped generation
+
+A model that supports it can generate one step at a time instead of streaming.
+Ask for it when creating the client, then call `step(state:commands:)`: it runs
+the state, the commands and every input frame pushed since the previous step as
+one unit, and returns what the model produced on each output track.
+
+```swift
+let reactor = try await Reactor(model: "owner/model", apiKey: apiKey, generation: .stepped)
+let accepted = reactor.onStepAccepted { index in print("generating step", index) }
+
+try await reactor.connect()          // generationModeMismatch if the runtime cannot
+
+let camera = try reactor.track("camera")
+try await camera.publish()
+try camera.pushFrame(pixels, width: 640, height: 360)   // buffered for the next step, not sent
+
+let result = try await reactor.step(
+    state: ["prompt": "a red fox"],
+    commands: [StepCommand("advance", ["frames": 4])])
+for frame in try result.track("main_video").frames {
+    frame.data      // (height, width, 3) uint8 RGB — frame.shape, frame.dtype
+    frame.metadata  // what the sender attached, if anything
+    frame.captureTimeUs
+}
+```
+
+`Track.pushFrame` keeps its signatures: in a stepped session it buffers the frame
+for the next step instead of sending it. Audio comes back as planar
+`(channels, samples)` `int16`. The result is copied out of the library once and
+the native copy freed at once, so a `StepResult` can be kept and passed around
+freely.
+
+A step the runtime refuses throws `ReactorError.stepRefused`; one whose output
+does not fit in a message throws `stepResultTooLarge`; a request too large to
+send throws `messageTooLarge` and keeps the pushed frames, which
+`clearStepInputs()` drops. `stepTimeout:` bounds a step (default 300 s). See
+[`Examples/09_stepped_generation`](Examples/09_stepped_generation/main.swift).
+
 ## Where the manifest lives
 
 `Package.swift` is at the **repository root**, not in this directory. SwiftPM
