@@ -9,6 +9,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-13
+
 ### Fixed
 
 - `connect(sessionId, connectionId)` on a client built with
@@ -16,6 +18,11 @@ versioning follows [Semantic Versioning](https://semver.org/).
   token bound to the session it adopts. Before, the token it minted could not
   reach that session. To mint a bound token yourself, pass
   `{"sessions": ["<id>"]}` as the options of `Reactor.fetchJwt`.
+- Command replies no longer stall for 100–600 ms every five minutes. The
+  client gathered ICE candidates continually, so libwebrtc regathered on failed
+  networks every five minutes, and the client waited on posting each new
+  candidate to the coordinator before it delivered the next reply. The client
+  now gathers candidates once, as browsers do.
 
 ## [1.2.0] - 2026-10-08
 

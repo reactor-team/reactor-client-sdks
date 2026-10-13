@@ -7,6 +7,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-13
+
 ### Added
 
 - `Reactor.TokenOptions(sessions: [...])` mints a token bound to sessions that
@@ -14,6 +16,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
   token, because a scoped token reaches only the sessions it created or was
   bound to. Without `models` and `maxSessions`, the token can act only on those
   sessions and cannot create new ones.
+
+### Fixed
+
+- Command replies no longer stall for 100–600 ms every five minutes. The
+  client gathered ICE candidates continually, so libwebrtc regathered on failed
+  networks every five minutes, and the client waited on posting each new
+  candidate to the coordinator before it delivered the next reply. The client
+  now gathers candidates once, as browsers do.
 
 ## [1.4.0] - 2026-10-08
 

@@ -8,6 +8,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-10-13
+
 ### Added
 
 - `FetchJwtOptions::sessions` mints a token bound to sessions that already
@@ -19,6 +21,11 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - `connect()` with `ConnectOptions::session_id` on a client built with an
   `ApiKey` no longer fails with 403. The client now mints a token bound to the
   session it adopts. Before, the token it minted could not reach that session.
+- Command replies no longer stall for 100–600 ms every five minutes. The
+  client gathered ICE candidates continually, so libwebrtc regathered on failed
+  networks every five minutes, and the client waited on posting each new
+  candidate to the coordinator before it delivered the next reply. The client
+  now gathers candidates once, as browsers do.
 
 ## [2.4.0] - 2026-10-08
 
