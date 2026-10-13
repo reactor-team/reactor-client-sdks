@@ -44,8 +44,8 @@ use crate::types::{
     ClientTrackStatsInput, ClipOutput, CommandData, CommandReply, ConnectOptionsInput,
     ErrorListener, FileRefOutput, JwtSourceInput, MessageListener, PixelFormatInput,
     ReactorErrorOutput, SchemaOutput, SessionIdListener, SessionInfoOutput, Status, StatusListener,
-    StepAcceptedListener, StepCommandsInput, StepResultOutput, StepStateInput, StringsOutput,
-    TrackListener, TrackMappingOutput, TracksOutput, UploadsInput,
+    StepCommandsInput, StepResultOutput, StepStateInput, StringsOutput, TrackListener,
+    TrackMappingOutput, TracksOutput, UploadsInput,
 };
 
 /// Coordinator URL used when none is given.
@@ -210,7 +210,6 @@ struct Callbacks {
     track_received: Option<Function>,
     error: Option<Function>,
     capabilities_received: Option<Function>,
-    step_accepted: Option<Function>,
 }
 
 type SharedCallbacks = Rc<RefCell<Callbacks>>;
@@ -462,8 +461,7 @@ impl ReactorClient {
     /// In a stepped session the track has no RTP sender, so there is nothing
     /// to attach a `MediaStreamTrack` to: `publishTrack(name)` only claims the
     /// track, and its frames come from `pushVideoFrame` / `pushAudioFrame`.
-    /// Passing a `MediaStreamTrack` there is refused — feeding a browser track
-    /// into steps is not supported yet.
+    /// A `MediaStreamTrack` passed there is ignored, with a warning.
     #[wasm_bindgen(js_name = publishTrack)]
     pub async fn publish_track(
         &self,
@@ -472,10 +470,11 @@ impl ReactorClient {
     ) -> Result<(), JsValue> {
         let track = match (self.stepped, track) {
             (true, Some(_)) => {
-                return Err(invalid(&format!(
-                    "publishTrack('{name}'): a MediaStreamTrack cannot feed a stepped session yet; \
-                     call publishTrack('{name}') without one and push frames with pushVideoFrame / pushAudioFrame"
-                )))
+                log::warn!(
+                    "publishTrack('{name}'): ignoring the MediaStreamTrack; a stepped session \
+                     sends no RTP and takes frames through pushVideoFrame / pushAudioFrame"
+                );
+                None
             }
             (true, None) => None,
             (false, Some(track)) => Some(track),
@@ -914,13 +913,6 @@ impl ReactorClient {
     #[wasm_bindgen(js_name = onCapabilitiesReceived)]
     pub fn on_capabilities_received(&self, listener: CapabilitiesListener) {
         self.callbacks.borrow_mut().capabilities_received = Some(listener.unchecked_into());
-    }
-
-    /// `(index: number) => void` — a stepped session accepted a step and
-    /// started generating it. Fires before that step's `step()` resolves.
-    #[wasm_bindgen(js_name = onStepAccepted)]
-    pub fn on_step_accepted(&self, listener: StepAcceptedListener) {
-        self.callbacks.borrow_mut().step_accepted = Some(listener.unchecked_into());
     }
 }
 

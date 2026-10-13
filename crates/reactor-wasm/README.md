@@ -53,7 +53,7 @@ rather than `any`:
 | Uploads | `uploadFile(file, name?)` |
 | Introspection | `status()`, `sessionId()`, `sessionInfo()`, `capabilities()`, `lastError()` |
 | Browser handles | `getPeerConnection()`, `getTrackByMid(mid)`, `getStreamByMid(mid)`, `getTrackByName(name)`, `getStreamByName(name)` |
-| Events | `onStatusChanged`, `onSessionIdChanged`, `onMessage`, `onRuntimeMessage`, `onTrackReceived`, `onError`, `onCapabilitiesReceived`, `onStepAccepted` |
+| Events | `onStatusChanged`, `onSessionIdChanged`, `onMessage`, `onRuntimeMessage`, `onTrackReceived`, `onError`, `onCapabilitiesReceived` |
 
 Payloads that come out of the core keep their wire names (`protocol_version`,
 `retry_after_ms`, `playlist_url`); the options this crate defines itself are
@@ -62,11 +62,18 @@ it is built by hand rather than serialized, because its frame data are typed
 arrays (`Uint8Array` video, `Int16Array` audio) and serde has no word for one.
 
 A client created with `generation: "stepped"` sends no input media over RTP.
-`publishTrack(name)` only claims an input track (a `MediaStreamTrack` is
-refused), `pushVideoFrame` / `pushAudioFrame` buffer frames in the core, and
-the next `step()` carries them inside its one `RequestStep`. Video arrives as
-RGBA, RGB or BGRA and is converted here to the BGRA the core's push API takes;
-the core sends it as RGB.
+`publishTrack(name)` only claims an input track (a `MediaStreamTrack` passed
+there is ignored, with a console warning), `pushVideoFrame` / `pushAudioFrame`
+buffer frames in the core, and the next `step()` carries them inside its one
+`RequestStep`. Both of `step()`'s arguments are optional: an empty step runs on
+the model's current state. Video arrives as RGBA, RGB or BGRA and is converted
+here to the BGRA the core's push API takes; the core sends it as RGB.
+
+`step()` resolves with `{ index, tracks, elapsed, files, error? }`. `files`
+describes the files the model kept with the step (`name`, `contentType`,
+`size`); their bytes are served over HTTP from the session's step results.
+`error` is set when the step ran and the model reported a failure — such a
+step still resolves. Only a refused step rejects.
 
 ```js
 import init, { ReactorClient } from "./pkg/reactor_wasm.js";

@@ -13,7 +13,7 @@ use wasm_bindgen::prelude::*;
 
 use reactor_core::protocol::session::TrackKind;
 use reactor_core::protocol::wire::v1::step::FrameEncoding;
-use reactor_core::step::{DecodedFrame, StepCommand, StepOutput, TrackOutput};
+use reactor_core::step::{DecodedFrame, StepCommand, StepFile, StepOutput, TrackOutput};
 
 /// One entry of `step()`'s `commands`, as JS writes it.
 #[derive(Debug, Deserialize)]
@@ -42,7 +42,27 @@ pub(crate) fn output_to_js(output: StepOutput) -> Result<JsValue, JsValue> {
     }
     set(&result, "tracks", &tracks)?;
     set(&result, "elapsed", &JsValue::from_f64(output.elapsed))?;
+    let files = Array::new();
+    for file in output.files {
+        files.push(&file_to_js(file)?);
+    }
+    set(&result, "files", &files)?;
+    if let Some(error) = output.error {
+        set(&result, "error", &JsValue::from_str(&error))?;
+    }
     Ok(result.into())
+}
+
+fn file_to_js(file: StepFile) -> Result<JsValue, JsValue> {
+    let object = Object::new();
+    set(&object, "name", &JsValue::from_str(&file.name))?;
+    set(
+        &object,
+        "contentType",
+        &JsValue::from_str(&file.content_type),
+    )?;
+    set(&object, "size", &JsValue::from_f64(file.size as f64))?;
+    Ok(object.into())
 }
 
 fn track_to_js(track: TrackOutput) -> Result<JsValue, JsValue> {
