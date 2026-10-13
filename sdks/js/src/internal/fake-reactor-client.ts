@@ -267,7 +267,7 @@ export class FakeReactorClient {
     state: Record<string, unknown> | null | undefined;
     commands: StepCommand[] | null | undefined;
   }> = [];
-  stepResult: StepResult = { index: 1, tracks: [] };
+  stepResult: StepResult = { index: 1, tracks: [], elapsed: 0 };
   // Overridable so a test can hold a step open or fail it.
   stepImpl: (() => Promise<StepResult>) | undefined;
   step(

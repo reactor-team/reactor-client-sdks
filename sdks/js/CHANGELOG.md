@@ -49,9 +49,11 @@ versioning follows [Semantic Versioning](https://semver.org/).
   to start a session that generates one step at a time, and `connect()` fails
   with the new `GenerationModeMismatchError` when it does not. `step({ state,
   commands })` runs one step and resolves with its output per track, frame
-  data as typed arrays; `pushFrame(track, frame)` buffers a `VideoFrame`,
-  `ImageData`, raw RGB(A) pixels or `Int16Array` PCM for the next step, which
-  carries them in its own request — a stepped session's input never uses RTP.
+  data as typed arrays, and `elapsed`, the seconds the step's `generate()` took
+  (or the time the model reported for the step); `pushFrame(track, frame)`
+  buffers a `VideoFrame`, `ImageData`, raw RGB(A) pixels or `Int16Array` PCM
+  for the next step, which carries them in its own request — a stepped
+  session's input never uses RTP.
   A `stepAccepted` event reports when a step starts generating, and
   `stepFrameToImageData()` turns a video frame into something a canvas draws.
   Step failures are typed: `StepRefusedError`, `StepResultTooLargeError`,

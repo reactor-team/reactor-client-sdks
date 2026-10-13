@@ -188,9 +188,11 @@ try {
 
 - `step({ state, commands })` runs `state` (each key as the model's `set_<key>`), then
   `commands` in order, then every frame pushed since the previous step, as one unit. It
-  resolves with `{ index, tracks: [{ track, kind, frames }] }`; each frame has `dtype`,
-  `shape`, typed-array `data` (`Uint8Array` RGB `(height, width, 3)` for video, `Int16Array`
-  planar `(channels, samples)` for audio), and optional `metadata` / `captureTimeUs`.
+  resolves with `{ index, tracks: [{ track, kind, frames }], elapsed }` — `elapsed` is the
+  seconds the step's `generate()` took (or the time the model reported for the step); each
+  frame has `dtype`, `shape`, typed-array `data` (`Uint8Array` RGB `(height, width, 3)` for
+  video, `Int16Array` planar `(channels, samples)` for audio), and optional `metadata` /
+  `captureTimeUs`.
 - `pushFrame(track, frame, { metadata?, captureTimeUs? })` takes a `VideoFrame`, an
   `ImageData`, `{ data, width, height, format? }` raw `"rgba"`/`"rgb"`/`"bgra"` pixels, or
   `{ samples, sampleRate, channels? }` interleaved `Int16Array` PCM for an audio track. Pushes
