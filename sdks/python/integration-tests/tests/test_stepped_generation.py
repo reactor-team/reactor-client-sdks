@@ -61,6 +61,7 @@ async def test_steps_resolve_in_order_with_their_accepted_events() -> None:
         assert isinstance(first, StepResult)
         assert second.index == first.index + 1
         assert first.index in accepted
+        assert first.elapsed >= 0
         for track in first.tracks:
             for frame in track.frames:
                 assert frame.array.shape == frame.shape
