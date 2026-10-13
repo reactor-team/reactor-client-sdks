@@ -125,6 +125,61 @@ rebuilds its native client with the new token. That token cannot create
 sessions. To mint one yourself, pass `{"sessions": ["<id>"]}` as the options
 of `Reactor.fetchJwt`.
 
+## Stepped generation
+
+A model that supports it can generate one step at a time instead of streaming.
+Ask for it when creating the client, then call `step()`: it runs the state, the
+commands and every input frame pushed since the previous step as one unit, and
+completes with what the model produced on each output track.
+
+```java
+try (Reactor reactor = Reactor.open(ReactorOptions.builder(apiUrl, "owner/model")
+        .apiKey(apiKey)
+        .generation(Generation.STEPPED)
+        .build())) {
+    reactor.onStepAccepted(index -> System.out.println("generating step " + index));
+    reactor.connect().join();              // GenerationModeMismatchException if the runtime cannot
+
+    Track camera = reactor.track("camera");
+    camera.publish().join();
+    camera.pushFrame(bgra, width, height); // buffered for the next step, not sent
+
+    StepResult result = reactor.step(
+                    JsonValue.object().put("prompt", "a red fox").build(),
+                    List.of(StepCommand.of("advance", JsonValue.object().put("frames", 4).build())))
+            .join();
+    for (StepFrame frame : result.track("main_video").frames()) {
+        frame.shape();                     // [height, width, 3], uint8 RGB
+        frame.data();                      // read-only little-endian ByteBuffer
+        frame.metadata();
+        frame.captureTimeUs();
+    }
+}
+```
+
+```kotlin
+val result = client.step(
+    state = JsonValue.`object`().put("prompt", "a red fox").build(),
+    commands = listOf(StepCommand.of("advance")),
+)
+client.stepAcceptedFlow().collect { index -> println("generating step $index") }
+```
+
+`Track.pushFrame` keeps its signature: in a stepped session it buffers the frame
+for the next step instead of sending it, converted to `(height, width, 3)` RGB.
+Audio comes back as `(channels, samples)` `int16`, so `frame.data().asShortBuffer()`
+reads the samples. A frame handler on a stepped session's track is refused,
+because nothing streams there — the output is in the result.
+
+The result is copied onto the heap once, when the step completes, and the native
+one is freed straight away: a `StepResult` holds no native memory and can be kept.
+
+A step the runtime refuses fails with `StepRefusedException`; one whose output
+does not fit in a message with `StepResultTooLargeException`; a request too large
+to send with `MessageTooLargeException`, keeping the pushed frames, which
+`clearStepInputs()` drops. `stepTimeoutSeconds(...)` bounds a step (default
+300 s). See [`Example09SteppedGeneration`](examples/src/main/java/inc/reactor/examples/Example09SteppedGeneration.java).
+
 ## From Kotlin
 
 `reactor-sdk-kotlin` is a facade over the same binding, not a second one. It holds

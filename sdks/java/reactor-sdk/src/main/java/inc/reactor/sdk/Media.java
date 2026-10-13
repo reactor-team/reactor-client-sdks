@@ -6,7 +6,7 @@ import org.jspecify.annotations.Nullable;
 /**
  * Builds frames for the internals.
  *
- * <p>{@link VideoFrame} and {@link AudioFrame} have package-private constructors so nothing outside
+ * <p>{@link VideoFrame}, {@link AudioFrame} and {@link StepFrame} have package-private constructors so nothing outside
  * this package can invent one; the code that receives them lives in another package and needs a way
  * in. This is that way, and nothing else.
  */
@@ -37,5 +37,24 @@ public final class Media {
      */
     public static AudioFrame audioFrame(MemorySegment samples, int sampleCount, int sampleRate, int channels) {
         return new AudioFrame(samples, sampleCount, sampleRate, channels);
+    }
+
+    /**
+     * @param encoding how the frame travelled, e.g. {@code "raw"}
+     * @param dtype the element type, e.g. {@code "uint8"}
+     * @param shape the dimensions, already validated against {@code data}; kept, not copied
+     * @param data the bytes, already copied off the native result; kept, not copied
+     * @param metadata the sender's tag, already copied, or {@code null}
+     * @param captureTimeUs the sender's capture time, or {@code null}
+     * @return the frame
+     */
+    public static StepFrame stepFrame(
+            String encoding,
+            String dtype,
+            int[] shape,
+            byte[] data,
+            byte @Nullable [] metadata,
+            @Nullable Long captureTimeUs) {
+        return new StepFrame(encoding, dtype, shape, data, metadata, captureTimeUs);
     }
 }

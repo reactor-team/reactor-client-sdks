@@ -71,6 +71,7 @@ class FlowsTest : FacadeFixture() {
                 client.runtimeMessageFlow(),
                 client.capabilitiesFlow(),
                 client.sessionIdFlow(),
+                client.stepAcceptedFlow(),
             )
         for (flow in flows) {
             val collecting = async(Dispatchers.Default) { flow.take(1).toList() }
