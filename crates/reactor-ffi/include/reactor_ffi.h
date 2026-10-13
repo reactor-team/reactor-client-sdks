@@ -675,9 +675,11 @@ void reactor_upload_bytes(
 
 /*
  * A stepped session (reactor_create_with_options with "generation": "stepped")
- * generates one step per request instead of streaming.  A step runs the state,
- * then the commands, then every input frame pushed since the previous step, as
- * one unit, and answers with what the model produced on each output track.
+ * generates one step per request instead of streaming.  The runtime applies a
+ * step's state, then its commands, then every input frame pushed since the
+ * previous step, as separate calls in that order, then runs the step and
+ * answers with what the model produced on each output track.  Any part may be
+ * empty.  A refusal rolls nothing back: calls applied before it stay applied.
  *
  * Input frames use the push functions below, unchanged: in a stepped session
  * reactor_push_video_frame* and reactor_push_audio_frame do not reach the
@@ -721,7 +723,7 @@ typedef void (*reactor_step_completion_fn)(
  * when the step is done — or with one of:
  *
  *   step_refused               the request or the model turned the step down;
- *                              no state changed.
+ *                              calls applied before the refusal stay applied.
  *   step_result_too_large      the step ran, but its result does not fit in one
  *                              data-channel message.
  *   MESSAGE_TOO_LARGE          the request (state + commands + buffered inputs)
