@@ -255,19 +255,11 @@ export class FakeReactorClient {
     this.capabilitiesReceivedListener?.(capabilities);
   }
 
-  private stepAcceptedListener: ((index: number) => void) | undefined;
-  onStepAccepted(listener: (index: number) => void): void {
-    this.stepAcceptedListener = listener;
-  }
-  emitStepAccepted(index: number): void {
-    this.stepAcceptedListener?.(index);
-  }
-
   stepCalls: Array<{
     state: Record<string, unknown> | null | undefined;
     commands: StepCommand[] | null | undefined;
   }> = [];
-  stepResult: StepResult = { index: 1, tracks: [], elapsed: 0 };
+  stepResult: StepResult = { index: 1, tracks: [], elapsed: 0, files: [] };
   // Overridable so a test can hold a step open or fail it.
   stepImpl: (() => Promise<StepResult>) | undefined;
   step(

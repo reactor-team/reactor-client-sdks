@@ -196,7 +196,7 @@ export function WebcamStream({
 
         const videoMediaTrack = activeStream.getVideoTracks()[0];
         const audioMediaTrack = desiredAudio ? activeStream.getAudioTracks()[0] : undefined;
-        const attempts: Array<{ name: string; task: Promise<void> }> = [];
+        const attempts: Array<{ name: string; task: Promise<unknown> }> = [];
 
         if (videoMediaTrack) {
           attempts.push({ name: track, task: publish(track, videoMediaTrack) });

@@ -10,8 +10,6 @@ vi.mock('./internal/wasm', () => ({
 // Import after the mock so `Reactor` picks up the faked wasm loader.
 const { Reactor } = await import('./reactor');
 
-type ReactorInstance = InstanceType<typeof Reactor>;
-
 async function connected(generation?: 'streamed' | 'stepped') {
   const reactor = new Reactor({ modelName: 'test-model', ...(generation ? { generation } : {}) });
 
@@ -96,6 +94,7 @@ describe('Reactor.step', () => {
         },
       ],
       elapsed: 0.25,
+      files: [],
     };
 
     client.stepResult = result;
@@ -128,14 +127,37 @@ describe('Reactor.step', () => {
     expect(reactor.getLastError()).toBe(error);
   });
 
-  it('re-emits the binding’s stepAccepted as an event', async () => {
+  it('hands back the files the model kept with the step', async () => {
     const { reactor, client } = await connected('stepped');
-    const accepted: number[] = [];
 
-    reactor.on('stepAccepted', (index) => accepted.push(index));
-    client.emitStepAccepted(7);
+    client.stepResult = {
+      index: 2,
+      tracks: [],
+      elapsed: 1,
+      files: [{ name: 'depth.png', contentType: 'image/png', size: 2048 }],
+    };
 
-    expect(accepted).toEqual([7]);
+    const result = await reactor.step();
+
+    expect(result.files).toEqual([{ name: 'depth.png', contentType: 'image/png', size: 2048 }]);
+    expect(result.error).toBeUndefined();
+  });
+
+  it('resolves a step that ran but failed, with its error, rather than rejecting', async () => {
+    const { reactor, client } = await connected('stepped');
+
+    client.stepResult = { index: 4, tracks: [], elapsed: 0.5, files: [], error: 'out of memory' };
+
+    const result = await reactor.step();
+
+    expect(result).toMatchObject({ index: 4, error: 'out of memory' });
+    expect(reactor.getLastError()).toBeUndefined();
+  });
+
+  it('has no step-accepted event: the result is the step’s one response', async () => {
+    const { client } = await connected('stepped');
+
+    expect('onStepAccepted' in client).toBe(false);
   });
 
   it('waits for a push called before it, however long its pixels take to read', async () => {
@@ -306,32 +328,59 @@ describe('Reactor.pushFrame', () => {
 });
 
 describe('Reactor.publishTrack and generation', () => {
-  async function rejection(reactor: ReactorInstance, track?: MediaStreamTrack) {
-    return reactor.publishTrack('camera', track).catch((e: unknown) => e);
-  }
-
   it('claims a stepped input track without a MediaStreamTrack', async () => {
     const { reactor, client } = await connected('stepped');
 
-    await reactor.publishTrack('camera');
+    const published = await reactor.publishTrack('camera');
 
+    expect(published.name).toBe('camera');
     expect(client.publishTrackCalls).toEqual([{ name: 'camera', track: undefined }]);
   });
 
-  it('refuses a MediaStreamTrack in a stepped session, which cannot feed steps yet', async () => {
+  it('ignores a MediaStreamTrack in a stepped session with a warning, sending no RTP', async () => {
     const { reactor, client } = await connected('stepped');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-    const error = await rejection(reactor, {} as MediaStreamTrack);
+    try {
+      await reactor.publishTrack('camera', {} as MediaStreamTrack);
 
-    expect(error).toBeInstanceOf(InvalidStateError);
-    expect((error as ReactorError).message).toContain('cannot feed a stepped session yet');
-    expect(client.publishTrackCalls).toEqual([]);
+      expect(warn).toHaveBeenCalledOnce();
+      expect(String(warn.mock.calls[0]?.[0])).toContain('track.pushFrame(...)');
+      // The binding is never handed the track, so no sender is attached.
+      expect(client.publishTrackCalls).toEqual([{ name: 'camera', track: undefined }]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('feeds the stepped track through the handle’s pushFrame()', async () => {
+    const { reactor, client } = await connected('stepped');
+    const camera = await reactor.publishTrack('camera');
+    const data = new Uint8Array(4);
+
+    await camera.pushFrame({ data, width: 1, height: 1 }, { captureTimeUs: 9 });
+
+    expect(client.pushVideoFrameCalls).toEqual([
+      { name: 'camera', data, width: 1, height: 1, format: 'rgba', metadata: null, captureTimeUs: 9 },
+    ]);
   });
 
   it('still needs a MediaStreamTrack in a streamed session', async () => {
     const { reactor, client } = await connected();
 
-    expect(await rejection(reactor)).toBeInstanceOf(InvalidStateError);
+    const error = await reactor.publishTrack('camera').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(InvalidStateError);
+    expect((error as ReactorError).message).toContain('needs a MediaStreamTrack');
     expect(client.publishTrackCalls).toEqual([]);
+  });
+
+  it('rejects a push through a streamed track’s handle', async () => {
+    const { reactor } = await connected();
+    const camera = await reactor.publishTrack('camera', {} as MediaStreamTrack);
+
+    await expect(
+      camera.pushFrame({ data: new Uint8Array(4), width: 1, height: 1 }),
+    ).rejects.toBeInstanceOf(InvalidStateError);
   });
 });

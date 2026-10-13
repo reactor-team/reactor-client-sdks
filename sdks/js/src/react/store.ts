@@ -8,6 +8,7 @@ import type {
   JwtSource,
   MessageScope,
   NotFunction,
+  PublishedTrack,
   ReactorMessage,
   ReactorOptions,
   ReactorStatus,
@@ -49,7 +50,10 @@ export interface ReactorActions {
     data?: NotFunction<T>,
     scope?: MessageScope,
   ) => Promise<ReactorMessage | undefined>;
-  publish: (name: string, track: MediaStreamTrack) => Promise<void>;
+  /** `Reactor.publishTrack()`. `track` is required in a streamed session
+   *  and ignored (with a warning) in a stepped one, whose frames go through
+   *  the resolved handle's `pushFrame()`. */
+  publish: (name: string, track?: MediaStreamTrack) => Promise<PublishedTrack>;
   unpublish: (name: string) => Promise<void>;
   pauseTrack: (name: string) => Promise<void>;
   resumeTrack: (name: string) => Promise<void>;

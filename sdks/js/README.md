@@ -139,8 +139,7 @@ for most:
 | `message` | `ReactorMessage` from the model |
 | `trackReceived` | a new media track from the model |
 
-Full list — including `schemaReceived`, `capabilitiesReceived`, `statsUpdate`, and
-`stepAccepted` (see [Stepped generation](#stepped-generation)) — in
+Full list — including `schemaReceived`, `capabilitiesReceived`, and `statsUpdate` — in
 [Events](https://docs.reactor.inc/sdk-reference/events).
 
 ## Model schema and capabilities
@@ -165,44 +164,59 @@ with `step()`. Create the client with `generation: "stepped"`; `connect()` fails
 import { Reactor, StepRefusedError, stepFrameToImageData } from "@reactor-team/js-sdk";
 
 const reactor = new Reactor({ modelName: "my-stepped-model", generation: "stepped", jwt });
-reactor.on("stepAccepted", (index) => console.log(`step ${index} is generating`));
 await reactor.connect();
 
 // Input frames never travel over RTP in a stepped session: claim the input
-// track, push frames, and the next step carries them.
-await reactor.publishTrack("camera");
-await reactor.pushFrame("camera", canvasCtx.getImageData(0, 0, 640, 360));
+// track, push frames through it, and the next step carries them.
+const camera = await reactor.publishTrack("camera");
+await camera.pushFrame(canvasCtx.getImageData(0, 0, 640, 360));
 
 try {
   const result = await reactor.step({
     state: { prompt: "a cat" },
     commands: [{ command: "jump", data: { height: 2 } }],
   });
+  if (result.error) console.warn(`step ${result.index} failed:`, result.error);
   const frame = result.tracks.find((t) => t.track === "main_video")?.frames[0];
   if (frame) outputCtx.putImageData(stepFrameToImageData(frame), 0, 0);
 } catch (error) {
-  if (error instanceof StepRefusedError) console.warn("refused, nothing changed:", error.message);
+  if (error instanceof StepRefusedError) console.warn("refused:", error.message);
   else throw error;
 }
+
+// Every part of a step is optional: this one runs on the model's current state.
+await reactor.step();
 ```
 
-- `step({ state, commands })` runs `state` (each key as the model's `set_<key>`), then
-  `commands` in order, then every frame pushed since the previous step, as one unit. It
-  resolves with `{ index, tracks: [{ track, kind, frames }], elapsed }` — `elapsed` is the
-  seconds the step's `generate()` took (or the time the model reported for the step); each
-  frame has `dtype`, `shape`, typed-array `data` (`Uint8Array` RGB `(height, width, 3)` for
-  video, `Int16Array` planar `(channels, samples)` for audio), and optional `metadata` /
-  `captureTimeUs`.
-- `pushFrame(track, frame, { metadata?, captureTimeUs? })` takes a `VideoFrame`, an
-  `ImageData`, `{ data, width, height, format? }` raw `"rgba"`/`"rgb"`/`"bgra"` pixels, or
-  `{ samples, sampleRate, channels? }` interleaved `Int16Array` PCM for an audio track. Pushes
-  keep their order, and `step()` waits for every push called before it.
-- Failures are typed: `StepRefusedError` (`step_refused`), `StepResultTooLargeError`
+- `step({ state, commands })` sends `state`, `commands` and every frame pushed since the
+  previous step in one request. The runtime applies them in order — each `state` key as the
+  model's `set_<key>` command, then `commands`, then the frames — and then generates. They
+  are separate calls, not a transaction: one that fails does not undo the ones before it.
+  `sendCommand()` outside a step still works and changes the state the next step uses. A file
+  input goes in the way it does for a command: `uploadFile()` it, then put the `FileRef` in a
+  command's `data` or a state value.
+- It resolves with `{ index, tracks: [{ track, kind, frames }], elapsed, files, error? }`.
+  `elapsed` is the seconds the step's `generate()` took (or the time the model reported for
+  the step); each frame has `dtype`, `shape`, typed-array `data` (`Uint8Array` RGB
+  `(height, width, 3)` for video, `Int16Array` planar `(channels, samples)` for audio), and
+  optional `metadata` / `captureTimeUs`. `files` lists `{ name, contentType, size }` for each
+  file the model kept with the step; the bytes are served over HTTP from the session's step
+  results (`GET /sessions/{id}/steps/{index}`), not carried in the result. `error` is set when
+  the step ran and the model reported a failure — such a step resolves, it does not reject.
+- `publishTrack(name)` resolves with a handle whose `pushFrame(frame, { metadata?,
+  captureTimeUs? })` buffers a frame for the next step (`reactor.pushFrame(name, frame)` does
+  the same). It takes a `VideoFrame`, an `ImageData`, `{ data, width, height, format? }` raw
+  `"rgba"`/`"rgb"`/`"bgra"` pixels, or `{ samples, sampleRate, channels? }` interleaved
+  `Int16Array` PCM for an audio track. Pushes keep their order, and `step()` waits for every
+  push called before it.
+- The `MediaStreamTrack` argument of `publishTrack()` is optional in a stepped session and
+  ignored there, with a console warning: no RTP is sent, frames go through `pushFrame()`. In
+  a streamed session it is still required, and `publishTrack(name)` without one rejects with
+  an `InvalidStateError`.
+- Refusals are typed: `StepRefusedError` (`step_refused`), `StepResultTooLargeError`
   (`step_result_too_large`), `UnsupportedFrameEncodingError`, and `MessageTooLargeError` when
   the request is too large to send — nothing was sent, and the pushed frames are kept until
   `clearStepInputs()`.
-- Publishing a `MediaStreamTrack` (a webcam) into a stepped session is not supported yet:
-  `publishTrack(name, track)` rejects with an `InvalidStateError`.
 
 ## Recording and clips
 

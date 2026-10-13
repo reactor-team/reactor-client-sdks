@@ -48,19 +48,25 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Stepped generation. `new Reactor({ generation: "stepped" })` asks the runtime
   to start a session that generates one step at a time, and `connect()` fails
   with the new `GenerationModeMismatchError` when it does not. `step({ state,
-  commands })` runs one step and resolves with its output per track, frame
-  data as typed arrays, and `elapsed`, the seconds the step's `generate()` took
-  (or the time the model reported for the step); `pushFrame(track, frame)`
-  buffers a `VideoFrame`, `ImageData`, raw RGB(A) pixels or `Int16Array` PCM
-  for the next step, which carries them in its own request — a stepped
-  session's input never uses RTP.
-  A `stepAccepted` event reports when a step starts generating, and
+  commands })` runs one step — every argument optional, so `step()` runs on the
+  model's current state — and resolves with its output per track (frame data
+  as typed arrays), `elapsed` (the seconds the step's `generate()` took, or the
+  time the model reported for the step), `files` (`{ name, contentType, size }`
+  for each file the model kept with the step, fetched over HTTP from the
+  session's step results) and `error`, set when the step ran but the model
+  reported a failure; such a step resolves rather than rejects.
+  `pushFrame(track, frame)` buffers a `VideoFrame`, `ImageData`, raw RGB(A)
+  pixels or `Int16Array` PCM for the next step, which carries them in its own
+  request — a stepped session's input never uses RTP.
   `stepFrameToImageData()` turns a video frame into something a canvas draws.
-  Step failures are typed: `StepRefusedError`, `StepResultTooLargeError`,
+  Refusals are typed: `StepRefusedError`, `StepResultTooLargeError`,
   `UnsupportedFrameEncodingError`.
-- `publishTrack(name)` without a `MediaStreamTrack` claims an input track of a
-  stepped session. Passing a `MediaStreamTrack` there is rejected with an
-  `InvalidStateError`: feeding a browser track into steps is not supported yet.
+- `publishTrack()` resolves with a `PublishedTrack` handle, whose
+  `pushFrame(frame)` feeds that track in a stepped session. Its
+  `MediaStreamTrack` argument is now optional: a stepped session ignores one
+  passed there, with a console warning, and sends no RTP. A streamed session
+  still requires it and rejects `publishTrack(name)` without one with an
+  `InvalidStateError`.
 
 ### Changed
 

@@ -31,6 +31,7 @@ import type {
   ModelSchema,
   NotFunction,
   PushFrame,
+  PublishedTrack,
   PushFrameOptions,
   ReactorEventMap,
   ReactorMessage,
@@ -438,22 +439,35 @@ export class Reactor implements Disposable {
    * into a freed client — the same class of use-after-free `queue` exists to
    * prevent for connect/disconnect/reconnect themselves.
    *
+   * Resolves with a `PublishedTrack` handle whose `pushFrame()` feeds the
+   * track in a stepped session.
+   *
    * In a `generation: "stepped"` session, input frames never travel over
-   * RTP: call `publishTrack(name)` without a track to claim it, and feed it
-   * with `pushFrame()`. A `MediaStreamTrack` (a webcam, say) cannot feed a
-   * stepped session yet, and is rejected with an `InvalidStateError`.
+   * RTP: `track` is optional, and the frames are pushed with
+   * `published.pushFrame(...)` for the next `step()`. A `MediaStreamTrack`
+   * passed there is ignored, with a console warning — nothing is sent from
+   * it. In a streamed session `track` is required, and omitting it rejects
+   * with an `InvalidStateError`.
+   *
+   * ```ts
+   * const camera = await reactor.publishTrack('camera');
+   * await camera.pushFrame(imageData);
+   * const result = await reactor.step();
+   * ```
    */
-  async publishTrack(name: string, track?: MediaStreamTrack): Promise<void> {
+  async publishTrack(name: string, track?: MediaStreamTrack): Promise<PublishedTrack> {
     this.assertNotDisposed();
     try {
-      if (this.isStepped() && track !== undefined) {
-        throw new InvalidStateError(
-          `publishTrack('${name}'): a MediaStreamTrack cannot feed a stepped session yet. ` +
-            `Call publishTrack('${name}') without one and push frames with pushFrame().`,
-          { operation: 'publishTrack' },
+      let media = track;
+
+      if (this.isStepped() && media !== undefined) {
+        console.warn(
+          `[Reactor] publishTrack('${name}'): ignoring the MediaStreamTrack — a stepped session ` +
+            'sends no RTP and takes frames through track.pushFrame(...) on the track publishTrack() returns.',
         );
+        media = undefined;
       }
-      if (!this.isStepped() && track === undefined) {
+      if (!this.isStepped() && media === undefined) {
         throw new InvalidStateError(
           `publishTrack('${name}') needs a MediaStreamTrack in a streamed session.`,
           { operation: 'publishTrack' },
@@ -462,11 +476,15 @@ export class Reactor implements Disposable {
       await this.queue.push(async () => {
         const client = await this.getOrCreateClient();
 
-        await client.publishTrack(name, track);
+        await client.publishTrack(name, media);
       }, 'publishTrack');
     } catch (cause) {
       throw this.captureError(cause);
     }
+    return {
+      name,
+      pushFrame: (frame, options) => this.pushFrame(name, frame, options),
+    };
   }
 
   /**
@@ -570,22 +588,35 @@ export class Reactor implements Disposable {
    * Runs one step of a `generation: "stepped"` session and resolves with
    * what it produced, per output track.
    *
-   * The step is `state` (each key applied as the model's `set_<key>`
-   * command), then `commands` in order, then every frame `pushFrame()`ed
-   * since the previous step — sent as one request and run as one unit. A
-   * `stepAccepted` event fires once the runtime starts generating it.
+   * The request carries `state`, `commands` and every frame pushed since the
+   * previous step. The runtime applies them in that order — each `state` key
+   * as the model's `set_<key>` command, then `commands`, then the frames —
+   * and then generates. They are separate calls, not a transaction: one that
+   * fails does not undo the ones before it. All of it is optional:
+   * `step()` with nothing set and nothing pushed runs on the model's current
+   * state, which commands sent outside a step (`sendCommand()`) also change.
+   * A file goes in the way it does for a command: upload it with
+   * `uploadFile()`, then put the `FileRef` in a command's `data` or a state
+   * value.
+   *
+   * A step that ran but that the model reported as failed still resolves,
+   * with `result.error` set. `result.files` lists the files the model kept
+   * with the step (name, content type, size); their bytes are served over
+   * HTTP from the session's step results, not carried here.
    *
    * Rejects with a `StepRefusedError` when the runtime or the model turns
-   * the step down (no state changed), `StepResultTooLargeError` when the
-   * result does not fit in one message, `MessageTooLargeError` when the
-   * request itself is too large (nothing was sent and the pushed frames are
-   * kept — see `clearStepInputs()`), `InvalidStateError` outside a ready
-   * stepped session, or whatever else failed the step (`DisconnectedError`,
+   * the step down, `StepResultTooLargeError` when the result does not fit in
+   * one message, `MessageTooLargeError` when the request itself is too large
+   * (nothing was sent and the pushed frames are kept — see
+   * `clearStepInputs()`), `InvalidStateError` outside a ready stepped
+   * session, or whatever else failed the step (`DisconnectedError`,
    * `RequestTimeoutError`, ...).
    *
    * ```ts
-   * await reactor.pushFrame('camera', imageData);
+   * const camera = await reactor.publishTrack('camera');
+   * await camera.pushFrame(imageData);
    * const result = await reactor.step({ state: { prompt: 'a cat' } });
+   * if (result.error) console.warn('step failed:', result.error);
    * const frame = result.tracks.find((t) => t.track === 'main_video')?.frames[0];
    * if (frame) ctx.putImageData(stepFrameToImageData(frame), 0, 0);
    * ```
@@ -610,7 +641,9 @@ export class Reactor implements Disposable {
   /**
    * Buffers one input frame for the next `step()` on the sendonly track
    * `trackName`. Nothing is sent until that step, which carries every frame
-   * pushed since the one before it, per track in push order.
+   * pushed since the one before it, per track in push order. The
+   * `PublishedTrack` that `publishTrack()` resolves with does the same
+   * through `track.pushFrame(frame)`.
    *
    * Video: a `VideoFrame` (read, not closed — it stays the caller's), an
    * `ImageData`, or `{ data, width, height, format? }` raw pixels (`"rgba"`
@@ -920,7 +953,6 @@ export class Reactor implements Disposable {
       this.capabilities = toPublicCapabilities(capabilities);
       this.emitter.emit('capabilitiesReceived', this.capabilities);
     });
-    client.onStepAccepted((index) => this.emitter.emit('stepAccepted', index));
     client.onTrackReceived((name, mid) => {
       const track = client.getTrackByName(name);
       const stream = client.getStreamByName(name);
