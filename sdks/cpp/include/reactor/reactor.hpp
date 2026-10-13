@@ -405,10 +405,11 @@ class Reactor {
 
   /// Run one step of a stepped session and resolve with what it produced.
   ///
-  /// The runtime runs, as one unit: `state` (each key as the model's
-  /// `set_<key>` command), then `commands` in order, then every input frame
-  /// pushed since the previous step — `Track::push_frame` does not send in a
-  /// stepped session, it buffers for the next step:
+  /// Before the model generates, the runtime applies `state` (each key as the
+  /// model's `set_<key>` command), then `commands` in order, then every input
+  /// frame pushed since the previous step — `Track::push_frame` does not send in
+  /// a stepped session, it buffers for the next step. These are individual
+  /// calls, not a transaction: one that fails does not undo the ones before it.
   ///
   /// ```cpp
   /// auto camera = client.track("camera");
@@ -419,13 +420,23 @@ class Reactor {
   /// for (const auto& frame : result.track("main_video").frames) { … }
   /// ```
   ///
-  /// `state` is a JSON object or null (no state); a `FileRef` converts into it
-  /// as its upload reference. Each command's `data` is an object or null.
+  /// Both arguments are optional: `client.step()` with nothing pushed runs the
+  /// model once on its current state. Commands sent with `send_command` outside a
+  /// step still work in a stepped session and change the state the next step
+  /// uses.
+  ///
+  /// `state` is a JSON object or null (no state). Each command's `data` is an
+  /// object or null. Files go in the way they do for `send_command`: upload them
+  /// first, then put the `FileRef` in a command's data or in the state value of
+  /// an upload-typed field, where it converts into its upload reference.
+  ///
+  /// A step that ran but that the model reported failing still resolves, with
+  /// `StepResult::error` set; only a step the runtime refuses fails the future.
   ///
   /// Fails with `InvalidStateError` on a streamed client or a session that is
   /// not `Ready`; `BadRequestError` for a state or command data that is not an
   /// object, or a command with no name; `StepRefusedError` when the runtime
-  /// refuses the step (no state changed); `StepResultTooLargeError` when its
+  /// refuses the step; `StepResultTooLargeError` when its
   /// output does not fit in one message; `MessageTooLargeError` when the request
   /// does not — nothing was sent then, and the pushed frames are kept for the
   /// next step (see `clear_step_inputs`); `UnsupportedFrameEncodingError` for an
@@ -445,16 +456,6 @@ class Reactor {
   /// frames it could not send. A no-op before a session exists and on a streamed
   /// client.
   void clear_step_inputs();
-
-  /// Called when a stepped session accepts a step and starts generating it, with
-  /// the step's index — its number in the session, counted from 1, the same as
-  /// the `StepResult::index` that step resolves with.
-  ///
-  /// Never fired for a refused step. Delivered on the control-event executor,
-  /// normally before the step's future resolves — but the two travel
-  /// separately, so do not rely on that order. Throws `InvalidStateError` on a
-  /// streamed client, where it could never fire.
-  Subscription on_step_accepted(std::function<void(std::uint64_t)> handler);
 
  private:
   /// Shared, not unique, for two reasons: the callbacks the library holds capture

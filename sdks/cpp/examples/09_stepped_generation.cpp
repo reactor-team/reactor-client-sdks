@@ -3,7 +3,8 @@
 // A client created with `Generation::Stepped` asks for a session that generates
 // only when told to. Each `step()` sends the model's state, a list of commands
 // and every frame pushed since the previous step, and resolves with what the
-// model produced on each output track — as arrays of bytes, not a video stream.
+// model produced on each output track — as arrays of bytes, not a video stream —
+// along with the files it kept and, if it reported one, the step's failure.
 //
 // Pushing into an input track does not send anything in a stepped session: the
 // frame waits for the next step. A runtime without stepped generation ignores the
@@ -89,8 +90,6 @@ int main() {
 
   auto errors = client.on_error(
       [](const reactor::ReactorError& error) { std::cerr << "error: " << error.what() << '\n'; });
-  auto accepted = client.on_step_accepted(
-      [](std::uint64_t index) { std::cout << "step " << index << ": accepted, generating\n"; });
 
   try {
     client.connect().get();
@@ -124,6 +123,15 @@ int main() {
           std::cout << ' ' << shape_of(out) << ' ' << out.dtype;
         }
         std::cout << '\n';
+      }
+      for (const auto& file : result.files) {
+        // Described only: the bytes are on GET /sessions/{id}/steps/{index}.
+        std::cout << "step " << result.index << ": kept " << file.name << " (" << file.content_type
+                  << ", " << file.size << " bytes)\n";
+      }
+      if (result.error) {
+        // The step ran and the model reported a failure; the session goes on.
+        std::cout << "step " << result.index << ": the model reported " << *result.error << '\n';
       }
     }
 

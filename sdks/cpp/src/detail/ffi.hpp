@@ -96,6 +96,11 @@ namespace reactor::detail {
   X(step_result_frame_data, reactor_step_result_frame_data)                           \
   X(step_result_frame_metadata, reactor_step_result_frame_metadata)                   \
   X(step_result_frame_capture_time_us, reactor_step_result_frame_capture_time_us)     \
+  X(step_result_error, reactor_step_result_error)                                     \
+  X(step_result_file_count, reactor_step_result_file_count)                           \
+  X(step_result_file_name, reactor_step_result_file_name)                             \
+  X(step_result_file_content_type, reactor_step_result_file_content_type)             \
+  X(step_result_file_size, reactor_step_result_file_size)                             \
   X(step_result_free, reactor_step_result_free)
 
 /// The functions the SDK calls, as pointers.

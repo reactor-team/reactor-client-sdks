@@ -287,7 +287,7 @@ receiving nothing. Every one of these throws instead, with the fix in the messag
 | a pixel buffer that is not `width * height * 4` | `BadRequestError`, naming both sizes |
 | anything after the session leaves `Ready` | `InvalidStateError`, naming the status |
 | `one()` matching zero or several tracks | `NotFoundError` / `InvalidStateError` |
-| `step()` or `on_step_accepted()` on a streamed client | `InvalidStateError`, naming `Generation::Stepped` |
+| `step()` on a streamed client | `InvalidStateError`, naming `Generation::Stepped` |
 | a step state, or a command's data, that is not a JSON object | `BadRequestError`, before anything is sent |
 
 Publishing state is not something the session records, so the SDK keeps it — and
@@ -312,18 +312,18 @@ parse failure.
 ## Stepped generation
 
 A model that supports it can generate one step at a time instead of streaming.
-Ask for it when creating the client, then call `step()`: it runs the state, the
-commands and every input frame pushed since the previous step as one unit, and
-resolves with what the model produced on each output track.
+Ask for it when creating the client, then call `step()`: it applies the state,
+the commands and every input frame pushed since the previous step, runs the model
+once, and resolves with what the model produced on each output track. The runtime
+applies those as individual calls, in that order, before generating — not as a
+transaction. Both arguments are optional: `client.step()` runs the model on its
+current state, and commands sent with `send_command()` between steps still change
+the state the next step uses.
 
 ```cpp
 reactor::Options options;
 options.generation = reactor::Generation::Stepped;
 reactor::Reactor client{"owner/model", reactor::ApiKey{key}, options};
-
-auto accepted = client.on_step_accepted([](std::uint64_t index) {
-  std::cout << "generating step " << index << '\n';
-});
 
 client.connect().get();          // GenerationModeMismatchError if the runtime cannot
 
@@ -338,7 +338,21 @@ for (const auto& frame : result.track("main_video").frames) {
   frame.metadata, frame.capture_time_us;
 }
 result.elapsed;                  // seconds the step's generate() took (or the model reported)
+for (const auto& file : result.files) {
+  file.name, file.content_type, file.size;  // bytes: GET /sessions/{id}/steps/{index}
+}
+if (result.error) { /* the step ran, and the model reported this failure */ }
+
+const auto next = client.step().get();      // no new state or commands
 ```
+
+A step that ran but that the model reported failing resolves normally with
+`error` set; only a refusal throws. `files` describes the extra files the model
+kept with the step; their bytes are fetched over HTTP from the session's step
+results, `GET /sessions/{id}/steps/{index}`, which answers 202 until they are
+stored. `files` is empty when the model kept none or the result was not saved.
+Files go *into* a step the way they go into a command: upload first, then put the
+`FileRef` in a command's data or in the state value of an upload-typed field.
 
 `Track::push_frame` keeps its signature: in a stepped session it buffers the frame
 for the next step instead of sending it, and still needs `publish()` first. Audio
@@ -350,8 +364,8 @@ drops. `Options::step_timeout_seconds` bounds a step (default 300 s).
 
 The result is copied out of the native library once, when the step completes, and
 the native result is freed there and then: a `StepResult` owns its bytes and
-outlives the client. `step()` and `on_step_accepted()` refuse a streamed client
-rather than waiting on something that cannot happen. See
+outlives the client. `step()` refuses a streamed client rather than waiting on
+something that cannot happen. See
 [`examples/09_stepped_generation.cpp`](examples/09_stepped_generation.cpp).
 
 ## Recordings
