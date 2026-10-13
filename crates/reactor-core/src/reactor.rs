@@ -33,8 +33,8 @@ use crate::protocol::wire::v1::control::control_client_message::Payload as Clien
 use crate::protocol::wire::v1::control::control_server_message::Payload as ServerPayload;
 use crate::protocol::wire::v1::data::{data_client_message, data_server_message};
 use crate::protocol::wire::v1::platform::{
-    ClientConnectionStat, ClientStats, ClientTrackStat, FileUploaded, FrameStage, Ping,
-    RequestClip, RequestRecording, RequestSchema,
+    ClientConnectionStat, ClientEnvironment, ClientStats, ClientTrackStat, FileUploaded,
+    FrameStage, Ping, RequestClip, RequestRecording, RequestSchema,
 };
 use crate::protocol::wire::v1::track::{PauseTrack, PublishTrack, ResumeTrack, UnpublishTrack};
 use crate::recording::{clip_failed_code, clip_from_ready, Clip};
@@ -1032,6 +1032,20 @@ impl Reactor {
         self.peer.send_control(&payload)
     }
 
+    /// What this client runs on, for its stats readings: the SDK and version
+    /// the binding declared, and the system its platform reads.
+    pub fn client_environment(&self) -> ClientEnvironment {
+        let client = self.coordinator.client_info();
+        let platform = self.platform.info();
+        ClientEnvironment {
+            sdk_type: client.sdk_type.clone(),
+            sdk_version: client.sdk_version.clone(),
+            os: platform.os,
+            os_version: platform.os_version,
+            arch: platform.arch,
+        }
+    }
+
     /// Share the [`StageTimes`] the host adds the stages it times to: a
     /// decoded frame reaches the app outside the core.
     pub fn with_stage_times(mut self, stage_times: Arc<StageTimes>) -> Self {
@@ -1527,6 +1541,9 @@ impl Reactor {
         let generation = self.stage_times.generation();
         let mut reporter = ClientStatsReporter::new();
         let mut sent_connect_time = false;
+        // Fixed for the connection, sent on every batch so any one reading
+        // can be grouped on its own.
+        let environment = self.client_environment();
         loop {
             self.platform.sleep(interval).await;
             if !current() {
@@ -1558,7 +1575,8 @@ impl Reactor {
             };
             let mut track_stats = reporter.track_stats(&raw, &tracks, &paused, now);
             let unmatched = add_sdk_stages(&mut track_stats, sdk_stages.clone());
-            let connection_stat = client_connection_stat(&raw, time_to_connect_ms, now);
+            let connection_stat =
+                client_connection_stat(&raw, time_to_connect_ms, &environment, now);
             if track_stats.is_empty() && connection_stat.metrics.is_empty() {
                 self.stage_times.give_back(generation, sdk_stages);
                 continue;
@@ -2823,10 +2841,12 @@ mod tests {
                 total_ms: 120.0,
                 frames: 150,
             }],
+            ..ClientTrackStat::default()
         };
         let connection_stat = ClientConnectionStat {
             timestamp: 1_700_000_000_000,
             metrics: HashMap::from([("time_to_connect_ms".to_string(), 850.0)]),
+            ..ClientConnectionStat::default()
         };
 
         reactor

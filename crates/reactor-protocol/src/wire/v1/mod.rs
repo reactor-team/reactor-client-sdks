@@ -22,9 +22,9 @@ pub mod model {
 
 pub mod platform {
     pub use super::generated::{
-        client_track_stat, AudioCodec, ClientConnectionStat, ClientStats, ClientTrackStat,
-        ClipFailed, ClipReady, FileUploaded, FrameStage, ModelSchema, Moderation, Ping,
-        RequestClip, RequestRecording, RequestSchema, TrackDirection, TrackKind, VideoCodec,
+        client_track_stat, AudioCodec, ClientConnectionStat, ClientEnvironment, ClientStats,
+        ClientTrackStat, ClipFailed, ClipReady, FileUploaded, FrameStage, ModelSchema, Moderation,
+        Ping, RequestClip, RequestRecording, RequestSchema, TrackDirection, TrackKind, VideoCodec,
     };
 }
 

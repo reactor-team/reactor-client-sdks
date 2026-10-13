@@ -46,8 +46,8 @@ use crate::peer::{
 use crate::protocol::session::{TrackDirection, TrackKind};
 use crate::protocol::webrtc::TrackMappingEntry;
 use crate::protocol::wire::v1::platform::{
-    client_track_stat, AudioCodec, ClientConnectionStat, ClientTrackStat, FrameStage,
-    TrackDirection as WireTrackDirection, TrackKind as WireTrackKind, VideoCodec,
+    client_track_stat, AudioCodec, ClientConnectionStat, ClientEnvironment, ClientTrackStat,
+    FrameStage, TrackDirection as WireTrackDirection, TrackKind as WireTrackKind, VideoCodec,
 };
 
 /// The shortest window a rate is derived over, in milliseconds.
@@ -916,6 +916,9 @@ fn track_stat(
         paused: paused.contains(&track.name),
         metrics: metrics.0,
         frame_stages,
+        // Filled once the engine reports which encoder or decoder runs.
+        codec_implementation: String::new(),
+        hardware_codec: None,
     }
 }
 
@@ -953,6 +956,7 @@ impl Metrics {
 pub fn client_connection_stat(
     raw: &TransportStats,
     time_to_connect_ms: Option<f64>,
+    environment: &ClientEnvironment,
     now_ms: f64,
 ) -> ClientConnectionStat {
     let mut m = Metrics::default();
@@ -974,6 +978,7 @@ pub fn client_connection_stat(
     ClientConnectionStat {
         timestamp: now_ms as i64,
         metrics: m.0,
+        environment: Some(environment.clone()),
     }
 }
 
@@ -1975,6 +1980,23 @@ mod tests {
             .contains_key("bitrate_bps"));
     }
 
+    fn environment() -> ClientEnvironment {
+        ClientEnvironment {
+            sdk_type: "python".to_string(),
+            sdk_version: "1.10.0".to_string(),
+            os: "macos".to_string(),
+            os_version: "15.1".to_string(),
+            arch: "aarch64".to_string(),
+        }
+    }
+
+    #[test]
+    fn every_connection_reading_says_what_the_client_runs_on() {
+        let raw = TransportStats::default();
+        let stat = client_connection_stat(&raw, None, &environment(), 0.0);
+        assert_eq!(stat.environment, Some(environment()));
+    }
+
     fn stage_names(stat: &ClientTrackStat) -> Vec<(&str, u64)> {
         stat.frame_stages
             .iter()
@@ -2455,7 +2477,7 @@ mod tests {
             ..TransportStats::default()
         };
 
-        let stat = client_connection_stat(&raw, Some(812.345_6), 2_000.0);
+        let stat = client_connection_stat(&raw, Some(812.345_6), &environment(), 2_000.0);
 
         assert_eq!(stat.timestamp, 2_000);
         assert_eq!(stat.metrics["connection_rtt_ms"], 24.568);
@@ -2472,9 +2494,13 @@ mod tests {
             ..TransportStats::default()
         };
 
-        assert!(client_connection_stat(&raw, None, 0.0).metrics.is_empty());
+        assert!(client_connection_stat(&raw, None, &environment(), 0.0)
+            .metrics
+            .is_empty());
         assert_eq!(
-            client_connection_stat(&raw, Some(100.0), 0.0).metrics.len(),
+            client_connection_stat(&raw, Some(100.0), &environment(), 0.0)
+                .metrics
+                .len(),
             1
         );
     }

@@ -11,7 +11,7 @@ default = []
 # Provides `runtime::TokioPlatform` for tokio-based hosts.
 # Enable this feature in native hosts (FFI, Go, Swift, Kotlin).
 # Keep optional so the core stays portable to WASM and embedded targets.
-tokio-platform = ["dep:tokio"]
+tokio-platform = ["dep:tokio", "dep:os_info"]
 
 [dependencies]
 reactor-protocol = { workspace = true }
@@ -23,6 +23,8 @@ futures          = { workspace = true }
 log              = { workspace = true }
 prost            = { workspace = true }
 tokio            = { version = "1", features = ["time"], optional = true }
+# The operating system's version for the client stats environment, native only.
+os_info          = { version = "3", default-features = false, optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "test-util", "sync"] }

@@ -190,6 +190,13 @@ export interface ClientTrackStat {
    *  an entry with no frames or a time that is not a finite, non-negative
    *  number is left out. */
   frameStages?: FrameStage[];
+  /** Video only: the encoder (a sent track) or decoder (a received one) the
+   *  browser runs, from getStats()'s encoderImplementation /
+   *  decoderImplementation, e.g. "libvpx" or "ExternalDecoder". */
+  codecImplementation?: string;
+  /** Video only: whether that implementation is the hardware one, from
+   *  powerEfficientEncoder / powerEfficientDecoder. */
+  hardwareCodec?: boolean;
 }
 
 /** The time a track's frames spent in one stage of their trip, over one

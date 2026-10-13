@@ -581,8 +581,14 @@ impl ReactorClient {
             .map_err(|e| invalid(&e))?;
         let connection_stat: Option<ClientConnectionStatJson> =
             from_optional(Some(connection_stat), "client connection stat")?;
+        // What the browser client runs on, which this side knows and the
+        // page does not need to pass.
+        let connection_stat = connection_stat.map(|stat| ClientConnectionStat {
+            environment: Some(self.reactor.client_environment()),
+            ..ClientConnectionStat::from(stat)
+        });
         self.reactor
-            .client_stats(track_stats, connection_stat.map(ClientConnectionStat::from))
+            .client_stats(track_stats, connection_stat)
             .map_err(|e| error_value(&e.details(Some("sendClientStats"))))
     }
 
@@ -861,6 +867,14 @@ struct ClientTrackStatJson {
     /// Optional, so a caller that has no stage times sends none.
     #[serde(default)]
     frame_stages: Vec<FrameStageJson>,
+    /// Optional: the browser's `encoderImplementation` or
+    /// `decoderImplementation` for a video track.
+    #[serde(default)]
+    codec_implementation: Option<String>,
+    /// Optional: the browser's `powerEfficientEncoder` or
+    /// `powerEfficientDecoder` for a video track.
+    #[serde(default)]
+    hardware_codec: Option<bool>,
 }
 
 /// The JSON shape of `FrameStage`, as its TypeScript interface declares it.
@@ -894,6 +908,17 @@ impl TryFrom<ClientTrackStatJson> for ClientTrackStat {
             paused: stat.paused,
             metrics: stat.metrics,
             frame_stages: stage_times(stat.frame_stages),
+            // Only a video track has a codec implementation.
+            codec_implementation: if kind == TrackKind::Video {
+                stat.codec_implementation.unwrap_or_default()
+            } else {
+                String::new()
+            },
+            hardware_codec: if kind == TrackKind::Video {
+                stat.hardware_codec
+            } else {
+                None
+            },
         })
     }
 }
@@ -927,6 +952,7 @@ impl From<ClientConnectionStatJson> for ClientConnectionStat {
         ClientConnectionStat {
             timestamp: stat.timestamp,
             metrics: stat.metrics,
+            environment: None,
         }
     }
 }

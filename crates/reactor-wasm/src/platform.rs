@@ -85,6 +85,14 @@ impl Platform for WasmPlatform {
         js_sys::Date::now()
     }
 
+    /// A browser: the page does not say more without asking the user.
+    fn info(&self) -> reactor_core::runtime::PlatformInfo {
+        reactor_core::runtime::PlatformInfo {
+            os: "browser".to_string(),
+            ..Default::default()
+        }
+    }
+
     /// `performance.now()`, on a page or in a worker alike; the wall clock
     /// where the global has no `performance`.
     fn monotonic_ms(&self) -> f64 {
