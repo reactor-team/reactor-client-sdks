@@ -331,7 +331,7 @@ impl Reactor {
         // Frames timed before this connection belong to no batch of it. Cleared
         // here, at the boundary, not when the reporter task first runs: the host
         // can push frames before that.
-        self.stage_times.take();
+        self.stage_times.begin_connection();
         self.dispatcher
             .dispatch(ReactorEvent::StatusChanged(ReactorStatus::Connecting));
 
@@ -481,7 +481,7 @@ impl Reactor {
             sid
         };
         // As in connect(): the previous connection's frames end here.
-        self.stage_times.take();
+        self.stage_times.begin_connection();
         self.dispatcher
             .dispatch(ReactorEvent::StatusChanged(ReactorStatus::Connecting));
         self.set_status(ReactorStatus::Waiting);

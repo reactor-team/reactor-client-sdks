@@ -227,6 +227,9 @@ struct VideoFrame {
     user_data: Vec<u8>,
     /// When the decoder handed the frame over, to time its trip to the host.
     decoded_at: std::time::Instant,
+    /// The connection the frame was decoded on, so a frame still queued when
+    /// a reconnect begins is not counted in the new connection's stats.
+    generation: u64,
 }
 
 /// A decoded remote audio frame, likewise copied.
@@ -919,7 +922,8 @@ unsafe fn create_impl(
                 Overflow::DropOldest,
                 gate.clone(),
                 move |frame: VideoFrame| unsafe {
-                    delivered.add(
+                    delivered.add_from(
+                        frame.generation,
                         &frame.track.to_string_lossy(),
                         DELIVERY,
                         frame.decoded_at.elapsed().as_secs_f64() * 1_000.0,
@@ -942,6 +946,7 @@ unsafe fn create_impl(
                 },
             );
             let tx = thread.sender();
+            let decoding = stage_times.clone();
             peer_transport =
                 peer_transport.with_frame_callback(move |track, data, w, h, frame_id, ts, ud| {
                     // Runs on a libwebrtc decode thread. Copy and hand off; the one
@@ -957,6 +962,7 @@ unsafe fn create_impl(
                         timestamp_us: ts,
                         user_data: ud.to_vec(),
                         decoded_at,
+                        generation: decoding.generation(),
                     });
                 });
             video = Some(thread);

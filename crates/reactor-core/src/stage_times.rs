@@ -46,7 +46,15 @@ type Totals = HashMap<String, HashMap<&'static str, (f64, u64)>>;
 /// them, so every access holds a lock.
 #[derive(Default)]
 pub struct StageTimes {
-    totals: Mutex<Totals>,
+    inner: Mutex<Inner>,
+}
+
+#[derive(Default)]
+struct Inner {
+    totals: Totals,
+    /// Which connection the totals belong to, advanced by
+    /// [`StageTimes::begin_connection`].
+    generation: u64,
 }
 
 impl StageTimes {
@@ -54,25 +62,41 @@ impl StageTimes {
         Self::default()
     }
 
+    /// Start a new connection's window: drop what earlier connections timed,
+    /// and refuse their frames that are still on their way (see
+    /// [`StageTimes::add_from`]).
+    pub fn begin_connection(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.totals.clear();
+        inner.generation = inner.generation.wrapping_add(1);
+    }
+
+    /// The current connection, to tag a frame with when its timing starts
+    /// on one thread and ends on another.
+    pub fn generation(&self) -> u64 {
+        self.inner.lock().unwrap().generation
+    }
+
     /// Add one frame of *track* that spent *ms* milliseconds in *stage*. A
     /// time that is negative or not finite is no measurement, and is left out.
     pub fn add(&self, track: &str, stage: &'static str, ms: f64) {
-        if !ms.is_finite() || ms < 0.0 {
-            return;
+        let mut inner = self.inner.lock().unwrap();
+        add_to(&mut inner.totals, track, stage, ms);
+    }
+
+    /// [`StageTimes::add`] for a frame tagged with *generation* when its
+    /// timing started. A frame of an earlier connection, still queued when
+    /// the next one began, is left out rather than counted in the new one.
+    pub fn add_from(&self, generation: u64, track: &str, stage: &'static str, ms: f64) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.generation == generation {
+            add_to(&mut inner.totals, track, stage, ms);
         }
-        let mut totals = self.totals.lock().unwrap();
-        let stages = match totals.get_mut(track) {
-            Some(stages) => stages,
-            None => totals.entry(track.to_string()).or_default(),
-        };
-        let entry = stages.entry(stage).or_default();
-        entry.0 += ms;
-        entry.1 += 1;
     }
 
     /// Each track's stages since the previous take, and start a new window.
     pub fn take(&self) -> HashMap<String, Vec<FrameStage>> {
-        std::mem::take(&mut *self.totals.lock().unwrap())
+        std::mem::take(&mut self.inner.lock().unwrap().totals)
             .into_iter()
             .map(|(track, by_stage)| {
                 let stages = by_stage
@@ -87,6 +111,19 @@ impl StageTimes {
             })
             .collect()
     }
+}
+
+fn add_to(totals: &mut Totals, track: &str, stage: &'static str, ms: f64) {
+    if !ms.is_finite() || ms < 0.0 {
+        return;
+    }
+    let stages = match totals.get_mut(track) {
+        Some(stages) => stages,
+        None => totals.entry(track.to_string()).or_default(),
+    };
+    let entry = stages.entry(stage).or_default();
+    entry.0 += ms;
+    entry.1 += 1;
 }
 
 /// Sort *stages* into trip order. A stage this SDK does not know goes last.
@@ -117,6 +154,27 @@ mod tests {
         assert!((submit.total_ms - 0.08).abs() < 1e-9);
         assert_eq!(stages["main_video"][0].frames, 1);
         assert!(times.take().is_empty(), "a take starts a new window");
+    }
+
+    #[test]
+    fn a_frame_from_an_earlier_connection_is_left_out() {
+        let times = StageTimes::new();
+        let before = times.generation();
+        times.begin_connection();
+        times.add_from(before, "main_video", DELIVERY, 2.0);
+        times.add_from(times.generation(), "main_video", DELIVERY, 3.0);
+
+        let stages = times.take();
+        assert_eq!(stages["main_video"][0].frames, 1);
+        assert!((stages["main_video"][0].total_ms - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_new_connection_drops_what_the_last_one_timed() {
+        let times = StageTimes::new();
+        times.add("webcam", SUBMIT, 1.0);
+        times.begin_connection();
+        assert!(times.take().is_empty());
     }
 
     #[test]
