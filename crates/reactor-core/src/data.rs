@@ -10,12 +10,6 @@
 //! unprompted broadcast rather than a reply to any request — it matches
 //! nothing and is dispatched as a `message` event.
 //!
-//! A stepped session's `StepAccepted` is the one inbound message that carries
-//! a pending request's `request_id` without answering it: it is progress on
-//! that step, ahead of the `StepResult` or `Error` that resolves it. It is
-//! returned uncorrelated and leaves the request pending, so a request still
-//! gets exactly one response.
-//!
 //! Correlation decides who gets an *awaited* value, not who gets an event:
 //! a correlated reply carrying a message is dispatched as a `message` event
 //! as well, so a listener sees it alongside the resolved call. Only a
@@ -137,8 +131,7 @@ impl DataCorrelator {
         // correlation below instead of being silently dropped.
         let payload = message.payload;
         let mut correlated = false;
-        let progress = matches!(payload, Some(data_server_message::Payload::StepAccepted(_)));
-        if !message.request_id.is_empty() && !progress {
+        if !message.request_id.is_empty() {
             match self.pending.lock().unwrap().remove(&message.request_id) {
                 Some((_, tx)) => {
                     let _ = tx.send(Ok(payload.clone()));
@@ -308,47 +301,37 @@ mod tests {
         assert!(!handled.correlated);
     }
 
-    /// `StepAccepted` names its step's request_id but is not the response:
-    /// the step stays pending until the `StepResult` arrives.
+    /// A step's one response is its `StepResult`: the first message bearing
+    /// the step's request_id resolves it, and nothing else arrives for it.
     #[test]
-    fn step_accepted_does_not_resolve_the_step() {
-        use crate::protocol::wire::v1::step::{RequestStep, StepAccepted, StepResult};
+    fn a_step_result_resolves_its_step() {
+        use crate::protocol::wire::v1::step::{RequestStep, StepFileRef, StepResult};
 
         let c = DataCorrelator::new();
         let mut pending = c.begin(data_client_message::Payload::RequestStep(
             RequestStep::default(),
         ));
-        let accepted = DataServerMessage {
-            request_id: pending.request_id.clone(),
-            kind: MessageKind::Notification as i32,
-            payload: Some(data_server_message::Payload::StepAccepted(StepAccepted {
-                index: 1,
-            })),
-        }
-        .encode_to_vec();
-        let handled = c.handle_message(&accepted).unwrap();
-        assert!(!handled.correlated);
-        assert!(matches!(
-            handled.payload,
-            Some(data_server_message::Payload::StepAccepted(StepAccepted {
-                index: 1
-            }))
-        ));
-        assert!(pending.receiver.try_recv().unwrap().is_none());
-
         let result = encode_response(
             &pending.request_id,
             data_server_message::Payload::StepResult(StepResult {
                 index: 1,
                 tracks: vec![],
                 elapsed: 0.0,
+                files: vec![StepFileRef {
+                    name: "f.bin".into(),
+                    content_type: "application/octet-stream".into(),
+                    size: 3,
+                }],
+                error: None,
             }),
         );
         assert!(c.handle_message(&result).unwrap().correlated);
-        assert!(matches!(
-            pending.receiver.try_recv().unwrap().unwrap(),
-            Ok(Some(data_server_message::Payload::StepResult(_)))
-        ));
+        match pending.receiver.try_recv().unwrap().unwrap() {
+            Ok(Some(data_server_message::Payload::StepResult(result))) => {
+                assert_eq!(result.files.len(), 1);
+            }
+            other => panic!("expected the step result, got {other:?}"),
+        }
     }
 
     #[test]

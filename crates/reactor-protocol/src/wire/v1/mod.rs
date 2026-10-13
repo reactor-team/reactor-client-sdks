@@ -36,7 +36,7 @@ pub mod track {
 
 pub mod step {
     pub use super::generated::{
-        Frame, FrameEncoding, RequestStep, StepAccepted, StepResult, TrackFrames,
+        Frame, FrameEncoding, RequestStep, StepFileRef, StepResult, TrackFrames,
     };
 }
 

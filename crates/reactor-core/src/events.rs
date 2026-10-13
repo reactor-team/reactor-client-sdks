@@ -31,13 +31,6 @@ pub enum ReactorEvent {
     },
     Error(ReactorError),
     CapabilitiesReceived(Capabilities),
-    /// A stepped session accepted a step and started generating it. Arrives
-    /// before that step's [`crate::reactor::Reactor::step`] call resolves
-    /// (never for a refused step); `index` is the step's number in the
-    /// session, counted from 1, and matches the resolved result's.
-    StepAccepted {
-        index: u64,
-    },
 }
 
 /// Fan-out dispatcher.
