@@ -275,6 +275,15 @@ export interface StepTrack {
   frames: StepFrame[];
 }
 
+/** A file the model kept with a step. */
+export interface StepFile {
+  name: string;
+  /** Its MIME type, e.g. "image/png". */
+  contentType: string;
+  /** Its size in bytes. */
+  size: number;
+}
+
 /** What one step produced. */
 export interface StepResult {
   /** The step's number in the session, counted from 1. */
@@ -282,6 +291,13 @@ export interface StepResult {
   tracks: StepTrack[];
   /** Seconds the step's `generate()` took, or the time the model reported for the step. */
   elapsed: number;
+  /** Files the model kept with the step. Only their description: the bytes
+   *  are served over HTTP from the session's step results. Empty when the
+   *  model kept none or the result was not saved. */
+  files: StepFile[];
+  /** Set when the step ran and the model reported a failure. Such a step
+   *  still resolves; only a refused step rejects. */
+  error?: string;
 }
 
 export type StatusListener = (status: ReactorStatus) => void;
@@ -290,7 +306,6 @@ export type MessageListener = (message: ReactorMessage) => void;
 export type TrackListener = (name: string, mid: string | undefined) => void;
 export type ErrorListener = (error: ReactorError) => void;
 export type CapabilitiesListener = (capabilities: Capabilities) => void;
-export type StepAcceptedListener = (index: number) => void;
 "#;
 
 #[wasm_bindgen]
@@ -367,9 +382,6 @@ extern "C" {
 
     #[wasm_bindgen(typescript_type = "CapabilitiesListener")]
     pub type CapabilitiesListener;
-
-    #[wasm_bindgen(typescript_type = "StepAcceptedListener")]
-    pub type StepAcceptedListener;
 
     #[wasm_bindgen(typescript_type = "Record<string, unknown> | null")]
     pub type StepStateInput;
