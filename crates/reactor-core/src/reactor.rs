@@ -1039,10 +1039,18 @@ impl Reactor {
         self
     }
 
-    /// Time one frame's hand-off to the engine, from *started_ms* on the
-    /// platform's monotonic clock.
-    fn submitted(&self, track_name: &str, started_ms: f64) {
-        self.stage_times.add(
+    /// Start timing one frame's hand-off to the engine: the time on the
+    /// platform's monotonic clock, and the connection it belongs to.
+    fn submit_started(&self) -> (f64, u64) {
+        (self.platform.monotonic_ms(), self.stage_times.generation())
+    }
+
+    /// Time one frame's hand-off to the engine, from [`Self::submit_started`].
+    /// A push that a reconnect overtook belongs to the old connection, so it
+    /// is left out of the new one's stats.
+    fn submitted(&self, track_name: &str, (started_ms, generation): (f64, u64)) {
+        self.stage_times.add_from(
+            generation,
             track_name,
             SUBMIT,
             self.platform.monotonic_ms() - started_ms,
@@ -1050,7 +1058,7 @@ impl Reactor {
     }
 
     pub fn push_video_frame(&self, track_name: &str, data: &[u8], width: u32, height: u32) {
-        let started = self.platform.monotonic_ms();
+        let started = self.submit_started();
         self.peer.push_video_frame(track_name, data, width, height);
         self.submitted(track_name, started);
     }
@@ -1065,7 +1073,7 @@ impl Reactor {
         height: u32,
         user_data: &[u8],
     ) {
-        let started = self.platform.monotonic_ms();
+        let started = self.submit_started();
         self.peer
             .push_video_frame_with_metadata(track_name, data, width, height, user_data);
         self.submitted(track_name, started);
@@ -1084,7 +1092,7 @@ impl Reactor {
         user_data: &[u8],
         capture_time_us: i64,
     ) {
-        let started = self.platform.monotonic_ms();
+        let started = self.submit_started();
         self.peer.push_video_frame_with_metadata_at(
             track_name,
             data,
