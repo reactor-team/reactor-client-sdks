@@ -20,6 +20,7 @@ use serde_json::Value;
 pub struct ReactorStepResult {
     pub(crate) index: u64,
     pub(crate) tracks: Vec<StepTrack>,
+    pub(crate) elapsed: f64,
 }
 
 pub(crate) struct StepTrack {
@@ -80,6 +81,7 @@ impl From<StepOutput> for ReactorStepResult {
                     },
                 )
                 .collect(),
+            elapsed: output.elapsed,
         }
     }
 }
@@ -189,8 +191,10 @@ mod tests {
                 kind: TrackKind::Video,
                 frames: vec![frame(bytes)],
             }],
+            elapsed: 0.75,
         });
         assert_eq!(result.index, 3);
+        assert_eq!(result.elapsed, 0.75);
         let track = result.track(0).unwrap();
         assert_eq!(track.name.to_str().unwrap(), "main_video");
         assert_eq!(track.kind, c"video");

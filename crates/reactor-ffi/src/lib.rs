@@ -2314,6 +2314,17 @@ pub unsafe extern "C" fn reactor_step_result_index(result: *const ReactorStepRes
     result.as_ref().map_or(0, |r| r.index)
 }
 
+/// Seconds the step's `generate()` took, or the time the model reported for
+/// the step. 0.0 for a null result.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_index`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_elapsed(result: *const ReactorStepResult) -> f64 {
+    result.as_ref().map_or(0.0, |r| r.elapsed)
+}
+
 /// How many output tracks the step produced frames for, in the order the
 /// runtime sent them. 0 for a null result.
 ///
@@ -3406,6 +3417,7 @@ mod tests {
             reactor_clear_step_inputs(std::ptr::null_mut());
             let null: *const ReactorStepResult = std::ptr::null();
             assert_eq!(reactor_step_result_index(null), 0);
+            assert_eq!(reactor_step_result_elapsed(null), 0.0);
             assert_eq!(reactor_step_result_track_count(null), 0);
             assert!(reactor_step_result_track_name(null, 0).is_null());
             assert!(reactor_step_result_track_kind(null, 0).is_null());
@@ -3465,6 +3477,7 @@ mod tests {
                     }],
                 },
             ],
+            elapsed: 0.5,
         }
     }
 
@@ -3488,6 +3501,7 @@ mod tests {
         unsafe {
             let text = |p: *const c_char| CStr::from_ptr(p).to_str().unwrap().to_owned();
             assert_eq!(reactor_step_result_index(result), 4);
+            assert_eq!(reactor_step_result_elapsed(result), 0.5);
             assert_eq!(reactor_step_result_track_count(result), 2);
             assert_eq!(
                 text(reactor_step_result_track_name(result, 0)),

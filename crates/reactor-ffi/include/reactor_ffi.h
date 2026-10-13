@@ -774,6 +774,12 @@ void reactor_clear_step_inputs(ReactorHandle *handle);
 /* The step's number in the session, counted from 1 (see on_step_accepted). */
 uint64_t reactor_step_result_index(const ReactorStepResult *result);
 
+/*
+ * Seconds the step's generate() took, or the time the model reported for the
+ * step.  0.0 for a null result.
+ */
+double reactor_step_result_elapsed(const ReactorStepResult *result);
+
 uint32_t reactor_step_result_track_count(const ReactorStepResult *result);
 
 /* The output track's declared name. */
