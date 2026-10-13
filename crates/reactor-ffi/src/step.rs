@@ -12,7 +12,7 @@ use std::ffi::{CStr, CString};
 use reactor_core::error::CoreError;
 use reactor_core::protocol::session::TrackKind;
 use reactor_core::protocol::wire::v1::step::FrameEncoding;
-use reactor_core::step::{DecodedFrame, StepCommand, StepOutput, TrackOutput};
+use reactor_core::step::{DecodedFrame, StepCommand, StepFile, StepOutput, TrackOutput};
 use serde_json::Value;
 
 /// One step's output, owned by the host between the completion and
@@ -21,6 +21,16 @@ pub struct ReactorStepResult {
     pub(crate) index: u64,
     pub(crate) tracks: Vec<StepTrack>,
     pub(crate) elapsed: f64,
+    pub(crate) files: Vec<StepFileEntry>,
+    pub(crate) error: Option<CString>,
+}
+
+/// A reference to an extra file the model kept with the step; the bytes are
+/// fetched over HTTP, not carried here.
+pub(crate) struct StepFileEntry {
+    pub(crate) name: CString,
+    pub(crate) content_type: CString,
+    pub(crate) size: u64,
 }
 
 pub(crate) struct StepTrack {
@@ -82,6 +92,18 @@ impl From<StepOutput> for ReactorStepResult {
                 )
                 .collect(),
             elapsed: output.elapsed,
+            files: output.files.into_iter().map(StepFileEntry::from).collect(),
+            error: output.error.map(c_string),
+        }
+    }
+}
+
+impl From<StepFile> for StepFileEntry {
+    fn from(file: StepFile) -> Self {
+        Self {
+            name: c_string(file.name),
+            content_type: c_string(file.content_type),
+            size: file.size,
         }
     }
 }
@@ -106,6 +128,10 @@ impl ReactorStepResult {
 
     pub(crate) fn frame(&self, track: u32, frame: u32) -> Option<&StepFrame> {
         self.track(track)?.frames.get(frame as usize)
+    }
+
+    pub(crate) fn file(&self, file: u32) -> Option<&StepFileEntry> {
+        self.files.get(file as usize)
     }
 }
 
@@ -192,6 +218,12 @@ mod tests {
                 frames: vec![frame(bytes)],
             }],
             elapsed: 0.75,
+            files: vec![StepFile {
+                name: "depth.npy".into(),
+                content_type: "application/octet-stream".into(),
+                size: 4096,
+            }],
+            error: Some("model said no\0pe".into()),
         });
         assert_eq!(result.index, 3);
         assert_eq!(result.elapsed, 0.75);
@@ -207,6 +239,18 @@ mod tests {
         assert_eq!(f.capture_time_us, Some(42));
         assert!(result.frame(0, 1).is_none());
         assert!(result.track(1).is_none());
+        let file = result.file(0).unwrap();
+        assert_eq!(file.name.to_str().unwrap(), "depth.npy");
+        assert_eq!(
+            file.content_type.to_str().unwrap(),
+            "application/octet-stream"
+        );
+        assert_eq!(file.size, 4096);
+        assert!(result.file(1).is_none());
+        assert_eq!(
+            result.error.as_deref().map(|e| e.to_str().unwrap()),
+            Some("model said nope")
+        );
     }
 
     #[test]

@@ -20,9 +20,9 @@
  * differs:
  *
  *   - Control events (on_status, on_error, on_message, on_runtime_message,
- *     on_track, on_capabilities, on_session_id, on_step_accepted) and the
- *     completion callbacks (reactor_completion_fn and reactor_step_completion_fn,
- *     invoked exactly once per call) share one thread,
+ *     on_track, on_capabilities, on_session_id) and the completion callbacks
+ *     (reactor_completion_fn and reactor_step_completion_fn, invoked exactly
+ *     once per call) share one thread,
  *     with an unbounded queue: they are low-rate, and losing one would leave you
  *     with a wrong view of the session.
  *   - on_frame has its own thread and a one-deep queue.  If you are slower than
@@ -119,19 +119,6 @@ typedef void (*reactor_on_capabilities_fn)(const char *caps_json, void *userdata
 
 /* session_id_or_null is NULL when the session is cleared. */
 typedef void (*reactor_on_session_id_fn)(const char *session_id_or_null, void *userdata);
-
-/*
- * A stepped session accepted a step and started generating it.  `index` is the
- * step's number in the session, counted from 1 — the same number
- * reactor_step_result_index() reports for that step's result.  Never fired for a
- * refused step.
- *
- * Not a member of ReactorCallbacks: adding one would change a struct every
- * binding already lays out.  Pass it to reactor_create_with_options().  It runs
- * on the control thread with callbacks->userdata, and normally before the step's
- * completion — but the two travel separately, so do not rely on that order.
- */
-typedef void (*reactor_on_step_accepted_fn)(uint64_t index, void *userdata);
 
 /*
  * Raw video frame in BGRA format (B, G, R, A bytes).  width * height * 4 bytes.
@@ -341,8 +328,6 @@ ReactorHandle *reactor_create_with_adm(
  * since a key is not a signature change.
  *
  *   api_url, model_name, jwt, callbacks — as reactor_create.
- *   on_step_accepted — nullable; see reactor_on_step_accepted_fn.  Receives
- *                      callbacks->userdata, or NULL when callbacks is NULL.
  *   options_json     — nullable (every default).  JSON object, every key optional:
  *                        {
  *                          "local":                bool,   // default false
@@ -372,13 +357,12 @@ ReactorHandle *reactor_create_with_adm(
  * The returned handle must be destroyed with reactor_destroy().
  */
 ReactorHandle *reactor_create_with_options(
-    const char                 *api_url,
-    const char                 *model_name,
-    const char                 *jwt,              /* nullable */
-    const ReactorCallbacks     *callbacks,        /* nullable */
-    reactor_on_step_accepted_fn on_step_accepted, /* nullable */
-    const char                 *options_json,     /* nullable */
-    char                      **error_out         /* nullable */
+    const char             *api_url,
+    const char             *model_name,
+    const char             *jwt,          /* nullable */
+    const ReactorCallbacks *callbacks,    /* nullable */
+    const char             *options_json, /* nullable */
+    char                  **error_out     /* nullable */
 );
 
 /*
@@ -733,8 +717,8 @@ typedef void (*reactor_step_completion_fn)(
  *                   may be omitted or null.  Any other key is an error.
  *   completion    — see reactor_step_completion_fn.
  *
- * on_step_accepted fires when the runtime accepts the step; the completion
- * fires once, with the result or with one of:
+ * The completion fires once: with the step's result — its one answer, sent
+ * when the step is done — or with one of:
  *
  *   step_refused               the request or the model turned the step down;
  *                              no state changed.
@@ -751,6 +735,9 @@ typedef void (*reactor_step_completion_fn)(
  *   INVALID_STATE              not a ready stepped session.
  *   DISCONNECTED, REQUEST_TIMEOUT (after step_timeout_seconds), or any code the
  *                              runtime answered with.
+ *
+ * A step that ran but that the model reported as failed is a result, not an
+ * error: ok is 1 and reactor_step_result_error() says why.
  *
  * Once sent, the input frames belong to that step whatever its outcome.
  */
@@ -777,7 +764,7 @@ void reactor_clear_step_inputs(ReactorHandle *handle);
  * Tracks are in the order the runtime sent them; frames in production order.
  */
 
-/* The step's number in the session, counted from 1 (see on_step_accepted). */
+/* The step's number in the session, counted from 1. */
 uint64_t reactor_step_result_index(const ReactorStepResult *result);
 
 /*
@@ -785,6 +772,32 @@ uint64_t reactor_step_result_index(const ReactorStepResult *result);
  * step.  0.0 for a null result.
  */
 double reactor_step_result_elapsed(const ReactorStepResult *result);
+
+/*
+ * Why the step failed, when it ran and the model reported a failure; NULL when
+ * it worked.  A refused step never has a result: its completion fails with
+ * step_refused instead.
+ */
+const char *reactor_step_result_error(const ReactorStepResult *result);
+
+/*
+ * The extra files the model kept with the step, in the order the runtime listed
+ * them.  None when it kept none or its result was not saved.  The result names
+ * them; it does not carry them: fetch a file's bytes over HTTP from the
+ * session's step results (GET /sessions/{id}/steps/{index}), by the step's index
+ * and the file's name, as for a streamed session.
+ */
+uint32_t reactor_step_result_file_count(const ReactorStepResult *result);
+
+/* The file's name, one path segment. */
+const char *reactor_step_result_file_name(const ReactorStepResult *result, uint32_t file);
+
+/* The file's media type, guessed from its name. */
+const char *reactor_step_result_file_content_type(
+    const ReactorStepResult *result, uint32_t file);
+
+/* The file's size in bytes.  0 when out of range. */
+uint64_t reactor_step_result_file_size(const ReactorStepResult *result, uint32_t file);
 
 uint32_t reactor_step_result_track_count(const ReactorStepResult *result);
 

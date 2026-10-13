@@ -142,10 +142,6 @@ struct CallbackSet {
     on_track: Option<unsafe extern "C" fn(*const c_char, *const c_char, *mut c_void)>,
     on_capabilities: Option<unsafe extern "C" fn(*const c_char, *mut c_void)>,
     on_session_id: Option<unsafe extern "C" fn(*const c_char, *mut c_void)>,
-    /// Not in [`ReactorCallbacks`]: adding a field there would change a struct
-    /// every binding already lays out, so it is passed beside it to
-    /// [`reactor_create_with_options`].
-    on_step_accepted: Option<unsafe extern "C" fn(u64, *mut c_void)>,
     userdata: *mut c_void,
     /// Every fire below goes through this. Once `reactor_destroy` retires it, the
     /// pointers above must be treated as dangling.
@@ -191,15 +187,6 @@ impl CallbackSet {
                 }
                 None => unsafe { func(std::ptr::null(), self.userdata) },
             }
-        }
-    }
-
-    fn fire_step_accepted(&self, index: u64) {
-        if let Some(func) = self.on_step_accepted {
-            let Some(_admitted) = self.gate.enter() else {
-                return;
-            };
-            unsafe { func(index, self.userdata) }
         }
     }
 
@@ -828,7 +815,7 @@ pub unsafe extern "C" fn reactor_create(
     sdk_type: *const c_char,
 ) -> *mut ReactorHandle {
     let config = CreateConfig::from_args(local, auto_resume_tracks, None, sdk_version, sdk_type);
-    create_impl(api_url, model_name, jwt, callbacks, None, config)
+    create_impl(api_url, model_name, jwt, callbacks, config)
 }
 
 /// Like [`reactor_create`], but selects the audio device module explicitly:
@@ -859,11 +846,11 @@ pub unsafe extern "C" fn reactor_create_with_adm(
         _ => None,
     };
     let config = CreateConfig::from_args(local, auto_resume_tracks, adm, sdk_version, sdk_type);
-    create_impl(api_url, model_name, jwt, callbacks, None, config)
+    create_impl(api_url, model_name, jwt, callbacks, config)
 }
 
-/// Create a client from a JSON object of options, with the callback stepped
-/// sessions add. The returned handle must be released with [`reactor_destroy`].
+/// Create a client from a JSON object of options. The returned handle must be
+/// released with [`reactor_destroy`].
 ///
 /// `options_json` may be null for every default; otherwise it is a JSON object
 /// of [`CreateConfig`]'s keys — `local`, `auto_resume_tracks`, `adm`,
@@ -871,10 +858,6 @@ pub unsafe extern "C" fn reactor_create_with_adm(
 /// unrecognised key is an error**, as is a value of the wrong type: a misspelt
 /// `generation` would otherwise connect a streamed session and leave the host
 /// waiting on steps that never come.
-///
-/// `on_step_accepted` may be null. It is called with the step's index and
-/// `callbacks->userdata` (null when `callbacks` is null), on the control
-/// thread, under the same lifetime rules as every [`ReactorCallbacks`] pointer.
 ///
 /// Returns null when the options are refused, and then, if `error_out` is not
 /// null, stores a heap JSON error object there for the caller to release with
@@ -891,7 +874,6 @@ pub unsafe extern "C" fn reactor_create_with_options(
     model_name: *const c_char,
     jwt: *const c_char,
     callbacks: *const ReactorCallbacks,
-    on_step_accepted: Option<unsafe extern "C" fn(u64, *mut c_void)>,
     options_json: *const c_char,
     error_out: *mut *mut c_char,
 ) -> *mut ReactorHandle {
@@ -901,14 +883,7 @@ pub unsafe extern "C" fn reactor_create_with_options(
         CreateConfig::from_json(&CStr::from_ptr(options_json).to_string_lossy())
     };
     match config {
-        Ok(config) => create_impl(
-            api_url,
-            model_name,
-            jwt,
-            callbacks,
-            on_step_accepted,
-            config,
-        ),
+        Ok(config) => create_impl(api_url, model_name, jwt, callbacks, config),
         Err(error) => {
             if !error_out.is_null() {
                 *error_out = error_details_ptr(&error, "create");
@@ -1041,7 +1016,6 @@ unsafe fn create_impl(
     model_name: *const c_char,
     jwt: *const c_char,
     callbacks: *const ReactorCallbacks,
-    on_step_accepted: Option<unsafe extern "C" fn(u64, *mut c_void)>,
     config: CreateConfig,
 ) -> *mut ReactorHandle {
     let api_url = CStr::from_ptr(api_url).to_string_lossy().into_owned();
@@ -1054,18 +1028,7 @@ unsafe fn create_impl(
     let gate = Arc::new(CallbackGate::new());
 
     let cbs: Option<CallbackSet> = if callbacks.is_null() {
-        on_step_accepted.map(|_| CallbackSet {
-            on_status: None,
-            on_error: None,
-            on_message: None,
-            on_runtime_message: None,
-            on_track: None,
-            on_capabilities: None,
-            on_session_id: None,
-            on_step_accepted,
-            userdata: std::ptr::null_mut(),
-            gate: gate.clone(),
-        })
+        None
     } else {
         let c = &*callbacks;
         Some(CallbackSet {
@@ -1076,7 +1039,6 @@ unsafe fn create_impl(
             on_track: c.on_track,
             on_capabilities: c.on_capabilities,
             on_session_id: c.on_session_id,
-            on_step_accepted,
             userdata: c.userdata,
             gate: gate.clone(),
         })
@@ -2430,8 +2392,7 @@ pub unsafe extern "C" fn reactor_clear_step_inputs(handle: *mut ReactorHandle) {
     }
 }
 
-/// The step's number in the session, counted from 1, as `on_step_accepted`
-/// reported it. 0 for a null result.
+/// The step's number in the session, counted from 1. 0 for a null result.
 ///
 /// # Safety
 ///
@@ -2454,6 +2415,84 @@ pub unsafe extern "C" fn reactor_step_result_index(result: *const ReactorStepRes
 #[no_mangle]
 pub unsafe extern "C" fn reactor_step_result_elapsed(result: *const ReactorStepResult) -> f64 {
     result.as_ref().map_or(0.0, |r| r.elapsed)
+}
+
+/// Why the step failed, when it ran and the model reported a failure; null
+/// when it worked, and for a null result. A refused step never gets here: its
+/// completion fails with `step_refused`.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_index`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_error(
+    result: *const ReactorStepResult,
+) -> *const c_char {
+    result
+        .as_ref()
+        .and_then(|r| r.error.as_deref())
+        .map_or(std::ptr::null(), CStr::as_ptr)
+}
+
+/// How many extra files the model kept with the step, in the order the
+/// runtime listed them. 0 when it kept none, when its result was not saved,
+/// and for a null result.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_index`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_file_count(result: *const ReactorStepResult) -> u32 {
+    result.as_ref().map_or(0, |r| r.files.len() as u32)
+}
+
+/// The file's name, one path segment — the name to fetch its bytes by from the
+/// session's step results. Null when out of range.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_index`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_file_name(
+    result: *const ReactorStepResult,
+    file: u32,
+) -> *const c_char {
+    result
+        .as_ref()
+        .and_then(|r| r.file(file))
+        .map_or(std::ptr::null(), |f| f.name.as_ptr())
+}
+
+/// The file's media type, guessed from its name. Null when out of range.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_index`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_file_content_type(
+    result: *const ReactorStepResult,
+    file: u32,
+) -> *const c_char {
+    result
+        .as_ref()
+        .and_then(|r| r.file(file))
+        .map_or(std::ptr::null(), |f| f.content_type.as_ptr())
+}
+
+/// The file's size in bytes. 0 when out of range.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_index`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_file_size(
+    result: *const ReactorStepResult,
+    file: u32,
+) -> u64 {
+    result
+        .as_ref()
+        .and_then(|r| r.file(file))
+        .map_or(0, |f| f.size)
 }
 
 /// How many output tracks the step produced frames for, in the order the
@@ -3394,7 +3433,6 @@ mod tests {
                 model.as_ptr(),
                 std::ptr::null(),
                 std::ptr::null(),
-                None,
                 options.as_ptr(),
                 &mut error,
             )
@@ -3508,7 +3546,6 @@ mod tests {
                 url.as_ptr(),
                 std::ptr::null(),
                 std::ptr::null(),
-                None,
                 options.as_ptr(),
                 std::ptr::null_mut(),
             )
@@ -3572,6 +3609,11 @@ mod tests {
             let null: *const ReactorStepResult = std::ptr::null();
             assert_eq!(reactor_step_result_index(null), 0);
             assert_eq!(reactor_step_result_elapsed(null), 0.0);
+            assert!(reactor_step_result_error(null).is_null());
+            assert_eq!(reactor_step_result_file_count(null), 0);
+            assert!(reactor_step_result_file_name(null, 0).is_null());
+            assert!(reactor_step_result_file_content_type(null, 0).is_null());
+            assert_eq!(reactor_step_result_file_size(null, 0), 0);
             assert_eq!(reactor_step_result_track_count(null), 0);
             assert!(reactor_step_result_track_name(null, 0).is_null());
             assert!(reactor_step_result_track_kind(null, 0).is_null());
@@ -3602,7 +3644,7 @@ mod tests {
     fn sample_output() -> reactor_core::step::StepOutput {
         use reactor_core::protocol::session::TrackKind;
         use reactor_core::protocol::wire::v1::step::FrameEncoding;
-        use reactor_core::step::{DecodedFrame, StepOutput, TrackOutput};
+        use reactor_core::step::{DecodedFrame, StepFile, StepOutput, TrackOutput};
         StepOutput {
             index: 4,
             tracks: vec![
@@ -3632,6 +3674,19 @@ mod tests {
                 },
             ],
             elapsed: 0.5,
+            files: vec![
+                StepFile {
+                    name: "depth.npy".into(),
+                    content_type: "application/octet-stream".into(),
+                    size: 4096,
+                },
+                StepFile {
+                    name: "caption.txt".into(),
+                    content_type: "text/plain".into(),
+                    size: 12,
+                },
+            ],
+            error: None,
         }
     }
 
@@ -3656,6 +3711,26 @@ mod tests {
             let text = |p: *const c_char| CStr::from_ptr(p).to_str().unwrap().to_owned();
             assert_eq!(reactor_step_result_index(result), 4);
             assert_eq!(reactor_step_result_elapsed(result), 0.5);
+            assert!(reactor_step_result_error(result).is_null());
+            assert_eq!(reactor_step_result_file_count(result), 2);
+            assert_eq!(text(reactor_step_result_file_name(result, 0)), "depth.npy");
+            assert_eq!(
+                text(reactor_step_result_file_content_type(result, 0)),
+                "application/octet-stream"
+            );
+            assert_eq!(reactor_step_result_file_size(result, 0), 4096);
+            assert_eq!(
+                text(reactor_step_result_file_name(result, 1)),
+                "caption.txt"
+            );
+            assert_eq!(
+                reactor_step_result_file_name(result, 0),
+                reactor_step_result_file_name(result, 0),
+                "a file's name is borrowed, the same pointer every read"
+            );
+            assert!(reactor_step_result_file_name(result, 2).is_null());
+            assert!(reactor_step_result_file_content_type(result, 2).is_null());
+            assert_eq!(reactor_step_result_file_size(result, 2), 0);
             assert_eq!(reactor_step_result_track_count(result), 2);
             assert_eq!(
                 text(reactor_step_result_track_name(result, 0)),
@@ -3700,6 +3775,26 @@ mod tests {
                 0
             );
 
+            reactor_step_result_free(result);
+        }
+    }
+
+    /// A step that ran and failed completes with ok = 1 and a result whose
+    /// error names the reason, borrowed like every other string on it.
+    #[test]
+    fn a_step_that_ran_and_failed_hands_over_a_result_with_its_reason() {
+        let output = reactor_core::step::StepOutput {
+            files: vec![],
+            error: Some("generate() raised".into()),
+            ..sample_output()
+        };
+        let result = Box::into_raw(Box::new(ReactorStepResult::from(output)));
+        unsafe {
+            let error = reactor_step_result_error(result);
+            assert!(!error.is_null());
+            assert_eq!(CStr::from_ptr(error).to_str().unwrap(), "generate() raised");
+            assert_eq!(reactor_step_result_error(result), error);
+            assert_eq!(reactor_step_result_file_count(result), 0);
             reactor_step_result_free(result);
         }
     }
@@ -3781,39 +3876,8 @@ mod tests {
         }
     }
 
-    static STEP_ACCEPTED: Mutex<Vec<(u64, usize)>> = Mutex::new(Vec::new());
-
-    unsafe extern "C" fn record_step_accepted(index: u64, userdata: *mut c_void) {
-        STEP_ACCEPTED
-            .lock()
-            .unwrap()
-            .push((index, userdata as usize));
-    }
-
-    /// The event reaches the host's callback with its index and the
-    /// callbacks' userdata — and only once the gate admits it.
     #[test]
-    fn step_accepted_reaches_its_callback_with_the_index() {
-        let cbs = CallbackSet {
-            on_status: None,
-            on_error: None,
-            on_message: None,
-            on_runtime_message: None,
-            on_track: None,
-            on_capabilities: None,
-            on_session_id: None,
-            on_step_accepted: Some(record_step_accepted),
-            userdata: 0x5eed as *mut c_void,
-            gate: Arc::new(CallbackGate::new()),
-        };
-        dispatch_event(&cbs, ReactorEvent::StepAccepted { index: 7 });
-        assert_eq!(cbs.gate.retire(), Quiescence::Complete);
-        dispatch_event(&cbs, ReactorEvent::StepAccepted { index: 8 });
-        assert_eq!(*STEP_ACCEPTED.lock().unwrap(), vec![(7, 0x5eed)]);
-    }
-
-    #[test]
-    fn create_with_options_and_a_step_callback_alone_creates_and_destroys() {
+    fn create_with_options_and_no_callbacks_creates_and_destroys() {
         let url = CString::new("http://localhost:1").unwrap();
         let handle = unsafe {
             reactor_create_with_options(
@@ -3821,7 +3885,6 @@ mod tests {
                 url.as_ptr(),
                 std::ptr::null(),
                 std::ptr::null(),
-                Some(record_step_accepted),
                 std::ptr::null(),
                 std::ptr::null_mut(),
             )
