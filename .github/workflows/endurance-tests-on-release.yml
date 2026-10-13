@@ -75,6 +75,10 @@ jobs:
         if: steps.released.outputs.released == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          # No checkout in this job, so `gh workflow run` has no local .git to
+          # infer the repo from; name it explicitly (gh api calls above don't
+          # need this, they put the repo in the URL).
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           gh workflow run endurance-tests.yml --ref main \
@@ -113,6 +117,7 @@ jobs:
         if: steps.released.outputs.released == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           gh workflow run endurance-tests.yml --ref main \
@@ -144,6 +149,7 @@ jobs:
         if: steps.released.outputs.released == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           gh workflow run endurance-tests.yml --ref main \
@@ -182,6 +188,7 @@ jobs:
         if: steps.released.outputs.released == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_ENDURANCE_DURATION_MINUTES: ${{ vars.RELEASE_ENDURANCE_DURATION_MINUTES || '120' }}
         run: |
           set -euo pipefail
