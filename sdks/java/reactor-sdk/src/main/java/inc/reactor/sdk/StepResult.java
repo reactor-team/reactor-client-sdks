@@ -20,12 +20,24 @@ import java.util.Optional;
  * @param index the step's number in the session, counted from 1 — the same number {@link
  *     Reactor#onStepAccepted} reported for it
  * @param tracks the output tracks, in the order the runtime sent them
+ * @param elapsed seconds the step's {@code generate()} took, or the time the model reported for the
+ *     step
  */
-public record StepResult(long index, List<StepTrackOutput> tracks) {
+public record StepResult(long index, List<StepTrackOutput> tracks, double elapsed) {
 
     /** Copies {@code tracks}, so the record is as immutable as it looks. */
     public StepResult {
         tracks = List.copyOf(tracks);
+    }
+
+    /**
+     * A result with an {@code elapsed} of zero, as the other SDKs default it.
+     *
+     * @param index the step's number in the session, counted from 1
+     * @param tracks the output tracks, in the order the runtime sent them
+     */
+    public StepResult(long index, List<StepTrackOutput> tracks) {
+        this(index, tracks, 0.0);
     }
 
     /**

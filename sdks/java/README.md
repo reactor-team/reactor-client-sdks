@@ -154,6 +154,7 @@ try (Reactor reactor = Reactor.open(ReactorOptions.builder(apiUrl, "owner/model"
         frame.metadata();
         frame.captureTimeUs();
     }
+    result.elapsed();                      // seconds the step's generate() took (or the model reported)
 }
 ```
 

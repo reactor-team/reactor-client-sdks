@@ -18,6 +18,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   little-endian `ByteBuffer` from `data()`, or a copy from `toByteArray()`),
   `dtype()`, `shape()`, `metadata()` and `captureTimeUs()`. Video comes back as
   `(height, width, 3)` `uint8` RGB and audio as `(channels, samples)` `int16`.
+  `elapsed()` is the seconds the step's `generate()` took, or the time the model
+  reported for the step.
   The result is copied onto the heap once and the native one freed straight
   away, so it can be kept. `Track.pushFrame` buffers into the next step in such
   a session, `onStepAccepted` reports a step the runtime started,
