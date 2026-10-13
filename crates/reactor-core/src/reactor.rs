@@ -4588,11 +4588,13 @@ mod tests {
                     kind: WireTrackKind::Video as i32,
                     frames: vec![raw_frame(9)],
                 }],
+                elapsed: 1.5,
             }),
         )
         .await;
         let output = stepping.await.unwrap().unwrap();
         assert_eq!(output.index, 1);
+        assert_eq!(output.elapsed, 1.5);
         assert_eq!(output.tracks[0].track, "out");
         assert_eq!(output.tracks[0].frames[0].data, [9, 9, 9]);
         assert_eq!(output.tracks[0].frames[0].shape, [1, 1, 3]);
@@ -4635,6 +4637,7 @@ mod tests {
             data_server_message::Payload::StepResult(StepResult {
                 index: 4,
                 tracks: vec![],
+                elapsed: 0.0,
             }),
         )
         .await;
@@ -4702,6 +4705,7 @@ mod tests {
                         ..raw_frame(0)
                     }],
                 }],
+                elapsed: 0.0,
             }),
         )
         .await;
@@ -4820,6 +4824,7 @@ mod tests {
             data_server_message::Payload::StepResult(StepResult {
                 index: 1,
                 tracks: vec![],
+                elapsed: 0.0,
             }),
         )
         .await;
