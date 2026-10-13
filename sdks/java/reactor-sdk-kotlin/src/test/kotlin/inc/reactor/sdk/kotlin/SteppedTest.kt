@@ -5,22 +5,22 @@ import inc.reactor.sdk.Generation
 import inc.reactor.sdk.InvalidStateException
 import inc.reactor.sdk.JsonValue
 import inc.reactor.sdk.StepCommand
+import inc.reactor.sdk.StepFile
 import inc.reactor.sdk.StepRefusedException
 import inc.reactor.sdk.internal.FakeNativeLibrary
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
-import kotlinx.coroutines.flow.take
-import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 
-/** Stepped generation through the facade: the suspend step, its refusals, the accepted flow. */
+/** Stepped generation through the facade: the suspend step, its result, its refusals. */
 class SteppedTest {
 
     private lateinit var fake: FakeNativeLibrary
@@ -114,16 +114,23 @@ class SteppedTest {
     }
 
     @Test
-    fun `the step accepted flow carries each index`() = runBlocking {
-        val collecting = async(Dispatchers.Default) { client.stepAcceptedFlow().take(2).toList() }
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-        while (FakeClients.controlHandlerCount(client.java) == 0 && System.nanoTime() < deadline) {
-            Thread.sleep(1)
+    fun `a bare step sends nothing but the step, and a failed one returns its error and files`() =
+        runBlocking {
+            val stepping = async(Dispatchers.Default) { client.step() }
+            awaitStep()
+            assertNull(fake.lastStepState)
+            assertEquals("[]", fake.lastStepCommands)
+            fake.settleLastStep(
+                3,
+                emptyList(),
+                0.0,
+                listOf(FakeNativeLibrary.StepFileSpec("out.png", "image/png", 42)),
+                "the model gave up",
+            )
+            val result = stepping.await()
+            assertEquals("the model gave up", result.error().orElseThrow())
+            assertEquals(listOf(StepFile("out.png", "image/png", 42)), result.files())
         }
-        fake.fireStepAccepted(1)
-        fake.fireStepAccepted(2)
-        assertEquals(listOf(1L, 2L), collecting.await())
-    }
 
     private fun awaitStep() {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)

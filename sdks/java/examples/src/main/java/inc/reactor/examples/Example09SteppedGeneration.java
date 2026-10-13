@@ -5,6 +5,7 @@ import inc.reactor.sdk.JsonValue;
 import inc.reactor.sdk.Reactor;
 import inc.reactor.sdk.ReactorOptions;
 import inc.reactor.sdk.StepCommand;
+import inc.reactor.sdk.StepFile;
 import inc.reactor.sdk.StepFrame;
 import inc.reactor.sdk.StepResult;
 import inc.reactor.sdk.StepTrackOutput;
@@ -24,7 +25,8 @@ import java.util.stream.Collectors;
  * <p>A client created with {@code generation(Generation.STEPPED)} asks for a session that generates
  * only when told to. Each {@link Reactor#step} sends the model's state, a list of commands and every
  * frame pushed since the previous step, and resolves with what the model produced on each output
- * track — as arrays, not a video stream.
+ * track — as arrays, not a video stream — plus the names of any files the model kept with the
+ * step, and its error when the model reported the step as failed.
  *
  * <p><b>Pushing into an input track sends nothing in a stepped session</b>: the frame waits for the
  * next step. A runtime without stepped generation ignores the request, so {@code connect()} checks
@@ -63,7 +65,6 @@ public final class Example09SteppedGeneration {
                 .generation(Generation.STEPPED)
                 .build())) {
 
-            reactor.onStepAccepted(index -> System.out.println("step " + index + ": accepted, generating"));
             reactor.connect().join();
             System.out.println("session: " + reactor.sessionId().orElse("?"));
 
@@ -86,6 +87,15 @@ public final class Example09SteppedGeneration {
                         command == null || command.isBlank() ? List.of() : List.of(StepCommand.of(command));
 
                 StepResult result = reactor.step(state, commands).join();
+                System.out.printf(
+                        java.util.Locale.ROOT, "step %d: generated in %.3f s%n", result.index(), result.elapsed());
+                // A step the model reported as failed still completes; only a refused one throws.
+                result.error().ifPresent(why -> System.out.println("step " + result.index() + ": model error: " + why));
+                for (StepFile file : result.files()) {
+                    // Named only: fetch the bytes over HTTP from the session's step results.
+                    System.out.println("step " + result.index() + ": kept " + file.name() + " (" + file.contentType()
+                            + ", " + file.size() + " bytes)");
+                }
 
                 for (StepTrackOutput track : result.tracks()) {
                     String shapes = track.frames().stream()

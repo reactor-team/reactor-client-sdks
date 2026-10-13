@@ -26,7 +26,7 @@ import org.jspecify.annotations.Nullable;
  * next run cannot start until that clears. Try-with-resources is the reliable way; the {@link
  * Cleaner} registered here is a safety net for a client somebody forgot, not a plan.
  *
- * <p>Control events — status, error, message, track, capabilities, session id, step accepted — are delivered
+ * <p>Control events — status, error, message, track, capabilities, session id — are delivered
  * through the {@link Dispatcher}, so a Swing or JavaFX application can have them arrive on the
  * thread its toolkit requires. Media does not go through it: see {@link Dispatcher}.
  *
@@ -310,10 +310,17 @@ public final class Reactor implements AutoCloseable {
     /**
      * Runs one step of a stepped session and answers with what it produced.
      *
-     * <p>The runtime runs, as one unit: {@code state} (each key as the model's {@code set_<key>}
-     * command), then {@code commands} in order, then every input frame pushed since the previous
-     * step — in a stepped session {@link Track#pushFrame(byte[], int, int)} does not send, it
-     * buffers for the next step.
+     * <p>The runtime applies, in order: {@code state} (each key as the model's {@code set_<key>}
+     * command), then {@code commands}, then every input frame pushed since the previous step — in
+     * a stepped session {@link Track#pushFrame(byte[], int, int)} does not send, it buffers for the
+     * next step — and then generates. These are separate calls, not a transaction: nothing applied
+     * is rolled back if a later one fails. Every part is optional; {@link #step()} with nothing
+     * runs on the model's current state. Commands sent with {@link #sendCommand} outside a step
+     * still work in a stepped session and change the state the next step uses.
+     *
+     * <p>A file input is an upload reference, as for any command: {@link #uploadFile upload} it
+     * first, then put the reference in a command's arguments or in the value of an upload-typed
+     * state field.
      *
      * <pre>{@code
      * Reactor reactor = Reactor.open(ReactorOptions.builder(apiUrl, "owner/model")
@@ -333,7 +340,8 @@ public final class Reactor implements AutoCloseable {
      * }
      * }</pre>
      *
-     * <p>The future fails with {@link StepRefusedException} when the runtime turns the step down (no
+     * <p>A step that ran but that the model reported as failed still completes normally, with
+     * {@link StepResult#error()} saying why. The future fails with {@link StepRefusedException} when the runtime turns the step down (no
      * state changed), {@link StepResultTooLargeException} when the step ran but its output does not
      * fit in one message, {@link MessageTooLargeException} when the request does not — nothing was
      * sent then, and the pushed frames are kept for the next step, which {@link #clearStepInputs()}
@@ -395,17 +403,6 @@ public final class Reactor implements AutoCloseable {
      */
     public void clearStepInputs() {
         peer.clearStepInputs();
-    }
-
-    /**
-     * @param handler called with a step's index — its number in the session, counted from 1, the
-     *     same as the {@link StepResult#index()} the step resolves with — when the runtime accepts it
-     *     and starts generating. Never for a refused step. Normally before {@link #step}'s future
-     *     settles, but the two travel separately, so do not rely on that order
-     * @return a subscription that removes it
-     */
-    public Subscription onStepAccepted(Consumer<Long> handler) {
-        return peer.onStepAccepted(handler);
     }
 
     /**
