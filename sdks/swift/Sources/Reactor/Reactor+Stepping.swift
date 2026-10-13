@@ -47,7 +47,7 @@ extension Reactor {
     ///
     /// - Throws: ``ReactorError``:
     ///   - ``ReactorError/Code/stepRefused`` — the runtime or the model turned
-    ///     the step down; no state changed.
+    ///     the step down; calls applied before the refusal stay applied.
     ///
     ///   A step that ran but that the model reported as failed does not throw:
     ///   it returns a result whose ``StepResult/error`` says why.
