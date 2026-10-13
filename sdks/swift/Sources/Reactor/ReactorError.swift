@@ -188,8 +188,9 @@ extension ReactorError {
         public static let unsupportedFrameEncoding = Code(rawValue: "UNSUPPORTED_FRAME_ENCODING")
 
         /// The runtime refused a step — the request or the model turned it
-        /// down — and no state changed. Lowercase because it is the runtime's
-        /// own code, passed through.
+        /// down. The calls it applied before the refusal stay applied: nothing
+        /// is rolled back. Lowercase because it is the runtime's own code,
+        /// passed through.
         public static let stepRefused = Code(rawValue: "step_refused")
 
         /// A step ran, but its result does not fit in one data-channel message.

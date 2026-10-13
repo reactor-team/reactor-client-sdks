@@ -193,9 +193,9 @@ export class GenerationModeMismatchError extends ReactorError {
   static override readonly code = 'GENERATION_MODE_MISMATCH';
 }
 
-/** The runtime refused a `step()` — the request or the model turned it down
- *  — and no state changed. The code is the runtime's own, passed through,
- *  hence lowercase. */
+/** The runtime refused a `step()` — the request or the model turned it down.
+ *  The calls it applied before the refusal stay applied: nothing is rolled
+ *  back. The code is the runtime's own, passed through, hence lowercase. */
 export class StepRefusedError extends ReactorError {
   static override readonly code = 'step_refused';
 }
