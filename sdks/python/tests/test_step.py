@@ -71,6 +71,7 @@ class FakeStepLib:
 
     def __init__(self) -> None:
         self.results: dict[int, tuple[int, list[tuple[str, str, list[_NativeFrame]]]]] = {}
+        self.elapsed: dict[int, float] = {}
         self.freed: list[int] = []
         self.created_with: dict[str, Any] = {}
         self.step_calls: list[tuple[bytes | None, bytes | None]] = []
@@ -116,9 +117,15 @@ class FakeStepLib:
     def reactor_clear_step_inputs(self, handle):
         self.cleared += 1
 
-    def add_result(self, index: int, tracks: list[tuple[str, str, list[_NativeFrame]]]) -> int:
+    def add_result(
+        self,
+        index: int,
+        tracks: list[tuple[str, str, list[_NativeFrame]]],
+        elapsed: float = 0.0,
+    ) -> int:
         ptr = 0x1000 + len(self.results)
         self.results[ptr] = (index, tracks)
+        self.elapsed[ptr] = elapsed
         return ptr
 
     def _frame(self, ptr, t, f) -> _NativeFrame | None:
@@ -129,6 +136,9 @@ class FakeStepLib:
 
     def reactor_step_result_index(self, ptr):
         return self.results[ptr.value][0]
+
+    def reactor_step_result_elapsed(self, ptr):
+        return self.elapsed[ptr.value]
 
     def reactor_step_result_track_count(self, ptr):
         return len(self.results[ptr.value][1])
@@ -308,6 +318,7 @@ class TestStep:
                 ),
                 ("main_audio", "audio", [_NativeFrame(pcm.tobytes(), "int16", (2, 3))]),
             ],
+            elapsed=0.25,
         )
         lib.step_answer = lambda done: done(1, ptr, None, None)
 
@@ -316,6 +327,7 @@ class TestStep:
         assert lib.freed == [ptr], "freed exactly once, after the copy"
         assert isinstance(result, StepResult)
         assert result.index == 7
+        assert result.elapsed == 0.25
         video = result.track("main_video")
         assert video.kind is TrackKind.VIDEO
         frame = video.frames[0]

@@ -291,6 +291,7 @@ result = await reactor.step(
 for out in result.track("main_video").frames:
     out.array                    # numpy (height, width, 3) uint8 RGB
     out.metadata, out.capture_time_us
+result.elapsed                   # seconds the step's generate() took (or the model reported)
 ```
 
 `Track.push_frame` keeps its signature: in a stepped session it buffers the frame

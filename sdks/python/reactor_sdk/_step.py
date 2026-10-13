@@ -155,6 +155,9 @@ class StepResult:
     #: ``step_accepted`` event carried for it.
     index: int
     tracks: tuple[StepTrackOutput, ...] = field(default=())
+    #: Seconds the step's ``generate()`` took, or the time the model reported
+    #: for the step.
+    elapsed: float = 0.0
 
     def track(self, name: str) -> StepTrackOutput:
         """The output of the track called `name`.
@@ -210,4 +213,8 @@ def _read_step_result(lib: Any, ptr: int) -> StepResult:
                 )
             )
         tracks.append(StepTrackOutput(name=name, kind=kind, frames=tuple(frames)))
-    return StepResult(index=int(lib.reactor_step_result_index(handle)), tracks=tuple(tracks))
+    return StepResult(
+        index=int(lib.reactor_step_result_index(handle)),
+        tracks=tuple(tracks),
+        elapsed=float(lib.reactor_step_result_elapsed(handle)),
+    )
