@@ -219,6 +219,9 @@ pub struct StepOutput {
     /// The step's number in the session, counted from 1.
     pub index: u64,
     pub tracks: Vec<TrackOutput>,
+    /// Seconds the step's `generate()` took, or the time the model reported
+    /// for the step.
+    pub elapsed: f64,
 }
 
 /// The frames one output track produced in a step, in production order.
@@ -358,6 +361,7 @@ impl FrameDecoders {
         Ok(StepOutput {
             index: result.index,
             tracks,
+            elapsed: result.elapsed,
         })
     }
 }
@@ -522,9 +526,11 @@ mod tests {
                     frames: vec![raw("int16", vec![1, 2], vec![0; 4])],
                 },
             ],
+            elapsed: 0.25,
         };
         let output = FrameDecoders::default().decode_result(result).unwrap();
         assert_eq!(output.index, 3);
+        assert_eq!(output.elapsed, 0.25);
         assert_eq!(output.tracks[0].track, "main_video");
         assert_eq!(output.tracks[0].kind, TrackKind::Video);
         let frame = &output.tracks[0].frames[0];
@@ -549,6 +555,7 @@ mod tests {
                     ..raw("uint8", vec![1], vec![0])
                 }],
             }],
+            elapsed: 0.0,
         };
         match FrameDecoders::default().decode_result(result) {
             Err(CoreError::UnsupportedFrameEncoding { track, encoding }) => {
