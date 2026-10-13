@@ -47,10 +47,8 @@ async def test_a_runtime_that_streams_fails_a_stepped_connect() -> None:
 
 
 @needs_stepped_model
-async def test_steps_resolve_in_order_with_their_accepted_events() -> None:
+async def test_steps_resolve_in_order() -> None:
     client = stepped(STEPPED_MODEL)
-    accepted: list[int] = []
-    client.on_step_accepted(accepted.append)
     try:
         await paced_connect(client)
         assert client.status == ReactorStatus.READY
@@ -60,8 +58,10 @@ async def test_steps_resolve_in_order_with_their_accepted_events() -> None:
 
         assert isinstance(first, StepResult)
         assert second.index == first.index + 1
-        assert first.index in accepted
         assert first.elapsed >= 0
+        assert first.error is None
+        for file in first.files:
+            assert file.name and file.size >= 0
         for track in first.tracks:
             for frame in track.frames:
                 assert frame.array.shape == frame.shape

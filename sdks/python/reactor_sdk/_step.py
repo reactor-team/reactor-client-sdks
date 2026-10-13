@@ -142,22 +142,48 @@ class StepTrackOutput:
 
 
 @dataclass(frozen=True)
+class StepFile:
+    """An extra file the model kept with a step.
+
+    The result names the file; it does not carry it. Fetch its bytes over HTTP
+    from the session's step results, ``GET /sessions/{id}/steps/{index}``, which
+    lists each file with a download URL (and answers 202 while the step's files
+    are still being stored).
+    """
+
+    #: The file's name, one path segment.
+    name: str
+    #: The file's media type, guessed from its name.
+    content_type: str
+    #: The file's size in bytes.
+    size: int
+
+
+@dataclass(frozen=True)
 class StepResult:
     """What one step produced: its index in the session and, per output track,
     the frames it generated::
 
         result = await reactor.step(state={"prompt": "a red fox"})
+        if result.error is not None:
+            print("the model failed the step:", result.error)
         for frame in result.track("main_video").frames:
             show(frame.array)
     """
 
-    #: The step's number in the session, counted from 1 — the same number the
-    #: ``step_accepted`` event carried for it.
+    #: The step's number in the session, counted from 1.
     index: int
     tracks: tuple[StepTrackOutput, ...] = field(default=())
     #: Seconds the step's ``generate()`` took, or the time the model reported
     #: for the step.
     elapsed: float = 0.0
+    #: The extra files the model kept with the step, in the order the runtime
+    #: listed them. Empty when it kept none or the result was not saved.
+    files: tuple[StepFile, ...] = field(default=())
+    #: Why the step failed, when it ran and the model reported a failure; None
+    #: when it worked. A step that ran and failed still returns its result — only
+    #: a refused one raises.
+    error: str | None = None
 
     def track(self, name: str) -> StepTrackOutput:
         """The output of the track called `name`.
@@ -213,8 +239,20 @@ def _read_step_result(lib: Any, ptr: int) -> StepResult:
                 )
             )
         tracks.append(StepTrackOutput(name=name, kind=kind, frames=tuple(frames)))
+    files = tuple(
+        StepFile(
+            name=(lib.reactor_step_result_file_name(handle, i) or b"").decode(),
+            content_type=(lib.reactor_step_result_file_content_type(handle, i) or b"").decode(),
+            size=int(lib.reactor_step_result_file_size(handle, i)),
+        )
+        for i in range(lib.reactor_step_result_file_count(handle))
+    )
+    # c_char_p restype: ctypes copies the borrowed string out; nothing to free.
+    error = lib.reactor_step_result_error(handle)
     return StepResult(
         index=int(lib.reactor_step_result_index(handle)),
         tracks=tuple(tracks),
         elapsed=float(lib.reactor_step_result_elapsed(handle)),
+        files=files,
+        error=None if error is None else error.decode(errors="replace"),
     )

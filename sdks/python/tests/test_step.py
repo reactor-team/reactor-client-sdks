@@ -22,6 +22,7 @@ from reactor_sdk import (
     MessageTooLargeError,
     Reactor,
     StepCommand,
+    StepFile,
     StepFrame,
     StepRefusedError,
     StepResult,
@@ -72,22 +73,24 @@ class FakeStepLib:
     def __init__(self) -> None:
         self.results: dict[int, tuple[int, list[tuple[str, str, list[_NativeFrame]]]]] = {}
         self.elapsed: dict[int, float] = {}
+        # Per result: (name, content_type, size) per file, and the error string,
+        # both behind real C buffers like every other borrowed string.
+        self.files: dict[int, list[tuple[Any, Any, int]]] = {}
+        self.errors: dict[int, Any] = {}
         self.freed: list[int] = []
         self.created_with: dict[str, Any] = {}
         self.step_calls: list[tuple[bytes | None, bytes | None]] = []
         self.step_answer: Any = None  # callable(completion) run on reactor_step
         self.cleared = 0
-        self.step_accepted: Any = None
         self.create_error: bytes | None = None
         self.free_strings: list[int] = []
 
     # -- lifecycle ---------------------------------------------------------
 
     def reactor_create_with_options(
-        self, api_url, model_name, jwt, callbacks, on_step_accepted, options_json, error_out
+        self, api_url, model_name, jwt, callbacks, options_json, error_out
     ):
         self.created_with = json.loads(options_json)
-        self.step_accepted = on_step_accepted
         if self.create_error is not None:
             self._error_buf = ctypes.create_string_buffer(self.create_error)
             error_out._obj.value = ctypes.addressof(self._error_buf)
@@ -122,10 +125,17 @@ class FakeStepLib:
         index: int,
         tracks: list[tuple[str, str, list[_NativeFrame]]],
         elapsed: float = 0.0,
+        files: list[tuple[str, str, int]] = (),  # type: ignore[assignment]
+        error: str | None = None,
     ) -> int:
         ptr = 0x1000 + len(self.results)
         self.results[ptr] = (index, tracks)
         self.elapsed[ptr] = elapsed
+        self.files[ptr] = [
+            (ctypes.create_string_buffer(n.encode()), ctypes.create_string_buffer(c.encode()), s)
+            for n, c, s in files
+        ]
+        self.errors[ptr] = None if error is None else ctypes.create_string_buffer(error.encode())
         return ptr
 
     def _frame(self, ptr, t, f) -> _NativeFrame | None:
@@ -139,6 +149,23 @@ class FakeStepLib:
 
     def reactor_step_result_elapsed(self, ptr):
         return self.elapsed[ptr.value]
+
+    def reactor_step_result_error(self, ptr):
+        # What the c_char_p restype hands back: the borrowed string's bytes.
+        buf = self.errors[ptr.value]
+        return None if buf is None else buf.value
+
+    def reactor_step_result_file_count(self, ptr):
+        return len(self.files[ptr.value])
+
+    def reactor_step_result_file_name(self, ptr, i):
+        return self.files[ptr.value][i][0].value
+
+    def reactor_step_result_file_content_type(self, ptr, i):
+        return self.files[ptr.value][i][1].value
+
+    def reactor_step_result_file_size(self, ptr, i):
+        return self.files[ptr.value][i][2]
 
     def reactor_step_result_track_count(self, ptr):
         return len(self.results[ptr.value][1])
@@ -232,7 +259,6 @@ class TestConstruction:
             "generation": "stepped",
             "step_timeout_seconds": 12.5,
         }
-        assert lib.step_accepted is not None
 
     async def test_streamed_keeps_the_existing_entry(self, lib: FakeStepLib) -> None:
         await Reactor("m", jwt="t").connect()
@@ -339,6 +365,37 @@ class TestStep:
         assert audio.metadata is None and audio.capture_time_us is None
         assert audio.array.dtype == np.int16
         np.testing.assert_array_equal(audio.array, pcm)
+        assert result.files == ()
+        assert result.error is None
+
+    async def test_files_are_copied_out_in_order(self, lib: FakeStepLib) -> None:
+        reactor = await _stepped(lib)
+        ptr = lib.add_result(
+            2,
+            [],
+            files=[("depth.npy", "application/octet-stream", 4096), ("log.txt", "text/plain", 0)],
+        )
+        lib.step_answer = lambda done: done(1, ptr, None, None)
+
+        result = await reactor.step()
+
+        assert result.files == (
+            StepFile("depth.npy", "application/octet-stream", 4096),
+            StepFile("log.txt", "text/plain", 0),
+        )
+        assert lib.freed == [ptr]
+
+    async def test_a_step_the_model_failed_resolves_with_its_error(self, lib: FakeStepLib) -> None:
+        reactor = await _stepped(lib)
+        ptr = lib.add_result(4, [], elapsed=0.5, error="out of memory")
+        lib.step_answer = lambda done: done(1, ptr, None, None)
+
+        result = await reactor.step(state={"prompt": "fox"})
+
+        assert result.index == 4
+        assert result.error == "out of memory"
+        assert result.elapsed == 0.5
+        assert lib.freed == [ptr]
 
     async def test_a_frame_whose_bytes_disagree_with_its_shape_fails_and_is_still_freed(
         self, lib: FakeStepLib
@@ -396,24 +453,18 @@ class TestStep:
             await reactor.step(state=["prompt"])  # type: ignore[arg-type]
 
 
-# ── step_accepted ───────────────────────────────────────────────────────────
+# ── no accepted event ──────────────────────────────────────────────────────
 
 
-class TestStepAccepted:
-    async def test_the_native_callback_reaches_handlers_on_the_loop(self, lib: FakeStepLib) -> None:
-        reactor = await _stepped(lib)
-        seen: list[int] = []
-        arrived = asyncio.Event()
+class TestNoAcceptedEvent:
+    def test_there_is_no_step_accepted_registration(self) -> None:
+        # A step's one answer is its result; nothing announces it beforehand.
+        assert not hasattr(Reactor, "on_step_accepted")
 
-        @reactor.on_step_accepted
-        def accepted(index: int) -> None:
-            seen.append(index)
-            arrived.set()
+    def test_the_ffi_module_has_no_step_accepted_trampoline(self) -> None:
+        from reactor_sdk import _ffi
 
-        # Called the way the library calls it: through the trampoline it was handed.
-        lib.step_accepted(3, None)
-        await asyncio.wait_for(arrived.wait(), timeout=1)
-        assert seen == [3]
+        assert not hasattr(_ffi, "ON_STEP_ACCEPTED_FN")
 
 
 # ── commands and results ───────────────────────────────────────────────────
@@ -448,6 +499,11 @@ class TestStepResult:
         frame = StepFrame(data=bytes(6), dtype="uint8", shape=(1, 2, 3))
         assert frame.array.shape == (1, 2, 3)
         assert not frame.array.flags.writeable
+
+    def test_files_and_error_default_to_none_kept_and_no_failure(self) -> None:
+        result = StepResult(index=1)
+        assert result.files == ()
+        assert result.error is None
 
     def test_an_unknown_dtype_is_not_size_checked(self) -> None:
         StepFrame(data=b"abc", dtype="bfloat16", shape=(9,))

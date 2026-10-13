@@ -211,6 +211,11 @@ def test_step_result_accessors_accept_a_null_result() -> None:
     captured = ctypes.c_int64(7)
     assert lib.reactor_step_result_index(None) == 0
     assert lib.reactor_step_result_elapsed(None) == 0.0
+    assert lib.reactor_step_result_error(None) is None
+    assert lib.reactor_step_result_file_count(None) == 0
+    assert lib.reactor_step_result_file_name(None, 0) is None
+    assert lib.reactor_step_result_file_content_type(None, 0) is None
+    assert lib.reactor_step_result_file_size(None, 0) == 0
     assert lib.reactor_step_result_track_count(None) == 0
     assert lib.reactor_step_result_track_name(None, 0) is None
     assert lib.reactor_step_result_track_kind(None, 0) is None
@@ -233,7 +238,6 @@ def test_create_with_options_refuses_an_unknown_key_through_error_out() -> None:
     handle = lib.reactor_create_with_options(
         b"http://localhost:1",
         b"owner/model",
-        None,
         None,
         None,
         b'{"generaton":"stepped"}',
@@ -261,7 +265,7 @@ async def test_a_stepped_step_before_connecting_fails_through_its_completion() -
         loop.call_soon_threadsafe(done.set_result, (ok, result, error))
 
     handle = lib.reactor_create_with_options(
-        b"http://localhost:1", b"owner/model", None, None, None, b'{"generation":"stepped"}', None
+        b"http://localhost:1", b"owner/model", None, None, b'{"generation":"stepped"}', None
     )
     assert handle
     try:
