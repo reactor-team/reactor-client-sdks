@@ -158,6 +158,7 @@ StepFrame read_frame(const Ffi& lib, const ReactorStepResult* result, std::uint3
 StepResult read_step_result(const Ffi& lib, const ReactorStepResult* result) {
   StepResult copied;
   copied.index = lib.step_result_index(result);
+  copied.elapsed = lib.step_result_elapsed(result);
   const std::uint32_t track_count = lib.step_result_track_count(result);
   copied.tracks.reserve(track_count);
   for (std::uint32_t track = 0; track < track_count; ++track) {

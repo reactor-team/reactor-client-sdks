@@ -102,6 +102,10 @@ struct StepResult {
   /// in this step may be absent.
   std::vector<StepTrackOutput> tracks{};
 
+  /// Seconds the step's `generate()` took, or the time the model reported for
+  /// the step.
+  double elapsed{};
+
   /// The output of the track called `name`.
   ///
   /// Throws `NotFoundError` naming the tracks that did produce output: a model can
