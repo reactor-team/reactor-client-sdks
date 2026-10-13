@@ -871,11 +871,6 @@ impl Reactor {
                 // is the only signal callers get that it failed.
                 self.emit_error(ErrorDetails::new(error.code, error.message, true));
             }
-            Some(data_server_message::Payload::StepAccepted(accepted)) => {
-                self.dispatcher.dispatch(ReactorEvent::StepAccepted {
-                    index: accepted.index,
-                });
-            }
             Some(data_server_message::Payload::StepResult(result)) if !handled.correlated => {
                 // Its step() already gave up (timeout) — nobody to hand it to.
                 log::warn!("dropping uncorrelated result of step {}", result.index);
@@ -977,10 +972,7 @@ impl Reactor {
                 code: e.code,
                 message: e.message,
             }),
-            Some(
-                data_server_message::Payload::StepAccepted(_)
-                | data_server_message::Payload::StepResult(_),
-            ) => Err(CoreError::decode(format!(
+            Some(data_server_message::Payload::StepResult(_)) => Err(CoreError::decode(format!(
                 "unexpected step reply to command '{command}'"
             ))),
         }
@@ -1048,9 +1040,13 @@ impl Reactor {
     /// Sends one `RequestStep` on the data channel: `state` (a JSON object of
     /// the model's state fields, or `null`), then `commands` in order, then
     /// every input frame pushed since the last step, per track in push order.
-    /// The runtime runs it as one unit. A `StepAccepted` notification may
-    /// arrive first and is published as [`ReactorEvent::StepAccepted`]; this
-    /// call does not wait for it, only for the step's one response.
+    /// The runtime runs it as one unit and answers with the step's result
+    /// alone: the frames per output track, the time the step took,
+    /// references to any extra files the model kept with it
+    /// ([`StepOutput::files`]; their bytes are fetched over HTTP from the
+    /// session's step results), and — when the step ran but the model
+    /// reported a failure — why ([`StepOutput::error`]; the call still
+    /// resolves). No event is published for a step.
     ///
     /// Fails, with nothing sent and the input frames kept for the next step,
     /// when the session is not a ready stepped session, when `state` or a
@@ -3994,7 +3990,7 @@ mod tests {
     use crate::protocol::wire::v1::data::DataClientMessage;
     use crate::protocol::wire::v1::platform::TrackKind as WireTrackKind;
     use crate::protocol::wire::v1::step::{
-        Frame, FrameEncoding, StepAccepted, StepResult, TrackFrames,
+        Frame, FrameEncoding, StepFileRef, StepResult, TrackFrames,
     };
 
     /// Records every data-channel send and advertises `max` as its limit.
@@ -4195,6 +4191,8 @@ mod tests {
                     frames: vec![raw_frame(9)],
                 }],
                 elapsed: 1.5,
+                files: vec![],
+                error: None,
             }),
         )
         .await;
@@ -4206,10 +4204,10 @@ mod tests {
         assert_eq!(output.tracks[0].frames[0].shape, [1, 1, 3]);
     }
 
-    /// `StepAccepted` is a state event, not the response: it is published,
-    /// and the step keeps waiting for its result.
+    /// The result is the step's one answer: it resolves the step with its
+    /// file references, and nothing about the step reaches the event stream.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn step_accepted_is_an_event_and_does_not_resolve_the_step() {
+    async fn a_step_resolves_on_its_result_alone_with_its_files() {
         let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
         let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
         let mut events = reactor.subscribe();
@@ -4218,36 +4216,64 @@ mod tests {
         feed(
             &reactor,
             &sent.request_id,
-            MessageKind::Notification,
-            data_server_message::Payload::StepAccepted(StepAccepted { index: 4 }),
+            MessageKind::Response,
+            data_server_message::Payload::StepResult(StepResult {
+                index: 4,
+                tracks: vec![],
+                elapsed: 0.5,
+                files: vec![StepFileRef {
+                    name: "depth.npy".into(),
+                    content_type: "application/octet-stream".into(),
+                    size: 4096,
+                }],
+                error: None,
+            }),
         )
         .await;
-        let accepted = tokio::time::timeout(Duration::from_secs(1), async {
-            while let Some(event) = events.next().await {
-                if let ReactorEvent::StepAccepted { index } = event {
-                    return index;
-                }
-            }
-            panic!("event stream ended");
-        })
-        .await
-        .expect("StepAccepted should be published");
-        assert_eq!(accepted, 4);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert!(!stepping.is_finished(), "StepAccepted resolved the step");
+        let output = stepping.await.unwrap().unwrap();
+        assert_eq!(output.index, 4);
+        assert_eq!(output.elapsed, 0.5);
+        assert!(output.error.is_none());
+        assert_eq!(
+            output.files,
+            [crate::step::StepFile {
+                name: "depth.npy".into(),
+                content_type: "application/octet-stream".into(),
+                size: 4096,
+            }]
+        );
+        while let Ok(event) = events.try_recv() {
+            assert!(
+                !matches!(event, ReactorEvent::Message(_) | ReactorEvent::Error(_)),
+                "a step's result was also published as an event: {event:?}"
+            );
+        }
+    }
+
+    /// A step that ran and reported a failure is answered with a result, not
+    /// an error: the call resolves, and the reason rides on the output.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_step_that_ran_and_failed_resolves_with_its_reason() {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
 
         feed(
             &reactor,
             &sent.request_id,
             MessageKind::Response,
             data_server_message::Payload::StepResult(StepResult {
-                index: 4,
+                index: 2,
                 tracks: vec![],
-                elapsed: 0.0,
+                elapsed: 0.2,
+                files: vec![],
+                error: Some("generate() raised".into()),
             }),
         )
         .await;
-        assert_eq!(stepping.await.unwrap().unwrap().index, 4);
+        let output = stepping.await.unwrap().unwrap();
+        assert_eq!(output.index, 2);
+        assert_eq!(output.error.as_deref(), Some("generate() raised"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4312,6 +4338,8 @@ mod tests {
                     }],
                 }],
                 elapsed: 0.0,
+                files: vec![],
+                error: None,
             }),
         )
         .await;
@@ -4431,6 +4459,8 @@ mod tests {
                 index: 1,
                 tracks: vec![],
                 elapsed: 0.0,
+                files: vec![],
+                error: None,
             }),
         )
         .await;
