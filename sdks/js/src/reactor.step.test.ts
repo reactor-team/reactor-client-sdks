@@ -95,6 +95,7 @@ describe('Reactor.step', () => {
           frames: [{ encoding: 'raw', dtype: 'uint8', shape: [1, 1, 3], data: new Uint8Array([1, 2, 3]) }],
         },
       ],
+      elapsed: 0.25,
     };
 
     client.stepResult = result;

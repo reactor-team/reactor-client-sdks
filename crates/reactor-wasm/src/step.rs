@@ -41,6 +41,7 @@ pub(crate) fn output_to_js(output: StepOutput) -> Result<JsValue, JsValue> {
         tracks.push(&track_to_js(track)?);
     }
     set(&result, "tracks", &tracks)?;
+    set(&result, "elapsed", &JsValue::from_f64(output.elapsed))?;
     Ok(result.into())
 }
 

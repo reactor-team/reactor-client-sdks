@@ -240,6 +240,8 @@ export interface StepResult {
   /** The step's number in the session, counted from 1. */
   index: number;
   tracks: StepTrack[];
+  /** Seconds the step's `generate()` took, or the time the model reported for the step. */
+  elapsed: number;
 }
 
 export type StatusListener = (status: ReactorStatus) => void;
