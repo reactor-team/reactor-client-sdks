@@ -1050,8 +1050,10 @@ impl Reactor {
     /// Sends one `RequestStep` on the data channel: `state` (a JSON object of
     /// the model's state fields, or `null`), then `commands` in order, then
     /// every input frame pushed since the last step, per track in push order.
-    /// The runtime runs it as one unit and answers with the step's result
-    /// alone: the frames per output track, the time the step took,
+    /// The runtime applies these as separate calls, in that order, then runs
+    /// the step; a refusal, part-way or by the model, undoes none of the calls
+    /// already applied. Every part may be empty. It answers with the step's
+    /// result alone: the frames per output track, the time the step took,
     /// references to any extra files the model kept with it
     /// ([`StepOutput::files`]; their bytes are fetched over HTTP from the
     /// session's step results), and — when the step ran but the model

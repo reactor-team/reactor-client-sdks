@@ -79,9 +79,10 @@ pub mod codes {
     /// client asked for — most often a runtime without stepped generation,
     /// which ignores the request rather than refusing it.
     pub const GENERATION_MODE_MISMATCH: &str = "GENERATION_MODE_MISMATCH";
-    /// The runtime refused a step — the request or the model turned it down —
-    /// and changed no state. Platform-sent; lowercase because it is the
-    /// runtime's own code, passed through.
+    /// The runtime refused a step — the request or the model turned it down.
+    /// The calls it applied before the refusal stay applied: nothing is
+    /// rolled back. Platform-sent; lowercase because it is the runtime's own
+    /// code, passed through.
     pub const STEP_REFUSED: &str = "step_refused";
     /// A step ran, but its result does not fit in one data-channel message.
     /// Platform-sent, as [`STEP_REFUSED`].
@@ -241,7 +242,7 @@ pub enum CoreError {
     },
 
     /// The runtime refused the step (`step_refused`): the request or the model
-    /// turned it down, and no state changed.
+    /// turned it down. The calls it applied before the refusal stay applied.
     #[error("step refused: {message}")]
     StepRefused { message: String },
 
