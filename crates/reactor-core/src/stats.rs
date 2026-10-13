@@ -2033,6 +2033,28 @@ mod tests {
     }
 
     #[test]
+    fn a_stage_the_sender_did_not_stamp_is_left_out() {
+        let mut r = received(1, "0", "video/VP8", 0);
+        r.timing_frame = Some(TimingFrame {
+            rtp_timestamp: 9_000,
+            encode_wait_ms: 1.0,
+            packetize_ms: 0.0,
+            pacer_ms: -1_000.0,
+        });
+        let raw = TransportStats {
+            inbound: vec![r],
+            ..TransportStats::default()
+        };
+
+        let stats = ClientStatsReporter::new().track_stats(&raw, &tracks(), &HashSet::new(), 0.0);
+
+        assert_eq!(
+            stage_names(by_name(&stats, "main_video")),
+            [("encode_wait", 1), ("packetize", 1)]
+        );
+    }
+
+    #[test]
     fn a_timing_frame_counts_once_as_the_senders_stages() {
         let mut reporter = ClientStatsReporter::new();
         let batch = |rtp_timestamp: u32| {
