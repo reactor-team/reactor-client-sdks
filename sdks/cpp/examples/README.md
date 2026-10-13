@@ -1,10 +1,10 @@
 # Reactor C++ SDK examples
 
-Eight examples, one capability each. The first seven exist in every Reactor
+Nine examples, one capability each. The first seven exist in every Reactor
 SDK, so that part of the set doubles as a conformance grid: **an example
 missing from an SDK is a code path that SDK has never run.** `08` matches the
 JS SDK's `07` (numbered differently only because JS has no native
-frame-metadata example).
+frame-metadata example), and `09` matches the Python SDK's `09`.
 
 ## The set
 
@@ -18,6 +18,7 @@ frame-metadata example).
 | 06 | [`06_record_clip.cpp`](06_record_clip.cpp) | `request_clip` and downloading the result | `reactor/helios` |
 | 07 | [`07_frame_metadata.cpp`](07_frame_metadata.cpp) | The trailer on each incoming frame: id, capture time, `user_data` | `reactor/helios` |
 | 08 | [`08_snapshot_and_rewind.cpp`](08_snapshot_and_rewind.cpp) | `send_command()`'s resolved reply, read and used — not fire-and-forgotten | `reactor/helios` |
+| 09 | [`09_stepped_generation.cpp`](09_stepped_generation.cpp) | A stepped session: `Generation::Stepped`, frames pushed into a step, `step()` and its per-track arrays | any model with stepped generation (`REACTOR_MODEL`) |
 
 Every example shares one spine — connect, wait for ready, give the model the
 minimum it needs, receive frames — and adds one call on top. **The diff against

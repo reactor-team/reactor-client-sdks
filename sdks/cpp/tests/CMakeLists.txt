@@ -19,6 +19,7 @@ set(REACTOR_TEST_SOURCES
   reactor_test.cpp
   recording_test.cpp
   stats_test.cpp
+  step_test.cpp
   track_test.cpp
   smoke_test.cpp
   # The endurance-tests suite's reporting/trend modules, pulled in by source

@@ -8,6 +8,21 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Stepped generation. `Options::generation = reactor::Generation::Stepped` asks
+  for a session that generates one step at a time, and
+  `client.step(state, commands)` runs one and resolves with a `StepResult`: per
+  output track, the frames it produced, each with its bytes, dtype, shape,
+  metadata and capture time, copied out of the native library once and owned by
+  the result. `Track::push_frame` buffers into the next step in such a session.
+  `on_step_accepted` reports a step the runtime started, `clear_step_inputs()`
+  drops buffered frames, and `Options::step_timeout_seconds` bounds a step. A
+  runtime that does not start the session stepped fails `connect()` with
+  `GenerationModeMismatchError`; a step can fail with `StepRefusedError`,
+  `StepResultTooLargeError` or `UnsupportedFrameEncodingError`. Needs a
+  `libreactor_ffi` with `reactor_create_with_options`.
+
 ## [2.5.0] - 2026-10-13
 
 ### Added
