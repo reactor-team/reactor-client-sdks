@@ -88,8 +88,7 @@ struct FFI: Sendable {
             _ sdkType: UnsafePointer<CChar>?
         ) -> OpaquePointer?
 
-    /// `reactor_create_with_options` — a client from a JSON object of options,
-    /// plus the `on_step_accepted` callback `ReactorCallbacks` has no slot for.
+    /// `reactor_create_with_options` — a client from a JSON object of options.
     ///
     /// Only a stepped client is created through here: the generation mode is a
     /// creation option this is the only entry for. The options name `"adm":
@@ -103,7 +102,6 @@ struct FFI: Sendable {
             _ model: UnsafePointer<CChar>?,
             _ jwt: UnsafePointer<CChar>?,
             _ callbacks: UnsafePointer<ReactorCallbacks>?,
-            _ onStepAccepted: reactor_on_step_accepted_fn?,
             _ optionsJSON: UnsafePointer<CChar>?,
             _ errorOut: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
         ) -> OpaquePointer?
@@ -174,18 +172,22 @@ struct FFI: Sendable {
         ) -> Void
 
     /// `reactor_push_video_frame_timed` — BGRA pixels, optionally tagged,
-    /// stamped with the caller's own capture time, and the milliseconds this
-    /// SDK already spent on the frame, which count toward its submit stage.
+    /// stamped with the caller's own capture time when it gave one, and the
+    /// milliseconds this SDK already spent on the frame, which count toward
+    /// its submit stage.
     ///
-    /// The one push the SDK calls: the plain and tagged variants are this one
-    /// with nothing to tag and nothing to stamp, so there is a single path to
-    /// get wrong rather than three.
+    /// The one push the SDK calls. A null tag with length 0 sends the frame
+    /// untagged. A `nil` capture time reaches the library as no capture time
+    /// at all, and the library stamps the frame as it is pushed: there is no
+    /// value of `captureTimeUs` that means "none", since 0 is a time like any
+    /// other, and a stepped session sends it to the model as the frame's
+    /// capture time.
     var pushVideoFrame:
         @Sendable (
             _ handle: OpaquePointer?, _ track: UnsafePointer<CChar>?,
             _ pixels: UnsafePointer<UInt8>?, _ width: UInt32, _ height: UInt32,
             _ userData: UnsafePointer<UInt8>?, _ userDataLen: UInt32,
-            _ captureTimeUs: Int64, _ bindingMs: Double, _ generation: UInt64
+            _ captureTimeUs: Int64?, _ bindingMs: Double, _ generation: UInt64
         ) -> Void
 
     /// `reactor_push_begin` — the connection a frame push belongs to, read as
@@ -290,6 +292,22 @@ struct FFI: Sendable {
     /// `reactor_step_result_elapsed` — the seconds the step's `generate()` took.
     var stepResultElapsed: @Sendable (OpaquePointer?) -> Double
 
+    /// `reactor_step_result_error` — why a step that ran failed, borrowed from
+    /// the result; null when it worked.
+    var stepResultError: @Sendable (OpaquePointer?) -> UnsafePointer<CChar>?
+
+    /// `reactor_step_result_file_count` — the extra files the model kept.
+    var stepResultFileCount: @Sendable (OpaquePointer?) -> UInt32
+
+    /// `reactor_step_result_file_name` — borrowed from the result.
+    var stepResultFileName: @Sendable (OpaquePointer?, UInt32) -> UnsafePointer<CChar>?
+
+    /// `reactor_step_result_file_content_type` — borrowed from the result.
+    var stepResultFileContentType: @Sendable (OpaquePointer?, UInt32) -> UnsafePointer<CChar>?
+
+    /// `reactor_step_result_file_size` — bytes; 0 when out of range.
+    var stepResultFileSize: @Sendable (OpaquePointer?, UInt32) -> UInt64
+
     /// `reactor_step_result_track_count`.
     var stepResultTrackCount: @Sendable (OpaquePointer?) -> UInt32
 
@@ -353,9 +371,8 @@ extension FFI {
                 sdkType)
         },
         createWithOptions: {
-            apiURL, model, jwt, callbacks, onStepAccepted, optionsJSON, errorOut in
-            reactor_create_with_options(
-                apiURL, model, jwt, callbacks, onStepAccepted, optionsJSON, errorOut)
+            apiURL, model, jwt, callbacks, optionsJSON, errorOut in
+            reactor_create_with_options(apiURL, model, jwt, callbacks, optionsJSON, errorOut)
         },
         destroy: { handle in reactor_destroy(handle) },
         connect: { handle, sessionID, connectionID, completion, userdata in
@@ -385,8 +402,8 @@ extension FFI {
             handle, track, pixels, width, height, userData, userDataLen, captureAt, bindingMs,
             generation in
             reactor_push_video_frame_timed(
-                handle, track, pixels, width, height, userData, userDataLen, 1, captureAt,
-                bindingMs, generation)
+                handle, track, pixels, width, height, userData, userDataLen,
+                captureAt == nil ? 0 : 1, captureAt ?? 0, bindingMs, generation)
         },
         pushBegin: { handle in reactor_push_begin(handle) },
         frameDelivered: { reactor_frame_delivered() },
@@ -429,6 +446,13 @@ extension FFI {
         clearStepInputs: { handle in reactor_clear_step_inputs(handle) },
         stepResultIndex: { result in reactor_step_result_index(result) },
         stepResultElapsed: { result in reactor_step_result_elapsed(result) },
+        stepResultError: { result in reactor_step_result_error(result) },
+        stepResultFileCount: { result in reactor_step_result_file_count(result) },
+        stepResultFileName: { result, file in reactor_step_result_file_name(result, file) },
+        stepResultFileContentType: { result, file in
+            reactor_step_result_file_content_type(result, file)
+        },
+        stepResultFileSize: { result, file in reactor_step_result_file_size(result, file) },
         stepResultTrackCount: { result in reactor_step_result_track_count(result) },
         stepResultTrackName: { result, track in reactor_step_result_track_name(result, track) },
         stepResultTrackKind: { result, track in reactor_step_result_track_kind(result, track) },

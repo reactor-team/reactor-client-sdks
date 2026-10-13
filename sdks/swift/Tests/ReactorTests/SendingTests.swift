@@ -280,7 +280,7 @@ struct SendingTests {
         #expect(pushed.captureTimeUs == 99)
     }
 
-    @Test("an untagged, unstamped push carries no tag and a zero stamp")
+    @Test("an untagged, unstamped push carries no tag and no stamp")
     func plainPush() async throws {
         let fake = FakeLibrary()
         declaringSession(fake)
@@ -293,8 +293,25 @@ struct SendingTests {
 
         let pushed = try #require(fake.pushedFrames.first)
         #expect(pushed.userData == nil)
-        // 0 means "stamp it as you push it", which is what the library does.
-        #expect(pushed.captureTimeUs == 0)
+        // No capture time at all — not 0, which the library would carry as a
+        // real time. Without one, the library stamps the frame as it is pushed.
+        #expect(pushed.captureTimeUs == nil)
+    }
+
+    @Test("a tagged push without a capture time keeps its tag and has no stamp")
+    func taggedUnstampedPush() async throws {
+        let fake = FakeLibrary()
+        declaringSession(fake)
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+
+        let source = try client.track("source")
+        try await publish(source, on: fake)
+        try source.pushFrame(frame, width: 2, height: 2, userData: Data("tag".utf8))
+
+        let pushed = try #require(fake.pushedFrames.first)
+        #expect(pushed.userData == "tag")
+        #expect(pushed.captureTimeUs == nil)
     }
 
     @Test("audio reaches the library as samples per channel")

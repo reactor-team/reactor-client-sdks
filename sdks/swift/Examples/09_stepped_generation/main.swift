@@ -9,6 +9,12 @@
 // returns what the model produced on each output track — as arrays of bytes
 // with a dtype and a shape, not a video stream.
 //
+// Every argument of `step` is optional: `step()` with nothing pushed runs on
+// the model's current state. A step the model ran but reported as failed still
+// returns a result, with `error` set; only a step that never ran throws.
+// `files` names the files the model kept with the step; their bytes are
+// fetched over HTTP from the session's step results.
+//
 // Pushing into an input track sends nothing in a stepped session: the frame
 // waits for the next step. A runtime without stepped generation ignores the
 // request, so `connect()` checks and throws `generationModeMismatch` rather
@@ -38,7 +44,6 @@ await runExample {
     let reactor = try await connectedClient(model: model, generation: .stepped)
     defer { reactor.close() }
     let subscriptions = watch(reactor)
-    let accepted = reactor.onStepAccepted { print("step \($0): accepted, generating") }
 
     try await reactor.connect()
     print("session: \(reactor.sessionID ?? "none")")
@@ -63,20 +68,32 @@ await runExample {
             try source.pushFrame(pixels, width: width, height: height)
         }
 
-        let result = try await reactor.step(
-            // State on the first step only: the model keeps it until changed.
-            state: sequence == 0 ? ["prompt": .string(prompt)] : nil,
-            commands: command.map { [StepCommand($0)] } ?? [])
+        // State on the first step only: the model keeps it until changed. With
+        // nothing else to send, a later step is just `step()`.
+        let state: [String: JSONValue]? = sequence == 0 ? ["prompt": .string(prompt)] : nil
+        let commands = command.map { [StepCommand($0)] } ?? []
+        let result =
+            state == nil && commands.isEmpty
+            ? try await reactor.step()
+            : try await reactor.step(state: state, commands: commands)
 
+        print("step \(result.index): ran in \(result.elapsed)")
+        if let error = result.error {
+            print("step \(result.index): the model reported a failure: \(error)")
+        }
         for track in result.tracks {
             let shapes = track.frames.map { "\($0.shape)" }.joined(separator: ", ")
             print(
                 "step \(result.index): \(track.name) (\(track.kind.rawValue)) "
                     + "\(track.frames.count) frame(s) \(shapes)")
         }
+        for file in result.files {
+            print(
+                "step \(result.index): kept \(file.name) (\(file.contentType), "
+                    + "\(file.size) bytes)")
+        }
     }
 
     _ = subscriptions
-    _ = accepted
     try await reactor.disconnect()
 }

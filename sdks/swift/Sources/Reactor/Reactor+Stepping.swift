@@ -7,10 +7,22 @@ extension Reactor {
 
     /// Run one step of a stepped session and return what it produced.
     ///
-    /// The runtime runs, as one unit: `state` (each key as the model's
-    /// `set_<key>` command), then `commands` in order, then every input frame
-    /// pushed since the previous step — ``Track/pushFrame(_:width:height:userData:captureTimeUs:)``
-    /// does not send in a stepped session, it buffers for the next step.
+    /// The runtime applies `state` (each key as the model's `set_<key>`
+    /// command), then `commands` in order, then every input frame pushed since
+    /// the previous step — ``Track/pushFrame(_:width:height:userData:captureTimeUs:)``
+    /// does not send in a stepped session, it buffers for the next step — and
+    /// then generates. Each of those is its own call into the model: they are
+    /// not applied as one unit, and nothing is rolled back if a later one fails.
+    ///
+    /// Every argument is optional. `step()` with nothing set and nothing pushed
+    /// runs on the model's current state — which commands sent outside a step,
+    /// through ``sendCommand(_:_:uploads:)``, can change in between.
+    ///
+    /// A file goes in as it does for any command: upload it with
+    /// ``uploadFile(at:)`` or ``uploadData(_:name:mimeType:)`` first, then
+    /// put the ``FileRef`` in a command's arguments
+    /// (``StepCommand/init(_:arguments:)``) or, as `JSONValue(fileRef)`,
+    /// in the state value of a field that takes an upload.
     ///
     /// ```swift
     /// let reactor = try await Reactor(model: "owner/model", apiKey: key, generation: .stepped)
@@ -36,6 +48,9 @@ extension Reactor {
     /// - Throws: ``ReactorError``:
     ///   - ``ReactorError/Code/stepRefused`` — the runtime or the model turned
     ///     the step down; no state changed.
+    ///
+    ///   A step that ran but that the model reported as failed does not throw:
+    ///   it returns a result whose ``StepResult/error`` says why.
     ///   - ``ReactorError/Code/stepResultTooLarge`` — the step ran, but its
     ///     output does not fit in one message. Ask for less per step.
     ///   - ``ReactorError/Code/messageTooLarge`` — the request does not fit.
@@ -89,43 +104,6 @@ extension Reactor {
         withHandle(else: ()) { handle in ffi.clearStepInputs(handle) }
     }
 
-    /// Register a handler for the runtime accepting a step and starting to
-    /// generate it.
-    ///
-    /// The handler receives the step's index — its number in the session,
-    /// counted from 1, the same as the ``StepResult/index`` the step returns.
-    /// Never called for a refused step, and never on a streamed client. It
-    /// normally runs before ``step(state:commands:)`` returns, but the two
-    /// travel separately, so do not rely on that order.
-    ///
-    /// Runs on the event queue, like every control event. Keep the returned
-    /// ``Subscription``: it cancels when released.
-    public func onStepAccepted(_ handler: @escaping @Sendable (UInt64) -> Void) -> Subscription {
-        let id = UUID()
-        state.withLock { $0.stepAcceptedHandlers[id] = handler }
-        return Subscription { [weak self] in
-            self?.state.withLock { $0.stepAcceptedHandlers[id] = nil }
-        }
-    }
-
-    /// Accepted step indexes, as a stream.
-    ///
-    /// Buffers a backlog rather than the newest only: each step is its own
-    /// event, and dropping one loses which steps started.
-    public var stepsAccepted: AsyncStream<UInt64> {
-        AsyncStream(bufferingPolicy: .bufferingNewest(64)) { continuation in
-            let subscription = onStepAccepted { continuation.yield($0) }
-            continuation.onTermination = { _ in subscription.cancel() }
-        }
-    }
-
-    /// Deliver a step the library reported accepted. Called on an FFI thread.
-    func deliver(stepAccepted index: UInt64) {
-        let handlers = state.withLock { Array($0.stepAcceptedHandlers.values) }
-        guard !handlers.isEmpty else { return }
-        dispatch { for handler in handlers { handler(index) } }
-    }
-
     // MARK: - Creating a stepped client
 
     /// What `reactor_create_with_options` is handed. Every key is spelled out,
@@ -176,7 +154,7 @@ extension Reactor {
         var errorOut: UnsafeMutablePointer<CChar>?
         let handle = json.withCString { optionsPointer in
             ffi.createWithOptions(
-                apiURL, model, jwt, callbacks, stepAcceptedTrampoline, optionsPointer, &errorOut)
+                apiURL, model, jwt, callbacks, optionsPointer, &errorOut)
         }
         // Heap-allocated for this caller, and only on a refusal.
         if let payload = String(takingOwnership: errorOut, freeing: ffi.freeString) {
@@ -267,7 +245,17 @@ extension StepResult {
         // one); a runtime that sent one measured nothing usable.
         let seconds = ffi.stepResultElapsed(result)
         let elapsed: Duration = seconds.isFinite ? .seconds(seconds) : .zero
-        self.init(index: ffi.stepResultIndex(result), tracks: tracks, elapsed: elapsed)
+
+        let files = (0..<ffi.stepResultFileCount(result)).map { file in
+            StepFile(
+                name: String(borrowing: ffi.stepResultFileName(result, file)) ?? "",
+                contentType: String(borrowing: ffi.stepResultFileContentType(result, file)) ?? "",
+                size: ffi.stepResultFileSize(result, file))
+        }
+
+        self.init(
+            index: ffi.stepResultIndex(result), tracks: tracks, elapsed: elapsed, files: files,
+            error: String(borrowing: ffi.stepResultError(result)))
     }
 }
 
@@ -327,12 +315,4 @@ let stepCompletionTrampoline: reactor_step_completion_fn = { ok, result, errorJS
     defer { unmanaged.release() }
 
     pending.complete(ok: ok, result: result, errorJSON: errorJSON)
-}
-
-/// The C function the library calls when the runtime accepts a step.
-///
-/// Receives `ReactorCallbacks.userdata` — the client's callback context — like
-/// every other control event.
-let stepAcceptedTrampoline: reactor_on_step_accepted_fn = { index, userdata in
-    CallbackContext.from(userdata)?.client?.deliver(stepAccepted: index)
 }

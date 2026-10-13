@@ -29,13 +29,15 @@ does. `reactor.tracks` and its `.withKind`/`.withDirection` filters are for
 ## Stepped generation
 
 A model that supports it can generate one step at a time instead of streaming.
-Ask for it when creating the client, then call `step(state:commands:)`: it runs
-the state, the commands and every input frame pushed since the previous step as
-one unit, and returns what the model produced on each output track.
+Ask for it when creating the client, then call `step(state:commands:)`: the
+runtime applies the state, then the commands, then every input frame pushed
+since the previous step — each as its own call, not as one unit — generates,
+and returns what the model produced on each output track. Both arguments are
+optional: `step()` runs on the model's current state, which commands sent with
+`sendCommand` between steps can change.
 
 ```swift
 let reactor = try await Reactor(model: "owner/model", apiKey: apiKey, generation: .stepped)
-let accepted = reactor.onStepAccepted { index in print("generating step", index) }
 
 try await reactor.connect()          // generationModeMismatch if the runtime cannot
 
@@ -52,6 +54,12 @@ for frame in try result.track("main_video").frames {
     frame.captureTimeUs
 }
 result.elapsed      // Duration — how long the step's generate() took (or the model reported)
+result.error        // String? — set when the step ran but the model reported a failure
+for file in result.files {
+    file.name; file.contentType; file.size   // bytes: GET /sessions/{id}/steps/{index}
+}
+
+let next = try await reactor.step()       // nothing new: run on the current state
 ```
 
 `Track.pushFrame` keeps its signatures: in a stepped session it buffers the frame
@@ -60,10 +68,20 @@ for the next step instead of sending it. Audio comes back as planar
 the native copy freed at once, so a `StepResult` can be kept and passed around
 freely.
 
-A step the runtime refuses throws `ReactorError.stepRefused`; one whose output
+A step that ran but that the model reported as failed returns normally, with
+`result.error` saying why. A step the runtime refuses throws
+`ReactorError.stepRefused`; one whose output
 does not fit in a message throws `stepResultTooLarge`; a request too large to
 send throws `messageTooLarge` and keeps the pushed frames, which
-`clearStepInputs()` drops. `stepTimeout:` bounds a step (default 300 s). See
+`clearStepInputs()` drops. `stepTimeout:` bounds a step (default 300 s).
+
+`result.files` names the extra files the model kept with the step; it does not
+carry them. Fetch their bytes over HTTP from the session's step results,
+`GET /sessions/{id}/steps/{index}`, which lists each with a download URL (202
+while the step is not stored yet). Files go *into* a step as they go into any
+command: upload with `uploadFile(at:)` or `uploadData(_:name:mimeType:)`, then
+put the `FileRef` in a command's arguments (`StepCommand(_:arguments:)`) or,
+as `JSONValue(fileRef)`, in the state value of a field that takes an upload. See
 [`Examples/09_stepped_generation`](Examples/09_stepped_generation/main.swift).
 
 ## Where the manifest lives

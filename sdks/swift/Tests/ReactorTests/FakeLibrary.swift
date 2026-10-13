@@ -84,7 +84,6 @@ final class FakeLibrary: @unchecked Sendable {
         var whileReadingStatus: (@Sendable () -> Void)?
         var whileStartingDownload: (@Sendable () -> Void)?
         var createOptionsCalls: [CreateOptionsCall] = []
-        var onStepAccepted: reactor_on_step_accepted_fn?
         var stepCalls: [StepCall] = []
         var lastStepCompletion: (fn: reactor_step_completion_fn, userdata: UnsafeMutableRawPointer)?
         var clearStepInputsCalls = 0
@@ -104,7 +103,8 @@ final class FakeLibrary: @unchecked Sendable {
         var firstByte: UInt8?
         var byteCount: Int
         var userData: String?
-        var captureTimeUs: Int64
+        /// `nil` when the push carried no capture time at all.
+        var captureTimeUs: Int64?
         var bindingMs: Double
         var generation: UInt64
     }
@@ -149,7 +149,6 @@ final class FakeLibrary: @unchecked Sendable {
         var model: String?
         var jwt: String?
         var optionsJSON: String?
-        var hadStepAccepted: Bool
 
         /// The options, parsed — so a test asserts on values rather than on
         /// how an encoder happened to order the keys.
@@ -258,15 +257,6 @@ final class FakeLibrary: @unchecked Sendable {
     var freedStepResults: Int { state.withLock { $0.freedStepResults } }
     /// Whether a step is waiting on a completion the fake has not fired.
     var hasPendingStep: Bool { state.withLock { $0.lastStepCompletion != nil } }
-
-    /// Fire `on_step_accepted`, the way the library's control thread would.
-    func fireStepAccepted(_ index: UInt64) {
-        guard canFireCallbacks else { return }
-        guard let fn = state.withLock({ $0.onStepAccepted }),
-            let userdata = state.withLock({ $0.callbacks?.userdata })
-        else { return }
-        fn(index, userdata)
-    }
 
     /// Answer the step in flight, handing over `result` the way the library
     /// does: owned by the callee, to be released through
@@ -503,7 +493,7 @@ final class FakeLibrary: @unchecked Sendable {
                 return OpaquePointer(handle)
             },
             createWithOptions: {
-                [self] apiURL, model, jwt, callbacks, onStepAccepted, optionsJSON, errorOut in
+                [self] apiURL, model, jwt, callbacks, optionsJSON, errorOut in
                 let failure = createOptionsFailure
                 state.withLock { state in
                     state.createOptionsCalls.append(
@@ -511,11 +501,9 @@ final class FakeLibrary: @unchecked Sendable {
                             apiURL: String(borrowing: apiURL),
                             model: String(borrowing: model),
                             jwt: String(borrowing: jwt),
-                            optionsJSON: String(borrowing: optionsJSON),
-                            hadStepAccepted: onStepAccepted != nil))
+                            optionsJSON: String(borrowing: optionsJSON)))
                     if failure == nil {
                         state.callbacks = callbacks?.pointee
-                        state.onStepAccepted = onStepAccepted
                     }
                 }
                 if let failure {
@@ -710,6 +698,15 @@ final class FakeLibrary: @unchecked Sendable {
             clearStepInputs: { [self] _ in state.withLock { $0.clearStepInputsCalls += 1 } },
             stepResultIndex: { FakeStepResult.from($0)?.index ?? 0 },
             stepResultElapsed: { FakeStepResult.from($0)?.elapsed ?? 0 },
+            stepResultError: { FakeStepResult.from($0)?.error.map { UnsafePointer($0) } },
+            stepResultFileCount: { UInt32(FakeStepResult.from($0)?.files.count ?? 0) },
+            stepResultFileName: {
+                FakeStepResult.from($0)?.file($1).map { UnsafePointer($0.name) }
+            },
+            stepResultFileContentType: {
+                FakeStepResult.from($0)?.file($1).map { UnsafePointer($0.contentType) }
+            },
+            stepResultFileSize: { FakeStepResult.from($0)?.file($1)?.size ?? 0 },
             stepResultTrackCount: { UInt32(FakeStepResult.from($0)?.tracks.count ?? 0) },
             stepResultTrackName: {
                 FakeStepResult.from($0)?.track($1).map { UnsafePointer($0.name) }

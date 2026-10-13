@@ -91,14 +91,54 @@ final class FakeStepResult: @unchecked Sendable {
         }
     }
 
+    struct File {
+        var name: String
+        var contentType: String
+        var size: UInt64
+    }
+
+    /// One file entry, in C memory.
+    final class CFile {
+        let name: UnsafeMutablePointer<CChar>
+        let contentType: UnsafeMutablePointer<CChar>
+        let size: UInt64
+
+        init(_ file: File) {
+            name = strdup(file.name)
+            contentType = strdup(file.contentType)
+            size = file.size
+        }
+
+        deinit {
+            free(name)
+            free(contentType)
+        }
+    }
+
     let index: UInt64
     let tracks: [CTrack]
     let elapsed: Double
+    let files: [CFile]
+    /// Null when the step worked, as the header has it.
+    let error: UnsafeMutablePointer<CChar>?
 
-    init(index: UInt64, tracks: [Track], elapsed: Double = 0) {
+    init(
+        index: UInt64, tracks: [Track], elapsed: Double = 0, files: [File] = [],
+        error: String? = nil
+    ) {
         self.index = index
         self.tracks = tracks.map(CTrack.init)
         self.elapsed = elapsed
+        self.files = files.map(CFile.init)
+        self.error = error.map { strdup($0) }
+    }
+
+    deinit {
+        free(error)
+    }
+
+    func file(_ index: UInt32) -> CFile? {
+        Int(index) < files.count ? files[Int(index)] : nil
     }
 
     func track(_ index: UInt32) -> CTrack? {
