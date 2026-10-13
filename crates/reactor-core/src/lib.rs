@@ -22,6 +22,8 @@ pub mod backoff;
 pub mod control;
 pub mod coordinator;
 pub mod data;
+#[cfg(feature = "tokio-platform")]
+mod device;
 pub mod error;
 pub mod events;
 pub mod http;

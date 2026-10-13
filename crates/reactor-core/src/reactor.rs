@@ -1043,6 +1043,7 @@ impl Reactor {
             os: platform.os,
             os_version: platform.os_version,
             arch: platform.arch,
+            device_model: platform.device_model,
         }
     }
 

@@ -1987,6 +1987,7 @@ mod tests {
             os: "macos".to_string(),
             os_version: "15.1".to_string(),
             arch: "aarch64".to_string(),
+            device_model: "MacBookPro18,3".to_string(),
         }
     }
 

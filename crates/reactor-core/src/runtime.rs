@@ -43,6 +43,9 @@ pub struct PlatformInfo {
     pub os_version: String,
     /// The CPU architecture, e.g. `"aarch64"`, `"x86_64"`.
     pub arch: String,
+    /// The device's hardware model, e.g. `"iPhone15,2"`, `"Pixel 8"` or
+    /// `"MacBookPro18,3"`.
+    pub device_model: String,
 }
 
 /// Race `fut` against a platform sleep.
@@ -91,6 +94,7 @@ impl Platform for TokioPlatform {
                 version
             },
             arch: std::env::consts::ARCH.to_string(),
+            device_model: crate::device::model(),
         }
     }
 

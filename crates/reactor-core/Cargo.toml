@@ -26,5 +26,9 @@ tokio            = { version = "1", features = ["time"], optional = true }
 # The operating system's version for the client stats environment, native only.
 os_info          = { version = "3", default-features = false, optional = true }
 
+# The device model for the client stats environment, read from the system.
+[target.'cfg(any(target_vendor = "apple", target_os = "android"))'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "test-util", "sync"] }
