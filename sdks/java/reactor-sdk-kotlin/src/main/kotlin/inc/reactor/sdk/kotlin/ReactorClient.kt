@@ -6,10 +6,13 @@ import inc.reactor.sdk.CommandReply
 import inc.reactor.sdk.ConnectionStatus
 import inc.reactor.sdk.DownloadedClip
 import inc.reactor.sdk.FileRef
+import inc.reactor.sdk.Generation
 import inc.reactor.sdk.JsonValue
 import inc.reactor.sdk.Reactor
 import inc.reactor.sdk.ReactorOptions
 import inc.reactor.sdk.Stats
+import inc.reactor.sdk.StepCommand
+import inc.reactor.sdk.StepResult
 import java.nio.file.Path
 import kotlinx.coroutines.future.await
 
@@ -171,6 +174,54 @@ public class ReactorClient(
 
     /** What the platform reports about this session. */
     public suspend fun getStats(): Stats = java.getStats().await()
+
+    // ── Stepped generation ──────────────────────────────────────────────────
+
+    /** How this client's sessions generate, as [ReactorOptions.Builder.generation] set it. */
+    public val generation: Generation
+        get() = java.generation()
+
+    /**
+     * Runs one step of a stepped session and returns what it produced.
+     *
+     * The runtime runs, as one unit: [state] (each key as the model's `set_<key>` command), then
+     * [commands] in order, then every input frame pushed since the previous step — in a stepped
+     * session [ReactorTrack.pushFrame] buffers for the next step instead of sending.
+     *
+     * ```kotlin
+     * val client = ReactorClient.open(reactorOptions(apiUrl, "owner/model") {
+     *     apiKey(key)
+     *     generation(Generation.STEPPED)
+     * })
+     * client.connect()
+     * val result = client.step(
+     *     state = JsonValue.`object`().put("prompt", "a red fox").build(),
+     *     commands = listOf(StepCommand.of("advance")),
+     * )
+     * result.track("main_video").frames().forEach { show(it.data(), it.shape()) }
+     * ```
+     *
+     * Cancelling the await does not recall the step: once sent, the runtime runs it and its input
+     * frames are spent.
+     *
+     * @param state the model's state fields as a JSON object, or null to change none
+     * @param commands what to run after the state, in order
+     * @return the step's result, copied onto the heap
+     * @throws inc.reactor.sdk.StepRefusedException when the runtime turns the step down
+     * @throws inc.reactor.sdk.StepResultTooLargeException when its output does not fit in a message
+     * @throws inc.reactor.sdk.MessageTooLargeException when the request does not; see
+     *   [clearStepInputs]
+     */
+    public suspend fun step(
+        state: JsonValue? = null,
+        commands: List<StepCommand> = emptyList(),
+    ): StepResult = java.step(state, commands).await()
+
+    /**
+     * Drops every input frame pushed since the last step — the way out after a
+     * [inc.reactor.sdk.MessageTooLargeException] from [step]. A no-op on a streamed client.
+     */
+    public fun clearStepInputs(): Unit = java.clearStepInputs()
 
     // ── Recording ───────────────────────────────────────────────────────────
 

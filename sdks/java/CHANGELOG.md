@@ -9,6 +9,33 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Stepped generation. `ReactorOptions.Builder.generation(Generation.STEPPED)`
+  asks for a session that generates one step at a time, and
+  `reactor.step(state, commands)` runs one and completes with a `StepResult`:
+  per output track, the frames it produced, each with its bytes (a read-only,
+  little-endian `ByteBuffer` from `data()`, or a copy from `toByteArray()`),
+  `dtype()`, `shape()`, `metadata()` and `captureTimeUs()`. Video comes back as
+  `(height, width, 3)` `uint8` RGB and audio as `(channels, samples)` `int16`.
+  The result is copied onto the heap once and the native one freed straight
+  away, so it can be kept. `Track.pushFrame` buffers into the next step in such
+  a session, `onStepAccepted` reports a step the runtime started,
+  `clearStepInputs()` drops buffered frames, and `stepTimeoutSeconds(...)`
+  bounds a step (default 300 s). A frame handler on a stepped session's track
+  is refused, since nothing streams there. `connect()` fails with
+  `GenerationModeMismatchException` when the runtime does not start the session
+  stepped. The Kotlin facade gains `suspend fun step(...)`, `clearStepInputs()`,
+  `generation` and `stepAcceptedFlow()`.
+
+### Changed
+
+- The SDK now binds the stepped-generation functions of `libreactor_ffi`
+  (`reactor_create_with_options`, `reactor_step` and friends) at load, like
+  every other symbol. The bundled natives carry them; a library supplied
+  through `REACTOR_FFI_LIB` that predates them is refused at load, naming the
+  missing symbol, instead of failing later.
+
 ## [1.2.1] - 2026-10-13
 
 ### Fixed

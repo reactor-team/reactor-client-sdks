@@ -26,7 +26,7 @@ import org.jspecify.annotations.Nullable;
  * next run cannot start until that clears. Try-with-resources is the reliable way; the {@link
  * Cleaner} registered here is a safety net for a client somebody forgot, not a plan.
  *
- * <p>Control events — status, error, message, track, capabilities, session id — are delivered
+ * <p>Control events — status, error, message, track, capabilities, session id, step accepted — are delivered
  * through the {@link Dispatcher}, so a Swing or JavaFX application can have them arrive on the
  * thread its toolkit requires. Media does not go through it: see {@link Dispatcher}.
  *
@@ -298,6 +298,114 @@ public final class Reactor implements AutoCloseable {
         JsonValue.ObjectBuilder named = JsonValue.object();
         uploads.forEach((parameter, ref) -> named.put(parameter, ref.toJsonValue()));
         return peer.sendCommand(name, args.toJsonString(), named.build().toJsonString());
+    }
+
+    // ── Stepped generation ──────────────────────────────────────────────────
+
+    /** @return how this client's sessions generate, as {@link ReactorOptions.Builder#generation} set it */
+    public Generation generation() {
+        return peer.generation();
+    }
+
+    /**
+     * Runs one step of a stepped session and answers with what it produced.
+     *
+     * <p>The runtime runs, as one unit: {@code state} (each key as the model's {@code set_<key>}
+     * command), then {@code commands} in order, then every input frame pushed since the previous
+     * step — in a stepped session {@link Track#pushFrame(byte[], int, int)} does not send, it
+     * buffers for the next step.
+     *
+     * <pre>{@code
+     * Reactor reactor = Reactor.open(ReactorOptions.builder(apiUrl, "owner/model")
+     *         .apiKey(key)
+     *         .generation(Generation.STEPPED)
+     *         .build());
+     * reactor.connect().join();
+     * Track camera = reactor.track("camera");
+     * camera.publish().join();
+     * camera.pushFrame(bgra, width, height);          // buffered, not sent
+     * StepResult result = reactor.step(
+     *                 JsonValue.object().put("prompt", "a red fox").build(),
+     *                 List.of(StepCommand.of("advance", JsonValue.object().put("frames", 4).build())))
+     *         .join();
+     * for (StepFrame frame : result.track("main_video").frames()) {
+     *     show(frame.data(), frame.shape());          // (height, width, 3) uint8 RGB
+     * }
+     * }</pre>
+     *
+     * <p>The future fails with {@link StepRefusedException} when the runtime turns the step down (no
+     * state changed), {@link StepResultTooLargeException} when the step ran but its output does not
+     * fit in one message, {@link MessageTooLargeException} when the request does not — nothing was
+     * sent then, and the pushed frames are kept for the next step, which {@link #clearStepInputs()}
+     * drops — {@link UnsupportedFrameEncodingException} for a frame this SDK cannot decode, {@link
+     * RequestTimeoutException} after {@link ReactorOptions#stepTimeoutSeconds()}, and {@link
+     * InvalidStateException} outside a connected stepped session.
+     *
+     * @param state the model's state fields as a JSON object, or {@code null} to change none
+     * @param commands what to run after the state, in order; may be empty
+     * @return the step's result, copied onto the heap once and safe to keep
+     */
+    public CompletableFuture<StepResult> step(@Nullable JsonValue state, java.util.List<StepCommand> commands) {
+        if (state instanceof JsonValue.JsonNull) {
+            state = null;
+        }
+        if (state != null && !(state instanceof JsonValue.JsonObject)) {
+            return CompletableFuture.failedFuture(ReactorException.of(
+                    ErrorCode.BAD_REQUEST.code(),
+                    "a step's state must be a JSON object of state fields, or null; got " + state.toJsonString(),
+                    null,
+                    "step",
+                    null));
+        }
+        String commandsJson = JsonValue.array(
+                        commands.stream().map(StepCommand::toWire).toList())
+                .toJsonString();
+        return peer.step(state == null ? null : state.toJsonString(), commandsJson);
+    }
+
+    /**
+     * Runs one step that sets state and runs no commands.
+     *
+     * @param state the model's state fields as a JSON object, or {@code null} to change none
+     * @return the step's result
+     * @see #step(JsonValue, java.util.List)
+     */
+    public CompletableFuture<StepResult> step(@Nullable JsonValue state) {
+        return step(state, java.util.List.of());
+    }
+
+    /**
+     * Runs one step with no state change and no commands — the buffered input frames, and whatever
+     * the model does by itself.
+     *
+     * @return the step's result
+     * @see #step(JsonValue, java.util.List)
+     */
+    public CompletableFuture<StepResult> step() {
+        return step(null, java.util.List.of());
+    }
+
+    /**
+     * Drops every input frame pushed since the last step.
+     *
+     * <p>The way out after a {@link MessageTooLargeException} from {@link #step}, which keeps the
+     * frames it could not send. A no-op on a streamed client.
+     *
+     * @throws ReactorException ({@code INVALID_STATE}) when the client is closed
+     */
+    public void clearStepInputs() {
+        peer.clearStepInputs();
+    }
+
+    /**
+     * @param handler called with a step's index — its number in the session, counted from 1, the
+     *     same as the {@link StepResult#index()} the step resolves with — when the runtime accepts it
+     *     and starts generating. Never for a refused step. Normally before {@link #step}'s future
+     *     settles, but the two travel separately, so do not rely on that order
+     * @return a subscription that removes it
+     */
+    public Subscription onStepAccepted(Consumer<Long> handler) {
+        return peer.onStepAccepted(handler);
     }
 
     /**

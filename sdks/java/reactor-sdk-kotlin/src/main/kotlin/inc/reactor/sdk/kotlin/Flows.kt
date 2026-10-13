@@ -54,6 +54,12 @@ public fun ReactorClient.capabilitiesFlow(): Flow<JsonValue> =
 public fun ReactorClient.sessionIdFlow(): Flow<String?> =
     subscriptionFlow<Optional<String>>(java::onSessionId).map { it.orElse(null) }
 
+/**
+ * The index of every step a stepped session accepted — its number in the session, counted from 1,
+ * the same as the [inc.reactor.sdk.StepResult.index] the step resolves with. Never a refused step.
+ */
+public fun ReactorClient.stepAcceptedFlow(): Flow<Long> = subscriptionFlow(java::onStepAccepted)
+
 // ── Media ───────────────────────────────────────────────────────────────────
 
 /**
