@@ -49,6 +49,7 @@ struct FakeTrack {
 struct FakeResult {
   std::uint64_t index = 1;
   std::vector<FakeTrack> tracks;
+  double elapsed = 0.0;
 };
 
 /// A stand-in for libreactor_ffi's stepped surface. Answers on its own thread.
@@ -80,6 +81,7 @@ class FakeStepped {
     filled.step = &step;
     filled.clear_step_inputs = &clear_step_inputs;
     filled.step_result_index = &result_index;
+    filled.step_result_elapsed = &result_elapsed;
     filled.step_result_track_count = &track_count;
     filled.step_result_track_name = &track_name;
     filled.step_result_track_kind = &track_kind;
@@ -268,6 +270,10 @@ class FakeStepped {
 
   static std::uint64_t result_index(const ReactorStepResult* result) {
     return result == nullptr ? 0 : as_fake(result)->index;
+  }
+
+  static double result_elapsed(const ReactorStepResult* result) {
+    return result == nullptr ? 0.0 : as_fake(result)->elapsed;
   }
 
   static std::uint32_t track_count(const ReactorStepResult* result) {
@@ -575,7 +581,7 @@ TEST_CASE("a step's result is copied out once, owns its bytes, and the native on
   audio.dtype = "int16";
   audio.shape = {2, 3};
   audio.data = std::vector<std::uint8_t>(12, 7);
-  fixture.library.result = FakeResult{7, {video, FakeTrack{"main_audio", "audio", {audio}}}};
+  fixture.library.result = FakeResult{7, {video, FakeTrack{"main_audio", "audio", {audio}}}, 0.25};
 
   reactor::StepResult result;
   {
@@ -587,6 +593,7 @@ TEST_CASE("a step's result is copied out once, owns its bytes, and the native on
   CHECK(fixture.library.results_freed == 1);
 
   CHECK(result.index == 7);
+  CHECK(result.elapsed == 0.25);
   REQUIRE(result.tracks.size() == 2);
   CHECK(result.tracks[0].name == "main_video");
   CHECK(result.tracks[0].kind == reactor::TrackKind::Video);

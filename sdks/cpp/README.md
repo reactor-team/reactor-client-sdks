@@ -337,6 +337,7 @@ for (const auto& frame : result.track("main_video").frames) {
   frame.data;                    // (height, width, 3) uint8 RGB, frame.shape says so
   frame.metadata, frame.capture_time_us;
 }
+result.elapsed;                  // seconds the step's generate() took (or the model reported)
 ```
 
 `Track::push_frame` keeps its signature: in a stepped session it buffers the frame
