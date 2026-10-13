@@ -31,6 +31,7 @@
 #include "reactor/recording.hpp"
 #include "reactor/stats.hpp"
 #include "reactor/status.hpp"
+#include "reactor/step.hpp"
 #include "reactor/subscription.hpp"
 #include "reactor/track.hpp"
 
@@ -126,6 +127,21 @@ struct Options {
   /// — `Options{url, local, executor}` — still selects the executor rather
   /// than silently becoming the flag.
   bool auto_resume_tracks = true;
+
+  /// How the session generates: `Streamed` over media tracks (the default), or
+  /// `Stepped`, one `Reactor::step()` at a time. A stepped client fails
+  /// `connect()` with `GenerationModeMismatchError` when the runtime does not
+  /// start the session that way. Appended, like `auto_resume_tracks`, so an
+  /// aggregate initializer written before it existed means what it meant.
+  Generation generation = Generation::Streamed;
+
+  /// Seconds a `step()` may take, generation included, before it fails with
+  /// `RequestTimeoutError`. Stepped sessions only — the constructor throws
+  /// `BadRequestError` for one set on a streamed client, or for a value that is
+  /// not a finite number above zero. Unset keeps the library's default of 300.
+  /// Brace-initialised so an aggregate initializer that stops before it does
+  /// not trip -Wmissing-field-initializers in a consumer's -Werror build.
+  std::optional<double> step_timeout_seconds{};
 };
 
 /// What `connect` may adopt instead of creating.
@@ -381,6 +397,64 @@ class Reactor {
   /// `dynamic_cast`; `recoverable()` is the property to branch on when the
   /// specific code does not matter.
   Subscription on_error(std::function<void(const ReactorError&)> handler);
+
+  // ── Stepped generation ─────────────────────────────────────────────────────
+
+  /// How this client's sessions generate, as `Options::generation` chose.
+  Generation generation() const noexcept;
+
+  /// Run one step of a stepped session and resolve with what it produced.
+  ///
+  /// The runtime runs, as one unit: `state` (each key as the model's
+  /// `set_<key>` command), then `commands` in order, then every input frame
+  /// pushed since the previous step — `Track::push_frame` does not send in a
+  /// stepped session, it buffers for the next step:
+  ///
+  /// ```cpp
+  /// auto camera = client.track("camera");
+  /// camera.publish().get();
+  /// camera.push_frame(reactor::Bytes{bgra.data(), bgra.size()}, width, height);
+  /// const auto result = client.step({{"prompt", "a red fox"}},
+  ///                                 {{"advance", {{"frames", 4}}}}).get();
+  /// for (const auto& frame : result.track("main_video").frames) { … }
+  /// ```
+  ///
+  /// `state` is a JSON object or null (no state); a `FileRef` converts into it
+  /// as its upload reference. Each command's `data` is an object or null.
+  ///
+  /// Fails with `InvalidStateError` on a streamed client or a session that is
+  /// not `Ready`; `BadRequestError` for a state or command data that is not an
+  /// object, or a command with no name; `StepRefusedError` when the runtime
+  /// refuses the step (no state changed); `StepResultTooLargeError` when its
+  /// output does not fit in one message; `MessageTooLargeError` when the request
+  /// does not — nothing was sent then, and the pushed frames are kept for the
+  /// next step (see `clear_step_inputs`); `UnsupportedFrameEncodingError` for an
+  /// output frame the library cannot decode; `RequestTimeoutError` after
+  /// `Options::step_timeout_seconds`.
+  ///
+  /// The result is copied out of the native library once, on the library's
+  /// completion thread, and owns its bytes.
+  // By value, like send_command: an exported symbol whose mangled name is the
+  // parameter types.
+  // NOLINTNEXTLINE(performance-unnecessary-value-param)
+  std::future<StepResult> step(Json state = nullptr, std::vector<StepCommand> commands = {});
+
+  /// Drop every frame pushed since the last step.
+  ///
+  /// The way out after a `MessageTooLargeError` from `step()`, which keeps the
+  /// frames it could not send. A no-op before a session exists and on a streamed
+  /// client.
+  void clear_step_inputs();
+
+  /// Called when a stepped session accepts a step and starts generating it, with
+  /// the step's index — its number in the session, counted from 1, the same as
+  /// the `StepResult::index` that step resolves with.
+  ///
+  /// Never fired for a refused step. Delivered on the control-event executor,
+  /// normally before the step's future resolves — but the two travel
+  /// separately, so do not rely on that order. Throws `InvalidStateError` on a
+  /// streamed client, where it could never fire.
+  Subscription on_step_accepted(std::function<void(std::uint64_t)> handler);
 
  private:
   /// Shared, not unique, for two reasons: the callbacks the library holds capture

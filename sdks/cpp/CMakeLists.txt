@@ -200,6 +200,7 @@ add_library(
   src/reactor.cpp
   src/recording.cpp
   src/stats.cpp
+  src/step.cpp
   src/track.cpp
   src/version.cpp
 )
