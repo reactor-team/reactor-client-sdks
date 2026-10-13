@@ -563,10 +563,6 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
                   const std::vector<StepCommand>& commands);
   void clear_step_inputs();
 
-  /// The handlers for `on_step_accepted`, or a thrown `InvalidStateError` on a
-  /// streamed client, where the event can never fire.
-  Handlers<std::uint64_t>& step_accepted_handlers();
-
   /// The C completion for `reactor_step`. `userdata` is a `PendingStep*`, tracked
   /// like every other call's; `result` is this call's to free, whatever happens.
   static void step_completion_trampoline(int ok, ReactorStepResult* result, const char* error_json,
@@ -681,8 +677,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
 
     if (generation_ == Generation::Stepped) {
       // Its own creation call: only `reactor_create_with_options` takes the
-      // generation mode, and the step-accepted callback that ReactorCallbacks has
-      // no slot for. It pins the synthetic audio module too, by name.
+      // generation mode. It pins the synthetic audio module too, by name.
       handle_ = create_stepped_handle(callbacks);
       context_ = context.release();
       return;
@@ -860,7 +855,6 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
                                   void* userdata) noexcept;
   static void on_capabilities_trampoline(const char* caps_json, void* userdata) noexcept;
   static void on_session_id_trampoline(const char* session_id, void* userdata) noexcept;
-  static void on_step_accepted_trampoline(std::uint64_t index, void* userdata) noexcept;
   static void on_message_trampoline(const char* msg_json, void* userdata) noexcept;
   static void on_runtime_message_trampoline(const char* msg_json, void* userdata) noexcept;
 
@@ -948,7 +942,6 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   Handlers<Track> track_handlers_;
   Handlers<const Json&> message_handlers_;
   Handlers<const Json&> runtime_message_handlers_;
-  Handlers<std::uint64_t> step_accepted_handlers_;
 
   /// Frame handlers, per track name.
   ///

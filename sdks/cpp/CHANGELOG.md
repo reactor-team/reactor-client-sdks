@@ -15,11 +15,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
   `client.step(state, commands)` runs one and resolves with a `StepResult`: per
   output track, the frames it produced, each with its bytes, dtype, shape,
   metadata and capture time, copied out of the native library once and owned by
-  the result, and `elapsed`, the seconds the step's `generate()` took (or the
-  time the model reported for the step). `Track::push_frame` buffers into the
-  next step in such a session.
-  `on_step_accepted` reports a step the runtime started, `clear_step_inputs()`
-  drops buffered frames, and `Options::step_timeout_seconds` bounds a step. A
+  the result; `elapsed`, the seconds the step's `generate()` took (or the
+  time the model reported for the step); `files`, the name, content type and
+  size of each file the model kept with the step, whose bytes are on
+  `GET /sessions/{id}/steps/{index}`; and `error`, set when the step ran but the
+  model reported a failure, which resolves rather than throws. `step()` takes no
+  arguments to run the model on its current state. `Track::push_frame` buffers
+  into the next step in such a session. `clear_step_inputs()` drops buffered
+  frames, and `Options::step_timeout_seconds` bounds a step. A
   runtime that does not start the session stepped fails `connect()` with
   `GenerationModeMismatchError`; a step can fail with `StepRefusedError`,
   `StepResultTooLargeError` or `UnsupportedFrameEncodingError`. Needs a

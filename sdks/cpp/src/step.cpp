@@ -178,6 +178,16 @@ StepResult read_step_result(const Ffi& lib, const ReactorStepResult* result) {
     }
     copied.tracks.push_back(std::move(output));
   }
+  const std::uint32_t file_count = lib.step_result_file_count(result);
+  copied.files.reserve(file_count);
+  for (std::uint32_t file = 0; file < file_count; ++file) {
+    copied.files.push_back(StepFile{text_or_empty(lib.step_result_file_name(result, file)),
+                                    text_or_empty(lib.step_result_file_content_type(result, file)),
+                                    lib.step_result_file_size(result, file)});
+  }
+  if (const char* error = lib.step_result_error(result)) {
+    copied.error = std::string{error};
+  }
   return copied;
 }
 
@@ -239,9 +249,9 @@ ReactorHandle* ClientImpl::create_stepped_handle(const ReactorCallbacks& callbac
   const std::string options_json = options.dump();
 
   char* error = nullptr;
-  ReactorHandle* handle = ffi().create_with_options(
-      api_url_.c_str(), model_.c_str(), jwt_ ? jwt_->c_str() : nullptr, &callbacks,
-      &on_step_accepted_trampoline, options_json.c_str(), &error);
+  ReactorHandle* handle =
+      ffi().create_with_options(api_url_.c_str(), model_.c_str(), jwt_ ? jwt_->c_str() : nullptr,
+                                &callbacks, options_json.c_str(), &error);
   if (handle == nullptr) {
     const OwnedString refused{error};
     if (refused) {
@@ -250,21 +260,6 @@ ReactorHandle* ClientImpl::create_stepped_handle(const ReactorCallbacks& callbac
     throw ReactorError{"libreactor_ffi could not create a stepped client"};
   }
   return handle;
-}
-
-void ClientImpl::on_step_accepted_trampoline(std::uint64_t index, void* userdata) noexcept {
-  try {
-    if (const auto impl = from_userdata(userdata)) {
-      impl->dispatcher_.post([weak = impl->weak_from_this(), index] {
-        if (const auto self = weak.lock()) {
-          self->step_accepted_handlers_.invoke(index);
-        }
-      });
-    }
-  } catch (...) {  // NOLINT(bugprone-empty-catch)
-    // See on_status_trampoline's own comment: called from Rust, nothing may
-    // unwind out of it.
-  }
 }
 
 void ClientImpl::step_completion_trampoline(int ok, ReactorStepResult* result,
@@ -355,17 +350,6 @@ void ClientImpl::clear_step_inputs() {
   }
 }
 
-Handlers<std::uint64_t>& ClientImpl::step_accepted_handlers() {
-  if (generation_ != Generation::Stepped) {
-    // Registering would succeed and the handler would never run — the silent
-    // failure this SDK refuses everywhere else.
-    throw InvalidStateError{
-        "on_step_accepted() never fires on a streamed client: create it with "
-        "Options::generation = reactor::Generation::Stepped"};
-  }
-  return step_accepted_handlers_;
-}
-
 }  // namespace detail
 
 Generation Reactor::generation() const noexcept { return impl_->generation(); }
@@ -381,14 +365,5 @@ std::future<StepResult> Reactor::step(Json state, std::vector<StepCommand> comma
 }
 
 void Reactor::clear_step_inputs() { impl_->clear_step_inputs(); }
-
-Subscription Reactor::on_step_accepted(std::function<void(std::uint64_t)> handler) {
-  const std::uint64_t id = impl_->step_accepted_handlers().add(std::move(handler));
-  return Subscription{[weak = std::weak_ptr<detail::ClientImpl>{impl_}, id] {
-    if (const auto impl = weak.lock()) {
-      impl->step_accepted_handlers().remove(id);
-    }
-  }};
-}
 
 }  // namespace reactor

@@ -11,9 +11,10 @@
 //       use(frame.data, frame.shape);   // (height, width, 3) uint8 RGB
 //     }
 //
-// A stepped session does not stream. Each `Reactor::step` runs the model's state,
-// a list of commands and every input frame pushed since the previous step as one
-// unit, and resolves with what the model produced on each output track.
+// A stepped session does not stream. Each `Reactor::step` applies the model's
+// state, a list of commands and every input frame pushed since the previous step,
+// runs the model once, and resolves with what it produced on each output track
+// and the files it kept.
 #pragma once
 
 #include <cstddef>
@@ -91,11 +92,24 @@ struct StepTrackOutput {
   std::vector<StepFrame> frames{};
 };
 
-/// What one step produced: its number in the session and, per output track, the
-/// frames it generated.
+/// A file the model kept with a step, beyond the frames it produced.
+///
+/// Only its description travels with the result. The bytes are fetched over HTTP
+/// from the session's step results, `GET /sessions/{id}/steps/{index}`, which
+/// lists each file with a download URL (and answers 202 while they are not yet
+/// stored).
+struct StepFile {
+  std::string name{};
+  std::string content_type{};
+  /// In bytes.
+  std::uint64_t size = 0;
+};
+
+/// What one step produced: its number in the session, per output track the
+/// frames it generated, the files the model kept, and whether the model reported
+/// a failure.
 struct StepResult {
-  /// The step's number in the session, counted from 1 — the same number
-  /// `Reactor::on_step_accepted` reported for it.
+  /// The step's number in the session, counted from 1.
   std::uint64_t index = 0;
 
   /// In the order the runtime sent them. A track the model produced nothing on
@@ -105,6 +119,14 @@ struct StepResult {
   /// Seconds the step's `generate()` took, or the time the model reported for
   /// the step.
   double elapsed{};
+
+  /// The files the model kept with this step, described. Empty when it kept
+  /// none, or when the result was not saved.
+  std::vector<StepFile> files{};
+
+  /// Set when the step ran and the model reported a failure. Such a step still
+  /// resolves — only a step the runtime refuses fails `Reactor::step()`'s future.
+  std::optional<std::string> error{};
 
   /// The output of the track called `name`.
   ///

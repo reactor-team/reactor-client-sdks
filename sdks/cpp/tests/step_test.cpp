@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <future>
 #include <limits>
 #include <memory>
@@ -18,6 +19,8 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -46,10 +49,18 @@ struct FakeTrack {
   std::vector<FakeFrame> frames;
 };
 
+struct FakeFile {
+  std::string name;
+  std::string content_type;
+  std::uint64_t size = 0;
+};
+
 struct FakeResult {
   std::uint64_t index = 1;
   std::vector<FakeTrack> tracks;
   double elapsed = 0.0;
+  std::vector<FakeFile> files{};
+  std::optional<std::string> error{};
 };
 
 /// A stand-in for libreactor_ffi's stepped surface. Answers on its own thread.
@@ -92,6 +103,11 @@ class FakeStepped {
     filled.step_result_frame_data = &frame_data;
     filled.step_result_frame_metadata = &frame_metadata;
     filled.step_result_frame_capture_time_us = &frame_capture_time;
+    filled.step_result_error = &result_error;
+    filled.step_result_file_count = &file_count;
+    filled.step_result_file_name = &file_name;
+    filled.step_result_file_content_type = &file_content_type;
+    filled.step_result_file_size = &file_size;
     filled.step_result_free = &result_free;
     return filled;
   }
@@ -101,7 +117,6 @@ class FakeStepped {
   int adm_creates = 0;
   int options_creates = 0;
   std::string options_json;
-  bool had_step_accepted = false;
   std::string created_with_jwt;
   int steps = 0;
   std::optional<std::string> state_json;
@@ -122,8 +137,6 @@ class FakeStepped {
   /// Answer success with a null result.
   bool null_result = false;
   FakeResult result;
-  /// Fire on_step_accepted with the result's index before completing.
-  bool accept_step = true;
 
   void join_all() {
     std::vector<std::thread> threads;
@@ -195,13 +208,11 @@ class FakeStepped {
 
   static ReactorHandle* create_with_options(const char* /*api_url*/, const char* /*model*/,
                                             const char* jwt, const ReactorCallbacks* callbacks,
-                                            reactor_on_step_accepted_fn on_step_accepted,
                                             const char* options_json, char** error_out) {
     auto& self = current();
     ++self.options_creates;
     self.options_json = options_json == nullptr ? "" : options_json;
     self.created_with_jwt = jwt == nullptr ? "" : jwt;
-    self.had_step_accepted = on_step_accepted != nullptr;
     if (!self.create_error.empty()) {
       if (error_out != nullptr) {
         *error_out = heap_copy(self.create_error.c_str());
@@ -211,7 +222,6 @@ class FakeStepped {
     if (callbacks != nullptr) {
       self.callbacks_ = *callbacks;
     }
-    self.on_step_accepted_ = on_step_accepted;
     return handle();
   }
 
@@ -248,12 +258,8 @@ class FakeStepped {
     }
     const std::string error = self.step_error;
     const bool null_result = self.null_result;
-    const bool accept = self.accept_step && error.empty();
     auto* result = new FakeResult{self.result};  // NOLINT(cppcoreguidelines-owning-memory)
-    self.spawn([&self, completion, userdata, error, null_result, accept, result] {
-      if (accept && self.on_step_accepted_ != nullptr) {
-        self.on_step_accepted_(result->index, self.callbacks_.userdata);
-      }
+    self.spawn([completion, userdata, error, null_result, result] {
       if (!error.empty()) {
         delete result;  // NOLINT(cppcoreguidelines-owning-memory)
         completion(0, nullptr, error.c_str(), userdata);
@@ -274,6 +280,40 @@ class FakeStepped {
 
   static double result_elapsed(const ReactorStepResult* result) {
     return result == nullptr ? 0.0 : as_fake(result)->elapsed;
+  }
+
+  static const char* result_error(const ReactorStepResult* result) {
+    if (result == nullptr) {
+      return nullptr;
+    }
+    const auto& error = as_fake(result)->error;
+    return error ? error->c_str() : nullptr;
+  }
+
+  static const FakeFile* file_at(const ReactorStepResult* result, std::uint32_t file) {
+    if (result == nullptr || file >= as_fake(result)->files.size()) {
+      return nullptr;
+    }
+    return &as_fake(result)->files[file];
+  }
+
+  static std::uint32_t file_count(const ReactorStepResult* result) {
+    return result == nullptr ? 0 : static_cast<std::uint32_t>(as_fake(result)->files.size());
+  }
+
+  static const char* file_name(const ReactorStepResult* result, std::uint32_t file) {
+    const FakeFile* found = file_at(result, file);
+    return found == nullptr ? nullptr : found->name.c_str();
+  }
+
+  static const char* file_content_type(const ReactorStepResult* result, std::uint32_t file) {
+    const FakeFile* found = file_at(result, file);
+    return found == nullptr ? nullptr : found->content_type.c_str();
+  }
+
+  static std::uint64_t file_size(const ReactorStepResult* result, std::uint32_t file) {
+    const FakeFile* found = file_at(result, file);
+    return found == nullptr ? 0 : found->size;
   }
 
   static std::uint32_t track_count(const ReactorStepResult* result) {
@@ -363,7 +403,6 @@ class FakeStepped {
 
   int handle_marker_ = 0;
   ReactorCallbacks callbacks_{};
-  reactor_on_step_accepted_fn on_step_accepted_ = nullptr;
   std::mutex mutex_;
   std::vector<std::thread> threads_;
 };
@@ -427,7 +466,6 @@ TEST_CASE("a stepped client is created with its options, never through create_wi
 
   CHECK(fixture.library.options_creates == 1);
   CHECK(fixture.library.adm_creates == 0);
-  CHECK(fixture.library.had_step_accepted);
   CHECK(fixture.library.created_with_jwt == "a-token");
   const auto sent = reactor::Json::parse(fixture.library.options_json);
   CHECK(sent == reactor::Json{{"local", false},
@@ -619,6 +657,43 @@ TEST_CASE("a step's result is copied out once, owns its bytes, and the native on
   CHECK_FALSE(samples.metadata.has_value());
 }
 
+TEST_CASE("a step's files and error are copied out with it") {
+  Fixture fixture;
+  fixture.library.result.index = 4;
+  fixture.library.result.files = {FakeFile{"depth.exr", "image/x-exr", 1048576},
+                                  FakeFile{"log.txt", "text/plain", 0}};
+
+  reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, stepped()};
+  client.connect().get();
+  const auto result = client.step().get();
+
+  REQUIRE(result.files.size() == 2);
+  CHECK(result.files[0].name == "depth.exr");
+  CHECK(result.files[0].content_type == "image/x-exr");
+  CHECK(result.files[0].size == 1048576);
+  CHECK(result.files[1].name == "log.txt");
+  CHECK(result.files[1].content_type == "text/plain");
+  CHECK(result.files[1].size == 0);
+  CHECK_FALSE(result.error.has_value());
+  CHECK(fixture.library.results_freed == 1);
+}
+
+TEST_CASE("a step that ran but that the model reported failing resolves, with its error") {
+  Fixture fixture;
+  fixture.library.result.index = 9;
+  fixture.library.result.error = "out of memory";
+
+  reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, stepped()};
+  client.connect().get();
+  const auto result = client.step().get();
+
+  CHECK(result.index == 9);
+  CHECK(result.error == std::optional<std::string>{"out of memory"});
+  CHECK(result.files.empty());
+  CHECK(result.tracks.empty());
+  CHECK(fixture.library.results_freed == 1);
+}
+
 TEST_CASE("asking a result for a track it has no output on names the ones it has") {
   reactor::StepResult result;
   result.index = 3;
@@ -708,32 +783,15 @@ TEST_CASE("destroying a client settles a step still in flight") {
 
 // ── Events and inputs ────────────────────────────────────────────────────────
 
-TEST_CASE("an accepted step is reported with its index, off the library's thread") {
-  Fixture fixture;
-  fixture.library.result.index = 42;
-  reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, stepped()};
-
-  std::atomic<std::uint64_t> accepted{0};
-  std::atomic<bool> off_caller_thread{false};
-  const auto caller = std::this_thread::get_id();
-  auto subscription = client.on_step_accepted([&](std::uint64_t index) {
-    off_caller_thread = std::this_thread::get_id() != caller;
-    accepted = index;
-  });
-
-  client.connect().get();
-  const auto result = client.step().get();
-
-  REQUIRE(eventually([&] { return accepted.load() == 42; }));
-  CHECK(result.index == 42);
-  CHECK(off_caller_thread.load());
-}
-
-TEST_CASE("on_step_accepted is refused on a streamed client, where it could never fire") {
-  Fixture fixture;
-  reactor::Reactor client{"owner/model", reactor::Jwt{"token"}};
-  CHECK_THROWS_AS(client.on_step_accepted([](std::uint64_t) {}), reactor::InvalidStateError);
-}
+// The runtime answers a step with its result alone: there is no separate
+// "accepted" event to subscribe to.
+template <typename T, typename = void>
+struct HasOnStepAccepted : std::false_type {};
+template <typename T>
+struct HasOnStepAccepted<T, std::void_t<decltype(std::declval<T&>().on_step_accepted(
+                                std::function<void(std::uint64_t)>{}))>> : std::true_type {};
+static_assert(!HasOnStepAccepted<reactor::Reactor>::value,
+              "a step is answered by its result alone; there is no accepted event");
 
 TEST_CASE("clear_step_inputs reaches the library only for a stepped session") {
   Fixture fixture;
