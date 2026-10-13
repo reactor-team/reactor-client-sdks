@@ -9,6 +9,7 @@ import type {
   ReactorStatus,
   SessionInfo,
   StepCommand,
+  StepFile,
   StepFrame,
   StepResult,
   StepTrack,
@@ -29,6 +30,7 @@ export type {
   ReactorStatus,
   StepCommand,
   StepFrame,
+  StepFile,
   StepResult,
   StepTrack,
   TrackCapability,
@@ -37,8 +39,10 @@ export type {
   TrackMappingEntry,
 };
 
-/** What `Reactor.step()` runs: `state`, then `commands`, then every frame
- *  pushed since the previous step — as one unit. */
+/** What `Reactor.step()` sends: `state`, then `commands`, then every frame
+ *  pushed since the previous step, applied in that order before the model
+ *  generates. Every part is optional. A file goes in as a `FileRef` from
+ *  `uploadFile()`, in a command's `data` or a state value. */
 export interface StepOptions {
   /** Values for the model's state fields, keyed by field name. Each key runs
    *  as the model's `set_<key>` command, before `commands`. */
@@ -71,6 +75,16 @@ export interface PushAudioFrame {
 }
 
 export type PushFrame = PushVideoFrame | PushAudioFrame;
+
+/** What `Reactor.publishTrack()` resolves with: the published input track. */
+export interface PublishedTrack {
+  readonly name: string;
+  /** Buffers one input frame on this track for the next `step()` of a
+   *  stepped session — `reactor.pushFrame(name, frame, options)`. Rejects
+   *  with an `InvalidStateError` in a streamed session, whose media comes
+   *  from the `MediaStreamTrack` given to `publishTrack()`. */
+  pushFrame(frame: PushFrame, options?: PushFrameOptions): Promise<void>;
+}
 
 /** Per-frame extras for a pushed video frame. */
 export interface PushFrameOptions {
@@ -301,10 +315,6 @@ export interface ReactorEventMap {
   /** Fired every `LOCAL_STATS_INTERVAL_MS` while the session is "ready" — see
    *  `getStats()`. */
   statsUpdate: (stats: ConnectionStats) => void;
-  /** A stepped session accepted a step and started generating it. Fires
-   *  before that `step()` resolves, never for a refused step; `index`
-   *  matches the resolved `StepResult.index`. */
-  stepAccepted: (index: number) => void;
 }
 
 export type ReactorEventName = keyof ReactorEventMap;
