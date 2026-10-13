@@ -778,9 +778,15 @@ impl ClientStatsReporter {
         seconds: f64,
         frames: u64,
     ) -> Option<FrameStage> {
+        // A total that is not a number is no baseline either: the next finite
+        // one starts a fresh window rather than differencing against it.
+        if !seconds.is_finite() {
+            self.last_stage_totals.remove(&key);
+            return None;
+        }
         let (seconds_before, frames_before) =
             self.last_stage_totals.insert(key, (seconds, frames))?;
-        if frames <= frames_before || seconds < seconds_before || !seconds.is_finite() {
+        if frames <= frames_before || seconds < seconds_before {
             return None;
         }
         Some(FrameStage {
@@ -1975,6 +1981,36 @@ mod tests {
         let webcam = by_name(&second, "webcam");
         assert_eq!(stage_names(webcam), [("encode", 150)]);
         assert!((webcam.frame_stages[0].total_ms - 300.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_total_that_is_not_a_number_starts_a_fresh_window() {
+        let mut reporter = ClientStatsReporter::new();
+        let batch = |frames: u32, seconds: f64| {
+            let mut s = sent(2, "2", "video/VP8", 0);
+            s.frames_encoded = frames;
+            s.total_encode_time_s = seconds;
+            TransportStats {
+                outbound: vec![s],
+                ..TransportStats::default()
+            }
+        };
+        let encode = |stats: &[ClientTrackStat]| by_name(stats, "webcam").frame_stages.clone();
+        let paused = HashSet::new();
+
+        reporter.track_stats(&batch(100, 0.2), &tracks(), &paused, 0.0);
+        let after_nan = reporter.track_stats(&batch(130, f64::NAN), &tracks(), &paused, 5_000.0);
+        let first_finite = reporter.track_stats(&batch(160, 0.32), &tracks(), &paused, 10_000.0);
+        let next = reporter.track_stats(&batch(190, 0.38), &tracks(), &paused, 15_000.0);
+
+        assert!(encode(&after_nan).is_empty());
+        assert!(
+            encode(&first_finite).is_empty(),
+            "no finite baseline to difference against"
+        );
+        let [stage] = encode(&next).try_into().expect("one stage");
+        assert_eq!(stage.frames, 30);
+        assert!((stage.total_ms - 60.0).abs() < 1e-6);
     }
 
     #[test]
