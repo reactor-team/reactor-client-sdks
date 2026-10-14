@@ -114,6 +114,20 @@ public final class Ffi {
         PUSH_VIDEO_FRAME_WITH_METADATA_AT(
                 "reactor_push_video_frame_with_metadata_at",
                 FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT, JAVA_LONG)),
+        PUSH_VIDEO_FRAME_TIMED(
+                "reactor_push_video_frame_timed",
+                FunctionDescriptor.ofVoid(
+                        ADDRESS,
+                        ADDRESS,
+                        ADDRESS,
+                        JAVA_INT,
+                        JAVA_INT,
+                        ADDRESS,
+                        JAVA_INT,
+                        JAVA_INT,
+                        JAVA_LONG,
+                        JAVA_DOUBLE)),
+        FRAME_DELIVERED("reactor_frame_delivered", FunctionDescriptor.ofVoid()),
         PUSH_AUDIO_FRAME(
                 "reactor_push_audio_frame",
                 FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT));

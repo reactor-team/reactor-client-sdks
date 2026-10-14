@@ -166,6 +166,8 @@ extension Reactor {
             }
             return
         }
+        // The frame's delivery stage ends as it reaches the app's handlers.
+        ffi.frameDelivered()
         for handler in handlers { handler(frame) }
     }
 

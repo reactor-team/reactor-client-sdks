@@ -9,6 +9,7 @@
 #include "reactor/track.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <string>
 #include <utility>
 #include <vector>
@@ -493,6 +494,8 @@ void ClientImpl::deliver_video(const std::string& name, const VideoFrame& frame)
     warn_about_unhandled(name);
     return;
   }
+  // The frame's delivery stage ends as it reaches the app's handlers.
+  ffi().frame_delivered();
   // Inline, on the thread the library called on. That is the contract: while this
   // runs, the FFI keeps only the newest frame.
   handlers->invoke(frame);
@@ -821,6 +824,8 @@ void ClientImpl::begin_set_track_bitrate(std::unique_ptr<Pending> op, const std:
 
 void ClientImpl::push_video(const std::string& name, Bytes bgra, std::uint32_t width,
                             std::uint32_t height, const Track::FrameOptions& options) {
+  // The frame's submit stage starts here, so this SDK's own checks count.
+  const auto started = std::chrono::steady_clock::now();
   const auto tracks = declared_tracks();
   const Declared* found = find_declared(tracks, name);
   const Declared declared_track =
@@ -849,17 +854,11 @@ void ClientImpl::push_video(const std::string& name, Bytes bgra, std::uint32_t w
   const std::uint8_t* tag = options.user_data.empty() ? nullptr : options.user_data.data;
   const auto tag_len = static_cast<std::uint32_t>(options.user_data.size);
 
-  if (options.capture_time_us) {
-    ffi().push_video_frame_with_metadata_at(handle, name.c_str(), bgra.data, width, height, tag,
-                                            tag_len, *options.capture_time_us);
-    return;
-  }
-  if (tag != nullptr) {
-    ffi().push_video_frame_with_metadata(handle, name.c_str(), bgra.data, width, height, tag,
-                                         tag_len);
-    return;
-  }
-  ffi().push_video_frame(handle, name.c_str(), bgra.data, width, height);
+  const std::chrono::duration<double, std::milli> binding_ms =
+      std::chrono::steady_clock::now() - started;
+  ffi().push_video_frame_timed(handle, name.c_str(), bgra.data, width, height, tag, tag_len,
+                               options.capture_time_us ? 1 : 0, options.capture_time_us.value_or(0),
+                               binding_ms.count());
 }
 
 void ClientImpl::push_audio(const std::string& name, Samples pcm, std::uint32_t sample_rate,

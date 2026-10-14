@@ -14,6 +14,7 @@ import inc.reactor.sdk.ReactorOptions;
 import inc.reactor.sdk.ReactorSdk;
 import inc.reactor.sdk.Stats;
 import inc.reactor.sdk.Subscription;
+import inc.reactor.sdk.VideoFrame;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.invoke.MethodHandle;
@@ -966,7 +967,21 @@ public final class ClientPeer implements Runnable {
         // already reused.
         try (Arena frame = Arena.ofConfined()) {
             MemorySegment pixels = data.reinterpret(bytes, frame, null).asReadOnly();
-            tracks.deliverVideo(track, Media.videoFrame(pixels, width, height, frameId, timestampUs, tag));
+            VideoFrame video = Media.videoFrame(pixels, width, height, frameId, timestampUs, tag);
+            markDelivered();
+            tracks.deliverVideo(track, video);
+        }
+    }
+
+    /**
+     * Ends the delivering frame's delivery stage, as it reaches the app's handlers. Called from
+     * inside the frame callback; a failure to mark it only costs the stat, never the frame.
+     */
+    private void markDelivered() {
+        try {
+            ffi.handle(Ffi.Symbol.FRAME_DELIVERED).invokeExact();
+        } catch (Throwable t) {
+            LOG.log(System.Logger.Level.DEBUG, "reactor_frame_delivered could not be called", t);
         }
     }
 
@@ -1237,6 +1252,8 @@ public final class ClientPeer implements Runnable {
      */
     public void pushVideoFrame(
             String name, byte[] bgra, int width, int height, byte @Nullable [] userData, @Nullable Long captureTimeUs) {
+        // The frame's submit stage starts here, so the copy below counts toward it.
+        long started = System.nanoTime();
         requireOpen("pushFrame");
         // Copied into native memory for the call and released at the end of it. A copy per frame is
         // 8 MB at 1080p; Linker.Option.critical would let the heap array be passed directly, and is
@@ -1245,28 +1262,12 @@ public final class ClientPeer implements Runnable {
         try (Arena call = Arena.ofConfined()) {
             MemorySegment track = call.allocateFrom(name);
             MemorySegment pixels = call.allocateFrom(java.lang.foreign.ValueLayout.JAVA_BYTE, bgra);
-            if (userData == null && captureTimeUs == null) {
-                invokeMixed(Ffi.Symbol.PUSH_VIDEO_FRAME, handle, track, pixels, width, height);
-                return;
-            }
             MemorySegment tag = userData == null
                     ? MemorySegment.NULL
                     : call.allocateFrom(java.lang.foreign.ValueLayout.JAVA_BYTE, userData);
             int tagLength = userData == null ? 0 : userData.length;
-            if (captureTimeUs == null) {
-                invokeMixed(
-                        Ffi.Symbol.PUSH_VIDEO_FRAME_WITH_METADATA,
-                        handle,
-                        track,
-                        pixels,
-                        width,
-                        height,
-                        tag,
-                        tagLength);
-                return;
-            }
             invokeMixed(
-                    Ffi.Symbol.PUSH_VIDEO_FRAME_WITH_METADATA_AT,
+                    Ffi.Symbol.PUSH_VIDEO_FRAME_TIMED,
                     handle,
                     track,
                     pixels,
@@ -1274,7 +1275,9 @@ public final class ClientPeer implements Runnable {
                     height,
                     tag,
                     tagLength,
-                    captureTimeUs.longValue());
+                    captureTimeUs == null ? 0 : 1,
+                    captureTimeUs == null ? 0L : captureTimeUs.longValue(),
+                    (System.nanoTime() - started) / 1_000_000.0);
         }
     }
 

@@ -151,8 +151,9 @@ struct FFI: Sendable {
             UnsafeMutableRawPointer?
         ) -> Void
 
-    /// `reactor_push_video_frame_with_metadata_at` — BGRA pixels, optionally
-    /// tagged, optionally stamped with the caller's own capture time.
+    /// `reactor_push_video_frame_timed` — BGRA pixels, optionally tagged,
+    /// stamped with the caller's own capture time, and the milliseconds this
+    /// SDK already spent on the frame, which count toward its submit stage.
     ///
     /// The one push the SDK calls: the plain and tagged variants are this one
     /// with nothing to tag and nothing to stamp, so there is a single path to
@@ -162,8 +163,13 @@ struct FFI: Sendable {
             _ handle: OpaquePointer?, _ track: UnsafePointer<CChar>?,
             _ pixels: UnsafePointer<UInt8>?, _ width: UInt32, _ height: UInt32,
             _ userData: UnsafePointer<UInt8>?, _ userDataLen: UInt32,
-            _ captureTimeUs: Int64
+            _ captureTimeUs: Int64, _ bindingMs: Double
         ) -> Void
+
+    /// `reactor_frame_delivered` — marks, from inside the frame callback, the
+    /// moment a video frame is handed to the app's handlers, which ends its
+    /// delivery stage.
+    var frameDelivered: @Sendable () -> Void
 
     /// `reactor_push_audio_frame` — interleaved i16 PCM.
     var pushAudioFrame:
@@ -280,10 +286,13 @@ extension FFI {
         resumeTrack: { handle, name, completion, userdata in
             reactor_resume_track(handle, name, completion, userdata)
         },
-        pushVideoFrame: { handle, track, pixels, width, height, userData, userDataLen, captureAt in
-            reactor_push_video_frame_with_metadata_at(
-                handle, track, pixels, width, height, userData, userDataLen, captureAt)
+        pushVideoFrame: {
+            handle, track, pixels, width, height, userData, userDataLen, captureAt, bindingMs in
+            reactor_push_video_frame_timed(
+                handle, track, pixels, width, height, userData, userDataLen, 1, captureAt,
+                bindingMs)
         },
+        frameDelivered: { reactor_frame_delivered() },
         pushAudioFrame: { handle, track, samples, samplesPerChannel, sampleRate, channels in
             reactor_push_audio_frame(
                 handle, track, samples, samplesPerChannel, sampleRate, channels)

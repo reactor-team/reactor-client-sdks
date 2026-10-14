@@ -63,6 +63,7 @@ final class FakeLibrary: @unchecked Sendable {
         var resumeCalls: [String] = []
         var pushedFrames: [PushedFrame] = []
         var pushedAudio: [PushedAudio] = []
+        var framesDelivered = 0
         var commandCalls: [CommandCall] = []
         var schemaCalls = 0
         var statsCalls = 0
@@ -89,7 +90,7 @@ final class FakeLibrary: @unchecked Sendable {
     /// A pointer that is unique and dereferenceable but is not a client.
     private let handle = UnsafeMutableRawPointer.allocate(byteCount: 1, alignment: 1)
 
-    /// What the SDK handed `reactor_push_video_frame_with_metadata_at`.
+    /// What the SDK handed `reactor_push_video_frame_timed`.
     struct PushedFrame {
         var track: String?
         var width: UInt32
@@ -98,6 +99,7 @@ final class FakeLibrary: @unchecked Sendable {
         var byteCount: Int
         var userData: String?
         var captureTimeUs: Int64
+        var bindingMs: Double
     }
 
     /// What the SDK handed `reactor_push_audio_frame`.
@@ -201,6 +203,8 @@ final class FakeLibrary: @unchecked Sendable {
     var pauseCalls: [String] { state.withLock { $0.pauseCalls } }
     var resumeCalls: [String] { state.withLock { $0.resumeCalls } }
     var pushedFrames: [PushedFrame] { state.withLock { $0.pushedFrames } }
+    /// How many video frames the SDK marked as handed to the app.
+    var framesDelivered: Int { state.withLock { $0.framesDelivered } }
     var pushedAudio: [PushedAudio] { state.withLock { $0.pushedAudio } }
     var commandCalls: [CommandCall] { state.withLock { $0.commandCalls } }
     var schemaCalls: Int { state.withLock { $0.schemaCalls } }
@@ -493,7 +497,8 @@ final class FakeLibrary: @unchecked Sendable {
                 state.withLock { $0.resumeCalls.append(String(borrowing: name) ?? "") }
                 record(completion, userdata)
             },
-            pushVideoFrame: { [self] _, track, pixels, width, height, userData, userDataLen, at in
+            pushVideoFrame: {
+                [self] _, track, pixels, width, height, userData, userDataLen, at, bindingMs in
                 let byteCount = Int(width) * Int(height) * 4
                 let tag = userData.flatMap { pointer -> String? in
                     guard userDataLen > 0 else { return nil }
@@ -509,9 +514,11 @@ final class FakeLibrary: @unchecked Sendable {
                             firstByte: pixels?.pointee,
                             byteCount: byteCount,
                             userData: tag,
-                            captureTimeUs: at))
+                            captureTimeUs: at,
+                            bindingMs: bindingMs))
                 }
             },
+            frameDelivered: { [self] in state.withLock { $0.framesDelivered += 1 } },
             pushAudioFrame: { [self] _, track, samples, perChannel, sampleRate, channels in
                 let count = Int(perChannel) * Int(channels)
                 let values = samples.map { Array(UnsafeBufferPointer(start: $0, count: count)) }

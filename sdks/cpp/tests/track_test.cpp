@@ -57,9 +57,8 @@ class FakeSession {
     filled.resume_track = &resume_track;
     filled.set_bitrate = &set_bitrate;
     filled.set_track_bitrate = &set_track_bitrate;
-    filled.push_video_frame = &push_video_frame;
-    filled.push_video_frame_with_metadata = &push_video_frame_with_metadata;
-    filled.push_video_frame_with_metadata_at = &push_video_frame_with_metadata_at;
+    filled.push_video_frame_timed = &push_video_frame_timed;
+    filled.frame_delivered = &frame_delivered;
     filled.push_audio_frame = &push_audio_frame;
     filled.time_micros = &time_micros;
     return filled;
@@ -67,17 +66,18 @@ class FakeSession {
 
   // ── What the SDK sent ─────────────────────────────────────────────────────
 
-  /// One recorded push. Which entry point was used matters: the plain one drops
-  /// the tag, and the tagged one stamps the time as it arrives.
+  /// One recorded push: what reached the timed entry point.
   struct Push {
     std::string track;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::string user_data;
     std::optional<std::int64_t> capture_time_us;
-    bool via_metadata_entry_point = false;
+    double binding_ms = -1.0;
   };
   std::vector<Push> pushes;
+  /// How many frames the SDK marked as handed to the app.
+  int frames_delivered = 0;
 
   struct AudioPush {
     std::string track;
@@ -369,35 +369,20 @@ class FakeSession {
     }
   }
 
-  static void push_video_frame(ReactorHandle* /*handle*/, const char* track,
-                               const std::uint8_t* /*data*/, std::uint32_t width,
-                               std::uint32_t height) {
-    current().pushes.push_back(
-        Push{track == nullptr ? "" : track, width, height, "", std::nullopt, false});
-  }
-
-  static void push_video_frame_with_metadata(ReactorHandle* /*handle*/, const char* track,
-                                             const std::uint8_t* /*data*/, std::uint32_t width,
-                                             std::uint32_t height, const std::uint8_t* user_data,
-                                             std::uint32_t user_data_len) {
+  static void push_video_frame_timed(ReactorHandle* /*handle*/, const char* track,
+                                     const std::uint8_t* /*data*/, std::uint32_t width,
+                                     std::uint32_t height, const std::uint8_t* user_data,
+                                     std::uint32_t user_data_len, int has_capture_time,
+                                     std::int64_t capture_time_us, double binding_ms) {
     current().pushes.push_back(Push{
         track == nullptr ? "" : track, width, height,
         user_data == nullptr ? std::string{}
                              : std::string{reinterpret_cast<const char*>(user_data), user_data_len},
-        std::nullopt, true});
+        has_capture_time != 0 ? std::optional<std::int64_t>{capture_time_us} : std::nullopt,
+        binding_ms});
   }
 
-  static void push_video_frame_with_metadata_at(ReactorHandle* /*handle*/, const char* track,
-                                                const std::uint8_t* /*data*/, std::uint32_t width,
-                                                std::uint32_t height, const std::uint8_t* user_data,
-                                                std::uint32_t user_data_len,
-                                                std::int64_t capture_time_us) {
-    current().pushes.push_back(Push{
-        track == nullptr ? "" : track, width, height,
-        user_data == nullptr ? std::string{}
-                             : std::string{reinterpret_cast<const char*>(user_data), user_data_len},
-        capture_time_us, true});
-  }
+  static void frame_delivered() { ++current().frames_delivered; }
 
   /// A clock that moves, which is all the contract is: a stamp only means anything
   /// against the value the next frame gets.
@@ -577,6 +562,8 @@ TEST_CASE("frames arrive with the trailer the sender attached") {
   fixture.session.push_video("main_video", 4, 2);  // no trailer
 
   REQUIRE(seen.size() == 2);
+  // Each frame is marked as handed to the app, which ends its delivery stage.
+  CHECK(fixture.session.frames_delivered == 2);
   CHECK(seen[0].track == "main_video");
   CHECK(seen[0].width == 4);
   CHECK(seen[0].height == 2);
@@ -1068,9 +1055,10 @@ TEST_CASE("pushing a frame reaches the plain entry point when there is nothing t
   CHECK(push.track == "input_video");
   CHECK(push.width == 4);
   CHECK(push.height == 2);
-  CHECK_FALSE(push.via_metadata_entry_point);
   CHECK(push.user_data.empty());
   CHECK_FALSE(push.capture_time_us.has_value());
+  // The time the SDK spent on the frame before handing it over.
+  CHECK(push.binding_ms >= 0.0);
 }
 
 TEST_CASE("a tag and a capture time each reach the entry point that carries them") {
@@ -1097,8 +1085,7 @@ TEST_CASE("a tag and a capture time each reach the entry point that carries them
   REQUIRE(fixture.session.pushes.size() == 3);
   CHECK(fixture.session.pushes[0].user_data == "tag");
   CHECK_FALSE(fixture.session.pushes[0].capture_time_us.has_value());
-  // Stamping and tagging are independent: a stamped frame with no tag still goes
-  // through the entry point that takes both.
+  // Stamping and tagging are independent.
   CHECK(fixture.session.pushes[1].user_data.empty());
   CHECK(fixture.session.pushes[1].capture_time_us == std::int64_t{1'234'567});
   CHECK(fixture.session.pushes[2].user_data == "tag");

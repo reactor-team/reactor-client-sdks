@@ -9,6 +9,7 @@ import json
 import logging
 import mimetypes
 import os
+import time
 import weakref
 from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
@@ -654,6 +655,9 @@ class Reactor:
                 else b""
             )
             pixels = bytes(frame)
+            # The frame's delivery stage ends as it is handed to the app,
+            # after this copy.
+            get_lib().reactor_frame_delivered()
             r._fire_on_track(
                 "frame", track_bytes, pixels, width, height, frame_id, timestamp_us, ud
             )
@@ -1356,41 +1360,23 @@ class Reactor:
         instead of the time it is pushed. Tagging and stamping are independent:
         either, both, or neither.
         """
+        # The frame's submit stage starts here, so the copies below count.
+        started = time.perf_counter()
         self._require_handle()
         buf = (ctypes.c_uint8 * len(data)).from_buffer_copy(data)
         tag_len = len(user_data) if user_data else 0
         tag = (ctypes.c_uint8 * tag_len).from_buffer_copy(user_data) if user_data else None
-        # Three exports, one per combination the C ABI has a symbol for. The
-        # stamped one carries the tag too, so it covers stamped-and-untagged.
-        if capture_time_us is not None:
-            get_lib().reactor_push_video_frame_with_metadata_at(
-                ctypes.c_void_p(self._handle),
-                track_name.encode(),
-                buf,
-                ctypes.c_uint32(width),
-                ctypes.c_uint32(height),
-                tag,
-                ctypes.c_uint32(tag_len),
-                ctypes.c_int64(capture_time_us),
-            )
-            return
-        if tag is not None:
-            get_lib().reactor_push_video_frame_with_metadata(
-                ctypes.c_void_p(self._handle),
-                track_name.encode(),
-                buf,
-                ctypes.c_uint32(width),
-                ctypes.c_uint32(height),
-                tag,
-                ctypes.c_uint32(tag_len),
-            )
-            return
-        get_lib().reactor_push_video_frame(
+        get_lib().reactor_push_video_frame_timed(
             ctypes.c_void_p(self._handle),
             track_name.encode(),
             buf,
             ctypes.c_uint32(width),
             ctypes.c_uint32(height),
+            tag,
+            ctypes.c_uint32(tag_len),
+            ctypes.c_int(capture_time_us is not None),
+            ctypes.c_int64(capture_time_us or 0),
+            ctypes.c_double((time.perf_counter() - started) * 1_000.0),
         )
 
     def _push_audio_frame(

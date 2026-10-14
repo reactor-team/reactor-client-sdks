@@ -287,6 +287,23 @@ def _load() -> ctypes.CDLL:
         ctypes.c_int64,  # capture_time_us
     ]
 
+    lib.reactor_push_video_frame_timed.restype = None
+    lib.reactor_push_video_frame_timed.argtypes = [
+        ctypes.c_void_p,  # handle
+        ctypes.c_char_p,  # track_name
+        ctypes.c_void_p,  # data
+        ctypes.c_uint32,  # width
+        ctypes.c_uint32,  # height
+        ctypes.c_void_p,  # user_data (NULL = send untagged)
+        ctypes.c_uint32,  # user_data_len
+        ctypes.c_int,  # has_capture_time
+        ctypes.c_int64,  # capture_time_us
+        ctypes.c_double,  # binding_ms
+    ]
+
+    lib.reactor_frame_delivered.restype = None
+    lib.reactor_frame_delivered.argtypes = []
+
     lib.reactor_push_audio_frame.restype = None
     lib.reactor_push_audio_frame.argtypes = [
         ctypes.c_void_p,  # handle

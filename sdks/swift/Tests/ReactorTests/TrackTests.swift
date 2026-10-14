@@ -322,6 +322,22 @@ struct TrackTests {
         #expect(result?.thread == Thread.current)
     }
 
+    @Test("a frame is marked as handed to the app, which ends its delivery stage")
+    func framesMarkTheirDelivery() throws {
+        let fake = FakeLibrary()
+        declaringSession(fake)
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+
+        let subscription = try client.track("main_video").onFrame { _ in }
+        defer { subscription.cancel() }
+
+        fake.fireFrame(track: "main_video")
+        fake.fireFrame(track: "main_video")
+
+        #expect(fake.framesDelivered == 2)
+    }
+
     @Test("a frame carries its pixels and its trailer")
     func frameCarriesTheTrailer() throws {
         let fake = FakeLibrary()

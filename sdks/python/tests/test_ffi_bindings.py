@@ -173,4 +173,9 @@ def test_media_push_on_a_null_handle_is_a_noop() -> None:
     lib.reactor_push_video_frame_with_metadata_at(
         None, b"video", pixels, 1, 1, None, 0, 1_700_000_000_000_000
     )
+    lib.reactor_push_video_frame_timed(None, b"video", pixels, 1, 1, None, 0, 0, 0, 0.5)
     lib.reactor_push_audio_frame(None, b"audio", pcm, 2, 48000, 1)
+
+
+def test_marking_a_delivery_outside_a_frame_callback_is_a_noop() -> None:
+    _ffi.get_lib().reactor_frame_delivered()

@@ -79,6 +79,7 @@ final class SendingTest extends SendingFixture {
         assertEquals(PublishState.PUBLISHED, sending.publishState());
         sending.pushFrame(new byte[4], 1, 1);
         assertEquals(1, fake.videoFramesPushed);
+        assertTrue(fake.lastBindingMs >= 0, "the time the SDK spent on the frame reaches the push");
     }
 
     @Test

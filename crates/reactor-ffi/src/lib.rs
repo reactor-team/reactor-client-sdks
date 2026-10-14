@@ -232,6 +232,32 @@ struct VideoFrame {
     generation: u64,
 }
 
+/// The video frame the host's `on_frame` callback is delivering on this
+/// thread, until the binding marks the moment it hands the frame to the app
+/// with [`reactor_frame_delivered`].
+struct Delivering {
+    stage_times: Arc<StageTimes>,
+    track: String,
+    decoded_at: std::time::Instant,
+    generation: u64,
+}
+
+thread_local! {
+    static DELIVERING: std::cell::RefCell<Option<Delivering>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+impl Delivering {
+    fn record(self) {
+        self.stage_times.add_from(
+            self.generation,
+            &self.track,
+            DELIVERY,
+            self.decoded_at.elapsed().as_secs_f64() * 1_000.0,
+        );
+    }
+}
+
 /// A decoded remote audio frame, likewise copied.
 struct AudioFrame {
     track: CString,
@@ -922,12 +948,18 @@ unsafe fn create_impl(
                 Overflow::DropOldest,
                 gate.clone(),
                 move |frame: VideoFrame| unsafe {
-                    delivered.add_from(
-                        frame.generation,
-                        &frame.track.to_string_lossy(),
-                        DELIVERY,
-                        frame.decoded_at.elapsed().as_secs_f64() * 1_000.0,
-                    );
+                    // `delivery` ends where the binding hands the frame to the
+                    // app, which it marks with reactor_frame_delivered() from
+                    // inside this callback. A binding that does not mark it
+                    // ends the stage here, as the callback starts.
+                    let delivering = Delivering {
+                        stage_times: delivered.clone(),
+                        track: frame.track.to_string_lossy().into_owned(),
+                        decoded_at: frame.decoded_at,
+                        generation: frame.generation,
+                    };
+                    let unmarked_ms = frame.decoded_at.elapsed().as_secs_f64() * 1_000.0;
+                    DELIVERING.with(|d| *d.borrow_mut() = Some(delivering));
                     frame_fn(
                         frame.track.as_ptr(),
                         frame.bgra.as_ptr(),
@@ -942,7 +974,15 @@ unsafe fn create_impl(
                         },
                         frame.user_data.len() as u32,
                         userdata_usize as *mut c_void,
-                    )
+                    );
+                    if let Some(unmarked) = DELIVERING.with(|d| d.borrow_mut().take()) {
+                        unmarked.stage_times.add_from(
+                            unmarked.generation,
+                            &unmarked.track,
+                            DELIVERY,
+                            unmarked_ms,
+                        );
+                    }
                 },
             );
             let tx = thread.sender();
@@ -1945,6 +1985,65 @@ pub unsafe extern "C" fn reactor_push_video_frame_with_metadata(
         .push_video_frame_with_metadata(&name, slice, width, height, tag);
 }
 
+/// Mark the moment the binding hands the video frame it is delivering to the
+/// app, from inside its `on_frame` callback: the frame's `delivery` stage ends
+/// here rather than when the callback started, so the binding's own copying
+/// and routing count toward it. Call it once, right before the app's handler
+/// runs, on the thread the callback runs on; a call anywhere else does
+/// nothing.
+#[no_mangle]
+pub extern "C" fn reactor_frame_delivered() {
+    if let Some(delivering) = DELIVERING.with(|d| d.borrow_mut().take()) {
+        delivering.record();
+    }
+}
+
+/// Push a BGRA frame the binding has already spent `binding_ms` milliseconds
+/// on since the app handed it over, so the binding's own copying or
+/// conversion counts toward the frame's `submit` stage. Tagged with
+/// `user_data` when `user_data_len` is not 0, and stamped with
+/// `capture_time_us` (see [`reactor_push_video_frame_with_metadata_at`]) when
+/// `has_capture_time` is not 0; otherwise the same as the other push exports.
+///
+/// # Safety
+///
+/// As [`reactor_push_video_frame_with_metadata_at`].
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn reactor_push_video_frame_timed(
+    handle: *mut ReactorHandle,
+    track_name: *const c_char,
+    data: *const u8,
+    width: u32,
+    height: u32,
+    user_data: *const u8,
+    user_data_len: u32,
+    has_capture_time: c_int,
+    capture_time_us: i64,
+    binding_ms: c_double,
+) {
+    if handle.is_null() || track_name.is_null() || data.is_null() {
+        return;
+    }
+    let name = CStr::from_ptr(track_name).to_string_lossy();
+    let n = (width * height * 4) as usize;
+    let slice = std::slice::from_raw_parts(data, n);
+    let tag: &[u8] = if user_data.is_null() || user_data_len == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(user_data, user_data_len as usize)
+    };
+    (*handle).reactor.push_video_frame_timed(
+        &name,
+        slice,
+        width,
+        height,
+        tag,
+        (has_capture_time != 0).then_some(capture_time_us),
+        binding_ms,
+    );
+}
+
 /// The engine's monotonic clock in microseconds — the epoch
 /// [`reactor_push_video_frame_with_metadata_at`] reads its capture time in.
 ///
@@ -2059,6 +2158,29 @@ pub unsafe extern "C" fn reactor_push_audio_frame(
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// The binding's mark ends the delivering frame's stage once; a mark with
+    /// no frame being delivered on this thread does nothing.
+    #[test]
+    fn a_delivery_mark_ends_the_delivering_frames_stage_once() {
+        let stage_times = Arc::new(StageTimes::new());
+        let generation = stage_times.generation();
+        DELIVERING.with(|d| {
+            *d.borrow_mut() = Some(Delivering {
+                stage_times: stage_times.clone(),
+                track: "main_video".to_string(),
+                decoded_at: std::time::Instant::now(),
+                generation,
+            })
+        });
+
+        reactor_frame_delivered();
+        reactor_frame_delivered();
+
+        let stages = stage_times.take_from(generation).unwrap();
+        assert_eq!(stages["main_video"][0].name, DELIVERY);
+        assert_eq!(stages["main_video"][0].frames, 1);
+    }
 
     /// Every entry point documents null as accepted-and-handled, and bindings lean
     /// on it: a Python `Reactor` reports `"disconnected"` from a client that never

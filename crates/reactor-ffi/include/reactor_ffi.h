@@ -126,6 +126,10 @@ typedef void (*reactor_on_session_id_fn)(const char *session_id_or_null, void *u
  * track decodes into this one callback, so it is the only thing that tells them
  * apart.  Empty ("") when the transceiver could not be matched to a declared
  * track; never NULL.
+ *
+ * Call reactor_frame_delivered() from inside the callback right before the
+ * app's handler runs, so the frame's "delivery" stage in client stats covers
+ * the binding's own copying and routing.
  */
 typedef void (*reactor_on_frame_fn)(
     const char *track_name,
@@ -788,6 +792,15 @@ void reactor_push_video_frame_with_metadata(
 int64_t reactor_time_micros(void);
 
 /*
+ * Mark the moment the binding hands the video frame its on_frame callback is
+ * delivering to the app: the frame's "delivery" stage in client stats ends
+ * here rather than when the callback started.  Call it once, from inside the
+ * callback, on its thread, right before the app's handler runs; anywhere else
+ * it does nothing.  Takes no handle.
+ */
+void reactor_frame_delivered(void);
+
+/*
  * Push a BGRA frame stamped with the caller's own capture time, in microseconds,
  * read from reactor_time_micros(), optionally tagged with `user_data`.
  *
@@ -809,6 +822,27 @@ void reactor_push_video_frame_with_metadata_at(
     const uint8_t *user_data,   /* nullable with user_data_len 0 */
     uint32_t       user_data_len,
     int64_t        capture_time_us
+);
+
+/*
+ * Push a BGRA frame the binding has already spent `binding_ms` milliseconds on
+ * since the app handed it over, so the binding's own copy or conversion counts
+ * toward the frame's "submit" stage in client stats.  Tagged with `user_data`
+ * when `user_data_len` is not 0, and stamped with `capture_time_us` (as
+ * reactor_push_video_frame_with_metadata_at()) when `has_capture_time` is not
+ * 0.  Same buffer requirements as the functions above.
+ */
+void reactor_push_video_frame_timed(
+    ReactorHandle *handle,
+    const char    *track_name,
+    const uint8_t *data,
+    uint32_t       width,
+    uint32_t       height,
+    const uint8_t *user_data,   /* nullable with user_data_len 0 */
+    uint32_t       user_data_len,
+    int            has_capture_time,
+    int64_t        capture_time_us,
+    double         binding_ms
 );
 
 /*
