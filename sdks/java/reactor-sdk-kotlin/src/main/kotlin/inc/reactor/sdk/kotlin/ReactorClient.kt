@@ -214,6 +214,8 @@ public class ReactorClient(
      * @return the step's result, copied onto the heap
      * @throws inc.reactor.sdk.StepRefusedException when the runtime or the model turns the step
      *   down
+     * @throws inc.reactor.sdk.StepNotReadyException when the session cannot take a step yet; the
+     *   step did not run
      * @throws inc.reactor.sdk.StepResultTooLargeException when its output does not fit in a message
      * @throws inc.reactor.sdk.MessageTooLargeException when the request does not; see
      *   [clearStepInputs]
