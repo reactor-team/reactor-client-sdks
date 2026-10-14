@@ -590,7 +590,10 @@ impl ReactorClient {
     /// Every frame pushed since the previous step rides this one. Rejects with
     /// the core's code: `step_refused` (calls applied before the refusal stay
     /// applied), `step_not_ready` (the session cannot take a step yet; the
-    /// step did not run), `step_result_too_large`,
+    /// step did not run), `step_command_failed` (a state key or command
+    /// failed; the calls before it stay applied and the step did not run),
+    /// `step_session_ended` (the session ended before the result came back),
+    /// `step_result_too_large`,
     /// `MESSAGE_TOO_LARGE` (nothing sent, pushed frames kept — see
     /// `clearStepInputs`), `UNSUPPORTED_FRAME_ENCODING`, or the code of
     /// whatever else failed the step (`DISCONNECTED`, `REQUEST_TIMEOUT`, …).

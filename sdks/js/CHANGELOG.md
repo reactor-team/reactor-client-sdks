@@ -27,6 +27,7 @@ versioning follows [Semantic Versioning](https://semver.org/).
   `stepFrameToImageData()` turns a video frame into something a canvas draws.
   Refusals are typed: `StepRefusedError`, the new `StepNotReadyError` (the
   session cannot take a step yet; the step did not run),
+  `StepCommandFailedError`, `StepSessionEndedError`,
   `StepResultTooLargeError`, `UnsupportedFrameEncodingError`.
 - `publishTrack()` resolves with a `PublishedTrack` handle, whose
   `pushFrame(frame)` feeds that track in a stepped session. Its

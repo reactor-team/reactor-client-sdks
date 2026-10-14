@@ -215,6 +215,9 @@ await reactor.step();
   an `InvalidStateError`.
 - Refusals are typed: `StepRefusedError` (`step_refused`), `StepNotReadyError`
   (`step_not_ready`: the session cannot take a step yet, and the step did not run),
+  `StepCommandFailedError` (`step_command_failed`: a state key or command failed, the calls
+  before it stay applied, and the step did not run), `StepSessionEndedError`
+  (`step_session_ended`: the session ended before the step's result came back),
   `StepResultTooLargeError` (`step_result_too_large`), `UnsupportedFrameEncodingError`, and `MessageTooLargeError` when
   the request is too large to send — nothing was sent, and the pushed frames are kept until
   `clearStepInputs()`.

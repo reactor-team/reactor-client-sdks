@@ -73,9 +73,11 @@ here to the BGRA the core's push API takes; the core sends it as RGB.
 describes the files the model kept with the step (`name`, `contentType`,
 `size`); their bytes are served over HTTP from the session's step results.
 `error` is set when the step ran and the model reported a failure — such a
-step still resolves. A step that did not run rejects with `step_refused` or
-`step_not_ready` (the session cannot take a step yet), and one whose result was
-too large for a message with `step_result_too_large`.
+step still resolves. A step that did not run rejects with `step_refused`,
+`step_not_ready` (the session cannot take a step yet) or `step_command_failed`
+(a state key or command failed). One whose result was too large for a message
+rejects with `step_result_too_large`, and one whose session ended before the
+result came back with `step_session_ended`.
 
 ```js
 import init, { ReactorClient } from "./pkg/reactor_wasm.js";
