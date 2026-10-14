@@ -991,23 +991,42 @@ mod audio_tests;
 
 /// The stage durations of a timing frame, from the sender's stamps.
 ///
-/// The engine leaves a stamp the sender never took negative. A stage missing
-/// either of its stamps comes out as `-1.0`, which the reporter drops, rather
-/// than a zero or a span across the gap that never happened.
+/// The sender carries each stamp as a non-negative delta from the capture
+/// time, so a stamp it never took is the capture time itself and falls before
+/// the stamps it did take. The stamps are negative until the engine has
+/// estimated the clock offset, still right relative to each other, so a sign
+/// says nothing. A stage missing either of its stamps comes out as `-1.0`,
+/// which the reporter drops, rather than a zero or a span across the gap.
 fn timing_frame(t: reactor_webrtc::TimingFrameInfo) -> TimingFrame {
-    let stage = |from: i64, to: i64| {
-        if from < 0 || to < 0 {
-            -1.0
+    let s = t.sender;
+    let stamps = [
+        s.capture_ms,
+        s.encode_start_ms,
+        s.encode_finish_ms,
+        s.packetization_finish_ms,
+        s.pacer_exit_ms,
+    ];
+    let mut taken = [true; 5];
+    let mut latest = stamps[0];
+    for (i, &stamp) in stamps.iter().enumerate().skip(1) {
+        if stamp < latest {
+            taken[i] = false;
         } else {
-            (to - from) as f64
+            latest = stamp;
+        }
+    }
+    let stage = |from: usize, to: usize| {
+        if taken[from] && taken[to] {
+            (stamps[to] - stamps[from]) as f64
+        } else {
+            -1.0
         }
     };
-    let s = t.sender;
     TimingFrame {
         rtp_timestamp: t.rtp_timestamp,
-        encode_wait_ms: stage(s.capture_ms, s.encode_start_ms),
-        packetize_ms: stage(s.encode_finish_ms, s.packetization_finish_ms),
-        pacer_ms: stage(s.packetization_finish_ms, s.pacer_exit_ms),
+        encode_wait_ms: stage(0, 1),
+        packetize_ms: stage(2, 3),
+        pacer_ms: stage(3, 4),
     }
 }
 
@@ -1089,16 +1108,26 @@ mod tests {
 
     #[test]
     fn a_missing_stamp_leaves_both_stages_it_bounds_negative() {
-        // No packetization stamp: packetize ends at it and pacer starts at it.
-        let t = mapped_timing_frame([1_000, 1_004, 1_020, -1, 1_030]);
+        // The sender never stamped packetization: it reads as the capture
+        // time. packetize ends at it and pacer starts at it.
+        let t = mapped_timing_frame([1_000, 1_004, 1_020, 1_000, 1_030]);
         assert_eq!(t.encode_wait_ms, 4.0);
         assert!(t.packetize_ms < 0.0);
         assert!(t.pacer_ms < 0.0);
-        // No capture stamp: only encode_wait starts at it.
-        let t = mapped_timing_frame([-1, 1_004, 1_020, 1_023, 1_030]);
-        assert!(t.encode_wait_ms < 0.0);
+        // Nor the pacer exit: only pacer ends at it.
+        let t = mapped_timing_frame([1_000, 1_004, 1_020, 1_023, 1_000]);
         assert_eq!(t.packetize_ms, 3.0);
-        assert_eq!(t.pacer_ms, 7.0);
+        assert!(t.pacer_ms < 0.0);
+    }
+
+    #[test]
+    fn stamps_before_the_clock_offset_is_known_are_still_times() {
+        // Negative until the engine estimates the offset, still right
+        // relative to each other.
+        let t = mapped_timing_frame([-30, -26, -10, -7, -1]);
+        assert_eq!(t.encode_wait_ms, 4.0);
+        assert_eq!(t.packetize_ms, 3.0);
+        assert_eq!(t.pacer_ms, 6.0);
     }
 
     #[test]
