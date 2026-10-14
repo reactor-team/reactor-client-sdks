@@ -305,7 +305,9 @@ mod tests {
     /// the step's request_id resolves it, and nothing else arrives for it.
     #[test]
     fn a_step_result_resolves_its_step() {
-        use crate::protocol::wire::v1::step::{RequestStep, StepFileRef, StepResult};
+        use crate::protocol::wire::v1::step::{
+            RequestStep, StepFailureCode, StepFileRef, StepResult,
+        };
 
         let c = DataCorrelator::new();
         let mut pending = c.begin(data_client_message::Payload::RequestStep(
@@ -323,6 +325,7 @@ mod tests {
                     size: 3,
                 }],
                 error: None,
+                failure_code: StepFailureCode::Unspecified as i32,
             }),
         );
         assert!(c.handle_message(&result).unwrap().correlated);

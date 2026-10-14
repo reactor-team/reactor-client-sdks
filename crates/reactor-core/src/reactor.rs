@@ -1065,9 +1065,12 @@ impl Reactor {
     /// command's data is not an object, or when the encoded request exceeds
     /// the data channel's `max_message_bytes()` ([`CoreError::MessageTooLarge`];
     /// see [`Reactor::clear_step_inputs`]). Once sent, the frames belong to
-    /// that step whatever its outcome. The runtime's refusal is
-    /// [`CoreError::StepRefused`], an oversized result
-    /// [`CoreError::StepResultTooLarge`], any other failure
+    /// that step whatever its outcome. The runtime answers every step with a
+    /// `StepResult` whose `failure_code` names the outcome: a refusal is
+    /// [`CoreError::StepRefused`], a session not ready to step
+    /// [`CoreError::StepNotReady`], an oversized result
+    /// [`CoreError::StepResultTooLarge`], each with the runtime's reason as
+    /// its message; any other failure (the connection dropping mid-step) is
     /// [`CoreError::StepFailed`].
     ///
     /// The step is not checked against the model's command schema here: the
@@ -1085,14 +1088,14 @@ impl Reactor {
         }
         self.ensure_ready()?;
         let mut request = build_request_step(state, commands, Vec::new())?;
-        request.inputs = self.step_inputs.take();
+        request.media_input = self.step_inputs.take();
 
         let (pending, payload) = self
             .data
             .begin_returning(data_client_message::Payload::RequestStep(request));
         if let Err(error) = self.send_pending("step", &pending) {
             if let data_client_message::Payload::RequestStep(request) = payload {
-                self.step_inputs.restore(request.inputs);
+                self.step_inputs.restore(request.media_input);
             }
             return Err(error);
         }
@@ -1114,15 +1117,12 @@ impl Reactor {
             Some(data_server_message::Payload::StepResult(result)) => {
                 self.frame_decoders.decode_result(result)
             }
-            Some(data_server_message::Payload::Error(e)) => Err(match e.code.as_str() {
-                codes::STEP_REFUSED => CoreError::StepRefused { message: e.message },
-                codes::STEP_RESULT_TOO_LARGE => {
-                    CoreError::StepResultTooLarge { message: e.message }
-                }
-                _ => CoreError::StepFailed {
-                    code: e.code,
-                    message: e.message,
-                },
+            // Every outcome of a step, refusals included, is a StepResult; an
+            // Error is not a step reply. Should one arrive anyway, its code
+            // passes through untouched.
+            Some(data_server_message::Payload::Error(e)) => Err(CoreError::StepFailed {
+                code: e.code,
+                message: e.message,
             }),
             Some(other) => Err(CoreError::decode(format!(
                 "unexpected reply to a step: {other:?}"
@@ -4386,7 +4386,7 @@ mod tests {
     use crate::protocol::wire::v1::data::DataClientMessage;
     use crate::protocol::wire::v1::platform::TrackKind as WireTrackKind;
     use crate::protocol::wire::v1::step::{
-        Frame, FrameEncoding, StepFileRef, StepResult, TrackFrames,
+        Frame, FrameEncoding, StepFailureCode, StepFileRef, StepResult, TrackFrames,
     };
 
     /// Records every data-channel send and advertises `max` as its limit.
@@ -4561,7 +4561,7 @@ mod tests {
         assert_eq!(request.commands[0].r#type, "set_seed");
         assert_eq!(
             request
-                .inputs
+                .media_input
                 .iter()
                 .map(|t| (
                     t.track.as_str(),
@@ -4589,6 +4589,7 @@ mod tests {
                 elapsed: 1.5,
                 files: vec![],
                 error: None,
+                failure_code: StepFailureCode::Unspecified as i32,
             }),
         )
         .await;
@@ -4623,6 +4624,7 @@ mod tests {
                     size: 4096,
                 }],
                 error: None,
+                failure_code: StepFailureCode::Unspecified as i32,
             }),
         )
         .await;
@@ -4664,6 +4666,7 @@ mod tests {
                 elapsed: 0.2,
                 files: vec![],
                 error: Some("generate() raised".into()),
+                failure_code: StepFailureCode::Failed as i32,
             }),
         )
         .await;
@@ -4672,46 +4675,82 @@ mod tests {
         assert_eq!(output.error.as_deref(), Some("generate() raised"));
     }
 
+    /// Every step outcome arrives as a StepResult; its failure_code picks the
+    /// variant, and its `error` is the message. None of them is an event.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn step_errors_map_to_their_own_variants() {
+    async fn step_failure_codes_map_to_their_own_variants() {
         type IsExpected = fn(&CoreError) -> bool;
-        let cases: [(&str, IsExpected); 3] = [
-            ("step_refused", |e| {
-                matches!(e, CoreError::StepRefused { .. })
-            }),
-            ("step_result_too_large", |e| {
-                matches!(e, CoreError::StepResultTooLarge { .. })
-            }),
+        let cases: [(StepFailureCode, &str, IsExpected); 3] = [
             (
-                "model_crashed",
-                |e| matches!(e, CoreError::StepFailed { code, .. } if code == "model_crashed"),
+                StepFailureCode::Refused,
+                codes::STEP_REFUSED,
+                |e| matches!(e, CoreError::StepRefused { message } if message == "no"),
+            ),
+            (
+                StepFailureCode::NotReady,
+                codes::STEP_NOT_READY,
+                |e| matches!(e, CoreError::StepNotReady { message } if message == "no"),
+            ),
+            (
+                StepFailureCode::ResultTooLarge,
+                codes::STEP_RESULT_TOO_LARGE,
+                |e| matches!(e, CoreError::StepResultTooLarge { message } if message == "no"),
             ),
         ];
-        for (code, expected) in cases {
+        for (failure_code, code, expected) in cases {
             let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
             let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
             let mut events = reactor.subscribe();
             let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+            let ran = failure_code == StepFailureCode::ResultTooLarge;
             feed(
                 &reactor,
                 &sent.request_id,
                 MessageKind::Response,
-                data_server_message::Payload::Error(crate::protocol::wire::v1::common::Error {
-                    code: code.into(),
-                    message: "no".into(),
+                data_server_message::Payload::StepResult(StepResult {
+                    index: if ran { 3 } else { 0 },
+                    tracks: vec![],
+                    elapsed: if ran { 0.4 } else { 0.0 },
+                    files: vec![],
+                    error: Some("no".into()),
+                    failure_code: failure_code as i32,
                 }),
             )
             .await;
             let error = stepping.await.unwrap().unwrap_err();
-            assert!(expected(&error), "{code}: got {error:?}");
+            assert!(expected(&error), "{failure_code:?}: got {error:?}");
             assert_eq!(error.code(), code);
             while let Ok(event) = events.try_recv() {
                 assert!(
                     !matches!(event, ReactorEvent::Error(_)),
-                    "a correlated step error is the caller's, not an event"
+                    "a correlated step failure is the caller's, not an event"
                 );
             }
         }
+    }
+
+    /// No step reply is an `Error` any more; one that arrives anyway fails
+    /// the step with its code passed through, rather than hanging it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_error_reply_to_a_step_passes_its_code_through() {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+        feed(
+            &reactor,
+            &sent.request_id,
+            MessageKind::Response,
+            data_server_message::Payload::Error(crate::protocol::wire::v1::common::Error {
+                code: "model_crashed".into(),
+                message: "no".into(),
+            }),
+        )
+        .await;
+        let error = stepping.await.unwrap().unwrap_err();
+        assert!(
+            matches!(&error, CoreError::StepFailed { code, .. } if code == "model_crashed"),
+            "got {error:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4736,6 +4775,7 @@ mod tests {
                 elapsed: 0.0,
                 files: vec![],
                 error: None,
+                failure_code: StepFailureCode::Unspecified as i32,
             }),
         )
         .await;
@@ -4830,8 +4870,8 @@ mod tests {
         let Some(data_client_message::Payload::RequestStep(request)) = sent.payload else {
             panic!("expected a RequestStep");
         };
-        assert_eq!(request.inputs.len(), 2);
-        let cam = &request.inputs[0];
+        assert_eq!(request.media_input.len(), 2);
+        let cam = &request.media_input[0];
         assert_eq!(cam.track, "cam");
         assert_eq!(cam.kind, WireTrackKind::Video as i32);
         assert_eq!(cam.frames.len(), 2);
@@ -4840,7 +4880,7 @@ mod tests {
         assert_eq!(cam.frames[1].data, [6, 5, 4]);
         assert_eq!(cam.frames[1].metadata.as_deref(), Some(&b"t"[..]));
         assert_eq!(cam.frames[1].capture_time_us, Some(99));
-        let mic = &request.inputs[1];
+        let mic = &request.media_input[1];
         assert_eq!(mic.track, "mic");
         assert_eq!(mic.kind, WireTrackKind::Audio as i32);
         assert_eq!(mic.frames[0].dtype, "int16");
@@ -4857,6 +4897,7 @@ mod tests {
                 elapsed: 0.0,
                 files: vec![],
                 error: None,
+                failure_code: StepFailureCode::Unspecified as i32,
             }),
         )
         .await;
@@ -4867,7 +4908,7 @@ mod tests {
         let Some(data_client_message::Payload::RequestStep(request)) = sent.payload else {
             panic!("expected a RequestStep");
         };
-        assert!(request.inputs.is_empty());
+        assert!(request.media_input.is_empty());
         stepping.abort();
     }
 

@@ -66,6 +66,8 @@ public enum ErrorCode {
     UNSUPPORTED_FRAME_ENCODING("UNSUPPORTED_FRAME_ENCODING", false, UnsupportedFrameEncodingException::new),
     /** @see StepRefusedException */
     STEP_REFUSED("step_refused", false, StepRefusedException::new),
+    /** @see StepNotReadyException */
+    STEP_NOT_READY("step_not_ready", false, StepNotReadyException::new),
     /** @see StepResultTooLargeException */
     STEP_RESULT_TOO_LARGE("step_result_too_large", false, StepResultTooLargeException::new);
 

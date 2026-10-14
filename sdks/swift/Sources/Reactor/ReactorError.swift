@@ -193,6 +193,11 @@ extension ReactorError {
         /// passed through.
         public static let stepRefused = Code(rawValue: "step_refused")
 
+        /// The session cannot run a step yet: it is not in a running state
+        /// that can take one. The step did not run and nothing it carried was
+        /// applied. Lowercase, as the runtime names the outcome.
+        public static let stepNotReady = Code(rawValue: "step_not_ready")
+
         /// A step ran, but its result does not fit in one data-channel message.
         /// Ask for less per step — fewer frames, a smaller resolution.
         public static let stepResultTooLarge = Code(rawValue: "step_result_too_large")
@@ -269,6 +274,9 @@ extension ReactorError {
 
     /// Matches an error whose code is ``Code/stepRefused``.
     public static var stepRefused: Code { .stepRefused }
+
+    /// Matches an error whose code is ``Code/stepNotReady``.
+    public static var stepNotReady: Code { .stepNotReady }
 
     /// Matches an error whose code is ``Code/stepResultTooLarge``.
     public static var stepResultTooLarge: Code { .stepResultTooLarge }

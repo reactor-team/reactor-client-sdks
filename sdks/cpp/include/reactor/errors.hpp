@@ -74,6 +74,7 @@ inline constexpr std::string_view GENERATION_MODE_MISMATCH = "GENERATION_MODE_MI
 inline constexpr std::string_view UNSUPPORTED_FRAME_ENCODING = "UNSUPPORTED_FRAME_ENCODING";
 // Lowercase: the runtime's own step codes, passed through as it sends them.
 inline constexpr std::string_view STEP_REFUSED = "step_refused";
+inline constexpr std::string_view STEP_NOT_READY = "step_not_ready";
 inline constexpr std::string_view STEP_RESULT_TOO_LARGE = "step_result_too_large";
 inline constexpr std::string_view INTERNAL_ERROR = "INTERNAL_ERROR";
 
@@ -139,8 +140,8 @@ class ReactorError : public std::runtime_error {
 
 /// Declare a subclass.
 ///
-/// Twenty-one of these differ only in name and code, so they are generated from one
-/// list: a hand-written set is twenty-one chances to paste the wrong code in, or to
+/// Twenty-two of these differ only in name and code, so they are generated from one
+/// list: a hand-written set is twenty-two chances to paste the wrong code in, or to
 /// forget the `rethrow` override that keeps the type from being sliced away.
 #define REACTOR_ERROR_CLASSES(X)                                                                  \
   X(NetworkError, NETWORK_ERROR)              /* the request never got a reply */                 \
@@ -163,6 +164,7 @@ class ReactorError : public std::runtime_error {
   X(GenerationModeMismatchError, GENERATION_MODE_MISMATCH)     /* runtime ignored the mode */     \
   X(UnsupportedFrameEncodingError, UNSUPPORTED_FRAME_ENCODING) /* step frame undecodable */       \
   X(StepRefusedError, STEP_REFUSED)                            /* runtime turned the step down */ \
+  X(StepNotReadyError, STEP_NOT_READY)                         /* session cannot step yet */      \
   X(StepResultTooLargeError, STEP_RESULT_TOO_LARGE)            /* step result over one message */
 
 namespace detail {

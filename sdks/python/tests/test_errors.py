@@ -27,6 +27,7 @@ from reactor_sdk import (
     RecorderDisabledError,
     RequestTimeoutError,
     ServerError,
+    StepNotReadyError,
     StepRefusedError,
     StepResultTooLargeError,
     UnauthorizedError,
@@ -60,6 +61,7 @@ class TestCodeToClass:
             ("GENERATION_MODE_MISMATCH", GenerationModeMismatchError),
             ("UNSUPPORTED_FRAME_ENCODING", UnsupportedFrameEncodingError),
             ("step_refused", StepRefusedError),
+            ("step_not_ready", StepNotReadyError),
             ("step_result_too_large", StepResultTooLargeError),
         ],
     )

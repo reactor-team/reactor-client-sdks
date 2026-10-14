@@ -17,6 +17,7 @@ import {
   RequestTimeoutError,
   ServerError,
   SessionTerminalError,
+  StepNotReadyError,
   StepRefusedError,
   StepResultTooLargeError,
   toReactorError,
@@ -139,6 +140,7 @@ describe('typed subclasses', () => {
     [RecorderDisabledError, 'RECORDER_DISABLED'],
     [GenerationModeMismatchError, 'GENERATION_MODE_MISMATCH'],
     [StepRefusedError, 'step_refused'],
+    [StepNotReadyError, 'step_not_ready'],
     [StepResultTooLargeError, 'step_result_too_large'],
     [UnsupportedFrameEncodingError, 'UNSUPPORTED_FRAME_ENCODING'],
   ];
@@ -171,6 +173,7 @@ describe('errorForCode', () => {
 
   it("matches the runtime's lowercase step codes exactly as reactor-core passes them through", () => {
     expect(errorForCode('step_refused')).toBe(StepRefusedError);
+    expect(errorForCode('step_not_ready')).toBe(StepNotReadyError);
     expect(errorForCode('step_result_too_large')).toBe(StepResultTooLargeError);
   });
 
