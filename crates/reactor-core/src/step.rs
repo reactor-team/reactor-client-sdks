@@ -15,6 +15,8 @@
 //! | `REFUSED`          | did not run           | [`CoreError::StepRefused`]          |
 //! | `NOT_READY`        | did not run           | [`CoreError::StepNotReady`]         |
 //! | `RESULT_TOO_LARGE` | ran, result too big   | [`CoreError::StepResultTooLarge`]   |
+//! | `COMMAND_FAILED`   | did not run           | [`CoreError::StepCommandFailed`]    |
+//! | `SESSION_ENDED`    | unknown               | [`CoreError::StepSessionEnded`]     |
 //!
 //! A result names the extra files the model kept with the step
 //! ([`StepFile`]) but does not carry them; their bytes are fetched over HTTP
@@ -130,6 +132,8 @@ impl StepInputs {
                 track: track.to_string(),
                 kind: kind as i32,
                 frames: vec![frame],
+                // A pushed frame carries no rate of its own to declare.
+                rate: 0.0,
             }),
         }
     }
@@ -415,7 +419,7 @@ impl FrameDecoders {
         Ok(StepOutput {
             index: result.index,
             tracks,
-            elapsed: result.elapsed,
+            elapsed: result.elapsed_seconds,
             files: result.files.into_iter().map(StepFile::from).collect(),
             error: result.error,
         })
@@ -437,6 +441,12 @@ fn step_failure(failure_code: i32, error: Option<&str>) -> Option<CoreError> {
         }),
         Ok(StepFailureCode::ResultTooLarge) => Some(CoreError::StepResultTooLarge {
             message: message("the step's result does not fit in one message"),
+        }),
+        Ok(StepFailureCode::CommandFailed) => Some(CoreError::StepCommandFailed {
+            message: message("one of the step's calls failed"),
+        }),
+        Ok(StepFailureCode::SessionEnded) => Some(CoreError::StepSessionEnded {
+            message: message("the session ended before the step's result was sent"),
         }),
         // A code from a newer runtime: the step's outcome is unknown, so it
         // cannot resolve as a result.
@@ -473,6 +483,7 @@ mod tests {
             track: "cam".into(),
             kind: WireTrackKind::Video as i32,
             frames: vec![raw("uint8", vec![1, 1, 3], vec![1, 2, 3])],
+            rate: 0.0,
         }];
         let request = build_request_step(
             json!({"prompt": "a cat"}),
@@ -603,14 +614,16 @@ mod tests {
                         capture_time_us: Some(7),
                         ..raw("uint8", vec![1, 2, 3], vec![0; 6])
                     }],
+                    rate: 0.0,
                 },
                 TrackFrames {
                     track: "main_audio".into(),
                     kind: WireTrackKind::Audio as i32,
                     frames: vec![raw("int16", vec![1, 2], vec![0; 4])],
+                    rate: 0.0,
                 },
             ],
-            elapsed: 0.25,
+            elapsed_seconds: 0.25,
             files: vec![],
             error: None,
             failure_code: StepFailureCode::Unspecified as i32,
@@ -639,7 +652,7 @@ mod tests {
         let result = StepResult {
             index: 5,
             tracks: vec![],
-            elapsed: 0.1,
+            elapsed_seconds: 0.1,
             files: vec![],
             error: Some("out of memory".into()),
             failure_code: StepFailureCode::Failed as i32,
@@ -657,7 +670,7 @@ mod tests {
         let result = |failure_code: StepFailureCode, error: Option<&str>| StepResult {
             index: 0,
             tracks: vec![],
-            elapsed: 0.0,
+            elapsed_seconds: 0.0,
             files: vec![],
             error: error.map(str::to_string),
             failure_code: failure_code as i32,
@@ -675,6 +688,19 @@ mod tests {
             Err(CoreError::StepResultTooLarge { message }) => assert!(!message.is_empty()),
             other => panic!("expected StepResultTooLarge, got {other:?}"),
         }
+        match decoders.decode_result(result(
+            StepFailureCode::CommandFailed,
+            Some("set_prompt failed (bad): no"),
+        )) {
+            Err(CoreError::StepCommandFailed { message }) => {
+                assert_eq!(message, "set_prompt failed (bad): no")
+            }
+            other => panic!("expected StepCommandFailed, got {other:?}"),
+        }
+        match decoders.decode_result(result(StepFailureCode::SessionEnded, None)) {
+            Err(CoreError::StepSessionEnded { message }) => assert!(!message.is_empty()),
+            other => panic!("expected StepSessionEnded, got {other:?}"),
+        }
         match decoders.decode_result(StepResult {
             failure_code: 99,
             ..result(StepFailureCode::Unspecified, Some("future"))
@@ -689,7 +715,7 @@ mod tests {
         let result = StepResult {
             index: 2,
             tracks: vec![],
-            elapsed: 1.5,
+            elapsed_seconds: 1.5,
             files: vec![
                 StepFileRef {
                     name: "depth.npy".into(),
@@ -734,7 +760,7 @@ mod tests {
         let bytes = StepResult {
             index: 1,
             tracks: vec![],
-            elapsed: 0.5,
+            elapsed_seconds: 0.5,
             files: vec![StepFileRef {
                 name: "mask.png".into(),
                 content_type: "image/png".into(),
@@ -769,8 +795,9 @@ mod tests {
                     encoding: 99,
                     ..raw("uint8", vec![1], vec![0])
                 }],
+                rate: 0.0,
             }],
-            elapsed: 0.0,
+            elapsed_seconds: 0.0,
             files: vec![],
             error: None,
             failure_code: StepFailureCode::Unspecified as i32,

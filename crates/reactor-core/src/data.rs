@@ -318,7 +318,7 @@ mod tests {
             data_server_message::Payload::StepResult(StepResult {
                 index: 1,
                 tracks: vec![],
-                elapsed: 0.0,
+                elapsed_seconds: 0.0,
                 files: vec![StepFileRef {
                     name: "f.bin".into(),
                     content_type: "application/octet-stream".into(),

@@ -17,9 +17,11 @@ import {
   RequestTimeoutError,
   ServerError,
   SessionTerminalError,
+  StepCommandFailedError,
   StepNotReadyError,
   StepRefusedError,
   StepResultTooLargeError,
+  StepSessionEndedError,
   toReactorError,
   TransportError,
   UnauthorizedError,
@@ -142,6 +144,8 @@ describe('typed subclasses', () => {
     [StepRefusedError, 'step_refused'],
     [StepNotReadyError, 'step_not_ready'],
     [StepResultTooLargeError, 'step_result_too_large'],
+    [StepCommandFailedError, 'step_command_failed'],
+    [StepSessionEndedError, 'step_session_ended'],
     [UnsupportedFrameEncodingError, 'UNSUPPORTED_FRAME_ENCODING'],
   ];
 
@@ -175,6 +179,8 @@ describe('errorForCode', () => {
     expect(errorForCode('step_refused')).toBe(StepRefusedError);
     expect(errorForCode('step_not_ready')).toBe(StepNotReadyError);
     expect(errorForCode('step_result_too_large')).toBe(StepResultTooLargeError);
+    expect(errorForCode('step_command_failed')).toBe(StepCommandFailedError);
+    expect(errorForCode('step_session_ended')).toBe(StepSessionEndedError);
   });
 
   it('falls back to the base class for an unknown or missing code', () => {

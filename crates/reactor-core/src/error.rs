@@ -90,6 +90,13 @@ pub mod codes {
     /// A step ran, but its result does not fit in one data-channel message.
     /// Lowercase, as [`STEP_REFUSED`].
     pub const STEP_RESULT_TOO_LARGE: &str = "step_result_too_large";
+    /// The handler of one of a step's state keys or commands failed. The
+    /// calls before it stay applied, the ones after it were skipped, and the
+    /// step did not run. Lowercase, as [`STEP_REFUSED`].
+    pub const STEP_COMMAND_FAILED: &str = "step_command_failed";
+    /// The session ended before the step's result could be sent, so whether
+    /// the step ran is unknown. Lowercase, as [`STEP_REFUSED`].
+    pub const STEP_SESSION_ENDED: &str = "step_session_ended";
     /// A step result carried a frame in an encoding this client cannot decode.
     pub const UNSUPPORTED_FRAME_ENCODING: &str = "UNSUPPORTED_FRAME_ENCODING";
     /// A failure that fits none of the above.
@@ -260,6 +267,17 @@ pub enum CoreError {
     #[error("step result too large: {message}")]
     StepResultTooLarge { message: String },
 
+    /// The handler of one of the step's state keys or commands failed
+    /// (`step_command_failed`). The calls before it stay applied, the ones
+    /// after it were skipped, and the step did not run.
+    #[error("step command failed: {message}")]
+    StepCommandFailed { message: String },
+
+    /// The session ended before the step's result could be sent
+    /// (`step_session_ended`); whether the step ran is unknown.
+    #[error("step session ended: {message}")]
+    StepSessionEnded { message: String },
+
     /// Any other failed step: an error the runtime answered with, or the
     /// connection dropping while the step was in flight (`DISCONNECTED`).
     #[error("step failed ({code}): {message}")]
@@ -310,6 +328,8 @@ impl CoreError {
             CoreError::StepRefused { .. } => codes::STEP_REFUSED,
             CoreError::StepNotReady { .. } => codes::STEP_NOT_READY,
             CoreError::StepResultTooLarge { .. } => codes::STEP_RESULT_TOO_LARGE,
+            CoreError::StepCommandFailed { .. } => codes::STEP_COMMAND_FAILED,
+            CoreError::StepSessionEnded { .. } => codes::STEP_SESSION_ENDED,
             CoreError::UnsupportedFrameEncoding { .. } => codes::UNSUPPORTED_FRAME_ENCODING,
             CoreError::Http(_) => codes::NETWORK_ERROR,
             CoreError::Status { status, .. } => match status {
@@ -592,6 +612,17 @@ mod tests {
         };
         assert_eq!(not_ready.code(), codes::STEP_NOT_READY);
         assert!(!not_ready.recoverable());
+
+        let command_failed = CoreError::StepCommandFailed {
+            message: "set_prompt failed".into(),
+        };
+        assert_eq!(command_failed.code(), codes::STEP_COMMAND_FAILED);
+        assert!(!command_failed.recoverable());
+
+        let session_ended = CoreError::StepSessionEnded {
+            message: "gone".into(),
+        };
+        assert_eq!(session_ended.code(), codes::STEP_SESSION_ENDED);
 
         let dropped = CoreError::StepFailed {
             code: codes::DISCONNECTED.into(),

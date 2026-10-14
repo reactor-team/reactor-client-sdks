@@ -27,9 +27,11 @@ from reactor_sdk import (
     RecorderDisabledError,
     RequestTimeoutError,
     ServerError,
+    StepCommandFailedError,
     StepNotReadyError,
     StepRefusedError,
     StepResultTooLargeError,
+    StepSessionEndedError,
     UnauthorizedError,
     UnsupportedFrameEncodingError,
 )
@@ -63,6 +65,8 @@ class TestCodeToClass:
             ("step_refused", StepRefusedError),
             ("step_not_ready", StepNotReadyError),
             ("step_result_too_large", StepResultTooLargeError),
+            ("step_command_failed", StepCommandFailedError),
+            ("step_session_ended", StepSessionEndedError),
         ],
     )
     def test_a_known_code_raises_its_own_class(self, code: str, expected: type) -> None:

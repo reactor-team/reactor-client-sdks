@@ -69,7 +69,11 @@ public enum ErrorCode {
     /** @see StepNotReadyException */
     STEP_NOT_READY("step_not_ready", false, StepNotReadyException::new),
     /** @see StepResultTooLargeException */
-    STEP_RESULT_TOO_LARGE("step_result_too_large", false, StepResultTooLargeException::new);
+    STEP_RESULT_TOO_LARGE("step_result_too_large", false, StepResultTooLargeException::new),
+    /** @see StepCommandFailedException */
+    STEP_COMMAND_FAILED("step_command_failed", false, StepCommandFailedException::new),
+    /** @see StepSessionEndedException */
+    STEP_SESSION_ENDED("step_session_ended", false, StepSessionEndedException::new);
 
     /** Builds the exception for one code. */
     @FunctionalInterface
