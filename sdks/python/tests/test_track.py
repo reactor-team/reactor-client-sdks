@@ -64,6 +64,14 @@ class _FakeLib:
     def reactor_free_string(self, ptr: object) -> None:
         self.freed.append(getattr(ptr, "value", ptr))
 
+    frames_delivered = 0
+
+    def reactor_push_begin(self, _handle: object) -> int:
+        return 7
+
+    def reactor_frame_delivered(self) -> None:
+        self.frames_delivered += 1
+
     # The two bitrate exports. Both record what crossed the boundary and then fire
     # the completion trampoline they were handed, so the test exercises the real
     # `_async_op` bridge rather than a stand-in for it.
@@ -371,6 +379,9 @@ class TestPushFrame:
         reactor.track("camera").push_frame(b"\x01\x02\x03\x04", width=1, height=1)
         args, kwargs = captured["video"]
         assert args == ("camera", b"\x01\x02\x03\x04", 1, 1)
+        # Where the app handed the frame over, and the connection it went to.
+        assert isinstance(kwargs.pop("started"), float)
+        assert kwargs.pop("generation") == 7
         assert kwargs == {"user_data": None, "capture_time_us": None}
 
     def test_an_rgb_array_carries_its_own_dimensions_and_is_converted(
@@ -411,13 +422,19 @@ class TestPushFrame:
         reactor, _ = _connected(monkeypatch)
         captured = self._captured(reactor)
         reactor.track("camera").push_frame(b"\x00" * 4, width=1, height=1, user_data=b"n=1")
-        assert captured["video"][1] == {"user_data": b"n=1", "capture_time_us": None}
+        kwargs = {
+            k: v for k, v in captured["video"][1].items() if k not in ("started", "generation")
+        }
+        assert kwargs == {"user_data": b"n=1", "capture_time_us": None}
 
     def test_a_capture_time_reaches_the_frame(self, monkeypatch: pytest.MonkeyPatch) -> None:
         reactor, _ = _connected(monkeypatch)
         captured = self._captured(reactor)
         reactor.track("camera").push_frame(b"\x00" * 4, width=1, height=1, capture_time_us=42)
-        assert captured["video"][1] == {"user_data": None, "capture_time_us": 42}
+        kwargs = {
+            k: v for k, v in captured["video"][1].items() if k not in ("started", "generation")
+        }
+        assert kwargs == {"user_data": None, "capture_time_us": 42}
 
     def test_one_capture_time_stamps_every_track_of_that_capture(
         self, monkeypatch: pytest.MonkeyPatch
@@ -554,6 +571,20 @@ class TestOnFrame:
         reactor._fire_on_track("frame", b"other", bytes([1, 2, 3, 4]), 1, 1, 0, 0, b"")
 
         assert seen == [10]
+
+    def test_only_a_frame_that_reaches_a_handler_is_marked_delivered(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Its delivery stage ends at the handler; a frame nobody listens to, or
+        one with no track name, never reached the app."""
+        reactor, lib = _connected(monkeypatch)
+        reactor.track("output").on_frame(lambda frame: None)
+
+        reactor._fire_on_track("frame", b"output", bytes(4), 1, 1, 0, 0, b"")
+        reactor._fire_on_track("frame", b"other", bytes(4), 1, 1, 0, 0, b"")
+        reactor._fire_on_track("frame", b"", bytes(4), 1, 1, 0, 0, b"")
+
+        assert lib.frames_delivered == 1
 
     @pytest.mark.parametrize(("event", "kind"), [("frame", "video"), ("audio", "audio")])
     def test_the_client_wide_media_events_are_refused(

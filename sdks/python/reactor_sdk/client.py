@@ -482,7 +482,12 @@ class Reactor:
         if not track:
             _log.debug("a %s frame arrived with no track name; dropping it", kind)
             return
-        self._fire(f"{kind}@{track.decode()}", *args)
+        event = f"{kind}@{track.decode()}"
+        if kind == "frame" and self._handlers.get(event):
+            # A video frame's delivery stage ends as it reaches the app's
+            # handlers; one nobody listens to is not counted.
+            get_lib().reactor_frame_delivered()
+        self._fire(event, *args)
 
     def _fire_on_loop(self, event: str, *args: Any) -> None:
         """Hand `event` to the loop thread, and run the handlers there.
@@ -655,9 +660,6 @@ class Reactor:
                 else b""
             )
             pixels = bytes(frame)
-            # The frame's delivery stage ends as it is handed to the app,
-            # after this copy.
-            get_lib().reactor_frame_delivered()
             r._fire_on_track(
                 "frame", track_bytes, pixels, width, height, frame_id, timestamp_us, ud
             )
@@ -1346,6 +1348,8 @@ class Reactor:
         height: int,
         user_data: bytes | None = None,
         capture_time_us: int | None = None,
+        started: float | None = None,
+        generation: int | None = None,
     ) -> None:
         """Push a raw BGRA video frame into a named sendonly track.
 
@@ -1359,9 +1363,16 @@ class Reactor:
         Pass ``capture_time_us`` to stamp the frame with the time it was captured
         instead of the time it is pushed. Tagging and stamping are independent:
         either, both, or neither.
+
+        ``started`` (a ``time.perf_counter()`` reading) and ``generation`` (from
+        ``_push_begin()``) mark where the app handed the frame over, so the
+        conversion before this call counts toward its submit stage; both
+        default to this call.
         """
-        # The frame's submit stage starts here, so the copies below count.
-        started = time.perf_counter()
+        if started is None:
+            started = time.perf_counter()
+        if generation is None:
+            generation = self._push_begin()
         self._require_handle()
         buf = (ctypes.c_uint8 * len(data)).from_buffer_copy(data)
         tag_len = len(user_data) if user_data else 0
@@ -1377,7 +1388,14 @@ class Reactor:
             ctypes.c_int(capture_time_us is not None),
             ctypes.c_int64(capture_time_us or 0),
             ctypes.c_double((time.perf_counter() - started) * 1_000.0),
+            ctypes.c_uint64(generation),
         )
+
+    def _push_begin(self) -> int:
+        """The connection a frame push belongs to, read as the app hands it over."""
+        if self._handle is None:
+            return 0
+        return int(get_lib().reactor_push_begin(ctypes.c_void_p(self._handle)))
 
     def _push_audio_frame(
         self,

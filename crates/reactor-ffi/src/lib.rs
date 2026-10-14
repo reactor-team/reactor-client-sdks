@@ -1990,12 +1990,29 @@ pub extern "C" fn reactor_frame_delivered() {
     }
 }
 
+/// The connection a frame push belongs to. A binding reads it as the app
+/// hands it a frame, before its own work, and passes it to
+/// [`reactor_push_video_frame_timed`], so a reconnect during that work leaves
+/// the frame with the connection it was pushed on. 0 for a null handle.
+///
+/// # Safety
+///
+/// `handle` must come from `reactor_new`, or be null.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_push_begin(handle: *mut ReactorHandle) -> u64 {
+    if handle.is_null() {
+        return 0;
+    }
+    (*handle).reactor.push_begin()
+}
+
 /// Push a BGRA frame the binding has already spent `binding_ms` milliseconds
 /// on since the app handed it over, so the binding's own copying or
-/// conversion counts toward the frame's `submit` stage. Tagged with
-/// `user_data` when `user_data_len` is not 0, and stamped with
-/// `capture_time_us` (see [`reactor_push_video_frame_with_metadata_at`]) when
-/// `has_capture_time` is not 0; otherwise the same as the other push exports.
+/// conversion counts toward the frame's `submit` stage; `generation` is what
+/// [`reactor_push_begin`] returned then. Tagged with `user_data` when
+/// `user_data_len` is not 0, and stamped with `capture_time_us` (see
+/// [`reactor_push_video_frame_with_metadata_at`]) when `has_capture_time` is
+/// not 0; otherwise the same as the other push exports.
 ///
 /// # Safety
 ///
@@ -2013,6 +2030,7 @@ pub unsafe extern "C" fn reactor_push_video_frame_timed(
     has_capture_time: c_int,
     capture_time_us: i64,
     binding_ms: c_double,
+    generation: u64,
 ) {
     if handle.is_null() || track_name.is_null() || data.is_null() {
         return;
@@ -2033,6 +2051,7 @@ pub unsafe extern "C" fn reactor_push_video_frame_timed(
         tag,
         (has_capture_time != 0).then_some(capture_time_us),
         binding_ms,
+        generation,
     );
 }
 

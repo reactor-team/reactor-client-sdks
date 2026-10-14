@@ -850,6 +850,9 @@ void ClientImpl::push_video(const std::string& name, Bytes bgra, std::uint32_t w
   }
 
   ReactorHandle* handle = require_ready_handle("push a frame into", name);
+  // The connection this frame belongs to; nothing before here can block, so a
+  // reconnect has no time to land between this and the push below.
+  const std::uint64_t generation = ffi().push_begin(handle);
 
   const std::uint8_t* tag = options.user_data.empty() ? nullptr : options.user_data.data;
   const auto tag_len = static_cast<std::uint32_t>(options.user_data.size);
@@ -858,7 +861,7 @@ void ClientImpl::push_video(const std::string& name, Bytes bgra, std::uint32_t w
       std::chrono::steady_clock::now() - started;
   ffi().push_video_frame_timed(handle, name.c_str(), bgra.data, width, height, tag, tag_len,
                                options.capture_time_us ? 1 : 0, options.capture_time_us.value_or(0),
-                               binding_ms.count());
+                               binding_ms.count(), generation);
 }
 
 void ClientImpl::push_audio(const std::string& name, Samples pcm, std::uint32_t sample_rate,

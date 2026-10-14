@@ -145,6 +145,22 @@ final class TracksTest {
     }
 
     @Test
+    @DisplayName("only a frame that reaches a handler is marked delivered")
+    void onlyAHandledFrameIsMarkedDelivered() {
+        try (FakeNativeLibrary fake = new FakeNativeLibrary()) {
+            fake.tracksJson = THREE_TRACKS;
+            ClientPeer client = peer(fake);
+            client.onVideoFrame("zulu_video", frame -> {});
+
+            fireVideoFrame(fake, "zulu_video", 2, 2, 0L, 0L);
+            fireVideoFrame(fake, "a_track_nobody_declared", 2, 2, 0L, 0L);
+
+            assertEquals(1, fake.framesDelivered, "a frame nobody listens to never reached the app");
+            client.close();
+        }
+    }
+
+    @Test
     @DisplayName("a frame kept past its handler throws, instead of reading memory the FFI reused")
     void aFrameKeptPastItsHandlerThrows() {
         try (FakeNativeLibrary fake = new FakeNativeLibrary()) {

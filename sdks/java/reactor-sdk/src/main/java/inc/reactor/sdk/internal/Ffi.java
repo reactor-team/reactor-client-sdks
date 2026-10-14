@@ -126,7 +126,9 @@ public final class Ffi {
                         JAVA_INT,
                         JAVA_INT,
                         JAVA_LONG,
-                        JAVA_DOUBLE)),
+                        JAVA_DOUBLE,
+                        JAVA_LONG)),
+        PUSH_BEGIN("reactor_push_begin", FunctionDescriptor.of(JAVA_LONG, ADDRESS)),
         FRAME_DELIVERED("reactor_frame_delivered", FunctionDescriptor.ofVoid()),
         PUSH_AUDIO_FRAME(
                 "reactor_push_audio_frame",

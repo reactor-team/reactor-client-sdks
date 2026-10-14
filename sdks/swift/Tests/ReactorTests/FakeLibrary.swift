@@ -100,6 +100,7 @@ final class FakeLibrary: @unchecked Sendable {
         var userData: String?
         var captureTimeUs: Int64
         var bindingMs: Double
+        var generation: UInt64
     }
 
     /// What the SDK handed `reactor_push_audio_frame`.
@@ -498,7 +499,9 @@ final class FakeLibrary: @unchecked Sendable {
                 record(completion, userdata)
             },
             pushVideoFrame: {
-                [self] _, track, pixels, width, height, userData, userDataLen, at, bindingMs in
+                [self]
+                _, track, pixels, width, height, userData, userDataLen, at,
+                bindingMs, generation in
                 let byteCount = Int(width) * Int(height) * 4
                 let tag = userData.flatMap { pointer -> String? in
                     guard userDataLen > 0 else { return nil }
@@ -515,9 +518,11 @@ final class FakeLibrary: @unchecked Sendable {
                             byteCount: byteCount,
                             userData: tag,
                             captureTimeUs: at,
-                            bindingMs: bindingMs))
+                            bindingMs: bindingMs,
+                            generation: generation))
                 }
             },
+            pushBegin: { _ in 7 },
             frameDelivered: { [self] in state.withLock { $0.framesDelivered += 1 } },
             pushAudioFrame: { [self] _, track, samples, perChannel, sampleRate, channels in
                 let count = Int(perChannel) * Int(channels)

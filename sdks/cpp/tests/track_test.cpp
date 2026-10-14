@@ -57,6 +57,7 @@ class FakeSession {
     filled.resume_track = &resume_track;
     filled.set_bitrate = &set_bitrate;
     filled.set_track_bitrate = &set_track_bitrate;
+    filled.push_begin = &push_begin;
     filled.push_video_frame_timed = &push_video_frame_timed;
     filled.frame_delivered = &frame_delivered;
     filled.push_audio_frame = &push_audio_frame;
@@ -74,6 +75,7 @@ class FakeSession {
     std::string user_data;
     std::optional<std::int64_t> capture_time_us;
     double binding_ms = -1.0;
+    std::uint64_t generation = 0;
   };
   std::vector<Push> pushes;
   /// How many frames the SDK marked as handed to the app.
@@ -373,14 +375,17 @@ class FakeSession {
                                      const std::uint8_t* /*data*/, std::uint32_t width,
                                      std::uint32_t height, const std::uint8_t* user_data,
                                      std::uint32_t user_data_len, int has_capture_time,
-                                     std::int64_t capture_time_us, double binding_ms) {
+                                     std::int64_t capture_time_us, double binding_ms,
+                                     std::uint64_t generation) {
     current().pushes.push_back(Push{
         track == nullptr ? "" : track, width, height,
         user_data == nullptr ? std::string{}
                              : std::string{reinterpret_cast<const char*>(user_data), user_data_len},
         has_capture_time != 0 ? std::optional<std::int64_t>{capture_time_us} : std::nullopt,
-        binding_ms});
+        binding_ms, generation});
   }
+
+  static std::uint64_t push_begin(ReactorHandle* /*handle*/) { return 7; }
 
   static void frame_delivered() { ++current().frames_delivered; }
 
@@ -1057,8 +1062,10 @@ TEST_CASE("pushing a frame reaches the plain entry point when there is nothing t
   CHECK(push.height == 2);
   CHECK(push.user_data.empty());
   CHECK_FALSE(push.capture_time_us.has_value());
-  // The time the SDK spent on the frame before handing it over.
+  // The time the SDK spent on the frame before handing it over, and the
+  // connection it read as it started.
   CHECK(push.binding_ms >= 0.0);
+  CHECK(push.generation == 7);
 }
 
 TEST_CASE("a tag and a capture time each reach the entry point that carries them") {

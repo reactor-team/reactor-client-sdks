@@ -27,6 +27,7 @@ sender behind it, so the frames would be taken and dropped.
 from __future__ import annotations
 
 import logging
+import time
 import weakref
 from collections.abc import Callable
 from enum import Enum
@@ -354,6 +355,8 @@ class Track:
         passing `user_data` or `capture_time_us` to an audio track means a value
         that never goes anywhere, and that is an error.
         """
+        # A video frame's submit stage starts here, so the conversion counts.
+        started = time.perf_counter()
         self._require_direction(TrackDirection.SENDONLY, "push_frame()")
         self._require_published("push_frame()")
         reactor = self._reactor()
@@ -384,6 +387,7 @@ class Track:
             )
             return
 
+        generation = reactor._push_begin()
         bgra, actual_width, actual_height = _as_bgra(data, width, height, self._name)
         if _is_array(data) and (
             (width is not None and width != actual_width)
@@ -405,6 +409,8 @@ class Track:
             actual_height,
             user_data=user_data,
             capture_time_us=capture_time_us,
+            started=started,
+            generation=generation,
         )
 
     # ------------------------------------------------------------------

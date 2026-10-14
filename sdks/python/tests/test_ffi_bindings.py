@@ -173,7 +173,8 @@ def test_media_push_on_a_null_handle_is_a_noop() -> None:
     lib.reactor_push_video_frame_with_metadata_at(
         None, b"video", pixels, 1, 1, None, 0, 1_700_000_000_000_000
     )
-    lib.reactor_push_video_frame_timed(None, b"video", pixels, 1, 1, None, 0, 0, 0, 0.5)
+    assert lib.reactor_push_begin(None) == 0
+    lib.reactor_push_video_frame_timed(None, b"video", pixels, 1, 1, None, 0, 0, 0, 0.5, 0)
     lib.reactor_push_audio_frame(None, b"audio", pcm, 2, 48000, 1)
 
 

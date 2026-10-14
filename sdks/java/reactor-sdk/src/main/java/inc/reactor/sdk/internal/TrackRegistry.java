@@ -120,7 +120,22 @@ public final class TrackRegistry {
 
     /** Delivers a video frame, or drops it when no track by that name has handlers. */
     void deliverVideo(String track, VideoFrame frame) {
-        deliver(track, frame, existing -> existing.video.emit(frame), existing -> existing.video.size());
+        deliverVideo(track, frame, () -> {});
+    }
+
+    /**
+     * Delivers a video frame, running {@code reached} first when a handler is there to take it: a
+     * frame nobody listens to never reaches the app.
+     */
+    void deliverVideo(String track, VideoFrame frame, Runnable reached) {
+        deliver(
+                track,
+                frame,
+                existing -> {
+                    reached.run();
+                    existing.video.emit(frame);
+                },
+                existing -> existing.video.size());
     }
 
     /** Delivers an audio frame, or drops it when no track by that name has handlers. */

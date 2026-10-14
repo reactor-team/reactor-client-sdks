@@ -142,6 +142,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
         bind("reactor_push_video_frame", Ffi.Symbol.PUSH_VIDEO_FRAME.descriptor(), "pushVideoFrame");
         bind("reactor_push_video_frame_timed", Ffi.Symbol.PUSH_VIDEO_FRAME_TIMED.descriptor(), "pushVideoFrameTimed");
         bind("reactor_frame_delivered", Ffi.Symbol.FRAME_DELIVERED.descriptor(), "frameDelivered");
+        bind("reactor_push_begin", Ffi.Symbol.PUSH_BEGIN.descriptor(), "pushBegin");
         bind("reactor_send_command", Ffi.Symbol.SEND_COMMAND.descriptor(), "sendCommand");
         bind("reactor_request_schema", Ffi.Symbol.REQUEST_SCHEMA.descriptor(), "requestSchema");
         bind("reactor_get_stats", Ffi.Symbol.GET_STATS.descriptor(), "getStats");
@@ -411,9 +412,18 @@ public final class FakeNativeLibrary implements AutoCloseable {
             int userDataLength,
             int hasCaptureTime,
             long captureTimeUs,
-            double bindingMs) {
+            double bindingMs,
+            long generation) {
         lastBindingMs = bindingMs;
+        lastGeneration = generation;
         pushVideoFrame(handle, name, data, width, height);
+    }
+
+    /** The connection the binding read as the app handed over the last frame it pushed. */
+    public volatile long lastGeneration = -1;
+
+    private long pushBegin(MemorySegment handle) {
+        return 7;
     }
 
     private void frameDelivered() {

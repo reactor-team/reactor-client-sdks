@@ -163,8 +163,12 @@ struct FFI: Sendable {
             _ handle: OpaquePointer?, _ track: UnsafePointer<CChar>?,
             _ pixels: UnsafePointer<UInt8>?, _ width: UInt32, _ height: UInt32,
             _ userData: UnsafePointer<UInt8>?, _ userDataLen: UInt32,
-            _ captureTimeUs: Int64, _ bindingMs: Double
+            _ captureTimeUs: Int64, _ bindingMs: Double, _ generation: UInt64
         ) -> Void
+
+    /// `reactor_push_begin` — the connection a frame push belongs to, read as
+    /// the app hands the frame over and passed to ``pushVideoFrame``.
+    var pushBegin: @Sendable (_ handle: OpaquePointer?) -> UInt64
 
     /// `reactor_frame_delivered` — marks, from inside the frame callback, the
     /// moment a video frame is handed to the app's handlers, which ends its
@@ -287,11 +291,13 @@ extension FFI {
             reactor_resume_track(handle, name, completion, userdata)
         },
         pushVideoFrame: {
-            handle, track, pixels, width, height, userData, userDataLen, captureAt, bindingMs in
+            handle, track, pixels, width, height, userData, userDataLen, captureAt, bindingMs,
+            generation in
             reactor_push_video_frame_timed(
                 handle, track, pixels, width, height, userData, userDataLen, 1, captureAt,
-                bindingMs)
+                bindingMs, generation)
         },
+        pushBegin: { handle in reactor_push_begin(handle) },
         frameDelivered: { reactor_frame_delivered() },
         pushAudioFrame: { handle, track, samples, samplesPerChannel, sampleRate, channels in
             reactor_push_audio_frame(

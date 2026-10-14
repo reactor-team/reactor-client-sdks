@@ -75,6 +75,7 @@ namespace reactor::detail {
   X(push_video_frame, reactor_push_video_frame)                                     \
   X(push_video_frame_with_metadata, reactor_push_video_frame_with_metadata)         \
   X(push_video_frame_with_metadata_at, reactor_push_video_frame_with_metadata_at)   \
+  X(push_begin, reactor_push_begin)                                                 \
   X(push_video_frame_timed, reactor_push_video_frame_timed)                         \
   X(frame_delivered, reactor_frame_delivered)                                       \
   X(push_audio_frame, reactor_push_audio_frame)

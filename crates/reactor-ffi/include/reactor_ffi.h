@@ -826,10 +826,19 @@ void reactor_push_video_frame_with_metadata_at(
 );
 
 /*
+ * The connection a frame push belongs to.  A binding reads it as the app hands
+ * it a frame, before its own work, and passes it to
+ * reactor_push_video_frame_timed(), so a reconnect during that work leaves the
+ * frame with the connection it was pushed on.  0 for a NULL handle.
+ */
+uint64_t reactor_push_begin(ReactorHandle *handle);
+
+/*
  * Push a BGRA frame the binding has already spent `binding_ms` milliseconds on
  * since the app handed it over, so the binding's own copy or conversion counts
- * toward the frame's "submit" stage in client stats.  Tagged with `user_data`
- * when `user_data_len` is not 0, and stamped with `capture_time_us` (as
+ * toward the frame's "submit" stage in client stats; `generation` is what
+ * reactor_push_begin() returned then.  Tagged with `user_data` when
+ * `user_data_len` is not 0, and stamped with `capture_time_us` (as
  * reactor_push_video_frame_with_metadata_at()) when `has_capture_time` is not
  * 0.  Same buffer requirements as the functions above.
  */
@@ -843,7 +852,8 @@ void reactor_push_video_frame_timed(
     uint32_t       user_data_len,
     int            has_capture_time,
     int64_t        capture_time_us,
-    double         binding_ms
+    double         binding_ms,
+    uint64_t       generation
 );
 
 /*

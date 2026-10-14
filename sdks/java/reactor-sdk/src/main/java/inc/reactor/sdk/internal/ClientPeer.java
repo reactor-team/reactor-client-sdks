@@ -968,14 +968,14 @@ public final class ClientPeer implements Runnable {
         try (Arena frame = Arena.ofConfined()) {
             MemorySegment pixels = data.reinterpret(bytes, frame, null).asReadOnly();
             VideoFrame video = Media.videoFrame(pixels, width, height, frameId, timestampUs, tag);
-            markDelivered();
-            tracks.deliverVideo(track, video);
+            tracks.deliverVideo(track, video, this::markDelivered);
         }
     }
 
     /**
      * Ends the delivering frame's delivery stage, as it reaches the app's handlers. Called from
-     * inside the frame callback; a failure to mark it only costs the stat, never the frame.
+     * inside the frame callback, only for a frame a handler takes; a failure to mark it only costs
+     * the stat, never the frame.
      */
     private void markDelivered() {
         try {
@@ -1255,6 +1255,9 @@ public final class ClientPeer implements Runnable {
         // The frame's submit stage starts here, so the copy below counts toward it.
         long started = System.nanoTime();
         requireOpen("pushFrame");
+        // The connection this frame belongs to, read before the copy below, so a reconnect during
+        // it leaves the frame with the connection it was pushed on.
+        long generation = pushBegin();
         // Copied into native memory for the call and released at the end of it. A copy per frame is
         // 8 MB at 1080p; Linker.Option.critical would let the heap array be passed directly, and is
         // the obvious thing to measure before reaching for it — it forbids blocking and calling
@@ -1277,7 +1280,19 @@ public final class ClientPeer implements Runnable {
                     tagLength,
                     captureTimeUs == null ? 0 : 1,
                     captureTimeUs == null ? 0L : captureTimeUs.longValue(),
-                    (System.nanoTime() - started) / 1_000_000.0);
+                    (System.nanoTime() - started) / 1_000_000.0,
+                    generation);
+        }
+    }
+
+    private long pushBegin() {
+        acquireHandle(Ffi.Symbol.PUSH_BEGIN.cName());
+        try {
+            return (long) ffi.handle(Ffi.Symbol.PUSH_BEGIN).invokeExact(handle);
+        } catch (Throwable t) {
+            throw new IllegalStateException("reactor_push_begin could not be called", t);
+        } finally {
+            releaseHandle();
         }
     }
 

@@ -299,7 +299,11 @@ def _load() -> ctypes.CDLL:
         ctypes.c_int,  # has_capture_time
         ctypes.c_int64,  # capture_time_us
         ctypes.c_double,  # binding_ms
+        ctypes.c_uint64,  # generation (reactor_push_begin)
     ]
+
+    lib.reactor_push_begin.restype = ctypes.c_uint64
+    lib.reactor_push_begin.argtypes = [ctypes.c_void_p]
 
     lib.reactor_frame_delivered.restype = None
     lib.reactor_frame_delivered.argtypes = []

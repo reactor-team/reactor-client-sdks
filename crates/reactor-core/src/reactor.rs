@@ -1104,9 +1104,19 @@ impl Reactor {
         self.submitted(track_name, started);
     }
 
+    /// The connection a frame push belongs to, for a host binding to read as
+    /// the app hands it a frame and pass to [`Self::push_video_frame_timed`]:
+    /// a reconnect during the binding's own work must not move the frame to
+    /// the new connection.
+    pub fn push_begin(&self) -> u64 {
+        self.stage_times.generation()
+    }
+
     /// Push a frame the host binding has already spent *binding_ms*
     /// milliseconds on, since the app handed it over: the binding's own copy
-    /// or conversion counts toward `submit` too. Tagged with `user_data` when
+    /// or conversion counts toward `submit` too. *generation* is what
+    /// [`Self::push_begin`] returned then; a frame whose connection has since
+    /// been replaced is left out of the stats. Tagged with `user_data` when
     /// not empty, and stamped with `capture_time_us` when given, as the other
     /// push methods do.
     #[allow(clippy::too_many_arguments)]
@@ -1119,8 +1129,9 @@ impl Reactor {
         user_data: &[u8],
         capture_time_us: Option<i64>,
         binding_ms: f64,
+        generation: u64,
     ) {
-        let (now_ms, generation) = self.submit_started();
+        let now_ms = self.platform.monotonic_ms();
         let binding_ms = if binding_ms.is_finite() {
             binding_ms.max(0.0)
         } else {
@@ -3061,15 +3072,29 @@ mod tests {
     #[test]
     fn a_timed_push_counts_the_bindings_time_toward_submit() {
         let reactor = make_reactor();
-        reactor.push_video_frame_timed("webcam", &[0; 16], 2, 2, &[], None, 3.5);
-        reactor.push_video_frame_timed("webcam", &[0; 16], 2, 2, &[], None, f64::NAN);
+        let generation = reactor.push_begin();
+        reactor.push_video_frame_timed("webcam", &[0; 16], 2, 2, &[], None, 3.5, generation);
+        reactor.push_video_frame_timed("webcam", &[0; 16], 2, 2, &[], None, f64::NAN, generation);
 
-        let generation = reactor.stage_times.generation();
         let stages = reactor.stage_times.take_from(generation).unwrap();
         let submit = &stages["webcam"][0];
         assert_eq!(submit.frames, 2);
         // `TestPlatform`'s clock is frozen, so the binding's time is all of it.
         assert!((submit.total_ms - 3.5).abs() < 1e-9);
+    }
+
+    /// A reconnect that lands while the binding is still working on a frame
+    /// leaves that frame with the old connection.
+    #[test]
+    fn a_reconnect_during_the_bindings_work_keeps_the_frame_out_of_the_new_connection() {
+        let reactor = make_reactor();
+        let generation = reactor.push_begin();
+        // The binding copies the frame; meanwhile the next connection begins.
+        reactor.stage_times.begin_connection();
+        reactor.push_video_frame_timed("webcam", &[0; 16], 2, 2, &[], None, 3.5, generation);
+
+        let current = reactor.push_begin();
+        assert!(reactor.stage_times.take_from(current).unwrap().is_empty());
     }
 
     /// A frame timed before `reconnect()` belongs to the old connection, and
