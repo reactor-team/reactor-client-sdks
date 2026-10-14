@@ -27,7 +27,8 @@ No bundler configuration needed: the WebAssembly binding the SDK runs on
 ships inside its own JavaScript module, fetched the first time a `Reactor`
 connects rather than when the SDK is imported. Each release is
 checked against Vite 6, 7 and 8 and Next.js 15 and 16 (webpack and
-Turbopack), in both dev and production builds.
+Turbopack), in both dev and production builds, except Next.js 15 with
+Turbopack, checked in dev only since its production build is still beta.
 
 If your page sets a Content Security Policy, its `script-src` needs
 `'wasm-unsafe-eval'` for the binding to compile.

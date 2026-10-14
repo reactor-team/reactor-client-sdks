@@ -4,7 +4,8 @@ Installs the packed SDK — the same tarball `npm publish` uploads — into real
 consumer apps and checks, in a real browser, that the wasm binding loads. Each
 target is a bundler and version (`run.mjs`'s `TARGETS`: Vite 6, 7 and 8,
 Next.js 15 and 16 with webpack and Turbopack), checked in both its dev server
-and its production build.
+and its production build. The exception is Next.js 15 with Turbopack, checked
+in dev only: its `build --turbopack` is still beta.
 
 This covers the gap between the SDK's own build and what a consumer's bundler
 does to it. The examples and the integration tests install the SDK linked from
