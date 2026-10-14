@@ -558,6 +558,23 @@ fn live_pair(pairs: &[CandidatePairStats]) -> Option<&CandidatePairStats> {
 /// This is the one table from codec names to the wire's codec enums. A binding
 /// that filters codecs before calling it (the JS SDK does, to keep one track's
 /// unknown codec from failing the whole batch) mirrors this list.
+/// The longest text value, in bytes, a client stats reading carries in one of
+/// its names or descriptive fields; the runtime refuses a reading with a
+/// longer one.
+pub const MAX_NAME_BYTES: usize = 128;
+
+/// *value* trimmed of surrounding whitespace and NUL bytes and cut to
+/// [`MAX_NAME_BYTES`] at a char boundary, for a value read from the system or
+/// a caller that one over-long string must not get a whole reading refused.
+pub fn bounded_name(value: &str) -> String {
+    let value = value.trim_matches(|c: char| c.is_whitespace() || c == '\0');
+    let mut end = value.len().min(MAX_NAME_BYTES);
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
+}
+
 pub fn client_track_codec(
     kind: TrackKind,
     codec: &str,
@@ -985,6 +1002,25 @@ pub fn client_connection_stat(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bounded_name_is_trimmed_and_cut_at_a_char_boundary() {
+        assert_eq!(bounded_name("  Pixel 8\n"), "Pixel 8");
+        assert_eq!(
+            bounded_name("Raspberry Pi 4 Model B\0"),
+            "Raspberry Pi 4 Model B"
+        );
+        let multibyte = bounded_name(&"é".repeat(MAX_NAME_BYTES));
+        assert!(multibyte.len() <= MAX_NAME_BYTES);
+        assert_eq!(multibyte.len(), MAX_NAME_BYTES);
+        assert!(multibyte.chars().all(|c| c == 'é'));
+        let odd = bounded_name(&format!("x{}", "é".repeat(MAX_NAME_BYTES)));
+        assert_eq!(
+            odd.len(),
+            MAX_NAME_BYTES - 1,
+            "a split char is dropped whole"
+        );
+    }
 
     /// A codec added to the wire's `VideoCodec`/`AudioCodec` without an arm in
     /// `client_track_codec` fails here, instead of having that track's readings

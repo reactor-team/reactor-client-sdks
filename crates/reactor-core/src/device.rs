@@ -1,29 +1,10 @@
 //! The device's hardware model, as the system names it, for the client
 //! stats environment.
 
-/// The longest model this reports, in bytes. A longer name is cut at a char
-/// boundary: a model is a short identifier, and the stats reading it travels
-/// in caps the length of every name.
-const MAX_LEN: usize = 64;
-
 /// The device's hardware model, e.g. `"iPhone15,2"`, `"Pixel 8"` or
 /// `"MacBookPro18,3"`; empty when the system does not expose it.
 pub(crate) fn model() -> String {
-    clean(read().unwrap_or_default())
-}
-
-fn clean(raw: String) -> String {
-    let mut model = raw
-        .trim_matches(|c: char| c.is_whitespace() || c == '\0')
-        .to_string();
-    if model.len() > MAX_LEN {
-        let mut end = MAX_LEN;
-        while !model.is_char_boundary(end) {
-            end -= 1;
-        }
-        model.truncate(end);
-    }
-    model
+    crate::stats::bounded_name(&read().unwrap_or_default())
 }
 
 /// On iOS `hw.machine` is the device identifier; on macOS that is the CPU
@@ -112,27 +93,8 @@ fn read() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn a_model_is_trimmed_of_whitespace_and_nul() {
-        assert_eq!(
-            clean("Raspberry Pi 4 Model B\0".to_string()),
-            "Raspberry Pi 4 Model B"
-        );
-        assert_eq!(clean("  Pixel 8\n".to_string()), "Pixel 8");
-    }
-
-    #[test]
-    fn a_long_model_is_cut_at_a_char_boundary() {
-        let long = "é".repeat(MAX_LEN);
-        let model = clean(long);
-        assert!(model.len() <= MAX_LEN);
-        assert!(model.chars().all(|c| c == 'é'));
-    }
-
     #[test]
     fn this_system_reports_a_bounded_model() {
-        assert!(model().len() <= MAX_LEN);
+        assert!(super::model().len() <= crate::stats::MAX_NAME_BYTES);
     }
 }

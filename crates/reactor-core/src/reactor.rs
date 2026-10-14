@@ -1037,13 +1037,15 @@ impl Reactor {
     pub fn client_environment(&self) -> ClientEnvironment {
         let client = self.coordinator.client_info();
         let platform = self.platform.info();
+        // Each value bounded, so no one of them gets a reading refused.
+        let bounded = |value: &str| crate::stats::bounded_name(value);
         ClientEnvironment {
-            sdk_type: client.sdk_type.clone(),
-            sdk_version: client.sdk_version.clone(),
-            os: platform.os,
-            os_version: platform.os_version,
-            arch: platform.arch,
-            device_model: platform.device_model,
+            sdk_type: bounded(&client.sdk_type),
+            sdk_version: bounded(&client.sdk_version),
+            os: bounded(&platform.os),
+            os_version: bounded(&platform.os_version),
+            arch: bounded(&platform.arch),
+            device_model: bounded(&platform.device_model),
         }
     }
 

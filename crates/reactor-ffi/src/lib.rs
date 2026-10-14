@@ -623,7 +623,7 @@ pub unsafe extern "C" fn reactor_download_clip(
 
     let progress = progress.map(|f| ProgressCallback { f, userdata });
     let http: SharedHttp = Arc::new(ReqwestHttpClient::new(local != 0));
-    let platform: SharedPlatform = Arc::new(TokioPlatform);
+    let platform: SharedPlatform = Arc::new(TokioPlatform::new());
 
     runtime().spawn(async move {
         let readiness = Readiness {
@@ -925,7 +925,7 @@ unsafe fn create_impl(
 
     let http = Arc::new(ReqwestHttpClient::new(local != 0));
     let auth = Arc::new(StaticAuth(jwt));
-    let platform = Arc::new(TokioPlatform);
+    let platform = Arc::new(TokioPlatform::new());
 
     let mut peer_transport = match adm {
         Some(mode) => ReactorWebRtcPeerTransport::with_adm_mode(peer_event_tx, mode),

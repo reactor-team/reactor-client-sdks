@@ -72,6 +72,17 @@ pub async fn timeout<T>(
 pub struct TokioPlatform;
 
 #[cfg(feature = "tokio-platform")]
+impl TokioPlatform {
+    /// The platform, with [`Platform::info`] already read, so no task ever
+    /// blocks on the system calls behind it.
+    pub fn new() -> Self {
+        let platform = Self;
+        platform.info();
+        platform
+    }
+}
+
+#[cfg(feature = "tokio-platform")]
 impl Platform for TokioPlatform {
     fn sleep(&self, duration: Duration) -> BoxFut<'static, ()> {
         Box::pin(tokio::time::sleep(duration))
@@ -84,18 +95,25 @@ impl Platform for TokioPlatform {
             .unwrap_or(0.0)
     }
 
+    /// Read once per process, since it cannot change while the process runs:
+    /// the first read does blocking system calls, so a host warms it up with
+    /// [`TokioPlatform::new`] rather than in a task.
     fn info(&self) -> PlatformInfo {
-        let version = os_info::get().version().to_string();
-        PlatformInfo {
-            os: std::env::consts::OS.to_string(),
-            os_version: if version == "Unknown" {
-                String::new()
-            } else {
-                version
-            },
-            arch: std::env::consts::ARCH.to_string(),
-            device_model: crate::device::model(),
-        }
+        static INFO: std::sync::OnceLock<PlatformInfo> = std::sync::OnceLock::new();
+        INFO.get_or_init(|| {
+            let version = os_info::get().version().to_string();
+            PlatformInfo {
+                os: std::env::consts::OS.to_string(),
+                os_version: if version == "Unknown" {
+                    String::new()
+                } else {
+                    crate::stats::bounded_name(&version)
+                },
+                arch: std::env::consts::ARCH.to_string(),
+                device_model: crate::device::model(),
+            }
+        })
+        .clone()
     }
 
     fn monotonic_ms(&self) -> f64 {

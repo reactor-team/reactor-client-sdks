@@ -316,6 +316,12 @@ export function createTrackStatsExtractor(): TrackStatsExtractor {
         }
       }
 
+      // Which encoder or decoder the video runs, and whether it is the
+      // power-efficient (hardware) one. A browser only says to a page that
+      // holds capture permission, so both are often absent.
+      const codecImplementation = inbound ? stat.decoderImplementation : stat.encoderImplementation;
+      const hardwareCodec = inbound ? stat.powerEfficientDecoder : stat.powerEfficientEncoder;
+
       stats.push({
         timestamp: Date.now(),
         trackName: track.name,
@@ -325,6 +331,8 @@ export function createTrackStatsExtractor(): TrackStatsExtractor {
         paused: pausedTracks.includes(track.name),
         metrics,
         ...(frameStages.length > 0 ? { frameStages } : {}),
+        ...(track.kind === 'video' && codecImplementation !== undefined ? { codecImplementation } : {}),
+        ...(track.kind === 'video' && hardwareCodec !== undefined ? { hardwareCodec } : {}),
       });
     });
 
@@ -439,6 +447,10 @@ interface RTCStatsReportEntry extends RTCStats {
   jitterBufferEmittedCount?: number;
   totalDecodeTime?: number;
   totalEncodeTime?: number;
+  encoderImplementation?: string;
+  decoderImplementation?: string;
+  powerEfficientEncoder?: boolean;
+  powerEfficientDecoder?: boolean;
 }
 
 interface RTCStatsReportWithLookup extends RTCStatsReport {

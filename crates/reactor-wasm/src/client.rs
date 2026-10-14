@@ -30,7 +30,7 @@ use reactor_core::protocol::wire::v1::platform::{
     ClientConnectionStat, ClientTrackStat, FrameStage, TrackDirection, TrackKind,
 };
 use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions};
-use reactor_core::stats::client_track_codec;
+use reactor_core::stats::{bounded_name, client_track_codec};
 
 use crate::auth::WasmAuthProvider;
 use crate::http::WasmHttpClient;
@@ -582,10 +582,15 @@ impl ReactorClient {
         let connection_stat: Option<ClientConnectionStatJson> =
             from_optional(Some(connection_stat), "client connection stat")?;
         // What the browser client runs on, which this side knows and the
-        // page does not need to pass.
-        let connection_stat = connection_stat.map(|stat| ClientConnectionStat {
+        // page does not need to pass. It goes on every batch, so a caller
+        // that passes no connection reading still gets one carrying it.
+        let connection_stat = connection_stat.unwrap_or_else(|| ClientConnectionStatJson {
+            timestamp: js_sys::Date::now() as i64,
+            metrics: Default::default(),
+        });
+        let connection_stat = Some(ClientConnectionStat {
             environment: Some(self.reactor.client_environment()),
-            ..ClientConnectionStat::from(stat)
+            ..ClientConnectionStat::from(connection_stat)
         });
         self.reactor
             .client_stats(track_stats, connection_stat)
@@ -910,7 +915,9 @@ impl TryFrom<ClientTrackStatJson> for ClientTrackStat {
             frame_stages: stage_times(stat.frame_stages),
             // Only a video track has a codec implementation.
             codec_implementation: if kind == TrackKind::Video {
-                stat.codec_implementation.unwrap_or_default()
+                // A browser can name a composite encoder at length; cut, not
+                // refused with the whole reading.
+                bounded_name(&stat.codec_implementation.unwrap_or_default())
             } else {
                 String::new()
             },

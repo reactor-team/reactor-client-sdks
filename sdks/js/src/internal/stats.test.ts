@@ -387,6 +387,29 @@ describe('createTrackStatsExtractor()', () => {
     ]);
   }
 
+  it("names a video track's encoder or decoder, and only a video track's", () => {
+    const report = fullReport(1_000, 100_000);
+    const entries = report as unknown as { get(id: string): Record<string, unknown> | undefined };
+
+    Object.assign(entries.get('ov')!, { encoderImplementation: 'libvpx', powerEfficientEncoder: false });
+    Object.assign(entries.get('iv')!, { decoderImplementation: 'VideoToolbox', powerEfficientDecoder: true });
+    Object.assign(entries.get('oa')!, { encoderImplementation: 'opus' });
+
+    const [webcam, mic, mainVideo, mainAudio] = createTrackStatsExtractor()(report, tracks, []);
+
+    expect([webcam?.codecImplementation, webcam?.hardwareCodec]).toEqual(['libvpx', false]);
+    expect([mainVideo?.codecImplementation, mainVideo?.hardwareCodec]).toEqual(['VideoToolbox', true]);
+    expect(mic).not.toHaveProperty('codecImplementation');
+    expect(mainAudio).not.toHaveProperty('hardwareCodec');
+  });
+
+  it('leaves the codec implementation out when the browser does not say', () => {
+    const [webcam] = createTrackStatsExtractor()(fullReport(1_000, 100_000), tracks, []);
+
+    expect(webcam).not.toHaveProperty('codecImplementation');
+    expect(webcam).not.toHaveProperty('hardwareCodec');
+  });
+
   it('reports every negotiated track, audio and video, sent and received', () => {
     const extract = createTrackStatsExtractor();
     const stats = extract(fullReport(1_000, 100_000), tracks, []);
