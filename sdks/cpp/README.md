@@ -296,9 +296,9 @@ tracks and nothing else, so a slot published before one is not published after i
 
 ## Errors
 
-One base `reactor::ReactorError` and twenty-one subclasses over the codes the
-core defines — four of them only for stepped sessions:
-`GenerationModeMismatchError`, `StepRefusedError`, `StepResultTooLargeError` and
+One base `reactor::ReactorError` and twenty-two subclasses over the codes the
+core defines — five of them only for stepped sessions:
+`GenerationModeMismatchError`, `StepRefusedError`, `StepNotReadyError`, `StepResultTooLargeError` and
 `UnsupportedFrameEncodingError`. The same type is what a failed call throws *and* what `on_error`
 delivers — they used to disagree in the Python SDK, and anything listening to the
 event reconnected in a loop against a token that would never work.
@@ -357,7 +357,8 @@ Files go *into* a step the way they go into a command: upload first, then put th
 `Track::push_frame` keeps its signature: in a stepped session it buffers the frame
 for the next step instead of sending it, and still needs `publish()` first. Audio
 comes back as `(channels, samples)` `int16`. A step the runtime refuses throws
-`StepRefusedError`; one whose output does not fit in a message throws
+`StepRefusedError`; one the session cannot take yet throws `StepNotReadyError`
+(neither ran); one whose output does not fit in a message throws
 `StepResultTooLargeError`; a request too large to send throws
 `MessageTooLargeError` and keeps the pushed frames, which `clear_step_inputs()`
 drops. `Options::step_timeout_seconds` bounds a step (default 300 s).

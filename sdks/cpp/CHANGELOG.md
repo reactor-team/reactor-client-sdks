@@ -25,7 +25,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   frames, and `Options::step_timeout_seconds` bounds a step. A
   runtime that does not start the session stepped fails `connect()` with
   `GenerationModeMismatchError`; a step can fail with `StepRefusedError`,
-  `StepResultTooLargeError` or `UnsupportedFrameEncodingError`. Needs a
+  `StepNotReadyError` (the session cannot take a step yet; the step did not
+  run), `StepResultTooLargeError` or `UnsupportedFrameEncodingError`. Needs a
   `libreactor_ffi` with `reactor_create_with_options`.
 
 ## [2.5.0] - 2026-10-13
