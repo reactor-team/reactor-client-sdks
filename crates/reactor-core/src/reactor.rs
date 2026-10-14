@@ -1547,6 +1547,7 @@ impl Reactor {
         // Fixed for the connection, sent on every batch so any one reading
         // can be grouped on its own.
         let environment = self.client_environment();
+        let mut sent_environment = false;
         loop {
             self.platform.sleep(interval).await;
             if !current() {
@@ -1580,7 +1581,10 @@ impl Reactor {
             let unmatched = add_sdk_stages(&mut track_stats, sdk_stages.clone());
             let connection_stat =
                 client_connection_stat(&raw, time_to_connect_ms, &environment, now);
-            if track_stats.is_empty() && connection_stat.metrics.is_empty() {
+            // A batch with no reading goes out once, for the environment it
+            // carries: a connection with no media, or none measured yet,
+            // still says what it runs on.
+            if track_stats.is_empty() && connection_stat.metrics.is_empty() && sent_environment {
                 self.stage_times.give_back(generation, sdk_stages);
                 continue;
             }
@@ -1591,6 +1595,7 @@ impl Reactor {
                     // stages for a batch that has one.
                     self.stage_times.give_back(generation, unmatched);
                     sent_connect_time |= time_to_connect_ms.is_some();
+                    sent_environment = true;
                 }
                 Err(e) => {
                     self.stage_times.give_back(generation, sdk_stages);
@@ -2877,6 +2882,9 @@ mod tests {
     #[derive(Default)]
     struct StatsPeer {
         sent_control: Mutex<Vec<Vec<u8>>>,
+        /// Report no streams and no candidate pair, as a connection with no
+        /// media measured yet does.
+        no_readings: bool,
     }
 
     #[async_trait::async_trait]
@@ -2905,6 +2913,9 @@ mod tests {
             Ok(())
         }
         async fn get_stats(&self) -> Result<crate::peer::TransportStats, CoreError> {
+            if self.no_readings {
+                return Ok(crate::peer::TransportStats::default());
+            }
             Ok(crate::peer::TransportStats {
                 inbound: vec![crate::peer::InboundRtpStats {
                     ssrc: 7,
@@ -3183,6 +3194,27 @@ mod tests {
             .map(|s| s.frames)
             .collect();
         assert_eq!(submits, [1], "sent once, with the first webcam reading");
+    }
+
+    /// With nothing measured, one batch still goes out, for the environment;
+    /// after that, an empty interval sends nothing.
+    #[tokio::test]
+    async fn the_environment_goes_out_once_with_nothing_measured() {
+        let peer = Arc::new(StatsPeer {
+            no_readings: true,
+            ..StatsPeer::default()
+        });
+        let reactor = make_reactor_with_stats_peer(peer.clone(), Duration::from_millis(10));
+        reactor.state.lock().unwrap().time_to_connect_ms = None;
+
+        report_briefly(&reactor).await;
+
+        let batches = sent_client_stats(&peer);
+        assert_eq!(batches.len(), 1, "got {} batch(es)", batches.len());
+        assert!(batches[0].track_stats.is_empty());
+        let connection = batches[0].connection_stat.as_ref().unwrap();
+        assert!(connection.metrics.is_empty());
+        assert!(connection.environment.is_some());
     }
 
     /// Nothing goes out before an interval has passed, and nothing at all once

@@ -65,6 +65,10 @@ export class Reactor implements Disposable {
    *  with it, so a batch sent before the timings exist doesn't use it up.
    *  Reset per `startStatsPolling()` call, i.e. per connect()/reconnect(). */
   private hasSentConnectTime = false;
+  /** Whether this connection has sent a client-stats batch yet. The first
+   *  one goes out even with no reading, for the environment the bridge adds
+   *  to it. Reset with `hasSentConnectTime`. */
+  private hasSentClientStats = false;
   /** Set on the "connecting" status transition, cleared once `connectionTimings`
    *  is finalized on "ready" — see `handleStatusChanged()`. */
   private connectStartTime: number | undefined;
@@ -910,6 +914,7 @@ export class Reactor implements Disposable {
     const extractTrackStats = createTrackStatsExtractor();
 
     this.hasSentConnectTime = false;
+    this.hasSentClientStats = false;
     this.stopStatsPollers = [
       pollPeerStats(client, LOCAL_STATS_INTERVAL_MS, (report) => {
         this.stats = { ...extractConnectionStats(report), connectionTimings: this.connectionTimings };
@@ -928,8 +933,9 @@ export class Reactor implements Disposable {
    *  track has one yet (none negotiated onto a named track, or no codec
    *  reported yet), so the runtime gets the bandwidth estimate, the
    *  round-trip time and the time to connect without waiting on the tracks.
-   *  Skipped only when there is nothing at all to say; one is due again in
-   *  `RUNTIME_REPORT_INTERVAL_MS`. The time to connect goes on the first batch
+   *  Skipped only when there is nothing at all to say and a batch has already
+   *  gone out for this connection, so the first one still carries the
+   *  environment; one is due again in `RUNTIME_REPORT_INTERVAL_MS`. The time to connect goes on the first batch
    *  actually sent for this connection — see `hasSentConnectTime`.
    *  `sendClientStats` throws synchronously on a closing connection; caught
    *  here for the same reason `getStats()`'s rejection is above. */
@@ -942,13 +948,14 @@ export class Reactor implements Disposable {
     const timeToConnectMs = this.hasSentConnectTime ? undefined : this.connectionTimings?.totalMs;
     const connectionStat = toClientConnectionStat(report, timeToConnectMs);
 
-    if (trackStats.length === 0 && Object.keys(connectionStat.metrics).length === 0) {
+    if (this.hasSentClientStats && trackStats.length === 0 && Object.keys(connectionStat.metrics).length === 0) {
       return;
     }
 
     try {
       client.sendClientStats(trackStats, connectionStat);
       extractTrackStats.commit();
+      this.hasSentClientStats = true;
       if (timeToConnectMs !== undefined) {
         this.hasSentConnectTime = true;
       }
