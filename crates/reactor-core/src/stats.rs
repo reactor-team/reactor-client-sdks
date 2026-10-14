@@ -550,14 +550,6 @@ fn live_pair(pairs: &[CandidatePairStats]) -> Option<&CandidatePairStats> {
         .find(|p| p.nominated && p.state == CandidatePairState::Succeeded)
 }
 
-/// The wire codec for one client track reading, from the codec's lowercase
-/// name (`"vp9"`, `"h264"`, `"opus"`). *kind* decides which enum it must come
-/// from: a video reading can only carry a [`VideoCodec`], an audio one only an
-/// [`AudioCodec`].
-///
-/// This is the one table from codec names to the wire's codec enums. A binding
-/// that filters codecs before calling it (the JS SDK does, to keep one track's
-/// unknown codec from failing the whole batch) mirrors this list.
 /// The longest text value, in bytes, a client stats reading carries in one of
 /// its names or descriptive fields; the runtime refuses a reading with a
 /// longer one.
@@ -575,6 +567,14 @@ pub fn bounded_name(value: &str) -> String {
     value[..end].to_string()
 }
 
+/// The wire codec for one client track reading, from the codec's lowercase
+/// name (`"vp9"`, `"h264"`, `"opus"`). *kind* decides which enum it must come
+/// from: a video reading can only carry a [`VideoCodec`], an audio one only an
+/// [`AudioCodec`].
+///
+/// This is the one table from codec names to the wire's codec enums. A binding
+/// that filters codecs before calling it (the JS SDK does, to keep one track's
+/// unknown codec from failing the whole batch) mirrors this list.
 pub fn client_track_codec(
     kind: TrackKind,
     codec: &str,
