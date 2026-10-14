@@ -343,6 +343,7 @@ public final class Reactor implements AutoCloseable {
      * <p>A step that ran but that the model reported as failed still completes normally, with
      * {@link StepResult#error()} saying why. The future fails with {@link StepRefusedException}
      * when the runtime turns the step down (calls applied before the refusal stay applied), {@link
+     * StepNotReadyException} when the session cannot take a step yet (the step did not run), {@link
      * StepResultTooLargeException} when the step ran but its output does not fit in one message,
      * {@link MessageTooLargeException} when the request does not — nothing was
      * sent then, and the pushed frames are kept for the next step, which {@link #clearStepInputs()}

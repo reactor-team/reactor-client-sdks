@@ -22,8 +22,11 @@ versioning follows [Semantic Versioning](https://semver.org/).
   reported for the step. `files()` names the extra files the model kept with
   the step (`StepFile`: name, content type, size; fetch their bytes from the
   session's step results over HTTP), and `error()` is set when the step ran but
-  the model reported a failure — such a step completes normally, only a refused
-  one fails. `step()` takes no arguments too, running on the model's current
+  the model reported a failure — such a step completes normally. A step fails
+  with `StepRefusedException` when refused, the new `StepNotReadyException`
+  when the session cannot take a step yet (neither ran), and
+  `StepResultTooLargeException` when its output does not fit in a message.
+  `step()` takes no arguments too, running on the model's current
   state.
   The result is copied onto the heap once and the native one freed straight
   away, so it can be kept. `Track.pushFrame` buffers into the next step in such

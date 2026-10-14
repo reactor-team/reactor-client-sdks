@@ -27,7 +27,8 @@ import java.util.Optional;
  *     empty when it kept none or the result was not saved. Only named here: see {@link StepFile}
  *     for fetching their bytes
  * @param error why the step failed, when it ran and the model reported a failure; empty when it
- *     worked. A refused step has no result: its future fails with {@link StepRefusedException}
+ *     worked. A step that did not run has no result: its future fails with {@link
+ *     StepRefusedException} or {@link StepNotReadyException}
  */
 public record StepResult(
         long index, List<StepTrackOutput> tracks, double elapsed, List<StepFile> files, Optional<String> error) {

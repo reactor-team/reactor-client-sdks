@@ -6,7 +6,9 @@ import inc.reactor.sdk.InvalidStateException
 import inc.reactor.sdk.JsonValue
 import inc.reactor.sdk.StepCommand
 import inc.reactor.sdk.StepFile
+import inc.reactor.sdk.StepNotReadyException
 import inc.reactor.sdk.StepRefusedException
+import inc.reactor.sdk.StepResultTooLargeException
 import inc.reactor.sdk.internal.FakeNativeLibrary
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
@@ -93,6 +95,26 @@ class SteppedTest {
         fake.failLastStep("""{"code":"step_refused","message":"no","recoverable":false}""")
         val failure = stepping.await().exceptionOrNull()
         assertEquals(StepRefusedException::class.java, failure?.javaClass)
+    }
+
+    @Test
+    fun `a step the session was not ready for throws its own type`() = runBlocking {
+        val stepping = async(Dispatchers.Default) { runCatching { client.step() } }
+        awaitStep()
+        fake.failLastStep("""{"code":"step_not_ready","message":"starting","recoverable":false}""")
+        val failure = stepping.await().exceptionOrNull()
+        assertEquals(StepNotReadyException::class.java, failure?.javaClass)
+    }
+
+    @Test
+    fun `a step whose result is too large throws its own type`() = runBlocking {
+        val stepping = async(Dispatchers.Default) { runCatching { client.step() } }
+        awaitStep()
+        fake.failLastStep(
+            """{"code":"step_result_too_large","message":"big","recoverable":false}"""
+        )
+        val failure = stepping.await().exceptionOrNull()
+        assertEquals(StepResultTooLargeException::class.java, failure?.javaClass)
     }
 
     @Test

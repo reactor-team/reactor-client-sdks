@@ -202,6 +202,7 @@ final class SteppedGenerationTest {
     @DisplayName("the runtime's step codes arrive as their own exception types")
     void stepFailuresAreTyped() {
         assertStepFailsWith("step_refused", StepRefusedException.class);
+        assertStepFailsWith("step_not_ready", StepNotReadyException.class);
         assertStepFailsWith("step_result_too_large", StepResultTooLargeException.class);
         assertStepFailsWith("MESSAGE_TOO_LARGE", MessageTooLargeException.class);
         assertStepFailsWith("UNSUPPORTED_FRAME_ENCODING", UnsupportedFrameEncodingException.class);

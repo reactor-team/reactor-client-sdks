@@ -196,7 +196,8 @@ field, exactly as for a normal command.
 A step that ran but that the model reported as failed is not an exception: it
 completes with `result.error()` saying why.
 
-A step the runtime refuses fails with `StepRefusedException`; one whose output
+A step the runtime refuses fails with `StepRefusedException`; one the session
+cannot take yet with `StepNotReadyException` (neither ran); one whose output
 does not fit in a message with `StepResultTooLargeException`; a request too large
 to send with `MessageTooLargeException`, keeping the pushed frames, which
 `clearStepInputs()` drops. `stepTimeoutSeconds(...)` bounds a step (default
