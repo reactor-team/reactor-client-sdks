@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   InvalidStateError,
+  StepCommandFailedError,
   StepNotReadyError,
   StepRefusedError,
   StepResultTooLargeError,
+  StepSessionEndedError,
   type ReactorError,
 } from './errors';
 import { FakeReactorClient } from './internal/fake-reactor-client';
@@ -135,6 +137,8 @@ describe('Reactor.step', () => {
 
   it.each([
     ['step_not_ready', StepNotReadyError],
+    ['step_command_failed', StepCommandFailedError],
+    ['step_session_ended', StepSessionEndedError],
     ['step_result_too_large', StepResultTooLargeError],
   ] as const)('rejects a %s step with its own class', async (code, ErrorClass) => {
     const { reactor, client } = await connected('stepped');

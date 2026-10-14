@@ -606,7 +606,10 @@ export class Reactor implements Disposable {
    *
    * Rejects with a `StepRefusedError` when the runtime or the model turns
    * the step down, `StepNotReadyError` when the session cannot take a step
-   * yet (neither ran the step), `StepResultTooLargeError` when the result
+   * yet (neither ran the step), `StepCommandFailedError` when a state key or
+   * command failed (the calls before it stay applied; the step did not run),
+   * `StepSessionEndedError` when the session ended before the result came
+   * back, `StepResultTooLargeError` when the result
    * does not fit in
    * one message, `MessageTooLargeError` when the request itself is too large
    * (nothing was sent and the pushed frames are kept — see
