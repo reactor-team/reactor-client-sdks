@@ -311,6 +311,42 @@ struct SteppingTests {
         #expect(fake.freedStepResults == 0)
     }
 
+    @Test("a step whose command handler failed throws stepCommandFailed")
+    func failedCommandStepThrowsStepCommandFailed() async throws {
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+
+        do {
+            _ = try await stepping(
+                fake, ok: false,
+                error:
+                    #"{"code":"step_command_failed","message":"set_prompt failed","recoverable":false,"operation":"step"}"#
+            ) { try await client.step() }
+            Issue.record("a step whose command handler failed returned a result")
+        } catch ReactorError.stepCommandFailed {
+        }
+        #expect(fake.freedStepResults == 0)
+    }
+
+    @Test("a step whose session ended first throws stepSessionEnded")
+    func endedSessionStepThrowsStepSessionEnded() async throws {
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+
+        do {
+            _ = try await stepping(
+                fake, ok: false,
+                error:
+                    #"{"code":"step_session_ended","message":"gone","recoverable":false,"operation":"step"}"#
+            ) { try await client.step() }
+            Issue.record("a step whose session ended first returned a result")
+        } catch ReactorError.stepSessionEnded {
+        }
+        #expect(fake.freedStepResults == 0)
+    }
+
     @Test("a step whose result is too large throws stepResultTooLarge")
     func tooLargeStepThrowsStepResultTooLarge() async throws {
         let fake = FakeLibrary()

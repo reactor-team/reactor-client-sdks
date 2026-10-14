@@ -52,6 +52,11 @@ extension Reactor {
     ///     yet. The step did not run.
     ///   - ``ReactorError/Code/stepResultTooLarge`` — the step ran, but its
     ///     output does not fit in one message. Ask for less per step.
+    ///   - ``ReactorError/Code/stepCommandFailed`` — the handler of one of the
+    ///     step's state keys or commands failed. The calls before it stay
+    ///     applied, the ones after it were skipped, and the step did not run.
+    ///   - ``ReactorError/Code/stepSessionEnded`` — the session ended before
+    ///     the step's result could be sent; whether the step ran is unknown.
     ///   - ``ReactorError/Code/messageTooLarge`` — the request does not fit.
     ///     Nothing was sent, and the pushed frames are kept for the next step;
     ///     ``clearStepInputs()`` drops them.
