@@ -4585,8 +4585,9 @@ mod tests {
                     track: "out".into(),
                     kind: WireTrackKind::Video as i32,
                     frames: vec![raw_frame(9)],
+                    rate: 0.0,
                 }],
-                elapsed: 1.5,
+                elapsed_seconds: 1.5,
                 files: vec![],
                 error: None,
                 failure_code: StepFailureCode::Unspecified as i32,
@@ -4617,7 +4618,7 @@ mod tests {
             data_server_message::Payload::StepResult(StepResult {
                 index: 4,
                 tracks: vec![],
-                elapsed: 0.5,
+                elapsed_seconds: 0.5,
                 files: vec![StepFileRef {
                     name: "depth.npy".into(),
                     content_type: "application/octet-stream".into(),
@@ -4663,7 +4664,7 @@ mod tests {
             data_server_message::Payload::StepResult(StepResult {
                 index: 2,
                 tracks: vec![],
-                elapsed: 0.2,
+                elapsed_seconds: 0.2,
                 files: vec![],
                 error: Some("generate() raised".into()),
                 failure_code: StepFailureCode::Failed as i32,
@@ -4710,7 +4711,7 @@ mod tests {
                 data_server_message::Payload::StepResult(StepResult {
                     index: if ran { 3 } else { 0 },
                     tracks: vec![],
-                    elapsed: if ran { 0.4 } else { 0.0 },
+                    elapsed_seconds: if ran { 0.4 } else { 0.0 },
                     files: vec![],
                     error: Some("no".into()),
                     failure_code: failure_code as i32,
@@ -4771,8 +4772,9 @@ mod tests {
                         encoding: 42,
                         ..raw_frame(0)
                     }],
+                    rate: 0.0,
                 }],
-                elapsed: 0.0,
+                elapsed_seconds: 0.0,
                 files: vec![],
                 error: None,
                 failure_code: StepFailureCode::Unspecified as i32,
@@ -4894,7 +4896,7 @@ mod tests {
             data_server_message::Payload::StepResult(StepResult {
                 index: 1,
                 tracks: vec![],
-                elapsed: 0.0,
+                elapsed_seconds: 0.0,
                 files: vec![],
                 error: None,
                 failure_code: StepFailureCode::Unspecified as i32,

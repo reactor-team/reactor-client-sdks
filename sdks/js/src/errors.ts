@@ -214,6 +214,19 @@ export class StepResultTooLargeError extends ReactorError {
   static override readonly code = 'step_result_too_large';
 }
 
+/** A `step()` did not run because the handler of one of its state keys or
+ *  commands failed. The calls before it stay applied and the ones after it
+ *  were skipped. Lowercase, as the runtime names the outcome. */
+export class StepCommandFailedError extends ReactorError {
+  static override readonly code = 'step_command_failed';
+}
+
+/** The session ended before a `step()`'s result could be sent, so whether the
+ *  step ran is unknown. Lowercase, as the runtime names the outcome. */
+export class StepSessionEndedError extends ReactorError {
+  static override readonly code = 'step_session_ended';
+}
+
 /** A `step()` result carried a frame in an encoding this SDK cannot decode. */
 export class UnsupportedFrameEncodingError extends ReactorError {
   static override readonly code = 'UNSUPPORTED_FRAME_ENCODING';
@@ -244,6 +257,8 @@ const ERROR_CLASSES = [
   StepRefusedError,
   StepNotReadyError,
   StepResultTooLargeError,
+  StepCommandFailedError,
+  StepSessionEndedError,
   UnsupportedFrameEncodingError,
 ] as const;
 

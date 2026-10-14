@@ -54,6 +54,8 @@ TEST_CASE("each documented code parses into its own class") {
   CHECK(parses_as<reactor::StepRefusedError>(payload_for("step_refused")));
   CHECK(parses_as<reactor::StepNotReadyError>(payload_for("step_not_ready")));
   CHECK(parses_as<reactor::StepResultTooLargeError>(payload_for("step_result_too_large")));
+  CHECK(parses_as<reactor::StepCommandFailedError>(payload_for("step_command_failed")));
+  CHECK(parses_as<reactor::StepSessionEndedError>(payload_for("step_session_ended")));
 }
 
 TEST_CASE("catching the base class catches every one of them") {

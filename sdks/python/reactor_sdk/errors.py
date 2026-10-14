@@ -293,6 +293,25 @@ class StepResultTooLargeError(ReactorError):
     code = "step_result_too_large"
 
 
+class StepCommandFailedError(ReactorError):
+    """The handler of one of the step's state keys or commands failed.
+
+    The calls before it stay applied, the ones after it were skipped, and the
+    step did not run. Lowercase, as the runtime names the outcome.
+    """
+
+    code = "step_command_failed"
+
+
+class StepSessionEndedError(ReactorError):
+    """The session ended before the step's result could be sent.
+
+    Whether the step ran is unknown. Lowercase, as the runtime names the outcome.
+    """
+
+    code = "step_session_ended"
+
+
 #: Every code this package has a class for. Anything else — a platform code for a
 #: rejected request — falls back to `ReactorError` with `code` set to it.
 ERROR_CLASSES: tuple[type[ReactorError], ...] = (
@@ -318,6 +337,8 @@ ERROR_CLASSES: tuple[type[ReactorError], ...] = (
     StepRefusedError,
     StepNotReadyError,
     StepResultTooLargeError,
+    StepCommandFailedError,
+    StepSessionEndedError,
 )
 
 _BY_CODE: dict[str, type[ReactorError]] = {cls.code: cls for cls in ERROR_CLASSES}

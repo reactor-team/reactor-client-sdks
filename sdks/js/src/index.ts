@@ -22,6 +22,8 @@ export {
   StepRefusedError,
   StepNotReadyError,
   StepResultTooLargeError,
+  StepCommandFailedError,
+  StepSessionEndedError,
   UnsupportedFrameEncodingError,
 } from './errors';
 export {

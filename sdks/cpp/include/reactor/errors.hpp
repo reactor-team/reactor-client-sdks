@@ -76,6 +76,8 @@ inline constexpr std::string_view UNSUPPORTED_FRAME_ENCODING = "UNSUPPORTED_FRAM
 inline constexpr std::string_view STEP_REFUSED = "step_refused";
 inline constexpr std::string_view STEP_NOT_READY = "step_not_ready";
 inline constexpr std::string_view STEP_RESULT_TOO_LARGE = "step_result_too_large";
+inline constexpr std::string_view STEP_COMMAND_FAILED = "step_command_failed";
+inline constexpr std::string_view STEP_SESSION_ENDED = "step_session_ended";
 inline constexpr std::string_view INTERNAL_ERROR = "INTERNAL_ERROR";
 
 }  // namespace codes
@@ -140,8 +142,8 @@ class ReactorError : public std::runtime_error {
 
 /// Declare a subclass.
 ///
-/// Twenty-two of these differ only in name and code, so they are generated from one
-/// list: a hand-written set is twenty-two chances to paste the wrong code in, or to
+/// Twenty-four of these differ only in name and code, so they are generated from one
+/// list: a hand-written set is twenty-four chances to paste the wrong code in, or to
 /// forget the `rethrow` override that keeps the type from being sliced away.
 #define REACTOR_ERROR_CLASSES(X)                                                                  \
   X(NetworkError, NETWORK_ERROR)              /* the request never got a reply */                 \
@@ -165,7 +167,9 @@ class ReactorError : public std::runtime_error {
   X(UnsupportedFrameEncodingError, UNSUPPORTED_FRAME_ENCODING) /* step frame undecodable */       \
   X(StepRefusedError, STEP_REFUSED)                            /* runtime turned the step down */ \
   X(StepNotReadyError, STEP_NOT_READY)                         /* session cannot step yet */      \
-  X(StepResultTooLargeError, STEP_RESULT_TOO_LARGE)            /* step result over one message */
+  X(StepResultTooLargeError, STEP_RESULT_TOO_LARGE)            /* step result over one message */ \
+  X(StepCommandFailedError, STEP_COMMAND_FAILED)               /* a step's call failed */         \
+  X(StepSessionEndedError, STEP_SESSION_ENDED)                 /* session ended before result */
 
 namespace detail {
 

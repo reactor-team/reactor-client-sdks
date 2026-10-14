@@ -202,6 +202,16 @@ extension ReactorError {
         /// Ask for less per step — fewer frames, a smaller resolution.
         public static let stepResultTooLarge = Code(rawValue: "step_result_too_large")
 
+        /// The handler of one of the step's state keys or commands failed. The
+        /// calls before it stay applied, the ones after it were skipped, and
+        /// the step did not run. Lowercase, as the runtime names the outcome.
+        public static let stepCommandFailed = Code(rawValue: "step_command_failed")
+
+        /// The session ended before the step's result could be sent, so
+        /// whether the step ran is unknown. Lowercase, as the runtime names
+        /// the outcome.
+        public static let stepSessionEnded = Code(rawValue: "step_session_ended")
+
         /// A failure with no better classification.
         public static let internalError = Code(rawValue: "INTERNAL_ERROR")
     }
@@ -280,6 +290,12 @@ extension ReactorError {
 
     /// Matches an error whose code is ``Code/stepResultTooLarge``.
     public static var stepResultTooLarge: Code { .stepResultTooLarge }
+
+    /// Matches an error whose code is ``Code/stepCommandFailed``.
+    public static var stepCommandFailed: Code { .stepCommandFailed }
+
+    /// Matches an error whose code is ``Code/stepSessionEnded``.
+    public static var stepSessionEnded: Code { .stepSessionEnded }
 
     /// Matches an error whose code is ``Code/internalError``.
     public static var internalError: Code { .internalError }
