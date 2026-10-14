@@ -1470,7 +1470,10 @@ impl Reactor {
                 continue;
             }
             match self.client_stats(track_stats, Some(connection_stat)) {
-                Ok(()) => sent_connect_time |= time_to_connect_ms.is_some(),
+                Ok(()) => {
+                    reporter.commit();
+                    sent_connect_time |= time_to_connect_ms.is_some();
+                }
                 Err(e) => log::debug!("[reactor] client stats send skipped: {e}"),
             }
         }

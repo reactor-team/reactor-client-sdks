@@ -193,7 +193,11 @@ export interface ClientTrackStat {
 }
 
 /** The time a track's frames spent in one stage of their trip, over one
- *  batch's window. The average per frame is `totalMs / frames`. */
+ *  batch's window. The average per frame is `totalMs / frames`.
+ *  encode_wait, packetize and pacer are different: they come from the
+ *  engine's timing frames, a sample of about one slow frame per second, so
+ *  `frames` counts sampled frames and `totalMs / frames` leans toward the
+ *  slow ones. Treat their average as an upper bound, not a mean. */
 export interface FrameStage {
   name: string;
   /** The time all `frames` frames spent in the stage together. */
