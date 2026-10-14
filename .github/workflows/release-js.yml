@@ -216,19 +216,32 @@ jobs:
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
         run: mise run test:js:integration-tests
 
+  # ── 1c. Consumer tests ──────────────────────────────────────────────────────
+  #
+  # The packed tarball installed into real Vite and Next.js apps, each loading
+  # the wasm binding in a real browser — see js-consumer-tests.yml. Only on an
+  # actual release (or a manual run): a plain push to main isn't publishing
+  # anything, and PRs that touch packaging get their own run from that
+  # workflow's path filter.
+  js-consumer-tests:
+    name: JS SDK consumer tests
+    needs: detect-version
+    if: needs.detect-version.outputs.bumped == 'true' || github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/js-consumer-tests.yml
+
   # ── 2. GitHub release ───────────────────────────────────────────────────────
   release:
     name: Publish GitHub release
-    needs: [detect-version, build, js-integration-tests]
+    needs: [detect-version, build, js-integration-tests, js-consumer-tests]
     # An explicit `if` replaces the implicit "every `needs` entry succeeded"
-    # gate rather than adding to it, so build's and js-integration-tests's own
-    # success are spelled out here too — matching release-python.yml's and
-    # release-cpp.yml's own release gates. js-integration-tests always runs
-    # (never skipped) whenever bumped can be true, since both gate on the
-    # same push/workflow_dispatch event.
+    # gate rather than adding to it, so build's, js-integration-tests's and
+    # js-consumer-tests's own success are spelled out here too — matching
+    # release-python.yml's and release-cpp.yml's own release gates. Both test
+    # jobs always run (never skipped) whenever bumped can be true.
     if: >-
       needs.detect-version.outputs.bumped == 'true' &&
-      needs.build.result == 'success' && needs.js-integration-tests.result == 'success'
+      needs.build.result == 'success' && needs.js-integration-tests.result == 'success' &&
+      needs.js-consumer-tests.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -1,0 +1,12 @@
+{
+  "name": "@reactor-team/js-sdk-consumer-tests",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "node run.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1"
+  }
+}

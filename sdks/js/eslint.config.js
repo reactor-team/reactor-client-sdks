@@ -5,7 +5,7 @@ import stylistic from '@stylistic/eslint-plugin';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'demo/dist/**', 'demo/node_modules/**', 'node_modules/**'] },
+  { ignores: ['dist/**', 'demo/dist/**', 'demo/node_modules/**', 'node_modules/**', 'consumer-tests/node_modules/**'] },
   js.configs.recommended,
   // Non-type-checked TS parsing everywhere (so tsup.config.ts etc. parse at
   // all), then type-checked rules layered on top for the SDK's own source
@@ -38,6 +38,27 @@ export default tseslint.config(
     files: ['scripts/**/*.mjs'],
     languageOptions: {
       globals: { console: 'readonly', process: 'readonly' },
+    },
+  },
+  {
+    // Runs in Node, and hands callbacks to Playwright that run in the page.
+    files: ['consumer-tests/run.mjs'],
+    languageOptions: {
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+        URL: 'readonly',
+        window: 'readonly',
+      },
+    },
+  },
+  {
+    files: ['consumer-tests/fixtures/**/*.js'],
+    languageOptions: {
+      parserOptions: { ecmaFeatures: { jsx: true } },
+      globals: { window: 'readonly' },
     },
   },
   {

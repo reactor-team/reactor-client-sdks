@@ -23,6 +23,15 @@ Full reference and guides live at **[docs.reactor.inc](https://docs.reactor.inc)
 npm install @reactor-team/js-sdk
 ```
 
+No bundler configuration needed: the WebAssembly binding the SDK runs on
+ships inside its own JavaScript module, fetched the first time a `Reactor`
+connects rather than when the SDK is imported. Each release is
+checked against Vite 6, 7 and 8 and Next.js 15 and 16 (webpack and
+Turbopack), in both dev and production builds.
+
+If your page sets a Content Security Policy, its `script-src` needs
+`'wasm-unsafe-eval'` for the binding to compile.
+
 ## Quickstart
 
 ```ts
@@ -266,8 +275,9 @@ you want to stay model-agnostic. See [Typed model SDKs](https://docs.reactor.inc
 ```bash
 mise run install:js   # npm install
 mise run lint:js      # eslint + tsc --noEmit
-mise run build:js     # tsup -> dist/, then copies reactor-wasm's pkg/ into dist/wasm
+mise run build:js     # tsup -> dist/, then copies reactor-wasm's pkg/ into dist/wasm, binary inlined
 mise run test:js      # vitest — pure-JS unit tests against a mocked ReactorClient, no wasm build needed
+mise run test:js:consumer-tests  # the packed SDK in real Vite/Next.js apps, in a real browser — see consumer-tests/README.md
 ```
 
 `build:js` fails fast with a clear message if `crates/reactor-wasm/pkg`

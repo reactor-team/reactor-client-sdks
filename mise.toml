@@ -285,6 +285,20 @@ run = [
     "$REPO_ROOT/scripts/retry.sh npx playwright test",
 ]
 
+[tasks."test:js:consumer-tests"]
+description = "[Testing] JS SDK consumer tests — the packed SDK installed into real Vite/Next.js apps, wasm loading checked in a real browser"
+dir = "sdks/js/consumer-tests"
+# Like test:js:integration-tests: sequential `mise run` steps rather than
+# `depends`, since build:js needs build:wasm's output to already exist. No
+# API key or live model — the checks stop at the SDK's first HTTP request.
+run = [
+    "mise run build:wasm",
+    "mise run build:js",
+    "npm ci",
+    "npx playwright install chromium",
+    "node run.mjs",
+]
+
 # ── C++ SDK ───────────────────────────────────────────────────────────────────
 # Needs a release build of libreactor_ffi to link against; `build:cpp` makes one.
 # Rebuild it after pulling changes under crates/ — reactor_abi_version() turns a

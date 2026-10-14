@@ -105,6 +105,13 @@ describe("toReactorError()'s code passthrough", () => {
     expect(toReactorError({}).code).toBe('INTERNAL_ERROR');
     expect(toReactorError(new Error('wasm import failed')).code).toBe('INTERNAL_ERROR');
   });
+
+  it('keeps a thrown JS error reachable as `cause`', () => {
+    const original = new Error('wasm import failed');
+
+    expect(toReactorError(original).cause).toBe(original);
+    expect(toReactorError({ code: 'TRANSPORT_ERROR' }).cause).toBeUndefined();
+  });
 });
 
 describe('typed subclasses', () => {

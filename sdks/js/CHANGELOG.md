@@ -9,8 +9,21 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The SDK now loads in Vite apps, in both the dev server and production
+  builds. Previously `connect()` failed with "reactor-wasm failed to load"
+  because Vite moved the SDK's code away from the WebAssembly binding it
+  loads. The binding now ships inside its own JavaScript module, so it no
+  longer depends on how a bundler handles a separate asset file and needs no
+  bundler configuration. It is still only fetched on the first `connect()`.
+- A binding that fails to load now says why in the error message (for
+  example, a Content Security Policy without `'wasm-unsafe-eval'`), instead
+  of always suggesting a rebuild.
+
 ### Added
 
+- `ReactorError` keeps the error it wraps as `cause`, when there is one.
 - A `jwt` resolver now receives a `JwtRequestContext`, `{ sessionId }`, on
   every call: the session the request is for, or none for session creation.
   A resolver that mints a replacement token mid-session can bind it to that

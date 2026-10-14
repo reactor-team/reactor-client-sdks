@@ -3,8 +3,8 @@ import { defineConfig, searchForWorkspaceRoot } from 'vite';
 import { reactorTokenPlugin } from '../shared/token-server';
 
 // `@reactor-team/js-sdk` is linked in from one level up (`../..`). Vite only
-// serves files under the workspace root by default, so its `dist/wasm` needs
-// to be allowed explicitly, or the wasm fetch 403s.
+// serves files under the workspace root by default, so its `dist/` needs
+// to be allowed explicitly, or loading it 403s.
 const sdkRoot = fileURLToPath(new URL('../..', import.meta.url));
 
 // Must match `main.ts`'s `MODEL_NAME`.

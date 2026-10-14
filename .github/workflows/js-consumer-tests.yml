@@ -1,0 +1,95 @@
+# Installs the packed JS SDK into real Vite and Next.js apps and checks in a
+# real browser that its wasm binding loads — dev server and production build,
+# for every bundler version in sdks/js/consumer-tests/run.mjs's TARGETS. See
+# sdks/js/consumer-tests/README.md.
+#
+# What it guards is how the package behaves once a consumer's bundler gets
+# hold of it, which nothing linked from source (the examples, the integration
+# tests' `file:..` install) ever exercises. Too slow to run on every PR — each
+# target installs and builds a whole app — so it runs:
+#   - from release-js.yml (workflow_call), as a gate before every release;
+#   - on PRs that touch how the binding is packaged or loaded (paths below);
+#   - by hand (workflow_dispatch).
+name: JS SDK consumer tests
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "sdks/js/scripts/copy-wasm.mjs"
+      - "sdks/js/src/internal/wasm.ts"
+      - "sdks/js/tsup.config.ts"
+      - "sdks/js/package.json"
+      - "sdks/js/consumer-tests/**"
+      - "crates/reactor-wasm/Cargo.toml"
+      - "mise.toml"
+      - ".github/workflows/js-consumer-tests.yml"
+
+concurrency:
+  group: js-consumer-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  MISE_VERSION: "2026.8.8"
+  MISE_LOCKED: "1"
+  MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
+
+jobs:
+  # Packs the SDK once; every target below installs this exact tarball.
+  pack:
+    name: Pack the SDK
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: mise run build:wasm
+      - run: mise run build:js
+      - name: npm pack
+        working-directory: sdks/js
+        # --ignore-scripts: `prepack` would rebuild what build:js just built.
+        run: npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/sdk-tarball"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: js-sdk-tarball
+          path: ${{ runner.temp }}/sdk-tarball/*.tgz
+          if-no-files-found: error
+      - id: targets
+        run: echo "targets=$(node sdks/js/consumer-tests/run.mjs --list)" >> "$GITHUB_OUTPUT"
+
+  consumer:
+    name: ${{ matrix.target }}
+    needs: pack
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.pack.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: actions/download-artifact@v4
+        with:
+          name: js-sdk-tarball
+          path: ${{ runner.temp }}/sdk-tarball
+      - name: Install the runner
+        working-directory: sdks/js/consumer-tests
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Run
+        working-directory: sdks/js/consumer-tests
+        run: node run.mjs --tarball "$(ls "$RUNNER_TEMP"/sdk-tarball/*.tgz)" --target "${{ matrix.target }}"

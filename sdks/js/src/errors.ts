@@ -26,6 +26,8 @@ export interface ReactorErrorOptions {
   operation?: string | undefined;
   retry_after_ms?: number | undefined;
   timestamp_ms?: number | undefined;
+  /** The underlying error, kept as the standard `Error.cause`. */
+  cause?: unknown;
 }
 
 export class ReactorError extends Error {
@@ -60,7 +62,7 @@ export class ReactorError extends Error {
   readonly timestamp: number;
 
   constructor(message: string, options: ReactorErrorOptions = {}) {
-    super(message);
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = 'ReactorError';
     // An explicit code wins, so an unrecognized one survives on the base
     // class rather than being relabelled as the fallback it was routed to.
@@ -261,5 +263,8 @@ export function toReactorError(cause: unknown): ReactorError {
     operation: payload.operation,
     retry_after_ms: payload.retry_after_ms,
     timestamp_ms: payload.timestamp_ms,
+    // A thrown JS error (a failed wasm load, say) keeps its stack and its own
+    // `cause` reachable; reactor-core's plain payload objects have neither.
+    cause: cause instanceof Error ? cause : undefined,
   });
 }
