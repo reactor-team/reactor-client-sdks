@@ -213,8 +213,9 @@ await reactor.step();
   ignored there, with a console warning: no RTP is sent, frames go through `pushFrame()`. In
   a streamed session it is still required, and `publishTrack(name)` without one rejects with
   an `InvalidStateError`.
-- Refusals are typed: `StepRefusedError` (`step_refused`), `StepResultTooLargeError`
-  (`step_result_too_large`), `UnsupportedFrameEncodingError`, and `MessageTooLargeError` when
+- Refusals are typed: `StepRefusedError` (`step_refused`), `StepNotReadyError`
+  (`step_not_ready`: the session cannot take a step yet, and the step did not run),
+  `StepResultTooLargeError` (`step_result_too_large`), `UnsupportedFrameEncodingError`, and `MessageTooLargeError` when
   the request is too large to send — nothing was sent, and the pushed frames are kept until
   `clearStepInputs()`.
 

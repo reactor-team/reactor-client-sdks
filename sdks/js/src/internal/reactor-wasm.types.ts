@@ -303,7 +303,7 @@ export declare class ReactorClient {
   pausedTracks(): string[];
 
   /** Stepped sessions only. Rejects with the core's code (`step_refused`,
-   *  `step_result_too_large`, `MESSAGE_TOO_LARGE`, ...). */
+   *  `step_not_ready`, `step_result_too_large`, `MESSAGE_TOO_LARGE`, ...). */
   step(state?: Record<string, unknown> | null, commands?: StepCommand[] | null): Promise<StepResult>;
   /** Stepped sessions only. Buffers the frame for the next `step()`; throws
    *  synchronously on a frame that does not match its dimensions. */
