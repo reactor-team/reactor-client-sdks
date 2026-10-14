@@ -202,6 +202,13 @@ export class StepRefusedError extends ReactorError {
   static override readonly code = 'step_refused';
 }
 
+/** A `step()` did not run because the session cannot take a step yet — it
+ *  is not in a running state that can. Nothing the step carried was applied.
+ *  Lowercase, as the runtime names the outcome. */
+export class StepNotReadyError extends ReactorError {
+  static override readonly code = 'step_not_ready';
+}
+
 /** A `step()` ran, but its result did not fit in one data-channel message. */
 export class StepResultTooLargeError extends ReactorError {
   static override readonly code = 'step_result_too_large';
@@ -235,6 +242,7 @@ const ERROR_CLASSES = [
   RecorderDisabledError,
   GenerationModeMismatchError,
   StepRefusedError,
+  StepNotReadyError,
   StepResultTooLargeError,
   UnsupportedFrameEncodingError,
 ] as const;

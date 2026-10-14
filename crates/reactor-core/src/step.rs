@@ -3,12 +3,18 @@
 //!
 //! A stepped session runs one step per request. The client sends one
 //! `RequestStep` on the data channel — state, then commands, then the input
-//! frames buffered per track since the previous step — and gets exactly one
-//! reply with the same `request_id`: a `StepResult`, or an `Error`
-//! (`step_refused`, `step_result_too_large`, ...). Nothing else is sent for a
-//! step: the result is its one answer, and an error is its refusal. A step
-//! that ran but that the model reported as failed is still a result, with the
-//! reason in [`StepOutput::error`].
+//! frames buffered per track since the previous step (`media_input`) — and
+//! gets exactly one reply with the same `request_id`: a `StepResult`, whatever
+//! the outcome. Its `failure_code` says which outcome it was, and its `error`
+//! says why in words:
+//!
+//! | `failure_code`     | the step              | [`FrameDecoders::decode_result`]    |
+//! |--------------------|-----------------------|-------------------------------------|
+//! | `UNSPECIFIED`      | ran and worked        | the output                          |
+//! | `FAILED`           | ran, the model failed | the output, with [`StepOutput::error`] |
+//! | `REFUSED`          | did not run           | [`CoreError::StepRefused`]          |
+//! | `NOT_READY`        | did not run           | [`CoreError::StepNotReady`]         |
+//! | `RESULT_TOO_LARGE` | ran, result too big   | [`CoreError::StepResultTooLarge`]   |
 //!
 //! A result names the extra files the model kept with the step
 //! ([`StepFile`]) but does not carry them; their bytes are fetched over HTTP
@@ -30,7 +36,7 @@ use crate::protocol::wire::struct_convert::value_to_struct;
 use crate::protocol::wire::v1::model::Command;
 use crate::protocol::wire::v1::platform::TrackKind as WireTrackKind;
 use crate::protocol::wire::v1::step::{
-    Frame, FrameEncoding, RequestStep, StepFileRef, StepResult, TrackFrames,
+    Frame, FrameEncoding, RequestStep, StepFailureCode, StepFileRef, StepResult, TrackFrames,
 };
 
 /// `dtype` of a raw video frame: RGB, one byte per channel.
@@ -56,14 +62,15 @@ impl StepCommand {
     }
 }
 
-/// Build the `RequestStep` for `state`, `commands` and the buffered `inputs`.
+/// Build the `RequestStep` for `state`, `commands` and the buffered input
+/// frames (`media_input`).
 ///
 /// `state` is a JSON object of the model's state fields (each key runs as the
 /// model's `set_<key>` command, before `commands`), or `null` for none.
 pub fn build_request_step(
     state: Value,
     commands: Vec<StepCommand>,
-    inputs: Vec<TrackFrames>,
+    media_input: Vec<TrackFrames>,
 ) -> Result<RequestStep, CoreError> {
     let state = match state {
         Value::Null => None,
@@ -93,7 +100,7 @@ pub fn build_request_step(
     Ok(RequestStep {
         state,
         commands,
-        inputs,
+        media_input,
     })
 }
 
@@ -235,9 +242,9 @@ pub struct StepOutput {
     /// saved.
     pub files: Vec<StepFile>,
     /// Why the step failed, when it ran and the model reported a failure;
-    /// `None` when it worked. A refused step never runs: it gets no result,
-    /// and [`crate::reactor::Reactor::step`] fails with
-    /// [`CoreError::StepRefused`] instead.
+    /// `None` when it worked. A step that did not run (refused, or the session
+    /// not ready) or whose result was too large has no output:
+    /// [`FrameDecoders::decode_result`] fails instead.
     pub error: Option<String>,
 }
 
@@ -370,9 +377,15 @@ impl FrameDecoders {
         }
     }
 
-    /// Decode a whole [`StepResult`]. Fails on the first frame that cannot be
-    /// decoded rather than returning a partial step.
+    /// Decode a whole [`StepResult`]. A result whose `failure_code` says the
+    /// step did not run, or ran with a result too large to send, is that
+    /// failure, with `error` as its message (see the module docs). Otherwise
+    /// fails on the first frame that cannot be decoded rather than returning a
+    /// partial step.
     pub fn decode_result(&self, result: StepResult) -> Result<StepOutput, CoreError> {
+        if let Some(failure) = step_failure(result.failure_code, result.error.as_deref()) {
+            return Err(failure);
+        }
         let tracks = result
             .tracks
             .into_iter()
@@ -406,6 +419,34 @@ impl FrameDecoders {
             files: result.files.into_iter().map(StepFile::from).collect(),
             error: result.error,
         })
+    }
+}
+
+/// The failure a `StepResult`'s `failure_code` stands for, or `None` when the
+/// result is an output — the step worked, or ran and the model reported a
+/// failure (`FAILED`, which still resolves with its reason).
+fn step_failure(failure_code: i32, error: Option<&str>) -> Option<CoreError> {
+    let message = |default: &str| error.unwrap_or(default).to_string();
+    match StepFailureCode::try_from(failure_code) {
+        Ok(StepFailureCode::Unspecified | StepFailureCode::Failed) => None,
+        Ok(StepFailureCode::Refused) => Some(CoreError::StepRefused {
+            message: message("the runtime refused the step"),
+        }),
+        Ok(StepFailureCode::NotReady) => Some(CoreError::StepNotReady {
+            message: message("the session cannot run a step yet"),
+        }),
+        Ok(StepFailureCode::ResultTooLarge) => Some(CoreError::StepResultTooLarge {
+            message: message("the step's result does not fit in one message"),
+        }),
+        // A code from a newer runtime: the step's outcome is unknown, so it
+        // cannot resolve as a result.
+        Err(_) => Some(CoreError::StepFailed {
+            code: String::new(),
+            message: format!(
+                "step failed with unknown failure code {failure_code}: {}",
+                error.unwrap_or("no reason given")
+            ),
+        }),
     }
 }
 
@@ -453,7 +494,7 @@ mod tests {
             struct_to_value(request.commands[1].data.clone().unwrap()),
             json!({"style": "ink"})
         );
-        assert_eq!(request.inputs, inputs);
+        assert_eq!(request.media_input, inputs);
     }
 
     #[test]
@@ -572,6 +613,7 @@ mod tests {
             elapsed: 0.25,
             files: vec![],
             error: None,
+            failure_code: StepFailureCode::Unspecified as i32,
         };
         let output = FrameDecoders::default().decode_result(result).unwrap();
         assert_eq!(output.index, 3);
@@ -600,10 +642,46 @@ mod tests {
             elapsed: 0.1,
             files: vec![],
             error: Some("out of memory".into()),
+            failure_code: StepFailureCode::Failed as i32,
         };
         let output = FrameDecoders::default().decode_result(result).unwrap();
         assert_eq!(output.index, 5);
         assert_eq!(output.error.as_deref(), Some("out of memory"));
+    }
+
+    /// A step that did not run, or whose result was too large to send, is no
+    /// output: it is its own failure, with the runtime's reason as the message
+    /// (or a stand-in when it gave none).
+    #[test]
+    fn a_failure_code_is_its_own_error() {
+        let result = |failure_code: StepFailureCode, error: Option<&str>| StepResult {
+            index: 0,
+            tracks: vec![],
+            elapsed: 0.0,
+            files: vec![],
+            error: error.map(str::to_string),
+            failure_code: failure_code as i32,
+        };
+        let decoders = FrameDecoders::default();
+        match decoders.decode_result(result(StepFailureCode::Refused, Some("bad command"))) {
+            Err(CoreError::StepRefused { message }) => assert_eq!(message, "bad command"),
+            other => panic!("expected StepRefused, got {other:?}"),
+        }
+        match decoders.decode_result(result(StepFailureCode::NotReady, Some("starting"))) {
+            Err(CoreError::StepNotReady { message }) => assert_eq!(message, "starting"),
+            other => panic!("expected StepNotReady, got {other:?}"),
+        }
+        match decoders.decode_result(result(StepFailureCode::ResultTooLarge, None)) {
+            Err(CoreError::StepResultTooLarge { message }) => assert!(!message.is_empty()),
+            other => panic!("expected StepResultTooLarge, got {other:?}"),
+        }
+        match decoders.decode_result(StepResult {
+            failure_code: 99,
+            ..result(StepFailureCode::Unspecified, Some("future"))
+        }) {
+            Err(CoreError::StepFailed { message, .. }) => assert!(message.contains("future")),
+            other => panic!("expected StepFailed, got {other:?}"),
+        }
     }
 
     #[test]
@@ -625,6 +703,7 @@ mod tests {
                 },
             ],
             error: None,
+            failure_code: StepFailureCode::Unspecified as i32,
         };
         let output = FrameDecoders::default().decode_result(result).unwrap();
         assert_eq!(output.elapsed, 1.5);
@@ -662,6 +741,7 @@ mod tests {
                 size: 12,
             }],
             error: Some("partial".into()),
+            failure_code: StepFailureCode::Failed as i32,
         }
         .encode_to_vec();
         let decoded = StepResult::decode(bytes.as_slice()).unwrap();
@@ -693,6 +773,7 @@ mod tests {
             elapsed: 0.0,
             files: vec![],
             error: None,
+            failure_code: StepFailureCode::Unspecified as i32,
         };
         match FrameDecoders::default().decode_result(result) {
             Err(CoreError::UnsupportedFrameEncoding { track, encoding }) => {

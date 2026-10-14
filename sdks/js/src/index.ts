@@ -20,6 +20,7 @@ export {
   RecorderDisabledError,
   GenerationModeMismatchError,
   StepRefusedError,
+  StepNotReadyError,
   StepResultTooLargeError,
   UnsupportedFrameEncodingError,
 } from './errors';

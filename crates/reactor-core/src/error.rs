@@ -81,11 +81,14 @@ pub mod codes {
     pub const GENERATION_MODE_MISMATCH: &str = "GENERATION_MODE_MISMATCH";
     /// The runtime refused a step — the request or the model turned it down.
     /// The calls it applied before the refusal stay applied: nothing is
-    /// rolled back. Platform-sent; lowercase because it is the runtime's own
-    /// code, passed through.
+    /// rolled back. Lowercase, as the runtime names the outcome (its
+    /// `StepResult.failure_code` `REFUSED`).
     pub const STEP_REFUSED: &str = "step_refused";
+    /// The session cannot run a step yet: it is not in a running state that
+    /// can take one. The step did not run. Lowercase, as [`STEP_REFUSED`].
+    pub const STEP_NOT_READY: &str = "step_not_ready";
     /// A step ran, but its result does not fit in one data-channel message.
-    /// Platform-sent, as [`STEP_REFUSED`].
+    /// Lowercase, as [`STEP_REFUSED`].
     pub const STEP_RESULT_TOO_LARGE: &str = "step_result_too_large";
     /// A step result carried a frame in an encoding this client cannot decode.
     pub const UNSUPPORTED_FRAME_ENCODING: &str = "UNSUPPORTED_FRAME_ENCODING";
@@ -246,6 +249,12 @@ pub enum CoreError {
     #[error("step refused: {message}")]
     StepRefused { message: String },
 
+    /// The session could not run the step yet (`step_not_ready`): it is not in
+    /// a running state that can take one. The step did not run and nothing it
+    /// carried was applied.
+    #[error("step not ready: {message}")]
+    StepNotReady { message: String },
+
     /// The step ran, but its result did not fit in one data-channel message
     /// (`step_result_too_large`).
     #[error("step result too large: {message}")]
@@ -299,6 +308,7 @@ impl CoreError {
             | CoreError::Recording { .. }
             | CoreError::StepFailed { .. } => codes::INTERNAL_ERROR,
             CoreError::StepRefused { .. } => codes::STEP_REFUSED,
+            CoreError::StepNotReady { .. } => codes::STEP_NOT_READY,
             CoreError::StepResultTooLarge { .. } => codes::STEP_RESULT_TOO_LARGE,
             CoreError::UnsupportedFrameEncoding { .. } => codes::UNSUPPORTED_FRAME_ENCODING,
             CoreError::Http(_) => codes::NETWORK_ERROR,
@@ -576,6 +586,12 @@ mod tests {
             message: "big".into(),
         };
         assert_eq!(too_large.code(), codes::STEP_RESULT_TOO_LARGE);
+
+        let not_ready = CoreError::StepNotReady {
+            message: "starting".into(),
+        };
+        assert_eq!(not_ready.code(), codes::STEP_NOT_READY);
+        assert!(!not_ready.recoverable());
 
         let dropped = CoreError::StepFailed {
             code: codes::DISCONNECTED.into(),

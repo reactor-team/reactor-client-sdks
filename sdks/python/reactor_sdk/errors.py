@@ -273,6 +273,16 @@ class StepRefusedError(ReactorError):
     code = "step_refused"
 
 
+class StepNotReadyError(ReactorError):
+    """The session cannot run a step yet: it is not in a running state that can take one.
+
+    The step did not run and nothing it carried was applied. Lowercase, as the
+    runtime names the outcome.
+    """
+
+    code = "step_not_ready"
+
+
 class StepResultTooLargeError(ReactorError):
     """A step ran, but its result does not fit in one data-channel message.
 
@@ -306,6 +316,7 @@ ERROR_CLASSES: tuple[type[ReactorError], ...] = (
     GenerationModeMismatchError,
     UnsupportedFrameEncodingError,
     StepRefusedError,
+    StepNotReadyError,
     StepResultTooLargeError,
 )
 
