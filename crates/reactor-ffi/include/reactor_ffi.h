@@ -191,10 +191,10 @@ typedef struct ReactorCallbacks {
  * TRANSPORT_ERROR, UNAUTHORIZED, NOT_FOUND, CONFLICT, RATE_LIMITED, BAD_REQUEST,
  * SERVER_ERROR, VERSION_MISMATCH, DECODE_FAILED, SESSION_TERMINAL,
  * MESSAGE_TOO_LARGE, ABORTED, GENERATION_MODE_MISMATCH, UNSUPPORTED_FRAME_ENCODING,
- * INTERNAL_ERROR, step_refused, step_result_too_large — *or* a code the platform
- * sent for a rejected control request, command, recording or step, which is
- * open-ended.  (The two lowercase ones are the runtime's own codes, passed
- * through; see reactor_step.)  Treat
+ * INTERNAL_ERROR, step_refused, step_not_ready, step_result_too_large — *or* a
+ * code the platform sent for a rejected control request, command or recording,
+ * which is open-ended.  (The three lowercase ones name the outcomes the runtime
+ * reports for a step; see reactor_step.)  Treat
  * an unrecognised code as an error you cannot classify, never as a parse failure.
  *
  * on_error reports the same codes, in the same shape plus "timestamp_ms".  The
@@ -719,11 +719,15 @@ typedef void (*reactor_step_completion_fn)(
  *                   may be omitted or null.  Any other key is an error.
  *   completion    — see reactor_step_completion_fn.
  *
- * The completion fires once: with the step's result — its one answer, sent
- * when the step is done — or with one of:
+ * The runtime answers every step with one result whose failure code names the
+ * outcome.  The completion fires once: with the step's result — when it ran,
+ * whether it worked or the model reported a failure — or with one of these,
+ * the runtime's reason as "message":
  *
  *   step_refused               the request or the model turned the step down;
  *                              calls applied before the refusal stay applied.
+ *   step_not_ready             the session is not in a running state that can
+ *                              take a step yet.  The step did not run.
  *   step_result_too_large      the step ran, but its result does not fit in one
  *                              data-channel message.
  *   MESSAGE_TOO_LARGE          the request (state + commands + buffered inputs)
@@ -735,8 +739,7 @@ typedef void (*reactor_step_completion_fn)(
  *   DECODE_FAILED              state_json / commands_json malformed, or state /
  *                              a command's data not an object.  Nothing sent.
  *   INVALID_STATE              not a ready stepped session.
- *   DISCONNECTED, REQUEST_TIMEOUT (after step_timeout_seconds), or any code the
- *                              runtime answered with.
+ *   DISCONNECTED, REQUEST_TIMEOUT (after step_timeout_seconds).
  *
  * A step that ran but that the model reported as failed is a result, not an
  * error: ok is 1 and reactor_step_result_error() says why.
@@ -777,8 +780,8 @@ double reactor_step_result_elapsed(const ReactorStepResult *result);
 
 /*
  * Why the step failed, when it ran and the model reported a failure; NULL when
- * it worked.  A refused step never has a result: its completion fails with
- * step_refused instead.
+ * it worked.  A step that did not run never has a result: its completion fails
+ * with step_refused or step_not_ready instead.
  */
 const char *reactor_step_result_error(const ReactorStepResult *result);
 

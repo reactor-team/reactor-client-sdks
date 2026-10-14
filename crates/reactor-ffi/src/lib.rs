@@ -1927,10 +1927,12 @@ impl StepCompletion {
 /// host now owns: read it with the `reactor_step_result_*` accessors and
 /// release it with [`reactor_step_result_free`], from any thread, after the
 /// completion has returned or inside it. On failure it is null and the third
-/// argument is the usual error object — `step_refused`,
-/// `step_result_too_large`, `UNSUPPORTED_FRAME_ENCODING`, `MESSAGE_TOO_LARGE`
-/// (nothing sent; the inputs are kept, see [`reactor_clear_step_inputs`]),
-/// `INVALID_STATE` (not a ready stepped session), or the runtime's own code.
+/// argument is the usual error object — `step_refused`, `step_not_ready`,
+/// `step_result_too_large` (each named by the result's failure code, with the
+/// runtime's reason as the message), `UNSUPPORTED_FRAME_ENCODING`,
+/// `MESSAGE_TOO_LARGE` (nothing sent; the inputs are kept, see
+/// [`reactor_clear_step_inputs`]), `INVALID_STATE` (not a ready stepped
+/// session), `DISCONNECTED` or `REQUEST_TIMEOUT`.
 ///
 /// # Safety
 ///
@@ -2418,8 +2420,8 @@ pub unsafe extern "C" fn reactor_step_result_elapsed(result: *const ReactorStepR
 }
 
 /// Why the step failed, when it ran and the model reported a failure; null
-/// when it worked, and for a null result. A refused step never gets here: its
-/// completion fails with `step_refused`.
+/// when it worked, and for a null result. A step that did not run never gets
+/// here: its completion fails with `step_refused` or `step_not_ready`.
 ///
 /// # Safety
 ///
@@ -3827,6 +3829,12 @@ mod tests {
                     message: "no".into(),
                 },
                 codes::STEP_REFUSED,
+            ),
+            (
+                CoreError::StepNotReady {
+                    message: "starting".into(),
+                },
+                codes::STEP_NOT_READY,
             ),
             (
                 CoreError::StepResultTooLarge {
