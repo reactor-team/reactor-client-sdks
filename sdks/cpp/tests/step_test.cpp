@@ -745,6 +745,10 @@ TEST_CASE("a failed step throws the typed error for its code") {
     fixture.library.step_error = R"({"code":"step_refused","message":"busy","operation":"step"})";
     CHECK_THROWS_AS(client.step().get(), reactor::StepRefusedError);
   }
+  SECTION("not ready") {
+    fixture.library.step_error = R"({"code":"step_not_ready","message":"starting"})";
+    CHECK_THROWS_AS(client.step().get(), reactor::StepNotReadyError);
+  }
   SECTION("result too large") {
     fixture.library.step_error = R"({"code":"step_result_too_large","message":"too big"})";
     CHECK_THROWS_AS(client.step().get(), reactor::StepResultTooLargeError);

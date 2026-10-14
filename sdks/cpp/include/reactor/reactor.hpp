@@ -431,12 +431,14 @@ class Reactor {
   /// an upload-typed field, where it converts into its upload reference.
   ///
   /// A step that ran but that the model reported failing still resolves, with
-  /// `StepResult::error` set; only a step the runtime refuses fails the future.
+  /// `StepResult::error` set; a step that did not run, or whose result was too
+  /// large to send, fails the future.
   ///
   /// Fails with `InvalidStateError` on a streamed client or a session that is
   /// not `Ready`; `BadRequestError` for a state or command data that is not an
   /// object, or a command with no name; `StepRefusedError` when the runtime
-  /// refuses the step; `StepResultTooLargeError` when its
+  /// refuses the step; `StepNotReadyError` when the session cannot take a step
+  /// yet (the step did not run); `StepResultTooLargeError` when its
   /// output does not fit in one message; `MessageTooLargeError` when the request
   /// does not — nothing was sent then, and the pushed frames are kept for the
   /// next step (see `clear_step_inputs`); `UnsupportedFrameEncodingError` for an
