@@ -22,7 +22,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   `Track.pushFrame` buffers into the next step in such a session.
   `clearStepInputs()` drops buffered frames, and `stepTimeout:` bounds a
   step. `connect()` throws `generationModeMismatch` when the runtime did not
-  start the session stepped; a step can throw `stepRefused`,
+  start the session stepped; a step can throw `stepRefused`, `stepNotReady`
+  (the session cannot take a step yet; the step did not run),
   `stepResultTooLarge`, `messageTooLarge` or `unsupportedFrameEncoding`. New
   example: `09_stepped_generation`.
 

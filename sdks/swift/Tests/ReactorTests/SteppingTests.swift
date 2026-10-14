@@ -293,6 +293,42 @@ struct SteppingTests {
         #expect(fake.freedStepResults == 0)
     }
 
+    @Test("a step the session was not ready for throws stepNotReady")
+    func notReadyStepThrowsStepNotReady() async throws {
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+
+        do {
+            _ = try await stepping(
+                fake, ok: false,
+                error:
+                    #"{"code":"step_not_ready","message":"starting","recoverable":false,"operation":"step"}"#
+            ) { try await client.step() }
+            Issue.record("a step the session was not ready for returned a result")
+        } catch ReactorError.stepNotReady {
+        }
+        #expect(fake.freedStepResults == 0)
+    }
+
+    @Test("a step whose result is too large throws stepResultTooLarge")
+    func tooLargeStepThrowsStepResultTooLarge() async throws {
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+
+        do {
+            _ = try await stepping(
+                fake, ok: false,
+                error:
+                    #"{"code":"step_result_too_large","message":"big","recoverable":false,"operation":"step"}"#
+            ) { try await client.step() }
+            Issue.record("a step whose result was too large returned a result")
+        } catch ReactorError.stepResultTooLarge {
+        }
+        #expect(fake.freedStepResults == 0)
+    }
+
     @Test("an elapsed a Duration cannot hold comes back as zero")
     func nonFiniteElapsedIsZero() async throws {
         let fake = FakeLibrary()

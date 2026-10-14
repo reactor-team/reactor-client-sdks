@@ -48,9 +48,8 @@ extension Reactor {
     /// - Throws: ``ReactorError``:
     ///   - ``ReactorError/Code/stepRefused`` — the runtime or the model turned
     ///     the step down; calls applied before the refusal stay applied.
-    ///
-    ///   A step that ran but that the model reported as failed does not throw:
-    ///   it returns a result whose ``StepResult/error`` says why.
+    ///   - ``ReactorError/Code/stepNotReady`` — the session cannot take a step
+    ///     yet. The step did not run.
     ///   - ``ReactorError/Code/stepResultTooLarge`` — the step ran, but its
     ///     output does not fit in one message. Ask for less per step.
     ///   - ``ReactorError/Code/messageTooLarge`` — the request does not fit.
@@ -63,6 +62,9 @@ extension Reactor {
     ///   - ``ReactorError/Code/invalidState`` — not a stepped client, or not a
     ///     ready session.
     ///   - ``ReactorError/Code/badRequest`` — a command with an empty name.
+    ///
+    ///   A step that ran but that the model reported as failed does not throw:
+    ///   it returns a result whose ``StepResult/error`` says why.
     ///
     ///   Once sent, the pushed frames belong to that step whatever its outcome.
     public func step(
