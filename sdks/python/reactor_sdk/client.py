@@ -1177,12 +1177,15 @@ class Reactor:
         with `StepResult.error` set. Raises `StepRefusedError` when the runtime
         refuses the step (calls it applied before the refusal stay applied),
         `StepNotReadyError` when the session cannot take a step yet (the step
-        did not run), `StepResultTooLargeError` when its output does not fit in
-        one message,
-        `MessageTooLargeError` when the request
-        does not — nothing was sent then, and the pushed frames are kept for the
-        next step (see :meth:`clear_step_inputs`) — and `InvalidStateError` outside
-        a ready stepped session.
+        did not run), `StepCommandFailedError` when the handler of one of its
+        state keys or commands fails (the calls before it stay applied, the step
+        did not run), `StepSessionEndedError` when the session ends before the
+        result arrives (whether the step ran is unknown),
+        `StepResultTooLargeError` when its output does not fit in one message,
+        `MessageTooLargeError` when the request does not — nothing was sent then,
+        and the pushed frames are kept for the next step (see
+        :meth:`clear_step_inputs`) — and `InvalidStateError` outside a ready
+        stepped session.
         """
         if self._generation != "stepped":
             raise InvalidStateError(
