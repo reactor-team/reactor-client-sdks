@@ -24,7 +24,10 @@ versioning follows [Semantic Versioning](https://semver.org/).
   step. `connect()` throws `generationModeMismatch` when the runtime did not
   start the session stepped; a step can throw `stepRefused`, `stepNotReady`
   (the session cannot take a step yet; the step did not run),
-  `stepResultTooLarge`, `messageTooLarge` or `unsupportedFrameEncoding`. New
+  `stepCommandFailed` (a state key or command handler failed; the step did not
+  run), `stepSessionEnded` (the session ended first; whether the step ran is
+  unknown), `stepResultTooLarge`, `messageTooLarge` or
+  `unsupportedFrameEncoding`. New
   example: `09_stepped_generation`.
 
 ### Fixed
