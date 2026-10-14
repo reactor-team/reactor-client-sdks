@@ -59,7 +59,10 @@ jobs:
       - name: npm pack
         working-directory: sdks/js
         # --ignore-scripts: `prepack` would rebuild what build:js just built.
-        run: npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/sdk-tarball"
+        # npm pack doesn't create --pack-destination itself.
+        run: |
+          mkdir -p "$RUNNER_TEMP/sdk-tarball"
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/sdk-tarball"
       - uses: actions/upload-artifact@v4
         with:
           name: js-sdk-tarball
