@@ -948,6 +948,7 @@ export class Reactor implements Disposable {
 
     try {
       client.sendClientStats(trackStats, connectionStat);
+      extractTrackStats.commit();
       if (timeToConnectMs !== undefined) {
         this.hasSentConnectTime = true;
       }

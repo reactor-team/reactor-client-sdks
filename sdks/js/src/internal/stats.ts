@@ -2,6 +2,7 @@ import type { ConnectionStats } from '../types';
 import type {
   ClientConnectionStat,
   ClientTrackStat,
+  FrameStage,
   ReactorClient,
   TrackDirection,
   TrackKind,
@@ -118,12 +119,22 @@ interface ByteSample {
 }
 
 /** Builds one batch of the wire's `ClientTrackStat`s from a stats report, a
- *  reading per negotiated track — audio and video, sent and received. */
-export type TrackStatsExtractor = (
+ *  reading per negotiated track — audio and video, sent and received. Call
+ *  `commit()` once the batch has gone out: until then the next batch still
+ *  measures from the last one that did, so an unsent batch's interval is not
+ *  lost. */
+export type TrackStatsExtractor = ((
   report: RTCStatsReport,
   tracks: readonly TrackMappingEntry[],
   pausedTracks: readonly string[],
-) => ClientTrackStat[];
+) => ClientTrackStat[]) & { commit(): void };
+
+/** A stage's running total as of the last batch sent: time in seconds, and
+ *  the frames it covers. */
+interface StageTotal {
+  seconds: number;
+  frames: number;
+}
 
 /**
  * The per-track part of the runtime report: one reading per track, every
@@ -150,11 +161,54 @@ export type TrackStatsExtractor = (
  * sessions stays a sum of sums — a pre-averaged ratio can't be re-aggregated
  * correctly. A reading the browser hasn't produced is left out of `metrics`
  * rather than reported as `0`, so it can't pass for a real zero.
+ *
+ * A video track also carries the time its frames spent in each stage the
+ * browser times, since the previous batch: `jitter_buffer` and `decode` on a
+ * received track, `encode` on a sent one, from the cumulative totals the
+ * browser keeps. As with the bitrate, a stream's first batch has none.
  */
 export function createTrackStatsExtractor(): TrackStatsExtractor {
   const lastBytes = new Map<string, ByteSample>();
+  const lastStages = new Map<string, StageTotal>();
+  // What the batch being built moves the baselines to, once committed.
+  // `undefined` drops a baseline.
+  let pendingBytes = new Map<string, ByteSample>();
+  let pendingStages = new Map<string, StageTotal | undefined>();
 
-  return (report, tracks, pausedTracks) => {
+  /** The time a stream's frames spent in *name* since the last batch sent,
+   *  from the browser's running total of *seconds* over *frames*. */
+  const stage = (
+    streamId: string,
+    name: string,
+    seconds: number | undefined,
+    frames: number | undefined,
+  ): FrameStage | undefined => {
+    if (seconds === undefined || frames === undefined) {
+      return undefined;
+    }
+    const key = `${streamId}:${name}`;
+
+    // A total that is not a number is no baseline either.
+    if (!Number.isFinite(seconds)) {
+      pendingStages.set(key, undefined);
+
+      return undefined;
+    }
+    pendingStages.set(key, { seconds, frames });
+    const before = lastStages.get(key);
+
+    // A stream's first batch, no frame through the stage, or a total that
+    // went backwards (a reset engine): nothing to report.
+    if (before === undefined || frames <= before.frames || seconds < before.seconds) {
+      return undefined;
+    }
+
+    return { name, totalMs: (seconds - before.seconds) * 1_000, frames: frames - before.frames };
+  };
+
+  const extract = (report: RTCStatsReport, tracks: readonly TrackMappingEntry[], pausedTracks: readonly string[]) => {
+    pendingBytes = new Map();
+    pendingStages = new Map();
     const reportWithLookup = report as RTCStatsReportWithLookup;
     const stats: ClientTrackStat[] = [];
     // Keyed by direction too: a sendrecv transceiver shares one mid between
@@ -204,7 +258,7 @@ export function createTrackStatsExtractor(): TrackStatsExtractor {
         if (previous !== undefined && stat.timestamp > previous.timestamp && bytes >= previous.bytes) {
           put('bitrate_bps', Math.round(((bytes - previous.bytes) * 8 * 1000) / (stat.timestamp - previous.timestamp)));
         }
-        lastBytes.set(stat.id, { bytes, timestamp: stat.timestamp });
+        pendingBytes.set(stat.id, { bytes, timestamp: stat.timestamp });
       }
       const keyframeRequests =
         stat.firCount !== undefined || stat.pliCount !== undefined
@@ -245,6 +299,23 @@ export function createTrackStatsExtractor(): TrackStatsExtractor {
         }
       }
 
+      const frameStages: FrameStage[] = [];
+
+      if (track.kind === 'video') {
+        const stages = inbound
+          ? [
+              stage(stat.id, 'jitter_buffer', stat.jitterBufferDelay, stat.jitterBufferEmittedCount),
+              stage(stat.id, 'decode', stat.totalDecodeTime, stat.framesDecoded),
+            ]
+          : [stage(stat.id, 'encode', stat.totalEncodeTime, stat.framesEncoded)];
+
+        for (const s of stages) {
+          if (s !== undefined) {
+            frameStages.push(s);
+          }
+        }
+      }
+
       stats.push({
         timestamp: Date.now(),
         trackName: track.name,
@@ -253,11 +324,29 @@ export function createTrackStatsExtractor(): TrackStatsExtractor {
         codec,
         paused: pausedTracks.includes(track.name),
         metrics,
+        ...(frameStages.length > 0 ? { frameStages } : {}),
       });
     });
 
     return stats;
   };
+
+  return Object.assign(extract, {
+    commit(): void {
+      for (const [id, sample] of pendingBytes) {
+        lastBytes.set(id, sample);
+      }
+      for (const [key, total] of pendingStages) {
+        if (total === undefined) {
+          lastStages.delete(key);
+        } else {
+          lastStages.set(key, total);
+        }
+      }
+      pendingBytes = new Map();
+      pendingStages = new Map();
+    },
+  });
 }
 
 /**
@@ -346,6 +435,10 @@ interface RTCStatsReportEntry extends RTCStats {
   framesEncoded?: number;
   concealedSamples?: number;
   totalSamplesReceived?: number;
+  jitterBufferDelay?: number;
+  jitterBufferEmittedCount?: number;
+  totalDecodeTime?: number;
+  totalEncodeTime?: number;
 }
 
 interface RTCStatsReportWithLookup extends RTCStatsReport {

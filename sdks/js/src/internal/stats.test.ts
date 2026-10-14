@@ -450,10 +450,63 @@ describe('createTrackStatsExtractor()', () => {
     expect(mainAudio?.metrics.jitter_ms).toBe(0.811);
   });
 
+  /** `fullReport` with the browser's cumulative stage totals on the video
+   *  streams: *frames* through each stage, *seconds* spent in it. */
+  function stageReport(timestamp: number, frames: number, seconds: number) {
+    const report = fullReport(timestamp, 100_000);
+    const entries = report as unknown as { get(id: string): Record<string, unknown> | undefined };
+
+    Object.assign(entries.get('iv')!, {
+      jitterBufferDelay: seconds,
+      jitterBufferEmittedCount: frames,
+      totalDecodeTime: seconds / 10,
+      framesDecoded: frames,
+    });
+    Object.assign(entries.get('ov')!, { totalEncodeTime: seconds / 5, framesEncoded: frames });
+
+    return report;
+  }
+
+  it("reports a video track's stage times from the second batch on", () => {
+    const extract = createTrackStatsExtractor();
+
+    const first = extract(stageReport(1_000, 100, 2), tracks, []);
+
+    extract.commit();
+    const second = extract(stageReport(6_000, 250, 5), tracks, []);
+    const received = second.find((s) => s.trackName === 'main_video')?.frameStages ?? [];
+    const sent = second.find((s) => s.trackName === 'webcam')?.frameStages ?? [];
+
+    expect(first.every((s) => s.frameStages === undefined)).toBe(true);
+    expect(received.map((s) => [s.name, s.frames])).toEqual([
+      ['jitter_buffer', 150],
+      ['decode', 150],
+    ]);
+    expect(received[0]?.totalMs).toBeCloseTo(3_000, 6);
+    expect(received[1]?.totalMs).toBeCloseTo(300, 6);
+    expect(sent.map((s) => [s.name, s.frames])).toEqual([['encode', 150]]);
+    expect(sent[0]?.totalMs).toBeCloseTo(600, 6);
+    expect(second.find((s) => s.trackName === 'mic')).not.toHaveProperty('frameStages');
+  });
+
+  it('folds a batch that was not sent into the next one', () => {
+    const extract = createTrackStatsExtractor();
+
+    extract(stageReport(1_000, 100, 2), tracks, []);
+    extract.commit();
+    extract(stageReport(6_000, 150, 3), tracks, []);
+    const next = extract(stageReport(11_000, 250, 5), tracks, []);
+
+    const mainVideo = next.find((s) => s.trackName === 'main_video');
+
+    expect(mainVideo?.frameStages?.[0]).toEqual({ name: 'jitter_buffer', totalMs: 3_000, frames: 150 });
+  });
+
   it('reports a per-stream bitrate from the second batch on, averaged since the previous one', () => {
     const extract = createTrackStatsExtractor();
 
     extract(fullReport(1_000, 100_000), tracks, []);
+    extract.commit();
     const stats = extract(fullReport(11_000, 1_350_000), tracks, []);
 
     // (1,350,000 - 100,000) bytes * 8 over 10 s.
