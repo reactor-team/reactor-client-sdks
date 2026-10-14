@@ -243,7 +243,7 @@ Subclasses: `InvalidStateError`, `DisconnectedError`, `NetworkError`,
 `ConflictError`, `RateLimitedError`, `BadRequestError`, `ServerError`,
 `VersionMismatchError`, `DecodeError`, `SessionTerminalError`,
 `MessageTooLargeError`, `AbortedError`, `RecorderDisabledError`, and for stepped
-sessions `GenerationModeMismatchError`, `StepRefusedError`,
+sessions `GenerationModeMismatchError`, `StepRefusedError`, `StepNotReadyError`,
 `StepResultTooLargeError` and `UnsupportedFrameEncodingError`.
 
 A command the model itself rejects reports the model's own code, which this package
@@ -308,7 +308,8 @@ A step that ran but that the model reported as failed returns normally, with
 their bytes are fetched over HTTP from the session's step results
 (`GET /sessions/{id}/steps/{index}`, which lists each with a download URL and
 answers 202 while they are still being stored). A step the runtime refuses raises
-`StepRefusedError`; one whose output
+`StepRefusedError`; one the session cannot take yet raises `StepNotReadyError`
+(neither ran); one whose output
 does not fit in a message raises `StepResultTooLargeError`; a request too large to
 send raises `MessageTooLargeError` and keeps the pushed frames, which
 `clear_step_inputs()` drops. `step_timeout=` bounds a step (default 300 s).

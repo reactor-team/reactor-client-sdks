@@ -24,7 +24,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   `clear_step_inputs()` drops buffered frames.
   New errors:
   `GenerationModeMismatchError` (the runtime did not start the session stepped),
-  `StepRefusedError`, `StepResultTooLargeError`, `UnsupportedFrameEncodingError`.
+  `StepRefusedError`, `StepNotReadyError` (the session cannot take a step yet;
+  the step did not run), `StepResultTooLargeError`, `UnsupportedFrameEncodingError`.
   Needs a `libreactor_ffi` with `reactor_create_with_options`.
 
 ## [1.10.0] - 2026-10-13

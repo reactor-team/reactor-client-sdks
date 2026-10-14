@@ -1176,7 +1176,9 @@ class Reactor:
         A step that ran but that the model reported as failed returns its result
         with `StepResult.error` set. Raises `StepRefusedError` when the runtime
         refuses the step (calls it applied before the refusal stay applied),
-        `StepResultTooLargeError` when its output does not fit in one message,
+        `StepNotReadyError` when the session cannot take a step yet (the step
+        did not run), `StepResultTooLargeError` when its output does not fit in
+        one message,
         `MessageTooLargeError` when the request
         does not — nothing was sent then, and the pushed frames are kept for the
         next step (see :meth:`clear_step_inputs`) — and `InvalidStateError` outside

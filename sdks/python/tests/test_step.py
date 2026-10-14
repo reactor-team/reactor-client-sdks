@@ -24,6 +24,7 @@ from reactor_sdk import (
     StepCommand,
     StepFile,
     StepFrame,
+    StepNotReadyError,
     StepRefusedError,
     StepResult,
     StepResultTooLargeError,
@@ -411,6 +412,7 @@ class TestStep:
         ("code", "expected"),
         [
             ("step_refused", StepRefusedError),
+            ("step_not_ready", StepNotReadyError),
             ("step_result_too_large", StepResultTooLargeError),
             ("MESSAGE_TOO_LARGE", MessageTooLargeError),
             ("UNSUPPORTED_FRAME_ENCODING", None),
