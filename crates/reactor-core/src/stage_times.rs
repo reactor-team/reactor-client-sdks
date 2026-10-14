@@ -13,6 +13,7 @@
 //! [`crate::stats::ClientStatsReporter`].
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use crate::protocol::wire::v1::platform::FrameStage;
@@ -42,19 +43,17 @@ pub const STAGES: &[&str] = &[
 type Totals = HashMap<String, HashMap<&'static str, (f64, u64)>>;
 
 /// The time each track's frames spent in each stage the SDK times, since the
-/// last [`StageTimes::take`]. Frames are timed from the threads that move
-/// them, so every access holds a lock.
+/// last [`StageTimes::take_from`]. Frames are timed from the threads that move
+/// them, so the totals sit behind a lock.
 #[derive(Default)]
 pub struct StageTimes {
-    inner: Mutex<Inner>,
-}
-
-#[derive(Default)]
-struct Inner {
-    totals: Totals,
+    totals: Mutex<Totals>,
     /// Which connection the totals belong to, advanced by
-    /// [`StageTimes::begin_connection`].
-    generation: u64,
+    /// [`StageTimes::begin_connection`]. Only changed while holding the
+    /// totals' lock, so a check against it under that lock stays true until
+    /// the lock is released; read without it, it costs a decode thread no
+    /// wait.
+    generation: AtomicU64,
 }
 
 impl StageTimes {
@@ -66,37 +65,43 @@ impl StageTimes {
     /// and refuse their frames that are still on their way (see
     /// [`StageTimes::add_from`]).
     pub fn begin_connection(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.totals.clear();
-        inner.generation = inner.generation.wrapping_add(1);
+        let mut totals = self.totals.lock().unwrap();
+        totals.clear();
+        self.generation.fetch_add(1, Ordering::AcqRel);
     }
 
     /// The current connection, to tag a frame with when its timing starts
     /// on one thread and ends on another.
     pub fn generation(&self) -> u64 {
-        self.inner.lock().unwrap().generation
+        self.generation.load(Ordering::Acquire)
     }
 
     /// Add one frame of *track* that spent *ms* milliseconds in *stage*. A
     /// time that is negative or not finite is no measurement, and is left out.
     pub fn add(&self, track: &str, stage: &'static str, ms: f64) {
-        let mut inner = self.inner.lock().unwrap();
-        add_to(&mut inner.totals, track, stage, ms);
+        add_to(&mut self.totals.lock().unwrap(), track, stage, ms, 1);
     }
 
     /// [`StageTimes::add`] for a frame tagged with *generation* when its
     /// timing started. A frame of an earlier connection, still queued when
     /// the next one began, is left out rather than counted in the new one.
     pub fn add_from(&self, generation: u64, track: &str, stage: &'static str, ms: f64) {
-        let mut inner = self.inner.lock().unwrap();
-        if inner.generation == generation {
-            add_to(&mut inner.totals, track, stage, ms);
+        let mut totals = self.totals.lock().unwrap();
+        if self.generation() == generation {
+            add_to(&mut totals, track, stage, ms, 1);
         }
     }
 
-    /// Each track's stages since the previous take, and start a new window.
-    pub fn take(&self) -> HashMap<String, Vec<FrameStage>> {
-        std::mem::take(&mut self.inner.lock().unwrap().totals)
+    /// Each track's stages since the previous take, and start a new window,
+    /// for the reporter of connection *generation*. `None`, taking nothing,
+    /// once a newer connection has begun: its frames are not this reporter's
+    /// to send.
+    pub fn take_from(&self, generation: u64) -> Option<HashMap<String, Vec<FrameStage>>> {
+        let mut totals = self.totals.lock().unwrap();
+        if self.generation() != generation {
+            return None;
+        }
+        let taken = std::mem::take(&mut *totals)
             .into_iter()
             .map(|(track, by_stage)| {
                 let stages = by_stage
@@ -109,12 +114,29 @@ impl StageTimes {
                     .collect();
                 (track, stages)
             })
-            .collect()
+            .collect();
+        Some(taken)
+    }
+
+    /// Put back stages taken for a batch that did not go out, so the next
+    /// batch of the same connection carries them.
+    pub fn give_back(&self, generation: u64, stages: HashMap<String, Vec<FrameStage>>) {
+        let mut totals = self.totals.lock().unwrap();
+        if self.generation() != generation {
+            return;
+        }
+        for (track, track_stages) in stages {
+            for stage in track_stages {
+                if let Some(name) = STAGES.iter().find(|known| **known == stage.name) {
+                    add_to(&mut totals, &track, name, stage.total_ms, stage.frames);
+                }
+            }
+        }
     }
 }
 
-fn add_to(totals: &mut Totals, track: &str, stage: &'static str, ms: f64) {
-    if !ms.is_finite() || ms < 0.0 {
+fn add_to(totals: &mut Totals, track: &str, stage: &'static str, ms: f64, frames: u64) {
+    if !ms.is_finite() || ms < 0.0 || frames == 0 {
         return;
     }
     let stages = match totals.get_mut(track) {
@@ -123,7 +145,7 @@ fn add_to(totals: &mut Totals, track: &str, stage: &'static str, ms: f64) {
     };
     let entry = stages.entry(stage).or_default();
     entry.0 += ms;
-    entry.1 += 1;
+    entry.1 += frames;
 }
 
 /// Sort *stages* into trip order. A stage this SDK does not know goes last.
@@ -139,6 +161,12 @@ pub fn sort_stages(stages: &mut [FrameStage]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl StageTimes {
+        fn take(&self) -> HashMap<String, Vec<FrameStage>> {
+            self.take_from(self.generation()).unwrap()
+        }
+    }
 
     #[test]
     fn frames_add_up_per_track_and_stage_until_taken() {
@@ -174,6 +202,45 @@ mod tests {
         let times = StageTimes::new();
         times.add("webcam", SUBMIT, 1.0);
         times.begin_connection();
+        assert!(times.take().is_empty());
+    }
+
+    #[test]
+    fn a_reporter_of_an_earlier_connection_takes_nothing() {
+        let times = StageTimes::new();
+        let old = times.generation();
+        times.begin_connection();
+        times.add("main_video", DELIVERY, 2.0);
+
+        assert!(times.take_from(old).is_none());
+        assert_eq!(times.take()["main_video"][0].frames, 1, "still there");
+    }
+
+    #[test]
+    fn stages_given_back_reach_the_next_take() {
+        let times = StageTimes::new();
+        let generation = times.generation();
+        times.add("webcam", SUBMIT, 1.0);
+        let unsent = times.take_from(generation).unwrap();
+        times.add("webcam", SUBMIT, 2.0);
+
+        times.give_back(generation, unsent);
+
+        let submit = &times.take()["webcam"][0];
+        assert_eq!(submit.frames, 2);
+        assert!((submit.total_ms - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn stages_given_back_after_a_new_connection_are_dropped() {
+        let times = StageTimes::new();
+        let generation = times.generation();
+        times.add("webcam", SUBMIT, 1.0);
+        let unsent = times.take_from(generation).unwrap();
+        times.begin_connection();
+
+        times.give_back(generation, unsent);
+
         assert!(times.take().is_empty());
     }
 
