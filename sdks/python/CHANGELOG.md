@@ -9,6 +9,19 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-10-14
+
+### Added
+
+- Client stats now report where each video frame spends its time, stage by
+  stage: `submit` (from `Track.push_frame` until the frame enters the engine),
+  `encode_wait`, `encode`, `packetize` and `pacer` on the way out, and
+  `jitter_buffer`, `decode` and `delivery` (until the frame reaches your
+  handler) on the way in. Each reading carries the stages' time and frame
+  count since the previous reading. Nothing changes in the public API.
+- Client stats now describe what the client runs on: SDK and version,
+  operating system and version, CPU architecture and device model.
+
 ## [1.10.0] - 2026-10-13
 
 ### Added
