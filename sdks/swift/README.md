@@ -70,7 +70,8 @@ freely.
 
 A step that ran but that the model reported as failed returns normally, with
 `result.error` saying why. A step the runtime refuses throws
-`ReactorError.stepRefused`; one whose output
+`ReactorError.stepRefused`; one the session cannot take yet throws
+`stepNotReady` (neither ran); one whose output
 does not fit in a message throws `stepResultTooLarge`; a request too large to
 send throws `messageTooLarge` and keeps the pushed frames, which
 `clearStepInputs()` drops. `stepTimeout:` bounds a step (default 300 s).
