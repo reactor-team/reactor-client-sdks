@@ -9,6 +9,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.0]
+
 ### Fixed
 
 - The SDK now loads in Vite apps, in both the dev server and production
