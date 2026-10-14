@@ -115,8 +115,8 @@ impl RelayProtocol {
 /// The sender stamps a timing frame at each stage and the stamps travel with
 /// the frame, so these are the far end's stages, read on the receiving side.
 /// Each is the difference between two of the sender's own stamps, in whole
-/// milliseconds. A stage the sender did not stamp comes out negative: read it
-/// as missing, not as a time.
+/// milliseconds. A stage is negative when the sender left out either of its
+/// two stamps: read it as missing, not as a time.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TimingFrame {
     /// Tells one timing frame from the next: a read can repeat the last one.
