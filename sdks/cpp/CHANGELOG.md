@@ -26,7 +26,10 @@ versioning follows [Semantic Versioning](https://semver.org/).
   runtime that does not start the session stepped fails `connect()` with
   `GenerationModeMismatchError`; a step can fail with `StepRefusedError`,
   `StepNotReadyError` (the session cannot take a step yet; the step did not
-  run), `StepResultTooLargeError` or `UnsupportedFrameEncodingError`. Needs a
+  run), `StepCommandFailedError` (a state key or command handler failed; the
+  step did not run), `StepSessionEndedError` (the session ended before the
+  result was sent), `StepResultTooLargeError` or
+  `UnsupportedFrameEncodingError`. Needs a
   `libreactor_ffi` with `reactor_create_with_options`.
 
 ## [2.5.0] - 2026-10-13

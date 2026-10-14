@@ -438,12 +438,14 @@ class Reactor {
   /// not `Ready`; `BadRequestError` for a state or command data that is not an
   /// object, or a command with no name; `StepRefusedError` when the runtime
   /// refuses the step; `StepNotReadyError` when the session cannot take a step
-  /// yet (the step did not run); `StepResultTooLargeError` when its
-  /// output does not fit in one message; `MessageTooLargeError` when the request
-  /// does not — nothing was sent then, and the pushed frames are kept for the
-  /// next step (see `clear_step_inputs`); `UnsupportedFrameEncodingError` for an
-  /// output frame the library cannot decode; `RequestTimeoutError` after
-  /// `Options::step_timeout_seconds`.
+  /// yet (the step did not run); `StepCommandFailedError` when the handler of
+  /// one of its state keys or commands fails (the calls before it stay applied,
+  /// the step did not run); `StepSessionEndedError` when the session ends before
+  /// the result is sent (whether the step ran is unknown);
+  /// `StepResultTooLargeError` when its output does not fit in one message; `MessageTooLargeError`
+  /// when the request does not — nothing was sent then, and the pushed frames are kept for the next
+  /// step (see `clear_step_inputs`); `UnsupportedFrameEncodingError` for an output frame the
+  /// library cannot decode; `RequestTimeoutError` after `Options::step_timeout_seconds`.
   ///
   /// The result is copied out of the native library once, on the library's
   /// completion thread, and owns its bytes.

@@ -753,6 +753,14 @@ TEST_CASE("a failed step throws the typed error for its code") {
     fixture.library.step_error = R"({"code":"step_result_too_large","message":"too big"})";
     CHECK_THROWS_AS(client.step().get(), reactor::StepResultTooLargeError);
   }
+  SECTION("a command failed") {
+    fixture.library.step_error = R"({"code":"step_command_failed","message":"set_prompt failed"})";
+    CHECK_THROWS_AS(client.step().get(), reactor::StepCommandFailedError);
+  }
+  SECTION("the session ended") {
+    fixture.library.step_error = R"({"code":"step_session_ended","message":"stopped"})";
+    CHECK_THROWS_AS(client.step().get(), reactor::StepSessionEndedError);
+  }
   SECTION("request too large") {
     fixture.library.step_error = R"({"code":"MESSAGE_TOO_LARGE","message":"too big"})";
     CHECK_THROWS_AS(client.step().get(), reactor::MessageTooLargeError);
