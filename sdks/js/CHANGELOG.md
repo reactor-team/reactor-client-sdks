@@ -59,8 +59,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
   pixels or `Int16Array` PCM for the next step, which carries them in its own
   request — a stepped session's input never uses RTP.
   `stepFrameToImageData()` turns a video frame into something a canvas draws.
-  Refusals are typed: `StepRefusedError`, `StepResultTooLargeError`,
-  `UnsupportedFrameEncodingError`.
+  Refusals are typed: `StepRefusedError`, the new `StepNotReadyError` (the
+  session cannot take a step yet; the step did not run),
+  `StepResultTooLargeError`, `UnsupportedFrameEncodingError`.
 - `publishTrack()` resolves with a `PublishedTrack` handle, whose
   `pushFrame(frame)` feeds that track in a stepped session. Its
   `MediaStreamTrack` argument is now optional: a stepped session ignores one

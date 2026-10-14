@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { InvalidStateError, StepRefusedError, type ReactorError } from './errors';
+import {
+  InvalidStateError,
+  StepNotReadyError,
+  StepRefusedError,
+  StepResultTooLargeError,
+  type ReactorError,
+} from './errors';
 import { FakeReactorClient } from './internal/fake-reactor-client';
 import type { StepResult } from './internal/reactor-wasm.types';
 
@@ -125,6 +131,20 @@ describe('Reactor.step', () => {
     expect(error).toBeInstanceOf(StepRefusedError);
     expect(error).toMatchObject({ code: 'step_refused', operation: 'step' });
     expect(reactor.getLastError()).toBe(error);
+  });
+
+  it.each([
+    ['step_not_ready', StepNotReadyError],
+    ['step_result_too_large', StepResultTooLargeError],
+  ] as const)('rejects a %s step with its own class', async (code, ErrorClass) => {
+    const { reactor, client } = await connected('stepped');
+
+    client.stepImpl = () => Promise.reject(bindingError(code, 'no'));
+
+    const error = await reactor.step().catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ErrorClass);
+    expect(error).toMatchObject({ code, operation: 'step' });
   });
 
   it('hands back the files the model kept with the step', async () => {
