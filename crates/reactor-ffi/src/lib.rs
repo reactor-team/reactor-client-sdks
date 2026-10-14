@@ -950,15 +950,14 @@ unsafe fn create_impl(
                 move |frame: VideoFrame| unsafe {
                     // `delivery` ends where the binding hands the frame to the
                     // app, which it marks with reactor_frame_delivered() from
-                    // inside this callback. A binding that does not mark it
-                    // ends the stage here, as the callback starts.
+                    // inside this callback. A frame it returns without marking
+                    // never reached the app, and is not counted.
                     let delivering = Delivering {
                         stage_times: delivered.clone(),
                         track: frame.track.to_string_lossy().into_owned(),
                         decoded_at: frame.decoded_at,
                         generation: frame.generation,
                     };
-                    let unmarked_ms = frame.decoded_at.elapsed().as_secs_f64() * 1_000.0;
                     DELIVERING.with(|d| *d.borrow_mut() = Some(delivering));
                     frame_fn(
                         frame.track.as_ptr(),
@@ -975,14 +974,7 @@ unsafe fn create_impl(
                         frame.user_data.len() as u32,
                         userdata_usize as *mut c_void,
                     );
-                    if let Some(unmarked) = DELIVERING.with(|d| d.borrow_mut().take()) {
-                        unmarked.stage_times.add_from(
-                            unmarked.generation,
-                            &unmarked.track,
-                            DELIVERY,
-                            unmarked_ms,
-                        );
-                    }
+                    DELIVERING.with(|d| d.borrow_mut().take());
                 },
             );
             let tx = thread.sender();

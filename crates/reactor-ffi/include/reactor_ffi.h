@@ -128,8 +128,9 @@ typedef void (*reactor_on_session_id_fn)(const char *session_id_or_null, void *u
  * track; never NULL.
  *
  * Call reactor_frame_delivered() from inside the callback right before the
- * app's handler runs, so the frame's "delivery" stage in client stats covers
- * the binding's own copying and routing.
+ * app's handler runs: the frame's "delivery" stage in client stats ends there,
+ * covering the binding's own copying and routing.  A frame the callback drops
+ * without calling it is not counted.
  */
 typedef void (*reactor_on_frame_fn)(
     const char *track_name,
