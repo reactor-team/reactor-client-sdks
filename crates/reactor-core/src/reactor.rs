@@ -1374,6 +1374,11 @@ impl Reactor {
         binding_ms: f64,
         generation: u64,
     ) {
+        if self.is_stepped() {
+            let metadata = (!user_data.is_empty()).then_some(user_data);
+            self.buffer_video_frame(track_name, data, width, height, metadata, capture_time_us);
+            return;
+        }
         let now_ms = self.platform.monotonic_ms();
         let binding_ms = if binding_ms.is_finite() {
             binding_ms.max(0.0)
@@ -4859,6 +4864,9 @@ mod tests {
         reactor.push_video_frame("cam", &[1, 2, 3, 255], 1, 1);
         reactor.push_audio_frame("mic", &[10, 20, 11, 21], 48_000, 2);
         reactor.push_video_frame_with_metadata_at("cam", &[4, 5, 6, 255], 1, 1, b"t", 99);
+        // The path a host binding takes, timing its own work.
+        let generation = reactor.push_begin();
+        reactor.push_video_frame_timed("cam", &[7, 8, 9, 255], 1, 1, b"", None, 2.0, generation);
         // Wrong size for 2x2: dropped, not buffered.
         reactor.push_video_frame("cam", &[0; 4], 2, 2);
 
@@ -4866,7 +4874,7 @@ mod tests {
             peer.pushed.lock().unwrap().is_empty(),
             "nothing went to RTP"
         );
-        assert_eq!(reactor.step_inputs.len(), 3);
+        assert_eq!(reactor.step_inputs.len(), 4);
 
         let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
         let Some(data_client_message::Payload::RequestStep(request)) = sent.payload else {
@@ -4876,12 +4884,14 @@ mod tests {
         let cam = &request.media_input[0];
         assert_eq!(cam.track, "cam");
         assert_eq!(cam.kind, WireTrackKind::Video as i32);
-        assert_eq!(cam.frames.len(), 2);
+        assert_eq!(cam.frames.len(), 3);
         assert_eq!(cam.frames[0].data, [3, 2, 1]);
         assert_eq!(cam.frames[0].shape, [1, 1, 3]);
         assert_eq!(cam.frames[1].data, [6, 5, 4]);
         assert_eq!(cam.frames[1].metadata.as_deref(), Some(&b"t"[..]));
         assert_eq!(cam.frames[1].capture_time_us, Some(99));
+        assert_eq!(cam.frames[2].data, [9, 8, 7]);
+        assert_eq!(cam.frames[2].metadata, None);
         let mic = &request.media_input[1];
         assert_eq!(mic.track, "mic");
         assert_eq!(mic.kind, WireTrackKind::Audio as i32);
