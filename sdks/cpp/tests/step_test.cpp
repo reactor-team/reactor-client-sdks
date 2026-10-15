@@ -47,6 +47,7 @@ struct FakeTrack {
   std::string name;
   std::string kind = "video";
   std::vector<FakeFrame> frames;
+  double rate = 0.0;
 };
 
 struct FakeFile {
@@ -96,6 +97,7 @@ class FakeStepped {
     filled.step_result_track_count = &track_count;
     filled.step_result_track_name = &track_name;
     filled.step_result_track_kind = &track_kind;
+    filled.step_result_track_rate = &track_rate;
     filled.step_result_frame_count = &frame_count;
     filled.step_result_frame_encoding = &frame_encoding;
     filled.step_result_frame_dtype = &frame_dtype;
@@ -328,6 +330,11 @@ class FakeStepped {
   static const char* track_kind(const ReactorStepResult* result, std::uint32_t track) {
     const FakeTrack* found = track_at(result, track);
     return found == nullptr ? nullptr : found->kind.c_str();
+  }
+
+  static double track_rate(const ReactorStepResult* result, std::uint32_t track) {
+    const FakeTrack* found = track_at(result, track);
+    return found == nullptr ? 0.0 : found->rate;
   }
 
   static std::uint32_t frame_count(const ReactorStepResult* result, std::uint32_t track) {
@@ -611,7 +618,7 @@ TEST_CASE("step needs a ready session") {
 
 TEST_CASE("a step's result is copied out once, owns its bytes, and the native one is freed") {
   Fixture fixture;
-  FakeTrack video{"main_video", "video", {video_frame(2, 4), video_frame(2, 4)}};
+  FakeTrack video{"main_video", "video", {video_frame(2, 4), video_frame(2, 4)}, 24.0};
   video.frames[0].metadata = std::vector<std::uint8_t>{'t', 'a', 'g'};
   video.frames[0].capture_time_us = 1234;
   video.frames[1].metadata = std::vector<std::uint8_t>{};
@@ -619,7 +626,8 @@ TEST_CASE("a step's result is copied out once, owns its bytes, and the native on
   audio.dtype = "int16";
   audio.shape = {2, 3};
   audio.data = std::vector<std::uint8_t>(12, 7);
-  fixture.library.result = FakeResult{7, {video, FakeTrack{"main_audio", "audio", {audio}}}, 0.25};
+  fixture.library.result =
+      FakeResult{7, {video, FakeTrack{"main_audio", "audio", {audio}, 48000.0}}, 0.25};
 
   reactor::StepResult result;
   {
@@ -636,6 +644,8 @@ TEST_CASE("a step's result is copied out once, owns its bytes, and the native on
   CHECK(result.tracks[0].name == "main_video");
   CHECK(result.tracks[0].kind == reactor::TrackKind::Video);
   CHECK(result.tracks[1].kind == reactor::TrackKind::Audio);
+  CHECK(result.tracks[0].rate == 24.0);
+  CHECK(result.tracks[1].rate == 48000.0);
 
   const auto& first = result.track("main_video").frames.at(0);
   CHECK(first.encoding == "raw");
@@ -697,7 +707,8 @@ TEST_CASE("a step that ran but that the model reported failing resolves, with it
 TEST_CASE("asking a result for a track it has no output on names the ones it has") {
   reactor::StepResult result;
   result.index = 3;
-  result.tracks.push_back(reactor::StepTrackOutput{"main_video", reactor::TrackKind::Video, {}});
+  result.tracks.push_back(
+      reactor::StepTrackOutput{"main_video", reactor::TrackKind::Video, 24.0, {}});
 
   try {
     (void)result.track("main_vdieo");

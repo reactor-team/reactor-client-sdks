@@ -411,6 +411,14 @@ class Reactor {
   /// a stepped session, it buffers for the next step. These are individual
   /// calls, not a transaction: one that fails does not undo the ones before it.
   ///
+  /// The buffer holds at most one data-channel message's worth of frame bytes:
+  /// pushing faster than steps run drops the oldest frames, across tracks. Once
+  /// the session's tracks are known, a frame pushed to a track the session does
+  /// not take as input is dropped with a warning. The frames buffered when a step
+  /// goes out belong to it whatever its outcome: one that could not be sent,
+  /// `MessageTooLargeError` included, drops them too, and nothing is resent. A
+  /// step refused before it goes out keeps them for the next step.
+  ///
   /// ```cpp
   /// auto camera = client.track("camera");
   /// camera.publish().get();
@@ -442,10 +450,11 @@ class Reactor {
   /// one of its state keys or commands fails (the calls before it stay applied,
   /// the step did not run); `StepSessionEndedError` when the session ends before
   /// the result is sent (whether the step ran is unknown);
-  /// `StepResultTooLargeError` when its output does not fit in one message; `MessageTooLargeError`
-  /// when the request does not — nothing was sent then, and the pushed frames are kept for the next
-  /// step (see `clear_step_inputs`); `UnsupportedFrameEncodingError` for an output frame the
-  /// library cannot decode; `RequestTimeoutError` after `Options::step_timeout_seconds`.
+  /// `StepResultTooLargeError` when its output does not fit in one message;
+  /// `MessageTooLargeError` when the request does not (nothing was sent, and the
+  /// pushed frames are dropped with it); `UnsupportedFrameEncodingError` for an
+  /// output frame the library cannot decode; `RequestTimeoutError` after
+  /// `Options::step_timeout_seconds`.
   ///
   /// The result is copied out of the native library once, on the library's
   /// completion thread, and owns its bytes.
@@ -454,11 +463,8 @@ class Reactor {
   // NOLINTNEXTLINE(performance-unnecessary-value-param)
   std::future<StepResult> step(Json state = nullptr, std::vector<StepCommand> commands = {});
 
-  /// Drop every frame pushed since the last step.
-  ///
-  /// The way out after a `MessageTooLargeError` from `step()`, which keeps the
-  /// frames it could not send. A no-op before a session exists and on a streamed
-  /// client.
+  /// Drop every frame buffered for the next step, so that step runs without
+  /// them. A no-op before a session exists and on a streamed client.
   void clear_step_inputs();
 
  private:
