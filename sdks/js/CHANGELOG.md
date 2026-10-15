@@ -23,7 +23,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   session's step results) and `error`, set when the step ran but the model
   reported a failure; such a step resolves rather than rejects.
   `pushFrame(track, frame)` buffers a `VideoFrame`, `ImageData`, raw RGB(A)
-  pixels or `Int16Array` PCM for the next step, which carries them in its own
+  pixels or `Int16Array` PCM for the next step, on a track published with
+  `publishTrack(track)` on this connection, which carries them in its own
   request — a stepped session's input never uses RTP. At most one message's
   worth of pushed frames waits for a step; pushing faster than steps run drops
   the oldest. A step's frames belong to it: when its request cannot be sent

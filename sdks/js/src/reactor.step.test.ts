@@ -8,6 +8,7 @@ import {
   StepSessionEndedError,
   type ReactorError,
 } from './errors';
+import { FileRef } from './file-ref';
 import { FakeReactorClient } from './internal/fake-reactor-client';
 import type { StepResult } from './internal/reactor-wasm.types';
 
@@ -28,6 +29,16 @@ async function connected(generation?: 'streamed' | 'stepped') {
     throw new Error('no FakeReactorClient was constructed');
   }
   return { reactor, client };
+}
+
+/** A stepped session with its `camera` and `mic` inputs published, as a
+ *  push needs. */
+async function steppedWithInputs() {
+  const connection = await connected('stepped');
+
+  await connection.reactor.publishTrack('camera');
+  await connection.reactor.publishTrack('mic');
+  return connection;
 }
 
 function createDeferred<T = void>() {
@@ -58,18 +69,20 @@ function fakeVideoFrame(format: string, width: number, height: number, fill: num
     return Promise.resolve([]);
   });
 
-  return {
-    frame: {
-      format,
-      codedWidth: width,
-      codedHeight: height,
-      displayWidth: width,
-      displayHeight: height,
-      visibleRect: { x: 0, y: 0, width, height },
-      copyTo,
-    } as unknown as VideoFrame,
+  const frame = {
+    format,
+    codedWidth: width,
+    codedHeight: height,
+    displayWidth: width,
+    displayHeight: height,
+    visibleRect: { x: 0, y: 0, width, height },
     copyTo,
+    close: vi.fn(),
+    // Its own clone, so a test that swaps copyTo reads through the clone too.
+    clone: () => frame,
   };
+
+  return { frame: frame as unknown as VideoFrame, copyTo };
 }
 
 beforeEach(() => {
@@ -208,8 +221,103 @@ describe('Reactor.step', () => {
     expect('onStepAccepted' in client).toBe(false);
   });
 
-  it('waits for a push called before it, however long its pixels take to read', async () => {
+  it('reads a VideoFrame the caller closes as soon as pushFrame() returns', async () => {
+    const { reactor, client } = await steppedWithInputs();
+    const { frame } = fakeVideoFrame('BGRA', 1, 1, 0);
+    const { frame: clone } = fakeVideoFrame('BGRA', 1, 1, 7);
+    const closeClone = vi.fn();
+    let closed = false;
+
+    Object.assign(clone, { close: closeClone });
+    Object.assign(frame, {
+      close: () => {
+        closed = true;
+      },
+      copyTo: () =>
+        closed
+          ? Promise.reject(new DOMException('VideoFrame is closed', 'InvalidStateError'))
+          : Promise.resolve([]),
+      clone: () => clone,
+    });
+    const pushing = reactor.pushFrame('camera', frame);
+
+    frame.close();
+    await pushing;
+
+    expect(client.pushVideoFrameCalls[0]?.data).toEqual(new Uint8Array(4).fill(7));
+    expect(closeClone).toHaveBeenCalledOnce();
+  });
+
+  it('sends a FileRef in state or command data in its wire shape', async () => {
     const { reactor, client } = await connected('stepped');
+    const image = new FileRef('up_1', 'cat.png', 'image/png', 3);
+
+    await reactor.step({
+      state: { reference: image },
+      commands: [{ command: 'add_layers', data: { layers: [image] } }],
+    });
+
+    const wire = { upload_id: 'up_1', name: 'cat.png', mime_type: 'image/png', size: 3 };
+
+    expect(client.stepCalls).toEqual([
+      {
+        state: { reference: wire },
+        commands: [{ command: 'add_layers', data: { layers: [wire] } }],
+      },
+    ]);
+  });
+
+  it('refuses a push to a track not published on this connection', async () => {
+    const { reactor, client } = await connected('stepped');
+    const pushing = reactor.pushFrame('camera', { data: new Uint8Array(4), width: 1, height: 1 });
+
+    await expect(pushing).rejects.toThrow("publishTrack('camera') first");
+    expect(client.pushVideoFrameCalls).toEqual([]);
+  });
+
+  it('stops a PublishedTrack once it is unpublished, or its connection ends', async () => {
+    const { reactor, client } = await connected('stepped');
+    const pixels = { data: new Uint8Array(4), width: 1, height: 1 };
+    const camera = await reactor.publishTrack('camera');
+
+    await reactor.unpublishTrack('camera');
+    await expect(camera.pushFrame(pixels)).rejects.toBeInstanceOf(InvalidStateError);
+
+    const again = await reactor.publishTrack('camera');
+
+    await again.pushFrame(pixels);
+    await reactor.disconnect(true);
+    await reactor.connect();
+    await reactor.publishTrack('camera');
+    await expect(again.pushFrame(pixels)).rejects.toBeInstanceOf(InvalidStateError);
+    expect(client.pushVideoFrameCalls).toHaveLength(1);
+  });
+
+  it('drops a push whose frame was still being read when disconnect() ran', async () => {
+    const { reactor, client } = await steppedWithInputs();
+    const read = createDeferred();
+    const { frame } = fakeVideoFrame('BGRA', 1, 1, 9);
+
+    Object.assign(frame, {
+      copyTo: async (destination: Uint8Array) => {
+        await read.promise;
+        destination.fill(9);
+
+        return [];
+      },
+    });
+    const pushing = reactor.pushFrame('camera', frame);
+
+    await reactor.disconnect();
+    read.resolve();
+
+    await expect(pushing).rejects.toBeInstanceOf(InvalidStateError);
+    expect(client.pushVideoFrameCalls).toEqual([]);
+    expect(FakeReactorClient.instances).toEqual([client]);
+  });
+
+  it('waits for a push called before it, however long its pixels take to read', async () => {
+    const { reactor, client } = await steppedWithInputs();
     const read = createDeferred();
     const { frame } = fakeVideoFrame('BGRA', 1, 1, 9);
 
@@ -234,15 +342,47 @@ describe('Reactor.step', () => {
   it('clearStepInputs() delegates to the binding', async () => {
     const { reactor, client } = await connected('stepped');
 
-    reactor.clearStepInputs();
+    await reactor.clearStepInputs();
 
     expect(client.clearStepInputsCalls).toBe(1);
+  });
+
+  it('clearStepInputs() also drops a push called before it that is still being read', async () => {
+    const { reactor, client } = await steppedWithInputs();
+    const read = createDeferred();
+    const order: string[] = [];
+    const { frame } = fakeVideoFrame('BGRA', 1, 1, 9);
+    const pushVideo = client.pushVideoFrame.bind(client);
+    const clear = client.clearStepInputs.bind(client);
+
+    Object.assign(frame, {
+      copyTo: async () => {
+        await read.promise;
+
+        return [];
+      },
+    });
+    client.pushVideoFrame = (...args) => {
+      order.push('push');
+      pushVideo(...args);
+    };
+    client.clearStepInputs = () => {
+      order.push('clear');
+      clear();
+    };
+    const pushing = reactor.pushFrame('camera', frame);
+    const clearing = reactor.clearStepInputs();
+
+    read.resolve();
+    await Promise.all([pushing, clearing]);
+
+    expect(order).toEqual(['push', 'clear']);
   });
 });
 
 describe('Reactor.pushFrame', () => {
   it('pushes raw pixels as RGBA by default, with the frame’s extras', async () => {
-    const { reactor, client } = await connected('stepped');
+    const { reactor, client } = await steppedWithInputs();
     const data = new Uint8Array(2 * 1 * 4);
     const metadata = new Uint8Array([7]);
 
@@ -254,7 +394,7 @@ describe('Reactor.pushFrame', () => {
   });
 
   it('passes an explicit pixel format through, and no extras as null', async () => {
-    const { reactor, client } = await connected('stepped');
+    const { reactor, client } = await steppedWithInputs();
 
     await reactor.pushFrame('camera', { data: new Uint8Array(3), width: 1, height: 1, format: 'rgb' });
 
@@ -266,7 +406,7 @@ describe('Reactor.pushFrame', () => {
   });
 
   it('pushes ImageData-shaped clamped bytes as a view over the same memory, not a copy', async () => {
-    const { reactor, client } = await connected('stepped');
+    const { reactor, client } = await steppedWithInputs();
     const pixels = new Uint8ClampedArray([1, 2, 3, 4]);
 
     await reactor.pushFrame('camera', { data: pixels, width: 1, height: 1 });
@@ -279,7 +419,7 @@ describe('Reactor.pushFrame', () => {
   });
 
   it('copies an RGB-family VideoFrame out as it is', async () => {
-    const { reactor, client } = await connected('stepped');
+    const { reactor, client } = await steppedWithInputs();
     const { frame, copyTo } = fakeVideoFrame('BGRX', 2, 2, 5);
 
     await reactor.pushFrame('camera', frame);
@@ -292,7 +432,7 @@ describe('Reactor.pushFrame', () => {
   });
 
   it('asks a YUV VideoFrame’s copyTo() to convert to RGBA', async () => {
-    const { reactor, client } = await connected('stepped');
+    const { reactor, client } = await steppedWithInputs();
     const { frame, copyTo } = fakeVideoFrame('I420', 2, 1, 3);
 
     await reactor.pushFrame('camera', frame);
@@ -305,7 +445,7 @@ describe('Reactor.pushFrame', () => {
   });
 
   it('pushes audio as interleaved PCM, mono unless told otherwise', async () => {
-    const { reactor, client } = await connected('stepped');
+    const { reactor, client } = await steppedWithInputs();
     const mono = new Int16Array([1, 2]);
     const stereo = new Int16Array([1, 2, 3, 4]);
 
@@ -319,7 +459,7 @@ describe('Reactor.pushFrame', () => {
   });
 
   it('keeps call order even when an earlier push is slower to read', async () => {
-    const { reactor, client } = await connected('stepped');
+    const { reactor, client } = await steppedWithInputs();
     const read = createDeferred();
     const { frame } = fakeVideoFrame('RGBA', 1, 1, 0);
     const order: string[] = [];
@@ -348,7 +488,7 @@ describe('Reactor.pushFrame', () => {
   });
 
   it('rejects a frame the binding refuses as a ReactorError, without blocking later pushes', async () => {
-    const { reactor, client } = await connected('stepped');
+    const { reactor, client } = await steppedWithInputs();
 
     client.pushVideoFrameError = Object.assign(new Error('4 bytes is not a 2x2 Rgba frame'), {
       code: 'INVALID_STATE',

@@ -3,8 +3,8 @@ import { toPublicCapabilities } from './internal/capabilities';
 import { debugLog } from './internal/debug-log';
 import { InvalidStateError, toReactorError, type ReactorError } from './errors';
 import { Emitter } from './internal/emitter';
-import { extractFileRefs, toPublicFileRef } from './internal/file-ref';
-import { isAudioFrame, toPixels } from './internal/push-frames';
+import { extractFileRefs, rewriteNestedFileRefs, toPublicFileRef } from './internal/file-ref';
+import { holdFrame, isAudioFrame, toPixels } from './internal/push-frames';
 import { toPublicClip } from './internal/recording';
 import type { ReactorClient } from './internal/reactor-wasm.types';
 import {
@@ -103,6 +103,15 @@ export class Reactor implements Disposable {
    *  out every read active when it started, before it releases the ones
    *  that arrived while it ran. */
   private writerActive = false;
+  /** Counts `disconnect()`s and disposal. A push captures it when called, and
+   *  one whose frame was still being read when it moved is dropped, rather
+   *  than recreating a client to carry the frame into the next session. */
+  private connectionEpoch = 0;
+  /** Input tracks published on this connection, each with the publication
+   *  that claimed it: a push needs one, and a `PublishedTrack` only feeds the
+   *  publication it came from. Cleared with the connection. */
+  private readonly publishedInputs = new Map<string, number>();
+  private publications = 0;
   /** Readers parked in `withReaderAccess()`'s wait loop, woken once
    *  `withWriterAccess()` finishes; each re-checks `writerActive` rather
    *  than assuming its turn, since another writer already queued behind the
@@ -473,18 +482,22 @@ export class Reactor implements Disposable {
           { operation: 'publishTrack' },
         );
       }
+      const publication = (this.publications += 1);
+
       await this.queue.push(async () => {
         const client = await this.getOrCreateClient();
 
         await client.publishTrack(name, media);
+        this.publishedInputs.set(name, publication);
       }, 'publishTrack');
+
+      return {
+        name,
+        pushFrame: (frame, options) => this.pushTo(name, publication, frame, options),
+      };
     } catch (cause) {
       throw this.captureError(cause);
     }
-    return {
-      name,
-      pushFrame: (frame, options) => this.pushFrame(name, frame, options),
-    };
   }
 
   /**
@@ -500,6 +513,7 @@ export class Reactor implements Disposable {
         const client = await this.getOrCreateClient();
 
         await client.unpublishTrack(name);
+        this.publishedInputs.delete(name);
       }, 'unpublishTrack');
     } catch (cause) {
       this.emitError(cause);
@@ -629,6 +643,12 @@ export class Reactor implements Disposable {
   async step(options: StepOptions = {}): Promise<StepResult> {
     this.assertNotDisposed();
     try {
+      // A step has no uploads map: a FileRef rides inline, in its wire shape.
+      const state = rewriteNestedFileRefs(options.state ?? null);
+      const commands = (options.commands ?? []).map((command) =>
+        command.data ? { ...command, data: rewriteNestedFileRefs(command.data) } : command,
+      );
+
       await this.pendingPushes;
       // Excluded from connect()/disconnect()/reconnect() like sendCommand():
       // a step can take minutes, and must neither be freed out from under
@@ -636,7 +656,7 @@ export class Reactor implements Disposable {
       return await this.withReaderAccess(async () => {
         const client = await this.getOrCreateClient();
 
-        return client.step(options.state ?? null, options.commands ?? []);
+        return client.step(state, commands);
       });
     } catch (cause) {
       throw this.captureError(cause);
@@ -650,35 +670,79 @@ export class Reactor implements Disposable {
    * `PublishedTrack` that `publishTrack()` resolves with does the same
    * through `track.pushFrame(frame)`.
    *
-   * Video: a `VideoFrame` (read, not closed — it stays the caller's), an
+   * Video: a `VideoFrame` (cloned when called, so the caller may close it as
+   * soon as this returns; it stays the caller's), an
    * `ImageData`, or `{ data, width, height, format? }` raw pixels (`"rgba"`
    * by default, or `"rgb"`/`"bgra"`). Sent to the model as RGB.
    * Audio: `{ samples, sampleRate, channels? }`, interleaved `Int16Array`
    * PCM at the rate the model's track declares.
    *
    * Pushes keep their call order, and a `step()` waits for every push called
-   * before it — awaiting this is only needed to see its error. What waits for
+   * before it. A refused push rejects: await it, or `.catch()` it in a frame
+   * loop, or every bad frame is an unhandled rejection. What waits for
    * the next step is at most one message's worth of frames: pushing faster
    * than steps run drops the oldest frames, across tracks. Rejects with
-   * an `InvalidStateError` outside a stepped session, for a frame whose size
-   * does not match its dimensions, or for a name the model does not declare
-   * as a sendonly track of that kind.
+   * an `InvalidStateError` outside a stepped session, for a track not
+   * published on this connection (`publishTrack(trackName)` first), for a
+   * frame whose size does not match its dimensions, or for a name the model
+   * does not declare as a sendonly track of that kind.
    */
   async pushFrame(trackName: string, frame: PushFrame, options: PushFrameOptions = {}): Promise<void> {
+    return this.pushTo(trackName, undefined, frame, options);
+  }
+
+  /** `pushFrame()`, for the track's current publication or, from a
+   *  `PublishedTrack`, only for the `publication` it came from. */
+  private async pushTo(
+    trackName: string,
+    publication: number | undefined,
+    frame: PushFrame,
+    options: PushFrameOptions = {},
+  ): Promise<void> {
     this.assertNotDisposed();
+    const epoch = this.connectionEpoch;
+    let held: ReturnType<typeof holdFrame>;
+
+    try {
+      held = holdFrame(frame);
+    } catch (cause) {
+      throw this.captureError(cause);
+    }
     const push = this.pendingPushes.then(async () => {
-      if (!this.isStepped()) {
-        throw new InvalidStateError(
-          `pushFrame('${trackName}') needs a session created with generation: "stepped"; ` +
-            'a streamed session sends media from a MediaStreamTrack given to publishTrack().',
-          { operation: 'pushFrame' },
-        );
+      let pixels;
+
+      try {
+        if (!this.isStepped()) {
+          throw new InvalidStateError(
+            `pushFrame('${trackName}') needs a session created with generation: "stepped"; ` +
+              'a streamed session sends media from a MediaStreamTrack given to publishTrack().',
+            { operation: 'pushFrame' },
+          );
+        }
+        pixels = isAudioFrame(held.frame) ? undefined : await toPixels(held.frame);
+      } finally {
+        held.release();
       }
-      const pixels = isAudioFrame(frame) ? undefined : await toPixels(frame);
 
       // Read access, like step(): a disconnect() must not free the client
       // between resolving it and the (synchronous) push into it.
       await this.withReaderAccess(async () => {
+        if (epoch !== this.connectionEpoch) {
+          throw new InvalidStateError(
+            `pushFrame('${trackName}'): the connection it was pushed to ended while its frame was read`,
+            { operation: 'pushFrame' },
+          );
+        }
+        const current = this.publishedInputs.get(trackName);
+
+        if (current === undefined || (publication !== undefined && publication !== current)) {
+          throw new InvalidStateError(
+            publication === undefined
+              ? `pushFrame('${trackName}') needs publishTrack('${trackName}') first.`
+              : `pushFrame('${trackName}'): this track was unpublished, or its connection ended.`,
+            { operation: 'pushFrame' },
+          );
+        }
         const client = await this.getOrCreateClient();
 
         if (pixels) {
@@ -705,9 +769,23 @@ export class Reactor implements Disposable {
     }
   }
 
-  /** Drops every frame buffered for the next step. */
-  clearStepInputs(): void {
-    this.client?.clearStepInputs();
+  /** Drops every frame buffered for the next step, pushes called before it
+   *  included: it waits its turn behind them, as a `step()` does. */
+  async clearStepInputs(): Promise<void> {
+    this.assertNotDisposed();
+    const clear = this.pendingPushes.then(() =>
+      this.withReaderAccess(() => {
+        this.client?.clearStepInputs();
+        return Promise.resolve();
+      }),
+    );
+
+    this.pendingPushes = clear.catch(() => undefined);
+    try {
+      await clear;
+    } catch (cause) {
+      throw this.captureError(cause);
+    }
   }
 
   // ── Recording ───────────────────────────────────────────────────────────
@@ -1154,6 +1232,8 @@ export class Reactor implements Disposable {
    *  leave `getCapabilities()` returning the previous session's stale
    *  tracks/commands until a new `capabilitiesReceived` lands. */
   private resetConnectionState(): void {
+    this.connectionEpoch += 1;
+    this.publishedInputs.clear();
     this.stopStatsPolling();
     this.connectionTimings = undefined;
     this.connectStartTime = undefined;
