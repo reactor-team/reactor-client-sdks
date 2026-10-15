@@ -174,9 +174,14 @@ void completion_trampoline(int ok, const char* result_json, const char* error_js
   // Java strings here and not a moment later.
   jstring result = to_jstring(env, result_json);
   jstring error = to_jstring(env, error_json);
+  // Success is 1, not "not zero". reactor_send_command reports invalid args_json or
+  // uploads_json by calling back with -1 and an error_json, and `ok != 0` turned that into a
+  // successful completion carrying no result — so a malformed command answered with an empty
+  // reply and the caller never learned nothing had been sent. Only a positive status is success.
+  const jboolean succeeded = ok > 0 ? JNI_TRUE : JNI_FALSE;
   env->CallStaticVoidMethod(g_completions_class, g_settle,
                             static_cast<jlong>(reinterpret_cast<intptr_t>(userdata)),
-                            ok != 0 ? JNI_TRUE : JNI_FALSE, result, error);
+                            succeeded, result, error);
   if (env->ExceptionCheck()) {
     env->ExceptionDescribe();
     env->ExceptionClear();
@@ -468,4 +473,46 @@ Java_inc_reactor_sdk_android_internal_NativeClient_nativePushAudioFrame(
   reactor_push_audio_frame(context->handle, track.get(), data,
                            static_cast<uint32_t>(samplesPerChannel),
                            static_cast<uint32_t>(sampleRate), static_cast<uint32_t>(channels));
+}
+
+// ── Commands, schema and statistics ──────────────────────────────────────────
+
+/**
+ * Send a command and wait for its **correlated** reply.
+ *
+ * The correlation is the FFI's, not ours: the completion fires for this command and no other.
+ * A binding that instead sent and then waited for a message event would be racing a reply that
+ * may already have arrived — the classic hang at this boundary.
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeSendCommand(
+    JNIEnv* env, jobject, jlong context_ptr, jstring name, jstring args_json, jstring uploads_json,
+    jlong ticket) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return;
+  JavaString command(env, name);
+  JavaString args(env, args_json);
+  JavaString uploads(env, uploads_json);
+  reactor_send_command(context->handle, command.get(), args.get(), uploads.get(),
+                       completion_trampoline,
+                       reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeRequestSchema(JNIEnv*, jobject,
+                                                                       jlong context_ptr,
+                                                                       jlong ticket) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return;
+  reactor_request_schema(context->handle, completion_trampoline,
+                         reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeGetStats(JNIEnv*, jobject,
+                                                                  jlong context_ptr, jlong ticket) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return;
+  reactor_get_stats(context->handle, completion_trampoline,
+                    reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
 }
