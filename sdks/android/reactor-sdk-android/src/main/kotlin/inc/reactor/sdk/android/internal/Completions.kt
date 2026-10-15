@@ -37,6 +37,23 @@ internal object Completions {
         val deferred: CompletableDeferred<T>,
     )
 
+    /**
+     * Settle a completion from the native trampoline.
+     *
+     * `@JvmStatic` because `client.cpp` resolves it with `GetStaticMethodID`: a Kotlin `object`'s
+     * members are instance methods on INSTANCE by default, and the bridge would have to carry a
+     * reference to that instance for no reason. The ticket is all the native side holds.
+     */
+    @JvmStatic
+    fun settleFromNative(
+        ticket: Long,
+        ok: Boolean,
+        resultJson: String?,
+        errorJson: String?,
+    ) {
+        settle(ticket, ok, resultJson, errorJson)
+    }
+
     /** How many completions are outstanding. Zero at rest; the endurance suite watches it. */
     val pendingCount: Int
         get() = pending.size

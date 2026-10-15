@@ -68,7 +68,7 @@ esac
 mkdir -p "$OUT/classes"
 
 echo "==> Compiling the listener"
-javac -d "$OUT/classes" "$NATIVE/tests/AsanListener.java"
+javac -d "$OUT/classes" "$NATIVE/tests/AsanListener.java" "$NATIVE/tests/AsanCompletions.java"
 
 echo "==> Building the harness with AddressSanitizer"
 # -fno-omit-frame-pointer so a report names the frame that did it rather than an address.

@@ -29,6 +29,24 @@ internal object NativeClient {
 
     private external fun nativePausedTracks(context: Long): String?
 
+    private external fun nativeInitCompletions(completions: Class<*>)
+
+    private external fun nativeConnect(
+        context: Long,
+        sessionId: String?,
+        ticket: Long,
+    )
+
+    private external fun nativeDisconnect(
+        context: Long,
+        ticket: Long,
+    )
+
+    private external fun nativeReconnect(
+        context: Long,
+        ticket: Long,
+    )
+
     /**
      * Global references the bridge could not release, kept forever on purpose.
      *
@@ -51,6 +69,21 @@ internal object NativeClient {
         orphanedContexts += 1
     }
 
+    /**
+     * Tell the bridge where to settle completions. Idempotent, and done once before the first
+     * handle exists — the lookup needs a thread with an application class loader, which an
+     * FFI-owned callback thread does not have.
+     */
+    @Synchronized
+    private fun ensureCompletionsWired() {
+        if (completionsWired) return
+        nativeInitCompletions(Completions::class.java)
+        completionsWired = true
+    }
+
+    @Volatile
+    private var completionsWired = false
+
     /** A live handle. Not thread-safe against its own [close]; the object model serialises that. */
     class Handle internal constructor(
         private val context: Long,
@@ -66,11 +99,41 @@ internal object NativeClient {
          * boundary this class exists to make safe. The class doc used to say the object model
          * serialised this; nothing enforced that, and a comment is not a lock.
          *
-         * Cheap because it is only ever contended at teardown: these four getters are reads of a
-         * pointer the native side answers immediately, and the suspend operations do not take it
-         * — they are serialised by their own `checkOpen` and by the FFI.
+         * Cheap because nothing holds it for long: the getters are reads the native side answers
+         * immediately, and the suspend operations take it only around *launching* their native
+         * call — never across the await, which would mean suspending while holding a monitor.
          */
         private val lifecycle = Any()
+
+        /**
+         * Create or adopt a session and bring the transport up, with the *launch* of the native
+         * call under the lifecycle lock.
+         *
+         * `checkOpen()` on its own left the same window the getters had: a caller that passed the
+         * check and was then descheduled would hand a freed Context to `nativeConnect`, because
+         * `close()` ran `nativeDestroy` in between. Taking the lock around the launch closes it,
+         * and costs nothing — these calls register a completion and return; the waiting happens
+         * outside the lock, where it must, since a suspension may not hold a monitor.
+         */
+        suspend fun connect(sessionId: String?) {
+            Completions.await("connect", decode = { }) { ticket ->
+                withOpenHandle { nativeConnect(context, sessionId, ticket) }
+            }
+        }
+
+        /** End the session server-side. */
+        suspend fun disconnect() {
+            Completions.await("disconnect", decode = { }) { ticket ->
+                withOpenHandle { nativeDisconnect(context, ticket) }
+            }
+        }
+
+        /** Cycle the connection, keeping the session. */
+        suspend fun reconnect() {
+            Completions.await("reconnect", decode = { }) { ticket ->
+                withOpenHandle { nativeReconnect(context, ticket) }
+            }
+        }
 
         val status: String?
             get() = withOpenHandle { nativeStatus(context) }
@@ -127,6 +190,7 @@ internal object NativeClient {
         sdkType: String? = "android",
     ): Handle {
         NativeLibrary.ensureLoaded()
+        ensureCompletionsWired()
         val context =
             nativeCreate(apiUrl, modelName, jwt, local, autoResumeTracks, listener, sdkVersion, sdkType)
         check(context != 0L) { "The native layer refused to create a client for $modelName" }
