@@ -323,6 +323,10 @@ pub struct TrackOutput {
     pub track: String,
     pub kind: TrackKind,
     pub frames: Vec<DecodedFrame>,
+    /// The rate the frames play at: frames per second for video, samples per
+    /// second for audio. A step's video rate is that step's own. `0.0` when
+    /// the runtime does not say.
+    pub rate: f64,
 }
 
 /// One decoded frame: the array `data` holds, described by `dtype` and
@@ -454,6 +458,7 @@ impl FrameDecoders {
                     track: track.track,
                     kind,
                     frames,
+                    rate: track.rate,
                 })
             })
             .collect::<Result<_, CoreError>>()?;
@@ -707,13 +712,13 @@ mod tests {
                         capture_time_us: Some(7),
                         ..raw("uint8", vec![1, 2, 3], vec![0; 6])
                     }],
-                    rate: 0.0,
+                    rate: 24.0,
                 },
                 TrackFrames {
                     track: "main_audio".into(),
                     kind: WireTrackKind::Audio as i32,
                     frames: vec![raw("int16", vec![1, 2], vec![0; 4])],
-                    rate: 0.0,
+                    rate: 48_000.0,
                 },
             ],
             elapsed_seconds: 0.25,
@@ -726,6 +731,7 @@ mod tests {
         assert_eq!(output.elapsed, 0.25);
         assert_eq!(output.tracks[0].track, "main_video");
         assert_eq!(output.tracks[0].kind, TrackKind::Video);
+        assert_eq!(output.tracks[0].rate, 24.0);
         let frame = &output.tracks[0].frames[0];
         assert_eq!(frame.encoding, FrameEncoding::Raw);
         assert_eq!(frame.shape, [1, 2, 3]);
@@ -733,6 +739,7 @@ mod tests {
         assert_eq!(frame.metadata.as_deref(), Some(&b"m"[..]));
         assert_eq!(frame.capture_time_us, Some(7));
         assert_eq!(output.tracks[1].kind, TrackKind::Audio);
+        assert_eq!(output.tracks[1].rate, 48_000.0);
         assert_eq!(output.tracks[1].frames[0].dtype, "int16");
         assert!(output.files.is_empty());
         assert!(output.error.is_none());
