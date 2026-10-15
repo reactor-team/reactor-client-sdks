@@ -26,7 +26,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   dropped with a warning. A step's buffered frames belong to it whatever its
   outcome, sent or not. `clearStepInputs()` drops what is buffered now, and
   `stepTimeout:` bounds a step. `connect()` throws `generationModeMismatch` when
-  the runtime did not start the session stepped; a step can throw `stepRefused`,
+  the runtime did not start the session stepped, and `dataChannelChunkingRequired`
+  when the data channel did not negotiate chunking; a step can throw `stepRefused`,
   `stepNotReady` (the session cannot take a step yet; the step did not run),
   `stepCommandFailed` (a state key or command handler failed; the step did not
   run), `stepSessionEnded` (the session ended first; whether the step ran is

@@ -46,54 +46,61 @@ await runExample {
     let subscriptions = watch(reactor)
 
     try await reactor.connect()
-    print("session: \(reactor.sessionID ?? "none")")
+    // Past connect() the session exists on the server: a failure below still
+    // ends it, or it would linger until it expired.
+    do {
+        print("session: \(reactor.sessionID ?? "none")")
 
-    // Publishing still claims the slot on the runtime; only the frames travel
-    // differently.
-    let source = try inputTrack.map { try reactor.track($0) }
-    try await source?.publish()
+        // Publishing still claims the slot on the runtime; only the frames travel
+        // differently.
+        let source = try inputTrack.map { try reactor.track($0) }
+        try await source?.publish()
 
-    let width: UInt32 = 320
-    let height: UInt32 = 180
-    for sequence in 0..<steps {
-        if let source {
-            // A solid BGRA frame whose colour follows the step. Buffered, not
-            // sent: the step below carries it.
-            let pixel: [UInt8] = [
-                UInt8(sequence * 7 % 256), UInt8(sequence * 13 % 256), UInt8(sequence * 29 % 256),
-                255,
-            ]
-            let pixels = Data(
-                Array([[UInt8]](repeating: pixel, count: Int(width * height)).joined()))
-            try source.pushFrame(pixels, width: width, height: height)
-        }
+        let width: UInt32 = 320
+        let height: UInt32 = 180
+        for sequence in 0..<steps {
+            if let source {
+                // A solid BGRA frame whose colour follows the step. Buffered, not
+                // sent: the step below carries it.
+                let pixel: [UInt8] = [
+                    UInt8(sequence * 7 % 256), UInt8(sequence * 13 % 256),
+                    UInt8(sequence * 29 % 256),
+                    255,
+                ]
+                let pixels = Data(
+                    Array([[UInt8]](repeating: pixel, count: Int(width * height)).joined()))
+                try source.pushFrame(pixels, width: width, height: height)
+            }
 
-        // State on the first step only: the model keeps it until changed. With
-        // nothing else to send, a later step is just `step()`.
-        let state: [String: JSONValue]? = sequence == 0 ? ["prompt": .string(prompt)] : nil
-        let commands = command.map { [StepCommand($0)] } ?? []
-        let result =
-            state == nil && commands.isEmpty
-            ? try await reactor.step()
-            : try await reactor.step(state: state, commands: commands)
+            // State on the first step only: the model keeps it until changed. With
+            // nothing else to send, a later step is just `step()`.
+            let state: [String: JSONValue]? = sequence == 0 ? ["prompt": .string(prompt)] : nil
+            let commands = command.map { [StepCommand($0)] } ?? []
+            let result =
+                state == nil && commands.isEmpty
+                ? try await reactor.step()
+                : try await reactor.step(state: state, commands: commands)
 
-        print("step \(result.index): ran in \(result.elapsed)")
-        if let error = result.error {
-            print("step \(result.index): the model reported a failure: \(error)")
+            print("step \(result.index): ran in \(result.elapsed)")
+            if let error = result.error {
+                print("step \(result.index): the model reported a failure: \(error)")
+            }
+            for track in result.tracks {
+                let shapes = track.frames.map { "\($0.shape)" }.joined(separator: ", ")
+                print(
+                    "step \(result.index): \(track.name) (\(track.kind.rawValue)) "
+                        + "\(track.frames.count) frame(s) \(shapes)")
+            }
+            for file in result.files {
+                print(
+                    "step \(result.index): kept \(file.name) (\(file.contentType), "
+                        + "\(file.size) bytes)")
+            }
         }
-        for track in result.tracks {
-            let shapes = track.frames.map { "\($0.shape)" }.joined(separator: ", ")
-            print(
-                "step \(result.index): \(track.name) (\(track.kind.rawValue)) "
-                    + "\(track.frames.count) frame(s) \(shapes)")
-        }
-        for file in result.files {
-            print(
-                "step \(result.index): kept \(file.name) (\(file.contentType), "
-                    + "\(file.size) bytes)")
-        }
+        try await reactor.disconnect()
+    } catch {
+        try? await reactor.disconnect()
+        throw error
     }
-
     _ = subscriptions
-    try await reactor.disconnect()
 }

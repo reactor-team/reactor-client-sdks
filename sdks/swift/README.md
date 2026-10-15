@@ -39,7 +39,8 @@ optional: `step()` runs on the model's current state, which commands sent with
 ```swift
 let reactor = try await Reactor(model: "owner/model", apiKey: apiKey, generation: .stepped)
 
-try await reactor.connect()          // generationModeMismatch if the runtime cannot
+try await reactor.connect()          // generationModeMismatch if the runtime cannot step,
+                                     // dataChannelChunkingRequired without chunking
 
 let camera = try reactor.track("camera")
 try await camera.publish()

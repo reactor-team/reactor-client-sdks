@@ -81,16 +81,20 @@ package enum IntegrationConfig {
     /// will adopt, and its token is bound to that session: a scoped token reaches
     /// only the sessions it created or was bound to.
     package static func makeReactor(
-        model: String = defaultModel, jwt: String? = nil, adopting sessionID: String? = nil
+        model: String = defaultModel, jwt: String? = nil, adopting sessionID: String? = nil,
+        generation: Generation = .streamed
     ) async throws
         -> Reactor
     {
         if local {
-            return try Reactor(model: model, jwt: nil, apiURL: apiURL, local: true, eventQueue: nil)
+            return try Reactor(
+                model: model, jwt: nil, apiURL: apiURL, local: true, generation: generation,
+                eventQueue: nil)
         }
         if let jwt {
             return try Reactor(
-                model: model, jwt: jwt, apiURL: apiURL, local: false, eventQueue: nil)
+                model: model, jwt: jwt, apiURL: apiURL, local: false, generation: generation,
+                eventQueue: nil)
         }
         let key = try requiredAPIKey()
         // Scoped to this model, or bound to the session it adopts: a token that can
@@ -101,7 +105,7 @@ package enum IntegrationConfig {
             model: model, apiKey: key, apiURL: apiURL,
             options: sessionID.map { Reactor.TokenOptions(sessions: [$0]) }
                 ?? Reactor.TokenOptions(models: [model]),
-            local: false, eventQueue: nil)
+            local: false, generation: generation, eventQueue: nil)
     }
 
     private static func value(_ name: String) -> String? {
@@ -206,9 +210,11 @@ package func withConnectedReactor<Result>(
     jwt: String? = nil,
     sessionID: String? = nil,
     connectionID: UInt32? = nil,
+    generation: Generation = .streamed,
     _ body: (Reactor) async throws -> Result
 ) async throws -> Result {
-    let reactor = try await IntegrationConfig.makeReactor(model: model, jwt: jwt)
+    let reactor = try await IntegrationConfig.makeReactor(
+        model: model, jwt: jwt, generation: generation)
     do {
         try await pacedConnect(reactor, sessionID: sessionID, connectionID: connectionID)
         let result = try await body(reactor)
