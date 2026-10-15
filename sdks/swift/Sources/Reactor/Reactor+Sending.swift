@@ -81,7 +81,7 @@ extension Reactor {
         width: UInt32,
         height: UInt32,
         userData: UnsafeRawBufferPointer?,
-        captureTimeUs: Int64
+        captureTimeUs: Int64?
     ) throws {
         // The frame's submit stage starts here, so this SDK's own checks count.
         let started = ContinuousClock.now
@@ -120,19 +120,19 @@ extension Reactor {
         }
 
         let base = pixels.bindMemory(to: UInt8.self).baseAddress
+        let tag = userData.flatMap { $0.isEmpty ? nil : $0 }
+        let tagBase = tag?.bindMemory(to: UInt8.self).baseAddress
+        let tagLength = UInt32(tag?.count ?? 0)
         let elapsed = ContinuousClock.now - started
         let bindingMs =
             Double(elapsed.components.seconds) * 1_000
             + Double(elapsed.components.attoseconds) / 1e15
-        if let userData, !userData.isEmpty {
-            let tag = userData.bindMemory(to: UInt8.self).baseAddress
-            ffi.pushVideoFrame(
-                handle, name, base, width, height, tag, UInt32(userData.count), captureTimeUs,
-                bindingMs, generation)
-        } else {
-            ffi.pushVideoFrame(
-                handle, name, base, width, height, nil, 0, captureTimeUs, bindingMs, generation)
-        }
+        // A frame without a capture time reaches the library without one: 0
+        // would be a real time, which a stepped session hands the model as the
+        // frame's capture time.
+        ffi.pushVideoFrame(
+            handle, name, base, width, height, tagBase, tagLength, captureTimeUs, bindingMs,
+            generation)
     }
 
     /// Push interleaved i16 PCM into a sendonly audio track.
@@ -341,6 +341,19 @@ extension Track {
     ///     one capture and the far end reads them as the one moment they are.
     ///     Without it the frame is stamped as it is pushed, so several tracks
     ///     capturing one moment arrive stamped microseconds apart.
+    ///
+    /// **Stepped sessions.** On a client created with `generation: .stepped`
+    /// this sends nothing: the frame is buffered, with its tag and capture time,
+    /// as an `(height, width, 3)` `uint8` RGB frame, and the next
+    /// ``Reactor/step(state:commands:)`` carries every frame pushed since the one
+    /// before — per track, in push order. Publish the track first, as for a
+    /// streamed session.
+    ///
+    /// The buffer holds at most one data-channel message's worth of frame
+    /// bytes, as a step can never send more: pushing faster than steps run
+    /// drops the oldest frames, across tracks. Once the session's tracks are
+    /// known, a push to a track the session does not take as input is dropped
+    /// with a warning.
     public func pushFrame(
         _ pixels: Data,
         width: UInt32,
@@ -354,12 +367,12 @@ extension Track {
                 try userData.withUnsafeBytes { tagBytes in
                     try client.push(
                         track: name, pixels: pixelBytes, width: width, height: height,
-                        userData: tagBytes, captureTimeUs: captureTimeUs ?? 0)
+                        userData: tagBytes, captureTimeUs: captureTimeUs)
                 }
             } else {
                 try client.push(
                     track: name, pixels: pixelBytes, width: width, height: height,
-                    userData: nil, captureTimeUs: captureTimeUs ?? 0)
+                    userData: nil, captureTimeUs: captureTimeUs)
             }
         }
     }
@@ -375,7 +388,7 @@ extension Track {
         guard let client else { return }
         try client.push(
             track: name, pixels: pixels, width: width, height: height, userData: userData,
-            captureTimeUs: captureTimeUs ?? 0)
+            captureTimeUs: captureTimeUs)
     }
 
     /// Push interleaved 16-bit PCM into this track.
@@ -385,6 +398,12 @@ extension Track {
     /// blocks are buffered and discarded on format change or disconnect.
     /// Local audio tracks still share the synthetic capture device.
     /// Unsupported rates or channel counts throw a `badRequest` error.
+    ///
+    /// **Stepped sessions.** On a client created with `generation: .stepped`
+    /// each push is buffered as one planar `(channels, samples)` `int16` frame
+    /// for the next ``Reactor/step(state:commands:)`` instead of being sent. A
+    /// step frame carries no sample rate, so push at the rate the model's track
+    /// declares. The buffer is the one video frames share, with the same limit.
     public func pushFrame(
         _ samples: [Int16],
         sampleRate: UInt32 = 48000,

@@ -100,6 +100,8 @@ let package = Package(
         .executable(name: "05_multi_connection", targets: ["Example05MultiConnection"]),
         .executable(name: "06_record_clip", targets: ["Example06RecordClip"]),
         .executable(name: "07_frame_metadata", targets: ["Example07FrameMetadata"]),
+        // Beyond the seven: stepped generation, numbered as Python's 09.
+        .executable(name: "09_stepped_generation", targets: ["Example09SteppedGeneration"]),
     ],
     targets: [
         // The C ABI, imported through a module map over the header the Rust
@@ -214,6 +216,11 @@ let package = Package(
             name: "Example07FrameMetadata",
             dependencies: ["Reactor", "ExampleSupport"],
             path: "sdks/swift/Examples/07_frame_metadata"
+        ),
+        .executableTarget(
+            name: "Example09SteppedGeneration",
+            dependencies: ["Reactor", "ExampleSupport"],
+            path: "sdks/swift/Examples/09_stepped_generation"
         ),
         .testTarget(
             name: "ReactorMediaTests",

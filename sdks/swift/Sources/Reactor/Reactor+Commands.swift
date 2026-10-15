@@ -210,7 +210,7 @@ extension Reactor {
 
     // MARK: - JSON, in one place
 
-    private func encodeJSON(_ value: some Encodable, operation: String) throws -> String {
+    func encodeJSON(_ value: some Encodable, operation: String) throws -> String {
         do {
             let data = try JSON.encoder().encode(value)
             guard let text = String(data: data, encoding: .utf8) else {

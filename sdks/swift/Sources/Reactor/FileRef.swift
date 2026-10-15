@@ -43,3 +43,24 @@ public struct FileRef: Sendable, Hashable, Codable {
         self.size = size
     }
 }
+
+extension JSONValue {
+
+    /// The upload reference the platform reads, as a value — for a step's
+    /// `state`, whose fields are ``JSONValue``s:
+    ///
+    /// ```swift
+    /// let photo = try await reactor.uploadFile(at: url)
+    /// try await reactor.step(state: ["image": JSONValue(photo)])
+    /// ```
+    ///
+    /// The same object a ``FileRef`` encodes as inside a command's arguments.
+    public init(_ file: FileRef) {
+        self = .object([
+            "upload_id": .string(file.uploadID),
+            "name": .string(file.name),
+            "mime_type": .string(file.mimeType),
+            "size": .number(Double(file.size)),
+        ])
+    }
+}

@@ -1,7 +1,30 @@
 import CReactorFFI
 import Foundation
 
-/// One async operation waiting on `reactor_completion_fn`.
+/// What teardown needs from an operation in flight, whatever it answers with.
+///
+/// ``Reactor/close()`` settles every outstanding operation and, once
+/// `reactor_destroy` has promised no completion will arrive, balances the
+/// reference each one handed the library. It does not care what a completion
+/// would have decoded into — a JSON string for most calls, a ``StepResult`` for
+/// a step — so it holds them through this.
+protocol PendingOperation: AnyObject, Sendable {
+
+    /// Which call this is, for the error a teardown reports.
+    var operation: String { get }
+
+    /// Settle from teardown, for an operation the library will never answer.
+    func abandon(_ error: ReactorError)
+
+    /// Take ownership of the reference the library was handed, if it is still
+    /// outstanding. Answers `true` to exactly one caller.
+    func claimRetainedReference() -> Bool
+
+    /// Balance that reference. Only after ``claimRetainedReference()`` said so.
+    func releaseRetainedReference()
+}
+
+/// One async operation waiting on its completion callback.
 ///
 /// A continuation resolves **exactly once**, and resolving it twice is a
 /// `fatalError` that takes the process with it. Two things could reach this
@@ -12,12 +35,15 @@ import Foundation
 /// *before* the continuation is claimed. A conversion that throws after the claim
 /// has nowhere left to report, which in C++ is a broken promise and in Swift is a
 /// trap.
-final class PendingCompletion: @unchecked Sendable {
+///
+/// Generic over what the call answers with: `String?` — the borrowed
+/// `result_json` copied out — for every `reactor_completion_fn`, and
+/// ``StepResult`` for `reactor_step` (see ``PendingStep``).
+class PendingCompletion<Value: Sendable>: PendingOperation, @unchecked Sendable {
 
-    /// Which call this is, for the error a teardown reports.
     let operation: String
 
-    private let state = Locked<CheckedContinuation<String?, any Error>?>(nil)
+    private let state = Locked<CheckedContinuation<Value, any Error>?>(nil)
 
     /// Whether the FFI still holds the `passRetained` reference to this object
     /// that was handed to it as `userdata`.
@@ -41,21 +67,13 @@ final class PendingCompletion: @unchecked Sendable {
     }
 
     /// Hand over the continuation to settle. Called once, before the FFI call.
-    func attach(_ continuation: CheckedContinuation<String?, any Error>) {
+    func attach(_ continuation: CheckedContinuation<Value, any Error>) {
         state.withLock { $0 = continuation }
     }
 
-    /// Settle from the FFI's completion callback.
-    ///
-    /// `resultJSON` and `errorJSON` are borrowed for the duration of this call,
-    /// so both are copied before anything else happens.
-    func complete(ok: Int32, resultJSON: UnsafePointer<CChar>?, errorJSON: UnsafePointer<CChar>?) {
-        // Decode first, claim second.
-        let outcome: Result<String?, any Error> =
-            ok == 1
-            ? .success(String(borrowing: resultJSON))
-            : .failure(ReactorError.decode(payload: String(borrowing: errorJSON)))
-
+    /// Settle from the FFI's completion callback, with an outcome already
+    /// decoded — decode first, claim second.
+    func complete(_ outcome: Result<Value, any Error>) {
         owner?.forget(self)
         settle(outcome)
     }
@@ -80,15 +98,33 @@ final class PendingCompletion: @unchecked Sendable {
         }
     }
 
-    private func settle(_ outcome: Result<String?, any Error>) {
+    func releaseRetainedReference() {
+        Unmanaged.passUnretained(self).release()
+    }
+
+    private func settle(_ outcome: Result<Value, any Error>) {
         // Taking the continuation out under the lock is what makes "exactly
         // once" true: whoever finds it settles it, and everyone after finds nil.
-        let continuation = state.withLock { stored -> CheckedContinuation<String?, any Error>? in
+        let continuation = state.withLock { stored -> CheckedContinuation<Value, any Error>? in
             defer { stored = nil }
             return stored
         }
         guard let continuation else { return }
         continuation.resume(with: outcome)
+    }
+}
+
+extension PendingCompletion where Value == String? {
+
+    /// Settle from a `reactor_completion_fn`.
+    ///
+    /// `resultJSON` and `errorJSON` are borrowed for the duration of this call,
+    /// so both are copied before anything else happens.
+    func complete(ok: Int32, resultJSON: UnsafePointer<CChar>?, errorJSON: UnsafePointer<CChar>?) {
+        complete(
+            ok == 1
+                ? .success(String(borrowing: resultJSON))
+                : .failure(ReactorError.decode(payload: String(borrowing: errorJSON))))
     }
 }
 
@@ -98,7 +134,7 @@ final class PendingCompletion: @unchecked Sendable {
 /// which is what lets it be a `@convention(c)` pointer at all.
 let completionTrampoline: reactor_completion_fn = { ok, resultJSON, errorJSON, userdata in
     guard let userdata else { return }
-    let unmanaged = Unmanaged<PendingCompletion>.fromOpaque(userdata)
+    let unmanaged = Unmanaged<PendingCompletion<String?>>.fromOpaque(userdata)
     let pending = unmanaged.takeUnretainedValue()
 
     // Claimed rather than consumed outright, because teardown can get here

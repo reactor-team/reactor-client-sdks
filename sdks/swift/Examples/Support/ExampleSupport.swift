@@ -88,10 +88,13 @@ public func fail(_ message: String) -> Never {
 /// Every example starts here, and every example ends with `defer { reactor.close() }`
 /// — a creator that goes away without disconnecting orphans the session, and the
 /// next run cannot start until it clears.
-public func connectedClient(model: String) async throws -> Reactor {
+public func connectedClient(
+    model: String, generation: Generation = .streamed
+) async throws -> Reactor {
     if Env.local {
         return try Reactor(
-            model: model, jwt: nil, apiURL: Env.apiURL, local: true, eventQueue: nil)
+            model: model, jwt: nil, apiURL: Env.apiURL, local: true, generation: generation,
+            eventQueue: nil)
     }
     guard let key = Env.apiKey else {
         fail("set REACTOR_API_KEY — https://www.reactor.inc/account/api-keys")
@@ -100,7 +103,7 @@ public func connectedClient(model: String) async throws -> Reactor {
     // fine server-to-server and wrong everywhere else.
     return try await Reactor(
         model: model, apiKey: key, apiURL: Env.apiURL,
-        options: .init(models: [model]), local: Env.local)
+        options: .init(models: [model]), local: Env.local, generation: generation)
 }
 
 /// Print status, errors and both message channels.

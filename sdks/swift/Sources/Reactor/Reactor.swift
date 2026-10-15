@@ -81,6 +81,10 @@ public final class Reactor: @unchecked Sendable {
     /// certificate a download has to accept as well.
     let isLocal: Bool
 
+    /// How this client's sessions generate: ``Generation/streamed`` or
+    /// ``Generation/stepped``. Fixed at creation.
+    public let generation: Generation
+
     /// Everything mutable, in one place, behind one lock.
     struct State {
         var handle: OpaquePointer?
@@ -88,7 +92,7 @@ public final class Reactor: @unchecked Sendable {
         var closed = false
         var statusHandlers: [UUID: @Sendable (ReactorStatus) -> Void] = [:]
         var errorHandlers: [UUID: @Sendable (ReactorError) -> Void] = [:]
-        var pending: [ObjectIdentifier: PendingCompletion] = [:]
+        var pending: [ObjectIdentifier: any PendingOperation] = [:]
 
         /// One `Track` per name, so handlers registered on it stay registered —
         /// including across a reconnect, which renegotiates everything else.
@@ -129,16 +133,32 @@ public final class Reactor: @unchecked Sendable {
     /// Nothing connects here: the handle exists, and ``connect(sessionID:connectionID:)``
     /// is what creates or adopts a session.
     ///
+    /// - Parameters:
+    ///   - generation: how the session generates. ``Generation/streamed``, the
+    ///     default, generates continuously over the model's media tracks;
+    ///     ``Generation/stepped`` generates one ``step(state:commands:)`` at a
+    ///     time, and ``connect(sessionID:connectionID:)`` then fails with
+    ///     ``ReactorError/Code/generationModeMismatch`` when the runtime does not
+    ///     start the session that way — as one without stepped generation will
+    ///     not.
+    ///   - stepTimeout: how long a step may take, generation included, before it
+    ///     fails with ``ReactorError/Code/requestTimeout``. Stepped sessions
+    ///     only; `nil` keeps the library's default of 300 seconds.
+    ///
     /// - Throws: ``ReactorError`` with ``ReactorError/Code/versionMismatch`` when
     ///   the loaded `libreactor_ffi` speaks a different ABI than this SDK was
     ///   built against — the one failure that has to be caught before any call,
     ///   because past it the stack is corrupted rather than an error reported.
+    ///   ``ReactorError/Code/badRequest`` for a `stepTimeout` that is not
+    ///   positive, or that was given to a streamed client.
     public convenience init(
         model: String,
         jwt: String? = nil,
         apiURL: String = Reactor.defaultAPIURL,
         local: Bool = false,
         autoResumeTracks: Bool = true,
+        generation: Generation = .streamed,
+        stepTimeout: Duration? = nil,
         eventQueue: DispatchQueue? = nil
     ) throws {
         try self.init(
@@ -147,6 +167,8 @@ public final class Reactor: @unchecked Sendable {
             apiURL: apiURL,
             local: local,
             autoResumeTracks: autoResumeTracks,
+            generation: generation,
+            stepTimeout: stepTimeout,
             eventQueue: eventQueue,
             ffi: .system
         )
@@ -159,15 +181,19 @@ public final class Reactor: @unchecked Sendable {
         apiURL: String,
         local: Bool,
         autoResumeTracks: Bool = true,
+        generation: Generation = .streamed,
+        stepTimeout: Duration? = nil,
         eventQueue: DispatchQueue?,
         ffi: FFI
     ) throws {
         try ABI.check(ffi)
+        let stepTimeoutSeconds = try Reactor.validateStepTimeout(stepTimeout, for: generation)
 
         self.ffi = ffi
         self.dispatcher = eventQueue.map(EventDispatcher.init(queue:)) ?? EventDispatcher()
         self.jwt = jwt
         self.isLocal = local
+        self.generation = generation
 
         let resolvedURL = Reactor.resolveAPIURL(apiURL, local: local)
 
@@ -190,15 +216,40 @@ public final class Reactor: @unchecked Sendable {
 
         // The FFI copies the struct's contents at create time (see create_impl in
         // crates/reactor-ffi/src/lib.rs), so it does not have to outlive this call.
-        let handle = withUnsafePointer(to: &callbacks) { callbacksPointer in
-            // Mode 0 is synthetic, always. Nothing here reaches reactor_create,
-            // which would take the audio device mode from an environment
-            // variable — and a library whose audience is apps and scripts must
-            // never let an env var put a live microphone on the wire because a
-            // model happened to declare a sendonly audio track.
-            ffi.createWithADM(
-                resolvedURL, model, jwt, local ? 1 : 0, autoResumeTracks ? 1 : 0,
-                callbacksPointer, 0, ReactorSDK.version, Reactor.sdkType)
+        let created: Result<OpaquePointer?, ReactorError> = withUnsafePointer(to: &callbacks) {
+            callbacksPointer in
+            switch generation {
+            case .streamed:
+                // Mode 0 is synthetic, always. Nothing here reaches reactor_create,
+                // which would take the audio device mode from an environment
+                // variable — and a library whose audience is apps and scripts must
+                // never let an env var put a live microphone on the wire because a
+                // model happened to declare a sendonly audio track.
+                return .success(
+                    ffi.createWithADM(
+                        resolvedURL, model, jwt, local ? 1 : 0, autoResumeTracks ? 1 : 0,
+                        callbacksPointer, 0, ReactorSDK.version, Reactor.sdkType))
+            case .stepped:
+                // The generation mode is a creation option, and only the
+                // options-taking entry takes it.
+                return Reactor.createStepped(
+                    ffi: ffi, apiURL: resolvedURL, model: model, jwt: jwt,
+                    callbacks: callbacksPointer,
+                    options: CreateOptions(
+                        local: local, autoResumeTracks: autoResumeTracks,
+                        stepTimeoutSeconds: stepTimeoutSeconds))
+            }
+        }
+
+        let handle: OpaquePointer?
+        switch created {
+        case .success(let value):
+            handle = value
+        case .failure(let error):
+            // Refused with a reason: nothing was created, so nothing holds the
+            // context either.
+            Unmanaged<CallbackContext>.fromOpaque(userdata).release()
+            throw error
         }
 
         guard let handle else {
@@ -253,7 +304,7 @@ public final class Reactor: @unchecked Sendable {
         // returned, and those callbacks take this same lock — holding it across
         // the call would be a deadlock with the library's own thread.
         let (handle, context, pending) = state.withLock {
-            state -> (OpaquePointer?, CallbackContext?, [PendingCompletion]) in
+            state -> (OpaquePointer?, CallbackContext?, [any PendingOperation]) in
             guard !state.closed else { return (nil, nil, []) }
             state.closed = true
             let handle = state.handle
@@ -312,7 +363,7 @@ public final class Reactor: @unchecked Sendable {
             // without this each one leaks itself, its continuation, and whatever
             // that continuation retains.
             for operation in pending where operation.claimRetainedReference() {
-                Unmanaged.passUnretained(operation).release()
+                operation.releaseRetainedReference()
             }
         } else {
             // A callback is still executing and could not be waited for. The
@@ -333,6 +384,13 @@ public final class Reactor: @unchecked Sendable {
     ///   - connectionID: a connection id a backend already registered for this
     ///     session. `nil` registers a new one, which is what almost every caller
     ///     wants.
+    ///
+    /// - Throws: on a stepped client, ``ReactorError/Code/generationModeMismatch``
+    ///   when the runtime does not report starting the session stepped — a
+    ///   runtime without stepped generation ignores the request, and this client
+    ///   would otherwise wait on steps from a streaming session — and
+    ///   ``ReactorError/Code/dataChannelChunkingRequired`` when this library or
+    ///   the runtime did not negotiate data-channel chunking, which a step needs.
     public func connect(sessionID: String? = nil, connectionID: UInt32? = nil) async throws {
         _ = try await perform("connect") { handle, completion, userdata in
             withOptionalCString(sessionID) { sessionPointer in
@@ -363,7 +421,7 @@ public final class Reactor: @unchecked Sendable {
     /// Tears down the live connection first if there is one, without ending the
     /// session server-side. Fails when there is no session to reconnect to.
     ///
-    /// Note that a reconnect resumes recvonly tracks — unless ``init(model:jwt:apiURL:local:autoResumeTracks:eventQueue:)``
+    /// Note that a reconnect resumes recvonly tracks — unless ``init(model:jwt:apiURL:local:autoResumeTracks:generation:stepTimeout:eventQueue:)``
     /// was given `autoResumeTracks: false` at creation, which this client keeps
     /// for its whole lifetime — and nothing else: anything this client published
     /// before it is not published after it.
@@ -490,7 +548,7 @@ public final class Reactor: @unchecked Sendable {
     }
 
     /// Drop a completion that has been answered.
-    func forget(_ operation: PendingCompletion) {
+    func forget(_ operation: any PendingOperation) {
         state.withLock { $0.pending[ObjectIdentifier(operation)] = nil }
     }
 
@@ -512,7 +570,23 @@ public final class Reactor: @unchecked Sendable {
         _ operation: String,
         _ call: @escaping (OpaquePointer, reactor_completion_fn, UnsafeMutableRawPointer) -> Void
     ) async throws -> String? {
-        let pending = PendingCompletion(operation: operation, owner: self)
+        try await perform(
+            PendingCompletion<String?>(operation: operation, owner: self),
+            completion: completionTrampoline, call)
+    }
+
+    /// Run one async FFI operation whose completion `pending` settles, handing
+    /// the library `completion` as the C callback and `pending` as its userdata.
+    ///
+    /// The one path every operation takes — whatever its completion's C type —
+    /// so registration, the barrier and the closed-client refusal are written
+    /// once.
+    func perform<Value: Sendable, Completion>(
+        _ pending: PendingCompletion<Value>,
+        completion: Completion,
+        _ call: @escaping (OpaquePointer, Completion, UnsafeMutableRawPointer) -> Void
+    ) async throws -> Value {
+        let operation = pending.operation
 
         return try await withCheckedThrowingContinuation { continuation in
             // Attached before the call, or a completion that fires immediately
@@ -527,7 +601,7 @@ public final class Reactor: @unchecked Sendable {
                 state.withLock { $0.pending[ObjectIdentifier(pending)] = pending }
                 let userdata = Unmanaged.passRetained(pending).toOpaque()
                 pending.retainedByFFI()
-                call(handle, completionTrampoline, userdata)
+                call(handle, completion, userdata)
                 return true
             }
 
