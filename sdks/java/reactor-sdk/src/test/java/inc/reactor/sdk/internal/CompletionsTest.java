@@ -134,6 +134,34 @@ final class CompletionsTest {
     }
 
     @Test
+    @DisplayName("an operation registered while close settles the rest is never lost")
+    void registeringDuringSettleAllLosesNothing() throws InterruptedException {
+        // A close races calls being registered: each must end up either settled by it or still
+        // findable afterwards, never dropped from the map unsettled.
+        try (Arena arena = Arena.ofShared()) {
+            Completions completions = new Completions(arena);
+            java.util.List<CompletableFuture<String>> futures =
+                    java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+            Thread registering = new Thread(() -> {
+                for (int i = 0; i < 20_000; i++) {
+                    CompletableFuture<String> future = new CompletableFuture<>();
+                    futures.add(future);
+                    completions.register("send_command", json -> json, future);
+                }
+            });
+            registering.start();
+            while (registering.isAlive()) {
+                completions.settleAll(DetachedCompletion.abandoned("close"));
+            }
+            registering.join();
+            completions.settleAll(DetachedCompletion.abandoned("close"));
+
+            assertEquals(0, completions.pendingCount());
+            assertTrue(futures.stream().allMatch(CompletableFuture::isDone), "a registered future was lost");
+        }
+    }
+
+    @Test
     @DisplayName("an error payload that is not JSON still becomes an error, not a lost failure")
     void anUnparseableErrorIsStillAnError() {
         try (Arena arena = Arena.ofShared()) {
@@ -148,6 +176,119 @@ final class CompletionsTest {
                     assertThrows(ExecutionException.class, future::get).getCause());
             assertEquals("DECODE_FAILED", cause.code());
             assertTrue(cause.getMessage().contains("this is not JSON"), cause.getMessage());
+        }
+    }
+
+    // ── Owned results ───────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("an owned result is decoded in place, then released exactly once")
+    void anOwnedResultIsDecodedThenReleased() throws Exception {
+        try (Arena arena = Arena.ofShared()) {
+            java.util.List<Long> released = new java.util.ArrayList<>();
+            Completions completions = new Completions(arena, result -> released.add(result.address()));
+            CompletableFuture<Long> future = new CompletableFuture<>();
+            Completions.Ticket ticket = completions.registerOwned(
+                    "step",
+                    result -> {
+                        // Still readable here: the release has not happened yet.
+                        assertTrue(released.isEmpty(), "released before it was decoded");
+                        return result.address();
+                    },
+                    future);
+            MemorySegment owned = arena.allocate(8);
+
+            fireOwned(ticket, 1, owned, null);
+
+            assertEquals(owned.address(), future.get());
+            assertEquals(java.util.List.of(owned.address()), released);
+        }
+    }
+
+    @Test
+    @DisplayName("an owned result that will not decode fails the call and is still released")
+    void anOwnedResultThatWillNotDecodeIsStillReleased() {
+        try (Arena arena = Arena.ofShared()) {
+            java.util.List<Long> released = new java.util.ArrayList<>();
+            Completions completions = new Completions(arena, result -> released.add(result.address()));
+            CompletableFuture<Long> future = new CompletableFuture<>();
+            Completions.Ticket ticket = completions.registerOwned(
+                    "step",
+                    result -> {
+                        throw new IllegalArgumentException("a frame of the wrong size");
+                    },
+                    future);
+            MemorySegment owned = arena.allocate(8);
+
+            fireOwned(ticket, 1, owned, null);
+
+            DecodeFailedException cause = assertInstanceOf(
+                    DecodeFailedException.class,
+                    assertThrows(ExecutionException.class, future::get).getCause());
+            assertTrue(cause.getMessage().contains("a frame of the wrong size"), cause.getMessage());
+            assertEquals(java.util.List.of(owned.address()), released);
+        }
+    }
+
+    @Test
+    @DisplayName("an owned result arriving after close is released, not leaked")
+    void aLateOwnedResultIsReleased() {
+        // The case a flag on the map entry cannot cover: settleAll has removed the entry, so only
+        // the stub that was called still says this pointer is a result rather than a string.
+        try (Arena arena = Arena.ofShared()) {
+            java.util.List<Long> released = new java.util.ArrayList<>();
+            Completions completions = new Completions(arena, result -> released.add(result.address()));
+            CompletableFuture<Long> future = new CompletableFuture<>();
+            Completions.Ticket ticket = completions.registerOwned("step", MemorySegment::address, future);
+
+            completions.settleAll(DetachedCompletion.abandoned("step"));
+            MemorySegment owned = arena.allocate(8);
+            fireOwned(ticket, 1, owned, null);
+
+            assertInstanceOf(
+                    AbortedException.class,
+                    assertThrows(ExecutionException.class, future::get).getCause());
+            assertEquals(java.util.List.of(owned.address()), released);
+        }
+    }
+
+    @Test
+    @DisplayName("a success with no result is a decode failure, and nothing is released")
+    void aSuccessWithNoResultIsADecodeFailure() {
+        try (Arena arena = Arena.ofShared()) {
+            java.util.List<Long> released = new java.util.ArrayList<>();
+            Completions completions = new Completions(arena, result -> released.add(result.address()));
+            CompletableFuture<Long> future = new CompletableFuture<>();
+            Completions.Ticket ticket = completions.registerOwned("step", MemorySegment::address, future);
+
+            fireOwned(ticket, 1, MemorySegment.NULL, null);
+
+            assertInstanceOf(
+                    DecodeFailedException.class,
+                    assertThrows(ExecutionException.class, future::get).getCause());
+            assertTrue(released.isEmpty(), "NULL is not a result, and freeing it is not this binding's call");
+        }
+    }
+
+    @Test
+    @DisplayName("a registry built without a release refuses owned operations")
+    void aRegistryWithoutAReleaseRefusesOwnedOperations() {
+        try (Arena arena = Arena.ofShared()) {
+            Completions completions = new Completions(arena);
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> completions.registerOwned("step", MemorySegment::address, new CompletableFuture<>()));
+        }
+    }
+
+    @SuppressWarnings("restricted") // downcallHandle: calling our own stub as C would
+    private static void fireOwned(Completions.Ticket ticket, int ok, MemorySegment result, String errorJson) {
+        MethodHandle call = Linker.nativeLinker().downcallHandle(ticket.callback(), Ffi.Callbacks.STEP_COMPLETION);
+        try (Arena error = Arena.ofConfined()) {
+            MemorySegment errorText = errorJson == null ? MemorySegment.NULL : error.allocateFrom(errorJson);
+            call.invokeExact(ok, result, errorText, ticket.userdata());
+        } catch (Throwable t) {
+            throw new AssertionError("the completion callback threw out of the stub", t);
         }
     }
 

@@ -8,6 +8,7 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -44,6 +45,29 @@ public final class Completions {
         T decode(@Nullable String resultJson);
     }
 
+    /**
+     * Turns an owned native result into what the caller asked for.
+     *
+     * <p>Copies out whatever it keeps: the result is released as soon as this returns, whether it
+     * returned or threw.
+     */
+    @FunctionalInterface
+    public interface OwnedDecoder<T> {
+        /**
+         * @param result the result the completion handed over, never {@code NULL}
+         * @return the decoded value, holding nothing that points into {@code result}
+         * @throws RuntimeException when the result cannot be understood
+         */
+        T decode(MemorySegment result);
+    }
+
+    /** Releases an owned native result — {@code reactor_step_result_free}, for steps. */
+    @FunctionalInterface
+    public interface Release {
+        /** @param result the result to release, never {@code NULL} */
+        void release(MemorySegment result);
+    }
+
     /** Makes the native call for an operation, given what to hand it. */
     @FunctionalInterface
     public interface Invoker {
@@ -57,22 +81,24 @@ public final class Completions {
     /** What an operation needs to hand the FFI: the callback and the userdata that finds it again. */
     public record Ticket(MemorySegment callback, MemorySegment userdata) {}
 
-    private record Pending<T>(String operation, Decoder<T> decoder, CompletableFuture<T> future) {}
+    /** Reads a completion's {@code result} pointer, whichever kind of pointer it is. */
+    @FunctionalInterface
+    private interface RawDecoder<T> {
+        T decode(MemorySegment result);
+    }
+
+    private record Pending<T>(String operation, RawDecoder<T> decoder, CompletableFuture<T> future) {}
 
     private static final MethodHandle ON_COMPLETION;
+    private static final MethodHandle ON_OWNED_COMPLETION;
 
     static {
         try {
-            ON_COMPLETION = MethodHandles.lookup()
-                    .findVirtual(
-                            Completions.class,
-                            "onCompletion",
-                            MethodType.methodType(
-                                    void.class,
-                                    int.class,
-                                    MemorySegment.class,
-                                    MemorySegment.class,
-                                    MemorySegment.class));
+            MethodType completion = MethodType.methodType(
+                    void.class, int.class, MemorySegment.class, MemorySegment.class, MemorySegment.class);
+            MethodHandles.Lookup lookup = MethodHandles.lookup();
+            ON_COMPLETION = lookup.findVirtual(Completions.class, "onCompletion", completion);
+            ON_OWNED_COMPLETION = lookup.findVirtual(Completions.class, "onOwnedCompletion", completion);
         } catch (ReflectiveOperationException e) {
             throw new ExceptionInInitializerError(e);
         }
@@ -83,11 +109,37 @@ public final class Completions {
     private final MemorySegment callback;
 
     /**
+     * The completion for operations that hand over an owned result, or {@code NULL} when this
+     * registry was built without a way to release one.
+     *
+     * <p>A stub of its own rather than a flag on the entry, because the case that matters is the
+     * one with no entry: a completion arriving after {@link #settleAll} has already answered the
+     * caller still carries a result somebody has to free, and by then the map has forgotten what
+     * the operation was. Which stub was called is the one thing left that says so.
+     */
+    private final MemorySegment ownedCallback;
+
+    private final @Nullable Release ownedRelease;
+
+    /**
      * @param arena the lifetime the completion stub belongs to — the client's, so it outlives every
      *     operation the client can still be called back about
      */
     public Completions(Arena arena) {
+        this(arena, null);
+    }
+
+    /**
+     * @param arena the lifetime the completion stubs belong to, as above
+     * @param ownedRelease how to release an owned result, or {@code null} for a registry that only
+     *     ever carries borrowed JSON — {@link #registerOwned} is refused then
+     */
+    public Completions(Arena arena, @Nullable Release ownedRelease) {
         this.callback = Upcalls.stub(ON_COMPLETION.bindTo(this), Ffi.Callbacks.COMPLETION, arena);
+        this.ownedRelease = ownedRelease;
+        this.ownedCallback = ownedRelease == null
+                ? MemorySegment.NULL
+                : Upcalls.stub(ON_OWNED_COMPLETION.bindTo(this), Ffi.Callbacks.STEP_COMPLETION, arena);
     }
 
     /**
@@ -100,8 +152,40 @@ public final class Completions {
      */
     public <T> Ticket register(String operation, Decoder<T> decoder, CompletableFuture<T> future) {
         long id = nextId.getAndIncrement();
-        pending.put(id, new Pending<>(operation, decoder, future));
+        pending.put(id, new Pending<>(operation, result -> decoder.decode(NativeStrings.borrow(result)), future));
         return new Ticket(callback, MemorySegment.ofAddress(id));
+    }
+
+    /**
+     * Registers an operation whose completion hands over an owned result, and returns what to hand
+     * the FFI.
+     *
+     * <p>The result is released exactly once whatever happens to the operation: after decoding on
+     * success, unread on a failure that somehow carried one, and unread when the operation was
+     * already settled by {@link #settleAll} — the case that would otherwise leak a whole step's
+     * frames on every close that raced one.
+     *
+     * @param operation which call this is, for the error it may produce
+     * @param decoder how to copy a successful result out
+     * @param future the future to settle
+     * @return the callback and userdata for the native call
+     * @throws IllegalStateException when this registry was built without a {@link Release}
+     */
+    public <T> Ticket registerOwned(String operation, OwnedDecoder<T> decoder, CompletableFuture<T> future) {
+        if (ownedRelease == null) {
+            throw new IllegalStateException("this registry was built without a way to release an owned result");
+        }
+        long id = nextId.getAndIncrement();
+        pending.put(id, new Pending<>(operation, result -> decodeOwned(operation, decoder, result), future));
+        return new Ticket(ownedCallback, MemorySegment.ofAddress(id));
+    }
+
+    private static <T> T decodeOwned(String operation, OwnedDecoder<T> decoder, MemorySegment result) {
+        if (result.equals(MemorySegment.NULL)) {
+            // The header promises a result on success. Its absence is not an empty one.
+            throw new IllegalStateException(operation + " succeeded with no result");
+        }
+        return decoder.decode(result);
     }
 
     /**
@@ -130,18 +214,21 @@ public final class Completions {
     }
 
     /**
-     * Settles everything still pending, and stops finding anything afterwards.
+     * Settles everything pending when called, and stops finding it afterwards.
      *
      * <p>Called when the client closes. Leaving an operation out would leave its caller waiting for
      * the life of the process, which is the other half of the same bug as freeing one too early.
+     * Only what it settles is removed: an operation registered while this runs stays findable, so
+     * the {@link #abandon} that follows its refused call still settles it.
      *
      * @param why what to fail them with
      */
     public void settleAll(ReactorException why) {
-        List<Pending<?>> abandoned = new ArrayList<>(pending.values());
-        pending.clear();
-        for (Pending<?> one : abandoned) {
-            one.future().completeExceptionally(why);
+        List<Map.Entry<Long, Pending<?>>> abandoned = new ArrayList<>(pending.entrySet());
+        for (Map.Entry<Long, Pending<?>> one : abandoned) {
+            if (pending.remove(one.getKey(), one.getValue())) {
+                one.getValue().future().completeExceptionally(why);
+            }
         }
     }
 
@@ -152,11 +239,27 @@ public final class Completions {
             // Nothing to do, and nothing to complain about.
             return;
         }
-        settle(operation, ok != 0, NativeStrings.borrow(resultJson), NativeStrings.borrow(errorJson));
+        settle(operation, ok != 0, resultJson, NativeStrings.borrow(errorJson));
     }
 
-    private static <T> void settle(
-            Pending<T> operation, boolean ok, @Nullable String resultJson, @Nullable String errorJson) {
+    private void onOwnedCompletion(int ok, MemorySegment result, MemorySegment errorJson, MemorySegment userdata) {
+        try {
+            Pending<?> operation = pending.remove(userdata.address());
+            if (operation == null) {
+                // Already settled — a close or a re-mint answered the caller first. The result is
+                // still this binding's to free, and the finally below does.
+                return;
+            }
+            settle(operation, ok != 0, result, NativeStrings.borrow(errorJson));
+        } finally {
+            if (result != null && !result.equals(MemorySegment.NULL) && ownedRelease != null) {
+                // After the decode, never before it: the decoder reads the result in place.
+                ownedRelease.release(result);
+            }
+        }
+    }
+
+    private static <T> void settle(Pending<T> operation, boolean ok, MemorySegment result, @Nullable String errorJson) {
         if (!ok) {
             operation.future().completeExceptionally(ErrorPayloads.parse(errorJson, operation.operation()));
             return;
@@ -165,7 +268,7 @@ public final class Completions {
         try {
             // Decoded first, claimed second. The other order cannot report a bad payload: the
             // future is already done by the time the conversion throws.
-            value = operation.decoder().decode(resultJson);
+            value = operation.decoder().decode(result);
         } catch (RuntimeException decodeFailed) {
             operation
                     .future()

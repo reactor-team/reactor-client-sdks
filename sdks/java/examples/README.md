@@ -1,6 +1,6 @@
 # Examples
 
-Eight scenarios, numbered as in every other Reactor SDK. Each one teaches exactly
+Nine scenarios, numbered as in every other Reactor SDK. Each one teaches exactly
 one thing, and each is a parity requirement rather than documentation: an example
 missing from a binding is a code path that binding has never run.
 
@@ -28,9 +28,9 @@ REACTOR_API_KEY=rk_... REACTOR_SHOW=1 mise run example:java 01
 
 A frame count proves something arrived, not that it was the right something.
 `REACTOR_SHOW=1` is how you check the second part, and it is the only thing the
-eight examples share a file for.
+examples share a file for.
 
-## The eight
+## The nine
 
 | # | Teaches | Model |
 | --- | --- | --- |
@@ -42,9 +42,13 @@ eight examples share a file for.
 | 06 | Request a clip and download it | `reactor/helios` |
 | 07 | Read the per-frame trailer: frame id, sender timestamp, tag | `reactor/helios` |
 | 08 | Read what `sendCommand` actually hands back | `reactor/helios` |
+| 09 | A stepped session: `generation(Generation.STEPPED)`, frames pushed into a step, `step()` and its per-track arrays, kept files and model error | any model with stepped generation (`REACTOR_MODEL`) |
 
 04 uses a different model because it needs one that declares a **sendonly**
-track to push into; Helios only produces.
+track to push into; Helios only produces. 09 has no default model at all: it needs
+one with stepped generation, named in `REACTOR_MODEL`, and reads
+`REACTOR_INPUT_TRACK`, `REACTOR_STEP_COMMAND`, `REACTOR_PROMPT` and
+`REACTOR_STEPS` to shape each step — see its own header.
 
 ## Things these cost to learn
 

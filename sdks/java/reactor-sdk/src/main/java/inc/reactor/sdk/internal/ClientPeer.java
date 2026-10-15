@@ -6,6 +6,7 @@ import inc.reactor.sdk.ConnectionStatus;
 import inc.reactor.sdk.DownloadedClip;
 import inc.reactor.sdk.ErrorCode;
 import inc.reactor.sdk.FileRef;
+import inc.reactor.sdk.Generation;
 import inc.reactor.sdk.JsonValue;
 import inc.reactor.sdk.Media;
 import inc.reactor.sdk.PublishState;
@@ -13,6 +14,7 @@ import inc.reactor.sdk.ReactorException;
 import inc.reactor.sdk.ReactorOptions;
 import inc.reactor.sdk.ReactorSdk;
 import inc.reactor.sdk.Stats;
+import inc.reactor.sdk.StepResult;
 import inc.reactor.sdk.Subscription;
 import inc.reactor.sdk.VideoFrame;
 import java.lang.foreign.Arena;
@@ -245,7 +247,10 @@ public final class ClientPeer implements Runnable {
         this.ffi = ffi;
         this.arena = arena;
         this.options = options;
-        this.completions = new Completions(arena);
+        // Released through this peer's own binding of reactor_step_result_free. Bound to `this`
+        // before the constructor finishes, but only ever called from a completion, which needs a
+        // handle, which needs a connect.
+        this.completions = new Completions(arena, this::freeStepResult);
         this.dispatch = Dispatch.of(options.dispatcher());
         this.callbacks = buildCallbacks();
         this.apiKey = options.apiKey();
@@ -350,6 +355,9 @@ public final class ClientPeer implements Runnable {
      * changes only when a connect needs a scope the last one was not minted for.
      */
     private MemorySegment createHandle(@Nullable String token) {
+        if (options.generation() == Generation.STEPPED) {
+            return createSteppedHandle(token);
+        }
         // Every argument goes into a typed local first. invokeExact is signature-polymorphic: it
         // builds the call descriptor from the *static* types at the call site, and a conditional
         // expression in that position infers as Object — which does not match, and fails at the
@@ -382,6 +390,58 @@ public final class ClientPeer implements Runnable {
             throw new IllegalStateException("reactor_create_with_adm could not be called", t);
         }
         if (created.equals(MemorySegment.NULL)) {
+            throw ReactorException.of(
+                    ReactorException.INTERNAL_ERROR, "the native client could not be allocated", null, "create", null);
+        }
+        return created;
+    }
+
+    /**
+     * Builds a stepped client, through the one creation call that takes the generation mode.
+     *
+     * <p>{@code reactor_create_with_options} takes everything {@code reactor_create_with_adm} does,
+     * as JSON, plus {@code generation} and {@code step_timeout_seconds}. The audio device module is
+     * named here exactly as it is there — {@code synthetic} — so this path cannot be the one an
+     * environment variable opens a microphone through.
+     *
+     * <p>An options object the library refuses comes back as a {@code NULL} handle and an error
+     * object in {@code error_out}, which is read, freed and thrown as the typed error it names.
+     */
+    private MemorySegment createSteppedHandle(@Nullable String token) {
+        MemorySegment apiUrl = arena.allocateFrom(options.apiUrl());
+        MemorySegment modelName = arena.allocateFrom(options.modelName());
+        MemorySegment jwtArg = token == null ? MemorySegment.NULL : arena.allocateFrom(token);
+        JsonValue.ObjectBuilder settings = JsonValue.object()
+                .put("local", options.local())
+                .put("auto_resume_tracks", options.autoResumeTracks())
+                .put("adm", "synthetic")
+                .put("sdk_version", ReactorSdk.version())
+                .put("sdk_type", "java")
+                .put("generation", options.generation().wireValue());
+        Double stepTimeout = options.stepTimeoutSeconds();
+        if (stepTimeout != null) {
+            settings.put("step_timeout_seconds", stepTimeout.doubleValue());
+        }
+        MemorySegment optionsJson = arena.allocateFrom(settings.build().toJsonString());
+
+        MemorySegment created;
+        String refusal;
+        try (Arena call = Arena.ofConfined()) {
+            MemorySegment errorOut = call.allocate(java.lang.foreign.ValueLayout.ADDRESS);
+            errorOut.set(java.lang.foreign.ValueLayout.ADDRESS, 0, MemorySegment.NULL);
+            try {
+                created = (MemorySegment) ffi.handle(Ffi.Symbol.CREATE_WITH_OPTIONS)
+                        .invokeExact(apiUrl, modelName, jwtArg, callbacks, optionsJson, errorOut);
+            } catch (Throwable t) {
+                throw new IllegalStateException("reactor_create_with_options could not be called", t);
+            }
+            MemorySegment error = errorOut.get(java.lang.foreign.ValueLayout.ADDRESS, 0);
+            refusal = NativeStrings.takeOwned(error, ffi.handle(Ffi.Symbol.FREE_STRING));
+        }
+        if (created.equals(MemorySegment.NULL)) {
+            if (refusal != null) {
+                throw ErrorPayloads.parse(refusal, "create");
+            }
             throw ReactorException.of(
                     ReactorException.INTERNAL_ERROR, "the native client could not be allocated", null, "create", null);
         }
@@ -1465,6 +1525,112 @@ public final class ClientPeer implements Runnable {
             return Optional.of(new CommandReply(Optional.empty(), Optional.of(parsed)));
         }
         return Optional.of(new CommandReply(object.getString("type"), object.get("data")));
+    }
+
+    // ── Stepped generation ──────────────────────────────────────────────────
+
+    /** @return how this client's sessions generate */
+    public Generation generation() {
+        return options.generation();
+    }
+
+    /**
+     * Runs one step of a stepped session.
+     *
+     * <p>Refused without reaching the FFI on a streamed client and on one with no native client
+     * yet: {@code reactor_step} answers a {@code NULL} handle by returning without calling its
+     * completion at all, which from here would be a future that never settles.
+     *
+     * @param stateJson a JSON object of the model's state fields, or {@code null} for none
+     * @param commandsJson a JSON array of {@code {command, data}} objects
+     * @return the step's result, copied onto the heap
+     */
+    public CompletableFuture<StepResult> step(@Nullable String stateJson, String commandsJson) {
+        CompletableFuture<StepResult> result = new CompletableFuture<>();
+        if (options.generation() != Generation.STEPPED) {
+            result.completeExceptionally(ReactorException.of(
+                    ErrorCode.INVALID_STATE.code(),
+                    "step() needs a stepped session: create the client with"
+                            + " ReactorOptions.builder(...).generation(Generation.STEPPED)",
+                    null,
+                    "step",
+                    null));
+            return result;
+        }
+        if (closed.get()) {
+            result.completeExceptionally(ReactorException.of(
+                    ErrorCode.INVALID_STATE.code(), "step was called on a closed client", null, "step", null));
+            return result;
+        }
+        Completions.Ticket ticket = completions.registerOwned("step", owned -> StepResults.read(ffi, owned), result);
+        try (Arena call = Arena.ofConfined()) {
+            acquireHandle("step");
+            try {
+                // Read once, under the lease, and the same value is what the call is made with.
+                MemorySegment client = handle;
+                if (client.equals(MemorySegment.NULL)) {
+                    completions.abandon(
+                            ticket,
+                            ReactorException.of(
+                                    ErrorCode.INVALID_STATE.code(),
+                                    "step() needs a connected session: await connect() first",
+                                    null,
+                                    "step",
+                                    null));
+                    return result;
+                }
+                MemorySegment state = stateJson == null ? MemorySegment.NULL : call.allocateFrom(stateJson);
+                MemorySegment commands = call.allocateFrom(commandsJson);
+                ffi.handle(Ffi.Symbol.STEP).invokeExact(client, state, commands, ticket.callback(), ticket.userdata());
+            } finally {
+                releaseHandle();
+            }
+        } catch (ReactorException refused) {
+            // The lease refused: the client closed between the check above and here.
+            completions.abandon(ticket, refused);
+        } catch (Throwable notStarted) {
+            completions.abandon(
+                    ticket,
+                    ReactorException.of(
+                            ReactorException.INTERNAL_ERROR,
+                            "the native call for step failed to start: " + notStarted.getMessage(),
+                            null,
+                            "step",
+                            null));
+        }
+        return result;
+    }
+
+    /**
+     * Drops every input frame buffered for the next step. A no-op on a streamed client, and on one
+     * with no native client yet, which has buffered nothing.
+     */
+    public void clearStepInputs() {
+        if (options.generation() != Generation.STEPPED) {
+            return;
+        }
+        acquireHandle("clearStepInputs");
+        try {
+            ffi.handle(Ffi.Symbol.CLEAR_STEP_INPUTS).invokeExact(handle);
+        } catch (Throwable t) {
+            throw new IllegalStateException("reactor_clear_step_inputs could not be called", t);
+        } finally {
+            releaseHandle();
+        }
+    }
+
+    /**
+     * Frees a step result, once {@link Completions} has copied it out or found nobody waiting.
+     *
+     * <p>Takes no lease: the result belongs to the host from the moment its completion fires and
+     * the header lets it be freed from any thread, after {@code reactor_destroy} included.
+     */
+    private void freeStepResult(MemorySegment result) {
+        try {
+            ffi.handle(Ffi.Symbol.STEP_RESULT_FREE).invokeExact(result);
+        } catch (Throwable t) {
+            LOG.log(System.Logger.Level.ERROR, "a step result could not be freed: " + t.getMessage());
+        }
     }
 
     // ── Uploads ─────────────────────────────────────────────────────────────
