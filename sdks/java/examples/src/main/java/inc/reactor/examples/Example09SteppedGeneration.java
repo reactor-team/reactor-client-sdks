@@ -66,48 +66,60 @@ public final class Example09SteppedGeneration {
                 .build())) {
 
             reactor.connect().join();
-            System.out.println("session: " + reactor.sessionId().orElse("?"));
+            // Past connect() the session exists on the server: a failure below still
+            // ends it, or it would linger until it expired.
+            try {
+                System.out.println("session: " + reactor.sessionId().orElse("?"));
 
-            Track source = null;
-            if (inputTrack != null && !inputTrack.isBlank()) {
-                source = reactor.track(inputTrack);
-                source.publish().join();
+                Track source = null;
+                if (inputTrack != null && !inputTrack.isBlank()) {
+                    source = reactor.track(inputTrack);
+                    source.publish().join();
+                }
+
+                for (int seq = 0; seq < steps; seq++) {
+                    if (source != null) {
+                        // Buffered, not sent: the step below carries it.
+                        source.pushFrame(solidFrame(seq), WIDTH, HEIGHT);
+                    }
+
+                    // State on the first step only: the model keeps it until changed.
+                    JsonValue state =
+                            seq == 0 ? JsonValue.object().put("prompt", prompt).build() : null;
+                    List<StepCommand> commands =
+                            command == null || command.isBlank() ? List.of() : List.of(StepCommand.of(command));
+
+                    StepResult result = reactor.step(state, commands).join();
+                    System.out.printf(
+                            java.util.Locale.ROOT, "step %d: generated in %.3f s%n", result.index(), result.elapsed());
+                    // A step the model reported as failed still completes; only a refused one throws.
+                    result.error()
+                            .ifPresent(why -> System.out.println("step " + result.index() + ": model error: " + why));
+                    for (StepFile file : result.files()) {
+                        // Named only: fetch the bytes over HTTP from the session's step results.
+                        System.out.println("step " + result.index() + ": kept " + file.name() + " ("
+                                + file.contentType() + ", " + file.size() + " bytes)");
+                    }
+
+                    for (StepTrackOutput track : result.tracks()) {
+                        String shapes = track.frames().stream()
+                                .map(StepFrame::shape)
+                                .map(Arrays::toString)
+                                .collect(Collectors.joining(", "));
+                        System.out.println("step " + result.index() + ": " + track.name() + " ("
+                                + track.kind().name().toLowerCase(java.util.Locale.ROOT) + ") "
+                                + track.frames().size() + " frame(s) " + shapes);
+                    }
+                }
+
+            } catch (RuntimeException | Error failure) {
+                try {
+                    reactor.disconnect().join();
+                } catch (RuntimeException alsoFailed) {
+                    failure.addSuppressed(alsoFailed);
+                }
+                throw failure;
             }
-
-            for (int seq = 0; seq < steps; seq++) {
-                if (source != null) {
-                    // Buffered, not sent: the step below carries it.
-                    source.pushFrame(solidFrame(seq), WIDTH, HEIGHT);
-                }
-
-                // State on the first step only: the model keeps it until changed.
-                JsonValue state =
-                        seq == 0 ? JsonValue.object().put("prompt", prompt).build() : null;
-                List<StepCommand> commands =
-                        command == null || command.isBlank() ? List.of() : List.of(StepCommand.of(command));
-
-                StepResult result = reactor.step(state, commands).join();
-                System.out.printf(
-                        java.util.Locale.ROOT, "step %d: generated in %.3f s%n", result.index(), result.elapsed());
-                // A step the model reported as failed still completes; only a refused one throws.
-                result.error().ifPresent(why -> System.out.println("step " + result.index() + ": model error: " + why));
-                for (StepFile file : result.files()) {
-                    // Named only: fetch the bytes over HTTP from the session's step results.
-                    System.out.println("step " + result.index() + ": kept " + file.name() + " (" + file.contentType()
-                            + ", " + file.size() + " bytes)");
-                }
-
-                for (StepTrackOutput track : result.tracks()) {
-                    String shapes = track.frames().stream()
-                            .map(StepFrame::shape)
-                            .map(Arrays::toString)
-                            .collect(Collectors.joining(", "));
-                    System.out.println("step " + result.index() + ": " + track.name() + " ("
-                            + track.kind().name().toLowerCase(java.util.Locale.ROOT) + ") "
-                            + track.frames().size() + " frame(s) " + shapes);
-                }
-            }
-
             reactor.disconnect().join();
         }
     }

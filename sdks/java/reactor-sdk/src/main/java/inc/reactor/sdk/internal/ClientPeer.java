@@ -400,8 +400,9 @@ public final class ClientPeer implements Runnable {
      * Builds a stepped client, through the one creation call that takes the generation mode.
      *
      * <p>{@code reactor_create_with_options} takes everything {@code reactor_create_with_adm} does,
-     * as JSON, plus {@code generation} and {@code step_timeout_seconds}. The audio device module is named here exactly as it is there — {@code synthetic} —
-     * so this path cannot be the one an environment variable opens a microphone through.
+     * as JSON, plus {@code generation} and {@code step_timeout_seconds}. The audio device module is
+     * named here exactly as it is there — {@code synthetic} — so this path cannot be the one an
+     * environment variable opens a microphone through.
      *
      * <p>An options object the library refuses comes back as a {@code NULL} handle and an error
      * object in {@code error_out}, which is read, freed and thrown as the typed error it names.

@@ -3,6 +3,7 @@ package inc.reactor.sdk;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -15,6 +16,7 @@ import java.nio.ByteOrder;
 import java.nio.ShortBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import org.junit.jupiter.api.AfterEach;
@@ -200,6 +202,34 @@ final class SteppedGenerationTest {
         assertEquals(List.of(), result.tracks());
         assertEquals(List.of(), result.files());
         assertTrue(result.error().isEmpty());
+
+        // Null for either part means none of it, as for the state.
+        CompletableFuture<StepResult> nulls = reactor.step(null, null);
+        assertEquals("[]", fake.lastStepCommands);
+        fake.settleLastStep(2, List.of());
+        assertEquals(2, nulls.get().index());
+    }
+
+    @Test
+    @DisplayName("frames, and the results that hold them, compare by value")
+    void framesCompareByValue() {
+        StepFrame frame = new StepFrame("raw", "uint8", new int[] {1, 1, 3}, new byte[] {1, 2, 3}, null, 7L);
+        StepFrame same = new StepFrame("raw", "uint8", new int[] {1, 1, 3}, new byte[] {1, 2, 3}, null, 7L);
+        assertEquals(frame, same);
+        assertEquals(frame.hashCode(), same.hashCode());
+        assertNotEquals(frame, new StepFrame("raw", "uint8", new int[] {1, 1, 3}, new byte[] {1, 2, 4}, null, 7L));
+        assertNotEquals(
+                frame, new StepFrame("raw", "uint8", new int[] {1, 1, 3}, new byte[] {1, 2, 3}, new byte[0], 7L));
+
+        StepTrackOutput track = new StepTrackOutput("main_video", TrackKind.VIDEO, 30.0, List.of(frame));
+        assertEquals(
+                new StepResult(1, List.of(track), 0.5, List.of(), Optional.empty()),
+                new StepResult(
+                        1,
+                        List.of(new StepTrackOutput("main_video", TrackKind.VIDEO, 30.0, List.of(same))),
+                        0.5,
+                        List.of(),
+                        Optional.empty()));
     }
 
     @Test
@@ -208,6 +238,8 @@ final class SteppedGenerationTest {
         assertStepFailsWith("step_refused", StepRefusedException.class);
         assertStepFailsWith("step_not_ready", StepNotReadyException.class);
         assertStepFailsWith("step_result_too_large", StepResultTooLargeException.class);
+        assertStepFailsWith("step_command_failed", StepCommandFailedException.class);
+        assertStepFailsWith("step_session_ended", StepSessionEndedException.class);
         assertStepFailsWith("MESSAGE_TOO_LARGE", MessageTooLargeException.class);
         assertStepFailsWith("UNSUPPORTED_FRAME_ENCODING", UnsupportedFrameEncodingException.class);
         assertStepFailsWith("REQUEST_TIMEOUT", RequestTimeoutException.class);

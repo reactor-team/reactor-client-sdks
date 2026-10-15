@@ -216,6 +216,10 @@ public class ReactorClient(
      *   down
      * @throws inc.reactor.sdk.StepNotReadyException when the session cannot take a step yet; the
      *   step did not run
+     * @throws inc.reactor.sdk.StepCommandFailedException when one of its state keys or commands
+     *   failed; the step did not run, and the calls before it stay applied
+     * @throws inc.reactor.sdk.StepSessionEndedException when the session ended before its result
+     *   came; whether it ran is unknown
      * @throws inc.reactor.sdk.StepResultTooLargeException when its output does not fit in a message
      * @throws inc.reactor.sdk.MessageTooLargeException when the request does not; nothing was sent,
      *   and the step's buffered input frames are dropped with it
