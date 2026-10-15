@@ -73,6 +73,7 @@ fn track_to_js(track: TrackOutput) -> Result<JsValue, JsValue> {
         TrackKind::Audio => "audio",
     };
     set(&object, "kind", &JsValue::from_str(kind))?;
+    set(&object, "rate", &JsValue::from_f64(track.rate))?;
     let frames = Array::new();
     for frame in track.frames {
         frames.push(&frame_to_js(frame)?);

@@ -232,6 +232,10 @@ export interface StepFrame {
 export interface StepTrack {
   track: string;
   kind: TrackKind;
+  /** The rate the track's frames play at, as the runtime reported it:
+   *  frames per second for video, samples per second for audio. 0 when the
+   *  runtime did not say. */
+  rate: number;
   frames: StepFrame[];
 }
 

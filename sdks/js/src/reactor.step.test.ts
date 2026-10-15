@@ -98,6 +98,7 @@ describe('Reactor.step', () => {
         {
           track: 'main_video',
           kind: 'video',
+          rate: 24,
           frames: [{ encoding: 'raw', dtype: 'uint8', shape: [1, 1, 3], data: new Uint8Array([1, 2, 3]) }],
         },
       ],
@@ -149,6 +150,29 @@ describe('Reactor.step', () => {
 
     expect(error).toBeInstanceOf(ErrorClass);
     expect(error).toMatchObject({ code, operation: 'step' });
+  });
+
+  it('hands back each track’s rate: frames per second for video, samples per second for audio', async () => {
+    const { reactor, client } = await connected('stepped');
+
+    client.stepResult = {
+      index: 1,
+      tracks: [
+        { track: 'main_video', kind: 'video', rate: 24, frames: [] },
+        { track: 'main_audio', kind: 'audio', rate: 48000, frames: [] },
+        { track: 'depth', kind: 'video', rate: 0, frames: [] },
+      ],
+      elapsed: 0.1,
+      files: [],
+    };
+
+    const result = await reactor.step();
+
+    expect(result.tracks.map(({ track, kind, rate }) => ({ track, kind, rate }))).toEqual([
+      { track: 'main_video', kind: 'video', rate: 24 },
+      { track: 'main_audio', kind: 'audio', rate: 48000 },
+      { track: 'depth', kind: 'video', rate: 0 },
+    ]);
   });
 
   it('hands back the files the model kept with the step', async () => {

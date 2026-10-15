@@ -195,8 +195,9 @@ await reactor.step();
   `sendCommand()` outside a step still works and changes the state the next step uses. A file
   input goes in the way it does for a command: `uploadFile()` it, then put the `FileRef` in a
   command's `data` or a state value.
-- It resolves with `{ index, tracks: [{ track, kind, frames }], elapsed, files, error? }`.
-  `elapsed` is the seconds the step's `generate()` took (or the time the model reported for
+- It resolves with `{ index, tracks: [{ track, kind, rate, frames }], elapsed, files, error? }`.
+  `rate` is the rate a track's frames play at as the runtime reported it — frames per second
+  for video, samples per second for audio, `0` when the runtime did not say. `elapsed` is the seconds the step's `generate()` took (or the time the model reported for
   the step); each frame has `dtype`, `shape`, typed-array `data` (`Uint8Array` RGB
   `(height, width, 3)` for video, `Int16Array` planar `(channels, samples)` for audio), and
   optional `metadata` / `captureTimeUs`. `files` lists `{ name, contentType, size }` for each
@@ -208,7 +209,9 @@ await reactor.step();
   the same). It takes a `VideoFrame`, an `ImageData`, `{ data, width, height, format? }` raw
   `"rgba"`/`"rgb"`/`"bgra"` pixels, or `{ samples, sampleRate, channels? }` interleaved
   `Int16Array` PCM for an audio track. Pushes keep their order, and `step()` waits for every
-  push called before it.
+  push called before it. At most one message's worth of frames waits for the next step:
+  pushing faster than steps run drops the oldest frames, across tracks. `clearStepInputs()`
+  drops whatever is waiting.
 - The `MediaStreamTrack` argument of `publishTrack()` is optional in a stepped session and
   ignored there, with a console warning: no RTP is sent, frames go through `pushFrame()`. In
   a streamed session it is still required, and `publishTrack(name)` without one rejects with
@@ -218,9 +221,10 @@ await reactor.step();
   `StepCommandFailedError` (`step_command_failed`: a state key or command failed, the calls
   before it stay applied, and the step did not run), `StepSessionEndedError`
   (`step_session_ended`: the session ended before the step's result came back),
-  `StepResultTooLargeError` (`step_result_too_large`), `UnsupportedFrameEncodingError`, and `MessageTooLargeError` when
-  the request is too large to send — nothing was sent, and the pushed frames are kept until
-  `clearStepInputs()`.
+  `StepResultTooLargeError` (`step_result_too_large`), `UnsupportedFrameEncodingError`, and
+  `MessageTooLargeError` when the request is too large to send. The frames pushed for a step
+  belong to it: when its request cannot be sent, the step rejects and its frames are dropped
+  with it, not kept for the next step.
 
 ## Recording and clips
 
