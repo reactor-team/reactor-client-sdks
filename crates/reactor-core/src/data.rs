@@ -118,6 +118,18 @@ impl DataCorrelator {
         let mut correlated = false;
         if !message.request_id.is_empty() {
             match self.pending.lock().unwrap().remove(&message.request_id) {
+                // A step's result goes to its step() call alone, and can carry
+                // megabytes of frames: moved there, not copied for a caller
+                // that has nothing to dispatch for it.
+                Some((_, tx))
+                    if matches!(payload, Some(data_server_message::Payload::StepResult(_))) =>
+                {
+                    let _ = tx.send(Ok(payload));
+                    return Some(HandledMessage {
+                        payload: None,
+                        correlated: true,
+                    });
+                }
                 Some((_, tx)) => {
                     let _ = tx.send(Ok(payload.clone()));
                     correlated = true;
@@ -313,7 +325,10 @@ mod tests {
                 failure_code: StepFailureCode::Unspecified as i32,
             }),
         );
-        assert!(c.handle_message(&result).unwrap().correlated);
+        let handled = c.handle_message(&result).unwrap();
+        assert!(handled.correlated);
+        // Moved to the step, not copied back for dispatch.
+        assert!(handled.payload.is_none());
         match pending.receiver.try_recv().unwrap().unwrap() {
             Ok(Some(data_server_message::Payload::StepResult(result))) => {
                 assert_eq!(result.files.len(), 1);
