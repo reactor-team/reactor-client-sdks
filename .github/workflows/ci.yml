@@ -40,6 +40,7 @@ jobs:
       js: ${{ steps.filter.outputs.js }}
       cpp: ${{ steps.filter.outputs.cpp }}
       java: ${{ steps.filter.outputs.java }}
+      android: ${{ steps.filter.outputs.android }}
       swift: ${{ steps.effective.outputs.swift }}
       swift_package: ${{ steps.effective.outputs.swift_package }}
     steps:
@@ -117,6 +118,11 @@ jobs:
               - *shared
               - *core
               - 'sdks/java/**'
+            android:
+              - *shared
+              - *core
+              - 'sdks/android/**'
+              - 'scripts/setup-android-sdk.sh'
             # Package.swift is at the repository root — SwiftPM will not resolve
             # a package in a subdirectory — so it is named here alongside the
             # sources it points at.
@@ -607,6 +613,40 @@ jobs:
       # release refuses and an ordinary pull request has no reason to.
       - run: mise run build:java:central-bundle
 
+  android:
+    name: Android SDK
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.android == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+      # The SDK components sdkmanager installs — the platform, build-tools, adb and the NDK —
+      # are pinned in sdks/android/sdk-packages.txt rather than in mise.lock, because the
+      # android-sdk tool installs the command-line tools and nothing else. They live inside
+      # mise's own install directory, so caching that is caching them. Keyed on the packages
+      # file: change a pin and the next run installs it rather than restoring the old one.
+      #
+      # Worth the step rather than leaving it to mise-action's own tool cache: the NDK alone is
+      # a multi-gigabyte download, and mise-action has no reason to know that components were
+      # added to a tool it installed.
+      - name: Cache the pinned Android SDK components
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/mise/installs/android-sdk
+          key: android-sdk-${{ runner.os }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'mise.lock') }}
+      # Installs what that file pins and then verifies the result against it. The verification is
+      # the point: `android sdk install` exits 0 even when it silently ignores a spec it cannot
+      # resolve, so without this a withdrawn pin would build against whatever was already there.
+      - run: mise run setup:android
+      - run: mise run lint:android
+      - run: mise run build:android
+      # Compiles with allWarningsAsErrors as well as running the tests — kotlinc is the other
+      # half of this binding's lint gate, so there is no separate step for it.
+      - run: mise run test:android
+
   cpp-integration-tests:
     name: C++ SDK integration tests (real FFI, real model)
     # No longer chained onto python-integration-tests — see
@@ -845,6 +885,7 @@ jobs:
         cpp-integration-tests,
         java,
         java-integration-tests,
+        android,
         swift,
         swift-integration-tests,
         swift-integration-tests-ios-simulator,
@@ -869,6 +910,7 @@ jobs:
                    "${{ needs.cpp-integration-tests.result }}" \
                    "${{ needs.java.result }}" \
                    "${{ needs['java-integration-tests'].result }}" \
+                   "${{ needs.android.result }}" \
                    "${{ needs.swift.result }}" \
                    "${{ needs.swift-integration-tests.result }}" \
                    "${{ needs.swift-integration-tests-ios-simulator.result }}" \
