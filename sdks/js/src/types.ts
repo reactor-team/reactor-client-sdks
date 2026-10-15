@@ -1,11 +1,18 @@
 import type {
   ClientOptions as WasmClientOptions,
   ConnectOptions,
+  GenerationMode,
   JwtRequestContext,
   JwtSource,
+  PixelFormat,
   ReactorMessage,
   ReactorStatus,
   SessionInfo,
+  StepCommand,
+  StepFile,
+  StepFrame,
+  StepResult,
+  StepTrack,
   TrackCapability,
   TrackDirection,
   TrackKind,
@@ -15,15 +22,79 @@ import type { ReactorError } from './errors';
 
 export type {
   ConnectOptions,
+  GenerationMode,
   JwtRequestContext,
   JwtSource,
+  PixelFormat,
   ReactorMessage,
   ReactorStatus,
+  StepCommand,
+  StepFrame,
+  StepFile,
+  StepResult,
+  StepTrack,
   TrackCapability,
   TrackDirection,
   TrackKind,
   TrackMappingEntry,
 };
+
+/** What `Reactor.step()` sends: `state`, then `commands`, then every frame
+ *  pushed since the previous step, applied in that order before the model
+ *  generates. Every part is optional. A file goes in as a `FileRef` from
+ *  `uploadFile()`, in a command's `data` or a state value. */
+export interface StepOptions {
+  /** Values for the model's state fields, keyed by field name. Each key runs
+   *  as the model's `set_<key>` command, before `commands`. */
+  state?: Record<string, unknown>;
+  /** Commands to run after the state, in order. */
+  commands?: StepCommand[];
+}
+
+/** Raw pixels for `Reactor.pushFrame()`. `ImageData` is one of these as is. */
+export interface RawVideoFrame {
+  data: Uint8Array | Uint8ClampedArray;
+  width: number;
+  height: number;
+  /** Byte layout of `data`. Default `"rgba"` — what `ImageData` holds. */
+  format?: PixelFormat;
+}
+
+/** A video frame for `Reactor.pushFrame()`: a WebCodecs `VideoFrame` (the
+ *  caller keeps ownership and closes it), an `ImageData`, or raw pixels. */
+export type PushVideoFrame = VideoFrame | ImageData | RawVideoFrame;
+
+/** A block of audio for `Reactor.pushFrame()`: interleaved signed 16-bit
+ *  PCM, already at the sample rate the model's track declares — a step's
+ *  frame carries no sample rate for the runtime to resample from. */
+export interface PushAudioFrame {
+  samples: Int16Array;
+  sampleRate: number;
+  /** Interleaved channels in `samples`. Default 1. */
+  channels?: number;
+}
+
+export type PushFrame = PushVideoFrame | PushAudioFrame;
+
+/** What `Reactor.publishTrack()` resolves with: the published input track. */
+export interface PublishedTrack {
+  readonly name: string;
+  /** Buffers one input frame on this track for the next `step()` of a
+   *  stepped session — `reactor.pushFrame(name, frame, options)`. Rejects
+   *  with an `InvalidStateError` in a streamed session, whose media comes
+   *  from the `MediaStreamTrack` given to `publishTrack()`, and once the
+   *  track is unpublished or its connection ends: publish again for a new
+   *  handle. */
+  pushFrame(frame: PushFrame, options?: PushFrameOptions): Promise<void>;
+}
+
+/** Per-frame extras for a pushed video frame. */
+export interface PushFrameOptions {
+  /** Opaque bytes the frame carries to the model. */
+  metadata?: Uint8Array;
+  /** When the frame was captured, in microseconds. */
+  captureTimeUs?: number;
+}
 
 /** The session resource, as the coordinator reports it — see
  *  `Reactor.getSessionInfo()`. */

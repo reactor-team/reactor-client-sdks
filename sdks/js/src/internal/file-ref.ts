@@ -76,9 +76,11 @@ export function extractFileRefs(data: Record<string, unknown> | undefined): {
 /**
  * Returns `value` with every `FileRef` inside it replaced by its wire shape,
  * or `value` itself when it contains none, so an untouched payload keeps its
- * identity.
+ * identity. A step has no `uploads` slot, so `step()` sends its state and
+ * command data through this whole.
  */
-function rewriteNestedFileRefs(value: unknown): unknown {
+export function rewriteNestedFileRefs<T>(value: T): T;
+export function rewriteNestedFileRefs(value: unknown): unknown {
   if (isFileRef(value)) {
     return toWireFileRef(value);
   }
