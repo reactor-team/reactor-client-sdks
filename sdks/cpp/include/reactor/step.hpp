@@ -129,7 +129,8 @@ struct StepResult {
   std::vector<StepFile> files{};
 
   /// Set when the step ran and the model reported a failure. Such a step still
-  /// resolves — only a step the runtime refuses fails `Reactor::step()`'s future.
+  /// resolves; `Reactor::step()`'s future fails only for a step that did not run
+  /// or whose result could not be delivered.
   std::optional<std::string> error{};
 
   /// The output of the track called `name`.

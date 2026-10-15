@@ -138,6 +138,12 @@ class FakeStepped {
   std::string step_error;
   /// Answer success with a null result.
   bool null_result = false;
+  /// Keep the step's completion, unanswered, for the test to fire itself.
+  bool hold_step = false;
+  reactor_step_completion_fn held_completion = nullptr;
+  void* held_userdata = nullptr;
+  /// What destroy reports: 0 quiesced, non-zero a callback it could not wait for.
+  int destroy_result = 0;
   FakeResult result;
 
   void join_all() {
@@ -230,7 +236,7 @@ class FakeStepped {
   static int destroy(ReactorHandle* destroyed) {
     REQUIRE(destroyed == handle());
     current().join_all();
-    return 0;
+    return current().destroy_result;
   }
 
   static void connect(ReactorHandle* /*handle*/, const char* /*session_id*/,
@@ -256,6 +262,11 @@ class FakeStepped {
     self.commands_json =
         commands_json == nullptr ? std::nullopt : std::optional<std::string>{commands_json};
     if (!self.answer_step) {
+      return;
+    }
+    if (self.hold_step) {
+      self.held_completion = completion;
+      self.held_userdata = userdata;
       return;
     }
     const std::string error = self.step_error;
@@ -685,7 +696,7 @@ TEST_CASE("a step's files and error are copied out with it") {
   CHECK(result.files[1].content_type == "text/plain");
   CHECK(result.files[1].size == 0);
   CHECK_FALSE(result.error.has_value());
-  CHECK(fixture.library.results_freed == 1);
+  CHECK(eventually([&] { return fixture.library.results_freed == 1; }));
 }
 
 TEST_CASE("a step that ran but that the model reported failing resolves, with its error") {
@@ -701,7 +712,7 @@ TEST_CASE("a step that ran but that the model reported failing resolves, with it
   CHECK(result.error == std::optional<std::string>{"out of memory"});
   CHECK(result.files.empty());
   CHECK(result.tracks.empty());
-  CHECK(fixture.library.results_freed == 1);
+  CHECK(eventually([&] { return fixture.library.results_freed == 1; }));
 }
 
 TEST_CASE("asking a result for a track it has no output on names the ones it has") {
@@ -735,7 +746,7 @@ TEST_CASE("a result that will not decode fails the step, and is still freed") {
   reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, stepped()};
   client.connect().get();
   CHECK_THROWS_AS(client.step().get(), reactor::DecodeError);
-  CHECK(fixture.library.results_freed == 1);
+  CHECK(eventually([&] { return fixture.library.results_freed == 1; }));
 }
 
 TEST_CASE("a success with no result is a decode failure, not an empty step") {
@@ -802,6 +813,45 @@ TEST_CASE("destroying a client settles a step still in flight") {
   } catch (const reactor::AbortedError& error) {
     CHECK(error.operation() == "step");
   }
+}
+
+TEST_CASE("a step result that arrives after teardown is freed once, and the step stays aborted") {
+  Fixture fixture;
+  fixture.library.hold_step = true;
+  // The library could not wait for a callback still on its way: the pending step
+  // goes to the orphan store rather than being freed under it.
+  fixture.library.destroy_result = -1;
+
+  std::future<reactor::StepResult> future;
+  {
+    reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, stepped()};
+    client.connect().get();
+    future = client.step();
+  }
+  REQUIRE(future.wait_for(2000ms) == std::future_status::ready);
+  CHECK_THROWS_AS(future.get(), reactor::AbortedError);
+
+  REQUIRE(fixture.library.held_completion != nullptr);
+  auto* late = new FakeResult{fixture.library.result};  // NOLINT(cppcoreguidelines-owning-memory)
+  fixture.library.held_completion(1, reinterpret_cast<ReactorStepResult*>(late), nullptr,
+                                  fixture.library.held_userdata);
+  CHECK(fixture.library.results_freed == 1);
+}
+
+TEST_CASE("a failed step that still carries a result frees it") {
+  Fixture fixture;
+  fixture.library.hold_step = true;
+  reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, stepped()};
+  client.connect().get();
+  auto future = client.step();
+
+  REQUIRE(fixture.library.held_completion != nullptr);
+  auto* stray = new FakeResult{fixture.library.result};  // NOLINT(cppcoreguidelines-owning-memory)
+  const char* error = R"({"code":"step_refused","message":"busy","operation":"step"})";
+  fixture.library.held_completion(0, reinterpret_cast<ReactorStepResult*>(stray), error,
+                                  fixture.library.held_userdata);
+  CHECK_THROWS_AS(future.get(), reactor::StepRefusedError);
+  CHECK(fixture.library.results_freed == 1);
 }
 
 // ── Events and inputs ────────────────────────────────────────────────────────

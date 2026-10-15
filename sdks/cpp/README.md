@@ -348,8 +348,9 @@ const auto next = client.step().get();      // no new state or commands
 ```
 
 A step that ran but that the model reported failing resolves normally with
-`error` set; only a step whose result never arrives throws. `files` describes
-the extra files the model kept with the step; their bytes are fetched over HTTP
+`error` set; only a step that did not run, or whose result could not be
+delivered, throws. `files` describes the extra files the model kept with the
+step; their bytes are fetched over HTTP
 from the session's step results, `GET /sessions/{id}/steps/{index}`, which
 answers 202 until they are stored. `files` is empty when the model kept none or
 the result was not saved.
@@ -438,8 +439,9 @@ differences:
 
 ## Examples
 
-Nine, one capability each, in [`examples/`](examples) — and each one has been run
-against a published model in production. Start with
+Nine, one capability each, in [`examples/`](examples). The first eight have been run
+against a published model in production; 09 waits on a published model with stepped
+generation. Start with
 [`01_connect_and_receive.cpp`](examples/01_connect_and_receive.cpp); the diff
 against it is the lesson in every other one. `examples/README.md` has the matrix,
 including the two results that look like faults and are not.
