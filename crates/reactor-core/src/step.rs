@@ -287,8 +287,9 @@ pub struct StepOutput {
     /// saved.
     pub files: Vec<StepFile>,
     /// Why the step failed, when it ran and the model reported a failure;
-    /// `None` when it worked. A step that did not run (refused, or the session
-    /// not ready) or whose result was too large has no output:
+    /// `None` when it worked. A step that did not run (refused, the session
+    /// not ready, or one of its calls failed), whose result was too large, or
+    /// whose session ended before the result came has no output:
     /// [`FrameDecoders::decode_result`] fails instead.
     pub error: Option<String>,
 }
