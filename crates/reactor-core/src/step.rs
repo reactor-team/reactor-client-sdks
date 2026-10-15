@@ -110,12 +110,13 @@ pub fn build_request_step(
 
 /// Input frames pushed since the last step, per track.
 ///
-/// Tracks keep the order of their first push, and frames the order they were
-/// pushed in. [`StepInputs::take`] empties the buffer for a step.
+/// Tracks keep the order of their first buffered push, and frames the order
+/// they were pushed in. [`StepInputs::take`] empties the buffer for a step.
 ///
-/// The buffer holds at most one message's worth of frame bytes: a frame
-/// pushed past that budget pushes out the oldest ones, whatever their track,
-/// since a step can never send more than one message. It runs inside the
+/// The buffer holds at most one message's worth of frames, counted as they
+/// encode inside a `RequestStep`: a frame pushed past that budget pushes out
+/// the oldest ones, whatever their track, since a step can never send more
+/// than one message. It runs inside the
 /// app's process, where a camera pushing faster than steps run would
 /// otherwise grow it without end.
 #[derive(Default)]
@@ -138,13 +139,15 @@ impl Buffered {
         let index = match self.tracks.iter().position(|t| t.track == track) {
             Some(index) => index,
             None => {
-                self.tracks.push(TrackFrames {
+                let frames = TrackFrames {
                     track: track.to_string(),
                     kind,
                     frames: Vec::new(),
                     // A pushed frame carries no rate of its own to declare.
                     rate: 0.0,
-                });
+                };
+                self.bytes += track_bytes(&frames);
+                self.tracks.push(frames);
                 self.tracks.len() - 1
             }
         };
@@ -164,12 +167,37 @@ impl Buffered {
             let frame = self.tracks[index].frames.remove(0);
             self.bytes -= frame_bytes(&frame);
             self.dropped += 1;
+            // A track left with no frames goes too, so pushes to ever new track
+            // names cannot grow the buffer either.
+            if self.tracks[index].frames.is_empty() {
+                let track = self.tracks.remove(index);
+                self.bytes -= track_bytes(&track);
+                for later in self.order.iter_mut().filter(|i| **i > index) {
+                    *later -= 1;
+                }
+            }
         }
     }
 }
 
+/// Room a step's message needs besides its frames: the envelope, the request
+/// id and the field headers around `media_input`. The state and commands are
+/// not known until `step()`, so they are not reserved; a large state can still
+/// make a step too large.
+const REQUEST_STEP_ENVELOPE_BYTES: usize = 64;
+
+/// What a frame costs inside its `TrackFrames`: its encoded size plus the
+/// repeated field's tag and length prefix. Never zero, so an empty frame still
+/// counts against the budget.
 fn frame_bytes(frame: &Frame) -> usize {
-    frame.data.len() + frame.metadata.as_ref().map_or(0, Vec::len)
+    let len = prost::Message::encoded_len(frame);
+    1 + prost::length_delimiter_len(len) + len
+}
+
+/// What a track's entry costs inside a `RequestStep` before its frames: its
+/// own fields, its tag, and a length prefix as long as a message's can be.
+fn track_bytes(frames: &TrackFrames) -> usize {
+    1 + prost::length_delimiter_len(u32::MAX as usize) + prost::Message::encoded_len(frames)
 }
 
 impl StepInputs {
@@ -177,12 +205,12 @@ impl StepInputs {
         Self::default()
     }
 
-    /// Buffer `frame` for the next step, keeping the buffer within
-    /// `max_bytes` of frame data.
+    /// Buffer `frame` for the next step, keeping the frames within what a
+    /// message of `max_bytes` can carry.
     pub fn push(&self, track: &str, kind: WireTrackKind, frame: Frame, max_bytes: usize) {
         let mut buffer = self.buffer.lock().unwrap();
         buffer.add(track, kind as i32, frame);
-        buffer.trim(max_bytes);
+        buffer.trim(max_bytes.saturating_sub(REQUEST_STEP_ENVELOPE_BYTES));
     }
 
     /// Everything buffered, leaving the buffer empty.
@@ -610,30 +638,40 @@ mod tests {
     #[test]
     fn pushing_past_the_budget_drops_the_oldest_frames_across_tracks() {
         let inputs = StepInputs::new();
-        // 2 bytes per frame, room for 3 frames.
+        // Room for both tracks and 3 of their frames, each the same size.
+        let track = |name: &str| TrackFrames {
+            track: name.into(),
+            kind: WireTrackKind::Video as i32,
+            frames: vec![],
+            rate: 0.0,
+        };
+        let max = REQUEST_STEP_ENVELOPE_BYTES
+            + track_bytes(&track("a"))
+            + track_bytes(&track("b"))
+            + 3 * frame_bytes(&raw("uint8", vec![2], vec![0, 0]));
         inputs.push(
             "a",
             WireTrackKind::Video,
             raw("uint8", vec![2], vec![1, 1]),
-            6,
+            max,
         );
         inputs.push(
             "b",
             WireTrackKind::Video,
             raw("uint8", vec![2], vec![2, 2]),
-            6,
+            max,
         );
         inputs.push(
             "a",
             WireTrackKind::Video,
             raw("uint8", vec![2], vec![3, 3]),
-            6,
+            max,
         );
         inputs.push(
             "b",
             WireTrackKind::Video,
             raw("uint8", vec![2], vec![4, 4]),
-            6,
+            max,
         );
         assert_eq!(inputs.len(), 3);
 
@@ -647,6 +685,22 @@ mod tests {
             ("b", vec![2, 4])
         );
         assert!(inputs.is_empty());
+    }
+
+    #[test]
+    fn pushes_to_ever_new_tracks_stay_within_the_budget() {
+        let inputs = StepInputs::new();
+        for n in 0..10_000 {
+            inputs.push(
+                &format!("track-{n}"),
+                WireTrackKind::Video,
+                raw("uint8", vec![1], vec![1]),
+                1024,
+            );
+        }
+        let buffer = inputs.buffer.lock().unwrap();
+        assert!(buffer.tracks.len() < 1024, "{} tracks", buffer.tracks.len());
+        assert!(buffer.bytes <= 1024, "{} bytes", buffer.bytes);
     }
 
     #[test]

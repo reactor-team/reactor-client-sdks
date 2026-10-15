@@ -195,6 +195,14 @@ export class GenerationModeMismatchError extends ReactorError {
   static override readonly code = 'GENERATION_MODE_MISMATCH';
 }
 
+/** `connect()` asked for stepped generation over a data channel that did not
+ *  negotiate chunking: this client or the runtime does not support it. A
+ *  step's inputs and result each ride one data-channel message, and without
+ *  chunking a single camera frame outgrows it. Not recoverable. */
+export class DataChannelChunkingRequiredError extends ReactorError {
+  static override readonly code = 'DATA_CHANNEL_CHUNKING_REQUIRED';
+}
+
 /** The runtime refused a `step()` — the request or the model turned it down.
  *  The calls it applied before the refusal stay applied: nothing is rolled
  *  back. The code is the runtime's own, passed through, hence lowercase. */
@@ -254,6 +262,7 @@ const ERROR_CLASSES = [
   AbortedError,
   RecorderDisabledError,
   GenerationModeMismatchError,
+  DataChannelChunkingRequiredError,
   StepRefusedError,
   StepNotReadyError,
   StepResultTooLargeError,

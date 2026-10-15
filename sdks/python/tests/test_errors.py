@@ -18,6 +18,7 @@ import pytest
 
 from reactor_sdk import (
     ConflictError,
+    DataChannelChunkingRequiredError,
     GenerationModeMismatchError,
     InvalidStateError,
     MessageTooLargeError,
@@ -61,6 +62,7 @@ class TestCodeToClass:
             ("MESSAGE_TOO_LARGE", MessageTooLargeError),
             ("RECORDER_DISABLED", RecorderDisabledError),
             ("GENERATION_MODE_MISMATCH", GenerationModeMismatchError),
+            ("DATA_CHANNEL_CHUNKING_REQUIRED", DataChannelChunkingRequiredError),
             ("UNSUPPORTED_FRAME_ENCODING", UnsupportedFrameEncodingError),
             ("step_refused", StepRefusedError),
             ("step_not_ready", StepNotReadyError),

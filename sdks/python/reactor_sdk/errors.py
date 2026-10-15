@@ -256,6 +256,17 @@ class GenerationModeMismatchError(ReactorError):
     code = "GENERATION_MODE_MISMATCH"
 
 
+class DataChannelChunkingRequiredError(ReactorError):
+    """A stepped session connected over a data channel without chunking.
+
+    This client or the runtime does not support data-channel chunking. A step's
+    inputs and result each ride one data-channel message, and without chunking
+    a single camera frame outgrows it, so `connect()` fails instead.
+    """
+
+    code = "DATA_CHANNEL_CHUNKING_REQUIRED"
+
+
 class UnsupportedFrameEncodingError(ReactorError):
     """A step result carried a frame in an encoding this client cannot decode."""
 
@@ -333,6 +344,7 @@ ERROR_CLASSES: tuple[type[ReactorError], ...] = (
     AbortedError,
     RecorderDisabledError,
     GenerationModeMismatchError,
+    DataChannelChunkingRequiredError,
     UnsupportedFrameEncodingError,
     StepRefusedError,
     StepNotReadyError,

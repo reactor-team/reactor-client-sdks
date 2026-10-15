@@ -184,6 +184,10 @@ extension ReactorError {
         /// ignores the request rather than refusing it.
         public static let generationModeMismatch = Code(rawValue: "GENERATION_MODE_MISMATCH")
 
+        /// A stepped session connected over a data channel that did not
+        /// negotiate chunking: this client or the runtime does not support it.
+        public static let dataChannelChunkingRequired = Code(rawValue: "DATA_CHANNEL_CHUNKING_REQUIRED")
+
         /// A step result carried a frame in an encoding this client cannot decode.
         public static let unsupportedFrameEncoding = Code(rawValue: "UNSUPPORTED_FRAME_ENCODING")
 
@@ -278,6 +282,9 @@ extension ReactorError {
 
     /// Matches an error whose code is ``Code/generationModeMismatch``.
     public static var generationModeMismatch: Code { .generationModeMismatch }
+
+    /// Matches an error whose code is ``Code/dataChannelChunkingRequired``.
+    public static var dataChannelChunkingRequired: Code { .dataChannelChunkingRequired }
 
     /// Matches an error whose code is ``Code/unsupportedFrameEncoding``.
     public static var unsupportedFrameEncoding: Code { .unsupportedFrameEncoding }
