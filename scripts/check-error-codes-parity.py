@@ -105,8 +105,9 @@ CPP_CLASS_CODE = re.compile(r"X\(\w+,\s*([A-Z_]+)\)")
 # `inline constexpr std::string_view NETWORK_ERROR = "NETWORK_ERROR";`.
 CPP_NAMESPACE_CODE = re.compile(r'inline constexpr std::string_view \w+ = "([A-Za-z_]+)";')
 
-# Swift: `public static let networkError = Code(rawValue: "NETWORK_ERROR")`.
-SWIFT_CODE = re.compile(r'public static let \w+ = Code\(rawValue: "([A-Za-z_]+)"\)')
+# Swift: `public static let networkError = Code(rawValue: "NETWORK_ERROR")`, or
+# wrapped after `Code(` where the name is too long for one line.
+SWIFT_CODE = re.compile(r'public static let \w+ = Code\(\s*rawValue: "([A-Za-z_]+)"\)')
 
 # Swift's second hand-copy: the matchers `catch ReactorError.networkError`
 # resolves through, `public static var networkError: Code { .networkError }`.
