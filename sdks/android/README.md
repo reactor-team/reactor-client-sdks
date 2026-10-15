@@ -25,6 +25,66 @@ The Java SDK remains the answer for desktop JVM and desktop Kotlin.
 | `compileSdk` | 36 |
 | ABIs | `arm64-v8a`, `x86_64` |
 
+## Camera, microphone and rendering
+
+The core artifact opens no hardware and declares no permissions. Real devices
+live in `reactor-sdk-android-media`, a separate dependency precisely so that
+importing the SDK is not a request for a microphone — and one that takes no
+dependency of its own, built on the platform's own classes.
+
+| Class | What it is |
+| --- | --- |
+| `AudioRecordCapture` | A `CaptureDevice` on `AudioRecord`, at the voice-communication source so the platform's echo canceller is engaged |
+| `AudioTrackRender` | A `RenderDevice` on `AudioTrack`, blocking writes as backpressure |
+| `CameraCapture` | Camera2 to BGRA frames, through `YuvToBgra` |
+| `VideoRenderer` | A `SurfaceView` that draws frames without tearing |
+| `Microphone` / `Speaker` | The lifecycle above a device — start, stop, and the races between them |
+
+End to end, a microphone into a published track:
+
+```kotlin
+val mic = Microphone(
+    AudioRecordCapture(context),
+    targetSampleRate = 48_000,
+    deviceSampleRate = AudioRecordCapture.DEFAULT_SAMPLE_RATE,
+    channels = 1,
+)
+val buffer = PcmConversion.directBufferFor(frames = 480)
+
+mic.start { samples ->
+    track.pushFrame(
+        PcmConversion.toDirectBuffer(samples, buffer),
+        samplesPerChannel = samples.size,
+        sampleRate = 48_000,
+        channels = 1,
+    )
+}
+```
+
+And a camera into one:
+
+```kotlin
+val camera = CameraCapture(context, facing = CameraSelection.Facing.FRONT)
+camera.start { bgra, width, height -> track.pushFrame(bgra, width, height) }
+```
+
+Both callbacks run on the capture thread, and pushing straight from them is the
+intent — the buffers are reused, and queueing instead trades a bounded frame
+drop for unbounded latency.
+
+**The permissions are yours.** `RECORD_AUDIO` and `CAMERA` are requested by the
+app, because only the app knows when to ask. The adapters check before opening,
+so a missing grant is a message naming the permission rather than a
+`SecurityException` from inside the platform.
+
+**The parts worth knowing are unit-tested without a device.** `AudioRecord`,
+`CameraCharacteristics` and friends cannot be constructed on a JVM, so buffer
+sizing, resolution choice, rotation and the YUV conversion all live in plain
+functions — `AudioFormats`, `CameraSelection`, `YuvToBgra` — where a test can
+reach them. Front-camera rotation in particular is otherwise wrong on somebody's
+handset for months, because the symptom needs a specific device held a specific
+way.
+
 ## Development
 
 Everything is driven through mise from the repository root — never a Gradle
