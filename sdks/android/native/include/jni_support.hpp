@@ -58,7 +58,8 @@ class ScopedEnv {
       // and the reverse fails on the host. The bridge builds against the NDK's header on a
       // device and the JDK's in the sanitizer harness, so the difference is stated rather than
       // papered over. A host-only build would never have shown it, which is exactly what
-      // happened: this file compiled for Android nowhere in CI until the AAR build below.
+      // happened: nothing compiled this file for Android until the AAR build in the native CI
+      // job.
 #ifdef __ANDROID__
       const jint attached = g_vm->AttachCurrentThread(&env_, &args);
 #else
