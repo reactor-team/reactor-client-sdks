@@ -367,7 +367,7 @@ struct SteppingTests {
         #expect(fake.freedStepResults == 0)
     }
 
-    @Test("an elapsed a Duration cannot hold comes back as zero")
+    @Test("a non-finite elapsed comes back as zero, and one too large for a Duration saturates")
     func nonFiniteElapsedIsZero() async throws {
         let fake = FakeLibrary()
         let client = try makeClient(fake: fake)
@@ -378,6 +378,11 @@ struct SteppingTests {
         ) { try await client.step() }
         #expect(nonFinite.index == 3)
         #expect(nonFinite.elapsed == .zero)
+
+        let huge = try await stepping(
+            fake, result: FakeStepResult(index: 4, tracks: [], elapsed: .greatestFiniteMagnitude)
+        ) { try await client.step() }
+        #expect(huge.elapsed == .seconds(1e18))
     }
 
     @Test("a frame whose bytes disagree with its shape fails the step, and is still freed")

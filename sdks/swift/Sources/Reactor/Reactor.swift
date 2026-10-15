@@ -388,7 +388,9 @@ public final class Reactor: @unchecked Sendable {
     /// - Throws: on a stepped client, ``ReactorError/Code/generationModeMismatch``
     ///   when the runtime does not report starting the session stepped — a
     ///   runtime without stepped generation ignores the request, and this client
-    ///   would otherwise wait on steps from a streaming session.
+    ///   would otherwise wait on steps from a streaming session — and
+    ///   ``ReactorError/Code/dataChannelChunkingRequired`` when this library or
+    ///   the runtime did not negotiate data-channel chunking, which a step needs.
     public func connect(sessionID: String? = nil, connectionID: UInt32? = nil) async throws {
         _ = try await perform("connect") { handle, completion, userdata in
             withOptionalCString(sessionID) { sessionPointer in

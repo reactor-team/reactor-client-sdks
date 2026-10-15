@@ -251,10 +251,14 @@ extension StepResult {
                     name: name, kind: kind, rate: ffi.stepResultTrackRate(result, track),
                     frames: frames))
         }
-        // `Duration` cannot hold a NaN or an infinity (`.seconds(_:)` traps on
-        // one); a runtime that sent one measured nothing usable.
+        // `.seconds(_:)` traps on a NaN, an infinity, or a finite value past
+        // what a `Duration` holds (about 1.7e20 s), and this runs on the
+        // completion thread. A NaN or an infinity measured nothing usable; a
+        // finite value that large saturates.
         let seconds = ffi.stepResultElapsed(result)
-        let elapsed: Duration = seconds.isFinite ? .seconds(seconds) : .zero
+        let elapsedLimit = 1e18
+        let elapsed: Duration =
+            seconds.isFinite ? .seconds(min(max(seconds, -elapsedLimit), elapsedLimit)) : .zero
 
         let files = (0..<ffi.stepResultFileCount(result)).map { file in
             StepFile(
