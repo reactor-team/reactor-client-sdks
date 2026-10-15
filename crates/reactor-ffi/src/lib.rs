@@ -1928,11 +1928,14 @@ impl StepCompletion {
 /// release it with [`reactor_step_result_free`], from any thread, after the
 /// completion has returned or inside it. On failure it is null and the third
 /// argument is the usual error object — `step_refused`, `step_not_ready`,
-/// `step_result_too_large` (each named by the result's failure code, with the
-/// runtime's reason as the message), `UNSUPPORTED_FRAME_ENCODING`,
-/// `MESSAGE_TOO_LARGE` (nothing sent; the inputs are kept, see
-/// [`reactor_clear_step_inputs`]), `INVALID_STATE` (not a ready stepped
-/// session), `DISCONNECTED` or `REQUEST_TIMEOUT`.
+/// `step_result_too_large`, `step_command_failed`, `step_session_ended` (each
+/// named by the result's failure code, with the runtime's reason as the
+/// message), `UNSUPPORTED_FRAME_ENCODING`, `MESSAGE_TOO_LARGE` (nothing sent),
+/// `INVALID_STATE` (not a ready stepped session), `DISCONNECTED` or
+/// `REQUEST_TIMEOUT`. A step refused before it goes out (`INVALID_STATE`,
+/// `DECODE_FAILED`) keeps the buffered input frames for the next step; past
+/// those checks they belong to the step whatever its outcome, and one whose
+/// request cannot be sent (`MESSAGE_TOO_LARGE`) drops them too.
 ///
 /// # Safety
 ///
@@ -2380,8 +2383,7 @@ pub unsafe extern "C" fn reactor_push_audio_frame(
         .push_audio_frame(&name, slice, sample_rate, num_channels);
 }
 
-/// Drop every input frame buffered for the next step — the way out after a
-/// step failed `MESSAGE_TOO_LARGE`, which keeps them. A no-op outside a
+/// Drop every input frame buffered for the next step. A no-op outside a
 /// stepped session, and on a null handle.
 ///
 /// # Safety
@@ -2539,6 +2541,24 @@ pub unsafe extern "C" fn reactor_step_result_track_kind(
         .as_ref()
         .and_then(|r| r.track(track))
         .map_or(std::ptr::null(), |t| t.kind.as_ptr())
+}
+
+/// The rate track `track`'s frames play at, as the runtime reported it:
+/// frames per second for video, samples per second for audio. 0.0 when the
+/// runtime did not say, or when out of range.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_index`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_track_rate(
+    result: *const ReactorStepResult,
+    track: u32,
+) -> f64 {
+    result
+        .as_ref()
+        .and_then(|r| r.track(track))
+        .map_or(0.0, |t| t.rate)
 }
 
 /// How many frames track `track` produced, in production order. 0 when out of
@@ -3619,6 +3639,7 @@ mod tests {
             assert_eq!(reactor_step_result_track_count(null), 0);
             assert!(reactor_step_result_track_name(null, 0).is_null());
             assert!(reactor_step_result_track_kind(null, 0).is_null());
+            assert_eq!(reactor_step_result_track_rate(null, 0), 0.0);
             assert_eq!(reactor_step_result_frame_count(null, 0), 0);
             assert!(reactor_step_result_frame_encoding(null, 0, 0).is_null());
             assert!(reactor_step_result_frame_dtype(null, 0, 0).is_null());
@@ -3661,6 +3682,7 @@ mod tests {
                         metadata: Some(b"tag".to_vec()),
                         capture_time_us: Some(99),
                     }],
+                    rate: 24.0,
                 },
                 TrackOutput {
                     track: "main_audio".into(),
@@ -3673,6 +3695,7 @@ mod tests {
                         metadata: None,
                         capture_time_us: None,
                     }],
+                    rate: 48_000.0,
                 },
             ],
             elapsed: 0.5,
@@ -3740,6 +3763,9 @@ mod tests {
             );
             assert_eq!(text(reactor_step_result_track_kind(result, 0)), "video");
             assert_eq!(text(reactor_step_result_track_kind(result, 1)), "audio");
+            assert_eq!(reactor_step_result_track_rate(result, 0), 24.0);
+            assert_eq!(reactor_step_result_track_rate(result, 1), 48_000.0);
+            assert_eq!(reactor_step_result_track_rate(result, 2), 0.0);
             assert!(reactor_step_result_track_name(result, 2).is_null());
             assert_eq!(reactor_step_result_frame_count(result, 0), 1);
             assert_eq!(reactor_step_result_frame_count(result, 2), 0);
