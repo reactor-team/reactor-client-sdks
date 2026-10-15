@@ -587,16 +587,18 @@ impl ReactorClient {
     ///   `set_<key>` command before `commands`; `null`/`undefined` for none.
     /// * `commands` — `[{ command, data? }]`, run in order after the state.
     ///
-    /// Every frame pushed since the previous step rides this one. Rejects with
-    /// the core's code: `step_refused` (calls applied before the refusal stay
-    /// applied), `step_not_ready` (the session cannot take a step yet; the
-    /// step did not run), `step_command_failed` (a state key or command
-    /// failed; the calls before it stay applied and the step did not run),
-    /// `step_session_ended` (the session ended before the result came back),
-    /// `step_result_too_large`,
-    /// `MESSAGE_TOO_LARGE` (nothing sent, pushed frames kept — see
-    /// `clearStepInputs`), `UNSUPPORTED_FRAME_ENCODING`, or the code of
-    /// whatever else failed the step (`DISCONNECTED`, `REQUEST_TIMEOUT`, …).
+    /// Every frame pushed since the previous step rides this one, and belongs
+    /// to it: when the request cannot be sent the step fails and its frames
+    /// are dropped, not kept for the next step. Rejects with the core's code:
+    /// `step_refused` (calls applied before the refusal stay applied),
+    /// `step_not_ready` (the session cannot take a step yet; the step did not
+    /// run), `step_command_failed` (a state key or command failed; the calls
+    /// before it stay applied and the step did not run), `step_session_ended`
+    /// (the session ended before the result came back),
+    /// `step_result_too_large`, `MESSAGE_TOO_LARGE` (the request is over the
+    /// data channel's message limit; nothing was sent),
+    /// `UNSUPPORTED_FRAME_ENCODING`, or the code of whatever else failed the
+    /// step (`DISCONNECTED`, `REQUEST_TIMEOUT`, …).
     pub async fn step(
         &self,
         state: Option<StepStateInput>,
@@ -696,8 +698,7 @@ impl ReactorClient {
         Ok(())
     }
 
-    /// Drop every frame pushed since the last step — the way out when a step
-    /// was refused as `MESSAGE_TOO_LARGE` and kept them.
+    /// Drop every frame buffered for the next step.
     #[wasm_bindgen(js_name = clearStepInputs)]
     pub fn clear_step_inputs(&self) {
         self.reactor.clear_step_inputs();

@@ -609,13 +609,13 @@ export class Reactor implements Disposable {
    * yet (neither ran the step), `StepCommandFailedError` when a state key or
    * command failed (the calls before it stay applied; the step did not run),
    * `StepSessionEndedError` when the session ended before the result came
-   * back, `StepResultTooLargeError` when the result
-   * does not fit in
-   * one message, `MessageTooLargeError` when the request itself is too large
-   * (nothing was sent and the pushed frames are kept — see
-   * `clearStepInputs()`), `InvalidStateError` outside a ready stepped
+   * back, `StepResultTooLargeError` when the result does not fit in one
+   * message, `MessageTooLargeError` when the request itself is too large
+   * (nothing was sent), `InvalidStateError` outside a ready stepped
    * session, or whatever else failed the step (`DisconnectedError`,
-   * `RequestTimeoutError`, ...).
+   * `RequestTimeoutError`, ...). The frames pushed for a step belong to it:
+   * when its request cannot be sent, they are dropped with it rather than
+   * kept for the next step.
    *
    * ```ts
    * const camera = await reactor.publishTrack('camera');
@@ -657,7 +657,9 @@ export class Reactor implements Disposable {
    * PCM at the rate the model's track declares.
    *
    * Pushes keep their call order, and a `step()` waits for every push called
-   * before it — awaiting this is only needed to see its error. Rejects with
+   * before it — awaiting this is only needed to see its error. What waits for
+   * the next step is at most one message's worth of frames: pushing faster
+   * than steps run drops the oldest frames, across tracks. Rejects with
    * an `InvalidStateError` outside a stepped session, for a frame whose size
    * does not match its dimensions, or for a name the model does not declare
    * as a sendonly track of that kind.
@@ -703,8 +705,7 @@ export class Reactor implements Disposable {
     }
   }
 
-  /** Drops every frame pushed since the last step — the way out after a
-   *  `step()` refused as `MessageTooLargeError`, which keeps them. */
+  /** Drops every frame buffered for the next step. */
   clearStepInputs(): void {
     this.client?.clearStepInputs();
   }

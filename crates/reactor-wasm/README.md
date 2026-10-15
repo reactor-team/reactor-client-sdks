@@ -69,7 +69,17 @@ buffer frames in the core, and the next `step()` carries them inside its one
 the model's current state. Video arrives as RGBA, RGB or BGRA and is converted
 here to the BGRA the core's push API takes; the core sends it as RGB.
 
-`step()` resolves with `{ index, tracks, elapsed, files, error? }`. `files`
+The buffer holds at most one data-channel message's worth of frames: pushing
+faster than steps run drops the oldest frames, across tracks, and the next step
+logs how many. Pushed frames belong to the step that takes them: when that
+step's request cannot be sent — `MESSAGE_TOO_LARGE` among the reasons — the
+step rejects and its frames are dropped with it, so the next step starts from
+what is pushed after. `clearStepInputs()` drops whatever is buffered now.
+
+`step()` resolves with `{ index, tracks, elapsed, files, error? }`. Each track
+is `{ track, kind, rate, frames }`, `rate` being the rate its frames play at as
+the runtime reported it (frames per second for video, samples per second for
+audio; 0 when it did not say). `files`
 describes the files the model kept with the step (`name`, `contentType`,
 `size`); their bytes are served over HTTP from the session's step results.
 `error` is set when the step ran and the model reported a failure — such a
