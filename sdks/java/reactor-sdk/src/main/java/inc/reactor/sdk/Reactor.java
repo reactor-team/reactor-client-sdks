@@ -345,11 +345,18 @@ public final class Reactor implements AutoCloseable {
      * when the runtime turns the step down (calls applied before the refusal stay applied), {@link
      * StepNotReadyException} when the session cannot take a step yet (the step did not run), {@link
      * StepResultTooLargeException} when the step ran but its output does not fit in one message,
-     * {@link MessageTooLargeException} when the request does not — nothing was
-     * sent then, and the pushed frames are kept for the next step, which {@link #clearStepInputs()}
-     * drops — {@link UnsupportedFrameEncodingException} for a frame this SDK cannot decode, {@link
+     * {@link MessageTooLargeException} when the request does not (nothing was sent), {@link
+     * UnsupportedFrameEncodingException} for a frame this SDK cannot decode, {@link
      * RequestTimeoutException} after {@link ReactorOptions#stepTimeoutSeconds()}, and {@link
      * InvalidStateException} outside a connected stepped session.
+     *
+     * <p>A step refused before it goes out ({@link InvalidStateException}, malformed arguments)
+     * keeps the buffered input frames for the next step. Past that they belong to the step whatever
+     * its outcome: one that could not be sent, {@link MessageTooLargeException} included, drops them
+     * too, and nothing is resent. The buffer holds at most one data-channel message's
+     * worth of frame bytes, so pushing faster than steps run drops the oldest frames, across tracks.
+     * Once the session's tracks are known, a push to a track the session does not take as input is
+     * dropped with a warning.
      *
      * @param state the model's state fields as a JSON object, or {@code null} to change none
      * @param commands what to run after the state, in order; may be empty
@@ -396,10 +403,8 @@ public final class Reactor implements AutoCloseable {
     }
 
     /**
-     * Drops every input frame pushed since the last step.
-     *
-     * <p>The way out after a {@link MessageTooLargeException} from {@link #step}, which keeps the
-     * frames it could not send. A no-op on a streamed client.
+     * Drops every input frame buffered for the next step, so that step carries only what is pushed
+     * after this. A no-op on a streamed client.
      *
      * @throws ReactorException ({@code INVALID_STATE}) when the client is closed
      */

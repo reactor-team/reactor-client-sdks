@@ -217,8 +217,8 @@ public class ReactorClient(
      * @throws inc.reactor.sdk.StepNotReadyException when the session cannot take a step yet; the
      *   step did not run
      * @throws inc.reactor.sdk.StepResultTooLargeException when its output does not fit in a message
-     * @throws inc.reactor.sdk.MessageTooLargeException when the request does not; see
-     *   [clearStepInputs]
+     * @throws inc.reactor.sdk.MessageTooLargeException when the request does not; nothing was sent,
+     *   and the step's buffered input frames are dropped with it
      */
     public suspend fun step(
         state: JsonValue? = null,
@@ -226,8 +226,8 @@ public class ReactorClient(
     ): StepResult = java.step(state, commands).await()
 
     /**
-     * Drops every input frame pushed since the last step — the way out after a
-     * [inc.reactor.sdk.MessageTooLargeException] from [step]. A no-op on a streamed client.
+     * Drops every input frame buffered for the next step, so that step carries only what is pushed
+     * after this. A no-op on a streamed client.
      */
     public fun clearStepInputs(): Unit = java.clearStepInputs()
 
