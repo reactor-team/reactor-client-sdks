@@ -82,7 +82,9 @@ export interface PublishedTrack {
   /** Buffers one input frame on this track for the next `step()` of a
    *  stepped session — `reactor.pushFrame(name, frame, options)`. Rejects
    *  with an `InvalidStateError` in a streamed session, whose media comes
-   *  from the `MediaStreamTrack` given to `publishTrack()`. */
+   *  from the `MediaStreamTrack` given to `publishTrack()`, and once the
+   *  track is unpublished or its connection ends: publish again for a new
+   *  handle. */
   pushFrame(frame: PushFrame, options?: PushFrameOptions): Promise<void>;
 }
 

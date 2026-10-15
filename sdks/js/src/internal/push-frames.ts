@@ -24,6 +24,18 @@ function isVideoFrame(frame: PushVideoFrame): frame is VideoFrame {
   return typeof (frame as VideoFrame).copyTo === 'function' && 'displayWidth' in frame;
 }
 
+/** A pushed frame the queue can read later. A `VideoFrame` is cloned at call
+ *  time, so the caller may close theirs as soon as `pushFrame()` returns;
+ *  `release` closes the clone once its pixels are out. */
+export function holdFrame(frame: PushFrame): { frame: PushFrame; release: () => void } {
+  if (!isAudioFrame(frame) && isVideoFrame(frame)) {
+    const clone = frame.clone();
+
+    return { frame: clone, release: () => clone.close() };
+  }
+  return { frame, release: () => {} };
+}
+
 /** The pixels of a pushed video frame. Async because a `VideoFrame`'s live
  *  in GPU or decoder memory and copying them out is. */
 export async function toPixels(frame: PushVideoFrame): Promise<Pixels> {

@@ -206,10 +206,12 @@ await reactor.step();
   the step ran and the model reported a failure — such a step resolves, it does not reject.
 - `publishTrack(name)` resolves with a handle whose `pushFrame(frame, { metadata?,
   captureTimeUs? })` buffers a frame for the next step (`reactor.pushFrame(name, frame)` does
-  the same). It takes a `VideoFrame`, an `ImageData`, `{ data, width, height, format? }` raw
+  the same, for a track published on this connection). The handle stops working once the track
+  is unpublished or its connection ends; publish again for a new one. It takes a `VideoFrame`, an `ImageData`, `{ data, width, height, format? }` raw
   `"rgba"`/`"rgb"`/`"bgra"` pixels, or `{ samples, sampleRate, channels? }` interleaved
   `Int16Array` PCM for an audio track. Pushes keep their order, and `step()` waits for every
-  push called before it. At most one message's worth of frames waits for the next step:
+  push called before it. A refused push rejects, so await it, or `.catch()` it in a frame loop.
+  At most one message's worth of frames waits for the next step:
   pushing faster than steps run drops the oldest frames, across tracks. `clearStepInputs()`
   drops whatever is waiting.
 - The `MediaStreamTrack` argument of `publishTrack()` is optional in a stepped session and
