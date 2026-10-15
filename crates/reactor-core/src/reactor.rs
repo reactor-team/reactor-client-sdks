@@ -46,8 +46,8 @@ use crate::stage_times::{sort_stages, StageTimes, SUBMIT};
 use crate::state::ReactorStatus;
 use crate::stats::{client_connection_stat, ClientStatsReporter, ConnectionStats, StatsSampler};
 use crate::step::{
-    build_request_step, raw_audio_frame, raw_video_frame, FrameDecoders, StepCommand, StepInputs,
-    StepOutput,
+    build_request_step, raw_audio_frame, raw_video_frame, FrameDecoders, PixelLayout, StepCommand,
+    StepInputs, StepOutput,
 };
 use crate::{SharedAuth, SharedHttp, SharedPeer, SharedPlatform};
 
@@ -1295,7 +1295,15 @@ impl Reactor {
     /// size does not match its dimensions is dropped with a warning.
     pub fn push_video_frame(&self, track_name: &str, data: &[u8], width: u32, height: u32) {
         if self.is_stepped() {
-            self.buffer_video_frame(track_name, data, width, height, None, None);
+            self.buffer_video_frame(
+                track_name,
+                data,
+                width,
+                height,
+                PixelLayout::Bgra,
+                None,
+                None,
+            );
             return;
         }
         let started = self.submit_started();
@@ -1316,7 +1324,15 @@ impl Reactor {
         user_data: &[u8],
     ) {
         if self.is_stepped() {
-            self.buffer_video_frame(track_name, data, width, height, Some(user_data), None);
+            self.buffer_video_frame(
+                track_name,
+                data,
+                width,
+                height,
+                PixelLayout::Bgra,
+                Some(user_data),
+                None,
+            );
             return;
         }
         let started = self.submit_started();
@@ -1345,6 +1361,7 @@ impl Reactor {
                 data,
                 width,
                 height,
+                PixelLayout::Bgra,
                 Some(user_data),
                 Some(capture_time_us),
             );
@@ -1391,7 +1408,15 @@ impl Reactor {
     ) {
         if self.is_stepped() {
             let metadata = (!user_data.is_empty()).then_some(user_data);
-            self.buffer_video_frame(track_name, data, width, height, metadata, capture_time_us);
+            self.buffer_video_frame(
+                track_name,
+                data,
+                width,
+                height,
+                PixelLayout::Bgra,
+                metadata,
+                capture_time_us,
+            );
             return;
         }
         let now_ms = self.platform.monotonic_ms();
@@ -1495,19 +1520,55 @@ impl Reactor {
         takes
     }
 
+    /// Stepped: buffer `pixels` in `layout` for the next [`Reactor::step`],
+    /// converted to its RAW RGB frame in one pass, as the BGRA push methods
+    /// do. A host whose frames come as RGBA or RGB passes them here rather
+    /// than converting to BGRA for the core to convert again. A frame whose
+    /// size does not match its dimensions, or a push outside a stepped
+    /// session, is dropped with a warning.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_step_video_frame(
+        &self,
+        track_name: &str,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        layout: PixelLayout,
+        metadata: Option<&[u8]>,
+        capture_time_us: Option<i64>,
+    ) {
+        if !self.is_stepped() {
+            log::warn!(
+                "dropping a video frame for '{track_name}': push_step_video_frame needs a stepped session"
+            );
+            return;
+        }
+        self.buffer_video_frame(
+            track_name,
+            pixels,
+            width,
+            height,
+            layout,
+            metadata,
+            capture_time_us,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn buffer_video_frame(
         &self,
         track_name: &str,
         data: &[u8],
         width: u32,
         height: u32,
+        layout: PixelLayout,
         metadata: Option<&[u8]>,
         capture_time_us: Option<i64>,
     ) {
         if !self.takes_step_input(track_name, SessionTrackKind::Video) {
             return;
         }
-        match raw_video_frame(data, width, height, metadata, capture_time_us) {
+        match raw_video_frame(data, width, height, layout, metadata, capture_time_us) {
             Some(frame) => self.step_inputs.push(
                 track_name,
                 WireTrackKind::Video,
@@ -1515,7 +1576,7 @@ impl Reactor {
                 self.peer.max_message_bytes(),
             ),
             None => log::warn!(
-                "dropping video frame for '{track_name}': {} bytes is not {width}x{height} BGRA",
+                "dropping video frame for '{track_name}': {} bytes is not {width}x{height} {layout:?}",
                 data.len()
             ),
         }
