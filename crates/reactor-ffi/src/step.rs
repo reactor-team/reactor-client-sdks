@@ -36,6 +36,7 @@ pub(crate) struct StepFileEntry {
 pub(crate) struct StepTrack {
     pub(crate) name: CString,
     pub(crate) kind: &'static CStr,
+    pub(crate) rate: f64,
     pub(crate) frames: Vec<StepFrame>,
 }
 
@@ -84,9 +85,11 @@ impl From<StepOutput> for ReactorStepResult {
                          track,
                          kind,
                          frames,
+                         rate,
                      }| StepTrack {
                         name: c_string(track),
                         kind: kind_str(kind),
+                        rate,
                         frames: frames.into_iter().map(StepFrame::from).collect(),
                     },
                 )
@@ -216,6 +219,7 @@ mod tests {
                 track: "main_video".into(),
                 kind: TrackKind::Video,
                 frames: vec![frame(bytes)],
+                rate: 24.0,
             }],
             elapsed: 0.75,
             files: vec![StepFile {
@@ -230,6 +234,7 @@ mod tests {
         let track = result.track(0).unwrap();
         assert_eq!(track.name.to_str().unwrap(), "main_video");
         assert_eq!(track.kind, c"video");
+        assert_eq!(track.rate, 24.0);
         let f = result.frame(0, 0).unwrap();
         assert_eq!(f.data.as_ptr(), address);
         assert_eq!(f.encoding, c"raw");

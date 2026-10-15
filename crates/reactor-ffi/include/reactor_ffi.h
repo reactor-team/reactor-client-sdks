@@ -686,6 +686,11 @@ void reactor_upload_bytes(
  * network, they buffer the frame for the next step (video as (H, W, 3) uint8
  * RGB, audio as planar (channels, samples) int16).  Input tracks get no RTP
  * sender in a stepped session; a step's output frames arrive in its result.
+ *
+ * The buffer holds at most one data-channel message's worth of frame bytes, as
+ * a step can never send more: pushing faster than steps run drops the oldest
+ * frames, across tracks.  Once the session's tracks are known, a push to a
+ * track the session does not take as input is dropped with a warning.
  */
 
 /* One step's output.  Opaque; owned by the host once delivered. */
@@ -730,10 +735,12 @@ typedef void (*reactor_step_completion_fn)(
  *                              take a step yet.  The step did not run.
  *   step_result_too_large      the step ran, but its result does not fit in one
  *                              data-channel message.
+ *   step_command_failed        one of the step's commands failed, so the step
+ *                              did not run.
+ *   step_session_ended         the session ended before the step's result came.
  *   MESSAGE_TOO_LARGE          the request (state + commands + buffered inputs)
  *                              exceeds the data channel's limit.  Nothing was
- *                              sent and the inputs are kept for the next step;
- *                              reactor_clear_step_inputs() drops them.
+ *                              sent.
  *   UNSUPPORTED_FRAME_ENCODING the result carries a frame this library cannot
  *                              decode.
  *   DECODE_FAILED              state_json / commands_json malformed, or state /
@@ -744,7 +751,10 @@ typedef void (*reactor_step_completion_fn)(
  * A step that ran but that the model reported as failed is a result, not an
  * error: ok is 1 and reactor_step_result_error() says why.
  *
- * Once sent, the input frames belong to that step whatever its outcome.
+ * A step refused before it goes out (INVALID_STATE, DECODE_FAILED) keeps the
+ * buffered input frames for the next step.  Past those checks they belong to
+ * the step whatever its outcome: one whose request cannot be sent
+ * (MESSAGE_TOO_LARGE) drops them too.
  */
 void reactor_step(
     ReactorHandle             *handle,
@@ -811,6 +821,13 @@ const char *reactor_step_result_track_name(const ReactorStepResult *result, uint
 
 /* "video" | "audio" — a static string. */
 const char *reactor_step_result_track_kind(const ReactorStepResult *result, uint32_t track);
+
+/*
+ * The rate the track's frames play at, as the runtime reported it: frames per
+ * second for video, samples per second for audio.  0.0 when the runtime did not
+ * say, or when out of range.
+ */
+double reactor_step_result_track_rate(const ReactorStepResult *result, uint32_t track);
 
 uint32_t reactor_step_result_frame_count(const ReactorStepResult *result, uint32_t track);
 
