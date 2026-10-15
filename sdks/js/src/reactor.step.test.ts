@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import {
   InvalidStateError,
   StepCommandFailedError,
@@ -11,6 +11,7 @@ import {
 import { FileRef } from './file-ref';
 import { FakeReactorClient } from './internal/fake-reactor-client';
 import type { StepResult } from './internal/reactor-wasm.types';
+import type { ReactorEventMap } from './types';
 
 vi.mock('./internal/wasm', () => ({
   loadReactorWasm: () => Promise.resolve({ ReactorClient: FakeReactorClient }),
@@ -215,10 +216,10 @@ describe('Reactor.step', () => {
     expect(reactor.getLastError()).toBeUndefined();
   });
 
-  it('has no step-accepted event: the result is the step’s one response', async () => {
-    const { client } = await connected('stepped');
-
-    expect('onStepAccepted' in client).toBe(false);
+  // Checked by type-check: the result is the step's one response, so the
+  // public events have no step-accepted one.
+  it('has no step-accepted event: the result is the step’s one response', () => {
+    expectTypeOf<ReactorEventMap>().not.toHaveProperty('stepAccepted');
   });
 
   it('reads a VideoFrame the caller closes as soon as pushFrame() returns', async () => {
