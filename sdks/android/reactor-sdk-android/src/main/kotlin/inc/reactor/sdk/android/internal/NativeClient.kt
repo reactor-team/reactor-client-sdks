@@ -1,6 +1,8 @@
 package inc.reactor.sdk.android.internal
 
+import inc.reactor.sdk.android.Clip
 import inc.reactor.sdk.android.CommandReply
+import inc.reactor.sdk.android.DownloadedClip
 import inc.reactor.sdk.android.FileRef
 import inc.reactor.sdk.android.Stats
 import java.util.concurrent.atomic.AtomicBoolean
@@ -125,6 +127,31 @@ internal object NativeClient {
         ticket: Long,
     )
 
+    private external fun nativeRequestClip(
+        context: Long,
+        durationSeconds: Double,
+        ticket: Long,
+    )
+
+    private external fun nativeRequestRecording(
+        context: Long,
+        ticket: Long,
+    )
+
+    private external fun nativeInitProgress(completions: Class<*>)
+
+    private external fun nativeDownloadClip(
+        context: Long,
+        playlistUrl: String,
+        jwt: String?,
+        outPath: String,
+        predictedReadyAtMs: Double,
+        readyTimeoutSeconds: Double,
+        local: Boolean,
+        wantProgress: Boolean,
+        ticket: Long,
+    )
+
     /**
      * Global references the bridge could not release, kept forever on purpose.
      *
@@ -156,6 +183,7 @@ internal object NativeClient {
     private fun ensureCompletionsWired() {
         if (completionsWired) return
         nativeInitCompletions(Completions::class.java)
+        nativeInitProgress(Completions::class.java)
         completionsWired = true
     }
 
@@ -308,6 +336,49 @@ internal object NativeClient {
             Completions.await("upload_bytes", decode = Uploads::decode) { ticket ->
                 checkOpen()
                 nativeUploadBytes(context, data, length, name, mimeType, ticket)
+            }
+
+        suspend fun requestClip(durationSeconds: Double): Clip =
+            Completions.await("request_clip", decode = Recordings::decodeClip) { ticket ->
+                checkOpen()
+                nativeRequestClip(context, durationSeconds, ticket)
+            }
+
+        suspend fun requestRecording(): Clip =
+            Completions.await("request_recording", decode = Recordings::decodeClip) { ticket ->
+                checkOpen()
+                nativeRequestRecording(context, ticket)
+            }
+
+        /**
+         * Download a clip.
+         *
+         * Deliberately does **not** call checkOpen(): a download outlives the handle it was given
+         * one of, and refusing to start one because the client is closing would be inventing a
+         * rule the ABI does not have. The handle may legitimately be null on this call.
+         */
+        suspend fun downloadClip(
+            playlistUrl: String,
+            jwt: String?,
+            outPath: String,
+            predictedReadyAtMs: Double,
+            readyTimeoutSeconds: Double,
+            local: Boolean,
+            onProgress: ((Int, Int) -> Unit)?,
+        ): DownloadedClip =
+            Completions.await("download_clip", decode = Recordings::decodeDownload) { ticket ->
+                if (onProgress != null) Completions.watchProgress(ticket, onProgress)
+                nativeDownloadClip(
+                    context,
+                    playlistUrl,
+                    jwt,
+                    outPath,
+                    predictedReadyAtMs,
+                    readyTimeoutSeconds,
+                    local,
+                    onProgress != null,
+                    ticket,
+                )
             }
 
         val status: String?
