@@ -190,9 +190,10 @@ typedef struct ReactorCallbacks {
  * "code" is one of INVALID_STATE, DISCONNECTED, NETWORK_ERROR, REQUEST_TIMEOUT,
  * TRANSPORT_ERROR, UNAUTHORIZED, NOT_FOUND, CONFLICT, RATE_LIMITED, BAD_REQUEST,
  * SERVER_ERROR, VERSION_MISMATCH, DECODE_FAILED, SESSION_TERMINAL,
- * MESSAGE_TOO_LARGE, ABORTED, GENERATION_MODE_MISMATCH, UNSUPPORTED_FRAME_ENCODING,
- * INTERNAL_ERROR, step_refused, step_not_ready, step_result_too_large,
- * step_command_failed, step_session_ended — *or* a code the platform sent for a
+ * MESSAGE_TOO_LARGE, ABORTED, GENERATION_MODE_MISMATCH,
+ * DATA_CHANNEL_CHUNKING_REQUIRED, UNSUPPORTED_FRAME_ENCODING, INTERNAL_ERROR,
+ * step_refused, step_not_ready, step_result_too_large, step_command_failed,
+ * step_session_ended — *or* a code the platform sent for a
  * rejected control request, command, recording or step, which is open-ended.
  * (The five lowercase ones name the outcomes the runtime reports for a step;
  * see reactor_step.)  Treat
@@ -358,6 +359,9 @@ ReactorHandle *reactor_create_with_adm(
  * does not report starting in that mode — a runtime without stepped generation
  * ignores the request, and the client would otherwise wait on steps from a
  * streaming session.  A streamed request accepts a runtime that reports nothing.
+ * A stepped session also needs data-channel chunking: reactor_connect() fails
+ * with DATA_CHANNEL_CHUNKING_REQUIRED when this library or the runtime did not
+ * negotiate it, since without it a single camera frame outgrows a message.
  *
  * The returned handle must be destroyed with reactor_destroy().
  */

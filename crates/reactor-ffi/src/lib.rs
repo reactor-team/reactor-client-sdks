@@ -3917,6 +3917,10 @@ mod tests {
                 },
                 codes::GENERATION_MODE_MISMATCH,
             ),
+            (
+                CoreError::ChunkingRequired,
+                codes::DATA_CHANNEL_CHUNKING_REQUIRED,
+            ),
         ] {
             let recorded = StepRecorded::new();
             StepCompletion {
