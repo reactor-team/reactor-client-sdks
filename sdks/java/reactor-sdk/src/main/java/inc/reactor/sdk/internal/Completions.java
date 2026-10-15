@@ -8,6 +8,7 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -213,18 +214,21 @@ public final class Completions {
     }
 
     /**
-     * Settles everything still pending, and stops finding anything afterwards.
+     * Settles everything pending when called, and stops finding it afterwards.
      *
      * <p>Called when the client closes. Leaving an operation out would leave its caller waiting for
      * the life of the process, which is the other half of the same bug as freeing one too early.
+     * Only what it settles is removed: an operation registered while this runs stays findable, so
+     * the {@link #abandon} that follows its refused call still settles it.
      *
      * @param why what to fail them with
      */
     public void settleAll(ReactorException why) {
-        List<Pending<?>> abandoned = new ArrayList<>(pending.values());
-        pending.clear();
-        for (Pending<?> one : abandoned) {
-            one.future().completeExceptionally(why);
+        List<Map.Entry<Long, Pending<?>>> abandoned = new ArrayList<>(pending.entrySet());
+        for (Map.Entry<Long, Pending<?>> one : abandoned) {
+            if (pending.remove(one.getKey(), one.getValue())) {
+                one.getValue().future().completeExceptionally(why);
+            }
         }
     }
 

@@ -134,6 +134,34 @@ final class CompletionsTest {
     }
 
     @Test
+    @DisplayName("an operation registered while close settles the rest is never lost")
+    void registeringDuringSettleAllLosesNothing() throws InterruptedException {
+        // A close races calls being registered: each must end up either settled by it or still
+        // findable afterwards, never dropped from the map unsettled.
+        try (Arena arena = Arena.ofShared()) {
+            Completions completions = new Completions(arena);
+            java.util.List<CompletableFuture<String>> futures =
+                    java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+            Thread registering = new Thread(() -> {
+                for (int i = 0; i < 20_000; i++) {
+                    CompletableFuture<String> future = new CompletableFuture<>();
+                    futures.add(future);
+                    completions.register("send_command", json -> json, future);
+                }
+            });
+            registering.start();
+            while (registering.isAlive()) {
+                completions.settleAll(DetachedCompletion.abandoned("close"));
+            }
+            registering.join();
+            completions.settleAll(DetachedCompletion.abandoned("close"));
+
+            assertEquals(0, completions.pendingCount());
+            assertTrue(futures.stream().allMatch(CompletableFuture::isDone), "a registered future was lost");
+        }
+    }
+
+    @Test
     @DisplayName("an error payload that is not JSON still becomes an error, not a lost failure")
     void anUnparseableErrorIsStillAnError() {
         try (Arena arena = Arena.ofShared()) {

@@ -113,6 +113,30 @@ public final class StepFrame {
         return captureTimeUs == null ? OptionalLong.empty() : OptionalLong.of(captureTimeUs);
     }
 
+    /**
+     * Equal to another frame with the same encoding, dtype, shape, bytes, metadata and capture time,
+     * so the records that hold frames ({@link StepTrackOutput}, {@link StepResult}) compare by value
+     * too. No metadata and empty metadata are different frames, as they are on the wire.
+     */
+    @Override
+    public boolean equals(@Nullable Object other) {
+        return other instanceof StepFrame that
+                && encoding.equals(that.encoding)
+                && dtype.equals(that.dtype)
+                && java.util.Arrays.equals(shape, that.shape)
+                && java.util.Arrays.equals(data, that.data)
+                && java.util.Arrays.equals(metadata, that.metadata)
+                && java.util.Objects.equals(captureTimeUs, that.captureTimeUs);
+    }
+
+    @Override
+    public int hashCode() {
+        int hash = java.util.Objects.hash(encoding, dtype, captureTimeUs);
+        hash = 31 * hash + java.util.Arrays.hashCode(shape);
+        hash = 31 * hash + java.util.Arrays.hashCode(data);
+        return 31 * hash + java.util.Arrays.hashCode(metadata);
+    }
+
     @Override
     public String toString() {
         return "StepFrame[" + dtype + " " + java.util.Arrays.toString(shape) + ", " + data.length + " bytes]";

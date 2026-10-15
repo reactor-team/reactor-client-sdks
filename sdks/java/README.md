@@ -207,10 +207,16 @@ A step that ran but that the model reported as failed is not an exception: it
 completes with `result.error()` saying why.
 
 A step the runtime refuses fails with `StepRefusedException`; one the session
-cannot take yet with `StepNotReadyException` (neither ran); one whose output
-does not fit in a message with `StepResultTooLargeException`; a request too large
-to send with `MessageTooLargeException` (nothing was sent).
-`stepTimeoutSeconds(...)` bounds a step (default 300 s). See [`Example09SteppedGeneration`](examples/src/main/java/inc/reactor/examples/Example09SteppedGeneration.java).
+cannot take yet with `StepNotReadyException`; one whose state key or command
+failed with `StepCommandFailedException` (none of these three ran); one whose
+output does not fit in a message with `StepResultTooLargeException`; one whose
+session ended before its result came with `StepSessionEndedException` (whether it
+ran is unknown); a request too large to send with `MessageTooLargeException`
+(nothing was sent). A stepped `connect()` fails with
+`DataChannelChunkingRequiredException` when the data channel did not negotiate
+chunking, which a stepped session needs.
+`stepTimeoutSeconds(...)` bounds a step (default 300 s). See
+[`Example09SteppedGeneration`](examples/src/main/java/inc/reactor/examples/Example09SteppedGeneration.java).
 
 ## From Kotlin
 

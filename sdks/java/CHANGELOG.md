@@ -26,8 +26,10 @@ versioning follows [Semantic Versioning](https://semver.org/).
   step results over HTTP), and `error()` is set when the step ran but the
   model reported a failure — such a step completes normally. A step fails with
   `StepRefusedException` when refused, the new `StepNotReadyException` when
-  the session cannot take a step yet (neither ran), and
-  `StepResultTooLargeException` when its output does not fit in a message.
+  the session cannot take a step yet, `StepCommandFailedException` when a
+  state key or command failed (none of these three ran),
+  `StepSessionEndedException` when the session ended before its result came,
+  and `StepResultTooLargeException` when its output does not fit in a message.
   `step()` takes no arguments too, running on the model's current state. The
   result is copied onto the heap once and the native one freed straight away,
   so it can be kept. `Track.pushFrame` buffers into the next step in such a
@@ -36,11 +38,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
   a track the session does not take as input is dropped with a warning. A
   step refused before it goes out keeps its buffered frames; past that they
   belong to it whatever its outcome — one that could not be sent,
-  `MessageTooLargeException` included, drops them too, and nothing is resent. `clearStepInputs()` drops what is buffered now, and
+  `MessageTooLargeException` included, drops them too, and nothing is resent.
+  `clearStepInputs()` drops what is buffered now, and
   `stepTimeoutSeconds(...)` bounds a step (default 300 s). A frame handler on
   a stepped session's track is refused, since nothing streams there.
   `connect()` fails with `GenerationModeMismatchException` when the runtime
-  does not start the session stepped. The Kotlin facade gains `suspend fun
+  does not start the session stepped, and with
+  `DataChannelChunkingRequiredException` when the data channel did not
+  negotiate chunking. The Kotlin facade gains `suspend fun
   step(...)`, `clearStepInputs()`, and `generation`.
 
 ### Changed

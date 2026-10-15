@@ -344,11 +344,14 @@ public final class Reactor implements AutoCloseable {
      * {@link StepResult#error()} saying why. The future fails with {@link StepRefusedException}
      * when the runtime turns the step down (calls applied before the refusal stay applied), {@link
      * StepNotReadyException} when the session cannot take a step yet (the step did not run), {@link
-     * StepResultTooLargeException} when the step ran but its output does not fit in one message,
-     * {@link MessageTooLargeException} when the request does not (nothing was sent), {@link
-     * UnsupportedFrameEncodingException} for a frame this SDK cannot decode, {@link
-     * RequestTimeoutException} after {@link ReactorOptions#stepTimeoutSeconds()}, and {@link
-     * InvalidStateException} outside a connected stepped session.
+     * StepCommandFailedException} when one of its state keys or commands failed (the step did not
+     * run; the calls before it stay applied), {@link StepSessionEndedException} when the session
+     * ended before its result came (whether it ran is unknown), {@link StepResultTooLargeException}
+     * when the step ran but its output does not fit in one message, {@link MessageTooLargeException}
+     * when the request does not (nothing was sent), {@link UnsupportedFrameEncodingException} for a
+     * frame this SDK cannot decode, {@link RequestTimeoutException} after {@link
+     * ReactorOptions#stepTimeoutSeconds()}, {@link BadRequestException} for a state that is not a
+     * JSON object, and {@link InvalidStateException} outside a connected stepped session.
      *
      * <p>A step refused before it goes out ({@link InvalidStateException}, malformed arguments)
      * keeps the buffered input frames for the next step. Past that they belong to the step whatever
@@ -359,10 +362,14 @@ public final class Reactor implements AutoCloseable {
      * dropped with a warning.
      *
      * @param state the model's state fields as a JSON object, or {@code null} to change none
-     * @param commands what to run after the state, in order; may be empty
+     * @param commands what to run after the state, in order; empty or {@code null} for none
      * @return the step's result, copied onto the heap once and safe to keep
      */
-    public CompletableFuture<StepResult> step(@Nullable JsonValue state, java.util.List<StepCommand> commands) {
+    public CompletableFuture<StepResult> step(
+            @Nullable JsonValue state, java.util.@Nullable List<StepCommand> commands) {
+        if (commands == null) {
+            commands = java.util.List.of();
+        }
         if (state instanceof JsonValue.JsonNull) {
             state = null;
         }
