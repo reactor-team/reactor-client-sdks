@@ -28,6 +28,14 @@ of (label, file, pattern) rather than one bespoke check per language — adding
 a future SDK (Swift, Go, ...) means adding one entry to SDKS, not a new
 function.
 
+Codes are compared exactly as they travel, case included. Most are
+SCREAMING_SNAKE, but a few are the runtime's own codes passed through as it
+sends them (`step_refused`, `step_result_too_large`), and an SDK that declared
+`STEP_REFUSED` instead would never match what arrives. Where a declaration
+names the core's constant rather than repeating the string — C++'s macro
+entries, Swift's matchers — the name is translated through the core's own
+`NAME -> "value"` table before comparing.
+
 `recoverable` is deliberately not checked here: none of the SDKs compute it
 per code (each reads it straight off the wire payload — the core is the only
 place that decides it, via `code_is_recoverable()`), so there is no per-SDK
@@ -48,8 +56,10 @@ CORE_SRC = REPO_ROOT / "crates/reactor-core/src/error.rs"
 
 # `pub const NETWORK_ERROR: &str = "NETWORK_ERROR";` — nothing else in this
 # file matches this shape, so there's no need to isolate the `pub mod codes
-# { ... }` block it lives in.
-CORE_CODE = re.compile(r'pub const [A-Z_]+: &str = "([A-Z_]+)";')
+# { ... }` block it lives in. Captures the constant's name and its value, which
+# differ for the runtime's lowercase pass-through codes
+# (`STEP_REFUSED: &str = "step_refused"`).
+CORE_CODE = re.compile(r'pub const ([A-Z_]+): &str = "([A-Za-z_]+)";')
 
 # The universal fallback: every SDK's base error class defaults to this code
 # rather than giving it a dedicated subclass, so it is never expected in any
@@ -68,29 +78,36 @@ class Sdk:
     path: Path
     pattern: re.Pattern[str]  # first capture group is the declared CODE...
     # ...unless the declaration names a member instead of repeating the string,
-    # as Swift's matcher list does; then this turns the name back into a code.
+    # as Swift's matcher list does; then this turns the name back into the
+    # core's constant name...
     normalize: Callable[[str], str] = field(default=lambda captured: captured)
+    # ...and this says the capture is a core constant's NAME (C++'s macro
+    # entries, Swift's matchers), to be looked up in the core's table rather
+    # than compared as the wire value.
+    names_constant: bool = False
 
 
 # JS: `static override readonly code = 'NETWORK_ERROR';`. The base class's own
 # `static readonly code: string = 'INTERNAL_ERROR';` has no `override`, so it
 # is naturally excluded.
-JS_CODE = re.compile(r"static override readonly code = '([A-Z_]+)';")
+JS_CODE = re.compile(r"static override readonly code = '([A-Za-z_]+)';")
 
 # Python: subclasses assign `code = "NETWORK_ERROR"` with no type annotation.
 # The base class's `code: str = "INTERNAL_ERROR"` carries the annotation and
 # is naturally excluded.
-PY_CODE = re.compile(r'^    code = "([A-Z_]+)"$', re.MULTILINE)
+PY_CODE = re.compile(r'^    code = "([A-Za-z_]+)"$', re.MULTILINE)
 
-# C++: the `REACTOR_ERROR_CLASSES(X)` macro's `X(ClassName, CODE)` entries.
+# C++: the `REACTOR_ERROR_CLASSES(X)` macro's `X(ClassName, CODE)` entries,
+# where CODE names a `codes::` constant (the same name as the core's).
 CPP_CLASS_CODE = re.compile(r"X\(\w+,\s*([A-Z_]+)\)")
 
 # C++'s own hand-copy of the code strings, independent of the macro above:
 # `inline constexpr std::string_view NETWORK_ERROR = "NETWORK_ERROR";`.
-CPP_NAMESPACE_CODE = re.compile(r'inline constexpr std::string_view \w+ = "([A-Z_]+)";')
+CPP_NAMESPACE_CODE = re.compile(r'inline constexpr std::string_view \w+ = "([A-Za-z_]+)";')
 
-# Swift: `public static let networkError = Code(rawValue: "NETWORK_ERROR")`.
-SWIFT_CODE = re.compile(r'public static let \w+ = Code\(rawValue: "([A-Z_]+)"\)')
+# Swift: `public static let networkError = Code(rawValue: "NETWORK_ERROR")`, or
+# wrapped after `Code(` where the name is too long for one line.
+SWIFT_CODE = re.compile(r'public static let \w+ = Code\(\s*rawValue: "([A-Za-z_]+)"\)')
 
 # Swift's second hand-copy: the matchers `catch ReactorError.networkError`
 # resolves through, `public static var networkError: Code { .networkError }`.
@@ -110,17 +127,22 @@ SWIFT_ERRORS = REPO_ROOT / "sdks/swift/Sources/Reactor/ReactorError.swift"
 # separately written list that can fall out of step with the first; Java's
 # constant names its exception class in the same line, so the compiler enforces
 # that half — a constant naming a class that does not exist does not build.
-JAVA_CODE = re.compile(r'\("([A-Z_]+)",\s*(?:true|false),\s*\w+::new\)')
+JAVA_CODE = re.compile(r'\("([A-Za-z_]+)",\s*(?:true|false),\s*\w+::new\)')
 
 JAVA_ERRORS = REPO_ROOT / "sdks/java/reactor-sdk/src/main/java/inc/reactor/sdk/ErrorCode.java"
 
 SDKS = [
     Sdk("JS", REPO_ROOT / "sdks/js/src/errors.ts", JS_CODE),
     Sdk("Python", REPO_ROOT / "sdks/python/reactor_sdk/errors.py", PY_CODE),
-    Sdk("C++ (classes)", REPO_ROOT / "sdks/cpp/include/reactor/errors.hpp", CPP_CLASS_CODE),
+    Sdk(
+        "C++ (classes)",
+        REPO_ROOT / "sdks/cpp/include/reactor/errors.hpp",
+        CPP_CLASS_CODE,
+        names_constant=True,
+    ),
     Sdk("C++ (codes::)", REPO_ROOT / "sdks/cpp/include/reactor/errors.hpp", CPP_NAMESPACE_CODE),
     Sdk("Swift (Code)", SWIFT_ERRORS, SWIFT_CODE),
-    Sdk("Swift (matchers)", SWIFT_ERRORS, SWIFT_MATCHER, screaming_snake),
+    Sdk("Swift (matchers)", SWIFT_ERRORS, SWIFT_MATCHER, screaming_snake, names_constant=True),
     Sdk("Java", JAVA_ERRORS, JAVA_CODE),
 ]
 
@@ -132,16 +154,19 @@ def read(path: Path) -> str:
 
 
 def main() -> int:
-    core_codes = set(CORE_CODE.findall(read(CORE_SRC))) - {FALLBACK_CODE}
+    code_by_name = dict(CORE_CODE.findall(read(CORE_SRC)))
+    core_codes = set(code_by_name.values()) - {FALLBACK_CODE}
     if not core_codes:
         sys.exit("error: found no codes in error.rs — has the `codes` module moved?")
 
     problems: list[str] = []
 
     for sdk in SDKS:
-        declared = {sdk.normalize(m) for m in sdk.pattern.findall(read(sdk.path))} - {
-            FALLBACK_CODE
-        }
+        declared = {sdk.normalize(m) for m in sdk.pattern.findall(read(sdk.path))}
+        if sdk.names_constant:
+            # A name the core does not define stays as-is and is reported stale.
+            declared = {code_by_name.get(name, name) for name in declared}
+        declared -= {FALLBACK_CODE}
         where = str(sdk.path.relative_to(REPO_ROOT))
 
         missing = sorted(core_codes - declared)

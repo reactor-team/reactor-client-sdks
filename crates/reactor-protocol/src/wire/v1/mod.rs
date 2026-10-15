@@ -3,9 +3,9 @@
 //! The types below are generated at build time by `build.rs` from the
 //! `.proto` sources it fetches from the pinned `reactor-runtime` release
 //! (`prost-build`), then re-exported
-//! through the same `common`/`data`/`control`/`model`/`platform`/`track`
-//! modules this crate has always exposed — one per original `.proto` file —
-//! so callers are unaffected by the switch from hand-written types.
+//! through the same `common`/`data`/`control`/`model`/`platform`/`track`/`step`
+//! modules — one per original `.proto` file — so callers are unaffected by the
+//! switch from hand-written types.
 
 mod generated {
     #![allow(clippy::doc_lazy_continuation)]
@@ -31,6 +31,12 @@ pub mod platform {
 pub mod track {
     pub use super::generated::{
         PauseTrack, PublishTrack, PublishTrackResponse, ResumeTrack, UnpublishTrack,
+    };
+}
+
+pub mod step {
+    pub use super::generated::{
+        Frame, FrameEncoding, RequestStep, StepFailureCode, StepFileRef, StepResult, TrackFrames,
     };
 }
 

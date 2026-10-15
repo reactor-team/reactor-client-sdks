@@ -16,7 +16,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const REPO: &str = "reactor-team/reactor-runtime";
-const PROTO_FILES: &[&str] = &["common", "model", "platform", "track", "data", "control"];
+const PROTO_FILES: &[&str] = &[
+    "common", "model", "platform", "track", "step", "data", "control",
+];
 const LOCAL_PROTO_DIR_ENV: &str = "REACTOR_RUNTIME_PROTO_DIR";
 
 fn main() {

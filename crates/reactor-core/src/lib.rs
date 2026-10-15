@@ -36,6 +36,7 @@ pub mod signaling;
 pub mod stage_times;
 pub mod state;
 pub mod stats;
+pub mod step;
 
 /// Re-export of the wire-protocol crate.
 pub use reactor_protocol as protocol;

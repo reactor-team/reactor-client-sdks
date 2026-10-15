@@ -754,6 +754,11 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
         }
     }
 
+    fn data_channel_chunked(&self) -> bool {
+        let s = self.state.lock().unwrap();
+        s.data_channel.as_ref().is_some_and(DataChannel::is_chunked)
+    }
+
     fn send_data(&self, payload: &[u8], binary: bool) -> Result<(), CoreError> {
         debug!("[peer] → data: {} byte(s), binary={binary}", payload.len());
         let s = self.state.lock().unwrap();
