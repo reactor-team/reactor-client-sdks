@@ -130,6 +130,8 @@ jobs:
               - 'scripts/check-android-native.py'
               - 'scripts/asan-android-jni.sh'
               - 'scripts/require-android-device.sh'
+              - 'scripts/android-endurance.sh'
+              - 'scripts/android-endurance-diagnostics.sh'
               # The integration task wraps its test invocation in this, so a change to the
               # retry policy has to run the suite that consumes it. (The other SDKs' filters have
               # the same gap; this is the one wiring retry.sh into an Android task.)
