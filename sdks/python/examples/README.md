@@ -1,6 +1,6 @@
 # Reactor Python SDK examples
 
-Eight minimal examples, one per capability. Each teaches exactly one thing, and
+Nine minimal examples, one per capability. Each teaches exactly one thing, and
 the first seven exist in every Reactor SDK — so that part of the set doubles as
 a conformance grid: an example missing from an SDK is a code path that SDK has
 never run. `08` matches the JS SDK's `07` (numbered differently only because JS
@@ -18,6 +18,7 @@ has no native frame-metadata example).
 | 06 | [`06_record_clip.py`](06_record_clip.py) | `request_clip` and downloading the result | Helios |
 | 07 | [`07_frame_metadata.py`](07_frame_metadata.py) | The trailer on each incoming frame: id, sender timestamp, `user_data` (reads zero against Helios — see its own header) | Helios |
 | 08 | [`08_snapshot_and_rewind.py`](08_snapshot_and_rewind.py) | `send_command`'s resolved reply, read and used — not fire-and-forgotten | Helios |
+| 09 | [`09_stepped_generation.py`](09_stepped_generation.py) | A stepped session: `generation="stepped"`, frames pushed into a step, `step()` and its per-track arrays | any model with stepped generation (`REACTOR_MODEL`) |
 
 Every example shares one spine — connect, wait for ready, give the model the
 minimum it needs, receive frames — and adds one new call on top. The diff

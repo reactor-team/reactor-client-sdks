@@ -349,6 +349,18 @@ class Track:
         format change or disconnect discards the partial block. Local audio
         tracks still share the synthetic capture device.
 
+        **Stepped sessions.** In a client created with ``generation="stepped"`` this
+        sends nothing: the frame is buffered, with its tag and capture time, and the
+        next :meth:`Reactor.step` carries every frame pushed since the one before —
+        per track, in push order. Video goes as an ``(height, width, 3)`` ``uint8``
+        RGB frame, audio as one planar ``(channels, samples)`` ``int16`` frame per
+        push; a step frame has no sample rate, so push audio at the rate the model's
+        track declares. Publish the track first, as for a streamed session. The
+        buffer holds at most one message's worth of frame bytes: pushing faster
+        than steps run drops the oldest frames, across tracks. Once the session's
+        tracks are known, a push to a track the session does not take as input is
+        dropped with a warning.
+
         An argument the track's kind has no use for is refused rather than ignored —
         but only where ignoring it would throw away what the caller meant. Passing
         `sample_rate` to a video track is merely redundant and is let through;
