@@ -191,10 +191,11 @@ typedef struct ReactorCallbacks {
  * TRANSPORT_ERROR, UNAUTHORIZED, NOT_FOUND, CONFLICT, RATE_LIMITED, BAD_REQUEST,
  * SERVER_ERROR, VERSION_MISMATCH, DECODE_FAILED, SESSION_TERMINAL,
  * MESSAGE_TOO_LARGE, ABORTED, GENERATION_MODE_MISMATCH, UNSUPPORTED_FRAME_ENCODING,
- * INTERNAL_ERROR, step_refused, step_not_ready, step_result_too_large — *or* a
- * code the platform sent for a rejected control request, command or recording,
- * which is open-ended.  (The three lowercase ones name the outcomes the runtime
- * reports for a step; see reactor_step.)  Treat
+ * INTERNAL_ERROR, step_refused, step_not_ready, step_result_too_large,
+ * step_command_failed, step_session_ended — *or* a code the platform sent for a
+ * rejected control request, command, recording or step, which is open-ended.
+ * (The five lowercase ones name the outcomes the runtime reports for a step;
+ * see reactor_step.)  Treat
  * an unrecognised code as an error you cannot classify, never as a parse failure.
  *
  * on_error reports the same codes, in the same shape plus "timestamp_ms".  The
@@ -333,12 +334,16 @@ ReactorHandle *reactor_create_with_adm(
  *                          "local":                bool,   // default false
  *                          "auto_resume_tracks":   bool,   // default true
  *                          "adm":                  "synthetic" | "platform",
- *                                                          // default synthetic
+ *                                                          // default as reactor_create:
+ *                                                          // synthetic, unless the
+ *                                                          // REACTOR_WEBRTC_ADM env var
+ *                                                          // says "platform"
  *                          "sdk_version":          "…",    // as reactor_create
  *                          "sdk_type":             "…",    // as reactor_create
  *                          "generation":           "streamed" | "stepped",
  *                                                          // default "streamed"
- *                          "step_timeout_seconds": n       // > 0; default 300
+ *                          "step_timeout_seconds": n       // > 0; default 300;
+ *                                                          // too long = no limit
  *                        }
  *                      An **unrecognised key, or a value of the wrong type, is
  *                      an error**: a misspelt "generation" would otherwise create
@@ -791,7 +796,7 @@ double reactor_step_result_elapsed(const ReactorStepResult *result);
 /*
  * Why the step failed, when it ran and the model reported a failure; NULL when
  * it worked.  A step that did not run never has a result: its completion fails
- * with step_refused or step_not_ready instead.
+ * with step_refused, step_not_ready or step_command_failed instead.
  */
 const char *reactor_step_result_error(const ReactorStepResult *result);
 
