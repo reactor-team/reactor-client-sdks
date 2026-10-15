@@ -35,23 +35,45 @@ extension Reactor {
         /// How long the token should live, in seconds. The server clamps it.
         public var expiresAfter: Int?
 
+        /// Extra HTTP headers to send on the token request, by name.
+        ///
+        /// Left empty, none are sent and the key is omitted from the options.
+        /// Reserved header names are rejected by the library, and the call fails
+        /// with its usual error; this SDK does not check them itself.
+        public var extraHeaders: [String: String]
+
         /// The wire spelling, which is the platform's rather than Swift's.
         private enum CodingKeys: String, CodingKey {
             case models
             case sessions
             case maxSessions = "max_sessions"
             case expiresAfter = "expires_after"
+            case extraHeaders = "extra_headers"
+        }
+
+        /// Written by hand so an empty `extraHeaders` leaves its key out, as the
+        /// optional fields do, rather than sending an empty object.
+        public func encode(to encoder: any Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encodeIfPresent(models, forKey: .models)
+            try container.encodeIfPresent(sessions, forKey: .sessions)
+            try container.encodeIfPresent(maxSessions, forKey: .maxSessions)
+            try container.encodeIfPresent(expiresAfter, forKey: .expiresAfter)
+            if !extraHeaders.isEmpty {
+                try container.encode(extraHeaders, forKey: .extraHeaders)
+            }
         }
 
         /// Scope a token.
         public init(
             models: [String]? = nil, sessions: [String]? = nil, maxSessions: Int? = nil,
-            expiresAfter: Int? = nil
+            expiresAfter: Int? = nil, extraHeaders: [String: String] = [:]
         ) {
             self.models = models
             self.sessions = sessions
             self.maxSessions = maxSessions
             self.expiresAfter = expiresAfter
+            self.extraHeaders = extraHeaders
         }
     }
 
@@ -154,12 +176,21 @@ extension Reactor {
         apiURL: String = Reactor.defaultAPIURL,
         options: TokenOptions? = nil,
         local: Bool = false,
+        extraHeaders: [String: String] = [:],
         eventQueue: DispatchQueue? = nil
     ) async throws {
+        // The same headers go on the exchange as on every later request.
+        var tokenOptions = options
+        if !extraHeaders.isEmpty {
+            var merged = tokenOptions ?? TokenOptions()
+            merged.extraHeaders = extraHeaders
+            tokenOptions = merged
+        }
         let token = try await Reactor.fetchJWT(
-            apiKey: apiKey, apiURL: apiURL, options: options, local: local)
+            apiKey: apiKey, apiURL: apiURL, options: tokenOptions, local: local)
         try self.init(
-            model: model, jwt: token, apiURL: apiURL, local: local, eventQueue: eventQueue)
+            model: model, jwt: token, apiURL: apiURL, local: local,
+            extraHeaders: extraHeaders, eventQueue: eventQueue)
     }
 }
 

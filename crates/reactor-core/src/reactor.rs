@@ -95,6 +95,10 @@ pub struct ReactorOptions {
     /// runtime while the session is ready. Each batch's bitrates cover the
     /// interval since the previous one. Set to `Duration::ZERO` to disable it.
     pub client_stats_interval: Duration,
+    /// Sent on every coordinator and signaling request. [`Reactor::connect`]
+    /// rejects names the SDK sets itself; see
+    /// [`validate_extra_headers`](crate::http::validate_extra_headers).
+    pub extra_headers: crate::http::ExtraHeaders,
 }
 
 impl ReactorOptions {
@@ -115,6 +119,7 @@ impl ReactorOptions {
             local: false,
             heartbeat_interval: Duration::from_secs(10),
             client_stats_interval: Duration::from_secs(5),
+            extra_headers: crate::http::ExtraHeaders::default(),
         }
     }
 }
@@ -245,6 +250,7 @@ impl Reactor {
                 extra_args: options.extra_args.clone(),
                 poll: options.session_poll,
                 local: options.local,
+                extra_headers: options.extra_headers.clone(),
             },
         );
         Self {
@@ -305,6 +311,7 @@ impl Reactor {
     // ------------------------------------------------------------------
 
     pub async fn connect(&self, connect_options: ConnectOptions) -> Result<(), CoreError> {
+        self.options.extra_headers.validate()?;
         {
             let mut state = self.state.lock().unwrap();
             if state.status != ReactorStatus::Disconnected {
@@ -1621,6 +1628,7 @@ impl Reactor {
                 max_attempts: self.state.lock().unwrap().sdp_max_attempts,
                 ..self.options.sdp_poll
             },
+            self.options.extra_headers.clone(),
         )
     }
 

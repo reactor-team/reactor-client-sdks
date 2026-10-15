@@ -69,6 +69,9 @@ struct FFI: Sendable {
     /// reconnect; zero leaves recvonly tracks paused until the host resumes them
     /// itself.
     ///
+    /// `extraHeadersJSON` — a JSON object of header name to string value, sent
+    /// on every coordinator and signaling request; nil when there are none.
+    ///
     /// `sdkVersion` and `sdkType` are reported to the coordinator as
     /// `client_info`. Every binding shares this entry point, which would
     /// otherwise report `ffi` for all of them — Python sends `python`, so this
@@ -83,7 +86,8 @@ struct FFI: Sendable {
             _ callbacks: UnsafePointer<ReactorCallbacks>?,
             _ admMode: Int32,
             _ sdkVersion: UnsafePointer<CChar>?,
-            _ sdkType: UnsafePointer<CChar>?
+            _ sdkType: UnsafePointer<CChar>?,
+            _ extraHeadersJSON: UnsafePointer<CChar>?
         ) -> OpaquePointer?
 
     /// `reactor_destroy` — 0 when no callback is running and none will start,
@@ -261,10 +265,11 @@ extension FFI {
             reactor_fetch_jwt(apiURL, apiKey, optionsJSON, local, completion, userdata)
         },
         createWithADM: {
-            apiURL, model, jwt, local, autoResumeTracks, callbacks, admMode, sdkVersion, sdkType in
+            apiURL, model, jwt, local, autoResumeTracks, callbacks, admMode, sdkVersion, sdkType,
+            extraHeadersJSON in
             reactor_create_with_adm(
                 apiURL, model, jwt, local, autoResumeTracks, callbacks, admMode, sdkVersion,
-                sdkType)
+                sdkType, extraHeadersJSON)
         },
         destroy: { handle in reactor_destroy(handle) },
         connect: { handle, sessionID, connectionID, completion, userdata in

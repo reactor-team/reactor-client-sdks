@@ -28,6 +28,7 @@ export interface ClientOptions {
   sdkType?: string;
   sdkVersion?: string;
   autoResumeTracks?: boolean;
+  extraHeaders?: Record<string, string>;
   extraArgs?: Record<string, unknown>;
   heartbeatIntervalMs?: number;
   readyTimeoutMs?: number;

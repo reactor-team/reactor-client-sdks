@@ -33,6 +33,14 @@ export interface ClientOptions {
   sdkVersion?: string;
   /** Resume every recvonly track on connect. Default true. */
   autoResumeTracks?: boolean;
+  /** Extra headers sent on every coordinator and signaling request (not on
+   *  presigned uploads or clip downloads). Names the SDK sets itself
+   *  (Authorization, Content-Type, Content-Length, Reactor-API-*,
+   *  Reactor-WebRTC-Version), names a browser forbids (Cookie, Origin,
+   *  Sec-*, Proxy-*, …), a name given twice in any case, and values that are
+   *  not visible ASCII are rejected at construction. A browser sends a CORS preflight for any custom header, so
+   *  the API's allowed headers must list every name used here. */
+  extraHeaders?: Record<string, string>;
   /** Free-form model arguments, sent on session creation. */
   extraArgs?: Record<string, unknown>;
   /** Keep-alive period. 0 disables the heartbeat. Default 10000. */

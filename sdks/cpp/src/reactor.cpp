@@ -495,6 +495,10 @@ void ClientImpl::begin_connect(std::unique_ptr<Pending> op, ConnectOptions optio
       // With no `max_sessions`, a token bound to the session cannot create sessions.
       token_options["sessions"] = Json::array({wanted.session_id});
     }
+    // The coordinator sees the same headers on the mint as on every later request.
+    if (!extra_headers_json_.empty()) {
+      token_options["extra_headers"] = Json::parse(extra_headers_json_);
+    }
     const std::string options_json = token_options.dump();
 
     auto exchange = std::make_shared<TokenExchange>(

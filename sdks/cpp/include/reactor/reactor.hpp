@@ -87,6 +87,9 @@ struct FetchJwtOptions {
   /// Declared last, so an aggregate initializer written before this field
   /// existed keeps its meaning.
   std::optional<std::vector<std::string>> sessions = std::nullopt;
+  /// HTTP headers sent on the token exchange. Names the SDK sets itself are
+  /// rejected by the core. Declared last for the same reason as `sessions`.
+  std::map<std::string, std::string> extra_headers = {};
 };
 
 /// Exchange an API key without creating a client or session. The returned future
@@ -126,6 +129,11 @@ struct Options {
   /// — `Options{url, local, executor}` — still selects the executor rather
   /// than silently becoming the flag.
   bool auto_resume_tracks = true;
+
+  /// Extra HTTP headers sent on every coordinator and signaling request. Names
+  /// the SDK sets itself are rejected at `connect()`. Appended last, like
+  /// `auto_resume_tracks`, so older aggregate initializers keep their meaning.
+  std::map<std::string, std::string> extra_headers = {};
 };
 
 /// What `connect` may adopt instead of creating.

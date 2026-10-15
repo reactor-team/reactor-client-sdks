@@ -97,6 +97,30 @@ final class ClientPeerTokenTest {
     }
 
     @Test
+    @DisplayName("the client's own exchanges carry its extraHeaders, scoped or bound")
+    void exchangesCarryExtraHeaders() {
+        try (FakeNativeLibrary fake = new FakeNativeLibrary()) {
+            ReactorOptions options = ReactorOptions.builder(API_URL, MODEL)
+                    .apiKey("rk_test")
+                    .extraHeaders(java.util.Map.of("X-Tenant", "acme"))
+                    .dispatcher(Runnable::run)
+                    .build();
+            ClientPeer client = peer(fake, options);
+
+            client.connect(null, null);
+            fake.settleLastCall(true, "{}", null);
+            client.connect("session-1", null);
+
+            assertEquals(
+                    List.of(
+                            "{\"models\":[\"owner/model\"],\"extra_headers\":{\"X-Tenant\":\"acme\"}}",
+                            "{\"sessions\":[\"session-1\"],\"extra_headers\":{\"X-Tenant\":\"acme\"}}"),
+                    fake.jwtRequests);
+            client.close();
+        }
+    }
+
+    @Test
     @DisplayName("a second connect at the same scope reuses the token and the client behind it")
     void theSameScopeIsNotMintedTwice() {
         try (FakeNativeLibrary fake = new FakeNativeLibrary()) {

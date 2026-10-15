@@ -9,6 +9,17 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-10-15
+
+### Added
+
+- `Reactor(..., extra_headers={...})` sends extra HTTP headers on every request the
+  client makes to the coordinator and signaling. Reserved names such as
+  `Authorization` are rejected at `connect()`.
+- `fetch_jwt(..., extra_headers={...})` sends extra HTTP headers on the token
+  request, after the SDK's own. Reserved names such as `Authorization` raise
+  `AuthError` before any request is made.
+
 ## [1.10.0] - 2026-10-13
 
 ### Added

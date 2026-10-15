@@ -7,6 +7,16 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-15
+
+### Added
+
+- `Reactor(..., extraHeaders: [...])` sends extra HTTP headers on every
+  coordinator and signaling request the client makes. Reserved header names are
+  rejected when the client connects.
+- `Reactor.TokenOptions(extraHeaders: [...])` sends extra HTTP headers on the
+  token request. Reserved header names fail the call.
+
 ## [1.5.0] - 2026-10-13
 
 ### Added

@@ -69,6 +69,9 @@ struct ClientOptions {
     /// Resume every recvonly track once connected. Default `true`; overridable
     /// per connect.
     auto_resume_tracks: Option<bool>,
+    /// Extra headers sent on every coordinator and signaling request. See
+    /// `ReactorOptions::extra_headers`.
+    extra_headers: Option<std::collections::BTreeMap<String, String>>,
     /// Free-form model arguments sent on session creation.
     extra_args: Option<serde_json::Value>,
     heartbeat_interval_ms: Option<u64>,
@@ -89,6 +92,45 @@ struct ClientOptions {
     /// Defaults to `"warn"`: the core logs freely at debug, and a browser
     /// console is a user-facing surface.
     log_level: Option<String>,
+}
+
+/// Whether a browser's `fetch` refuses to send a request header, which it does by
+/// dropping it without an error. Refused up front instead, so a caller whose
+/// gateway needs it sees why. The names are Fetch's forbidden request headers
+/// (<https://fetch.spec.whatwg.org/#forbidden-request-header>); the ones the SDK
+/// owns are already refused by `validate_extra_headers`.
+fn browser_forbids(name: &str, value: &str) -> bool {
+    const FORBIDDEN: &[&str] = &[
+        "accept-charset",
+        "accept-encoding",
+        "access-control-request-headers",
+        "access-control-request-method",
+        "cookie",
+        "cookie2",
+        "date",
+        "dnt",
+        "expect",
+        "keep-alive",
+        "origin",
+        "referer",
+        "set-cookie",
+        "te",
+        "trailer",
+        "via",
+    ];
+    let name = name.to_ascii_lowercase();
+    // The method-override headers are forbidden only when they name an
+    // unsafe method.
+    let overrides_to_unsafe_method = matches!(
+        name.as_str(),
+        "x-http-method" | "x-http-method-override" | "x-method-override"
+    ) && value.split(',').any(|method| {
+        ["connect", "trace", "track"].contains(&method.trim().to_ascii_lowercase().as_str())
+    });
+    FORBIDDEN.contains(&name.as_str())
+        || name.starts_with("sec-")
+        || name.starts_with("proxy-")
+        || overrides_to_unsafe_method
 }
 
 impl ClientOptions {
@@ -112,6 +154,23 @@ impl ClientOptions {
         }
         if let Some(auto_resume) = self.auto_resume_tracks {
             options.auto_resume_tracks = auto_resume;
+        }
+        if let Some(headers) = self.extra_headers {
+            options.extra_headers = headers.into();
+            options
+                .extra_headers
+                .validate()
+                .map_err(|e| invalid(&e.to_string()))?;
+            if let Some(name) = options
+                .extra_headers
+                .to_pairs()
+                .into_iter()
+                .find_map(|(name, value)| browser_forbids(&name, &value).then_some(name))
+            {
+                return Err(invalid(&format!(
+                    "extra header {name:?} is forbidden in a browser and would be dropped"
+                )));
+            }
         }
         options.extra_args = self.extra_args;
         if let Some(ms) = self.heartbeat_interval_ms {

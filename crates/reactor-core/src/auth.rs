@@ -15,7 +15,7 @@
 use serde::Deserialize;
 
 use crate::error::CoreError;
-use crate::http::{check_status, HttpRequest, Method};
+use crate::http::{check_status, ExtraHeaders, HttpRequest, Method};
 use crate::SharedHttp;
 
 /// Where the coordinator mints tokens.
@@ -64,6 +64,13 @@ pub struct TokenRequest {
     /// client joins one. Without `models` and `max_sessions` the token can reach
     /// only these and create nothing.
     pub sessions: Option<Vec<String>>,
+    /// Headers added to the mint request after the SDK's own, so the coordinator
+    /// sees the same ones that [`ReactorOptions::extra_headers`] puts on every
+    /// later request. They never reach the body. Names the SDK sets are refused;
+    /// see [`validate_extra_headers`].
+    ///
+    /// [`ReactorOptions::extra_headers`]: crate::reactor::ReactorOptions::extra_headers
+    pub extra_headers: ExtraHeaders,
 }
 
 impl TokenRequest {
@@ -158,14 +165,18 @@ pub async fn fetch_jwt(
 
     let body = serde_json::to_vec(&request.body()).map_err(CoreError::decode)?;
 
+    request.extra_headers.validate()?;
+    let mut headers = vec![
+        (API_KEY_HEADER.to_string(), api_key.to_string()),
+        ("Content-Type".to_string(), "application/json".to_string()),
+    ];
+    request.extra_headers.append_to(&mut headers);
+
     let response = http
         .request(HttpRequest {
             method: Method::Post,
             url: url.clone(),
-            headers: vec![
-                (API_KEY_HEADER.to_string(), api_key.to_string()),
-                ("Content-Type".to_string(), "application/json".to_string()),
-            ],
+            headers,
             body: Some(body),
         })
         .await?;
@@ -181,6 +192,8 @@ pub async fn fetch_jwt(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::error::codes;
     use crate::http::{HttpClient, HttpResponse};
@@ -237,6 +250,52 @@ mod tests {
             .build()
             .unwrap()
             .block_on(future)
+    }
+
+    #[test]
+    fn extra_headers_follow_the_sdks_own_and_stay_out_of_the_body() {
+        let http = FakeHttp::returning(200, r#"{"jwt":"token"}"#);
+        let request = TokenRequest {
+            extra_headers: BTreeMap::from([("X-Client".to_string(), "acme".to_string())]).into(),
+            ..TokenRequest::default()
+        };
+
+        block_on(fetch_jwt(
+            &(http.clone() as SharedHttp),
+            "https://api.reactor.inc",
+            "key-123",
+            &request,
+        ))
+        .unwrap();
+
+        let seen = http.seen.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            seen.headers.last(),
+            Some(&("X-Client".to_string(), "acme".to_string()))
+        );
+        assert!(seen.headers.iter().any(|(k, _)| k == API_KEY_HEADER));
+        assert_eq!(seen.body.as_deref(), Some(&b"null"[..]));
+    }
+
+    #[test]
+    fn a_reserved_extra_header_is_refused_before_anything_is_sent() {
+        let http = FakeHttp::returning(200, r#"{"jwt":"token"}"#);
+        let request = TokenRequest {
+            extra_headers: BTreeMap::from([("Reactor-API-Key".to_string(), "x".to_string())])
+                .into(),
+            ..TokenRequest::default()
+        };
+
+        let error = block_on(fetch_jwt(
+            &(http.clone() as SharedHttp),
+            "https://api.reactor.inc",
+            "key-123",
+            &request,
+        ))
+        .unwrap_err();
+
+        assert!(matches!(error, CoreError::InvalidState(_)));
+        assert!(http.seen.lock().unwrap().is_none());
     }
 
     #[test]

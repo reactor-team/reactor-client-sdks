@@ -743,7 +743,13 @@ class TestNoAudioDeviceIsOpened:
     passes is the whole contract.
     """
 
-    def _create(self, monkeypatch: pytest.MonkeyPatch, *, auto_resume_tracks: bool = True) -> dict:
+    def _create(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        auto_resume_tracks: bool = True,
+        extra_headers: dict | None = None,
+    ) -> dict:
         captured: dict = {}
         fake_lib = mock.Mock()
 
@@ -757,7 +763,9 @@ class TestNoAudioDeviceIsOpened:
             adm_mode,
             sdk_version,
             sdk_type,
+            extra_headers_json,
         ):
+            captured["extra_headers_json"] = extra_headers_json
             captured["adm_mode"] = adm_mode
             captured["auto_resume_tracks"] = auto_resume_tracks
             return 1234
@@ -769,7 +777,7 @@ class TestNoAudioDeviceIsOpened:
         )
         monkeypatch.setattr("reactor_sdk.client.get_lib", lambda: fake_lib)
 
-        reactor = Reactor("m", auto_resume_tracks=auto_resume_tracks)
+        reactor = Reactor("m", auto_resume_tracks=auto_resume_tracks, extra_headers=extra_headers)
         try:
             reactor._create_handle()
         finally:
@@ -816,6 +824,17 @@ class TestNoAudioDeviceIsOpened:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         assert self._create(monkeypatch, auto_resume_tracks=False)["auto_resume_tracks"] == 0
+
+    async def test_extra_headers_default_to_null(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._create(monkeypatch)["extra_headers_json"] is None
+        assert self._create(monkeypatch, extra_headers={})["extra_headers_json"] is None
+
+    async def test_extra_headers_reach_the_ffi_as_a_json_object(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sent = self._create(monkeypatch, extra_headers={"X-Gateway": "a", "X-Né": "ü"})
+        assert isinstance(sent["extra_headers_json"], bytes)
+        assert json.loads(sent["extra_headers_json"]) == {"X-Gateway": "a", "X-Né": "ü"}
 
 
 class TestConnectionId:

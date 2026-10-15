@@ -68,6 +68,10 @@ public final class FakeNativeLibrary implements AutoCloseable {
     /** The {@code auto_resume_tracks} flag {@code reactor_create_with_adm} was called with. */
     public int autoResumeTracks = -1;
 
+    /** The {@code extra_headers_json} {@code reactor_create_with_adm} was called with; null for NULL. */
+    @Nullable
+    public String extraHeadersJson;
+
     /** What the client reported about itself. */
     @Nullable
     String sdkVersion;
@@ -207,7 +211,9 @@ public final class FakeNativeLibrary implements AutoCloseable {
             MemorySegment callbacksStruct,
             int adm,
             MemorySegment version,
-            MemorySegment type) {
+            MemorySegment type,
+            MemorySegment extraHeaders) {
+        this.extraHeadersJson = extraHeaders.equals(MemorySegment.NULL) ? null : readString(extraHeaders);
         this.autoResumeTracks = autoResumeTracks;
         this.admMode = adm;
         this.sdkVersion = readString(version);

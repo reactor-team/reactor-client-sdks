@@ -1,5 +1,6 @@
 #include <memory>
 
+#include "detail/extra_headers.hpp"
 #include "detail/ffi.hpp"
 #include "reactor/reactor.hpp"
 
@@ -57,6 +58,11 @@ std::future<std::string> fetch_jwt(const ApiKey& key, const FetchJwtOptions& opt
     }
     if (options.expires_after) {
       request["expires_after"] = *options.expires_after;
+    }
+    if (!options.extra_headers.empty()) {
+      // Parsed back into the request so the one encoder serves both entry points.
+      // Invalid UTF-8 in a value becomes U+FFFD there, which the core refuses.
+      request["extra_headers"] = Json::parse(detail::extra_headers_to_json(options.extra_headers));
     }
     const std::string json = request.dump();
     const auto exchange = detail::ffi().fetch_jwt;

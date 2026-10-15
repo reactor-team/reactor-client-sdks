@@ -418,7 +418,7 @@ fn fallback_error_json(message: &str) -> String {
 /// type changed, a return value repurposed. Do **not** bump it when a function is
 /// added: a binding built against the older version calls every function it knows
 /// about exactly as before, so refusing to run would strand it for no reason.
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 
 /// The ABI version, so a binding can refuse a library it was not built for.
 ///
@@ -797,8 +797,8 @@ async fn write_segments<L: Fn() -> bool>(
 /// `api_url` and `model_name` must be NUL-terminated C strings. `jwt` may be null
 /// (unauthenticated local dev). `callbacks` may be null (no events); when
 /// non-null it must point to a readable [`ReactorCallbacks`], which is copied
-/// during the call. `sdk_version` and `sdk_type` may be null; see
-/// [`create_impl`] for what null defaults to.
+/// during the call. `sdk_version`, `sdk_type` and `extra_headers_json` may be
+/// null; see [`create_impl`] for what null means.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_create(
     api_url: *const c_char,
@@ -809,6 +809,7 @@ pub unsafe extern "C" fn reactor_create(
     callbacks: *const ReactorCallbacks,
     sdk_version: *const c_char,
     sdk_type: *const c_char,
+    extra_headers_json: *const c_char,
 ) -> *mut ReactorHandle {
     create_impl(
         api_url,
@@ -820,6 +821,7 @@ pub unsafe extern "C" fn reactor_create(
         None,
         sdk_version,
         sdk_type,
+        extra_headers_json,
     )
 }
 
@@ -844,6 +846,7 @@ pub unsafe extern "C" fn reactor_create_with_adm(
     adm_mode: c_int,
     sdk_version: *const c_char,
     sdk_type: *const c_char,
+    extra_headers_json: *const c_char,
 ) -> *mut ReactorHandle {
     let adm = match adm_mode {
         0 => Some(AdmMode::Synthetic),
@@ -860,6 +863,7 @@ pub unsafe extern "C" fn reactor_create_with_adm(
         adm,
         sdk_version,
         sdk_type,
+        extra_headers_json,
     )
 }
 
@@ -870,6 +874,11 @@ pub unsafe extern "C" fn reactor_create_with_adm(
 /// language tag (`"python"`, `"cpp"`, …) so the coordinator sees what actually
 /// shipped instead of `reactor-core`'s internal crate version and a `sdk_type`
 /// that cannot tell one language from another.
+///
+/// `extra_headers_json` is null for none, else a JSON object of header name to
+/// string value, sent on every coordinator and signaling request. Anything else
+/// returns null, as does a name the SDK sets itself being rejected later by
+/// `connect()`, which reports it as an error rather than here.
 #[allow(clippy::too_many_arguments)]
 unsafe fn create_impl(
     api_url: *const c_char,
@@ -881,6 +890,7 @@ unsafe fn create_impl(
     adm: Option<AdmMode>,
     sdk_version: *const c_char,
     sdk_type: *const c_char,
+    extra_headers_json: *const c_char,
 ) -> *mut ReactorHandle {
     let api_url = CStr::from_ptr(api_url).to_string_lossy().into_owned();
     let model_name = CStr::from_ptr(model_name).to_string_lossy().into_owned();
@@ -898,6 +908,16 @@ unsafe fn create_impl(
         None
     } else {
         Some(CStr::from_ptr(sdk_type).to_string_lossy().into_owned())
+    };
+
+    let extra_headers: reactor_core::http::ExtraHeaders = if extra_headers_json.is_null() {
+        Default::default()
+    } else {
+        let json = CStr::from_ptr(extra_headers_json).to_string_lossy();
+        match serde_json::from_str::<reactor_core::http::ExtraHeaders>(&json) {
+            Ok(headers) => headers,
+            Err(_) => return std::ptr::null_mut(),
+        }
     };
 
     // Guards every host pointer below, including the media callbacks and the
@@ -1041,6 +1061,7 @@ unsafe fn create_impl(
     }
     options.local = local != 0;
     options.auto_resume_tracks = auto_resume_tracks != 0;
+    options.extra_headers = extra_headers;
 
     let deps = ReactorDeps {
         http,

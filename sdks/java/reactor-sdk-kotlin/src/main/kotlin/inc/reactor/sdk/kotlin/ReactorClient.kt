@@ -77,6 +77,28 @@ public class ReactorClient(
             options: JsonValue?,
             local: Boolean = false,
         ): String = Reactor.fetchJwt(apiUrl, apiKey, options, local).await()
+
+        /**
+         * Exchanges an API key for a scoped token, sending extra HTTP headers on the exchange.
+         *
+         * @param apiUrl the platform
+         * @param apiKey the key
+         * @param options what to scope the token to, or null for everything the key allows
+         * @param extraHeaders headers to send on the exchange, after the SDK's own. The SDK's own
+         *   header names are reserved, and a reserved name fails the call. Replaces an
+         *   `extra_headers` entry in [options]; an empty map leaves [options] as given
+         * @param local whether to accept a dev coordinator's certificate
+         * @return the token
+         * @throws IllegalArgumentException when [extraHeaders] is not empty and [options] is not a
+         *   JSON object
+         */
+        public suspend fun fetchJwt(
+            apiUrl: String,
+            apiKey: String,
+            options: JsonValue?,
+            extraHeaders: Map<String, String>,
+            local: Boolean = false,
+        ): String = Reactor.fetchJwt(apiUrl, apiKey, options, extraHeaders, local).await()
     }
 
     /** Connects, and settles once the session is ready. */

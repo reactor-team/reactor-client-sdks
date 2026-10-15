@@ -1,5 +1,7 @@
 package inc.reactor.sdk;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import org.jspecify.annotations.Nullable;
 
@@ -20,6 +22,7 @@ public final class ReactorOptions {
     private final @Nullable String apiKey;
     private final boolean local;
     private final boolean autoResumeTracks;
+    private final Map<String, String> extraHeaders;
     private final @Nullable Dispatcher dispatcher;
 
     private ReactorOptions(Builder builder) {
@@ -29,6 +32,7 @@ public final class ReactorOptions {
         this.apiKey = builder.apiKey;
         this.local = builder.local;
         this.autoResumeTracks = builder.autoResumeTracks;
+        this.extraHeaders = Map.copyOf(builder.extraHeaders);
         this.dispatcher = builder.dispatcher;
     }
 
@@ -72,6 +76,11 @@ public final class ReactorOptions {
         return autoResumeTracks;
     }
 
+    /** @return the extra headers sent on every coordinator and signaling request; never null */
+    public Map<String, String> extraHeaders() {
+        return extraHeaders;
+    }
+
     /** @return where control events are delivered, or {@code null} for the client's own thread */
     public @Nullable Dispatcher dispatcher() {
         return dispatcher;
@@ -86,6 +95,7 @@ public final class ReactorOptions {
         private @Nullable String apiKey;
         private boolean local;
         private boolean autoResumeTracks = true;
+        private Map<String, String> extraHeaders = Map.of();
         private @Nullable Dispatcher dispatcher;
 
         private Builder(String apiUrl, String modelName) {
@@ -139,6 +149,16 @@ public final class ReactorOptions {
          */
         public Builder autoResumeTracks(boolean autoResumeTracks) {
             this.autoResumeTracks = autoResumeTracks;
+            return this;
+        }
+
+        /**
+         * @param extraHeaders headers sent on every coordinator and signaling request. Defaults to
+         *     none. The SDK's own headers are reserved, and a reserved name fails {@code connect}
+         * @return this builder
+         */
+        public Builder extraHeaders(Map<String, String> extraHeaders) {
+            this.extraHeaders = new LinkedHashMap<>(Objects.requireNonNull(extraHeaders, "extraHeaders"));
             return this;
         }
 
