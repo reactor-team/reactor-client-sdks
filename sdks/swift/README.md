@@ -63,10 +63,15 @@ let next = try await reactor.step()       // nothing new: run on the current sta
 ```
 
 `Track.pushFrame` keeps its signatures: in a stepped session it buffers the frame
-for the next step instead of sending it. Audio comes back as planar
-`(channels, samples)` `int16`. The result is copied out of the library once and
-the native copy freed at once, so a `StepResult` can be kept and passed around
-freely.
+for the next step instead of sending it. The buffer holds at most one
+data-channel message's worth of frame bytes, so pushing faster than steps run
+drops the oldest frames, across tracks; once the session's tracks are known, a
+push to a track the session does not take as input is dropped with a warning.
+Audio comes back as planar `(channels, samples)` `int16`. Each output track
+carries `rate`, the rate its frames play at as the runtime reported it — frames
+per second for video, samples per second for audio, `0` when unspecified. The
+result is copied out of the library once and the native copy freed at once, so a
+`StepResult` can be kept and passed around freely.
 
 A step that ran but that the model reported as failed returns normally, with
 `result.error` saying why. A step the runtime refuses throws
@@ -76,8 +81,11 @@ throws `stepCommandFailed` (the calls before it stay applied, the step did not
 run); one whose session ended before its result was sent throws
 `stepSessionEnded` (whether it ran is unknown); one whose output
 does not fit in a message throws `stepResultTooLarge`; a request too large to
-send throws `messageTooLarge` and keeps the pushed frames, which
-`clearStepInputs()` drops. `stepTimeout:` bounds a step (default 300 s).
+send throws `messageTooLarge`. A step refused before it goes out (`invalidState`,
+`badRequest`) keeps its pushed frames for the next step; past that they belong to
+the step whatever its outcome, so one that could not be sent drops them too, and
+nothing is resent. `clearStepInputs()` drops what is
+buffered now. `stepTimeout:` bounds a step (default 300 s).
 
 `result.files` names the extra files the model kept with the step; it does not
 carry them. Fetch their bytes over HTTP from the session's step results,

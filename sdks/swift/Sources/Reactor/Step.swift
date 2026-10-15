@@ -193,13 +193,19 @@ public struct StepTrackOutput: Sendable {
     /// `video` or `audio`.
     public let kind: TrackKind
 
+    /// The rate the track's frames play at, as the runtime reported it: frames
+    /// per second for video, samples per second for audio. `0` when the runtime
+    /// did not say.
+    public let rate: Double
+
     /// What the track produced, oldest first.
     public let frames: [StepFrame]
 
     /// Assemble an output — for tests and previews.
-    public init(name: String, kind: TrackKind, frames: [StepFrame]) {
+    public init(name: String, kind: TrackKind, rate: Double = 0, frames: [StepFrame]) {
         self.name = name
         self.kind = kind
+        self.rate = rate
         self.frames = frames
     }
 }

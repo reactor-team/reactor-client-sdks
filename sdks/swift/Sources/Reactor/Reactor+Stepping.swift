@@ -58,8 +58,7 @@ extension Reactor {
     ///   - ``ReactorError/Code/stepSessionEnded`` — the session ended before
     ///     the step's result could be sent; whether the step ran is unknown.
     ///   - ``ReactorError/Code/messageTooLarge`` — the request does not fit.
-    ///     Nothing was sent, and the pushed frames are kept for the next step;
-    ///     ``clearStepInputs()`` drops them.
+    ///     Nothing was sent.
     ///   - ``ReactorError/Code/unsupportedFrameEncoding`` — the result carries a
     ///     frame this library cannot decode.
     ///   - ``ReactorError/Code/requestTimeout`` — the step took longer than the
@@ -71,7 +70,10 @@ extension Reactor {
     ///   A step that ran but that the model reported as failed does not throw:
     ///   it returns a result whose ``StepResult/error`` says why.
     ///
-    ///   Once sent, the pushed frames belong to that step whatever its outcome.
+    ///   A step refused before it goes out (``ReactorError/Code/invalidState``,
+    ///   ``ReactorError/Code/badRequest``) keeps the frames pushed for it for
+    ///   the next step. Past that they belong to the step whatever its outcome:
+    ///   one that could not be sent drops them too, and nothing is resent.
     public func step(
         state: [String: JSONValue]? = nil,
         commands: [StepCommand] = []
@@ -101,10 +103,8 @@ extension Reactor {
         }
     }
 
-    /// Drop every frame pushed since the last step.
-    ///
-    /// The way out after a ``ReactorError/Code/messageTooLarge`` from
-    /// ``step(state:commands:)``, which keeps the frames it could not send. A
+    /// Drop every frame pushed since the last step, so the next
+    /// ``step(state:commands:)`` carries only what is pushed after this. A
     /// no-op on a streamed or closed client.
     public func clearStepInputs() {
         guard generation == .stepped else { return }
@@ -246,7 +246,10 @@ extension StepResult {
                         metadata: metadata,
                         captureTimeUs: hasCaptureTime ? captured : nil))
             }
-            tracks.append(StepTrackOutput(name: name, kind: kind, frames: frames))
+            tracks.append(
+                StepTrackOutput(
+                    name: name, kind: kind, rate: ffi.stepResultTrackRate(result, track),
+                    frames: frames))
         }
         // `Duration` cannot hold a NaN or an infinity (`.seconds(_:)` traps on
         // one); a runtime that sent one measured nothing usable.

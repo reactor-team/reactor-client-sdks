@@ -714,6 +714,7 @@ final class FakeLibrary: @unchecked Sendable {
             stepResultTrackKind: {
                 FakeStepResult.from($0)?.track($1).map { UnsafePointer($0.kind) }
             },
+            stepResultTrackRate: { FakeStepResult.from($0)?.track($1)?.rate ?? 0 },
             stepResultFrameCount: { UInt32(FakeStepResult.from($0)?.track($1)?.frames.count ?? 0) },
             stepResultFrameEncoding: {
                 FakeStepResult.from($0)?.frame($1, $2).map { UnsafePointer($0.encoding) }
