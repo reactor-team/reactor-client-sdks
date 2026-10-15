@@ -172,9 +172,11 @@ public final class Track {
      * Pushes one BGRA video frame.
      *
      * <p><b>In a stepped session this sends nothing.</b> The frame is buffered, with its tag and
-     * capture time, and the next {@link Reactor#step} carries every frame pushed since the one
+     * capture time, and the next {@link Reactor#step} carries the frames pushed since the one
      * before — per track, in push order, converted to an {@code (height, width, 3)} {@code uint8}
-     * RGB array. Publish the track first, as for a streamed session.
+     * RGB array. The buffer holds at most one data-channel message's worth of frame bytes: pushing
+     * faster than steps run drops the oldest frames, across tracks. Publish the track first, as for
+     * a streamed session.
      *
      * @param bgra exactly {@code width * height * 4} bytes, in B, G, R, A order
      * @param width frame width in pixels

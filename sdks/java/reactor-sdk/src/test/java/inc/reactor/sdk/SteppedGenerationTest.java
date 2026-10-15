@@ -139,6 +139,7 @@ final class SteppedGenerationTest {
                         new StepTrackSpec(
                                 "main_video",
                                 "video",
+                                24.0,
                                 List.of(
                                         new StepFrameSpec(
                                                 "raw", "uint8", new int[] {1, 2, 3}, rgb, "tag".getBytes(), 99L),
@@ -147,6 +148,7 @@ final class SteppedGenerationTest {
                         new StepTrackSpec(
                                 "speech",
                                 "audio",
+                                48000.0,
                                 List.of(new StepFrameSpec("raw", "int16", new int[] {2, 2}, pcm, null, null)))),
                 0.25);
 
@@ -159,6 +161,7 @@ final class SteppedGenerationTest {
 
         StepTrackOutput video = result.track("main_video");
         assertEquals(TrackKind.VIDEO, video.kind());
+        assertEquals(24.0, video.rate());
         assertEquals(2, video.frames().size());
         StepFrame first = video.frames().get(0);
         assertEquals("raw", first.encoding());
@@ -173,6 +176,7 @@ final class SteppedGenerationTest {
 
         StepFrame audio = result.track("speech").frames().get(0);
         assertEquals(TrackKind.AUDIO, result.track("speech").kind());
+        assertEquals(48000.0, result.track("speech").rate());
         assertTrue(audio.metadata().isEmpty(), "no tag attached is not an empty tag");
         assertEquals(ByteOrder.LITTLE_ENDIAN, audio.data().order());
         ShortBuffer samples = audio.data().asShortBuffer();
@@ -254,6 +258,7 @@ final class SteppedGenerationTest {
         NotFoundException thrown = assertThrows(NotFoundException.class, () -> result.track("main_vidoe"));
         assertTrue(thrown.getMessage().contains("main_video"), thrown.getMessage());
         assertTrue(result.findTrack("main_vidoe").isEmpty());
+        assertEquals(0.0, result.track("main_video").rate(), "a rate the runtime did not report reads as 0");
     }
 
     @Test

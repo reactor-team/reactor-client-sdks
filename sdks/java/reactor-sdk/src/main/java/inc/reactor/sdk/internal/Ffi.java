@@ -156,6 +156,7 @@ public final class Ffi {
         STEP_RESULT_TRACK_COUNT("reactor_step_result_track_count", FunctionDescriptor.of(JAVA_INT, ADDRESS)),
         STEP_RESULT_TRACK_NAME("reactor_step_result_track_name", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT)),
         STEP_RESULT_TRACK_KIND("reactor_step_result_track_kind", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT)),
+        STEP_RESULT_TRACK_RATE("reactor_step_result_track_rate", FunctionDescriptor.of(JAVA_DOUBLE, ADDRESS, JAVA_INT)),
         STEP_RESULT_FRAME_COUNT("reactor_step_result_frame_count", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT)),
         STEP_RESULT_FRAME_ENCODING(
                 "reactor_step_result_frame_encoding", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT, JAVA_INT)),

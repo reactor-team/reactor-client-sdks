@@ -158,6 +158,7 @@ try (Reactor reactor = Reactor.open(ReactorOptions.builder(apiUrl, "owner/model"
         frame.metadata();
         frame.captureTimeUs();
     }
+    result.track("main_video").rate();     // frames per second (samples per second on audio); 0 if unspecified
     result.elapsed();                      // seconds the step's generate() took (or the model reported)
     result.error().ifPresent(why -> System.err.println("the model failed the step: " + why));
     for (StepFile file : result.files()) {  // named only; fetch bytes over HTTP
@@ -180,6 +181,15 @@ Audio comes back as `(channels, samples)` `int16`, so `frame.data().asShortBuffe
 reads the samples. A frame handler on a stepped session's track is refused,
 because nothing streams there — the output is in the result.
 
+A step refused before it goes out (outside a connected stepped session, or with
+malformed arguments) keeps the buffered frames for the next step. Past that they
+belong to the step whatever its outcome: one that could not be sent,
+`MessageTooLargeException` included, drops them too, and nothing is resent.
+`clearStepInputs()` drops what is buffered now. The buffer holds at most one data-channel message's
+worth of frame bytes, so pushing faster than steps run drops the oldest frames,
+across tracks. Once the session's tracks are known, a push to a track the
+session does not take as input is dropped with a warning.
+
 The result is copied onto the heap once, when the step completes, and the native
 one is freed straight away: a `StepResult` holds no native memory and can be kept.
 
@@ -199,9 +209,8 @@ completes with `result.error()` saying why.
 A step the runtime refuses fails with `StepRefusedException`; one the session
 cannot take yet with `StepNotReadyException` (neither ran); one whose output
 does not fit in a message with `StepResultTooLargeException`; a request too large
-to send with `MessageTooLargeException`, keeping the pushed frames, which
-`clearStepInputs()` drops. `stepTimeoutSeconds(...)` bounds a step (default
-300 s). See [`Example09SteppedGeneration`](examples/src/main/java/inc/reactor/examples/Example09SteppedGeneration.java).
+to send with `MessageTooLargeException` (nothing was sent).
+`stepTimeoutSeconds(...)` bounds a step (default 300 s). See [`Example09SteppedGeneration`](examples/src/main/java/inc/reactor/examples/Example09SteppedGeneration.java).
 
 ## From Kotlin
 

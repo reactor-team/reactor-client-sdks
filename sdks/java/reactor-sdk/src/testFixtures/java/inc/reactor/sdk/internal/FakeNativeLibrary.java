@@ -170,6 +170,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
                 "stepResultTrackCount");
         bind("reactor_step_result_track_name", Ffi.Symbol.STEP_RESULT_TRACK_NAME.descriptor(), "stepResultTrackName");
         bind("reactor_step_result_track_kind", Ffi.Symbol.STEP_RESULT_TRACK_KIND.descriptor(), "stepResultTrackKind");
+        bind("reactor_step_result_track_rate", Ffi.Symbol.STEP_RESULT_TRACK_RATE.descriptor(), "stepResultTrackRate");
         bind(
                 "reactor_step_result_frame_count",
                 Ffi.Symbol.STEP_RESULT_FRAME_COUNT.descriptor(),
@@ -767,8 +768,19 @@ public final class FakeNativeLibrary implements AutoCloseable {
             byte @Nullable [] metadata,
             @Nullable Long captureTimeUs) {}
 
-    /** One output track of a fake step result. */
-    public record StepTrackSpec(String name, String kind, List<StepFrameSpec> frames) {}
+    /**
+     * One output track of a fake step result.
+     *
+     * @param rate what {@code reactor_step_result_track_rate} answers: frames or samples per second,
+     *     0 for unspecified
+     */
+    public record StepTrackSpec(String name, String kind, double rate, List<StepFrameSpec> frames) {
+
+        /** A track whose rate the runtime did not report. */
+        public StepTrackSpec(String name, String kind, List<StepFrameSpec> frames) {
+            this(name, kind, 0.0, frames);
+        }
+    }
 
     /** The native side of a result: everything its accessors hand out, allocated once. */
     private record NativeStepResult(
@@ -779,7 +791,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
 
     private record NativeFile(MemorySegment name, MemorySegment contentType, long size) {}
 
-    private record NativeTrack(MemorySegment name, MemorySegment kind, List<NativeFrame> frames) {}
+    private record NativeTrack(MemorySegment name, MemorySegment kind, double rate, List<NativeFrame> frames) {}
 
     private record NativeFrame(
             MemorySegment encoding,
@@ -932,7 +944,8 @@ public final class FakeNativeLibrary implements AutoCloseable {
                         tag == null ? 0 : tag.length,
                         frame.captureTimeUs()));
             }
-            tracks.add(new NativeTrack(arena.allocateFrom(spec.name()), arena.allocateFrom(spec.kind()), frames));
+            tracks.add(new NativeTrack(
+                    arena.allocateFrom(spec.name()), arena.allocateFrom(spec.kind()), spec.rate(), frames));
         }
         MemorySegment address = arena.allocate(8);
         List<NativeFile> files = new ArrayList<>();
@@ -1026,6 +1039,11 @@ public final class FakeNativeLibrary implements AutoCloseable {
     private MemorySegment stepResultTrackKind(MemorySegment result, int t) {
         NativeTrack found = track(result, t);
         return found == null ? MemorySegment.NULL : found.kind();
+    }
+
+    private double stepResultTrackRate(MemorySegment result, int t) {
+        NativeTrack found = track(result, t);
+        return found == null ? 0.0 : found.rate();
     }
 
     private int stepResultFrameCount(MemorySegment result, int t) {

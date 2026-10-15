@@ -79,13 +79,14 @@ final class StepResults {
             TrackKind kind = TrackKind.of(kindName)
                     .orElseThrow(() -> decodeFailed("output track \"" + name + "\" has a kind this SDK does not"
                             + " know: \"" + kindName + "\""));
+            double rate = (double) ffi.handle(Ffi.Symbol.STEP_RESULT_TRACK_RATE).invokeExact(result, t);
             int frameCount =
                     (int) ffi.handle(Ffi.Symbol.STEP_RESULT_FRAME_COUNT).invokeExact(result, t);
             List<StepFrame> frames = new ArrayList<>(Math.max(frameCount, 0));
             for (int f = 0; f < frameCount; f++) {
                 frames.add(readFrame(ffi, result, name, t, f));
             }
-            tracks.add(new StepTrackOutput(name, kind, frames));
+            tracks.add(new StepTrackOutput(name, kind, rate, frames));
         }
         double elapsed = (double) ffi.handle(Ffi.Symbol.STEP_RESULT_ELAPSED).invokeExact(result);
         int fileCount = (int) ffi.handle(Ffi.Symbol.STEP_RESULT_FILE_COUNT).invokeExact(result);
