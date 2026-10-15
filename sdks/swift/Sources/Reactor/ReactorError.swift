@@ -186,7 +186,8 @@ extension ReactorError {
 
         /// A stepped session connected over a data channel that did not
         /// negotiate chunking: this client or the runtime does not support it.
-        public static let dataChannelChunkingRequired = Code(rawValue: "DATA_CHANNEL_CHUNKING_REQUIRED")
+        public static let dataChannelChunkingRequired = Code(
+            rawValue: "DATA_CHANNEL_CHUNKING_REQUIRED")
 
         /// A step result carried a frame in an encoding this client cannot decode.
         public static let unsupportedFrameEncoding = Code(rawValue: "UNSUPPORTED_FRAME_ENCODING")
