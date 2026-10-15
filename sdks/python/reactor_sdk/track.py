@@ -355,7 +355,11 @@ class Track:
         per track, in push order. Video goes as an ``(height, width, 3)`` ``uint8``
         RGB frame, audio as one planar ``(channels, samples)`` ``int16`` frame per
         push; a step frame has no sample rate, so push audio at the rate the model's
-        track declares. Publish the track first, as for a streamed session.
+        track declares. Publish the track first, as for a streamed session. The
+        buffer holds at most one message's worth of frame bytes: pushing faster
+        than steps run drops the oldest frames, across tracks. Once the session's
+        tracks are known, a push to a track the session does not take as input is
+        dropped with a warning.
 
         An argument the track's kind has no use for is refused rather than ignored —
         but only where ignoring it would throw away what the caller meant. Passing

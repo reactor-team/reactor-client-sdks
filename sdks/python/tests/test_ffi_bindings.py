@@ -219,6 +219,7 @@ def test_step_result_accessors_accept_a_null_result() -> None:
     assert lib.reactor_step_result_track_count(None) == 0
     assert lib.reactor_step_result_track_name(None, 0) is None
     assert lib.reactor_step_result_track_kind(None, 0) is None
+    assert lib.reactor_step_result_track_rate(None, 0) == 0.0
     assert lib.reactor_step_result_frame_count(None, 0) == 0
     assert lib.reactor_step_result_frame_encoding(None, 0, 0) is None
     assert lib.reactor_step_result_frame_dtype(None, 0, 0) is None

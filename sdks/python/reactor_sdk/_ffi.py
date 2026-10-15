@@ -342,6 +342,7 @@ STEPPED_FUNCTIONS = (
     "reactor_step_result_track_count",
     "reactor_step_result_track_name",
     "reactor_step_result_track_kind",
+    "reactor_step_result_track_rate",
     "reactor_step_result_frame_count",
     "reactor_step_result_frame_encoding",
     "reactor_step_result_frame_dtype",
@@ -407,6 +408,8 @@ def _bind_stepped(lib: ctypes.CDLL) -> None:
     lib.reactor_step_result_track_name.argtypes = [result, ctypes.c_uint32]
     lib.reactor_step_result_track_kind.restype = ctypes.c_char_p
     lib.reactor_step_result_track_kind.argtypes = [result, ctypes.c_uint32]
+    lib.reactor_step_result_track_rate.restype = ctypes.c_double
+    lib.reactor_step_result_track_rate.argtypes = [result, ctypes.c_uint32]
     lib.reactor_step_result_frame_count.restype = ctypes.c_uint32
     lib.reactor_step_result_frame_count.argtypes = [result, ctypes.c_uint32]
 

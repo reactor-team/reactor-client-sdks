@@ -1182,10 +1182,15 @@ class Reactor:
         did not run), `StepSessionEndedError` when the session ends before the
         result arrives (whether the step ran is unknown),
         `StepResultTooLargeError` when its output does not fit in one message,
-        `MessageTooLargeError` when the request does not — nothing was sent then,
-        and the pushed frames are kept for the next step (see
-        :meth:`clear_step_inputs`) — and `InvalidStateError` outside a ready
-        stepped session.
+        `MessageTooLargeError` when the request does not (nothing was sent), and
+        `InvalidStateError` outside a ready stepped session.
+
+        A step refused before it goes out (``InvalidStateError``, malformed
+        arguments) keeps the frames pushed since the previous step for the next
+        one. Past that they belong to this step whatever its outcome: a step that
+        fails, or could not be sent at all, drops them too, and nothing is resent. The buffer
+        holds at most one message's worth of frame bytes, so pushing faster than
+        steps run drops the oldest frames, across tracks.
         """
         if self._generation != "stepped":
             raise InvalidStateError(
@@ -1222,9 +1227,8 @@ class Reactor:
     def clear_step_inputs(self) -> None:
         """Drop every frame pushed since the last step.
 
-        The way out after a `MessageTooLargeError` from :meth:`step`, which keeps
-        the frames it could not send. A no-op without a handle or outside a stepped
-        session.
+        The next :meth:`step` then carries only frames pushed after this call. A
+        no-op without a handle or outside a stepped session.
         """
         if self._handle is None or self._generation != "stepped":
             return

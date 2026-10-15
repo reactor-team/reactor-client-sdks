@@ -288,6 +288,7 @@ result = await reactor.step(
 for out in result.track("main_video").frames:
     out.array                    # numpy (height, width, 3) uint8 RGB
     out.metadata, out.capture_time_us
+result.track("main_video").rate  # frames per second (audio: samples per second); 0.0 if unreported
 result.elapsed                   # seconds the step's generate() took (or the model reported)
 result.error                     # None, or why the model failed a step that ran
 for f in result.files:           # extra files the model kept with the step
@@ -297,11 +298,17 @@ await reactor.step()             # no arguments: a step on the model's current s
 ```
 
 `Track.push_frame` keeps its signature: in a stepped session it buffers the frame
-for the next step instead of sending it. Audio comes back as `(channels, samples)`
-`int16`. `send_command` keeps working between steps, and what it changes is what
-the next step uses. A file goes into a step the way it goes into a command: upload
-it with `upload_file()` and put the `FileRef` in a command's data, or as the value
-of an upload-typed state field.
+for the next step instead of sending it. The buffer holds at most one data-channel
+message's worth of frame bytes, so pushing faster than steps run drops the oldest
+frames, across tracks; once the session's tracks are known, a push to a track the
+session does not take as input is dropped with a warning. A step refused before it
+goes out (outside a ready stepped session, or with malformed arguments) keeps the
+buffered frames for the next step; past that they belong to the step whatever its
+outcome, so one that fails or cannot be sent drops them too. Audio comes back as
+`(channels, samples)` `int16`. `send_command` keeps working between steps, and
+what it changes is what the next step uses. A file goes into a step the way it
+goes into a command: upload it with `upload_file()` and put the `FileRef` in a
+command's data, or as the value of an upload-typed state field.
 
 A step that ran but that the model reported as failed returns normally, with
 `result.error` set. `result.files` names the files the model kept with the step;
@@ -311,8 +318,8 @@ answers 202 while they are still being stored). A step the runtime refuses raise
 `StepRefusedError`; one the session cannot take yet raises `StepNotReadyError`
 (neither ran); one whose output
 does not fit in a message raises `StepResultTooLargeError`; a request too large to
-send raises `MessageTooLargeError` and keeps the pushed frames, which
-`clear_step_inputs()` drops. `step_timeout=` bounds a step (default 300 s).
+send raises `MessageTooLargeError` (nothing was sent). `clear_step_inputs()` drops
+the frames buffered so far. `step_timeout=` bounds a step (default 300 s).
 `numpy` is needed to read `.array`; `.data`, `.dtype` and `.shape` are there
 without it. See [`examples/09_stepped_generation.py`](examples/09_stepped_generation.py).
 
