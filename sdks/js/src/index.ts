@@ -19,6 +19,7 @@ export {
   AbortedError,
   RecorderDisabledError,
   GenerationModeMismatchError,
+  DataChannelChunkingRequiredError,
   StepRefusedError,
   StepNotReadyError,
   StepResultTooLargeError,

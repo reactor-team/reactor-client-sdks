@@ -62,6 +62,8 @@ public enum ErrorCode {
     RECORDER_DISABLED("RECORDER_DISABLED", false, RecorderDisabledException::new),
     /** @see GenerationModeMismatchException */
     GENERATION_MODE_MISMATCH("GENERATION_MODE_MISMATCH", false, GenerationModeMismatchException::new),
+    /** @see DataChannelChunkingRequiredException */
+    DATA_CHANNEL_CHUNKING_REQUIRED("DATA_CHANNEL_CHUNKING_REQUIRED", false, DataChannelChunkingRequiredException::new),
     /** @see UnsupportedFrameEncodingException */
     UNSUPPORTED_FRAME_ENCODING("UNSUPPORTED_FRAME_ENCODING", false, UnsupportedFrameEncodingException::new),
     /** @see StepRefusedException */

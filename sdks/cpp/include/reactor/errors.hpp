@@ -71,6 +71,7 @@ inline constexpr std::string_view MESSAGE_TOO_LARGE = "MESSAGE_TOO_LARGE";
 inline constexpr std::string_view ABORTED = "ABORTED";
 inline constexpr std::string_view RECORDER_DISABLED = "RECORDER_DISABLED";
 inline constexpr std::string_view GENERATION_MODE_MISMATCH = "GENERATION_MODE_MISMATCH";
+inline constexpr std::string_view DATA_CHANNEL_CHUNKING_REQUIRED = "DATA_CHANNEL_CHUNKING_REQUIRED";
 inline constexpr std::string_view UNSUPPORTED_FRAME_ENCODING = "UNSUPPORTED_FRAME_ENCODING";
 // Lowercase: the runtime's own step codes, passed through as it sends them.
 inline constexpr std::string_view STEP_REFUSED = "step_refused";
@@ -164,6 +165,7 @@ class ReactorError : public std::runtime_error {
   X(AbortedError, ABORTED)                    /* abandoned before it finished */                  \
   X(RecorderDisabledError, RECORDER_DISABLED) /* clip/recording: recorder disabled or crashed */  \
   X(GenerationModeMismatchError, GENERATION_MODE_MISMATCH)     /* runtime ignored the mode */     \
+  X(DataChannelChunkingRequiredError, DATA_CHANNEL_CHUNKING_REQUIRED) /* stepped, no chunking */  \
   X(UnsupportedFrameEncodingError, UNSUPPORTED_FRAME_ENCODING) /* step frame undecodable */       \
   X(StepRefusedError, STEP_REFUSED)                            /* runtime turned the step down */ \
   X(StepNotReadyError, STEP_NOT_READY)                         /* session cannot step yet */      \

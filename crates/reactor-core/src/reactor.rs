@@ -76,7 +76,9 @@ pub struct ReactorOptions {
     /// over media tracks, or [`GenerationMode::Stepped`], one
     /// [`Reactor::step`] at a time. `connect()` fails with
     /// [`CoreError::GenerationModeMismatch`] when the runtime does not report
-    /// starting in the requested mode.
+    /// starting in the requested mode, and a stepped one with
+    /// [`CoreError::ChunkingRequired`] when the data channel did not negotiate
+    /// chunking.
     pub generation: GenerationMode,
     /// How long to wait for the transport readiness gate (peer connected +
     /// both channels open) after applying the SDP answer.
@@ -669,6 +671,12 @@ impl Reactor {
         )
         .await?
         {
+            // A step's inputs and result each ride one data-channel message:
+            // without chunking a single camera frame outgrows it, so a stepped
+            // session fails here rather than at its first step.
+            Ok(()) if self.is_stepped() && !self.peer.data_channel_chunked() => {
+                Err(CoreError::ChunkingRequired)
+            }
             Ok(()) => Ok(()),
             // The gate is dropped when `teardown()` clears `ready_gate` — which
             // happens for this same REA-5659 race (a peer failure landing after
@@ -1068,8 +1076,7 @@ impl Reactor {
     /// ([`CoreError::MessageTooLarge`]), the step fails and its frames are
     /// dropped. The buffer itself never holds more than one message's worth of
     /// frames: pushing past that drops the oldest. Once sent, the frames belong
-    /// to
-    /// that step whatever its outcome. The runtime answers every step with a
+    /// to that step whatever its outcome. The runtime answers every step with a
     /// `StepResult` whose `failure_code` names the outcome: a refusal is
     /// [`CoreError::StepRefused`], a session not ready to step
     /// [`CoreError::StepNotReady`], an oversized result
@@ -1079,6 +1086,12 @@ impl Reactor {
     /// sent [`CoreError::StepSessionEnded`], each with the runtime's reason as
     /// its message; any other failure (the connection dropping mid-step) is
     /// [`CoreError::StepFailed`].
+    ///
+    /// A `DISCONNECTED` or `REQUEST_TIMEOUT` after the request went out leaves
+    /// the outcome unknown, as `step_session_ended` does: the runtime may have
+    /// applied the state and commands and run the step. Both codes are
+    /// recoverable for the connection, not for the step: retrying it can apply
+    /// them twice.
     ///
     /// The step is not checked against the model's command schema here: the
     /// core holds no schema to check it against (the runtime validates it,
@@ -1437,12 +1450,33 @@ impl Reactor {
         self.options.generation == GenerationMode::Stepped
     }
 
+    /// Whether `track_name` is an input track of a stepped session, which
+    /// [`Self::media_tracks`] gives no transceiver.
+    fn is_step_input(&self, track_name: &str) -> bool {
+        self.is_stepped()
+            && self
+                .state
+                .lock()
+                .unwrap()
+                .capabilities
+                .as_ref()
+                .is_some_and(|c| {
+                    c.tracks
+                        .iter()
+                        .any(|t| t.name == track_name && t.direction == TrackDirection::Sendonly)
+                })
+    }
+
     /// Whether the session takes `track_name` as an input track of `kind`.
     /// Before the session's tracks are known every push is taken, and the
     /// runtime decides. A frame for any other track is dropped with a warning
-    /// here: sent, it would get the whole step refused.
+    /// here: sent, it would get the whole step refused. A paused track takes
+    /// nothing until resumed.
     fn takes_step_input(&self, track_name: &str, kind: SessionTrackKind) -> bool {
         let state = self.state.lock().unwrap();
+        if state.paused_tracks.contains(track_name) {
+            return false;
+        }
         let Some(capabilities) = &state.capabilities else {
             return true;
         };
@@ -1487,9 +1521,13 @@ impl Reactor {
         }
     }
 
+    /// Stepped: an input track has no transceiver to flip; pausing it stops
+    /// buffering its frames until [`Reactor::resume_track`].
     pub async fn pause_track(&self, name: &str) -> Result<(), CoreError> {
         self.ensure_ready()?;
-        self.peer.set_track_direction(name, false).await?;
+        if !self.is_step_input(name) {
+            self.peer.set_track_direction(name, false).await?;
+        }
         let payload = ControlCorrelator::notification(ClientPayload::PauseTrack(PauseTrack {
             name: name.to_string(),
         }));
@@ -1504,7 +1542,9 @@ impl Reactor {
 
     pub async fn resume_track(&self, name: &str) -> Result<(), CoreError> {
         self.ensure_ready()?;
-        self.peer.set_track_direction(name, true).await?;
+        if !self.is_step_input(name) {
+            self.peer.set_track_direction(name, true).await?;
+        }
         let payload = ControlCorrelator::notification(ClientPayload::ResumeTrack(ResumeTrack {
             name: name.to_string(),
         }));
@@ -4248,6 +4288,9 @@ mod tests {
     /// mode check stops there.
     struct GenerationHttp {
         echo: Option<&'static str>,
+        /// Whether connection registration and the SDP exchange complete;
+        /// otherwise registration parks.
+        completes: bool,
         requests: std::sync::Mutex<Vec<(Method, String)>>,
     }
 
@@ -4255,7 +4298,15 @@ mod tests {
         fn new(echo: Option<&'static str>) -> Self {
             Self {
                 echo,
+                completes: false,
                 requests: Default::default(),
+            }
+        }
+
+        fn completing(echo: Option<&'static str>) -> Self {
+            Self {
+                completes: true,
+                ..Self::new(echo)
             }
         }
 
@@ -4307,8 +4358,16 @@ mod tests {
                 ));
             }
             if req.method == Method::Post && req.url.ends_with("/connections") {
-                std::future::pending::<()>().await;
-                unreachable!()
+                if !self.completes {
+                    std::future::pending::<()>().await;
+                }
+                return json(r#"{"connection_id": 1}"#.to_string());
+            }
+            if self.completes && req.url.ends_with("/sdp_params") {
+                return match req.method {
+                    Method::Get => json(r#"{"sdp_answer": "answer"}"#.to_string()),
+                    _ => json(String::new()),
+                };
             }
             Err(CoreError::Http(format!(
                 "GenerationHttp: no route for {:?} {}",
@@ -4396,6 +4455,127 @@ mod tests {
         connect_until_registration(&reactor, &http).await.abort();
     }
 
+    /// Opens both channels once the answer is applied, over a data channel
+    /// chunked or not.
+    struct ChannelsPeer {
+        chunked: bool,
+        reactor: std::sync::Mutex<Option<std::sync::Weak<Reactor>>>,
+    }
+
+    impl ChannelsPeer {
+        fn new(chunked: bool) -> Self {
+            Self {
+                chunked,
+                reactor: std::sync::Mutex::new(None),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PeerTransport for ChannelsPeer {
+        async fn prepare(
+            &self,
+            _: &[IceServer],
+            _: &[TrackCapability],
+        ) -> Result<PreparedOffer, CoreError> {
+            Ok(PreparedOffer {
+                sdp_offer: "offer".into(),
+                track_mapping: vec![],
+            })
+        }
+        async fn set_remote_description(&self, _: &str) -> Result<(), CoreError> {
+            let reactor = self.reactor.lock().unwrap().clone();
+            if let Some(reactor) = reactor.and_then(|w| w.upgrade()) {
+                for event in [
+                    PeerEvent::ConnectionStateChanged(PeerConnectionState::Connected),
+                    PeerEvent::DataChannelOpen,
+                    PeerEvent::ControlChannelOpen,
+                ] {
+                    reactor.handle_peer_event(event).await;
+                }
+            }
+            Ok(())
+        }
+        fn send_data(&self, _: &[u8], _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn send_control(&self, _: &[u8]) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn set_track_direction(&self, _: &str, _: bool) -> Result<(), CoreError> {
+            Ok(())
+        }
+        async fn close(&self) -> Result<(), CoreError> {
+            Ok(())
+        }
+        fn data_channel_chunked(&self) -> bool {
+            self.chunked
+        }
+    }
+
+    async fn connect_over(
+        generation: GenerationMode,
+        chunked: bool,
+    ) -> (Arc<Reactor>, Result<(), CoreError>) {
+        let echo = match generation {
+            GenerationMode::Stepped => Some("stepped"),
+            GenerationMode::Streamed => None,
+        };
+        let http = Arc::new(GenerationHttp::completing(echo));
+        let peer = Arc::new(ChannelsPeer::new(chunked));
+        let mut opts = ReactorOptions::new("http://localhost", "test-model");
+        opts.generation = generation;
+        let reactor = Arc::new(Reactor::new(
+            ReactorDeps {
+                http: http as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: peer.clone() as SharedPeer,
+            },
+            opts,
+        ));
+        *peer.reactor.lock().unwrap() = Some(Arc::downgrade(&reactor));
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            reactor.connect(ConnectOptions::default()),
+        )
+        .await
+        .expect("connect() must not hang");
+        (reactor, result)
+    }
+
+    /// A step's inputs and result each ride one data-channel message, and
+    /// without chunking one camera frame outgrows it: a stepped session whose
+    /// channel did not negotiate chunking fails at connect, typed, not at its
+    /// first step.
+    #[tokio::test]
+    async fn a_stepped_connect_fails_when_the_data_channel_is_not_chunked() {
+        let (reactor, result) = connect_over(GenerationMode::Stepped, false).await;
+        let error = result.expect_err("an unchunked stepped connect must fail");
+        assert!(
+            matches!(error, CoreError::ChunkingRequired),
+            "got {error:?}"
+        );
+        assert_eq!(error.code(), codes::DATA_CHANNEL_CHUNKING_REQUIRED);
+        assert!(!error.recoverable());
+        assert_eq!(reactor.status(), ReactorStatus::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn a_stepped_connect_over_a_chunked_data_channel_is_ready() {
+        let (reactor, result) = connect_over(GenerationMode::Stepped, true).await;
+        result.unwrap();
+        assert_eq!(reactor.status(), ReactorStatus::Ready);
+    }
+
+    /// Streamed sessions send small messages and do not need chunking.
+    #[tokio::test]
+    async fn a_streamed_connect_does_not_need_chunking() {
+        let (reactor, result) = connect_over(GenerationMode::Streamed, false).await;
+        result.unwrap();
+        assert_eq!(reactor.status(), ReactorStatus::Ready);
+    }
+
     /// Streamed is what every runtime did before the mode existed, so silence
     /// is fine; an echo of a different mode is not.
     #[tokio::test]
@@ -4481,8 +4661,10 @@ mod tests {
         fn send_control(&self, _: &[u8]) -> Result<(), CoreError> {
             Ok(())
         }
-        async fn set_track_direction(&self, _: &str, _: bool) -> Result<(), CoreError> {
-            Ok(())
+        /// Refused, as the real peers refuse a track they have no transceiver
+        /// for: this one prepares none.
+        async fn set_track_direction(&self, name: &str, _: bool) -> Result<(), CoreError> {
+            Err(CoreError::Peer(format!("unknown track: {name}")))
         }
         async fn close(&self) -> Result<(), CoreError> {
             Ok(())
@@ -4856,22 +5038,77 @@ mod tests {
     }
 
     /// A camera pushing faster than steps run keeps at most one message's worth
-    /// of frames, the newest ones.
-    #[test]
-    fn stepped_pushes_keep_at_most_one_message_of_frames() {
-        // Room for two 1x1 RGB frames (3 bytes each), not three.
-        let peer = Arc::new(DataPeer::new(7));
+    /// of frames, the newest ones, counted as they encode: the step that takes
+    /// them is sent, not refused as too large.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stepped_pushes_keep_at_most_one_message_of_frames() {
+        let max = 1024;
+        let peer = Arc::new(DataPeer::new(max));
         let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
-        for value in 1..=10u8 {
+        for value in 1..=200u8 {
             reactor.push_video_frame("cam", &[value, value, value, 255], 1, 1);
         }
+        let buffered = reactor.step_inputs.len();
+        assert!((2..200).contains(&buffered), "{buffered} frames buffered");
 
-        assert_eq!(reactor.step_inputs.len(), 2);
-        let [cam] = reactor.step_inputs.take().try_into().unwrap();
+        let (_stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+        assert!(sent.encoded_len() <= max, "{} > {max}", sent.encoded_len());
+        let Some(data_client_message::Payload::RequestStep(request)) = sent.payload else {
+            panic!("expected a step request");
+        };
+        let [cam] = request.media_input.try_into().unwrap();
+        let newest: Vec<u8> = (201 - buffered as u8..=200).collect();
         assert_eq!(
             cam.frames.iter().map(|f| f.data[0]).collect::<Vec<_>>(),
-            [9, 10]
+            newest
         );
+    }
+
+    /// A stepped session's input track has no transceiver: pausing it sends the
+    /// notification and stops buffering its frames, and resuming takes them
+    /// again, without asking the peer for a transceiver it does not have.
+    #[tokio::test]
+    async fn a_paused_stepped_input_takes_no_frames_until_resumed() {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        reactor.state.lock().unwrap().capabilities = Some(Capabilities {
+            protocol_version: "1".into(),
+            tracks: vec![
+                output_track("output"),
+                TrackCapability {
+                    name: "cam".into(),
+                    kind: SessionTrackKind::Video,
+                    direction: TrackDirection::Sendonly,
+                },
+            ],
+            commands: None,
+            emission_fps: None,
+        });
+
+        reactor.pause_track("cam").await.unwrap();
+        assert!(reactor.paused_tracks().contains("cam"));
+        reactor.push_video_frame("cam", &[1, 2, 3, 255], 1, 1);
+        assert!(reactor.step_inputs.is_empty());
+
+        reactor.resume_track("cam").await.unwrap();
+        assert!(reactor.paused_tracks().is_empty());
+        reactor.push_video_frame("cam", &[1, 2, 3, 255], 1, 1);
+        assert_eq!(reactor.step_inputs.len(), 1);
+
+        // An output track still has its transceiver to flip.
+        assert!(reactor.pause_track("output").await.is_err());
+    }
+
+    /// An empty frame still counts against the budget, so pushing them cannot
+    /// grow the buffer without end.
+    #[test]
+    fn empty_stepped_pushes_stay_within_the_budget() {
+        let peer = Arc::new(DataPeer::new(1024));
+        let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        for _ in 0..10_000 {
+            reactor.push_audio_frame("mic", &[], 48_000, 1);
+        }
+        assert!(reactor.step_inputs.len() < 1024);
     }
 
     /// Once the session's tracks are known, a push to a track it does not take

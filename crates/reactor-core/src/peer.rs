@@ -425,6 +425,13 @@ pub trait PeerTransport {
         crate::protocol::DEFAULT_MAX_MESSAGE_BYTES
     }
 
+    /// Whether the data channel carries chunked messages, as both sides
+    /// negotiated and the channel decided when it opened. A transport without
+    /// chunking says no, and a stepped session refuses to connect over it.
+    fn data_channel_chunked(&self) -> bool {
+        false
+    }
+
     /// Push a raw BGRA video frame into the named sendonly track.
     /// `data` must be `width * height * 4` bytes (B, G, R, A order).
     /// Default implementation is a no-op — override in native transports.

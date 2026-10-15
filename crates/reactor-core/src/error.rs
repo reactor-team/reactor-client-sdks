@@ -79,6 +79,11 @@ pub mod codes {
     /// client asked for — most often a runtime without stepped generation,
     /// which ignores the request rather than refusing it.
     pub const GENERATION_MODE_MISMATCH: &str = "GENERATION_MODE_MISMATCH";
+    /// A stepped session connected over a data channel that did not negotiate
+    /// chunking, on either side. A step's inputs and result each ride one
+    /// data-channel message, and without chunking a single camera frame
+    /// outgrows it.
+    pub const DATA_CHANNEL_CHUNKING_REQUIRED: &str = "DATA_CHANNEL_CHUNKING_REQUIRED";
     /// The runtime refused a step — the request or the model turned it down.
     /// The calls it applied before the refusal stay applied: nothing is
     /// rolled back. Lowercase, as the runtime names the outcome (its
@@ -251,6 +256,13 @@ pub enum CoreError {
         echoed: Option<String>,
     },
 
+    /// A stepped session's data channel did not negotiate chunking: this
+    /// client, or the runtime, does not support it.
+    #[error(
+        "stepped generation needs data-channel chunking, which this connection did not negotiate"
+    )]
+    ChunkingRequired,
+
     /// The runtime refused the step (`step_refused`): the request or the model
     /// turned it down. The calls it applied before the refusal stay applied.
     #[error("step refused: {message}")]
@@ -354,6 +366,7 @@ impl CoreError {
             // built from it was sent — same category as a rejected 4xx.
             CoreError::PresetTracksMismatch { .. } => codes::BAD_REQUEST,
             CoreError::GenerationModeMismatch { .. } => codes::GENERATION_MODE_MISMATCH,
+            CoreError::ChunkingRequired => codes::DATA_CHANNEL_CHUNKING_REQUIRED,
         }
     }
 

@@ -577,6 +577,13 @@ impl PeerTransport for WasmPeerTransport {
             None => self.max_message_bytes.get(),
         }
     }
+
+    fn data_channel_chunked(&self) -> bool {
+        self.state
+            .borrow()
+            .as_ref()
+            .is_some_and(|state| state.data_framing.max_message_size().is_some())
+    }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
