@@ -63,6 +63,7 @@ async def test_steps_resolve_in_order() -> None:
         for file in first.files:
             assert file.name and file.size >= 0
         for track in first.tracks:
+            assert track.rate >= 0
             for frame in track.frames:
                 assert frame.array.shape == frame.shape
                 assert frame.array.dtype == np.dtype(frame.dtype)

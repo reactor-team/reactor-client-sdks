@@ -139,6 +139,10 @@ class StepTrackOutput:
     name: str
     kind: TrackKind
     frames: tuple[StepFrame, ...] = ()
+    #: The rate the track's frames play at, as the runtime reported it: frames
+    #: per second for video, samples per second for audio. 0.0 when the runtime
+    #: did not say.
+    rate: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -238,7 +242,14 @@ def _read_step_result(lib: Any, ptr: int) -> StepResult:
                     capture_time_us=captured.value if has_time else None,
                 )
             )
-        tracks.append(StepTrackOutput(name=name, kind=kind, frames=tuple(frames)))
+        tracks.append(
+            StepTrackOutput(
+                name=name,
+                kind=kind,
+                frames=tuple(frames),
+                rate=float(lib.reactor_step_result_track_rate(handle, t)),
+            )
+        )
     files = tuple(
         StepFile(
             name=(lib.reactor_step_result_file_name(handle, i) or b"").decode(),

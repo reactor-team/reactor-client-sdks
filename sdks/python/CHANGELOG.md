@@ -21,7 +21,13 @@ versioning follows [Semantic Versioning](https://semver.org/).
   `error`, set when the step ran but the model reported it failed — such a
   step returns, it does not raise. Both arguments of `step()` are optional.
   `Track.push_frame` buffers into the next step in such a session, and
-  `clear_step_inputs()` drops buffered frames.
+  `clear_step_inputs()` drops buffered frames. The buffer holds at most one
+  data-channel message's worth of frame bytes, dropping the oldest frames
+  across tracks when pushes outpace steps; a push to a track the session does
+  not take as input is dropped with a warning. A step refused before it goes
+  out keeps its buffered frames; past that they belong to the step whatever
+  its outcome, including one too large to send, and none carry over. Each output track carries its `rate` (frames per second for
+  video, samples per second for audio; 0.0 when the runtime did not say).
   New errors:
   `GenerationModeMismatchError` (the runtime did not start the session stepped),
   `StepRefusedError`, `StepNotReadyError` (the session cannot take a step yet;

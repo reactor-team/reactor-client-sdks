@@ -74,6 +74,8 @@ class FakeStepLib:
     def __init__(self) -> None:
         self.results: dict[int, tuple[int, list[tuple[str, str, list[_NativeFrame]]]]] = {}
         self.elapsed: dict[int, float] = {}
+        # Per result: each track's rate, 0.0 for a track the runtime gave none.
+        self.rates: dict[int, list[float]] = {}
         # Per result: (name, content_type, size) per file, and the error string,
         # both behind real C buffers like every other borrowed string.
         self.files: dict[int, list[tuple[Any, Any, int]]] = {}
@@ -128,10 +130,12 @@ class FakeStepLib:
         elapsed: float = 0.0,
         files: list[tuple[str, str, int]] = (),  # type: ignore[assignment]
         error: str | None = None,
+        rates: list[float] = (),  # type: ignore[assignment]
     ) -> int:
         ptr = 0x1000 + len(self.results)
         self.results[ptr] = (index, tracks)
         self.elapsed[ptr] = elapsed
+        self.rates[ptr] = [*rates, *[0.0] * (len(tracks) - len(rates))]
         self.files[ptr] = [
             (ctypes.create_string_buffer(n.encode()), ctypes.create_string_buffer(c.encode()), s)
             for n, c, s in files
@@ -176,6 +180,9 @@ class FakeStepLib:
 
     def reactor_step_result_track_kind(self, ptr, t):
         return self.results[ptr.value][1][t][1].encode()
+
+    def reactor_step_result_track_rate(self, ptr, t):
+        return self.rates[ptr.value][t]
 
     def reactor_step_result_frame_count(self, ptr, t):
         return len(self.results[ptr.value][1][t][2])
@@ -346,6 +353,7 @@ class TestStep:
                 ("main_audio", "audio", [_NativeFrame(pcm.tobytes(), "int16", (2, 3))]),
             ],
             elapsed=0.25,
+            rates=[24.0, 48000.0],
         )
         lib.step_answer = lambda done: done(1, ptr, None, None)
 
@@ -357,11 +365,14 @@ class TestStep:
         assert result.elapsed == 0.25
         video = result.track("main_video")
         assert video.kind is TrackKind.VIDEO
+        assert video.rate == 24.0
         frame = video.frames[0]
         assert frame.encoding == "raw"
         assert frame.metadata == b"tag"
         assert frame.capture_time_us == 99
         np.testing.assert_array_equal(frame.array, rgb)
+        assert result.track("main_audio").kind is TrackKind.AUDIO
+        assert result.track("main_audio").rate == 48000.0
         audio = result.track("main_audio").frames[0]
         assert audio.metadata is None and audio.capture_time_us is None
         assert audio.array.dtype == np.int16
@@ -506,6 +517,9 @@ class TestStepResult:
         result = StepResult(index=1)
         assert result.files == ()
         assert result.error is None
+
+    def test_a_track_rate_defaults_to_unspecified(self) -> None:
+        assert StepTrackOutput("a", TrackKind.AUDIO).rate == 0.0
 
     def test_an_unknown_dtype_is_not_size_checked(self) -> None:
         StepFrame(data=b"abc", dtype="bfloat16", shape=(9,))
