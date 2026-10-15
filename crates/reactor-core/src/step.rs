@@ -27,7 +27,7 @@
 //! [`FrameDecoders`], keyed by encoding, so a compressed encoding is a new
 //! registry entry rather than a change to the result type.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
 use serde_json::Value;
@@ -111,12 +111,65 @@ pub fn build_request_step(
 /// Input frames pushed since the last step, per track.
 ///
 /// Tracks keep the order of their first push, and frames the order they were
-/// pushed in. [`StepInputs::take`] empties the buffer for a step;
-/// [`StepInputs::restore`] puts frames back in front when that step could not
-/// be sent, so nothing pushed in the meantime is lost or reordered.
+/// pushed in. [`StepInputs::take`] empties the buffer for a step.
+///
+/// The buffer holds at most one message's worth of frame bytes: a frame
+/// pushed past that budget pushes out the oldest ones, whatever their track,
+/// since a step can never send more than one message. It runs inside the
+/// app's process, where a camera pushing faster than steps run would
+/// otherwise grow it without end.
 #[derive(Default)]
 pub struct StepInputs {
-    tracks: Mutex<Vec<TrackFrames>>,
+    buffer: Mutex<Buffered>,
+}
+
+#[derive(Default)]
+struct Buffered {
+    tracks: Vec<TrackFrames>,
+    /// The track each buffered frame belongs to, oldest first.
+    order: VecDeque<usize>,
+    bytes: usize,
+    /// Frames pushed out by the budget since the last take.
+    dropped: usize,
+}
+
+impl Buffered {
+    fn add(&mut self, track: &str, kind: i32, frame: Frame) {
+        let index = match self.tracks.iter().position(|t| t.track == track) {
+            Some(index) => index,
+            None => {
+                self.tracks.push(TrackFrames {
+                    track: track.to_string(),
+                    kind,
+                    frames: Vec::new(),
+                    // A pushed frame carries no rate of its own to declare.
+                    rate: 0.0,
+                });
+                self.tracks.len() - 1
+            }
+        };
+        self.bytes += frame_bytes(&frame);
+        self.tracks[index].frames.push(frame);
+        self.order.push_back(index);
+    }
+
+    /// Push out the oldest frames until the buffer fits `max_bytes`. The
+    /// newest frame stays even alone over budget: the step it rides on then
+    /// fails as too large, which names the problem.
+    fn trim(&mut self, max_bytes: usize) {
+        while self.bytes > max_bytes && self.order.len() > 1 {
+            let Some(index) = self.order.pop_front() else {
+                break;
+            };
+            let frame = self.tracks[index].frames.remove(0);
+            self.bytes -= frame_bytes(&frame);
+            self.dropped += 1;
+        }
+    }
+}
+
+fn frame_bytes(frame: &Frame) -> usize {
+    frame.data.len() + frame.metadata.as_ref().map_or(0, Vec::len)
 }
 
 impl StepInputs {
@@ -124,49 +177,37 @@ impl StepInputs {
         Self::default()
     }
 
-    pub fn push(&self, track: &str, kind: WireTrackKind, frame: Frame) {
-        let mut tracks = self.tracks.lock().unwrap();
-        match tracks.iter_mut().find(|t| t.track == track) {
-            Some(existing) => existing.frames.push(frame),
-            None => tracks.push(TrackFrames {
-                track: track.to_string(),
-                kind: kind as i32,
-                frames: vec![frame],
-                // A pushed frame carries no rate of its own to declare.
-                rate: 0.0,
-            }),
-        }
+    /// Buffer `frame` for the next step, keeping the buffer within
+    /// `max_bytes` of frame data.
+    pub fn push(&self, track: &str, kind: WireTrackKind, frame: Frame, max_bytes: usize) {
+        let mut buffer = self.buffer.lock().unwrap();
+        buffer.add(track, kind as i32, frame);
+        buffer.trim(max_bytes);
     }
 
     /// Everything buffered, leaving the buffer empty.
     pub fn take(&self) -> Vec<TrackFrames> {
-        std::mem::take(&mut *self.tracks.lock().unwrap())
-    }
-
-    /// Put `taken` back ahead of whatever was pushed since it was taken.
-    pub fn restore(&self, taken: Vec<TrackFrames>) {
-        let mut tracks = self.tracks.lock().unwrap();
-        let newer = std::mem::replace(&mut *tracks, taken);
-        for mut later in newer {
-            match tracks.iter_mut().find(|t| t.track == later.track) {
-                Some(existing) => existing.frames.append(&mut later.frames),
-                None => tracks.push(later),
-            }
+        let taken = std::mem::take(&mut *self.buffer.lock().unwrap());
+        if taken.dropped > 0 {
+            log::warn!(
+                "dropped {} buffered step input frames, oldest first, to keep the step within one message",
+                taken.dropped
+            );
         }
+        taken
+            .tracks
+            .into_iter()
+            .filter(|t| !t.frames.is_empty())
+            .collect()
     }
 
     pub fn clear(&self) {
-        self.tracks.lock().unwrap().clear();
+        *self.buffer.lock().unwrap() = Buffered::default();
     }
 
     /// Number of frames buffered across all tracks.
     pub fn len(&self) -> usize {
-        self.tracks
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|t| t.frames.len())
-            .sum()
+        self.buffer.lock().unwrap().order.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -522,13 +563,24 @@ mod tests {
     #[test]
     fn inputs_keep_push_order_per_track_and_take_empties() {
         let inputs = StepInputs::new();
-        inputs.push("a", WireTrackKind::Video, raw("uint8", vec![1], vec![1]));
+        inputs.push(
+            "a",
+            WireTrackKind::Video,
+            raw("uint8", vec![1], vec![1]),
+            usize::MAX,
+        );
         inputs.push(
             "b",
             WireTrackKind::Audio,
             raw("int16", vec![1, 1], vec![0, 0]),
+            usize::MAX,
         );
-        inputs.push("a", WireTrackKind::Video, raw("uint8", vec![1], vec![2]));
+        inputs.push(
+            "a",
+            WireTrackKind::Video,
+            raw("uint8", vec![1], vec![2]),
+            usize::MAX,
+        );
         assert_eq!(inputs.len(), 3);
 
         let taken = inputs.take();
@@ -550,21 +602,62 @@ mod tests {
     }
 
     #[test]
-    fn restore_puts_frames_back_ahead_of_newer_pushes() {
+    fn pushing_past_the_budget_drops_the_oldest_frames_across_tracks() {
         let inputs = StepInputs::new();
-        inputs.push("a", WireTrackKind::Video, raw("uint8", vec![1], vec![1]));
-        let taken = inputs.take();
-        inputs.push("b", WireTrackKind::Video, raw("uint8", vec![1], vec![9]));
-        inputs.push("a", WireTrackKind::Video, raw("uint8", vec![1], vec![2]));
-        inputs.restore(taken);
-
-        let all = inputs.take();
-        assert_eq!(all[0].track, "a");
-        assert_eq!(
-            all[0].frames.iter().map(|f| f.data[0]).collect::<Vec<_>>(),
-            [1, 2]
+        // 2 bytes per frame, room for 3 frames.
+        inputs.push(
+            "a",
+            WireTrackKind::Video,
+            raw("uint8", vec![2], vec![1, 1]),
+            6,
         );
-        assert_eq!(all[1].track, "b");
+        inputs.push(
+            "b",
+            WireTrackKind::Video,
+            raw("uint8", vec![2], vec![2, 2]),
+            6,
+        );
+        inputs.push(
+            "a",
+            WireTrackKind::Video,
+            raw("uint8", vec![2], vec![3, 3]),
+            6,
+        );
+        inputs.push(
+            "b",
+            WireTrackKind::Video,
+            raw("uint8", vec![2], vec![4, 4]),
+            6,
+        );
+        assert_eq!(inputs.len(), 3);
+
+        let taken = inputs.take();
+        let firsts =
+            |track: &TrackFrames| track.frames.iter().map(|f| f.data[0]).collect::<Vec<_>>();
+        assert_eq!(taken.len(), 2);
+        assert_eq!((taken[0].track.as_str(), firsts(&taken[0])), ("a", vec![3]));
+        assert_eq!(
+            (taken[1].track.as_str(), firsts(&taken[1])),
+            ("b", vec![2, 4])
+        );
+        assert!(inputs.is_empty());
+    }
+
+    #[test]
+    fn a_frame_alone_over_budget_stays_and_a_track_left_empty_is_not_sent() {
+        let inputs = StepInputs::new();
+        inputs.push("a", WireTrackKind::Video, raw("uint8", vec![1], vec![1]), 4);
+        inputs.push(
+            "b",
+            WireTrackKind::Video,
+            raw("uint8", vec![8], vec![0; 8]),
+            4,
+        );
+        assert_eq!(inputs.len(), 1);
+
+        let taken = inputs.take();
+        assert_eq!(taken.len(), 1);
+        assert_eq!(taken[0].track, "b");
     }
 
     #[test]
