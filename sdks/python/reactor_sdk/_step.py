@@ -121,7 +121,8 @@ class StepFrame:
         if size is not None and len(self.data) != math.prod(self.shape) * size:
             raise DecodeError(
                 f"a step frame of shape {self.shape} and dtype {self.dtype} needs "
-                f"{math.prod(self.shape) * size} bytes, got {len(self.data)}"
+                f"{math.prod(self.shape) * size} bytes, got {len(self.data)}",
+                operation="step",
             )
 
     @cached_property

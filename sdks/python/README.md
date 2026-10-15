@@ -243,8 +243,10 @@ Subclasses: `InvalidStateError`, `DisconnectedError`, `NetworkError`,
 `ConflictError`, `RateLimitedError`, `BadRequestError`, `ServerError`,
 `VersionMismatchError`, `DecodeError`, `SessionTerminalError`,
 `MessageTooLargeError`, `AbortedError`, `RecorderDisabledError`, and for stepped
-sessions `GenerationModeMismatchError`, `StepRefusedError`, `StepNotReadyError`,
-`StepResultTooLargeError` and `UnsupportedFrameEncodingError`.
+sessions `GenerationModeMismatchError`, `DataChannelChunkingRequiredError`,
+`StepRefusedError`, `StepNotReadyError`, `StepCommandFailedError`,
+`StepSessionEndedError`, `StepResultTooLargeError` and
+`UnsupportedFrameEncodingError`.
 
 A command the model itself rejects reports the model's own code, which this package
 cannot enumerate — match on `error.code` for anything outside that list.
@@ -315,10 +317,14 @@ A step that ran but that the model reported as failed returns normally, with
 their bytes are fetched over HTTP from the session's step results
 (`GET /sessions/{id}/steps/{index}`, which lists each with a download URL and
 answers 202 while they are still being stored). A step the runtime refuses raises
-`StepRefusedError`; one the session cannot take yet raises `StepNotReadyError`
-(neither ran); one whose output
-does not fit in a message raises `StepResultTooLargeError`; a request too large to
-send raises `MessageTooLargeError` (nothing was sent). `clear_step_inputs()` drops
+`StepRefusedError`; one the session cannot take yet raises `StepNotReadyError`;
+one whose state key or command failed raises `StepCommandFailedError` (none of
+these three ran; calls applied before a failure stay applied); one whose output
+does not fit in a message raises `StepResultTooLargeError`; one whose session
+ended before its result came raises `StepSessionEndedError` (whether it ran is
+unknown); a request too large to send raises `MessageTooLargeError` (nothing was
+sent). A stepped `connect()` raises `DataChannelChunkingRequiredError` when the
+data channel did not negotiate chunking, which stepped sessions need. `clear_step_inputs()` drops
 the frames buffered so far. `step_timeout=` bounds a step (default 300 s).
 `numpy` is needed to read `.array`; `.data`, `.dtype` and `.shape` are there
 without it. See [`examples/09_stepped_generation.py`](examples/09_stepped_generation.py).

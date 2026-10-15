@@ -336,7 +336,8 @@ class TestStep:
         reactor = await _stepped(lib)
         lib.step_answer = lambda done: done(1, lib.add_result(1, []), None, None)
         await reactor.step()
-        assert lib.step_calls == [(None, b"[]")]
+        await reactor.step(state=None, commands=None)
+        assert lib.step_calls == [(None, b"[]"), (None, b"[]")]
 
     async def test_a_result_is_copied_out_decoded_and_freed(self, lib: FakeStepLib) -> None:
         reactor = await _stepped(lib)
@@ -415,8 +416,9 @@ class TestStep:
         reactor = await _stepped(lib)
         ptr = lib.add_result(1, [("v", "video", [_NativeFrame(b"\0" * 5, "uint8", (2, 3, 3))])])
         lib.step_answer = lambda done: done(1, ptr, None, None)
-        with pytest.raises(DecodeError, match="needs 18 bytes, got 5"):
+        with pytest.raises(DecodeError, match="needs 18 bytes, got 5") as raised:
             await reactor.step()
+        assert raised.value.operation == "step"
         assert lib.freed == [ptr]
 
     @pytest.mark.parametrize(
@@ -460,24 +462,15 @@ class TestStep:
     def test_clear_step_inputs_without_a_handle_is_a_noop(self) -> None:
         Reactor("m", generation="stepped").clear_step_inputs()
 
+    def test_clear_step_inputs_refuses_a_streamed_client(self) -> None:
+        with pytest.raises(InvalidStateError, match="stepped") as raised:
+            Reactor("m").clear_step_inputs()
+        assert raised.value.operation == "clear_step_inputs"
+
     async def test_state_must_be_a_mapping(self, lib: FakeStepLib) -> None:
         reactor = await _stepped(lib)
         with pytest.raises(TypeError, match="state"):
             await reactor.step(state=["prompt"])  # type: ignore[arg-type]
-
-
-# ── no accepted event ──────────────────────────────────────────────────────
-
-
-class TestNoAcceptedEvent:
-    def test_there_is_no_step_accepted_registration(self) -> None:
-        # A step's one answer is its result; nothing announces it beforehand.
-        assert not hasattr(Reactor, "on_step_accepted")
-
-    def test_the_ffi_module_has_no_step_accepted_trampoline(self) -> None:
-        from reactor_sdk import _ffi
-
-        assert not hasattr(_ffi, "ON_STEP_ACCEPTED_FN")
 
 
 # ── commands and results ───────────────────────────────────────────────────

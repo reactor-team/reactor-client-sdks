@@ -17,7 +17,13 @@ import numpy as np
 import pytest
 from conftest import API_KEY, API_URL, LOCAL, MODEL_NAME, paced_connect, solid_rgb_frame
 
-from reactor_sdk import GenerationModeMismatchError, Reactor, ReactorStatus, StepResult
+from reactor_sdk import (
+    GenerationModeMismatchError,
+    MessageTooLargeError,
+    Reactor,
+    ReactorStatus,
+    StepResult,
+)
 
 STEPPED_MODEL = os.environ.get("REACTOR_STEPPED_MODEL_NAME")
 INPUT_TRACK = os.environ.get("REACTOR_STEPPED_INPUT_TRACK")
@@ -82,6 +88,13 @@ async def test_pushed_frames_ride_the_next_step() -> None:
         source.push_frame(solid_rgb_frame(64, 64, (255, 0, 0)))
         result = await client.step(state={"prompt": "repaint it"})
         assert result.index >= 1
+
+        # Proof the push rode the step whatever the model makes of it: a frame
+        # over the 64 MiB a chunked data channel carries can only fail a step
+        # it went into. A push dropped on the way would let this step through.
+        source.push_frame(solid_rgb_frame(5000, 5000, (255, 0, 0)))
+        with pytest.raises(MessageTooLargeError):
+            await client.step()
     finally:
         await client.disconnect()
         client.close()
