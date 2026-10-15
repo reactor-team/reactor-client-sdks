@@ -348,6 +348,12 @@ extension Track {
     /// ``Reactor/step(state:commands:)`` carries every frame pushed since the one
     /// before — per track, in push order. Publish the track first, as for a
     /// streamed session.
+    ///
+    /// The buffer holds at most one data-channel message's worth of frame
+    /// bytes, as a step can never send more: pushing faster than steps run
+    /// drops the oldest frames, across tracks. Once the session's tracks are
+    /// known, a push to a track the session does not take as input is dropped
+    /// with a warning.
     public func pushFrame(
         _ pixels: Data,
         width: UInt32,
@@ -397,7 +403,7 @@ extension Track {
     /// each push is buffered as one planar `(channels, samples)` `int16` frame
     /// for the next ``Reactor/step(state:commands:)`` instead of being sent. A
     /// step frame carries no sample rate, so push at the rate the model's track
-    /// declares.
+    /// declares. The buffer is the one video frames share, with the same limit.
     public func pushFrame(
         _ samples: [Int16],
         sampleRate: UInt32 = 48000,

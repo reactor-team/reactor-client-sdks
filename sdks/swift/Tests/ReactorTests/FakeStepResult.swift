@@ -26,6 +26,7 @@ final class FakeStepResult: @unchecked Sendable {
     struct Track {
         var name: String
         var kind: String
+        var rate: Double = 0
         var frames: [Frame]
     }
 
@@ -77,11 +78,13 @@ final class FakeStepResult: @unchecked Sendable {
     final class CTrack {
         let name: UnsafeMutablePointer<CChar>
         let kind: UnsafeMutablePointer<CChar>
+        let rate: Double
         let frames: [CFrame]
 
         init(_ track: Track) {
             name = strdup(track.name)
             kind = strdup(track.kind)
+            rate = track.rate
             frames = track.frames.map(CFrame.init)
         }
 

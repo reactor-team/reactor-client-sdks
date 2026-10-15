@@ -317,6 +317,10 @@ struct FFI: Sendable {
     /// `reactor_step_result_track_kind` — `"video"` or `"audio"`, static.
     var stepResultTrackKind: @Sendable (OpaquePointer?, UInt32) -> UnsafePointer<CChar>?
 
+    /// `reactor_step_result_track_rate` — frames per second for video, samples
+    /// per second for audio; 0 when unspecified or out of range.
+    var stepResultTrackRate: @Sendable (OpaquePointer?, UInt32) -> Double
+
     /// `reactor_step_result_frame_count`.
     var stepResultFrameCount: @Sendable (OpaquePointer?, UInt32) -> UInt32
 
@@ -456,6 +460,7 @@ extension FFI {
         stepResultTrackCount: { result in reactor_step_result_track_count(result) },
         stepResultTrackName: { result, track in reactor_step_result_track_name(result, track) },
         stepResultTrackKind: { result, track in reactor_step_result_track_kind(result, track) },
+        stepResultTrackRate: { result, track in reactor_step_result_track_rate(result, track) },
         stepResultFrameCount: { result, track in reactor_step_result_frame_count(result, track) },
         stepResultFrameEncoding: { result, track, frame in
             reactor_step_result_frame_encoding(result, track, frame)

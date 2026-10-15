@@ -44,7 +44,7 @@ struct SteppingTests {
             index: index,
             tracks: [
                 .init(
-                    name: "main_video", kind: "video",
+                    name: "main_video", kind: "video", rate: 24,
                     frames: [
                         .init(
                             dtype: "uint8", shape: [2, 2, 3], data: Array(0..<12),
@@ -53,7 +53,7 @@ struct SteppingTests {
                             dtype: "uint8", shape: [2, 2, 3], data: Array(repeating: 9, count: 12)),
                     ]),
                 .init(
-                    name: "main_audio", kind: "audio",
+                    name: "main_audio", kind: "audio", rate: 48_000,
                     frames: [
                         // (channels, samples) int16: 2 x 3, so 12 bytes.
                         .init(
@@ -238,6 +238,7 @@ struct SteppingTests {
 
         let video = try result.track("main_video")
         #expect(video.kind == .video)
+        #expect(video.rate == 24.0)
         #expect(video.frames.count == 2)
         let first = video.frames[0]
         #expect(first.dtype == "uint8")
@@ -251,6 +252,7 @@ struct SteppingTests {
 
         let audio = try result.track("main_audio")
         #expect(audio.kind == .audio)
+        #expect(audio.rate == 48000.0)
         #expect(audio.frames[0].shape == [2, 3])
         #expect(audio.frames[0].dtype == "int16")
         // An attached but empty tag is not the same as no tag.
