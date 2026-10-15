@@ -25,7 +25,7 @@ use crate::peer::{PeerConnectionState, PeerEvent, PreparedOffer};
 use crate::protocol::recording::message_type;
 use crate::protocol::session::{
     Capabilities, ClientInfo, GenerationMode, ModelConfig, SessionResponse, TrackCapability,
-    TrackDirection,
+    TrackDirection, TrackKind as SessionTrackKind,
 };
 use crate::protocol::upload::{CreateUploadRequest, FileRef};
 use crate::protocol::webrtc::{IceCandidate, TrackMappingEntry};
@@ -1073,7 +1073,10 @@ impl Reactor {
     /// `StepResult` whose `failure_code` names the outcome: a refusal is
     /// [`CoreError::StepRefused`], a session not ready to step
     /// [`CoreError::StepNotReady`], an oversized result
-    /// [`CoreError::StepResultTooLarge`], each with the runtime's reason as
+    /// [`CoreError::StepResultTooLarge`], a state key or command whose handler
+    /// failed [`CoreError::StepCommandFailed`] (the step did not run; the calls
+    /// before it stay applied), and a session that ended before the result was
+    /// sent [`CoreError::StepSessionEnded`], each with the runtime's reason as
     /// its message; any other failure (the connection dropping mid-step) is
     /// [`CoreError::StepFailed`].
     ///
@@ -1409,6 +1412,9 @@ impl Reactor {
         num_channels: u32,
     ) {
         if self.is_stepped() {
+            if !self.takes_step_input(track_name, SessionTrackKind::Audio) {
+                return;
+            }
             match raw_audio_frame(data, num_channels) {
                 Some(frame) => self.step_inputs.push(
                     track_name,
@@ -1431,6 +1437,30 @@ impl Reactor {
         self.options.generation == GenerationMode::Stepped
     }
 
+    /// Whether the session takes `track_name` as an input track of `kind`.
+    /// Before the session's tracks are known every push is taken, and the
+    /// runtime decides. A frame for any other track is dropped with a warning
+    /// here: sent, it would get the whole step refused.
+    fn takes_step_input(&self, track_name: &str, kind: SessionTrackKind) -> bool {
+        let state = self.state.lock().unwrap();
+        let Some(capabilities) = &state.capabilities else {
+            return true;
+        };
+        let takes = capabilities.tracks.iter().any(|t| {
+            t.name == track_name && t.direction == TrackDirection::Sendonly && t.kind == kind
+        });
+        if !takes {
+            let kind = match kind {
+                SessionTrackKind::Video => "video",
+                SessionTrackKind::Audio => "audio",
+            };
+            log::warn!(
+                "dropping a {kind} frame for '{track_name}': the session takes no {kind} input track by that name"
+            );
+        }
+        takes
+    }
+
     fn buffer_video_frame(
         &self,
         track_name: &str,
@@ -1440,6 +1470,9 @@ impl Reactor {
         metadata: Option<&[u8]>,
         capture_time_us: Option<i64>,
     ) {
+        if !self.takes_step_input(track_name, SessionTrackKind::Video) {
+            return;
+        }
         match raw_video_frame(data, width, height, metadata, capture_time_us) {
             Some(frame) => self.step_inputs.push(
                 track_name,
@@ -4839,6 +4872,34 @@ mod tests {
             cam.frames.iter().map(|f| f.data[0]).collect::<Vec<_>>(),
             [9, 10]
         );
+    }
+
+    /// Once the session's tracks are known, a push to a track it does not take
+    /// as input — unknown, an output, or of the other kind — is not buffered.
+    #[test]
+    fn stepped_pushes_to_tracks_the_session_does_not_take_are_dropped() {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        reactor.state.lock().unwrap().capabilities = Some(Capabilities {
+            protocol_version: "1".into(),
+            tracks: vec![
+                output_track("output"),
+                TrackCapability {
+                    name: "cam".into(),
+                    kind: SessionTrackKind::Video,
+                    direction: TrackDirection::Sendonly,
+                },
+            ],
+            commands: None,
+            emission_fps: None,
+        });
+        reactor.push_video_frame("other", &[1, 2, 3, 255], 1, 1);
+        reactor.push_video_frame("output", &[1, 2, 3, 255], 1, 1);
+        reactor.push_audio_frame("cam", &[10, 20], 48_000, 1);
+        assert!(reactor.step_inputs.is_empty());
+
+        reactor.push_video_frame("cam", &[1, 2, 3, 255], 1, 1);
+        assert_eq!(reactor.step_inputs.len(), 1);
     }
 
     #[tokio::test]
