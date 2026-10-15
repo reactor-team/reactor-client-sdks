@@ -404,6 +404,95 @@ public class Reactor(
     /** A connection statistics snapshot. */
     public suspend fun stats(): Stats = requireHandle("get_stats").stats()
 
+    /**
+     * Upload a file from the filesystem.
+     *
+     * The MIME type is inferred from the name's extension, so a staged copy has to keep one.
+     */
+    public suspend fun uploadFile(file: java.io.File): FileRef {
+        if (!file.isFile) {
+            throw ErrorCode.toException(
+                wire = "NOT_FOUND",
+                message = "No file at ${file.path}",
+                operation = "upload_file",
+            )
+        }
+        return requireHandle("upload_file").uploadFile(file.absolutePath)
+    }
+
+    /**
+     * Upload bytes already in memory.
+     *
+     * @param data a **direct** [java.nio.ByteBuffer]; the native layer reads it in place rather
+     *   than copying, which keeps peak memory at one copy for a large payload.
+     */
+    public suspend fun uploadBytes(
+        data: java.nio.ByteBuffer,
+        name: String,
+        mimeType: String? = null,
+    ): FileRef {
+        require(data.isDirect) {
+            "uploadBytes needs a direct ByteBuffer — ByteBuffer.allocateDirect(), not allocate()"
+        }
+        // Sliced, not passed as-is. GetDirectBufferAddress returns the buffer's *base* address,
+        // unadjusted for position — so a buffer that was filled and not flipped would upload
+        // `remaining()` bytes starting at offset 0, which is neither what the caller wrote nor an
+        // error anything would catch. A slice re-bases the address onto the current position,
+        // which is the contract ByteBuffer.slice() documents.
+        val window = data.slice()
+        // Resolved here because the ABI will not take null: reactor_upload_bytes dereferences
+        // mime_type unconditionally (CStr::from_ptr), and the header marks only send_command's
+        // args and uploads as nullable. Passing the public default through was a null dereference
+        // on the simplest possible call.
+        val resolved =
+            mimeType ?: inc.reactor.sdk.android.internal.Uploads
+                .mimeTypeFor(name)
+        return requireHandle("upload_bytes").uploadBytes(window, window.remaining(), name, resolved)
+    }
+
+    /**
+     * Upload from anything that opens a stream, staging it through [cacheDirectory] first.
+     *
+     * Public because a caller with their own source — an asset, a network response, a cipher
+     * stream — should not have to construct a `content://` URI to reach this. [uploadContent] is
+     * a thin wrapper over it.
+     *
+     * Copied in chunks and bounded by [maxBytes]: the source is a file the *user* chose, and an
+     * SDK that read it whole would be deciding the memory ceiling of an app it knows nothing
+     * about.
+     *
+     * **Cancellable while staging, not while uploading, and that asymmetry is the ABI's.**
+     * `reactor_upload_file` opens the path inside a task of its own, after returning, and nothing
+     * in the ABI cancels it. So the two halves get different treatment:
+     *
+     *  * The copy is cancellable, and is the half worth cancelling — it is the one that takes
+     *    time for a large file. It checks for cancellation between chunks and deletes its partial
+     *    file on the way out.
+     *  * The upload runs under [kotlinx.coroutines.NonCancellable]. A cancelled wait here used to
+     *    run the `finally` immediately and delete a file the native task had not opened yet,
+     *    which is a failed upload the caller is never told about. Waiting is the only thing that
+     *    makes the delete safe, because there is nothing to cancel on the other side.
+     */
+    public suspend fun uploadStream(
+        name: String,
+        cacheDirectory: java.io.File,
+        maxBytes: Long = DEFAULT_UPLOAD_LIMIT_BYTES,
+        open: () -> java.io.InputStream,
+    ): FileRef {
+        val staged =
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                inc.reactor.sdk.android.internal.Uploads
+                    .stage(name, cacheDirectory, maxBytes, open)
+            }
+        return try {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                requireHandle("upload_file").uploadFile(staged.absolutePath)
+            }
+        } finally {
+            staged.delete()
+        }
+    }
+
     /** End the session server-side. Use [reconnect] to keep it. */
     public suspend fun disconnect() {
         handle?.disconnect()
@@ -437,7 +526,15 @@ public class Reactor(
         scope.cancel()
     }
 
-    internal companion object {
+    public companion object {
+        /**
+         * The default ceiling for a streamed upload, 64 MiB.
+         *
+         * A number rather than "unbounded": the source is user-chosen, and an unbounded default
+         * turns a mis-picked video into an out-of-memory crash in someone else's app.
+         */
+        public const val DEFAULT_UPLOAD_LIMIT_BYTES: Long = 64L * 1024 * 1024
+
         /**
          * What the coordinator records as `client_info.sdk_version`.
          *
