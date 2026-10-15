@@ -31,12 +31,12 @@ use reactor_core::protocol::wire::v1::platform::{
 };
 use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions};
 use reactor_core::stats::{bounded_name, client_track_codec};
-use reactor_core::step::StepCommand;
+use reactor_core::step::{PixelLayout, StepCommand};
 
 use crate::auth::WasmAuthProvider;
 use crate::http::WasmHttpClient;
 use crate::peer::WasmPeerTransport;
-use crate::pixels::{to_bgra, PixelFormat};
+use crate::pixels::{check_size, PixelFormat};
 use crate::platform::WasmPlatform;
 use crate::step::{output_to_js, StepCommandJson};
 use crate::types::{
@@ -644,8 +644,13 @@ impl ReactorClient {
         let format =
             PixelFormat::parse(format.and_then(|f| JsValue::from(f).as_string()).as_deref())
                 .map_err(|e| invalid(&format!("pushVideoFrame('{name}'): {e}")))?;
-        let bgra = to_bgra(data, width, height, format)
+        check_size(data, width, height, format)
             .map_err(|e| invalid(&format!("pushVideoFrame('{name}'): {e}")))?;
+        let layout = match format {
+            PixelFormat::Rgba => PixelLayout::Rgba,
+            PixelFormat::Rgb => PixelLayout::Rgb,
+            PixelFormat::Bgra => PixelLayout::Bgra,
+        };
         let capture_time_us = capture_time_us
             .map(|us| {
                 if us.is_finite() {
@@ -657,20 +662,17 @@ impl ReactorClient {
                 }
             })
             .transpose()?;
-        match (metadata, capture_time_us) {
-            (metadata, Some(us)) => self.reactor.push_video_frame_with_metadata_at(
-                &name,
-                &bgra,
-                width,
-                height,
-                metadata.as_deref().unwrap_or_default(),
-                us,
-            ),
-            (Some(metadata), None) => self
-                .reactor
-                .push_video_frame_with_metadata(&name, &bgra, width, height, &metadata),
-            (None, None) => self.reactor.push_video_frame(&name, &bgra, width, height),
-        }
+        // In the caller's own layout: the core converts it to the step's RGB
+        // in one pass.
+        self.reactor.push_step_video_frame(
+            &name,
+            data,
+            width,
+            height,
+            layout,
+            metadata.as_deref(),
+            capture_time_us,
+        );
         Ok(())
     }
 

@@ -66,8 +66,8 @@ A client created with `generation: "stepped"` sends no input media over RTP.
 there is ignored, with a console warning), `pushVideoFrame` / `pushAudioFrame`
 buffer frames in the core, and the next `step()` carries them inside its one
 `RequestStep`. Both of `step()`'s arguments are optional: an empty step runs on
-the model's current state. Video arrives as RGBA, RGB or BGRA and is converted
-here to the BGRA the core's push API takes; the core sends it as RGB.
+the model's current state. Video arrives as RGBA, RGB or BGRA, and the core
+converts it to the RGB a step sends in one pass.
 
 The buffer holds at most one data-channel message's worth of frames: pushing
 faster than steps run drops the oldest frames, across tracks, and the next step
