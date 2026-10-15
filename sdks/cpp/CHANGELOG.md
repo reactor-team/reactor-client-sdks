@@ -8,6 +8,35 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Stepped generation. `Options::generation = reactor::Generation::Stepped` asks
+  for a session that generates one step at a time, and
+  `client.step(state, commands)` runs one and resolves with a `StepResult`: per
+  output track, its rate (frames or samples per second, 0 when the runtime did
+  not say) and the frames it produced, each with its bytes, dtype, shape,
+  metadata and capture time, copied out of the native library once and owned by
+  the result; `elapsed`, the seconds the step's `generate()` took (or the
+  time the model reported for the step); `files`, the name, content type and
+  size of each file the model kept with the step, whose bytes are on
+  `GET /sessions/{id}/steps/{index}`; and `error`, set when the step ran but the
+  model reported a failure, which resolves rather than throws. `step()` takes no
+  arguments to run the model on its current state. `Track::push_frame` buffers
+  into the next step in such a session, up to one data-channel message's worth
+  of frame bytes (the oldest go first); a frame for a track the session does not
+  take as input is dropped with a warning. The frames buffered when a step goes
+  out go with it whatever its outcome, including a step too large to send.
+  `clear_step_inputs()` drops buffered frames, and
+  `Options::step_timeout_seconds` bounds a step. A
+  runtime that does not start the session stepped fails `connect()` with
+  `GenerationModeMismatchError`; a step can fail with `StepRefusedError`,
+  `StepNotReadyError` (the session cannot take a step yet; the step did not
+  run), `StepCommandFailedError` (a state key or command handler failed; the
+  step did not run), `StepSessionEndedError` (the session ended before the
+  result was sent), `StepResultTooLargeError` or
+  `UnsupportedFrameEncodingError`. Needs a
+  `libreactor_ffi` with `reactor_create_with_options`.
+
 ## [2.5.0] - 2026-10-13
 
 ### Added
