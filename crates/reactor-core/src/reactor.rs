@@ -1061,10 +1061,14 @@ impl Reactor {
     /// resolves). No event is published for a step.
     ///
     /// Fails, with nothing sent and the input frames kept for the next step,
-    /// when the session is not a ready stepped session, when `state` or a
-    /// command's data is not an object, or when the encoded request exceeds
-    /// the data channel's `max_message_bytes()` ([`CoreError::MessageTooLarge`];
-    /// see [`Reactor::clear_step_inputs`]). Once sent, the frames belong to
+    /// when the session is not a ready stepped session or when `state` or a
+    /// command's data is not an object. Past that point the buffered frames
+    /// belong to this step: if the request cannot be sent, for example because
+    /// it exceeds the data channel's `max_message_bytes()`
+    /// ([`CoreError::MessageTooLarge`]), the step fails and its frames are
+    /// dropped. The buffer itself never holds more than one message's worth of
+    /// frames: pushing past that drops the oldest. Once sent, the frames belong
+    /// to
     /// that step whatever its outcome. The runtime answers every step with a
     /// `StepResult` whose `failure_code` names the outcome: a refusal is
     /// [`CoreError::StepRefused`], a session not ready to step
@@ -1090,16 +1094,12 @@ impl Reactor {
         let mut request = build_request_step(state, commands, Vec::new())?;
         request.media_input = self.step_inputs.take();
 
-        let (pending, payload) = self
+        // The frames belong to this attempt: a send that fails takes them with
+        // it. What the channel accepts, it delivers; the SDK resends nothing.
+        let pending = self
             .data
-            .begin_returning(data_client_message::Payload::RequestStep(request));
-        if let Err(error) = self.send_pending("step", &pending) {
-            if let data_client_message::Payload::RequestStep(request) = payload {
-                self.step_inputs.restore(request.media_input);
-            }
-            return Err(error);
-        }
-        drop(payload);
+            .begin(data_client_message::Payload::RequestStep(request));
+        self.send_pending("step", &pending)?;
 
         let response = match self
             .await_data_response("step", pending, self.options.step_timeout)
@@ -1131,8 +1131,7 @@ impl Reactor {
         }
     }
 
-    /// Drop every input frame buffered for the next step — the way out when a
-    /// step was refused as [`CoreError::MessageTooLarge`] and kept its frames.
+    /// Drop every input frame buffered for the next step.
     pub fn clear_step_inputs(&self) {
         self.step_inputs.clear();
     }
@@ -1411,9 +1410,12 @@ impl Reactor {
     ) {
         if self.is_stepped() {
             match raw_audio_frame(data, num_channels) {
-                Some(frame) => self
-                    .step_inputs
-                    .push(track_name, WireTrackKind::Audio, frame),
+                Some(frame) => self.step_inputs.push(
+                    track_name,
+                    WireTrackKind::Audio,
+                    frame,
+                    self.peer.max_message_bytes(),
+                ),
                 None => log::warn!(
                     "dropping audio frame for '{track_name}': {} samples do not divide into {num_channels} channels",
                     data.len()
@@ -1439,9 +1441,12 @@ impl Reactor {
         capture_time_us: Option<i64>,
     ) {
         match raw_video_frame(data, width, height, metadata, capture_time_us) {
-            Some(frame) => self
-                .step_inputs
-                .push(track_name, WireTrackKind::Video, frame),
+            Some(frame) => self.step_inputs.push(
+                track_name,
+                WireTrackKind::Video,
+                frame,
+                self.peer.max_message_bytes(),
+            ),
             None => log::warn!(
                 "dropping video frame for '{track_name}': {} bytes is not {width}x{height} BGRA",
                 data.len()
@@ -4538,13 +4543,13 @@ mod tests {
         let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
         reactor
             .step_inputs
-            .push("cam", WireTrackKind::Video, raw_frame(1));
+            .push("cam", WireTrackKind::Video, raw_frame(1), usize::MAX);
         reactor
             .step_inputs
-            .push("mic", WireTrackKind::Audio, raw_frame(2));
+            .push("mic", WireTrackKind::Audio, raw_frame(2), usize::MAX);
         reactor
             .step_inputs
-            .push("cam", WireTrackKind::Video, raw_frame(3));
+            .push("cam", WireTrackKind::Video, raw_frame(3), usize::MAX);
 
         let (stepping, sent) = start_step(
             &reactor,
@@ -4792,10 +4797,10 @@ mod tests {
         ));
     }
 
-    /// Over the channel's limit, nothing is sent and the inputs stay buffered
-    /// for the next step (or for `clear_step_inputs`).
+    /// Over the channel's limit, nothing is sent, and the inputs that made the
+    /// request too large are dropped rather than kept to fail the next step.
     #[tokio::test]
-    async fn an_oversized_step_is_refused_before_sending_and_keeps_its_inputs() {
+    async fn an_oversized_step_is_refused_before_sending_and_drops_its_inputs() {
         let peer = Arc::new(DataPeer::new(64));
         let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
         reactor.step_inputs.push(
@@ -4805,6 +4810,7 @@ mod tests {
                 data: vec![0; 1024],
                 ..raw_frame(0)
             },
+            usize::MAX,
         );
 
         let result = reactor.step(Value::Null, vec![]).await;
@@ -4813,10 +4819,26 @@ mod tests {
             Err(CoreError::MessageTooLarge { max: 64, .. })
         ));
         assert!(peer.sent().is_empty());
-        assert_eq!(reactor.step_inputs.len(), 1);
-
-        reactor.clear_step_inputs();
         assert!(reactor.step_inputs.is_empty());
+    }
+
+    /// A camera pushing faster than steps run keeps at most one message's worth
+    /// of frames, the newest ones.
+    #[test]
+    fn stepped_pushes_keep_at_most_one_message_of_frames() {
+        // Room for two 1x1 RGB frames (3 bytes each), not three.
+        let peer = Arc::new(DataPeer::new(7));
+        let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        for value in 1..=10u8 {
+            reactor.push_video_frame("cam", &[value, value, value, 255], 1, 1);
+        }
+
+        assert_eq!(reactor.step_inputs.len(), 2);
+        let [cam] = reactor.step_inputs.take().try_into().unwrap();
+        assert_eq!(
+            cam.frames.iter().map(|f| f.data[0]).collect::<Vec<_>>(),
+            [9, 10]
+        );
     }
 
     #[tokio::test]

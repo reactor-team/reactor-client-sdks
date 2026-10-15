@@ -73,16 +73,6 @@ impl DataCorrelator {
 
     /// Build a request and register it for correlation.
     pub fn begin(&self, payload: data_client_message::Payload) -> PendingData {
-        self.begin_returning(payload).0
-    }
-
-    /// As [`DataCorrelator::begin`], also handing the payload back once it is
-    /// encoded, for a caller that must recover what it held if the send
-    /// fails — a step's buffered input frames.
-    pub fn begin_returning(
-        &self,
-        payload: data_client_message::Payload,
-    ) -> (PendingData, data_client_message::Payload) {
         let command = match &payload {
             data_client_message::Payload::Command(c) => c.r#type.clone(),
             data_client_message::Payload::RequestStep(_) => "request_step".to_string(),
@@ -100,16 +90,11 @@ impl DataCorrelator {
             .lock()
             .unwrap()
             .insert(request_id.clone(), (command, tx));
-        let encoded = message.encode_to_vec();
-        let payload = message.payload.expect("set above");
-        (
-            PendingData {
-                payload: encoded,
-                request_id,
-                receiver,
-            },
-            payload,
-        )
+        PendingData {
+            payload: message.encode_to_vec(),
+            request_id,
+            receiver,
+        }
     }
 
     /// Feed an inbound data-channel payload. Resolves the pending request it
