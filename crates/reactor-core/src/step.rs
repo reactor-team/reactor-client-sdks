@@ -243,24 +243,55 @@ impl StepInputs {
     }
 }
 
-/// A raw video frame from the BGRA pixels the push API takes: RGB `uint8`,
-/// shape `(height, width, 3)`. `None` when `bgra` is not `width * height * 4`
-/// bytes.
+/// The byte layout of pushed video pixels. The push API takes BGRA; a host
+/// whose frames come in another layout names it to
+/// [`crate::reactor::Reactor::push_step_video_frame`], so they are converted to the
+/// step's RGB once rather than to BGRA first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PixelLayout {
+    /// 4 bytes per pixel, B G R A.
+    Bgra,
+    /// 4 bytes per pixel, R G B A.
+    Rgba,
+    /// 3 bytes per pixel, R G B: what a step frame holds.
+    Rgb,
+}
+
+impl PixelLayout {
+    pub fn bytes_per_pixel(self) -> usize {
+        match self {
+            Self::Rgb => 3,
+            Self::Bgra | Self::Rgba => 4,
+        }
+    }
+}
+
+/// A raw video frame from pushed pixels in `layout`: RGB `uint8`, shape
+/// `(height, width, 3)`, converted in one pass. `None` when `pixels` is not
+/// `width * height` pixels of that layout.
 pub fn raw_video_frame(
-    bgra: &[u8],
+    pixels: &[u8],
     width: u32,
     height: u32,
+    layout: PixelLayout,
     metadata: Option<&[u8]>,
     capture_time_us: Option<i64>,
 ) -> Option<Frame> {
-    let pixels = (width as usize).checked_mul(height as usize)?;
-    if bgra.len() != pixels.checked_mul(4)? {
+    let count = (width as usize).checked_mul(height as usize)?;
+    if pixels.len() != count.checked_mul(layout.bytes_per_pixel())? {
         return None;
     }
-    let mut rgb = Vec::with_capacity(pixels * 3);
-    for px in bgra.chunks_exact(4) {
-        rgb.extend_from_slice(&[px[2], px[1], px[0]]);
-    }
+    let rgb = match layout {
+        PixelLayout::Rgb => pixels.to_vec(),
+        PixelLayout::Rgba => pixels
+            .chunks_exact(4)
+            .flat_map(|px| [px[0], px[1], px[2]])
+            .collect(),
+        PixelLayout::Bgra => pixels
+            .chunks_exact(4)
+            .flat_map(|px| [px[2], px[1], px[0]])
+            .collect(),
+    };
     Some(Frame {
         encoding: FrameEncoding::Raw as i32,
         dtype: VIDEO_DTYPE.to_string(),
@@ -724,7 +755,8 @@ mod tests {
     fn video_frames_become_rgb_height_width_3() {
         // 2x1 BGRA: blue pixel, then red pixel.
         let bgra = [255, 0, 0, 255, 0, 0, 255, 255];
-        let frame = raw_video_frame(&bgra, 2, 1, Some(b"tag"), Some(42)).unwrap();
+        let frame =
+            raw_video_frame(&bgra, 2, 1, PixelLayout::Bgra, Some(b"tag"), Some(42)).unwrap();
         assert_eq!(frame.encoding, FrameEncoding::Raw as i32);
         assert_eq!(frame.dtype, "uint8");
         assert_eq!(frame.shape, [1, 2, 3]);
@@ -732,9 +764,22 @@ mod tests {
         assert_eq!(frame.metadata.as_deref(), Some(&b"tag"[..]));
         assert_eq!(frame.capture_time_us, Some(42));
 
-        assert!(raw_video_frame(&bgra, 3, 1, None, None).is_none());
-        let untagged = raw_video_frame(&bgra, 2, 1, Some(b""), None).unwrap();
+        assert!(raw_video_frame(&bgra, 3, 1, PixelLayout::Bgra, None, None).is_none());
+        let untagged = raw_video_frame(&bgra, 2, 1, PixelLayout::Bgra, Some(b""), None).unwrap();
         assert!(untagged.metadata.is_none());
+    }
+
+    #[test]
+    fn rgba_and_rgb_pixels_become_the_same_rgb_frame() {
+        // 2x1: blue pixel, then red pixel.
+        let rgba = [0, 0, 255, 255, 255, 0, 0, 255];
+        let rgb = [0, 0, 255, 255, 0, 0];
+        for (pixels, layout) in [(&rgba[..], PixelLayout::Rgba), (&rgb[..], PixelLayout::Rgb)] {
+            let frame = raw_video_frame(pixels, 2, 1, layout, None, None).unwrap();
+            assert_eq!(frame.shape, [1, 2, 3], "{layout:?}");
+            assert_eq!(frame.data, rgb, "{layout:?}");
+        }
+        assert!(raw_video_frame(&rgb, 2, 1, PixelLayout::Rgba, None, None).is_none());
     }
 
     #[test]
