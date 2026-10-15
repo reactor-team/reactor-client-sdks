@@ -171,6 +171,7 @@ StepResult read_step_result(const Ffi& lib, const ReactorStepResult* result) {
                    "\"");
     }
     output.kind = *parsed;
+    output.rate = lib.step_result_track_rate(result, track);
     const std::uint32_t frame_count = lib.step_result_frame_count(result, track);
     output.frames.reserve(frame_count);
     for (std::uint32_t frame = 0; frame < frame_count; ++frame) {

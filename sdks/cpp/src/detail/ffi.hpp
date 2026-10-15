@@ -89,6 +89,7 @@ namespace reactor::detail {
   X(step_result_track_count, reactor_step_result_track_count)                         \
   X(step_result_track_name, reactor_step_result_track_name)                           \
   X(step_result_track_kind, reactor_step_result_track_kind)                           \
+  X(step_result_track_rate, reactor_step_result_track_rate)                           \
   X(step_result_frame_count, reactor_step_result_frame_count)                         \
   X(step_result_frame_encoding, reactor_step_result_frame_encoding)                   \
   X(step_result_frame_dtype, reactor_step_result_frame_dtype)                         \

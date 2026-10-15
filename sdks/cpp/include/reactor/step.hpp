@@ -89,6 +89,10 @@ struct StepFrame {
 struct StepTrackOutput {
   std::string name{};
   TrackKind kind = TrackKind::Video;
+  /// The rate the track's frames play at, as the runtime reported it: frames per
+  /// second for video, samples per second for audio. 0 when the runtime did not
+  /// say.
+  double rate = 0.0;
   std::vector<StepFrame> frames{};
 };
 

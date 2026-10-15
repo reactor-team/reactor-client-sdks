@@ -333,6 +333,7 @@ camera.push_frame(reactor::Bytes{bgra.data(), bgra.size()}, width, height);  // 
 
 const auto result = client.step({{"prompt", "a red fox"}},
                                 {{"advance", {{"frames", 4}}}}).get();
+result.track("main_video").rate;  // frames/s (samples/s for audio); 0 if unspecified
 for (const auto& frame : result.track("main_video").frames) {
   frame.data;                    // (height, width, 3) uint8 RGB, frame.shape says so
   frame.metadata, frame.capture_time_us;
@@ -356,16 +357,23 @@ Files go *into* a step the way they go into a command: upload first, then put th
 `FileRef` in a command's data or in the state value of an upload-typed field.
 
 `Track::push_frame` keeps its signature: in a stepped session it buffers the frame
-for the next step instead of sending it, and still needs `publish()` first. Audio
-comes back as `(channels, samples)` `int16`. A step the runtime refuses throws
+for the next step instead of sending it, and still needs `publish()` first. The
+buffer holds at most one data-channel message's worth of frame bytes, so pushing
+faster than steps run drops the oldest frames, across tracks; once the session's
+tracks are known, a frame pushed to a track the session does not take as input is
+dropped with a warning. The frames buffered when a step goes out belong to that
+step whatever its outcome — one that could not be sent drops them too — and
+`clear_step_inputs()` drops what is buffered now. Audio comes back as
+`(channels, samples)` `int16`, and each output track's `rate` is what the runtime
+reported: frames per second for video, samples per second for audio, 0 when it
+did not say. A step the runtime refuses throws
 `StepRefusedError`; one the session cannot take yet throws `StepNotReadyError`
 (neither ran); one whose state key or command handler fails throws
 `StepCommandFailedError` (the calls before it stay applied, the step did not
 run); one whose session ends before its result is sent throws
 `StepSessionEndedError` (whether it ran is unknown); one whose output does not
 fit in a message throws `StepResultTooLargeError`; a request too large to send throws
-`MessageTooLargeError` and keeps the pushed frames, which `clear_step_inputs()`
-drops. `Options::step_timeout_seconds` bounds a step (default 300 s).
+`MessageTooLargeError`. `Options::step_timeout_seconds` bounds a step (default 300 s).
 
 The result is copied out of the native library once, when the step completes, and
 the native result is freed there and then: a `StepResult` owns its bytes and
