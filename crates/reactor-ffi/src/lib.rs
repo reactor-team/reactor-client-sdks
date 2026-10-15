@@ -388,10 +388,7 @@ impl Completion {
                 // every binding above collapsed all of these into one error type;
                 // the code and whether retrying is worth anything were both in
                 // the `CoreError` and both thrown away here.
-                let details = e.details(Some(self.operation));
-                let json = serde_json::to_string(&details)
-                    .unwrap_or_else(|_| fallback_error_json(&details.message));
-                if let Ok(cs) = CString::new(json) {
+                if let Some(cs) = error_json(&e, self.operation) {
                     unsafe { func(0, std::ptr::null(), cs.as_ptr(), self.userdata) }
                 }
             }
@@ -978,7 +975,7 @@ impl CreateConfig {
         }
         let config: Self = serde_json::from_value(value).map_err(|e| invalid(e.to_string()))?;
         if let Some(seconds) = config.step_timeout_seconds {
-            // Duration::from_secs_f64 panics on anything else.
+            // A finite value too long for a Duration saturates in `apply`.
             if !(seconds.is_finite() && seconds > 0.0) {
                 return Err(CoreError::InvalidState(format!(
                     "create options are not valid: step_timeout_seconds must be a positive number, got {seconds}"
@@ -997,7 +994,10 @@ impl CreateConfig {
         options.auto_resume_tracks = self.auto_resume_tracks;
         options.generation = self.generation;
         if let Some(seconds) = self.step_timeout_seconds {
-            options.step_timeout = std::time::Duration::from_secs_f64(seconds);
+            // `from_secs_f64` would panic on overflow, and a panic here
+            // would cross `extern "C"`.
+            options.step_timeout =
+                std::time::Duration::try_from_secs_f64(seconds).unwrap_or(std::time::Duration::MAX);
         }
     }
 }
@@ -1903,10 +1903,7 @@ impl StepCompletion {
                 unsafe { func(1, output, std::ptr::null(), self.userdata) }
             }
             Err(e) => {
-                let details = e.details(Some("step"));
-                let json = serde_json::to_string(&details)
-                    .unwrap_or_else(|_| fallback_error_json(&details.message));
-                if let Ok(cs) = CString::new(json) {
+                if let Some(cs) = error_json(&e, "step") {
                     unsafe { func(0, std::ptr::null_mut(), cs.as_ptr(), self.userdata) }
                 }
             }
@@ -2009,13 +2006,18 @@ pub unsafe extern "C" fn reactor_unpublish_track(
     }
 }
 
-/// Serialise a `CoreError` into the heap JSON payload every completion reports,
-/// for a synchronous caller with no completion callback to hand it to instead.
-fn error_details_ptr(err: &CoreError, operation: &str) -> *mut c_char {
+/// Serialise a `CoreError` into the JSON payload every completion reports.
+fn error_json(err: &CoreError, operation: &str) -> Option<CString> {
     let details = err.details(Some(operation));
     let json =
         serde_json::to_string(&details).unwrap_or_else(|_| fallback_error_json(&details.message));
-    CString::new(json)
+    CString::new(json).ok()
+}
+
+/// [`error_json`] on the heap, for a synchronous caller with no completion
+/// callback to hand it to instead.
+fn error_details_ptr(err: &CoreError, operation: &str) -> *mut c_char {
+    error_json(err, operation)
         .map(|cs| cs.into_raw())
         .unwrap_or(std::ptr::null_mut())
 }
@@ -3518,6 +3520,16 @@ mod tests {
         assert_eq!(config.adm, Some(AdmMode::Synthetic));
     }
 
+    /// A timeout too long for a Duration means no limit, not a panic that would
+    /// abort the host from inside `reactor_create_with_options`.
+    #[test]
+    fn a_step_timeout_too_long_for_a_duration_saturates() {
+        let config = CreateConfig::from_json(r#"{"step_timeout_seconds":1e20}"#).unwrap();
+        let mut options = ReactorOptions::new("http://x", "m");
+        config.apply(&mut options);
+        assert_eq!(options.step_timeout, std::time::Duration::MAX);
+    }
+
     /// Absent keys are what `reactor_create` already did, so switching a binding
     /// over changes nothing it did not ask for.
     #[test]
@@ -3867,6 +3879,18 @@ mod tests {
                     message: "big".into(),
                 },
                 codes::STEP_RESULT_TOO_LARGE,
+            ),
+            (
+                CoreError::StepCommandFailed {
+                    message: "set_prompt failed".into(),
+                },
+                codes::STEP_COMMAND_FAILED,
+            ),
+            (
+                CoreError::StepSessionEnded {
+                    message: "gone".into(),
+                },
+                codes::STEP_SESSION_ENDED,
             ),
             (
                 CoreError::StepFailed {
