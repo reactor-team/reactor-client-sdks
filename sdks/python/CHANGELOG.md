@@ -26,12 +26,18 @@ versioning follows [Semantic Versioning](https://semver.org/).
   across tracks when pushes outpace steps; a push to a track the session does
   not take as input is dropped with a warning. A step refused before it goes
   out keeps its buffered frames; past that they belong to the step whatever
-  its outcome, including one too large to send, and none carry over. Each output track carries its `rate` (frames per second for
-  video, samples per second for audio; 0.0 when the runtime did not say).
+  its outcome, including one too large to send, and none carry over. Each
+  output track carries its `rate` (frames per second for video, samples per
+  second for audio; 0.0 when the runtime did not say).
   New errors:
   `GenerationModeMismatchError` (the runtime did not start the session stepped),
-  `StepRefusedError`, `StepNotReadyError` (the session cannot take a step yet;
-  the step did not run), `StepResultTooLargeError`, `UnsupportedFrameEncodingError`.
+  `DataChannelChunkingRequiredError` (the data channel did not negotiate
+  chunking, which a stepped session needs), `StepRefusedError`,
+  `StepNotReadyError` (the session cannot take a step yet; the step did not
+  run), `StepCommandFailedError` (a state key or command failed; the step did
+  not run), `StepSessionEndedError` (the session ended before the result came;
+  whether the step ran is unknown), `StepResultTooLargeError`,
+  `UnsupportedFrameEncodingError`.
   Needs a `libreactor_ffi` with `reactor_create_with_options`.
 
 ## [1.10.0] - 2026-10-13

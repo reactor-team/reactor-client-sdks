@@ -1142,7 +1142,7 @@ class Reactor:
     async def step(
         self,
         state: Mapping[str, Any] | None = None,
-        commands: Sequence[StepCommand | Mapping[str, Any]] = (),
+        commands: Sequence[StepCommand | Mapping[str, Any]] | None = None,
     ) -> StepResult:
         """Run one step of a stepped session and return what it produced.
 
@@ -1203,7 +1203,9 @@ class Reactor:
         state_json = (
             json.dumps(dict(state), default=_wire_file_ref).encode() if state is not None else None
         )
-        commands_json = json.dumps(_wire_commands(commands), default=_wire_file_ref).encode()
+        commands_json = json.dumps(
+            _wire_commands(() if commands is None else commands), default=_wire_file_ref
+        ).encode()
         handle = self._handle
         lib = get_lib()
 
@@ -1228,9 +1230,18 @@ class Reactor:
         """Drop every frame pushed since the last step.
 
         The next :meth:`step` then carries only frames pushed after this call. A
-        no-op without a handle or outside a stepped session.
+        no-op before the client has a handle, with nothing buffered yet.
+
+        Raises:
+            InvalidStateError: outside a stepped session, as :meth:`step` does.
         """
-        if self._handle is None or self._generation != "stepped":
+        if self._generation != "stepped":
+            raise InvalidStateError(
+                "clear_step_inputs() needs a stepped session: "
+                'create the client with generation="stepped"',
+                operation="clear_step_inputs",
+            )
+        if self._handle is None:
             return
         get_lib().reactor_clear_step_inputs(ctypes.c_void_p(self._handle))
 
