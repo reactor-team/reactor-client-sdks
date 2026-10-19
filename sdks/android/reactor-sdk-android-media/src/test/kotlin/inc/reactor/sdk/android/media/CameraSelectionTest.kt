@@ -242,4 +242,42 @@ class CameraSelectionTest {
             CameraSelection.rotateBgra(frame3x2(), 3, 2, 90, java.nio.ByteBuffer.allocateDirect(20))
         }
     }
+
+    // ── Following the device ─────────────────────────────────────────────────
+
+    /** The four quadrants, in the listener's clockwise degrees and the display's convention. */
+    @Test
+    fun `a physical orientation maps to the display rotation convention`() {
+        assertEquals(0, CameraSelection.deviceRotationFor(0, current = 90))
+        assertEquals(270, CameraSelection.deviceRotationFor(90, current = 0))
+        assertEquals(180, CameraSelection.deviceRotationFor(180, current = 0))
+        assertEquals(90, CameraSelection.deviceRotationFor(270, current = 0))
+        assertEquals("359 is upright, across the seam", 0, CameraSelection.deviceRotationFor(359, current = 90))
+    }
+
+    /** The flip that never reaches onConfigurationChanged must still be followed. */
+    @Test
+    fun `turning from one landscape to the other is followed`() {
+        val left = CameraSelection.deviceRotationFor(90, current = 0)
+        assertEquals(90, CameraSelection.deviceRotationFor(270, current = left))
+    }
+
+    @Test
+    fun `lying flat keeps the last orientation`() {
+        assertEquals(270, CameraSelection.deviceRotationFor(ORIENTATION_FLAT, current = 270))
+    }
+
+    /** Near the diagonal, rounding alone would toggle the stream on every reading. */
+    @Test
+    fun `a reading near the diagonal does not flip the rotation`() {
+        assertEquals("50° is not yet landscape", 0, CameraSelection.deviceRotationFor(50, current = 0))
+        assertEquals("40° is not yet back to portrait", 270, CameraSelection.deviceRotationFor(40, current = 270))
+        assertEquals("60° is landscape", 270, CameraSelection.deviceRotationFor(60, current = 0))
+        assertEquals("30° is portrait again", 0, CameraSelection.deviceRotationFor(30, current = 270))
+    }
+
+    private companion object {
+        /** OrientationEventListener.ORIENTATION_UNKNOWN, which a JVM test cannot load. */
+        const val ORIENTATION_FLAT = -1
+    }
 }

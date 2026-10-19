@@ -69,9 +69,10 @@ camera.start { bgra, width, height -> track.pushFrame(bgra, width, height) }
 ```
 
 Camera frames arrive upright and unmirrored — what the camera sees, the way the
-model should get it. Keep `camera.deviceRotation` current (`Display.getRotation()`
-times 90, from `onConfigurationChanged`) so turning the phone turns the stream,
-and mirror only the local preview, with `VideoRenderer.mirror = true`.
+model should get it. The camera follows which way the phone is held on its own,
+so turning the phone turns the stream with nothing to wire up (pass
+`followDeviceOrientation = false` to set `camera.deviceRotation` yourself).
+Mirror only the local preview, with `VideoRenderer.mirror = true`.
 
 Both callbacks run on the capture thread, and pushing straight from them is the
 intent — the buffers are reused, and queueing instead trades a bounded frame

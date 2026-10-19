@@ -12,11 +12,14 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
+import android.hardware.display.DisplayManager
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.util.Log
+import android.view.Display
+import android.view.OrientationEventListener
 import java.nio.ByteBuffer
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -43,9 +46,14 @@ import java.util.concurrent.atomic.AtomicBoolean
  * turn it back. Rotating here means every app gets the right picture without writing the same
  * index arithmetic.
  *
- * The rotation follows [deviceRotation], which the app updates while capture runs — from
- * `onConfigurationChanged`, or a display listener for an Activity that handles its own rotation.
- * Only the app knows which way its window is turned; this class reads no `Display`.
+ * **The rotation follows the device on its own**, as the Swift SDK's `Camera` does: an
+ * `OrientationEventListener` tracks which way the phone is physically held while capture runs, so
+ * frames stay upright through every turn — including landscape to the other landscape, which
+ * changes no configuration and so never reaches `onConfigurationChanged`. It is the device's
+ * orientation rather than the window's, which is what keeps a portrait-locked Activity's stream
+ * upright when the phone is turned. Lying flat keeps the last orientation.
+ *
+ * Pass `followDeviceOrientation = false` to drive [deviceRotation] yourself instead.
  *
  * **Front-camera frames are not mirrored.** What is pushed is what the camera sees, which is what
  * the model should be given and what the Swift SDK's `Camera` pushes too. Mirroring is a preview
@@ -74,6 +82,7 @@ public class CameraCapture
         public val targetWidth: Int = 640,
         public val targetHeight: Int = 480,
         deviceRotation: Int = 0,
+        public val followDeviceOrientation: Boolean = true,
     ) {
         private val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
@@ -81,10 +90,10 @@ public class CameraCapture
          * How far the device is turned from its natural orientation, in degrees: 0, 90, 180 or
          * 270 — `Display.getRotation()` times 90.
          *
-         * Writable while capturing, and read per frame, so turning the phone mid-session turns
-         * the next frame rather than leaving the stream sideways until a restart. Taken as a value
-         * rather than read from a `Display`, because the caller is the one who knows whether it
-         * is rendering into a rotating Activity or a fixed-orientation one.
+         * Read per frame, so turning the phone mid-session turns the next frame rather than
+         * leaving the stream sideways until a restart. With [followDeviceOrientation] (the
+         * default) this class keeps it current while capturing, and a value written here lasts
+         * only until the phone is next turned; without it, this is the app's to update.
          */
         @Volatile
         public var deviceRotation: Int = requireRotation(deviceRotation)
@@ -124,6 +133,9 @@ public class CameraCapture
 
             /** Set by a teardown that found [openPending]; the open's answer finishes the quit. */
             var quitWhenOpenAnswers = false
+
+            /** Tracks the device while this run lasts. Null without [followDeviceOrientation]. */
+            var orientation: OrientationEventListener? = null
         }
 
         /** The run in progress, or null. Written by start() and stop(), on the caller's thread. */
@@ -194,6 +206,7 @@ public class CameraCapture
                     reader = ImageReader.newInstance(chosen.width, chosen.height, ImageFormat.YUV_420_888, 2),
                 )
             run = current
+            if (followDeviceOrientation) current.orientation = followOrientation()
 
             // Two buffers: the conversion's output, and the rotation's. A rotation cannot run in
             // place, and both are allocated once rather than per frame.
@@ -240,10 +253,36 @@ public class CameraCapture
                 // thread and a reader nobody can release.
                 current.live.set(false)
                 current.openPending = false
+                current.orientation?.disable()
                 run = null
                 current.handler.post { shutdown(current) }
                 throw failed
             }
+        }
+
+        /**
+         * Start tracking which way the device is held, seeded from the display.
+         *
+         * The listener only reports changes, so the starting value comes from the display's
+         * rotation — the best answer available before the first sensor reading, and the right one
+         * for the usual Activity that turns with the phone. Readings arrive on the main looper and
+         * only write [deviceRotation], which every frame reads.
+         */
+        private fun followOrientation(): OrientationEventListener? {
+            val display =
+                (context.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager)
+                    ?.getDisplay(Display.DEFAULT_DISPLAY)
+            if (display != null) deviceRotation = display.rotation * 90
+            val listener =
+                object : OrientationEventListener(context) {
+                    override fun onOrientationChanged(orientation: Int) {
+                        deviceRotation = CameraSelection.deviceRotationFor(orientation, deviceRotation)
+                    }
+                }
+            // A device with no accelerometer keeps the display's rotation for the whole run.
+            if (!listener.canDetectOrientation()) return null
+            listener.enable()
+            return listener
         }
 
         private fun currentRotation(): Int =
@@ -368,6 +407,9 @@ public class CameraCapture
             val current = run ?: return
             run = null
             current.live.set(false)
+            // From the caller's thread, not the camera's: the listener belongs to the main
+            // looper, and disable() is safe from anywhere.
+            current.orientation?.disable()
             if (Looper.myLooper() == current.thread.looper) {
                 shutdown(current)
                 return
