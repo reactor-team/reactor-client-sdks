@@ -100,12 +100,23 @@ public class AudioTrackRender
                 )
             }
 
-            track = opened
-            if (output == Output.SPEAKER) {
-                SpeakerRoute.acquire(context)
-                holdsRoute = true
+            var routed = false
+            try {
+                if (output == Output.SPEAKER) {
+                    SpeakerRoute.acquire(context)
+                    routed = true
+                }
+                opened.play()
+            } catch (failed: Throwable) {
+                // Rolled back before anything is committed: a renderer that failed to start must
+                // be startable again, and must not keep its share of the process-wide route — the
+                // Speaker above never became running, so it will never call stop() to return it.
+                if (routed) SpeakerRoute.release()
+                opened.release()
+                throw failed
             }
-            opened.play()
+            track = opened
+            holdsRoute = routed
         }
 
         override fun write(samples: ShortArray) {
