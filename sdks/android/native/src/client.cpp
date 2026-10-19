@@ -653,6 +653,28 @@ Java_inc_reactor_sdk_android_internal_NativeClient_nativeDownloadClip(
                         reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
 }
 
+/**
+ * Exchange an API key for a token.
+ *
+ * The detached shape once more, exactly as nativeDownloadClip: reactor_fetch_jwt takes no handle,
+ * so there is nothing to check and nothing to keep alive — the ticket is the entire userdata, and
+ * a completion arriving after the client is gone finds an empty map and returns. What differs is
+ * why the arguments may be null: the header says a null api_url or api_key *completes with an
+ * error* rather than returning silently, precisely because there is no handle a caller could have
+ * been expected to check. They are therefore passed through as-is, and refusing them here would
+ * turn a settled error into a waiter nothing ever completes.
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeFetchJwt(
+    JNIEnv* env, jobject, jstring api_url, jstring api_key, jstring options_json, jboolean local,
+    jlong ticket) {
+  JavaString url(env, api_url);
+  JavaString key(env, api_key);
+  JavaString options(env, options_json);
+  reactor_fetch_jwt(url.get(), key.get(), options.get(), local ? 1 : 0, completion_trampoline,
+                    reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitProgress(JNIEnv* env, jobject,
                                                                       jclass completions) {

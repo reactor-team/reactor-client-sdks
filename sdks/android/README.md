@@ -72,6 +72,14 @@ try {
 }
 ```
 
+For development you can pass `apiKey` instead of `jwt`: `connect()` then
+exchanges it for a token scoped to what that connect reaches — the model when
+creating a session, the session when adopting one — and re-mints when the scope
+changes. Production apps mint short-lived tokens on their own backend; a key in
+an APK is a key anyone can extract, which is all the exchange around it cannot
+change. A `jwt` passed alongside always wins, and `local = true` never
+authenticates at all.
+
 Three things that are not obvious and cost an afternoon each:
 
 **`disconnect()` and `close()` are two different things, and you want both.**

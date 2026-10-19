@@ -152,6 +152,14 @@ internal object NativeClient {
         ticket: Long,
     )
 
+    private external fun nativeFetchJwt(
+        apiUrl: String,
+        apiKey: String,
+        optionsJson: String?,
+        local: Boolean,
+        ticket: Long,
+    )
+
     /**
      * Global references the bridge could not release, kept forever on purpose.
      *
@@ -440,6 +448,34 @@ internal object NativeClient {
                 // handle as live after its Context is gone.
                 clientClosed()
             }
+        }
+    }
+
+    /**
+     * Exchange an API key for a short-lived token. Detached, like a download: `reactor_fetch_jwt`
+     * takes no handle, so this is not bounded by any client's lifetime and deliberately lives on
+     * the object — which is what makes it callable *before* the first handle exists, the one place
+     * a key-only connect mints from.
+     *
+     * @param apiUrl the coordinator's base URL
+     * @param apiKey the key to exchange
+     * @param optionsJson scoping options as JSON, or null for a token carrying everything the
+     *   key's roles allow — fine server to server, wrong to hand to a client you do not control
+     * @return the token
+     */
+    suspend fun fetchJwt(
+        apiUrl: String,
+        apiKey: String,
+        optionsJson: String?,
+        local: Boolean,
+    ): String {
+        // A connect mints before the first handle exists, so the load and the wiring a create()
+        // would have done must happen here — the completion thread resolves Completions through
+        // the refs ensureCompletionsWired captures, and it does not know they are still null.
+        NativeLibrary.ensureLoaded()
+        ensureCompletionsWired()
+        return Completions.await("fetch_jwt", Authentication::decodeJwt) { ticket ->
+            nativeFetchJwt(apiUrl, apiKey, optionsJson, local, ticket)
         }
     }
 

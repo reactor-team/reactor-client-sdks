@@ -167,6 +167,21 @@ void reactor_download_clip(ReactorHandle*, const char*, const char*, const char*
     remember(completion, userdata);
 }
 
+static std::string g_last_fetch_options;
+static int g_last_fetch_local = -1;
+
+/// The key exchange takes no handle, so there is no handle-related rule to check — what matters
+/// is the nullable argument and the flag. options_json is recorded the way send_command records
+/// its nullables, so the harness can tell NULL apart from the string "null" or "". api_url and
+/// api_key are *not* dereferenced: the header promises a null there completes with an error, and
+/// the fake must not be stricter by crashing first than the ABI is.
+void reactor_fetch_jwt(const char*, const char*, const char* options_json, int local,
+                       reactor_completion_fn completion, void* userdata) {
+    g_last_fetch_options = options_json == nullptr ? "<null>" : options_json;
+    g_last_fetch_local = local;
+    remember(completion, userdata);
+}
+
 /// Reads the whole borrowed buffer, so a binding that handed over a wrong length — or a
 /// non-direct buffer whose address is not the bytes — is a read past the end under the sanitizer
 /// rather than a truncated upload nobody notices.
@@ -250,6 +265,10 @@ size_t fake_uploaded_checksum(void) { return g_uploaded_bytes; }
 
 const char* fake_last_upload_mime(void) { return g_last_upload_mime.c_str(); }
 double fake_last_ready_timeout(void) { return g_last_ready_timeout; }
+
+const char* fake_last_fetch_options(void) { return g_last_fetch_options.c_str(); }
+
+int fake_last_fetch_local(void) { return g_last_fetch_local; }
 
 /// Fire the download's progress callback from a thread the JVM has never seen.
 void fake_fire_download_progress(uint32_t done, uint32_t total) {

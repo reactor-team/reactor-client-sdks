@@ -58,6 +58,10 @@ void Java_inc_reactor_sdk_android_internal_NativeClient_nativeDownloadClip(
     jlong);
 void Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitProgress(JNIEnv*, jobject,
                                                                           jclass);
+void Java_inc_reactor_sdk_android_internal_NativeClient_nativeFetchJwt(
+    JNIEnv*, jobject, jstring, jstring, jstring, jboolean, jlong);
+const char* fake_last_fetch_options(void);
+int fake_last_fetch_local(void);
 const char* fake_last_command_args(void);
 void Java_inc_reactor_sdk_android_internal_NativeClient_nativeUploadBytes(
     JNIEnv*, jobject, jlong, jobject, jint, jstring, jstring, jlong);
@@ -476,6 +480,72 @@ void completions_cross_from_a_foreign_thread() {
   g_env->DeleteGlobalRef(completions);
 }
 
+/// The key exchange, end to end on the native side.
+///
+/// Same detached shape as the download: no handle, the options and the flag cross verbatim, and
+/// both outcome kinds settle completion-first on a thread the JVM has never seen. The success here
+/// is the payload Reactor.connect() decodes a token from; the failure is what a rejected key
+/// looks like, and it must arrive as an error rather than as a silent hang — the whole point of
+/// the ABI promising that even null arguments *complete*, because there is no handle a caller
+/// could have checked.
+void fetch_jwt_crosses_and_settles() {
+  jclass local = g_env->FindClass("AsanCompletions");
+  if (local == nullptr) {
+    check(false, "AsanCompletions is on the classpath");
+    return;
+  }
+  jclass completions = static_cast<jclass>(g_env->NewGlobalRef(local));
+  g_env->DeleteLocalRef(local);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitCompletions(g_env, nullptr,
+                                                                          completions);
+
+  jfieldID ticket_id = g_env->GetStaticFieldID(completions, "lastTicket", "J");
+  jfieldID ok_id = g_env->GetStaticFieldID(completions, "lastOk", "Z");
+  jfieldID result_id = g_env->GetStaticFieldID(completions, "lastResult", "Ljava/lang/String;");
+  jfieldID error_id = g_env->GetStaticFieldID(completions, "lastError", "Ljava/lang/String;");
+
+  jstring url = g_env->NewStringUTF("https://api.invalid");
+  jstring key = g_env->NewStringUTF("rk_dev_key");
+  jstring options = g_env->NewStringUTF("{\"models\":[\"reactor/echo\"]}");
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeFetchJwt(g_env, nullptr, url, key,
+                                                                    options, JNI_TRUE,
+                                                                    /*ticket=*/9876);
+  check(std::strcmp(fake_last_fetch_options(), "{\"models\":[\"reactor/echo\"]}") == 0,
+        "the scope options cross untouched");
+  check(fake_last_fetch_local() == 1, "local crosses as 1");
+  fake_complete_last_on_foreign_thread(1, "{\"jwt\":\"minted-token\"}", nullptr);
+  check(g_env->GetStaticLongField(completions, ticket_id) == 9876,
+        "the completion settles with the ticket it was given");
+  check(g_env->GetStaticBooleanField(completions, ok_id) == JNI_TRUE,
+        "a successful exchange settles as success");
+  auto minted = static_cast<jstring>(g_env->GetStaticObjectField(completions, result_id));
+  const char* minted_chars = minted == nullptr ? nullptr : g_env->GetStringUTFChars(minted, nullptr);
+  check(minted_chars != nullptr && std::strstr(minted_chars, "minted-token") != nullptr,
+        "the payload carrying the token survives the crossing");
+  if (minted_chars != nullptr) g_env->ReleaseStringUTFChars(minted, minted_chars);
+  g_env->DeleteLocalRef(options);
+
+  // NULL options are how an unscoped mint is asked for — they must cross as NULL, not as "".
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeFetchJwt(g_env, nullptr, url, key,
+                                                                    nullptr, JNI_FALSE,
+                                                                    /*ticket=*/9877);
+  check(std::strcmp(fake_last_fetch_options(), "<null>") == 0,
+        "null options reach the ABI as NULL, not as \"null\" or \"\"");
+  check(fake_last_fetch_local() == 0, "local=false crosses as 0");
+  fake_complete_last_on_foreign_thread(0, nullptr, "{\"code\":\"UNAUTHORIZED\"}");
+  check(g_env->GetStaticBooleanField(completions, ok_id) == JNI_FALSE,
+        "a rejected key settles as a failure");
+  auto why = static_cast<jstring>(g_env->GetStaticObjectField(completions, error_id));
+  const char* why_chars = why == nullptr ? nullptr : g_env->GetStringUTFChars(why, nullptr);
+  check(why_chars != nullptr && std::strstr(why_chars, "UNAUTHORIZED") != nullptr,
+        "and the error reaches the caller rather than hanging");
+  if (why_chars != nullptr) g_env->ReleaseStringUTFChars(why, why_chars);
+
+  g_env->DeleteLocalRef(url);
+  g_env->DeleteLocalRef(key);
+  g_env->DeleteGlobalRef(completions);
+}
+
 }  // namespace
 
 /// Strings survive the crossing in both directions, including outside the BMP.
@@ -568,6 +638,7 @@ int main() {
   a_download_survives_its_client();
   nullable_command_arguments_arrive_as_null();
   completions_cross_from_a_foreign_thread();
+  fetch_jwt_crosses_and_settles();
   destroy_minus_one_keeps_the_references_alive();
   strings_round_trip_outside_the_bmp();
 
