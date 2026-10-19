@@ -88,4 +88,67 @@ public object CameraSelection {
 
     /** Whether [rotationDegrees] swaps the frame's width and height. */
     public fun swapsDimensions(rotation: Int): Boolean = rotation == 90 || rotation == 270
+
+    /**
+     * Rotate a BGRA frame clockwise by [degrees] into [out], and return the rotated size.
+     *
+     * Whole pixels are moved through `IntBuffer` views, so the byte order inside a pixel is
+     * preserved and no channel is touched. [source] is read from its position 0 and [out] is
+     * written from 0 and left rewound, ready to push; neither buffer's position is otherwise
+     * relied on. [out] must not be [source] — a rotation in place overwrites pixels it has not
+     * read yet.
+     *
+     * Here rather than inside the camera wiring for the reason the rest of this object is: the
+     * index arithmetic is where a sideways or upside-down image comes from, and it is testable on
+     * a JVM only if no Android class is in the way.
+     */
+    public fun rotateBgra(
+        source: java.nio.ByteBuffer,
+        width: Int,
+        height: Int,
+        degrees: Int,
+        out: java.nio.ByteBuffer,
+    ): Size {
+        require(degrees == 0 || degrees == 90 || degrees == 180 || degrees == 270) {
+            "degrees must be 0, 90, 180 or 270, got $degrees"
+        }
+        require(width > 0 && height > 0) { "frame size must be positive, got ${width}x$height" }
+        val bytes = width * height * 4
+        require(source.capacity() >= bytes && out.capacity() >= bytes) {
+            "a ${width}x$height BGRA frame needs $bytes bytes; source holds ${source.capacity()} " +
+                "and out holds ${out.capacity()}"
+        }
+        val swap = swapsDimensions(degrees)
+        val outWidth = if (swap) height else width
+        val outHeight = if (swap) width else height
+        // Duplicates, so the caller's positions and limits are left alone; native order on both
+        // sides, because only whole pixels move and a pixel read and written in the same order is
+        // the same four bytes. Cleared through `Buffer`, not `ByteBuffer`: the covariant
+        // `ByteBuffer.clear()` does not exist below API 33, and calling it there is a
+        // NoSuchMethodError at run time that compiles cleanly against a newer SDK.
+        val src = intView(source)
+        val dst = intView(out)
+        for (y in 0 until height) {
+            val row = y * width
+            for (x in 0 until width) {
+                val target =
+                    when (degrees) {
+                        90 -> x * outWidth + (height - 1 - y)
+                        180 -> (height - 1 - y) * outWidth + (width - 1 - x)
+                        270 -> (width - 1 - x) * outWidth + y
+                        else -> row + x
+                    }
+                dst.put(target, src.get(row + x))
+            }
+        }
+        (out as java.nio.Buffer).clear()
+        (out as java.nio.Buffer).limit(bytes)
+        return Size(outWidth, outHeight)
+    }
+
+    private fun intView(bytes: java.nio.ByteBuffer): java.nio.IntBuffer {
+        val view = bytes.duplicate().order(java.nio.ByteOrder.nativeOrder())
+        (view as java.nio.Buffer).clear()
+        return view.asIntBuffer()
+    }
 }

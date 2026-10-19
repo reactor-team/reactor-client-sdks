@@ -249,6 +249,99 @@ class DeviceLifecycleTest {
         mic.stop()
     }
 
+    /**
+     * A device that dies mid-capture — the audio server restarting, another app taking the
+     * microphone — must not leave the Microphone reporting that it captures.
+     */
+    @Test
+    fun `a device failing mid-capture is reported and clears isCapturing`() {
+        val device = FailingCapture()
+        val mic = Microphone(device, 48000, 48000, 1)
+        val errors = mutableListOf<Throwable>()
+        mic.start({ }, { errors += it })
+        assertTrue(mic.isCapturing)
+
+        device.fail(IllegalStateException("ERROR_DEAD_OBJECT"))
+
+        assertFalse("isCapturing must stop reporting a dead capture", mic.isCapturing)
+        assertEquals(1, errors.size)
+        assertEquals(
+            "a failure is not a stop: the device still holds the hardware until stop()",
+            0,
+            device.stops,
+        )
+
+        mic.stop()
+        assertEquals("stop() must still release a device that already failed", 1, device.stops)
+    }
+
+    /** Starting again after a failure releases the dead device before reopening it. */
+    @Test
+    fun `restarting after a failure releases the dead device first`() {
+        val device = FailingCapture()
+        val mic = Microphone(device, 48000, 48000, 1)
+        mic.start({ }, { })
+        device.fail(IllegalStateException("ERROR_DEAD_OBJECT"))
+
+        mic.start({ }, { })
+        assertEquals("the dead device must be stopped before the second start", 1, device.stops)
+        assertEquals(2, device.starts)
+        assertTrue(mic.isCapturing)
+        mic.stop()
+    }
+
+    /** A failure the teardown itself caused is not news, and is not reported. */
+    @Test
+    fun `a failure after stop is not reported`() {
+        val device = FailingCapture()
+        val mic = Microphone(device, 48000, 48000, 1)
+        val errors = mutableListOf<Throwable>()
+        mic.start({ }, { errors += it })
+        mic.stop()
+        device.fail(IllegalStateException("ERROR_INVALID_OPERATION"))
+        assertTrue("a failure racing stop() must not reach the caller", errors.isEmpty())
+    }
+
+    /** After a failure, buffers that still arrive are dropped like any after a stop. */
+    @Test
+    fun `buffers after a failure are dropped`() {
+        val device = FailingCapture()
+        val mic = Microphone(device, 48000, 48000, 1)
+        var delivered = 0
+        mic.start({ delivered++ }, { })
+        device.fail(IllegalStateException("ERROR_DEAD_OBJECT"))
+        device.onData?.invoke(shortArrayOf(1, 2, 3))
+        assertEquals(0, delivered)
+        mic.stop()
+    }
+
+    /** A device that reports failures, the way AudioRecordCapture does when read() errors. */
+    private class FailingCapture : CaptureDevice {
+        var onData: ((ShortArray) -> Unit)? = null
+        var onFailure: ((Throwable) -> Unit)? = null
+        var starts = 0
+        var stops = 0
+
+        override fun start(onData: (ShortArray) -> Unit) = start(onData) { }
+
+        override fun start(
+            onData: (ShortArray) -> Unit,
+            onFailure: (Throwable) -> Unit,
+        ) {
+            starts++
+            this.onData = onData
+            this.onFailure = onFailure
+        }
+
+        override fun stop() {
+            stops++
+        }
+
+        fun fail(cause: Throwable) {
+            onFailure?.invoke(cause)
+        }
+    }
+
     @Test
     fun `starting twice is refused rather than silently reopening the device`() {
         val mic = Microphone(FakeCapture(), 48000, 48000, 1)
@@ -291,6 +384,37 @@ class DeviceLifecycleTest {
         speaker.stop()
         speaker.write(shortArrayOf(1, 2, 3))
         assertEquals(0, device.written.size)
+    }
+
+    /** The speaker's twin of the microphone's rollback test. */
+    @Test
+    fun `a render device that fails to start leaves the speaker startable again`() {
+        var failNext = true
+        val device =
+            object : RenderDevice {
+                var stops = 0
+
+                override fun start() {
+                    if (failNext) throw IllegalStateException("AudioTrack would not open")
+                }
+
+                override fun write(samples: ShortArray) = Unit
+
+                override fun stop() {
+                    stops++
+                }
+            }
+        val speaker = Speaker(device)
+
+        assertThrows(IllegalStateException::class.java) { speaker.start() }
+        assertFalse("a failed start must not leave the speaker playing", speaker.isPlaying)
+        speaker.stop()
+        assertEquals("stop() must not stop a device that never started", 0, device.stops)
+
+        failNext = false
+        speaker.start()
+        assertTrue(speaker.isPlaying)
+        speaker.stop()
     }
 
     @Test
