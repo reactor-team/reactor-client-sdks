@@ -176,6 +176,83 @@ class UploadsTest {
         )
     }
 
+    /**
+     * A cancel that lands after the copy's last check still takes the staged file with it.
+     *
+     * The between-chunks check cannot see a cancel that arrives during the final read: the copy
+     * finishes, stage() returns a complete file, and the dispatcher hop then throws instead of
+     * handing it back. Here the stream cancels its own caller from inside that final read, which
+     * makes the window deterministic instead of a timing race. If the file only ever travelled
+     * through the hop's return value, it is left in the directory with nothing holding it.
+     */
+    @Test(timeout = 15_000)
+    fun `a cancel during the final read leaves nothing behind`() {
+        val before = temp.root.listFiles()!!.size
+        var used = false
+        runBlocking {
+            lateinit var job: kotlinx.coroutines.Job
+            val tail =
+                object : InputStream() {
+                    private var served = false
+
+                    override fun read(): Int = -1
+
+                    override fun read(
+                        b: ByteArray,
+                        off: Int,
+                        len: Int,
+                    ): Int {
+                        if (!served) {
+                            served = true
+                            return 1
+                        }
+                        job.cancel()
+                        return -1
+                    }
+                }
+            job =
+                launch {
+                    Uploads.withStaged("tail.bin", temp.root, 1024, { tail }) { used = true }
+                }
+            job.join()
+            assertTrue("the caller was cancelled", job.isCancelled)
+        }
+        assertTrue("a cancelled stage must not reach the upload", !used)
+        assertEquals(
+            "a staged file cancelled on its way back must not be left behind",
+            before,
+            temp.root.listFiles()!!.size,
+        )
+    }
+
+    /**
+     * Cancelling the caller mid-upload neither cuts the upload short nor deletes its file early.
+     *
+     * The native task opens the path after the call returns and cannot be cancelled, so the
+     * staged file has to outlive the caller's cancelled wait — and still be removed once the
+     * upload settles.
+     */
+    @Test(timeout = 15_000)
+    fun `a cancel during the upload waits for it and then deletes the file`() {
+        val before = temp.root.listFiles()!!.size
+        var existedThroughout = false
+        runBlocking {
+            val uploading = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val job =
+                launch {
+                    Uploads.withStaged("held.bin", temp.root, 1024, stream(ByteArray(8))) { staged ->
+                        uploading.complete(Unit)
+                        delay(200) // the caller is cancelled in here
+                        existedThroughout = staged.isFile
+                    }
+                }
+            uploading.await()
+            job.cancelAndJoin()
+        }
+        assertTrue("the file must still exist when the upload settles", existedThroughout)
+        assertEquals("and must be gone afterwards", before, temp.root.listFiles()!!.size)
+    }
+
     // ── MIME types ───────────────────────────────────────────────────────────
 
     /**
