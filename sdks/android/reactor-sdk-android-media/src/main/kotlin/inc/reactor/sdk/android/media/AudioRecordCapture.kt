@@ -104,9 +104,16 @@ public class AudioRecordCapture
                 error(AudioFormats.captureFailureMessage(sampleRate, channels, hasPermission = true))
             }
 
+            try {
+                opened.startRecording()
+            } catch (failed: Throwable) {
+                // Nothing is committed yet, so a failed start leaves this backend as it found it:
+                // startable again, and holding no native recorder.
+                opened.release()
+                throw failed
+            }
             record = opened
             capturing.set(true)
-            opened.startRecording()
 
             reader =
                 Thread({ pump(opened, onData, onFailure) }, "reactor-mic").apply {
