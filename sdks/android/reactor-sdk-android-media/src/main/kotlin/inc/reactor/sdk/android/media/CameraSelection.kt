@@ -86,6 +86,39 @@ public object CameraSelection {
         }
     }
 
+    /**
+     * The device rotation to use for a physical orientation reading, or [current] to keep it.
+     *
+     * [orientationDegrees] is what `OrientationEventListener` reports: how far the device is turned
+     * *clockwise* from its natural orientation, 0 to 359, or -1 when it is lying flat and names no
+     * way up. The result is in [rotationDegrees]' convention — `Display.getRotation()` times 90,
+     * which turns the other way — so a phone turned 90° clockwise is a device rotation of 270.
+     *
+     * Two things keep the stream from flickering between orientations:
+     *
+     * - **Flat keeps the last reading.** Face up on a table names no up; turning the frame there
+     *   would be a guess, so the last real orientation stands. The Swift SDK's `Camera` does the
+     *   same with face up, face down and unknown.
+     * - **A 15° dead band past each 45° boundary.** Rounding to the nearest quadrant alone toggles
+     *   every frame for a phone held near the diagonal, so a reading only moves the rotation once
+     *   it is within 30° of the new quadrant's centre.
+     */
+    public fun deviceRotationFor(
+        orientationDegrees: Int,
+        current: Int,
+    ): Int {
+        if (orientationDegrees < 0) return current
+        val clockwise = orientationDegrees % 360
+        val nearest = ((clockwise + 45) / 90 % 4) * 90
+        val rotation = (360 - nearest) % 360
+        if (rotation == current) return current
+        // Distance from the candidate quadrant's centre, across the 0/360 seam.
+        val offset = Math.abs(clockwise - nearest).let { minOf(it, 360 - it) }
+        return if (offset <= ORIENTATION_HYSTERESIS) rotation else current
+    }
+
+    private const val ORIENTATION_HYSTERESIS = 30
+
     /** Whether [rotationDegrees] swaps the frame's width and height. */
     public fun swapsDimensions(rotation: Int): Boolean = rotation == 90 || rotation == 270
 
