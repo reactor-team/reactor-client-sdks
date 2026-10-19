@@ -46,9 +46,15 @@ public object CameraSelection {
         val targetRatio = targetWidth.toDouble() / targetHeight
         val targetPixels = targetWidth * targetHeight
 
+        fun ratioError(size: Size) = kotlin.math.abs(size.width.toDouble() / size.height - targetRatio)
+
         return available.minWith(
             compareBy(
-                { kotlin.math.abs(it.width.toDouble() / it.height - targetRatio) > RATIO_TOLERANCE },
+                { ratioError(it) > RATIO_TOLERANCE },
+                // Outside the tolerance the shape still decides first: when nothing matches, the
+                // nearest shape beats the nearest area, or a 16:9 request falls to a 4:3 size of
+                // similar area while a 16:10 one was on offer. Within it, every match ties here.
+                { if (ratioError(it) > RATIO_TOLERANCE) ratioError(it) else 0.0 },
                 // Within the tolerance, prefer at-or-under the request over larger.
                 { it.pixels > targetPixels },
                 { kotlin.math.abs(it.pixels - targetPixels) },
