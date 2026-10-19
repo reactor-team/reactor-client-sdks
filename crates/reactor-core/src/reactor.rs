@@ -11,7 +11,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use futures::channel::oneshot;
+use futures::channel::{mpsc, oneshot};
+use futures::StreamExt;
 use serde_json::{json, Value};
 
 use crate::backoff::PollConfig;
@@ -219,6 +220,10 @@ pub struct Reactor {
     control: ControlCorrelator,
     data: DataCorrelator,
     state: Mutex<State>,
+    /// Coalescing wake for [`Self::run_ice_flush`]: a single buffered signal
+    /// is enough, because every wake drains the whole candidate buffer.
+    ice_flush_tx: mpsc::Sender<()>,
+    ice_flush_rx: Mutex<Option<mpsc::Receiver<()>>>,
     /// Holds the previous stats sample, so `get_stats` can answer with rates.
     stats: StatsSampler,
     /// The stages the SDK times itself, reported with the client stats.
@@ -247,6 +252,7 @@ impl Reactor {
                 local: options.local,
             },
         );
+        let (ice_flush_tx, ice_flush_rx) = mpsc::channel(1);
         Self {
             coordinator,
             http: deps.http,
@@ -256,6 +262,8 @@ impl Reactor {
             dispatcher: Dispatcher::new(),
             control: ControlCorrelator::new(),
             data: DataCorrelator::new(),
+            ice_flush_tx,
+            ice_flush_rx: Mutex::new(Some(ice_flush_rx)),
             stats: StatsSampler::new(),
             stage_times: Arc::new(StageTimes::new()),
             state: Mutex::new(State {
@@ -734,7 +742,7 @@ impl Reactor {
                     state.ice_ready
                 };
                 if ready {
-                    self.flush_ice_current_session().await;
+                    self.notify_ice_flush();
                 }
             }
             PeerEvent::IceGatheringComplete => {
@@ -744,7 +752,7 @@ impl Reactor {
                     state.ice_ready
                 };
                 if ready {
-                    self.flush_ice_current_session().await;
+                    self.notify_ice_flush();
                 }
             }
         }
@@ -1624,6 +1632,40 @@ impl Reactor {
         )
     }
 
+    /// Run the ICE trickle flush loop for the lifetime of this reactor.
+    ///
+    /// Callers (e.g. the FFI layer) spawn this **once per handle**, next to
+    /// the peer-event pump — not per connect: `flush_ice` re-reads session,
+    /// connection id and `ice_ready` from state on every wake, so the loop
+    /// needs no epoch and no restarting across reconnects.
+    ///
+    /// It exists because a flush must never run inside the peer-event intake.
+    /// The pump is one sequential loop and every flush is a coordinator POST,
+    /// so on a high-latency link a candidate burst trickling in during
+    /// connect costs one round trip per candidate — measured 46 candidates ×
+    /// ~1s RTT on an Android emulator, past the 30s readiness gate, while the
+    /// `Connected`/`DataChannelOpen`/`ControlChannelOpen` events that would
+    /// have opened it sat queued behind them (REA-7305). On this task the
+    /// POSTs serialize against nothing but themselves: the channel's single
+    /// buffered signal collapses a burst, and every wake drains whatever has
+    /// accumulated since the last POST.
+    pub async fn run_ice_flush(&self) {
+        let Some(mut wake) = self.ice_flush_rx.lock().unwrap().take() else {
+            log::warn!("run_ice_flush spawned twice; ignoring the extra spawn");
+            return;
+        };
+        while wake.next().await.is_some() {
+            self.flush_ice_current_session().await;
+        }
+    }
+
+    /// Wake the flush loop, if the embedder spawned it. A full buffer means a
+    /// wake is already pending — `flush_ice` drains every buffered candidate,
+    /// so a dropped signal loses nothing.
+    fn notify_ice_flush(&self) {
+        let _ = self.ice_flush_tx.clone().try_send(());
+    }
+
     async fn flush_ice_current_session(&self) {
         let session_id = match self.session_id() {
             Some(id) => id,
@@ -1946,6 +1988,44 @@ mod tests {
                 "a too-large refusal emitted an error event"
             );
         }
+    }
+
+    /// REA-7305: ICE intake must never wait on the flush POST inline. With
+    /// `ice_ready` set and a coordinator that never answers (`PendingHttp`),
+    /// handling a candidate or the end-of-gathering marker has to return
+    /// immediately — the POST is `run_ice_flush`'s job, off the intake path.
+    /// Before the fix both calls below pended forever.
+    #[tokio::test]
+    async fn ice_event_intake_never_awaits_the_flush_post() {
+        let reactor = make_reactor();
+        {
+            let mut state = reactor.state.lock().unwrap();
+            state.session_id = Some("session".to_string());
+            state.connection_id = Some(7);
+            state.ice_ready = true;
+        }
+
+        let candidate = IceCandidate {
+            candidate: "candidate:1 1 udp 2122260223 192.0.2.1 34567 typ host".to_string(),
+            sdp_mid: None,
+            sdp_mline_index: None,
+        };
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            reactor.handle_peer_event(PeerEvent::IceCandidate(candidate)),
+        )
+        .await
+        .expect("IceCandidate intake blocked on the flush POST");
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            reactor.handle_peer_event(PeerEvent::IceGatheringComplete),
+        )
+        .await
+        .expect("IceGatheringComplete intake blocked on the flush POST");
+
+        let state = reactor.state.lock().unwrap();
+        assert_eq!(state.ice_buffer.len(), 1, "the candidate was not buffered");
+        assert!(state.ice_gathering_complete);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
