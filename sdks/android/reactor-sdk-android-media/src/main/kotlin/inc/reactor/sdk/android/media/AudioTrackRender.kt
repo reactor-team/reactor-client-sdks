@@ -37,8 +37,9 @@ import android.util.Log
  * and restores both on [stop]. A connected headset or Bluetooth device is left to win, as on iOS.
  * [Output.EARPIECE] keeps the earpiece, for an app that is a phone call.
  *
- * That routing is process-wide audio state, as `AVAudioSession` is on iOS: two of these playing at
- * once share it, and the first to stop restores it.
+ * That routing is process-wide audio state, as `AVAudioSession` is on iOS, so it is shared: the
+ * first renderer to start records the platform's state and routes, and only the last to stop
+ * restores it.
  */
 public class AudioTrackRender
     @JvmOverloads
@@ -57,8 +58,8 @@ public class AudioTrackRender
 
         private var track: AudioTrack? = null
 
-        /** How to put the routing back on [stop]. Null when nothing was changed. */
-        private var restoreRoute: (() -> Unit)? = null
+        /** Whether this renderer holds a share of the process-wide speaker route. */
+        private var holdsRoute = false
 
         override fun start() {
             check(track == null) { "This AudioTrackRender is already started" }
@@ -100,50 +101,11 @@ public class AudioTrackRender
             }
 
             track = opened
-            if (output == Output.SPEAKER) restoreRoute = routeToSpeaker()
-            opened.play()
-        }
-
-        /**
-         * Communication mode and the built-in speaker, returning how to undo both — or null when
-         * a headset is connected or the platform refused, leaving the route as it was.
-         *
-         * Failures are logged rather than thrown: audio on the wrong speaker is a worse session,
-         * not a broken one, and refusing to play over it would be.
-         */
-        private fun routeToSpeaker(): (() -> Unit)? {
-            val audio = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return null
-            if (audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { it.type in HEADSET_TYPES }) return null
-            return try {
-                val previousMode = audio.mode
-                audio.mode = AudioManager.MODE_IN_COMMUNICATION
-                val undo: () -> Unit
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    val speaker =
-                        audio.availableCommunicationDevices.firstOrNull {
-                            it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-                        }
-                    val selected = speaker != null && audio.setCommunicationDevice(speaker)
-                    undo = {
-                        if (selected) audio.clearCommunicationDevice()
-                        audio.mode = previousMode
-                    }
-                } else {
-                    @Suppress("DEPRECATION")
-                    val previousSpeakerphone = audio.isSpeakerphoneOn
-                    @Suppress("DEPRECATION")
-                    audio.isSpeakerphoneOn = true
-                    undo = {
-                        @Suppress("DEPRECATION")
-                        audio.isSpeakerphoneOn = previousSpeakerphone
-                        audio.mode = previousMode
-                    }
-                }
-                undo
-            } catch (refused: SecurityException) {
-                Log.w(TAG, "Could not route playout to the speaker; leaving the platform's route", refused)
-                null
+            if (output == Output.SPEAKER) {
+                SpeakerRoute.acquire(context)
+                holdsRoute = true
             }
+            opened.play()
         }
 
         override fun write(samples: ShortArray) {
@@ -170,8 +132,83 @@ public class AudioTrackRender
             }
             open.release()
             // After the track is gone, so the route never changes under audio still playing.
-            restoreRoute?.let { runCatching(it) }
-            restoreRoute = null
+            if (holdsRoute) {
+                holdsRoute = false
+                SpeakerRoute.release()
+            }
+        }
+
+        /**
+         * The speaker route, counted across every renderer in the process.
+         *
+         * Per instance, two renderers corrupted it: the first recorded NORMAL and routed, the
+         * second recorded the first one's communication mode, and stopping them restored NORMAL
+         * under the second and then left communication mode on for good. One snapshot, taken by
+         * the first acquire and undone by the last release, is the only order that holds.
+         */
+        private object SpeakerRoute {
+            private val lock = Any()
+            private var holders = 0
+            private var undo: (() -> Unit)? = null
+
+            fun acquire(context: Context) {
+                synchronized(lock) {
+                    if (holders == 0) undo = routeToSpeaker(context.applicationContext)
+                    holders += 1
+                }
+            }
+
+            fun release() {
+                synchronized(lock) {
+                    holders -= 1
+                    if (holders > 0) return
+                    holders = 0
+                    undo?.let { runCatching(it) }
+                    undo = null
+                }
+            }
+
+            /**
+             * Communication mode and the built-in speaker, returning how to undo both — or null when
+             * a headset is connected or the platform refused, leaving the route as it was.
+             *
+             * Failures are logged rather than thrown: audio on the wrong speaker is a worse session,
+             * not a broken one, and refusing to play over it would be.
+             */
+            private fun routeToSpeaker(context: Context): (() -> Unit)? {
+                val audio = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return null
+                if (audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { it.type in HEADSET_TYPES }) return null
+                return try {
+                    val previousMode = audio.mode
+                    audio.mode = AudioManager.MODE_IN_COMMUNICATION
+                    val undo: () -> Unit
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        val speaker =
+                            audio.availableCommunicationDevices.firstOrNull {
+                                it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                            }
+                        val selected = speaker != null && audio.setCommunicationDevice(speaker)
+                        undo = {
+                            if (selected) audio.clearCommunicationDevice()
+                            audio.mode = previousMode
+                        }
+                    } else {
+                        @Suppress("DEPRECATION")
+                        val previousSpeakerphone = audio.isSpeakerphoneOn
+                        @Suppress("DEPRECATION")
+                        audio.isSpeakerphoneOn = true
+                        undo = {
+                            @Suppress("DEPRECATION")
+                            audio.isSpeakerphoneOn = previousSpeakerphone
+                            audio.mode = previousMode
+                        }
+                    }
+                    undo
+                } catch (refused: SecurityException) {
+                    Log.w(TAG, "Could not route playout to the speaker; leaving the platform's route", refused)
+                    null
+                }
+            }
         }
 
         private companion object {
