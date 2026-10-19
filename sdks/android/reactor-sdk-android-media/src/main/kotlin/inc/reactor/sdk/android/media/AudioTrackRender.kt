@@ -189,34 +189,39 @@ public class AudioTrackRender
             private fun routeToSpeaker(context: Context): (() -> Unit)? {
                 val audio = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return null
                 if (audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { it.type in HEADSET_TYPES }) return null
+                // Captured before anything changes, so every path out — success or a refusal half
+                // way — can put back exactly what it touched. A refusal that left the mode switched
+                // would otherwise hold the whole process in communication mode with no undo.
+                val previousMode = audio.mode
+
+                @Suppress("DEPRECATION")
+                val previousSpeakerphone = audio.isSpeakerphoneOn
+                var selected = false
+                val undo: () -> Unit = {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        if (selected) audio.clearCommunicationDevice()
+                    } else {
+                        @Suppress("DEPRECATION")
+                        audio.isSpeakerphoneOn = previousSpeakerphone
+                    }
+                    audio.mode = previousMode
+                }
                 return try {
-                    val previousMode = audio.mode
                     audio.mode = AudioManager.MODE_IN_COMMUNICATION
-                    val undo: () -> Unit
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         val speaker =
                             audio.availableCommunicationDevices.firstOrNull {
                                 it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
                             }
-                        val selected = speaker != null && audio.setCommunicationDevice(speaker)
-                        undo = {
-                            if (selected) audio.clearCommunicationDevice()
-                            audio.mode = previousMode
-                        }
+                        selected = speaker != null && audio.setCommunicationDevice(speaker)
                     } else {
                         @Suppress("DEPRECATION")
-                        val previousSpeakerphone = audio.isSpeakerphoneOn
-                        @Suppress("DEPRECATION")
                         audio.isSpeakerphoneOn = true
-                        undo = {
-                            @Suppress("DEPRECATION")
-                            audio.isSpeakerphoneOn = previousSpeakerphone
-                            audio.mode = previousMode
-                        }
                     }
                     undo
                 } catch (refused: SecurityException) {
                     Log.w(TAG, "Could not route playout to the speaker; leaving the platform's route", refused)
+                    runCatching(undo)
                     null
                 }
             }
