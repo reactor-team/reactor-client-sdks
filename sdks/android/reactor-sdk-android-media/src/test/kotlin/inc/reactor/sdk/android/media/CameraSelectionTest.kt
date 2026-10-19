@@ -62,6 +62,14 @@ class CameraSelectionTest {
         assertEquals(Size(1280, 720), chosen)
     }
 
+    /** With no size of the requested shape, the nearest shape wins over the nearest area. */
+    @Test
+    fun `the nearest shape is chosen when no size matches the request`() {
+        // 16:9 requested; 1024x768 (4:3) is nearer in area, 1280x800 (16:10) nearer in shape.
+        val chosen = CameraSelection.bestSize(listOf(Size(1024, 768), Size(1280, 800)), 1280, 720)
+        assertEquals(Size(1280, 800), chosen)
+    }
+
     @Test
     fun `a camera offering no YUV sizes is refused, saying why`() {
         val error =
