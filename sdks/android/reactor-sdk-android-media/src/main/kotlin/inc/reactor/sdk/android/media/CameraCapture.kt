@@ -37,12 +37,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  * wanted the microphone.
  *
  * Frames arrive as YUV_420_888 — three planes with their own row strides, and a chroma *pixel*
- * stride that is 1 on some devices and 2 on others — and go through [YuvToBgra], which is where
- * that arithmetic is tested without a device.
+ * stride that is 1 on some devices and 2 on others — and go through [FrameConverter], which
+ * converts and rotates them in one pass and is tested against [YuvToBgra] without a device.
  *
  * ### Orientation
  *
- * **Frames reach [start]'s callback already upright**, rotated by [CameraSelection.rotateBgra].
+ * **Frames reach [start]'s callback already upright**, rotated as they are converted.
  * The sensor is mounted sideways on almost every handset, so a frame pushed as captured reaches
  * the model on its side whenever the phone is held in portrait — and the model cannot know to
  * turn it back. Rotating here means every app gets the right picture without writing the same
@@ -225,11 +225,9 @@ public class CameraCapture
             run = current
             if (followDeviceOrientation) current.orientation = followOrientation()
 
-            // Two buffers: the conversion's output, and the rotation's. A rotation cannot run in
-            // place, and both are allocated once rather than per frame.
-            val frameBytes = chosen.width * chosen.height * 4
-            val converted = ByteBuffer.allocateDirect(frameBytes)
-            val upright = ByteBuffer.allocateDirect(frameBytes)
+            // Allocated once per run rather than per frame, like the converter's own scratch.
+            val upright = ByteBuffer.allocateDirect(chosen.width * chosen.height * 4)
+            val converter = FrameConverter()
             current.reader.setOnImageAvailableListener({ source ->
                 // Before acquiring: once stop() has begun, the reader is about to close, and a
                 // frame that has not been taken yet is one there is no reason to touch.
@@ -237,23 +235,22 @@ public class CameraCapture
                 val image = source.acquireLatestImage() ?: return@setOnImageAvailableListener
                 try {
                     val planes = image.planes
-                    // Through Buffer: the covariant ByteBuffer.clear() does not exist below API 33.
-                    (converted as java.nio.Buffer).clear()
-                    YuvToBgra.convert(
-                        y = planes[0].buffer,
-                        u = planes[1].buffer,
-                        v = planes[2].buffer,
-                        width = image.width,
-                        height = image.height,
-                        yRowStride = planes[0].rowStride,
-                        uvRowStride = planes[1].rowStride,
-                        uvPixelStride = planes[1].pixelStride,
-                        out = converted,
-                    )
                     val degrees = currentRotation()
                     rotation = degrees
+                    // Converted and rotated in one pass — see FrameConverter for why not two.
                     val turned =
-                        CameraSelection.rotateBgra(converted, image.width, image.height, degrees, upright)
+                        converter.convert(
+                            y = planes[0].buffer,
+                            u = planes[1].buffer,
+                            v = planes[2].buffer,
+                            width = image.width,
+                            height = image.height,
+                            yRowStride = planes[0].rowStride,
+                            uvRowStride = planes[1].rowStride,
+                            uvPixelStride = planes[1].pixelStride,
+                            degrees = degrees,
+                            out = upright,
+                        )
                     onFrame(upright, turned.width, turned.height)
                 } catch (thrown: Throwable) {
                     // The caller's callback threw. Escaping, it kills this thread with the camera,
