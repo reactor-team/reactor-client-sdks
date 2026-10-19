@@ -417,6 +417,48 @@ class DeviceLifecycleTest {
         speaker.stop()
     }
 
+    /** The speaker's twin of the microphone's mid-capture failure test. */
+    @Test
+    fun `a render device that fails mid-playout stops the speaker and reports it`() {
+        var failWrites = true
+        val device =
+            object : RenderDevice {
+                var starts = 0
+                var stops = 0
+
+                override fun start() {
+                    starts++
+                }
+
+                override fun write(samples: ShortArray) {
+                    if (failWrites) throw IllegalStateException("AudioTrack.write returned -32")
+                }
+
+                override fun stop() {
+                    stops++
+                }
+            }
+        val speaker = Speaker(device)
+        val errors = mutableListOf<Throwable>()
+        speaker.start { errors += it }
+
+        speaker.write(shortArrayOf(1, 2, 3))
+        assertEquals("the failure must be reported exactly once", 1, errors.size)
+        assertFalse("a failed write must not leave the speaker playing", speaker.isPlaying)
+        assertEquals("the dead device must be released", 1, device.stops)
+
+        speaker.write(shortArrayOf(1, 2, 3))
+        assertEquals("writes after a failure are dropped, not reported again", 1, errors.size)
+        speaker.stop()
+        assertEquals("stop() after a failure must not release the device twice", 1, device.stops)
+
+        failWrites = false
+        speaker.start()
+        assertTrue("a speaker that failed must be startable again", speaker.isPlaying)
+        assertEquals(2, device.starts)
+        speaker.stop()
+    }
+
     @Test
     fun `starting a speaker twice is refused`() {
         val speaker = Speaker(FakeRender())
