@@ -136,6 +136,13 @@ public class CameraCapture
             /** Set by a teardown that found [openPending]; the open's answer finishes the quit. */
             var quitWhenOpenAnswers = false
 
+            /**
+             * Released once the device is closed and the thread told to quit — by [shutdown], or
+             * by the open's late answer when shutdown had to defer to it. stop() waits on this
+             * rather than on its own posted task, which finishes before a pending open does.
+             */
+            val finished = CountDownLatch(1)
+
             /** Tracks the device while this run lasts. Null without [followDeviceOrientation]. */
             var orientation: OrientationEventListener? = null
         }
@@ -501,20 +508,18 @@ public class CameraCapture
             // Posted behind any frame already queued, and waited for: by the time the release
             // runs the listener has returned, so the reader closes with no image open — and a
             // frame dequeued after it sees `live` false and touches nothing.
-            val done = CountDownLatch(1)
-            val posted =
-                current.handler.post {
-                    shutdown(current)
-                    done.countDown()
-                }
-            if (posted && !done.await(TEARDOWN_WAIT_MS, TimeUnit.MILLISECONDS)) {
-                // A frame callback that will not return. Closing the reader from here would free
-                // the buffers that callback is reading, so nothing is closed from this thread:
-                // the release stays queued and runs if the callback ever returns.
+            //
+            // Waited on until the open has answered too, when one was pending: returning earlier
+            // let an immediate restart race the old open for the same camera and fail in use.
+            val posted = current.handler.post { shutdown(current) }
+            if (posted && !current.finished.await(TEARDOWN_WAIT_MS, TimeUnit.MILLISECONDS)) {
+                // A frame callback that will not return, or an open the platform never answers.
+                // Closing the reader from here would free the buffers that callback is reading,
+                // so nothing is closed from this thread: the release stays queued behind it.
                 Log.w(
                     TAG,
-                    "The camera thread did not finish the frame it was handling within " +
-                        "${TEARDOWN_WAIT_MS}ms; its release is left queued behind it.",
+                    "The camera did not finish closing within ${TEARDOWN_WAIT_MS}ms; its " +
+                        "release is left queued on the camera thread.",
                 )
             }
         }
@@ -526,6 +531,7 @@ public class CameraCapture
                 current.quitWhenOpenAnswers = true
             } else {
                 current.thread.quitSafely()
+                current.finished.countDown()
             }
         }
 
@@ -534,6 +540,7 @@ public class CameraCapture
             if (!current.quitWhenOpenAnswers) return
             current.quitWhenOpenAnswers = false
             current.thread.quitSafely()
+            current.finished.countDown()
         }
 
         /**
