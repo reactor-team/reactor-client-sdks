@@ -1,15 +1,21 @@
 package inc.reactor.sdk.android.media
 
+import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
+import android.os.Build
+import android.util.Log
 
 /**
  * Playout, for real.
  *
- * A [RenderDevice] backed by `AudioTrack`, which is what [Speaker] drives. Needs no permission:
- * playing audio is not a protected operation, which is why this class is shorter than its capture
- * sibling and has no runtime check.
+ * A [RenderDevice] backed by `AudioTrack`, which is what [Speaker] drives. Needs no runtime
+ * permission: playing audio is not a protected operation. Routing it needs
+ * `MODIFY_AUDIO_SETTINGS`, an install-time permission this module's manifest declares, so there is
+ * nothing for the app to ask for.
  *
  * **`write` blocks when the buffer is full, and that is the backpressure.** An `AudioTrack` in
  * streaming mode accepts samples at the rate the hardware consumes them; feeding it from the
@@ -19,22 +25,40 @@ import android.media.AudioTrack
  *
  * ### Usage
  *
- * `VOICE_COMMUNICATION`, matching [AudioRecordCapture]'s source. The pair is what routes a session
- * to the earpiece and engages the platform's echo canceller; mixing a `MEDIA` usage with a
- * `VOICE_COMMUNICATION` capture gets neither.
+ * `VOICE_COMMUNICATION`, matching [AudioRecordCapture]'s source. The pair is what engages the
+ * platform's echo canceller; mixing a `MEDIA` usage with a `VOICE_COMMUNICATION` capture loses it.
+ *
+ * ### Output
+ *
+ * **The loudspeaker by default**, as the Swift SDK's `Speaker` and `Microphone` do with
+ * `.defaultToSpeaker`. Left alone, a `VOICE_COMMUNICATION` stream plays through the earpiece — the
+ * call speaker at the top of the phone — and a session held at arm's length is silent. While
+ * playing, this class puts the platform in communication mode and selects the built-in speaker,
+ * and restores both on [stop]. A connected headset or Bluetooth device is left to win, as on iOS.
+ * [Output.EARPIECE] keeps the earpiece, for an app that is a phone call.
+ *
+ * That routing is process-wide audio state, as `AVAudioSession` is on iOS: two of these playing at
+ * once share it, and the first to stop restores it.
  */
 public class AudioTrackRender
     @JvmOverloads
     constructor(
+        private val context: Context,
         public val sampleRate: Int = 48_000,
         public val channels: Int = 1,
-        private val usage: Int = AudioAttributes.USAGE_VOICE_COMMUNICATION,
+        public val output: Output = Output.SPEAKER,
     ) : RenderDevice {
+        /** Where playout goes when no headset is connected. */
+        public enum class Output { SPEAKER, EARPIECE }
+
         init {
             AudioFormats.requireSupported(sampleRate, channels)
         }
 
         private var track: AudioTrack? = null
+
+        /** How to put the routing back on [stop]. Null when nothing was changed. */
+        private var restoreRoute: (() -> Unit)? = null
 
         override fun start() {
             check(track == null) { "This AudioTrackRender is already started" }
@@ -50,7 +74,7 @@ public class AudioTrackRender
                     .setAudioAttributes(
                         AudioAttributes
                             .Builder()
-                            .setUsage(usage)
+                            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                             .build(),
                     ).setAudioFormat(
@@ -76,7 +100,50 @@ public class AudioTrackRender
             }
 
             track = opened
+            if (output == Output.SPEAKER) restoreRoute = routeToSpeaker()
             opened.play()
+        }
+
+        /**
+         * Communication mode and the built-in speaker, returning how to undo both — or null when
+         * a headset is connected or the platform refused, leaving the route as it was.
+         *
+         * Failures are logged rather than thrown: audio on the wrong speaker is a worse session,
+         * not a broken one, and refusing to play over it would be.
+         */
+        private fun routeToSpeaker(): (() -> Unit)? {
+            val audio = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return null
+            if (audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { it.type in HEADSET_TYPES }) return null
+            return try {
+                val previousMode = audio.mode
+                audio.mode = AudioManager.MODE_IN_COMMUNICATION
+                val undo: () -> Unit
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    val speaker =
+                        audio.availableCommunicationDevices.firstOrNull {
+                            it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                        }
+                    val selected = speaker != null && audio.setCommunicationDevice(speaker)
+                    undo = {
+                        if (selected) audio.clearCommunicationDevice()
+                        audio.mode = previousMode
+                    }
+                } else {
+                    @Suppress("DEPRECATION")
+                    val previousSpeakerphone = audio.isSpeakerphoneOn
+                    @Suppress("DEPRECATION")
+                    audio.isSpeakerphoneOn = true
+                    undo = {
+                        @Suppress("DEPRECATION")
+                        audio.isSpeakerphoneOn = previousSpeakerphone
+                        audio.mode = previousMode
+                    }
+                }
+                undo
+            } catch (refused: SecurityException) {
+                Log.w(TAG, "Could not route playout to the speaker; leaving the platform's route", refused)
+                null
+            }
         }
 
         override fun write(samples: ShortArray) {
@@ -102,5 +169,27 @@ public class AudioTrackRender
                 open.stop()
             }
             open.release()
+            // After the track is gone, so the route never changes under audio still playing.
+            restoreRoute?.let { runCatching(it) }
+            restoreRoute = null
+        }
+
+        private companion object {
+            const val TAG = "ReactorSpeaker"
+
+            /**
+             * Outputs that mean the user chose where audio goes. TYPE_BLE_HEADSET (26) by value:
+             * its constant only exists from API 31, and the module compiles for 26.
+             */
+            val HEADSET_TYPES =
+                setOf(
+                    AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                    AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                    AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                    AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+                    AudioDeviceInfo.TYPE_USB_HEADSET,
+                    AudioDeviceInfo.TYPE_HEARING_AID,
+                    26,
+                )
         }
     }
