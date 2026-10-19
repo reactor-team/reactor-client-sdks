@@ -551,8 +551,9 @@ public class Reactor(
      * in the ABI cancels it. So the two halves get different treatment:
      *
      *  * The copy is cancellable, and is the half worth cancelling — it is the one that takes
-     *    time for a large file. It checks for cancellation between chunks and deletes its partial
-     *    file on the way out.
+     *    time for a large file. It checks for cancellation between chunks, and the staged file is
+     *    deleted however staging ends — including a cancel that lands after the copy finished but
+     *    before this function got the file back.
      *  * The upload runs under [kotlinx.coroutines.NonCancellable]. A cancelled wait here used to
      *    run the `finally` immediately and delete a file the native task had not opened yet,
      *    which is a failed upload the caller is never told about. Waiting is the only thing that
@@ -563,20 +564,11 @@ public class Reactor(
         cacheDirectory: java.io.File,
         maxBytes: Long = DEFAULT_UPLOAD_LIMIT_BYTES,
         open: () -> java.io.InputStream,
-    ): FileRef {
-        val staged =
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                inc.reactor.sdk.android.internal.Uploads
-                    .stage(name, cacheDirectory, maxBytes, open)
-            }
-        return try {
-            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+    ): FileRef =
+        inc.reactor.sdk.android.internal.Uploads
+            .withStaged(name, cacheDirectory, maxBytes, open) { staged ->
                 requireHandle("upload_file").uploadFile(staged.absolutePath)
             }
-        } finally {
-            staged.delete()
-        }
-    }
 
     /** End the session server-side. Use [reconnect] to keep it. */
     public suspend fun disconnect() {

@@ -2,9 +2,13 @@ package inc.reactor.sdk.android.internal
 
 import inc.reactor.sdk.android.ErrorCode
 import inc.reactor.sdk.android.FileRef
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.InputStream
+import java.util.concurrent.atomic.AtomicReference
 
 /** Decoding and staging for uploads. */
 internal object Uploads {
@@ -67,6 +71,37 @@ internal object Uploads {
         }
 
     /**
+     * Stage a stream, hand the staged file to [use], and delete it once [use] has settled.
+     *
+     * Staging runs on [Dispatchers.IO] and is cancellable; [use] runs under [NonCancellable],
+     * because the one caller hands the path to `reactor_upload_file`, which opens it inside a
+     * task of its own after returning and which nothing in the ABI cancels. Deleting the file
+     * before that task has opened it is a failed upload nobody is told about.
+     *
+     * The staged file is published through [stage]'s `onCreated` the moment it exists, not
+     * through the dispatcher hop's return value, and that is the point. `withContext` re-checks
+     * cancellation when it resumes the caller, so a cancel that lands after the copy's last
+     * between-chunks check — on the final read, say — lets [stage] return a complete file that
+     * `withContext` then discards in favour of a CancellationException. A file that was only
+     * ever in a return value is then held by nothing, and nothing deletes it.
+     */
+    suspend fun <T> withStaged(
+        name: String,
+        directory: File,
+        maxBytes: Long,
+        open: () -> InputStream,
+        use: suspend (File) -> T,
+    ): T {
+        val created = AtomicReference<File?>()
+        try {
+            val staged = withContext(Dispatchers.IO) { stage(name, directory, maxBytes, created::set, open) }
+            return withContext(NonCancellable) { use(staged) }
+        } finally {
+            created.get()?.delete()
+        }
+    }
+
+    /**
      * Copy a stream into [directory], bounded by [maxBytes].
      *
      * Streamed in chunks rather than read into a ByteArray: the source is a file the *user*
@@ -75,15 +110,29 @@ internal object Uploads {
      *
      * The bound is enforced while copying, not checked afterwards — by then the bytes are already
      * on disk, which is the thing being avoided. The partial file is removed on the way out.
+     *
      */
     suspend fun stage(
         name: String,
         directory: File,
         maxBytes: Long,
         open: () -> InputStream,
+    ): File = stage(name, directory, maxBytes, onCreated = {}, open = open)
+
+    /**
+     * [stage], with [onCreated] seeing the file as soon as it exists — so a caller whose frame
+     * can be cancelled after this returns still holds it. See [withStaged].
+     */
+    suspend fun stage(
+        name: String,
+        directory: File,
+        maxBytes: Long,
+        onCreated: (File) -> Unit,
+        open: () -> InputStream,
     ): File {
         require(maxBytes > 0) { "maxBytes must be positive, got $maxBytes" }
         val staged = File.createTempFile("reactor-upload-", "-$name", directory)
+        onCreated(staged)
         var copied = 0L
         try {
             open().use { input ->
