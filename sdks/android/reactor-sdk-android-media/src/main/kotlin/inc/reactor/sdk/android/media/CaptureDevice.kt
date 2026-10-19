@@ -45,7 +45,13 @@ public interface CaptureDevice {
 public interface RenderDevice {
     public fun start()
 
-    /** Hand over samples to play. Never called from the device's own thread. */
+    /**
+     * Hand over samples to play. Never called from the device's own thread.
+     *
+     * Throws if the device can no longer play — the audio server restarting under it, say. A
+     * write that fails quietly is a speaker that keeps reporting it is playing while every buffer
+     * after it is lost; throwing is what lets [Speaker] stop and say so.
+     */
     public fun write(samples: ShortArray)
 
     /** Stop. Does **not** wait for a caller-supplied callback, because there is not one. */
@@ -195,24 +201,57 @@ public class Speaker(
 ) {
     private val lock = ReentrantLock()
     private var running = false
+    private var onError: (Throwable) -> Unit = { }
 
+    /** Start playing, without being told if the device fails — [isPlaying] still goes false. */
     public fun start() {
+        start { }
+    }
+
+    /**
+     * Start playing.
+     *
+     * [onError] is told if the device fails during a [write] — by then [isPlaying] already reads
+     * false and the device is released; [start] again to reopen it. It runs on the thread that
+     * called [write], after this Speaker's lock is released.
+     */
+    public fun start(onError: (Throwable) -> Unit) {
         lock.withLock {
             check(!running) { "This Speaker is already playing" }
             // Committed only once the device is up. Set first, a device that refused to open left
             // this Speaker "already playing" for good, and stop() then stopped a backend that
             // never started. The order is free here because the lock covers both.
             device.start()
+            this.onError = onError
             running = true
         }
     }
 
-    /** Play [samples]. Silently ignored once stopped, rather than throwing into an audio loop. */
+    /**
+     * Play [samples]. Silently ignored once stopped, rather than throwing into an audio loop.
+     *
+     * A device that fails here does not throw either, for the same reason: the Speaker stops,
+     * releases the device and reports the failure to the `onError` given to [start].
+     */
     public fun write(samples: ShortArray) {
-        lock.withLock {
-            if (!running) return
-            device.write(samples)
-        }
+        val failure =
+            lock.withLock {
+                if (!running) return
+                try {
+                    device.write(samples)
+                    return
+                } catch (failed: Exception) {
+                    // Released here rather than left for stop(): unlike capture, nothing on the
+                    // device's side is waiting on this thread, so stopping under the lock cannot
+                    // deadlock — and a dead device left open would make the next start() fail.
+                    running = false
+                    runCatching { device.stop() }
+                    failed
+                }
+            }
+        // Outside the lock, so a handler that restarts or stops this Speaker does not do it from
+        // inside a write.
+        onError(failure)
     }
 
     /** Stop. Idempotent. */

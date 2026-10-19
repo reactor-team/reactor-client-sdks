@@ -83,7 +83,12 @@ public class AudioTrackRender
             // WRITE_BLOCKING, not the non-blocking mode: a short write would silently drop the
             // tail of a buffer, which is a click the user hears and nothing reports. Blocking is
             // the backpressure — see the class note.
-            track?.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
+            val open = track ?: return
+            val written = open.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
+            // Negative is an error code, not a count — ERROR_DEAD_OBJECT once the audio server
+            // has restarted, after which every later write fails the same way. Thrown so that
+            // [Speaker] stops claiming to play; see RenderDevice.write.
+            check(written >= 0) { "The speaker stopped accepting audio: AudioTrack.write returned $written" }
         }
 
         override fun stop() {
