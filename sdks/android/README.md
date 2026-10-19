@@ -80,6 +80,11 @@ an APK is a key anyone can extract, which is all the exchange around it cannot
 change. A `jwt` passed alongside always wins, and `local = true` never
 authenticates at all.
 
+Need the exchange without a client — a tool that mints tokens for devices, for
+example? `Reactor.fetchJwt(apiUrl, apiKey, options = """{"models":["owner/name"]}""")`
+is the same standalone call the Java, Swift and Python SDKs expose. Scope it:
+a token minted without options carries everything the key's roles allow.
+
 Three things that are not obvious and cost an afternoon each:
 
 **`disconnect()` and `close()` are two different things, and you want both.**
