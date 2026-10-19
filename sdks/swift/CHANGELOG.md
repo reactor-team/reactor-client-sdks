@@ -7,6 +7,15 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Same-session `reconnect()` could time out after 30 s ("transport readiness
+  did not complete") on high-latency links. Each ICE candidate was POSTed to
+  the coordinator inline in the peer-event pump, so a reconnect's candidate
+  burst (dozens of candidates, one round trip each) held the connection's
+  readiness events queued behind it past the connect timeout. Candidates now
+  flush from a dedicated background task.
+
 ## [1.6.0] - 2026-10-23
 
 ### Added

@@ -1223,6 +1223,12 @@ unsafe fn create_impl(
         }
     });
 
+    // ICE trickle POSTs run on their own task, once per handle: inside the
+    // pump each candidate would cost the events queued behind it a full
+    // coordinator round trip (REA-7305).
+    let reactor3 = reactor.clone();
+    spawn_tracked(&tasks, async move { reactor3.run_ice_flush().await });
+
     // Always present, even without event callbacks: completions are delivered here
     // too, so that a tokio worker never waits on the host either.
     let control = HostThread::spawn(

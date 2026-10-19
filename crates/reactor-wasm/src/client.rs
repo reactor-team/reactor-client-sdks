@@ -340,6 +340,15 @@ impl ReactorClient {
             });
         }
 
+        // ICE flush: candidate POSTs off the pump, once per handle (REA-7305).
+        {
+            let reactor = reactor.clone();
+            spawn_until_shutdown(
+                shutdown.clone(),
+                async move { reactor.run_ice_flush().await },
+            );
+        }
+
         // Dispatch: core events → JS listeners.
         {
             let mut events = reactor.subscribe();
