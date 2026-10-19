@@ -15,11 +15,15 @@ import android.hardware.camera2.params.SessionConfiguration
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
+import android.util.Log
 import java.nio.ByteBuffer
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * The camera, for real: Camera2 to BGRA frames ready for `Track.pushFrame`.
+ * The camera, for real: Camera2 to upright BGRA frames ready for `Track.pushFrame`.
  *
  * Camera2 rather than CameraX, and that is a deliberate cost. CameraX is far less code — but it
  * needs a `LifecycleOwner` and pulls four androidx artifacts onto every consumer of this module.
@@ -31,6 +35,22 @@ import java.util.concurrent.atomic.AtomicBoolean
  * stride that is 1 on some devices and 2 on others — and go through [YuvToBgra], which is where
  * that arithmetic is tested without a device.
  *
+ * ### Orientation
+ *
+ * **Frames reach [start]'s callback already upright**, rotated by [CameraSelection.rotateBgra].
+ * The sensor is mounted sideways on almost every handset, so a frame pushed as captured reaches
+ * the model on its side whenever the phone is held in portrait — and the model cannot know to
+ * turn it back. Rotating here means every app gets the right picture without writing the same
+ * index arithmetic.
+ *
+ * The rotation follows [deviceRotation], which the app updates while capture runs — from
+ * `onConfigurationChanged`, or a display listener for an Activity that handles its own rotation.
+ * Only the app knows which way its window is turned; this class reads no `Display`.
+ *
+ * **Front-camera frames are not mirrored.** What is pushed is what the camera sees, which is what
+ * the model should be given and what the Swift SDK's `Camera` pushes too. Mirroring is a preview
+ * concern: draw the local preview through [VideoRenderer] with `mirror = true`.
+ *
  * ### Permission
  *
  * `CAMERA` is the app's to request. [start] checks for it, so a missing grant is a message rather
@@ -38,9 +58,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * ### Threading
  *
- * Everything runs on this class's own background thread, and [onFrame] is called there. Push
- * straight into a track from it: that is the inline-callback bargain the SDK makes everywhere
- * else, and queueing instead trades a bounded drop for unbounded latency.
+ * Everything runs on this class's own background thread, and [onFrame][start] is called there.
+ * Push straight into a track from it: that is the inline-callback bargain the SDK makes
+ * everywhere else, and queueing instead trades a bounded drop for unbounded latency.
+ *
+ * [stop] tears down **on that same thread** and waits for it, so no frame is mid-conversion when
+ * the `ImageReader` closes — closing a reader frees the native buffers of every image it handed
+ * out — and no callback runs after [stop] returns.
  */
 public class CameraCapture
     @JvmOverloads
@@ -49,42 +73,93 @@ public class CameraCapture
         public val facing: CameraSelection.Facing = CameraSelection.Facing.FRONT,
         public val targetWidth: Int = 640,
         public val targetHeight: Int = 480,
-        /**
-         * How far the device is turned from its natural orientation, in degrees.
-         *
-         * Taken as a value rather than read from a `Display`, because the caller is the one who
-         * knows whether it is rendering into a rotating Activity or a fixed-orientation one — and
-         * because reading it here would make [CameraSelection.rotationDegrees] untestable.
-         */
-        public val deviceRotation: Int = 0,
+        deviceRotation: Int = 0,
     ) {
         private val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
-        private var thread: HandlerThread? = null
-        private var handler: Handler? = null
-        private var camera: CameraDevice? = null
-        private var session: CameraCaptureSession? = null
-        private var reader: ImageReader? = null
-        private val capturing = AtomicBoolean(false)
+        /**
+         * How far the device is turned from its natural orientation, in degrees: 0, 90, 180 or
+         * 270 — `Display.getRotation()` times 90.
+         *
+         * Writable while capturing, and read per frame, so turning the phone mid-session turns
+         * the next frame rather than leaving the stream sideways until a restart. Taken as a value
+         * rather than read from a `Display`, because the caller is the one who knows whether it
+         * is rendering into a rotating Activity or a fixed-orientation one.
+         */
+        @Volatile
+        public var deviceRotation: Int = requireRotation(deviceRotation)
+            set(value) {
+                field = requireRotation(value)
+            }
+
+        /**
+         * One start-to-stop, with everything it owns.
+         *
+         * Per start rather than fields on the class, because a stopped run can still be answered
+         * after the next one has begun: `openCamera`'s reply for the old run arrives on the old
+         * thread whenever the platform gets to it. With one shared `capturing` flag, that late
+         * onOpened read the new run's `true` and adopted a device nobody would ever close.
+         */
+        private class Run(
+            val thread: HandlerThread,
+            val handler: Handler,
+            val reader: ImageReader,
+        ) {
+            /** Cleared by stop() on any thread; read by every callback. */
+            val live = AtomicBoolean(true)
+
+            // The rest is touched only on [thread].
+            var camera: CameraDevice? = null
+            var session: CameraCaptureSession? = null
+
+            /**
+             * Whether `openCamera` has been asked and has not answered yet.
+             *
+             * The answer arrives on this run's looper. Quit that looper while it is pending and
+             * onOpened is never delivered — so the device it would have handed over is never
+             * closed, and stays held until the process dies. A stop in that window therefore
+             * leaves the thread running and lets the answer itself close the device and quit.
+             */
+            var openPending = true
+
+            /** Set by a teardown that found [openPending]; the open's answer finishes the quit. */
+            var quitWhenOpenAnswers = false
+        }
+
+        /** The run in progress, or null. Written by start() and stop(), on the caller's thread. */
+        @Volatile private var run: Run? = null
+
+        /** Read once in [start]; it is fixed in the hardware. */
+        @Volatile private var sensorOrientation = 0
 
         /** The size actually opened, which is the nearest the hardware offered. Null until started. */
         public var size: CameraSelection.Size? = null
             private set
 
-        /** How far frames need rotating to be upright, from [CameraSelection.rotationDegrees]. */
+        /**
+         * How far the most recent frame was rotated to be upright, from
+         * [CameraSelection.rotationDegrees]. Informational: frames are already rotated by the
+         * time they are delivered, so a preview of them wants zero rotation, not this.
+         */
+        @Volatile
         public var rotation: Int = 0
             private set
 
         /**
-         * Open the camera and deliver BGRA frames to [onFrame].
+         * Open the camera and deliver upright BGRA frames to [onFrame].
          *
          * The buffer handed to [onFrame] is reused between frames: copy it if you keep it. That is
          * the same contract the SDK's own `VideoFrame.pixels` has, and for the same reason — a
-         * fresh allocation per frame at 30fps is megabytes a second of garbage.
+         * fresh allocation per frame at 30fps is megabytes a second of garbage. The width and
+         * height passed alongside are the *rotated* ones, so a portrait frame is taller than it
+         * is wide.
          */
         @SuppressLint("MissingPermission") // Checked below, with a message worth reading.
         public fun start(onFrame: (ByteBuffer, Int, Int) -> Unit) {
-            check(camera == null) { "This CameraCapture is already started" }
+            // On the run, not on the device: the device is assigned asynchronously in onOpened,
+            // so a second start() landing before that callback used to pass a `camera == null`
+            // check and leak the first call's thread and reader.
+            check(run == null) { "This CameraCapture is already started" }
             check(
                 context.checkSelfPermission(Manifest.permission.CAMERA) ==
                     PackageManager.PERMISSION_GRANTED,
@@ -105,33 +180,35 @@ public class CameraCapture
                 }
             val chosen = CameraSelection.bestSize(available, targetWidth, targetHeight)
             size = chosen
-            rotation =
-                CameraSelection.rotationDegrees(
-                    sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0,
-                    deviceRotation = deviceRotation,
-                    facing = facing,
-                )
+            sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+            rotation = currentRotation()
 
             val background = HandlerThread("reactor-camera").apply { start() }
-            thread = background
-            val post = Handler(background.looper)
-            handler = post
-
             // maxImages = 2, deliberately. One is the frame being converted; the second lets the
             // hardware fill while that happens. More would buffer frames the consumer is already
             // too slow for, which is latency rather than throughput.
-            val imageReader =
-                ImageReader.newInstance(chosen.width, chosen.height, ImageFormat.YUV_420_888, 2)
-            reader = imageReader
-            capturing.set(true)
+            val current =
+                Run(
+                    thread = background,
+                    handler = Handler(background.looper),
+                    reader = ImageReader.newInstance(chosen.width, chosen.height, ImageFormat.YUV_420_888, 2),
+                )
+            run = current
 
-            val bgra = ByteBuffer.allocateDirect(chosen.width * chosen.height * 4)
-            imageReader.setOnImageAvailableListener({ source ->
+            // Two buffers: the conversion's output, and the rotation's. A rotation cannot run in
+            // place, and both are allocated once rather than per frame.
+            val frameBytes = chosen.width * chosen.height * 4
+            val converted = ByteBuffer.allocateDirect(frameBytes)
+            val upright = ByteBuffer.allocateDirect(frameBytes)
+            current.reader.setOnImageAvailableListener({ source ->
+                // Before acquiring: once stop() has begun, the reader is about to close, and a
+                // frame that has not been taken yet is one there is no reason to touch.
+                if (!current.live.get()) return@setOnImageAvailableListener
                 val image = source.acquireLatestImage() ?: return@setOnImageAvailableListener
                 try {
-                    if (!capturing.get()) return@setOnImageAvailableListener
                     val planes = image.planes
-                    bgra.clear()
+                    // Through Buffer: the covariant ByteBuffer.clear() does not exist below API 33.
+                    (converted as java.nio.Buffer).clear()
                     YuvToBgra.convert(
                         y = planes[0].buffer,
                         u = planes[1].buffer,
@@ -141,77 +218,121 @@ public class CameraCapture
                         yRowStride = planes[0].rowStride,
                         uvRowStride = planes[1].rowStride,
                         uvPixelStride = planes[1].pixelStride,
-                        out = bgra,
+                        out = converted,
                     )
-                    bgra.rewind()
-                    onFrame(bgra, image.width, image.height)
+                    val degrees = currentRotation()
+                    rotation = degrees
+                    val turned =
+                        CameraSelection.rotateBgra(converted, image.width, image.height, degrees, upright)
+                    onFrame(upright, turned.width, turned.height)
                 } finally {
                     // Always, and before returning: an Image that is not closed is a buffer the
                     // hardware cannot refill, and two of them stall the stream permanently.
                     image.close()
                 }
-            }, post)
+            }, current.handler)
 
-            manager.openCamera(cameraId, deviceCallback(imageReader, post), post)
+            try {
+                manager.openCamera(cameraId, deviceCallback(current), current.handler)
+            } catch (failed: Throwable) {
+                // Nothing was opened, so nothing will answer: undo what start() set up, or this
+                // instance refuses every later start() as "already started" while holding a
+                // thread and a reader nobody can release.
+                current.live.set(false)
+                current.openPending = false
+                run = null
+                current.handler.post { shutdown(current) }
+                throw failed
+            }
         }
 
-        private fun deviceCallback(
-            imageReader: ImageReader,
-            post: Handler,
-        ) = object : CameraDevice.StateCallback() {
-            override fun onOpened(device: CameraDevice) {
-                camera = device
-                val output = OutputConfiguration(imageReader.surface)
-                val request =
-                    device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
-                        addTarget(imageReader.surface)
-                        // Continuous rather than per-frame: a video stream wants the autofocus and
-                        // exposure that keep adjusting, not the one-shot kind a photo wants.
-                        set(
-                            CaptureRequest.CONTROL_AF_MODE,
-                            CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO,
-                        )
-                        set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+        private fun currentRotation(): Int =
+            CameraSelection.rotationDegrees(
+                sensorOrientation = sensorOrientation,
+                deviceRotation = deviceRotation,
+                facing = facing,
+            )
+
+        private fun deviceCallback(current: Run) =
+            object : CameraDevice.StateCallback() {
+                override fun onOpened(device: CameraDevice) {
+                    current.openPending = false
+                    // A stop() that landed before the open completed has already released
+                    // everything it could see — and this device was not yet among it. Closed
+                    // here, or it stays held until the process dies and no other app can open
+                    // the camera.
+                    if (!current.live.get()) {
+                        device.close()
+                        finishPendingQuit(current)
+                        return
                     }
-                device.createCaptureSession(
-                    SessionConfiguration(
-                        SessionConfiguration.SESSION_REGULAR,
-                        listOf(output),
-                        { runnable -> post.post(runnable) },
-                        object : CameraCaptureSession.StateCallback() {
-                            override fun onConfigured(configured: CameraCaptureSession) {
-                                session = configured
-                                if (!capturing.get()) return
-                                configured.setRepeatingRequest(request.build(), null, post)
-                            }
+                    current.camera = device
+                    val surface = current.reader.surface
+                    val request =
+                        device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+                            addTarget(surface)
+                            // Continuous rather than per-frame: a video stream wants the autofocus
+                            // and exposure that keep adjusting, not the one-shot kind a photo wants.
+                            set(
+                                CaptureRequest.CONTROL_AF_MODE,
+                                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO,
+                            )
+                            set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                        }
+                    device.createCaptureSession(
+                        SessionConfiguration(
+                            SessionConfiguration.SESSION_REGULAR,
+                            listOf(OutputConfiguration(surface)),
+                            { runnable -> current.handler.post(runnable) },
+                            object : CameraCaptureSession.StateCallback() {
+                                override fun onConfigured(configured: CameraCaptureSession) {
+                                    // Same window as onOpened, one step later: the device was
+                                    // already closed by the teardown, so this session is dead.
+                                    if (!current.live.get()) {
+                                        configured.close()
+                                        return
+                                    }
+                                    current.session = configured
+                                    configured.setRepeatingRequest(request.build(), null, current.handler)
+                                }
 
-                            override fun onConfigureFailed(configured: CameraCaptureSession) {
-                                // Nothing to throw to: this arrives on the camera's own thread,
-                                // long after start() returned. Tearing down is the only useful
-                                // response, and leaves isCapturing false for the caller to see.
-                                capturing.set(false)
-                                configured.close()
-                            }
-                        },
-                    ),
-                )
+                                override fun onConfigureFailed(configured: CameraCaptureSession) {
+                                    // Nothing to throw to: this arrives on the camera's own
+                                    // thread, long after start() returned. Releasing is the only
+                                    // useful response, and leaves isCapturing false for the
+                                    // caller to see; stop() still quits the thread.
+                                    current.live.set(false)
+                                    configured.close()
+                                    release(current)
+                                }
+                            },
+                        ),
+                    )
+                }
+
+                override fun onDisconnected(device: CameraDevice) {
+                    // The platform took the camera away — another app, or the screen locking.
+                    lost(current, device)
+                }
+
+                override fun onError(
+                    device: CameraDevice,
+                    error: Int,
+                ) {
+                    lost(current, device)
+                }
             }
 
-            override fun onDisconnected(device: CameraDevice) {
-                // The platform took the camera away — another app, or the screen locking.
-                capturing.set(false)
-                device.close()
-                camera = null
-            }
-
-            override fun onError(
-                device: CameraDevice,
-                error: Int,
-            ) {
-                capturing.set(false)
-                device.close()
-                camera = null
-            }
+        /** The device went away on its own. Released here; stop() still quits the thread. */
+        private fun lost(
+            current: Run,
+            device: CameraDevice,
+        ) {
+            current.openPending = false
+            current.live.set(false)
+            device.close()
+            release(current)
+            finishPendingQuit(current)
         }
 
         private fun findCamera(): String {
@@ -234,22 +355,86 @@ public class CameraCapture
 
         /** Whether frames are flowing. False after a disconnect or a configuration failure. */
         public val isCapturing: Boolean
-            get() = capturing.get()
+            get() = run?.live?.get() == true
 
-        /** Stop and release everything, in the order the platform requires. Idempotent. */
+        /**
+         * Stop and release everything, waiting until it is done. Idempotent.
+         *
+         * When this returns, the camera is closed and no frame callback is running or will run.
+         * Safe to call from the frame callback itself, where it releases inline instead of
+         * waiting on its own thread.
+         */
         public fun stop() {
-            capturing.set(false)
-            // Session, then camera, then reader, then thread. Closing the reader first would pull
-            // the surface out from under a session still repeating into it; closing the thread
-            // first would leave callbacks with no looper to run on.
-            runCatching { session?.close() }
-            session = null
-            runCatching { camera?.close() }
-            camera = null
-            runCatching { reader?.close() }
-            reader = null
-            thread?.quitSafely()
-            thread = null
-            handler = null
+            val current = run ?: return
+            run = null
+            current.live.set(false)
+            if (Looper.myLooper() == current.thread.looper) {
+                shutdown(current)
+                return
+            }
+            // Posted behind any frame already queued, and waited for: by the time the release
+            // runs the listener has returned, so the reader closes with no image open — and a
+            // frame dequeued after it sees `live` false and touches nothing.
+            val done = CountDownLatch(1)
+            val posted =
+                current.handler.post {
+                    shutdown(current)
+                    done.countDown()
+                }
+            if (posted && !done.await(TEARDOWN_WAIT_MS, TimeUnit.MILLISECONDS)) {
+                // A frame callback that will not return. Closing the reader from here would free
+                // the buffers that callback is reading, so nothing is closed from this thread:
+                // the release stays queued and runs if the callback ever returns.
+                Log.w(
+                    TAG,
+                    "The camera thread did not finish the frame it was handling within " +
+                        "${TEARDOWN_WAIT_MS}ms; its release is left queued behind it.",
+                )
+            }
+        }
+
+        /** Release, then quit the thread — unless an open is still to answer. Camera thread only. */
+        private fun shutdown(current: Run) {
+            release(current)
+            if (current.openPending) {
+                current.quitWhenOpenAnswers = true
+            } else {
+                current.thread.quitSafely()
+            }
+        }
+
+        /** The other half of [shutdown]'s deferral, run by whichever answer the open gets. */
+        private fun finishPendingQuit(current: Run) {
+            if (!current.quitWhenOpenAnswers) return
+            current.quitWhenOpenAnswers = false
+            current.thread.quitSafely()
+        }
+
+        /**
+         * Session, then camera, then reader. Closing the reader first would pull the surface out
+         * from under a session still repeating into it. Camera thread only, and idempotent.
+         */
+        private fun release(current: Run) {
+            runCatching { current.session?.close() }
+            current.session = null
+            runCatching { current.camera?.close() }
+            current.camera = null
+            runCatching { current.reader.close() }
+        }
+
+        private companion object {
+            const val TAG = "ReactorCamera"
+
+            /**
+             * How long [stop] waits for the camera thread. One frame's conversion is a few
+             * milliseconds; this is bounded only so a callback that never returns cannot hold
+             * the caller's teardown — usually the UI thread — open for ever.
+             */
+            const val TEARDOWN_WAIT_MS = 2_000L
+
+            fun requireRotation(degrees: Int): Int {
+                require(degrees % 90 == 0) { "deviceRotation must be a multiple of 90, got $degrees" }
+                return ((degrees % 360) + 360) % 360
+            }
         }
     }

@@ -57,8 +57,9 @@ public class VideoRenderer
         /**
          * How far to rotate frames before drawing, in degrees.
          *
-         * Set it from [CameraCapture.rotation] when rendering a local preview. Zero for a remote
-         * stream, which arrives already upright.
+         * Zero for frames from [CameraCapture], which delivers them already upright, and for a
+         * remote stream, which arrives that way. Set it only for a source of your own that hands over
+         * sensor-oriented frames.
          */
         public var rotationDegrees: Int = 0
 
@@ -69,7 +70,7 @@ public class VideoRenderer
             holder.addCallback(
                 object : SurfaceHolder.Callback {
                     override fun surfaceCreated(holder: SurfaceHolder) {
-                        surfaceReady = true
+                        lock.withLock { surfaceReady = true }
                     }
 
                     override fun surfaceChanged(
@@ -80,9 +81,12 @@ public class VideoRenderer
                     ) = Unit
 
                     override fun surfaceDestroyed(holder: SurfaceHolder) {
-                        // Before the surface actually goes: a lockCanvas racing destruction throws
-                        // from whichever thread happened to be mid-frame.
-                        surfaceReady = false
+                        // Under the render lock, not just a flag write. The platform requires that
+                        // no thread is still drawing into the surface when this returns, and a
+                        // render() past its first check can be between lockCanvas and
+                        // unlockCanvasAndPost. Taking the lock waits that frame out; the check
+                        // repeated inside render() stops the next one.
+                        lock.withLock { surfaceReady = false }
                     }
                 },
             )
@@ -106,6 +110,9 @@ public class VideoRenderer
         ) {
             if (!surfaceReady || width <= 0 || height <= 0) return
             lock.withLock {
+                // Again under the lock: the check above is only a cheap early-out, and the
+                // surface may have been destroyed while this thread waited for the lock.
+                if (!surfaceReady) return
                 // Keyed on both dimensions, not on their product: 640x480 and 480x640 have the
                 // same area and a different shape, and reusing across that writes out of bounds.
                 if (width != frameWidth || height != frameHeight) {

@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.util.Log
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -67,8 +68,19 @@ public class AudioRecordCapture
          *
          * [onData] runs on this class's own reader thread, not the caller's.
          */
-        @SuppressLint("MissingPermission") // Checked below, with a message worth reading.
         override fun start(onData: (ShortArray) -> Unit) {
+            start(onData) { }
+        }
+
+        /**
+         * Open the device and start delivering buffers to [onData]; [onFailure] is told if a read
+         * fails and capture ends on its own.
+         */
+        @SuppressLint("MissingPermission") // Checked below, with a message worth reading.
+        override fun start(
+            onData: (ShortArray) -> Unit,
+            onFailure: (Throwable) -> Unit,
+        ) {
             check(record == null) { "This AudioRecordCapture is already started" }
             val granted =
                 context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
@@ -97,7 +109,7 @@ public class AudioRecordCapture
             opened.startRecording()
 
             reader =
-                Thread({ pump(opened, onData) }, "reactor-mic").apply {
+                Thread({ pump(opened, onData, onFailure) }, "reactor-mic").apply {
                     // Audio priority: a capture thread that misses its slot drops buffers, and the
                     // default priority competes with everything the app is doing.
                     priority = Thread.MAX_PRIORITY
@@ -108,17 +120,22 @@ public class AudioRecordCapture
         private fun pump(
             opened: AudioRecord,
             onData: (ShortArray) -> Unit,
+            onFailure: (Throwable) -> Unit,
         ) {
             val buffer = ShortArray(framesPerRead * channels)
             while (capturing.get()) {
                 val read = opened.read(buffer, 0, buffer.size)
-                if (read <= 0) {
-                    // Negative codes are errors, and ERROR_INVALID_OPERATION is what a device
-                    // being torn down under us returns. Neither is worth throwing from a thread
-                    // nobody is waiting on; stopping is the only useful response.
-                    if (read < 0) capturing.set(false)
-                    continue
+                if (read < 0) {
+                    // An error code: ERROR_DEAD_OBJECT after the audio server restarts, or
+                    // ERROR_INVALID_OPERATION from a device torn down under us. Not thrown — this
+                    // thread has nobody to throw to — but reported, unless stop() is what caused
+                    // it: the compareAndSet loses to a stop() that already cleared the flag.
+                    if (capturing.compareAndSet(true, false)) {
+                        onFailure(IllegalStateException("AudioRecord.read() failed with code $read; capture has stopped"))
+                    }
+                    return
                 }
+                if (read == 0) continue
                 // Checked again after the read: `stop()` may have landed while this call was
                 // blocked, and delivering then would push into a track already torn down.
                 if (!capturing.get()) return
@@ -129,13 +146,31 @@ public class AudioRecordCapture
         /** Stop, **waiting for the reader thread to leave [onData]** — see the class note. */
         override fun stop() {
             val open = record ?: return
+            val pumping = reader
             capturing.set(false)
-            // Joined before release, not after: releasing the AudioRecord while the reader is
-            // inside read() is a use-after-free in the platform's own native layer.
-            reader?.join(TEARDOWN_WAIT_MS)
             reader = null
             record = null
+            // stop() before the join, not after: it is what returns a read() blocked waiting for
+            // data, so the join below waits for one buffer at most rather than for a timeout.
             runCatching { open.stop() }
+            // Then join, and release only once the reader is out. Releasing the AudioRecord while
+            // the reader is inside read() is a use-after-free in the platform's native layer. The
+            // reader itself calling stop() — from onData — is not waited for: it would be
+            // waiting for itself, and it is not inside read() while it runs this.
+            if (pumping != null && pumping !== Thread.currentThread()) {
+                pumping.join(TEARDOWN_WAIT_MS)
+                if (pumping.isAlive) {
+                    // Still inside read() despite stop(). Releasing now would be the native crash
+                    // the join exists to prevent; leaking one AudioRecord is the lesser failure.
+                    Log.w(
+                        TAG,
+                        "The microphone reader did not exit within ${TEARDOWN_WAIT_MS}ms of " +
+                            "stop(); leaving its AudioRecord unreleased rather than freeing it " +
+                            "under a read.",
+                    )
+                    return
+                }
+            }
             open.release()
         }
     }
@@ -148,3 +183,5 @@ public class AudioRecordCapture
  * is dropped either way.
  */
 private const val TEARDOWN_WAIT_MS = 2_000L
+
+private const val TAG = "ReactorMicrophone"

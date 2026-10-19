@@ -16,6 +16,23 @@ public interface CaptureDevice {
     public fun start(onData: (ShortArray) -> Unit)
 
     /**
+     * Begin delivering buffers to [onData], and report to [onFailure] if capture ends on its own.
+     *
+     * A device can stop delivering without anyone calling [stop] — the audio server restarting,
+     * or another app taking the microphone — and without this the layer above keeps reporting
+     * that it is capturing while nothing arrives. [onFailure] runs at most once, on the device's
+     * own thread, after the last [onData]. The device still needs [stop] to release it.
+     *
+     * Defaults to the one-argument form, for a backend that cannot fail mid-capture.
+     */
+    public fun start(
+        onData: (ShortArray) -> Unit,
+        onFailure: (Throwable) -> Unit,
+    ) {
+        start(onData)
+    }
+
+    /**
      * Stop, **waiting for any in-flight callback to return**.
      *
      * This is the property that decides how [Microphone] guards its state — see the note there.
@@ -55,7 +72,18 @@ public class Microphone(
     private val deviceSampleRate: Int,
     private val channels: Int,
 ) {
+    /** Whether buffers are being delivered. Read lock-free by the capture callback. */
     private val running = AtomicBoolean(false)
+
+    /**
+     * Whether the device has been started and not yet stopped. Guarded by [lifecycle].
+     *
+     * Distinct from [running], because a device that fails mid-capture clears [running] from its
+     * own thread — so `isCapturing` stops lying — but still holds the hardware until `stop()`.
+     * Releasing it from the failure callback instead would mean the device's `stop()` waiting for
+     * the very thread that is calling it.
+     */
+    private var started = false
 
     /**
      * Serialises the two lifecycle transitions, and **only** those.
@@ -73,14 +101,36 @@ public class Microphone(
     private val lifecycle = ReentrantLock()
 
     /**
+     * Start capturing, without being told if the device fails — [isCapturing] still goes false.
+     *
+     * An overload rather than a default argument: with a default, `start { samples -> }` would
+     * bind its trailing lambda to the error handler instead of the samples.
+     */
+    public fun start(onSamples: (ShortArray) -> Unit) {
+        start(onSamples) { }
+    }
+
+    /**
      * Start capturing, handing mono samples at [targetSampleRate] to [onSamples].
      *
      * [onSamples] runs on the device's capture thread. Push straight into a track from it —
      * queueing instead is what turns a bounded drop into unbounded latency.
+     *
+     * [onError] is told if capture ends without [stop] — the device failing under it. By then
+     * [isCapturing] already reads false; [start] again (or [stop]) releases the dead device.
      */
-    public fun start(onSamples: (ShortArray) -> Unit) {
+    public fun start(
+        onSamples: (ShortArray) -> Unit,
+        onError: (Throwable) -> Unit,
+    ) {
         lifecycle.withLock {
             check(!running.get()) { "This Microphone is already capturing" }
+            // A device that failed under a previous start still holds the hardware: release it
+            // before opening again, or the second open fails on a microphone this one owns.
+            if (started) {
+                started = false
+                device.stop()
+            }
             running.set(true)
             // One resampler for the whole capture, not one per buffer. A stateless resample
             // restarts its phase at every buffer boundary, which at 44.1k to 48k drops or repeats
@@ -88,13 +138,23 @@ public class Microphone(
             // stream over a long capture.
             val resampler = PcmConversion.Resampler(deviceSampleRate, targetSampleRate)
             try {
-                device.start { raw ->
-                    // Checked inside the callback, without a lock. A buffer captured while
-                    // stopping is dropped rather than delivered — which is the difference between
-                    // a clean stop and a push into a track the caller has already torn down.
-                    if (!running.get()) return@start
-                    onSamples(resampler.resample(PcmConversion.toMono(raw, channels)))
-                }
+                device.start(
+                    { raw ->
+                        // Checked inside the callback, without a lock. A buffer captured while
+                        // stopping is dropped rather than delivered — which is the difference
+                        // between a clean stop and a push into a track already torn down.
+                        if (running.get()) {
+                            onSamples(resampler.resample(PcmConversion.toMono(raw, channels)))
+                        }
+                    },
+                    { failure ->
+                        // No lock here either, for the same reason as the data callback. Only a
+                        // capture that was still meant to be running is reported: a failure that
+                        // races stop() is the teardown, not news.
+                        if (running.compareAndSet(true, false)) onError(failure)
+                    },
+                )
+                started = true
             } catch (failedToStart: Throwable) {
                 // Rolled back, or a device that refused to open leaves this Microphone claiming to
                 // capture forever: start() would refuse as "already capturing" and stop() would
@@ -108,7 +168,11 @@ public class Microphone(
     /** Stop capturing. Idempotent. */
     public fun stop() {
         lifecycle.withLock {
-            if (!running.compareAndSet(true, false)) return
+            running.set(false)
+            // On `started`, not on `running`: a device that already failed has cleared the flag
+            // and still needs releasing.
+            if (!started) return
+            started = false
             // Safe to call under the lock even though a callback may be running: that callback
             // takes no lock, so waiting for it here cannot deadlock.
             device.stop()
@@ -135,8 +199,11 @@ public class Speaker(
     public fun start() {
         lock.withLock {
             check(!running) { "This Speaker is already playing" }
-            running = true
+            // Committed only once the device is up. Set first, a device that refused to open left
+            // this Speaker "already playing" for good, and stop() then stopped a backend that
+            // never started. The order is free here because the lock covers both.
             device.start()
+            running = true
         }
     }
 
