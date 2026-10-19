@@ -139,7 +139,18 @@ public class AudioRecordCapture
                 // Checked again after the read: `stop()` may have landed while this call was
                 // blocked, and delivering then would push into a track already torn down.
                 if (!capturing.get()) return
-                onData(if (read == buffer.size) buffer.copyOf() else buffer.copyOf(read))
+                try {
+                    onData(if (read == buffer.size) buffer.copyOf() else buffer.copyOf(read))
+                } catch (thrown: Throwable) {
+                    // The caller's callback threw, and this thread is the only one reading: left
+                    // to escape, it ends the reader while everything above keeps reporting a live
+                    // capture. Treated as the capture ending — reported once, the same way as a
+                    // read error, and still released by stop().
+                    if (capturing.compareAndSet(true, false)) {
+                        onFailure(IllegalStateException("The capture callback threw; capture has stopped", thrown))
+                    }
+                    return
+                }
             }
         }
 

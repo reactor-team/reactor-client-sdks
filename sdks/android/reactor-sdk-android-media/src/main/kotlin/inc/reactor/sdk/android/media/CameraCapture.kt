@@ -140,8 +140,19 @@ public class CameraCapture
             var orientation: OrientationEventListener? = null
         }
 
-        /** The run in progress, or null. Written by start() and stop(), on the caller's thread. */
+        /** The run in progress, or null. Written only under [lifecycle]. */
         @Volatile private var run: Run? = null
+
+        /**
+         * Serialises [start] and [stop] — the whole of start's setup, not just its check.
+         *
+         * Without it a stop() landing between start's `run == null` check and the run being
+         * published saw nothing to stop and returned, and the start then opened a live camera the
+         * caller had already torn down; two concurrent starts could both pass the check and leak
+         * a run. Never held across a wait on the camera thread, which takes no lock, so it cannot
+         * deadlock against a frame.
+         */
+        private val lifecycle = Any()
 
         /** Read once in [start]; it is fixed in the hardware. */
         @Volatile private var sensorOrientation = 0
@@ -168,8 +179,12 @@ public class CameraCapture
          * height passed alongside are the *rotated* ones, so a portrait frame is taller than it
          * is wide.
          */
-        @SuppressLint("MissingPermission") // Checked below, with a message worth reading.
         public fun start(onFrame: (ByteBuffer, Int, Int) -> Unit) {
+            synchronized(lifecycle) { startLocked(onFrame) }
+        }
+
+        @SuppressLint("MissingPermission") // Checked below, with a message worth reading.
+        private fun startLocked(onFrame: (ByteBuffer, Int, Int) -> Unit) {
             // On the run, not on the device: the device is assigned asynchronously in onOpened,
             // so a second start() landing before that callback used to pass a `camera == null`
             // check and leak the first call's thread and reader.
@@ -240,6 +255,13 @@ public class CameraCapture
                     val turned =
                         CameraSelection.rotateBgra(converted, image.width, image.height, degrees, upright)
                     onFrame(upright, turned.width, turned.height)
+                } catch (thrown: Throwable) {
+                    // The caller's callback threw. Escaping, it kills this thread with the camera,
+                    // session and reader still open and isCapturing still true — hardware held
+                    // until the process dies. Contained instead: the run ends, and its release is
+                    // posted behind this callback so the reader never closes under the open image.
+                    Log.e(TAG, "The frame callback threw; capture has stopped", thrown)
+                    if (current.live.compareAndSet(true, false)) current.handler.post { release(current) }
                 } finally {
                     // Always, and before returning: an Image that is not closed is a buffer the
                     // hardware cannot refill, and two of them stall the stream permanently.
@@ -430,9 +452,13 @@ public class CameraCapture
          * waiting on its own thread.
          */
         public fun stop() {
-            val current = run ?: return
-            run = null
-            current.live.set(false)
+            val current =
+                synchronized(lifecycle) {
+                    val claimed = run ?: return
+                    run = null
+                    claimed.live.set(false)
+                    claimed
+                }
             // From the caller's thread, not the camera's: the listener belongs to the main
             // looper, and disable() is safe from anywhere.
             current.orientation?.disable()
