@@ -142,4 +142,104 @@ class CameraSelectionTest {
         assertFalse(CameraSelection.swapsDimensions(0))
         assertFalse(CameraSelection.swapsDimensions(180))
     }
+
+    // ── Rotating the pixels ──────────────────────────────────────────────────
+
+    /**
+     * A 3x2 frame whose every pixel is distinct, so a rotation that lands any pixel in the wrong
+     * place shows up as a mismatch rather than as two identical values swapping:
+     *
+     *     1 2 3
+     *     4 5 6
+     */
+    private fun frame3x2(): java.nio.ByteBuffer {
+        val bytes =
+            java.nio.ByteBuffer
+                .allocateDirect(3 * 2 * 4)
+                .order(java.nio.ByteOrder.nativeOrder())
+        for (pixel in 1..6) bytes.putInt(pixel)
+        return bytes
+    }
+
+    private fun pixels(
+        buffer: java.nio.ByteBuffer,
+        count: Int,
+    ): List<Int> {
+        val view = buffer.duplicate().order(java.nio.ByteOrder.nativeOrder())
+        return List(count) { view.getInt(it * 4) }
+    }
+
+    @Test
+    fun `a quarter turn clockwise puts the bottom-left pixel top-left`() {
+        val out = java.nio.ByteBuffer.allocateDirect(24)
+        val size = CameraSelection.rotateBgra(frame3x2(), 3, 2, 90, out)
+        assertEquals(Size(2, 3), size)
+        //  4 1
+        //  5 2
+        //  6 3
+        assertEquals(listOf(4, 1, 5, 2, 6, 3), pixels(out, 6))
+    }
+
+    @Test
+    fun `a half turn reverses the frame`() {
+        val out = java.nio.ByteBuffer.allocateDirect(24)
+        assertEquals(Size(3, 2), CameraSelection.rotateBgra(frame3x2(), 3, 2, 180, out))
+        assertEquals(listOf(6, 5, 4, 3, 2, 1), pixels(out, 6))
+    }
+
+    @Test
+    fun `three quarter turns put the top-right pixel top-left`() {
+        val out = java.nio.ByteBuffer.allocateDirect(24)
+        assertEquals(Size(2, 3), CameraSelection.rotateBgra(frame3x2(), 3, 2, 270, out))
+        //  3 6
+        //  2 5
+        //  1 4
+        assertEquals(listOf(3, 6, 2, 5, 1, 4), pixels(out, 6))
+    }
+
+    @Test
+    fun `no rotation copies the frame unchanged`() {
+        val out = java.nio.ByteBuffer.allocateDirect(24)
+        assertEquals(Size(3, 2), CameraSelection.rotateBgra(frame3x2(), 3, 2, 0, out))
+        assertEquals(listOf(1, 2, 3, 4, 5, 6), pixels(out, 6))
+    }
+
+    /**
+     * The bytes inside a pixel stay in order. The rotation moves whole ints, and an int read and
+     * written in the same byte order is the same four bytes — but a version that mixed orders
+     * would swap B and A, and every frame would come out the wrong colour.
+     */
+    @Test
+    fun `the channels inside a pixel are not reordered`() {
+        val source = java.nio.ByteBuffer.allocateDirect(4 * 2)
+        source.put(byteArrayOf(10, 20, 30, 40, 50, 60, 70, 80))
+        val out = java.nio.ByteBuffer.allocateDirect(8)
+        CameraSelection.rotateBgra(source, 2, 1, 90, out)
+        val written = ByteArray(8).also { out.duplicate().get(it) }
+        assertEquals(listOf<Byte>(10, 20, 30, 40, 50, 60, 70, 80), written.toList())
+    }
+
+    /** The result is ready to push: positioned at 0, limited to the frame. */
+    @Test
+    fun `the output is rewound and limited to the frame`() {
+        val out = java.nio.ByteBuffer.allocateDirect(64)
+        out.position(10)
+        CameraSelection.rotateBgra(frame3x2(), 3, 2, 90, out)
+        assertEquals(0, out.position())
+        assertEquals(24, out.limit())
+    }
+
+    @Test
+    fun `a rotation that is not a quarter turn is refused`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            CameraSelection.rotateBgra(frame3x2(), 3, 2, 45, java.nio.ByteBuffer.allocateDirect(24))
+        }
+    }
+
+    @Test
+    fun `an output buffer too small for the frame is refused`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            CameraSelection.rotateBgra(frame3x2(), 3, 2, 90, java.nio.ByteBuffer.allocateDirect(20))
+        }
+    }
 }
