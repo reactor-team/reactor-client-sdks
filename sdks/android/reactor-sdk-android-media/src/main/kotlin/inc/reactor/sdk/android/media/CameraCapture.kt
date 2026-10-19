@@ -330,42 +330,13 @@ public class CameraCapture
                         return
                     }
                     current.camera = device
-                    val surface = current.reader.surface
-                    val request =
-                        device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
-                            addTarget(surface)
-                            // Continuous rather than per-frame: a video stream wants the autofocus
-                            // and exposure that keep adjusting, not the one-shot kind a photo wants.
-                            set(
-                                CaptureRequest.CONTROL_AF_MODE,
-                                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO,
-                            )
-                            set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                        }
-                    val sessionCallback =
-                        object : CameraCaptureSession.StateCallback() {
-                            override fun onConfigured(configured: CameraCaptureSession) {
-                                // Same window as onOpened, one step later: the device was
-                                // already closed by the teardown, so this session is dead.
-                                if (!current.live.get()) {
-                                    configured.close()
-                                    return
-                                }
-                                current.session = configured
-                                configured.setRepeatingRequest(request.build(), null, current.handler)
-                            }
-
-                            override fun onConfigureFailed(configured: CameraCaptureSession) {
-                                // Nothing to throw to: this arrives on the camera's own
-                                // thread, long after start() returned. Releasing is the only
-                                // useful response, and leaves isCapturing false for the
-                                // caller to see; stop() still quits the thread.
-                                current.live.set(false)
-                                configured.close()
-                                release(current)
-                            }
-                        }
-                    createSession(device, surface, sessionCallback, current.handler)
+                    try {
+                        configure(current, device)
+                    } catch (failed: Exception) {
+                        // createCaptureRequest and createCaptureSession throw on a device that
+                        // disconnected or closed between being opened and being configured.
+                        setupFailed(current, failed)
+                    }
                 }
 
                 override fun onDisconnected(device: CameraDevice) {
@@ -380,6 +351,55 @@ public class CameraCapture
                     lost(current, device)
                 }
             }
+
+        /** Build the repeating request and the session for an opened [device]. Camera thread only. */
+        private fun configure(
+            current: Run,
+            device: CameraDevice,
+        ) {
+            val surface = current.reader.surface
+            val request =
+                device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+                    addTarget(surface)
+                    // Continuous rather than per-frame: a video stream wants the autofocus
+                    // and exposure that keep adjusting, not the one-shot kind a photo wants.
+                    set(
+                        CaptureRequest.CONTROL_AF_MODE,
+                        CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO,
+                    )
+                    set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                }
+            val sessionCallback =
+                object : CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(configured: CameraCaptureSession) {
+                        // Same window as onOpened, one step later: the device was
+                        // already closed by the teardown, so this session is dead.
+                        if (!current.live.get()) {
+                            configured.close()
+                            return
+                        }
+                        current.session = configured
+                        try {
+                            configured.setRepeatingRequest(request.build(), null, current.handler)
+                        } catch (failed: Exception) {
+                            // CameraAccessException when the device went away while the
+                            // session was configuring, IllegalStateException when it closed.
+                            setupFailed(current, failed)
+                        }
+                    }
+
+                    override fun onConfigureFailed(configured: CameraCaptureSession) {
+                        // Nothing to throw to: this arrives on the camera's own
+                        // thread, long after start() returned. Releasing is the only
+                        // useful response, and leaves isCapturing false for the
+                        // caller to see; stop() still quits the thread.
+                        current.live.set(false)
+                        configured.close()
+                        release(current)
+                    }
+                }
+            createSession(device, surface, sessionCallback, current.handler)
+        }
 
         /**
          * Configure a capture session onto [surface], on [handler]'s thread.
@@ -408,6 +428,21 @@ public class CameraCapture
                 @Suppress("DEPRECATION")
                 device.createCaptureSession(listOf(surface), callback, handler)
             }
+        }
+
+        /**
+         * The asynchronous half of [start] failed: nothing to throw to on this thread, so the run
+         * ends the way [lost] ends it — released, isCapturing false — and stop() still quits the
+         * thread. Left to escape, the exception kills the camera thread with the device held and
+         * isCapturing still true. Camera thread only.
+         */
+        private fun setupFailed(
+            current: Run,
+            failed: Exception,
+        ) {
+            Log.e(TAG, "The camera opened but could not be configured; capture has stopped", failed)
+            current.live.set(false)
+            release(current)
         }
 
         /** The device went away on its own. Released here; stop() still quits the thread. */
