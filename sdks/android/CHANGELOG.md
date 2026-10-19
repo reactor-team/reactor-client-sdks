@@ -11,6 +11,14 @@ request as the bump.
 
 ## [Unreleased]
 
+### Added
+
+- `Reactor.fetchJwt(apiUrl, apiKey, options, local)`, the standalone key→token
+  exchange Java, Swift and Python already expose. Scope tokens with
+  `options = """{"models":["owner/name"]}"""` before handing them to a client
+  you do not control; an unrecognised option key is an error, a rejected key
+  reports UNAUTHORIZED, and an unreachable coordinator NETWORK_ERROR.
+
 ### Fixed
 
 - `ReactorOptions.apiKey` no longer connects with no credentials. The option was
