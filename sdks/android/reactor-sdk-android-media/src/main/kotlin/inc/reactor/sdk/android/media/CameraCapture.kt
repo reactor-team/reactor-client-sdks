@@ -14,12 +14,14 @@ import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.hardware.display.DisplayManager
 import android.media.ImageReader
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.util.Log
 import android.view.Display
 import android.view.OrientationEventListener
+import android.view.Surface
 import java.nio.ByteBuffer
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -318,35 +320,30 @@ public class CameraCapture
                             )
                             set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
                         }
-                    device.createCaptureSession(
-                        SessionConfiguration(
-                            SessionConfiguration.SESSION_REGULAR,
-                            listOf(OutputConfiguration(surface)),
-                            { runnable -> current.handler.post(runnable) },
-                            object : CameraCaptureSession.StateCallback() {
-                                override fun onConfigured(configured: CameraCaptureSession) {
-                                    // Same window as onOpened, one step later: the device was
-                                    // already closed by the teardown, so this session is dead.
-                                    if (!current.live.get()) {
-                                        configured.close()
-                                        return
-                                    }
-                                    current.session = configured
-                                    configured.setRepeatingRequest(request.build(), null, current.handler)
-                                }
-
-                                override fun onConfigureFailed(configured: CameraCaptureSession) {
-                                    // Nothing to throw to: this arrives on the camera's own
-                                    // thread, long after start() returned. Releasing is the only
-                                    // useful response, and leaves isCapturing false for the
-                                    // caller to see; stop() still quits the thread.
-                                    current.live.set(false)
+                    val sessionCallback =
+                        object : CameraCaptureSession.StateCallback() {
+                            override fun onConfigured(configured: CameraCaptureSession) {
+                                // Same window as onOpened, one step later: the device was
+                                // already closed by the teardown, so this session is dead.
+                                if (!current.live.get()) {
                                     configured.close()
-                                    release(current)
+                                    return
                                 }
-                            },
-                        ),
-                    )
+                                current.session = configured
+                                configured.setRepeatingRequest(request.build(), null, current.handler)
+                            }
+
+                            override fun onConfigureFailed(configured: CameraCaptureSession) {
+                                // Nothing to throw to: this arrives on the camera's own
+                                // thread, long after start() returned. Releasing is the only
+                                // useful response, and leaves isCapturing false for the
+                                // caller to see; stop() still quits the thread.
+                                current.live.set(false)
+                                configured.close()
+                                release(current)
+                            }
+                        }
+                    createSession(device, surface, sessionCallback, current.handler)
                 }
 
                 override fun onDisconnected(device: CameraDevice) {
@@ -361,6 +358,35 @@ public class CameraCapture
                     lost(current, device)
                 }
             }
+
+        /**
+         * Configure a capture session onto [surface], on [handler]'s thread.
+         *
+         * Two paths because the module's floor is API 26 and `SessionConfiguration` arrived in
+         * 28: calling it on Android 8.0 or 8.1 is a `NoSuchMethodError` the moment the camera
+         * opens. The older overload does the same thing for a single plain surface, which is all
+         * this class ever configures.
+         */
+        private fun createSession(
+            device: CameraDevice,
+            surface: Surface,
+            callback: CameraCaptureSession.StateCallback,
+            handler: Handler,
+        ) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                device.createCaptureSession(
+                    SessionConfiguration(
+                        SessionConfiguration.SESSION_REGULAR,
+                        listOf(OutputConfiguration(surface)),
+                        { runnable -> handler.post(runnable) },
+                        callback,
+                    ),
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                device.createCaptureSession(listOf(surface), callback, handler)
+            }
+        }
 
         /** The device went away on its own. Released here; stop() still quits the thread. */
         private fun lost(
