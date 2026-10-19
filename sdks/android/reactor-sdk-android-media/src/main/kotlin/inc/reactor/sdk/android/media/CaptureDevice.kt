@@ -234,7 +234,7 @@ public class Speaker(
      * releases the device and reports the failure to the `onError` given to [start].
      */
     public fun write(samples: ShortArray) {
-        val failure =
+        val (failure, report) =
             lock.withLock {
                 if (!running) return
                 try {
@@ -246,12 +246,15 @@ public class Speaker(
                     // deadlock — and a dead device left open would make the next start() fail.
                     running = false
                     runCatching { device.stop() }
-                    failed
+                    // The handler is taken with the failure, under the lock: read after it, a
+                    // start() racing in between would have replaced it, and this playback's
+                    // failure would reach — and could tear down — the next one.
+                    failed to onError
                 }
             }
         // Outside the lock, so a handler that restarts or stops this Speaker does not do it from
         // inside a write.
-        onError(failure)
+        report(failure)
     }
 
     /** Stop. Idempotent. */
