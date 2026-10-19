@@ -290,10 +290,15 @@ internal object NativeClient {
 
         suspend fun stats(): Stats = launch("get_stats", decode = ::decodeStats) { ticket -> nativeGetStats(context, ticket) }
 
+        /**
+         * Upload a file the native side opens later, from its own task.
+         *
+         * Launched under the lifecycle lock, like [connect]: a bare `checkOpen()` lets a racing
+         * [close] free the Context between the check and the launch.
+         */
         suspend fun uploadFile(path: String): FileRef =
             Completions.await("upload_file", decode = Uploads::decode) { ticket ->
-                checkOpen()
-                nativeUploadFile(context, path, ticket)
+                withOpenHandle { nativeUploadFile(context, path, ticket) }
             }
 
         suspend fun uploadBytes(
@@ -303,8 +308,7 @@ internal object NativeClient {
             mimeType: String?,
         ): FileRef =
             Completions.await("upload_bytes", decode = Uploads::decode) { ticket ->
-                checkOpen()
-                nativeUploadBytes(context, data, length, name, mimeType, ticket)
+                withOpenHandle { nativeUploadBytes(context, data, length, name, mimeType, ticket) }
             }
 
         val status: String?
