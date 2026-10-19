@@ -60,8 +60,17 @@ public class VideoRenderer
          * Zero for frames from [CameraCapture], which delivers them already upright, and for a
          * remote stream, which arrives that way. Set it only for a source of your own that hands over
          * sensor-oriented frames.
+         *
+         * A multiple of 90, normalised to 0–359 on the way in: -90 and 450 are the same turn as
+         * 270 and 90, and the letterboxing that decides whether width and height swap has to see
+         * them that way too.
          */
+        @Volatile
         public var rotationDegrees: Int = 0
+            set(value) {
+                require(value % 90 == 0) { "rotationDegrees must be a multiple of 90, got $value" }
+                field = ((value % 360) + 360) % 360
+            }
 
         /** Mirror horizontally. What a front-camera preview wants, and nothing else does. */
         public var mirror: Boolean = false
