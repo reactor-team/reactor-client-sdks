@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MODIFY_AUDIO_SETTINGS is what lets AudioTrackRender route playout to the loudspeaker. It is an
+  install-time permission with no prompt, declared here so an app gets it by importing this module
+  rather than by reading about it. The runtime permissions — RECORD_AUDIO, CAMERA — stay the app's.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+</manifest>
