@@ -154,15 +154,30 @@ internal object Json {
             return value
         }
 
+        /**
+         * A number, by JSON's own grammar.
+         *
+         * Matched before conversion rather than handed to `toDoubleOrNull`, which accepts forms
+         * JSON forbids — `+1`, `01`, `1.`, `.5` — and would let a malformed payload read as a
+         * valid one instead of taking the malformed-payload path.
+         */
         private fun readNumber(): Double {
-            val start = index
-            if (!atEnd() && (text[index] == '-' || text[index] == '+')) index++
-            while (!atEnd() && (text[index].isDigit() || text[index] in ".eE+-")) index++
-            val slice = text.substring(start, index)
-            return slice.toDoubleOrNull() ?: throw JsonException("invalid number '$slice'")
+            val match =
+                NUMBER.matchAt(text, index)
+                    ?: throw JsonException("invalid number at offset $index")
+            index = match.range.last + 1
+            // A number running straight into more number-like characters is malformed, not two
+            // tokens: `01` matches `0` and would otherwise leave `1` to fail somewhere less clear.
+            if (!atEnd() && (text[index] in "0123456789+-.eE")) {
+                throw JsonException("invalid number '${text.substring(match.range.first, index + 1)}'")
+            }
+            return match.value.toDouble()
         }
     }
 }
+
+/** JSON's number grammar, ASCII digits only: `Char.isDigit` also accepts other scripts' digits. */
+private val NUMBER = Regex("""-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?""")
 
 /** A payload that did not parse. Distinct from a payload that was absent. */
 internal class JsonException(

@@ -72,6 +72,15 @@ class JsonTest {
         assertEquals(100.0, fields["g"] as Double, 0.0)
     }
 
+    @Test
+    fun `numbers JSON forbids are refused`() {
+        for (bad in listOf("+1", "01", "-01", "1.", ".5", "-", "1e", "1e+", "--1", "1.2.3", "0x10", "\u0661")) {
+            assertThrows("'$bad' must not parse as a number", JsonException::class.java) {
+                obj("""{"a":$bad}""")
+            }
+        }
+    }
+
     /** `status` and `retry_after_ms` are read through these casts, so the type matters. */
     @Test
     fun `an integral number is still a Double, which is what the payload readers expect`() {
