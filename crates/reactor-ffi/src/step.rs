@@ -18,7 +18,7 @@ use serde_json::Value;
 /// One step's output, owned by the host between the completion and
 /// `reactor_step_result_free`.
 pub struct ReactorStepResult {
-    pub(crate) index: u64,
+    pub(crate) step: u64,
     pub(crate) tracks: Vec<StepTrack>,
     pub(crate) elapsed: f64,
     pub(crate) files: Vec<StepFileEntry>,
@@ -76,7 +76,7 @@ fn encoding_str(encoding: FrameEncoding) -> &'static CStr {
 impl From<StepOutput> for ReactorStepResult {
     fn from(output: StepOutput) -> Self {
         Self {
-            index: output.index,
+            step: output.step,
             tracks: output
                 .tracks
                 .into_iter()
@@ -214,7 +214,7 @@ mod tests {
         let bytes = vec![7u8; 6];
         let address = bytes.as_ptr();
         let result = ReactorStepResult::from(StepOutput {
-            index: 3,
+            step: 3,
             tracks: vec![TrackOutput {
                 track: "main_video".into(),
                 kind: TrackKind::Video,
@@ -229,7 +229,7 @@ mod tests {
             }],
             error: Some("model said no\0pe".into()),
         });
-        assert_eq!(result.index, 3);
+        assert_eq!(result.step, 3);
         assert_eq!(result.elapsed, 0.75);
         let track = result.track(0).unwrap();
         assert_eq!(track.name.to_str().unwrap(), "main_video");

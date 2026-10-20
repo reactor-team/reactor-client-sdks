@@ -185,6 +185,11 @@ typedef struct ReactorCallbacks {
  *     "recoverable": bool — whether the same call could pass later
  *     "status":      HTTP status, present only when the failure came from one
  *     "operation":   which call failed, e.g. "connect", "send_command"
+ *     "entry":       for step_refused and step_command_failed, the part of the
+ *                    step request at fault ("state.<key>", "commands[<i>]",
+ *                    "media_input[<i>]"), present only when one is
+ *     "command_code": for step_command_failed, the code the failing handler
+ *                    raised (its CommandError code, or internal_error)
  *   }
  *
  * "code" is one of INVALID_STATE, DISCONNECTED, NETWORK_ERROR, REQUEST_TIMEOUT,
@@ -688,7 +693,9 @@ void reactor_upload_bytes(
  * step's state, then its commands, then every input frame pushed since the
  * previous step, as separate calls in that order, then runs the step and
  * answers with what the model produced on each output track.  Any part may be
- * empty.  A refusal rolls nothing back: calls applied before it stay applied.
+ * empty.  The runtime checks the whole request before it applies any of it, so
+ * a refused step changed nothing; a step whose call failed keeps the calls
+ * before that one applied.
  *
  * Input frames use the push functions below, unchanged: in a stepped session
  * reactor_push_video_frame* and reactor_push_audio_frame do not reach the
@@ -739,13 +746,16 @@ typedef void (*reactor_step_completion_fn)(
  * the runtime's reason as "message":
  *
  *   step_refused               the request or the model turned the step down;
- *                              calls applied before the refusal stay applied.
+ *                              nothing it carried was applied.  "entry" names
+ *                              the part at fault, when one is.
  *   step_not_ready             the session is not in a running state that can
  *                              take a step yet.  The step did not run.
  *   step_result_too_large      the step ran, but its result does not fit in one
  *                              data-channel message.
  *   step_command_failed        one of the step's commands failed, so the step
- *                              did not run.
+ *                              did not run; the calls before it stay applied.
+ *                              "entry" names the call and "command_code" the
+ *                              code its handler raised.
  *   step_session_ended         the session ended before the step's result came.
  *   MESSAGE_TOO_LARGE          the request (state + commands + buffered inputs)
  *                              exceeds the data channel's limit.  Nothing was
@@ -788,8 +798,11 @@ void reactor_clear_step_inputs(ReactorHandle *handle);
  * Tracks are in the order the runtime sent them; frames in production order.
  */
 
-/* The step's number in the session, counted from 1. */
-uint64_t reactor_step_result_index(const ReactorStepResult *result);
+/*
+ * The step's number in the session, counted from 1: the step of the session's
+ * step routes (GET /sessions/{id}/steps/{step}).
+ */
+uint64_t reactor_step_result_step(const ReactorStepResult *result);
 
 /*
  * Seconds the step's generate() took, or the time the model reported for the
@@ -808,7 +821,7 @@ const char *reactor_step_result_error(const ReactorStepResult *result);
  * The extra files the model kept with the step, in the order the runtime listed
  * them.  None when it kept none or its result was not saved.  The result names
  * them; it does not carry them: fetch a file's bytes over HTTP from the
- * session's step results (GET /sessions/{id}/steps/{index}), by the step's index
+ * session's step results (GET /sessions/{id}/steps/{step}), by the step's number
  * and the file's name, as for a streamed session.
  */
 uint32_t reactor_step_result_file_count(const ReactorStepResult *result);

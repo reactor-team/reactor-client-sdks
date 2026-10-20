@@ -2408,8 +2408,8 @@ pub unsafe extern "C" fn reactor_clear_step_inputs(handle: *mut ReactorHandle) {
 /// borrows from `result`: valid until it is freed, and never to be freed on
 /// its own.
 #[no_mangle]
-pub unsafe extern "C" fn reactor_step_result_index(result: *const ReactorStepResult) -> u64 {
-    result.as_ref().map_or(0, |r| r.index)
+pub unsafe extern "C" fn reactor_step_result_step(result: *const ReactorStepResult) -> u64 {
+    result.as_ref().map_or(0, |r| r.step)
 }
 
 /// Seconds the step's `generate()` took, or the time the model reported for
@@ -2417,7 +2417,7 @@ pub unsafe extern "C" fn reactor_step_result_index(result: *const ReactorStepRes
 ///
 /// # Safety
 ///
-/// As [`reactor_step_result_index`].
+/// As [`reactor_step_result_step`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_step_result_elapsed(result: *const ReactorStepResult) -> f64 {
     result.as_ref().map_or(0.0, |r| r.elapsed)
@@ -2429,7 +2429,7 @@ pub unsafe extern "C" fn reactor_step_result_elapsed(result: *const ReactorStepR
 ///
 /// # Safety
 ///
-/// As [`reactor_step_result_index`].
+/// As [`reactor_step_result_step`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_step_result_error(
     result: *const ReactorStepResult,
@@ -2446,7 +2446,7 @@ pub unsafe extern "C" fn reactor_step_result_error(
 ///
 /// # Safety
 ///
-/// As [`reactor_step_result_index`].
+/// As [`reactor_step_result_step`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_step_result_file_count(result: *const ReactorStepResult) -> u32 {
     result.as_ref().map_or(0, |r| r.files.len() as u32)
@@ -2457,7 +2457,7 @@ pub unsafe extern "C" fn reactor_step_result_file_count(result: *const ReactorSt
 ///
 /// # Safety
 ///
-/// As [`reactor_step_result_index`].
+/// As [`reactor_step_result_step`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_step_result_file_name(
     result: *const ReactorStepResult,
@@ -2473,7 +2473,7 @@ pub unsafe extern "C" fn reactor_step_result_file_name(
 ///
 /// # Safety
 ///
-/// As [`reactor_step_result_index`].
+/// As [`reactor_step_result_step`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_step_result_file_content_type(
     result: *const ReactorStepResult,
@@ -2489,7 +2489,7 @@ pub unsafe extern "C" fn reactor_step_result_file_content_type(
 ///
 /// # Safety
 ///
-/// As [`reactor_step_result_index`].
+/// As [`reactor_step_result_step`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_step_result_file_size(
     result: *const ReactorStepResult,
@@ -2506,7 +2506,7 @@ pub unsafe extern "C" fn reactor_step_result_file_size(
 ///
 /// # Safety
 ///
-/// As [`reactor_step_result_index`].
+/// As [`reactor_step_result_step`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_step_result_track_count(result: *const ReactorStepResult) -> u32 {
     result.as_ref().map_or(0, |r| r.tracks.len() as u32)
@@ -2516,7 +2516,7 @@ pub unsafe extern "C" fn reactor_step_result_track_count(result: *const ReactorS
 ///
 /// # Safety
 ///
-/// As [`reactor_step_result_index`].
+/// As [`reactor_step_result_step`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_step_result_track_name(
     result: *const ReactorStepResult,
@@ -2533,7 +2533,7 @@ pub unsafe extern "C" fn reactor_step_result_track_name(
 ///
 /// # Safety
 ///
-/// As [`reactor_step_result_index`].
+/// As [`reactor_step_result_step`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_step_result_track_kind(
     result: *const ReactorStepResult,
@@ -2551,7 +2551,7 @@ pub unsafe extern "C" fn reactor_step_result_track_kind(
 ///
 /// # Safety
 ///
-/// As [`reactor_step_result_index`].
+/// As [`reactor_step_result_step`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_step_result_track_rate(
     result: *const ReactorStepResult,
@@ -2568,7 +2568,7 @@ pub unsafe extern "C" fn reactor_step_result_track_rate(
 ///
 /// # Safety
 ///
-/// As [`reactor_step_result_index`].
+/// As [`reactor_step_result_step`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_step_result_frame_count(
     result: *const ReactorStepResult,
@@ -2586,7 +2586,7 @@ pub unsafe extern "C" fn reactor_step_result_frame_count(
 ///
 /// # Safety
 ///
-/// As [`reactor_step_result_index`].
+/// As [`reactor_step_result_step`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_step_result_frame_encoding(
     result: *const ReactorStepResult,
@@ -2604,7 +2604,7 @@ pub unsafe extern "C" fn reactor_step_result_frame_encoding(
 ///
 /// # Safety
 ///
-/// As [`reactor_step_result_index`].
+/// As [`reactor_step_result_step`].
 #[no_mangle]
 pub unsafe extern "C" fn reactor_step_result_frame_dtype(
     result: *const ReactorStepResult,
@@ -2622,7 +2622,7 @@ pub unsafe extern "C" fn reactor_step_result_frame_dtype(
 ///
 /// # Safety
 ///
-/// As [`reactor_step_result_index`]; `ndim` must be writable.
+/// As [`reactor_step_result_step`]; `ndim` must be writable.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_step_result_frame_shape(
     result: *const ReactorStepResult,
@@ -2642,7 +2642,7 @@ pub unsafe extern "C" fn reactor_step_result_frame_shape(
 ///
 /// # Safety
 ///
-/// As [`reactor_step_result_index`]; `len` must be writable.
+/// As [`reactor_step_result_step`]; `len` must be writable.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_step_result_frame_data(
     result: *const ReactorStepResult,
@@ -2663,7 +2663,7 @@ pub unsafe extern "C" fn reactor_step_result_frame_data(
 ///
 /// # Safety
 ///
-/// As [`reactor_step_result_index`]; `len` must be writable.
+/// As [`reactor_step_result_step`]; `len` must be writable.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_step_result_frame_metadata(
     result: *const ReactorStepResult,
@@ -2687,7 +2687,7 @@ pub unsafe extern "C" fn reactor_step_result_frame_metadata(
 ///
 /// # Safety
 ///
-/// As [`reactor_step_result_index`]; `capture_time_us` must be writable.
+/// As [`reactor_step_result_step`]; `capture_time_us` must be writable.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_step_result_frame_capture_time_us(
     result: *const ReactorStepResult,
@@ -3641,7 +3641,7 @@ mod tests {
             );
             reactor_clear_step_inputs(std::ptr::null_mut());
             let null: *const ReactorStepResult = std::ptr::null();
-            assert_eq!(reactor_step_result_index(null), 0);
+            assert_eq!(reactor_step_result_step(null), 0);
             assert_eq!(reactor_step_result_elapsed(null), 0.0);
             assert!(reactor_step_result_error(null).is_null());
             assert_eq!(reactor_step_result_file_count(null), 0);
@@ -3681,7 +3681,7 @@ mod tests {
         use reactor_core::protocol::wire::v1::step::FrameEncoding;
         use reactor_core::step::{DecodedFrame, StepFile, StepOutput, TrackOutput};
         StepOutput {
-            index: 4,
+            step: 4,
             tracks: vec![
                 TrackOutput {
                     track: "main_video".into(),
@@ -3746,7 +3746,7 @@ mod tests {
 
         unsafe {
             let text = |p: *const c_char| CStr::from_ptr(p).to_str().unwrap().to_owned();
-            assert_eq!(reactor_step_result_index(result), 4);
+            assert_eq!(reactor_step_result_step(result), 4);
             assert_eq!(reactor_step_result_elapsed(result), 0.5);
             assert!(reactor_step_result_error(result).is_null());
             assert_eq!(reactor_step_result_file_count(result), 2);
@@ -3858,6 +3858,23 @@ mod tests {
     /// Each step failure a host handles differently keeps its own code across
     /// the boundary, so a binding can type it without reading the message.
     #[test]
+    fn a_step_failures_entry_and_command_code_cross_the_boundary() {
+        let failed = CoreError::StepCommandFailed {
+            message: "tag failed (queue_full): full".into(),
+            command_code: Some("queue_full".into()),
+            entry: Some("commands[2]".into()),
+        };
+        let json = error_json(&failed, "step").unwrap();
+        let json: serde_json::Value = serde_json::from_str(json.to_str().unwrap()).unwrap();
+        assert_eq!(
+            json["code"],
+            reactor_core::error::codes::STEP_COMMAND_FAILED
+        );
+        assert_eq!(json["entry"], "commands[2]");
+        assert_eq!(json["command_code"], "queue_full");
+    }
+
+    #[test]
     fn step_failures_cross_the_boundary_with_their_own_codes() {
         use reactor_core::error::codes;
         use reactor_core::protocol::session::GenerationMode;
@@ -3865,6 +3882,7 @@ mod tests {
             (
                 CoreError::StepRefused {
                     message: "no".into(),
+                    entry: Some("commands[0]".into()),
                 },
                 codes::STEP_REFUSED,
             ),
@@ -3883,6 +3901,8 @@ mod tests {
             (
                 CoreError::StepCommandFailed {
                     message: "set_prompt failed".into(),
+                    command_code: Some("bad".into()),
+                    entry: Some("state.prompt".into()),
                 },
                 codes::STEP_COMMAND_FAILED,
             ),
