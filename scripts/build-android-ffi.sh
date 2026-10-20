@@ -67,6 +67,10 @@ fi
 echo "==> NDK $NDK_VERSION, API $API_LEVEL, ABIs: ${ABIS[*]}"
 
 mkdir -p "$STAGE/jniLibs" "$STAGE/libs"
+# A JAR left by an earlier run would be taken for the first ABI's, and every ABI of this run
+# compared against it: after a libwebrtc bump that fails a correct build, or — when the listings
+# happen to match — keeps the old JAR next to the new .so.
+rm -f "$STAGE/libs/libwebrtc.jar"
 
 for abi in "${ABIS[@]}"; do
   target="$(rust_target_for "$abi")"
