@@ -264,22 +264,15 @@ internal object NativeClient {
             argsJson: String?,
             uploadsJson: String?,
         ): CommandReply =
-            Completions.await("send_command", decode = ::decodeCommandReply) { ticket ->
-                checkOpen()
-                nativeSendCommand(context, name, argsJson, uploadsJson, ticket)
-            }
+            launch(
+                "send_command",
+                decode = ::decodeCommandReply,
+            ) { ticket -> nativeSendCommand(context, name, argsJson, uploadsJson, ticket) }
 
         suspend fun requestSchema(): Map<String, Any?> =
-            Completions.await("request_schema", decode = ::decodeSchema) { ticket ->
-                checkOpen()
-                nativeRequestSchema(context, ticket)
-            }
+            launch("request_schema", decode = ::decodeSchema) { ticket -> nativeRequestSchema(context, ticket) }
 
-        suspend fun stats(): Stats =
-            Completions.await("get_stats", decode = ::decodeStats) { ticket ->
-                checkOpen()
-                nativeGetStats(context, ticket)
-            }
+        suspend fun stats(): Stats = launch("get_stats", decode = ::decodeStats) { ticket -> nativeGetStats(context, ticket) }
 
         val status: String?
             get() = withOpenHandle { nativeStatus(context) }
