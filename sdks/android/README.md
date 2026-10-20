@@ -23,7 +23,7 @@ The Java SDK remains the answer for desktop JVM and desktop Kotlin.
 | --- | --- |
 | `minSdk` | **26** |
 | `compileSdk` | 36 |
-| ABIs | `arm64-v8a`, `x86_64` |
+| ABIs | `arm64-v8a` |
 
 ## Development
 
