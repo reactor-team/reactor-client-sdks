@@ -11,6 +11,10 @@ request as the bump.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-20
+
+First release.
+
 ### Added
 
 - Stepped generation, as the other SDKs have it. `ReactorOptions(generation =
