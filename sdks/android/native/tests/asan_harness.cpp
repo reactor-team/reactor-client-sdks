@@ -38,6 +38,7 @@ jstring Java_inc_reactor_sdk_android_internal_NativeClient_nativePausedTracks(JN
 
 void fake_set_destroy_result(int result);
 int fake_last_auto_resume(void);
+long fake_owned_strings_outstanding(void);
 void fake_fire_status_on_foreign_thread(const char* status);
 void fake_fire_session_id_on_foreign_thread(const char* session_id);
 }
@@ -95,8 +96,9 @@ jlong create(jboolean auto_resume = JNI_TRUE) {
   return context;
 }
 
-/// The owned strings, read enough times that a missing free is a leak ASan reports at exit and a
-/// double free is an immediate error.
+/// The owned strings, read enough times that a double free is an immediate ASan error, and counted
+/// so that a missing free fails here — leak detection is off in this harness, so ASan alone would
+/// let it pass.
 void auto_resume_tracks_crosses_as_the_caller_set_it() {
   jlong on = create(JNI_TRUE);
   check(fake_last_auto_resume() == 1, "autoResumeTracks=true reaches the ABI as 1");
@@ -111,12 +113,15 @@ void auto_resume_tracks_crosses_as_the_caller_set_it() {
 
 void owned_strings_are_freed_exactly_once() {
   jlong context = create();
+  long before = fake_owned_strings_outstanding();
   for (int i = 0; i < 500; ++i) {
     jstring tracks = Java_inc_reactor_sdk_android_internal_NativeClient_nativeTracks(g_env, nullptr, context);
     jstring paused = Java_inc_reactor_sdk_android_internal_NativeClient_nativePausedTracks(g_env, nullptr, context);
     if (tracks != nullptr) g_env->DeleteLocalRef(tracks);
     if (paused != nullptr) g_env->DeleteLocalRef(paused);
   }
+  check(fake_owned_strings_outstanding() == before,
+        "every owned string the bridge read was returned through reactor_free_string");
   fake_set_destroy_result(0);
   check(Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, context) == 0,
         "500 owned-string reads, then a quiesced destroy");
