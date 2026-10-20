@@ -40,6 +40,18 @@ class DecodingTest {
     }
 
     @Test
+    fun `a reply that is valid JSON but not an object is carried as data`() {
+        val list = decodeCommandReply("""[1,"two"]""")
+        assertNull(list.type)
+        assertEquals(listOf(1.0, "two"), list.data)
+        assertTrue(!list.isEmpty)
+
+        assertEquals("done", decodeCommandReply("\"done\"").data)
+        assertEquals(42.0, decodeCommandReply("42").data)
+        assertEquals(true, decodeCommandReply("true").data)
+    }
+
+    @Test
     fun `a reply with neither field is empty but valid`() {
         val reply = decodeCommandReply("{}")
         assertTrue(reply.isEmpty)

@@ -15,10 +15,17 @@ import inc.reactor.sdk.android.Stats
  * when the handler acknowledged the command but returned no message. A payload that *will not
  * parse* is a decode failure, and the difference matters: collapsing both to an empty reply is
  * what makes a malformed response indistinguishable from a silent handler.
+ *
+ * Valid JSON that is not an object — a bare list, string or number — is a reply too, carried as
+ * [CommandReply.data] with no type. A handler is free to answer with any JSON value, and failing
+ * that as undecodable would make one SDK refuse a reply the others hand to the caller.
  */
 internal fun decodeCommandReply(resultJson: String?): CommandReply {
     if (resultJson.isNullOrBlank()) return CommandReply()
-    val fields = Json.parseObject(resultJson)
+    val parsed = Json.parse(resultJson)
+
+    @Suppress("UNCHECKED_CAST")
+    val fields = parsed as? Map<String, Any?> ?: return CommandReply(data = parsed)
     return CommandReply(type = fields["type"] as? String, data = fields["data"])
 }
 
