@@ -7,10 +7,13 @@
 // or writes through freed memory, so both need a library that lies on request.
 //
 // The strings here are deliberately heap-allocated with strdup so that the ownership rules are
-// enforced by the allocator: forgetting reactor_free_string leaks, and calling it on the static
-// one is a free() of something that was never malloc'd. Under AddressSanitizer both are errors
-// rather than opinions.
+// enforced by the allocator: calling reactor_free_string on the static one is a free() of
+// something that was never malloc'd, which AddressSanitizer reports. Forgetting to free an owned
+// one is only a leak, and the harness runs with leak detection off — the JVM it hosts leaks by
+// design — so the owned strings are also counted, and the harness asserts the count returns to
+// zero rather than trusting the sanitizer to notice.
 
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -33,6 +36,12 @@ static ReactorCallbacks g_callbacks;
 static int g_destroy_result = 0;
 static int g_last_auto_resume = -1;
 static ReactorHandle g_handle = {0xBEEF};
+static std::atomic<long> g_owned_strings{0};
+
+static char* owned(const char* text) {
+    g_owned_strings.fetch_add(1);
+    return strdup(text);
+}
 
 uint32_t reactor_abi_version(void) { return REACTOR_ABI_VERSION; }
 
@@ -55,11 +64,14 @@ const char* reactor_status(ReactorHandle*) { return "disconnected"; }
 
 char* reactor_session_id(ReactorHandle*) { return nullptr; }
 
-char* reactor_tracks(ReactorHandle*) { return strdup("[{\"name\":\"main_video\"}]"); }
+char* reactor_tracks(ReactorHandle*) { return owned("[{\"name\":\"main_video\"}]"); }
 
-char* reactor_paused_tracks(ReactorHandle*) { return strdup("[]"); }
+char* reactor_paused_tracks(ReactorHandle*) { return owned("[]"); }
 
-void reactor_free_string(char* s) { free(s); }
+void reactor_free_string(char* s) {
+    if (s != nullptr) g_owned_strings.fetch_sub(1);
+    free(s);
+}
 
 // ── Controls, for the harness only ───────────────────────────────────────────
 // Named fake_* rather than reactor_*: a reactor_* symbol here would be a new name in the ABI as
@@ -68,6 +80,9 @@ void reactor_free_string(char* s) { free(s); }
 void fake_set_destroy_result(int result) { g_destroy_result = result; }
 
 int fake_last_auto_resume(void) { return g_last_auto_resume; }
+
+/// Owned strings handed out and not yet returned through reactor_free_string.
+long fake_owned_strings_outstanding(void) { return g_owned_strings.load(); }
 
 /// Fire a status event from a thread the "FFI" owns — one the JVM has never seen, which is the
 /// only way to exercise ScopedEnv's attach and detach.
