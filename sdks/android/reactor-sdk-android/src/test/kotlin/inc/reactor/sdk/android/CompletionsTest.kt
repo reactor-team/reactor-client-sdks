@@ -114,18 +114,52 @@ class CompletionsTest {
     @Test
     fun `abandonAll settles outstanding callers`() =
         runTest {
+            val owner = Any()
             val ticket = CompletableDeferred<Long>()
             val result =
                 async {
-                    runCatching { Completions.await("download_clip", decode = { it }) { ticket.complete(it) } }
+                    runCatching { Completions.await("download_clip", decode = { it }, owner = owner) { ticket.complete(it) } }
                 }
             ticket.await()
-            Completions.abandonAll("the client was closed; the download may still be writing")
+            Completions.abandonAll(owner, "the client was closed; the download may still be writing")
             val error = awaitFailure<AbortedException>(result)
             assertTrue(
                 "the message should say the native work may continue, not claim it stopped",
                 error.message!!.contains("may still be writing"),
             )
+        }
+
+    /**
+     * The registry is process-wide; closing one client must not fail another's operations, nor
+     * one that belongs to no client at all.
+     */
+    @Test
+    fun `abandonAll settles only the closing client's callers`() =
+        runTest {
+            val closing = Any()
+            val other = Any()
+            val closingTicket = CompletableDeferred<Long>()
+            val otherTicket = CompletableDeferred<Long>()
+            val unownedTicket = CompletableDeferred<Long>()
+            val closingResult =
+                async { runCatching { Completions.await("connect", decode = { it }, owner = closing) { closingTicket.complete(it) } } }
+            val otherResult =
+                async { runCatching { Completions.await("connect", decode = { it }, owner = other) { otherTicket.complete(it) } } }
+            val unownedResult =
+                async { runCatching { Completions.await("download_clip", decode = { it }) { unownedTicket.complete(it) } } }
+            closingTicket.await()
+            otherTicket.await()
+            unownedTicket.await()
+
+            Completions.abandonAll(closing, "closed")
+            awaitFailure<AbortedException>(closingResult)
+
+            assertTrue("another client's operation must still be pending", !otherResult.isCompleted)
+            assertTrue("an unowned operation must still be pending", !unownedResult.isCompleted)
+            Completions.settle(otherTicket.await(), ok = true, resultJson = "other", errorJson = null)
+            Completions.settle(unownedTicket.await(), ok = true, resultJson = "unowned", errorJson = null)
+            assertEquals("other", otherResult.await().getOrThrow())
+            assertEquals("unowned", unownedResult.await().getOrThrow())
         }
 
     @Test

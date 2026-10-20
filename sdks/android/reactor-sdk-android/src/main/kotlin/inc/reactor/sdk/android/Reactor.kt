@@ -200,11 +200,19 @@ public class Reactor(
      */
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        Completions.abandonAll(
-            "The Reactor was closed. Native work already started may still be running.",
-        )
-        handle?.close()
+        val closing = handle
         handle = null
+        // The handle first, and only then its completions. Once it is closed nothing can launch
+        // on it, so nothing can register a completion that this would miss — the other order let
+        // a disconnect() racing close() register after the sweep and launch before the destroy,
+        // and reactor_destroy then ended its native task with nothing left to settle it.
+        if (closing != null) {
+            closing.close()
+            Completions.abandonAll(
+                closing,
+                "The Reactor was closed. Native work already started may still be running.",
+            )
+        }
         scope.cancel()
     }
 
