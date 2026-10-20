@@ -36,7 +36,7 @@ dependency of its own, built on the platform's own classes.
 | --- | --- |
 | `AudioRecordCapture` | A `CaptureDevice` on `AudioRecord`, at the voice-communication source so the platform's echo canceller is engaged |
 | `AudioTrackRender` | A `RenderDevice` on `AudioTrack`, blocking writes as backpressure |
-| `CameraCapture` | Camera2 to BGRA frames, through `YuvToBgra` |
+| `CameraCapture` | Camera2 to upright BGRA frames, following the device's orientation |
 | `VideoRenderer` | A `SurfaceView` that draws frames without tearing |
 | `Microphone` / `Speaker` | The lifecycle above a device — start, stop, and the races between them |
 
