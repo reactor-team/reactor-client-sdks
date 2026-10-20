@@ -100,7 +100,12 @@ val libs = extensions.getByType<VersionCatalogsExtension>().named("libs")
 dependencies {
     // Coroutines are the SDK's async surface — `suspend` operations and `Flow` events. The
     // -android artifact brings the Main dispatcher backed by the app's looper.
-    implementation(libs.findLibrary("coroutines-android").get())
+    //
+    // `api`, because the public types are coroutines types: `status` is a StateFlow and every
+    // operation is `suspend`. As `implementation` the published POM would list it for runtime
+    // only, and an app that collects `reactor.status` without depending on coroutines itself
+    // would not compile against the SDK it just added.
+    api(libs.findLibrary("coroutines-android").get())
 
     testImplementation(libs.findLibrary("junit").get())
     testImplementation(libs.findLibrary("coroutines-test").get())
