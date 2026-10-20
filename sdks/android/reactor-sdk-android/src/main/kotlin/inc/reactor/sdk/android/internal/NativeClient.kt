@@ -293,13 +293,10 @@ internal object NativeClient {
         /**
          * Upload a file the native side opens later, from its own task.
          *
-         * Launched under the lifecycle lock, like [connect]: a bare `checkOpen()` lets a racing
-         * [close] free the Context between the check and the launch.
+         * Started through [launch], like every operation of this handle.
          */
         suspend fun uploadFile(path: String): FileRef =
-            Completions.await("upload_file", decode = Uploads::decode) { ticket ->
-                withOpenHandle { nativeUploadFile(context, path, ticket) }
-            }
+            launch("upload_file", decode = Uploads::decode) { ticket -> nativeUploadFile(context, path, ticket) }
 
         suspend fun uploadBytes(
             data: java.nio.ByteBuffer,
@@ -307,9 +304,7 @@ internal object NativeClient {
             name: String,
             mimeType: String?,
         ): FileRef =
-            Completions.await("upload_bytes", decode = Uploads::decode) { ticket ->
-                withOpenHandle { nativeUploadBytes(context, data, length, name, mimeType, ticket) }
-            }
+            launch("upload_bytes", decode = Uploads::decode) { ticket -> nativeUploadBytes(context, data, length, name, mimeType, ticket) }
 
         val status: String?
             get() = withOpenHandle { nativeStatus(context) }
