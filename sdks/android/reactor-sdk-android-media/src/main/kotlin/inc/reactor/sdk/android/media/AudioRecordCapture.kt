@@ -54,13 +54,17 @@ public class AudioRecordCapture
 
         public companion object {
             /**
-             * 44100, not 48000.
+             * 48000, the rate the platform's own voice paths run at.
              *
-             * It is the one rate every Android device supports for capture. Microphone resamples
-             * to whatever the track wants, so paying a conversion is better than opening at a rate
-             * a particular handset silently refuses.
+             * A capture at any other rate is held to it by whichever backend it was opened on, and
+             * a route change does not always carry it across: a Galaxy S9 on Android 10, opened at
+             * 44100 on USB-C earphones, kept recording garbled audio after unplugging and plugging
+             * them back in until the microphone was reopened, because the communication-mode path
+             * it passed through refuses 44100. At 48000 every path agrees and nothing has to be
+             * renegotiated. A device that refuses it says so at [start], and 44100 is the rate to
+             * pass instead.
              */
-            public const val DEFAULT_SAMPLE_RATE: Int = 44_100
+            public const val DEFAULT_SAMPLE_RATE: Int = 48_000
         }
 
         /**

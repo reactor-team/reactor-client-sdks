@@ -2,11 +2,14 @@ package inc.reactor.sdk.android.media
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 
 /**
@@ -34,7 +37,9 @@ import android.util.Log
  * `.defaultToSpeaker`. Left alone, a `VOICE_COMMUNICATION` stream plays through the earpiece — the
  * call speaker at the top of the phone — and a session held at arm's length is silent. While
  * playing, this class puts the platform in communication mode and selects the built-in speaker,
- * and restores both on [stop]. A connected headset or Bluetooth device is left to win, as on iOS.
+ * and restores both on [stop]. A headset or Bluetooth device wins whenever it is connected —
+ * before playout starts or in the middle of it — and unplugging it brings the speaker back, as
+ * `.defaultToSpeaker` does on iOS.
  * [Output.EARPIECE] keeps the earpiece, for an app that is a phone call.
  *
  * That routing is process-wide audio state, as `AVAudioSession` is on iOS, so it is shared: the
@@ -156,16 +161,50 @@ public class AudioTrackRender
          * second recorded the first one's communication mode, and stopping them restored NORMAL
          * under the second and then left communication mode on for good. One snapshot, taken by
          * the first acquire and undone by the last release, is the only order that holds.
+         *
+         * Between the two, the route follows headsets. With none connected: communication mode and
+         * the built-in speaker. With one: the mode the platform had before, and the speaker
+         * explicitly off. Communication mode is not kept for a headset because a device may not
+         * route it there at all — a Galaxy S9 on Android 10 sends communication-mode playout to the
+         * earpiece with USB-C earphones plugged in, whatever device the track prefers — and with
+         * the sound in the user's ears there is no speaker-to-microphone echo for it to cancel.
+         * The speaker is switched off rather than put back as found, because what was found can
+         * itself be a forced speaker left behind by another app.
          */
         private object SpeakerRoute {
             private val lock = Any()
             private var holders = 0
-            private var undo: (() -> Unit)? = null
+            private var audio: AudioManager? = null
+            private var previousMode = AudioManager.MODE_NORMAL
+            private var previousSpeakerphone = false
+
+            /**
+             * Follows headsets for as long as the route is held. Checking once at start is not
+             * enough: a headset plugged in mid-session would otherwise stay silent under a forced
+             * speaker, and one unplugged would leave playout on the earpiece.
+             */
+            private val devices =
+                object : AudioDeviceCallback() {
+                    override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>) = follow()
+
+                    override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>) = follow()
+                }
 
             fun acquire(context: Context) {
                 synchronized(lock) {
-                    if (holders == 0) undo = routeToSpeaker(context.applicationContext)
                     holders += 1
+                    if (holders > 1) return
+                    val manager = context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+                    previousMode = manager.mode
+                    @Suppress("DEPRECATION")
+                    previousSpeakerphone = manager.isSpeakerphoneOn
+                    audio = manager
+                    // Routed now, before the caller plays: the callback's first delivery arrives
+                    // later on the main looper, and finds the route already chosen.
+                    follow()
+                    // The main looper, not the caller's: a renderer may be started from a thread
+                    // without one, and the callback must outlive whichever thread that was.
+                    manager.registerAudioDeviceCallback(devices, Handler(Looper.getMainLooper()))
                 }
             }
 
@@ -174,55 +213,50 @@ public class AudioTrackRender
                     holders -= 1
                     if (holders > 0) return
                     holders = 0
-                    undo?.let { runCatching(it) }
-                    undo = null
+                    val manager = audio ?: return
+                    audio = null
+                    manager.unregisterAudioDeviceCallback(devices)
+                    runCatching {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            manager.clearCommunicationDevice()
+                        } else {
+                            @Suppress("DEPRECATION")
+                            manager.isSpeakerphoneOn = previousSpeakerphone
+                        }
+                        manager.mode = previousMode
+                    }
                 }
             }
 
             /**
-             * Communication mode and the built-in speaker, returning how to undo both — or null when
-             * a headset is connected or the platform refused, leaving the route as it was.
+             * Communication mode on the speaker while no headset is connected; the platform's
+             * previous mode, speaker off, while one is.
              *
              * Failures are logged rather than thrown: audio on the wrong speaker is a worse session,
              * not a broken one, and refusing to play over it would be.
              */
-            private fun routeToSpeaker(context: Context): (() -> Unit)? {
-                val audio = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return null
-                if (audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { it.type in HEADSET_TYPES }) return null
-                // Captured before anything changes, so every path out — success or a refusal half
-                // way — can put back exactly what it touched. A refusal that left the mode switched
-                // would otherwise hold the whole process in communication mode with no undo.
-                val previousMode = audio.mode
-
-                @Suppress("DEPRECATION")
-                val previousSpeakerphone = audio.isSpeakerphoneOn
-                var selected = false
-                val undo: () -> Unit = {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                        if (selected) audio.clearCommunicationDevice()
-                    } else {
-                        @Suppress("DEPRECATION")
-                        audio.isSpeakerphoneOn = previousSpeakerphone
-                    }
-                    audio.mode = previousMode
-                }
-                return try {
-                    audio.mode = AudioManager.MODE_IN_COMMUNICATION
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                        val speaker =
-                            audio.availableCommunicationDevices.firstOrNull {
-                                it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+            private fun follow() {
+                synchronized(lock) {
+                    // A callback already queued when the last holder released.
+                    val manager = audio ?: return
+                    val headset = manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { it.type in HEADSET_TYPES }
+                    try {
+                        manager.mode = if (headset) previousMode else AudioManager.MODE_IN_COMMUNICATION
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            if (headset) {
+                                manager.clearCommunicationDevice()
+                            } else {
+                                manager.availableCommunicationDevices
+                                    .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                                    ?.let { manager.setCommunicationDevice(it) }
                             }
-                        selected = speaker != null && audio.setCommunicationDevice(speaker)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        audio.isSpeakerphoneOn = true
+                        } else {
+                            @Suppress("DEPRECATION")
+                            manager.isSpeakerphoneOn = !headset
+                        }
+                    } catch (refused: SecurityException) {
+                        Log.w(TAG, "Could not choose the playout device; leaving the platform's route", refused)
                     }
-                    undo
-                } catch (refused: SecurityException) {
-                    Log.w(TAG, "Could not route playout to the speaker; leaving the platform's route", refused)
-                    runCatching(undo)
-                    null
                 }
             }
         }
