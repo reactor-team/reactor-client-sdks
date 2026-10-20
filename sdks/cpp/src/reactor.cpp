@@ -320,6 +320,8 @@ void ClientImpl::settle_completion(Pending* raw, int ok, const char* result_json
                          {},
                          raw->operation,
                          {},
+                         {},
+                         {},
                          {}}));
         return;
       }
@@ -358,6 +360,8 @@ void settle_exchange_as_aborted(TokenExchange& exchange) {
                                     false,
                                     {},
                                     "connect",
+                                    {},
+                                    {},
                                     {},
                                     {}}));
 }
@@ -421,6 +425,8 @@ void resume_connect_with_token(TokenExchange& exchange, int ok, const char* resu
                                         {},
                                         "connect",
                                         {},
+                                        {},
+                                        {},
                                         {}}));
     }
     return;
@@ -446,6 +452,8 @@ void resume_connect_with_token(TokenExchange& exchange, int ok, const char* resu
                                       false,
                                       {},
                                       "connect",
+                                      {},
+                                      {},
                                       {},
                                       {}}));
     return;

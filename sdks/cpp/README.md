@@ -340,7 +340,7 @@ for (const auto& frame : result.track("main_video").frames) {
 }
 result.elapsed;                  // seconds the step's generate() took (or the model reported)
 for (const auto& file : result.files) {
-  file.name, file.content_type, file.size;  // bytes: GET /sessions/{id}/steps/{index}
+  file.name, file.content_type, file.size;  // bytes: GET /sessions/{id}/steps/{step}
 }
 if (result.error) { /* the step ran, and the model reported this failure */ }
 
@@ -351,7 +351,7 @@ A step that ran but that the model reported failing resolves normally with
 `error` set; only a step that did not run, or whose result could not be
 delivered, throws. `files` describes the extra files the model kept with the
 step; their bytes are fetched over HTTP
-from the session's step results, `GET /sessions/{id}/steps/{index}`, which
+from the session's step results, `GET /sessions/{id}/steps/{step}`, which
 answers 202 until they are stored. `files` is empty when the model kept none or
 the result was not saved.
 Files go *into* a step the way they go into a command: upload first, then put the
@@ -368,10 +368,12 @@ step whatever its outcome — one that could not be sent drops them too — and
 `(channels, samples)` `int16`, and each output track's `rate` is what the runtime
 reported: frames per second for video, samples per second for audio, 0 when it
 did not say. A step the runtime refuses throws
-`StepRefusedError`; one the session cannot take yet throws `StepNotReadyError`
-(neither ran); one whose state key or command handler fails throws
-`StepCommandFailedError` (the calls before it stay applied, the step did not
-run); one whose session ends before its result is sent throws
+`StepRefusedError` (the runtime checks the whole request first, so it changed
+nothing; `entry()` names the part at fault); one the session cannot take yet
+throws `StepNotReadyError` (neither ran); one whose state key or command handler
+fails throws `StepCommandFailedError` (the calls before it stay applied, the step
+did not run; `entry()` names the call and `command_code()` the code its handler
+raised); one whose session ends before its result is sent throws
 `StepSessionEndedError` (whether it ran is unknown); one whose output does not
 fit in a message throws `StepResultTooLargeError`; a request too large to send throws
 `MessageTooLargeError`. `Options::step_timeout_seconds` bounds a step (default 300 s).

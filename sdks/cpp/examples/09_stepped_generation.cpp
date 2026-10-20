@@ -117,7 +117,7 @@ int main() {
 
       const auto result = client.step(std::move(state), std::move(commands)).get();
       for (const auto& track : result.tracks) {
-        std::cout << "step " << result.index << ": " << track.name << " ("
+        std::cout << "step " << result.step << ": " << track.name << " ("
                   << reactor::to_string(track.kind) << ") " << track.frames.size() << " frame(s)";
         for (const auto& out : track.frames) {
           std::cout << ' ' << shape_of(out) << ' ' << out.dtype;
@@ -126,12 +126,12 @@ int main() {
       }
       for (const auto& file : result.files) {
         // Described only: the bytes are on GET /sessions/{id}/steps/{index}.
-        std::cout << "step " << result.index << ": kept " << file.name << " (" << file.content_type
+        std::cout << "step " << result.step << ": kept " << file.name << " (" << file.content_type
                   << ", " << file.size << " bytes)\n";
       }
       if (result.error) {
         // The step ran and the model reported a failure; the session goes on.
-        std::cout << "step " << result.index << ": the model reported " << *result.error << '\n';
+        std::cout << "step " << result.step << ": the model reported " << *result.error << '\n';
       }
     }
 

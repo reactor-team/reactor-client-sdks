@@ -162,6 +162,8 @@ void PendingStats::deliver(Json result) {
         {},
         operation,
         {},
+        {},
+        {},
         {}}));
     return;
   }
@@ -204,6 +206,8 @@ void PendingStats::deliver(Json result) {
                                       false,
                                       {},
                                       operation,
+                                      {},
+                                      {},
                                       {},
                                       {}}));
     return;

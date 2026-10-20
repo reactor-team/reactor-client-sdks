@@ -99,7 +99,7 @@ struct StepTrackOutput {
 /// A file the model kept with a step, beyond the frames it produced.
 ///
 /// Only its description travels with the result. The bytes are fetched over HTTP
-/// from the session's step results, `GET /sessions/{id}/steps/{index}`, which
+/// from the session's step results, `GET /sessions/{id}/steps/{step}`, which
 /// lists each file with a download URL (and answers 202 while they are not yet
 /// stored).
 struct StepFile {
@@ -113,8 +113,9 @@ struct StepFile {
 /// frames it generated, the files the model kept, and whether the model reported
 /// a failure.
 struct StepResult {
-  /// The step's number in the session, counted from 1.
-  std::uint64_t index = 0;
+  /// The step's number in the session, counted from 1: the step of the
+  /// session's step routes, `GET /sessions/{id}/steps/{step}`.
+  std::uint64_t step = 0;
 
   /// In the order the runtime sent them. A track the model produced nothing on
   /// in this step may be absent.

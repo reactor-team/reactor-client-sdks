@@ -57,7 +57,7 @@ struct FakeFile {
 };
 
 struct FakeResult {
-  std::uint64_t index = 1;
+  std::uint64_t step = 1;
   std::vector<FakeTrack> tracks;
   double elapsed = 0.0;
   std::vector<FakeFile> files{};
@@ -92,7 +92,7 @@ class FakeStepped {
     filled.free_string = &free_string;
     filled.step = &step;
     filled.clear_step_inputs = &clear_step_inputs;
-    filled.step_result_index = &result_index;
+    filled.step_result_step = &result_step;
     filled.step_result_elapsed = &result_elapsed;
     filled.step_result_track_count = &track_count;
     filled.step_result_track_name = &track_name;
@@ -287,8 +287,8 @@ class FakeStepped {
 
   static void clear_step_inputs(ReactorHandle* /*handle*/) { ++current().clears; }
 
-  static std::uint64_t result_index(const ReactorStepResult* result) {
-    return result == nullptr ? 0 : as_fake(result)->index;
+  static std::uint64_t result_step(const ReactorStepResult* result) {
+    return result == nullptr ? 0 : as_fake(result)->step;
   }
 
   static double result_elapsed(const ReactorStepResult* result) {
@@ -557,7 +557,7 @@ TEST_CASE("step passes the state and the commands through as JSON") {
   SECTION("state and commands") {
     const auto result =
         client.step({{"prompt", "a red fox"}}, {{"advance", {{"frames", 4}}}, {"reset"}}).get();
-    CHECK(result.index == 1);
+    CHECK(result.step == 1);
     CHECK(reactor::Json::parse(fixture.library.state_json.value_or("null")) ==
           reactor::Json{{"prompt", "a red fox"}});
     CHECK(reactor::Json::parse(fixture.library.commands_json.value_or("null")) ==
@@ -567,7 +567,7 @@ TEST_CASE("step passes the state and the commands through as JSON") {
 
   SECTION("nothing at all") {
     const auto result = client.step().get();
-    CHECK(result.index == 1);
+    CHECK(result.step == 1);
     CHECK_FALSE(fixture.library.state_json.has_value());
     CHECK(fixture.library.commands_json == std::optional<std::string>{"[]"});
   }
@@ -575,7 +575,7 @@ TEST_CASE("step passes the state and the commands through as JSON") {
   SECTION("a FileRef in the state goes as its upload reference") {
     const reactor::FileRef ref{"up-1", "photo.png", "image/png", 3};
     const auto result = client.step({{"image", ref}}).get();
-    CHECK(result.index == 1);
+    CHECK(result.step == 1);
     CHECK(reactor::Json::parse(fixture.library.state_json.value_or("null"))["image"]["upload_id"] ==
           "up-1");
   }
@@ -649,7 +649,7 @@ TEST_CASE("a step's result is copied out once, owns its bytes, and the native on
   // The client and its handle are gone; the result is the caller's.
   CHECK(fixture.library.results_freed == 1);
 
-  CHECK(result.index == 7);
+  CHECK(result.step == 7);
   CHECK(result.elapsed == 0.25);
   REQUIRE(result.tracks.size() == 2);
   CHECK(result.tracks[0].name == "main_video");
@@ -680,7 +680,7 @@ TEST_CASE("a step's result is copied out once, owns its bytes, and the native on
 
 TEST_CASE("a step's files and error are copied out with it") {
   Fixture fixture;
-  fixture.library.result.index = 4;
+  fixture.library.result.step = 4;
   fixture.library.result.files = {FakeFile{"depth.exr", "image/x-exr", 1048576},
                                   FakeFile{"log.txt", "text/plain", 0}};
 
@@ -701,14 +701,14 @@ TEST_CASE("a step's files and error are copied out with it") {
 
 TEST_CASE("a step that ran but that the model reported failing resolves, with its error") {
   Fixture fixture;
-  fixture.library.result.index = 9;
+  fixture.library.result.step = 9;
   fixture.library.result.error = "out of memory";
 
   reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, stepped()};
   client.connect().get();
   const auto result = client.step().get();
 
-  CHECK(result.index == 9);
+  CHECK(result.step == 9);
   CHECK(result.error == std::optional<std::string>{"out of memory"});
   CHECK(result.files.empty());
   CHECK(result.tracks.empty());
@@ -717,7 +717,7 @@ TEST_CASE("a step that ran but that the model reported failing resolves, with it
 
 TEST_CASE("asking a result for a track it has no output on names the ones it has") {
   reactor::StepResult result;
-  result.index = 3;
+  result.step = 3;
   result.tracks.push_back(
       reactor::StepTrackOutput{"main_video", reactor::TrackKind::Video, 24.0, {}});
 

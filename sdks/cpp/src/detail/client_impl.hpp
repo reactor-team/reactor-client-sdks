@@ -245,6 +245,8 @@ class PendingFileRef final : public Pending {
                                           {},
                                           "upload_file",
                                           {},
+                                          {},
+                                          {},
                                           {}}));
         return;
       }
@@ -258,6 +260,8 @@ class PendingFileRef final : public Pending {
                        false,
                        {},
                        "upload_file",
+                       {},
+                       {},
                        {},
                        {}}));
       return;
@@ -297,6 +301,8 @@ class PendingStep final : public Pending {
                                                         false,
                                                         {},
                                                         "step",
+                                                        {},
+                                                        {},
                                                         {},
                                                         {}}));
   }
@@ -589,6 +595,8 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
                                              {},
                                              "reconnect",
                                              {},
+                                             {},
+                                             {},
                                              {}}));
       return;
     }
@@ -802,6 +810,8 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
                        {},
                        "download_clip",
                        {},
+                       {},
+                       {},
                        {}}));
     }
 
@@ -820,6 +830,8 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
                                              false,
                                              {},
                                              op->operation,
+                                             {},
+                                             {},
                                              {},
                                              {}}));
       if (quiesced != 0) {

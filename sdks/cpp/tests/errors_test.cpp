@@ -79,6 +79,26 @@ TEST_CASE("a code this SDK does not know survives as itself") {
   CHECK(dynamic_cast<const reactor::NetworkError*>(error.get()) == nullptr);
 }
 
+TEST_CASE("a failed step's entry and handler code reach the error") {
+  const auto error = reactor::error_from_payload(R"({
+    "code": "step_command_failed",
+    "message": "tag failed (queue_full): full",
+    "entry": "commands[2]",
+    "command_code": "queue_full"
+  })");
+
+  CHECK(dynamic_cast<const reactor::StepCommandFailedError*>(error.get()) != nullptr);
+  CHECK(error->entry() == "commands[2]");
+  CHECK(error->command_code() == "queue_full");
+}
+
+TEST_CASE("an error without an entry or handler code leaves them empty") {
+  const auto error = reactor::error_from_payload(R"({"code": "step_refused", "message": "no"})");
+
+  CHECK_FALSE(error->entry().has_value());
+  CHECK_FALSE(error->command_code().has_value());
+}
+
 TEST_CASE("every field the payload carries reaches the error") {
   const auto error = reactor::error_from_payload(R"({
     "code": "RATE_LIMITED",
@@ -180,8 +200,16 @@ TEST_CASE("what() names the operation, the code and the message") {
 // or to an event handler — and `throw *base_pointer` would slice it down to
 // ReactorError, so a caller catching the specific type would never run.
 TEST_CASE("an error thrown through a std::exception_ptr keeps its own type") {
-  const auto pointer = reactor::as_exception_ptr(reactor::ErrorDetails{
-      std::string{reactor::codes::UNAUTHORIZED}, "token expired", false, 401, "connect", {}, {}});
+  const auto pointer =
+      reactor::as_exception_ptr(reactor::ErrorDetails{std::string{reactor::codes::UNAUTHORIZED},
+                                                      "token expired",
+                                                      false,
+                                                      401,
+                                                      "connect",
+                                                      {},
+                                                      {},
+                                                      {},
+                                                      {}});
 
   bool caught_specific = false;
   try {
@@ -222,9 +250,15 @@ TEST_CASE("a subclass carries its own code, whatever the details said") {
   // payload that disagrees — make_error picks the class *from* the code — so this
   // is about what the type makes possible, and inheriting the base constructors
   // used to make this contradiction expressible.
-  const reactor::UnauthorizedError error{
-      reactor::ErrorDetails{std::string{"NOT_FOUND"}, "token expired", false, 401,
-                            std::string{"connect"}, std::nullopt, std::nullopt}};
+  const reactor::UnauthorizedError error{reactor::ErrorDetails{std::string{"NOT_FOUND"},
+                                                               "token expired",
+                                                               false,
+                                                               401,
+                                                               std::string{"connect"},
+                                                               std::nullopt,
+                                                               std::nullopt,
+                                                               {},
+                                                               {}}};
 
   CHECK(error.code() == "UNAUTHORIZED");
   CHECK(error.code() == reactor::UnauthorizedError::CODE);

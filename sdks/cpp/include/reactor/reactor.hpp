@@ -445,7 +445,8 @@ class Reactor {
   /// Fails with `InvalidStateError` on a streamed client or a session that is
   /// not `Ready`; `BadRequestError` for a state or command data that is not an
   /// object, or a command with no name; `StepRefusedError` when the runtime
-  /// refuses the step; `StepNotReadyError` when the session cannot take a step
+  /// refuses the step (it checks the whole request first, so a refused step
+  /// changed nothing); `StepNotReadyError` when the session cannot take a step
   /// yet (the step did not run); `StepCommandFailedError` when the handler of
   /// one of its state keys or commands fails (the calls before it stay applied,
   /// the step did not run); `StepSessionEndedError` when the session ends before

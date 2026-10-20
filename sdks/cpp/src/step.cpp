@@ -49,7 +49,7 @@ const StepTrackOutput& StepResult::track(std::string_view name) const {
   for (const auto& output : tracks) {
     produced += (produced.empty() ? "\"" : ", \"") + output.name + "\"";
   }
-  throw NotFoundError{"step " + std::to_string(index) + " produced no output on \"" +
+  throw NotFoundError{"step " + std::to_string(step) + " produced no output on \"" +
                       std::string{name} +
                       "\" (tracks: " + (produced.empty() ? std::string{"none"} : produced) + ")"};
 }
@@ -99,7 +99,7 @@ std::string text_or_empty(const char* text) { return text == nullptr ? std::stri
 
 [[noreturn]] void throw_decode(const std::string& message) {
   throw DecodeError{ErrorDetails{
-      std::string{codes::DECODE_FAILED}, message, false, {}, std::string{"step"}, {}, {}}};
+      std::string{codes::DECODE_FAILED}, message, false, {}, std::string{"step"}, {}, {}, {}, {}}};
 }
 
 StepFrame read_frame(const Ffi& lib, const ReactorStepResult* result, std::uint32_t track,
@@ -157,7 +157,7 @@ StepFrame read_frame(const Ffi& lib, const ReactorStepResult* result, std::uint3
 /// Copy a native result into one that owns its bytes. Does not free it.
 StepResult read_step_result(const Ffi& lib, const ReactorStepResult* result) {
   StepResult copied;
-  copied.index = lib.step_result_index(result);
+  copied.step = lib.step_result_step(result);
   copied.elapsed = lib.step_result_elapsed(result);
   const std::uint32_t track_count = lib.step_result_track_count(result);
   copied.tracks.reserve(track_count);
@@ -289,6 +289,8 @@ void ClientImpl::step_completion_trampoline(int ok, ReactorStepResult* result,
                                               false,
                                               {},
                                               "step",
+                                              {},
+                                              {},
                                               {},
                                               {}}));
       return;

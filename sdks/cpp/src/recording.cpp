@@ -34,6 +34,8 @@ std::future<void> Clip::download(std::string path, DownloadOptions options) cons
         {},
         "download_clip",
         {},
+        {},
+        {},
         {}}));
     return future;
   }
@@ -53,6 +55,8 @@ void PendingClip::deliver(Json result) {
         false,
         {},
         operation,
+        {},
+        {},
         {},
         {}}));
     return;
@@ -83,6 +87,8 @@ void PendingClip::deliver(Json result) {
                      false,
                      {},
                      operation,
+                     {},
+                     {},
                      {},
                      {}}));
     return;
