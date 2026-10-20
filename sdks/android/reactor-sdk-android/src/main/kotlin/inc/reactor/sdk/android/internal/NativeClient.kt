@@ -196,33 +196,21 @@ internal object NativeClient {
         ): T = Completions.await(operation, decode, owner = this) { ticket -> withOpenHandle { call(ticket) } }
 
         suspend fun publishTrack(name: String) {
-            checkOpen()
-            Completions.await("publish_track", decode = { }) { ticket ->
-                nativePublishTrack(context, name, ticket)
-            }
+            launch("publish_track", decode = { }) { ticket -> nativePublishTrack(context, name, ticket) }
         }
 
         /**
          * Unpublish, which the ABI answers synchronously with an error payload rather than a
          * completion. A non-null return is the failure.
          */
-        fun unpublishTrack(name: String): String? {
-            checkOpen()
-            return nativeUnpublishTrack(context, name)
-        }
+        fun unpublishTrack(name: String): String? = withOpenHandle { nativeUnpublishTrack(context, name) }
 
         suspend fun pauseTrack(name: String) {
-            checkOpen()
-            Completions.await("pause_track", decode = { }) { ticket ->
-                nativePauseTrack(context, name, ticket)
-            }
+            launch("pause_track", decode = { }) { ticket -> nativePauseTrack(context, name, ticket) }
         }
 
         suspend fun resumeTrack(name: String) {
-            checkOpen()
-            Completions.await("resume_track", decode = { }) { ticket ->
-                nativeResumeTrack(context, name, ticket)
-            }
+            launch("resume_track", decode = { }) { ticket -> nativeResumeTrack(context, name, ticket) }
         }
 
         fun pushVideoFrame(
@@ -232,8 +220,7 @@ internal object NativeClient {
             height: Int,
             userData: ByteArray?,
         ) {
-            checkOpen()
-            nativePushVideoFrame(context, name, pixels, width, height, userData)
+            withOpenHandle { nativePushVideoFrame(context, name, pixels, width, height, userData) }
         }
 
         fun pushAudioFrame(
@@ -243,8 +230,7 @@ internal object NativeClient {
             sampleRate: Int,
             channels: Int,
         ) {
-            checkOpen()
-            nativePushAudioFrame(context, name, pcm, samplesPerChannel, sampleRate, channels)
+            withOpenHandle { nativePushAudioFrame(context, name, pcm, samplesPerChannel, sampleRate, channels) }
         }
 
         val status: String?
