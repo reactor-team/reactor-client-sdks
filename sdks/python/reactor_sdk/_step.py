@@ -176,8 +176,9 @@ class StepResult:
             show(frame.array)
     """
 
-    #: The step's number in the session, counted from 1.
-    index: int
+    #: The step's number in the session, counted from 1: the ``step`` of the
+    #: session's step results (``GET /sessions/{id}/steps/{step}``).
+    step: int
     tracks: tuple[StepTrackOutput, ...] = field(default=())
     #: Seconds the step's ``generate()`` took, or the time the model reported
     #: for the step.
@@ -201,7 +202,7 @@ class StepResult:
             if track.name == name:
                 return track
         produced = ", ".join(repr(t.name) for t in self.tracks) or "none"
-        raise KeyError(f"step {self.index} produced no output on {name!r} (tracks: {produced})")
+        raise KeyError(f"step {self.step} produced no output on {name!r} (tracks: {produced})")
 
 
 def _read_step_result(lib: Any, ptr: int) -> StepResult:
@@ -262,7 +263,7 @@ def _read_step_result(lib: Any, ptr: int) -> StepResult:
     # c_char_p restype: ctypes copies the borrowed string out; nothing to free.
     error = lib.reactor_step_result_error(handle)
     return StepResult(
-        index=int(lib.reactor_step_result_index(handle)),
+        step=int(lib.reactor_step_result_step(handle)),
         tracks=tuple(tracks),
         elapsed=float(lib.reactor_step_result_elapsed(handle)),
         files=files,

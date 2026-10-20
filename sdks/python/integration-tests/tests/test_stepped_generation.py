@@ -63,7 +63,7 @@ async def test_steps_resolve_in_order() -> None:
         second = await client.step()
 
         assert isinstance(first, StepResult)
-        assert second.index == first.index + 1
+        assert second.step == first.step + 1
         assert first.elapsed >= 0
         assert first.error is None
         for file in first.files:
@@ -87,7 +87,7 @@ async def test_pushed_frames_ride_the_next_step() -> None:
         source = await client.track(INPUT_TRACK).publish()
         source.push_frame(solid_rgb_frame(64, 64, (255, 0, 0)))
         result = await client.step(state={"prompt": "repaint it"})
-        assert result.index >= 1
+        assert result.step >= 1
 
         # Proof the push rode the step whatever the model makes of it: a frame
         # over the 64 MiB a chunked data channel carries can only fail a step

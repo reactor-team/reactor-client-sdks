@@ -319,7 +319,10 @@ their bytes are fetched over HTTP from the session's step results
 answers 202 while they are still being stored). A step the runtime refuses raises
 `StepRefusedError`; one the session cannot take yet raises `StepNotReadyError`;
 one whose state key or command failed raises `StepCommandFailedError` (none of
-these three ran; calls applied before a failure stay applied); one whose output
+these three ran; a refused step changed nothing, since the runtime checks the
+whole request first, while a failed call keeps the calls before it applied;
+both name the part at fault in `entry`, and `StepCommandFailedError` the
+handler's own code in `command_code`); one whose output
 does not fit in a message raises `StepResultTooLargeError`; one whose session
 ended before its result came raises `StepSessionEndedError` (whether it ran is
 unknown); a request too large to send raises `MessageTooLargeError` (nothing was

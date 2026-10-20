@@ -209,7 +209,7 @@ def test_step_result_accessors_accept_a_null_result() -> None:
     ndim = ctypes.c_uint32(7)
     length = ctypes.c_size_t(7)
     captured = ctypes.c_int64(7)
-    assert lib.reactor_step_result_index(None) == 0
+    assert lib.reactor_step_result_step(None) == 0
     assert lib.reactor_step_result_elapsed(None) == 0.0
     assert lib.reactor_step_result_error(None) is None
     assert lib.reactor_step_result_file_count(None) == 0

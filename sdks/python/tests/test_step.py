@@ -151,7 +151,7 @@ class FakeStepLib:
             return None
         return tracks[t][2][f]
 
-    def reactor_step_result_index(self, ptr):
+    def reactor_step_result_step(self, ptr):
         return self.results[ptr.value][0]
 
     def reactor_step_result_elapsed(self, ptr):
@@ -364,7 +364,7 @@ class TestStep:
 
         assert lib.freed == [ptr], "freed exactly once, after the copy"
         assert isinstance(result, StepResult)
-        assert result.index == 7
+        assert result.step == 7
         assert result.elapsed == 0.25
         video = result.track("main_video")
         assert video.kind is TrackKind.VIDEO
@@ -407,7 +407,7 @@ class TestStep:
 
         result = await reactor.step(state={"prompt": "fox"})
 
-        assert result.index == 4
+        assert result.step == 4
         assert result.error == "out of memory"
         assert result.elapsed == 0.5
         assert lib.freed == [ptr]
@@ -500,7 +500,7 @@ class TestWireCommands:
 
 class TestStepResult:
     def test_track_by_name_names_what_did_produce_output(self) -> None:
-        result = StepResult(index=2, tracks=(StepTrackOutput("a", TrackKind.VIDEO),))
+        result = StepResult(step=2, tracks=(StepTrackOutput("a", TrackKind.VIDEO),))
         assert result.track("a").name == "a"
         with pytest.raises(KeyError, match="'a'"):
             result.track("b")
@@ -511,7 +511,7 @@ class TestStepResult:
         assert not frame.array.flags.writeable
 
     def test_files_and_error_default_to_none_kept_and_no_failure(self) -> None:
-        result = StepResult(index=1)
+        result = StepResult(step=1)
         assert result.files == ()
         assert result.error is None
 

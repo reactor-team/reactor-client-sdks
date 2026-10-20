@@ -332,7 +332,7 @@ STEPPED_FUNCTIONS = (
     "reactor_create_with_options",
     "reactor_step",
     "reactor_clear_step_inputs",
-    "reactor_step_result_index",
+    "reactor_step_result_step",
     "reactor_step_result_elapsed",
     "reactor_step_result_error",
     "reactor_step_result_file_count",
@@ -386,8 +386,8 @@ def _bind_stepped(lib: ctypes.CDLL) -> None:
     lib.reactor_clear_step_inputs.argtypes = [ctypes.c_void_p]
 
     result = ctypes.c_void_p
-    lib.reactor_step_result_index.restype = ctypes.c_uint64
-    lib.reactor_step_result_index.argtypes = [result]
+    lib.reactor_step_result_step.restype = ctypes.c_uint64
+    lib.reactor_step_result_step.argtypes = [result]
     lib.reactor_step_result_elapsed.restype = ctypes.c_double
     lib.reactor_step_result_elapsed.argtypes = [result]
     # c_char_p: every string accessor borrows from the result, so ctypes copying

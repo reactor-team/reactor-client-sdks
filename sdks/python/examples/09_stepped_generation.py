@@ -76,15 +76,15 @@ async def main() -> None:
                 commands=[StepCommand(COMMAND)] if COMMAND else [],
             )
             if result.error is not None:
-                print(f"step {result.index}: the model failed it: {result.error}")
+                print(f"step {result.step}: the model failed it: {result.error}")
             for track in result.tracks:
                 shapes = ", ".join(str(f.array.shape) for f in track.frames)
                 print(
-                    f"step {result.index}: {track.name} ({track.kind.value}) "
+                    f"step {result.step}: {track.name} ({track.kind.value}) "
                     f"{len(track.frames)} frame(s) {shapes}"
                 )
             for file in result.files:
-                print(f"step {result.index}: kept {file.name} ({file.content_type}, {file.size} B)")
+                print(f"step {result.step}: kept {file.name} ({file.content_type}, {file.size} B)")
 
 
 if __name__ == "__main__":

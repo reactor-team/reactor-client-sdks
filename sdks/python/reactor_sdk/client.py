@@ -599,6 +599,8 @@ class Reactor:
                     operation=d.get("operation"),
                     retry_after_ms=d.get("retry_after_ms"),
                     timestamp_ms=d.get("timestamp_ms", 0.0),
+                    entry=d.get("entry"),
+                    command_code=d.get("command_code"),
                 )
                 r._fire_on_loop("error", err)
             except Exception:
@@ -1175,7 +1177,8 @@ class Reactor:
 
         A step that ran but that the model reported as failed returns its result
         with `StepResult.error` set. Raises `StepRefusedError` when the runtime
-        refuses the step (calls it applied before the refusal stay applied),
+        refuses the step (it checks the whole request first, so nothing it carried
+        was applied),
         `StepNotReadyError` when the session cannot take a step yet (the step
         did not run), `StepCommandFailedError` when the handler of one of its
         state keys or commands fails (the calls before it stay applied, the step
