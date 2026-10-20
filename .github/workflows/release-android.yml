@@ -180,21 +180,15 @@ jobs:
     needs: [detect-version, natives]
     # Only when something will be released or dry-run — the same condition as `release`, which is
     # the only job that needs this one. An ordinary push to main is a no-op here, and running the
-    # live suite for it would spend the emulator and the session quota, and fail outright where no
-    # emulator runner is configured. Pull requests never get here: ci.yml runs the same suite on
-    # the same commit, and reactor/echo does not have the session quota for both racing it.
+    # live suite for it would spend the emulator and the session quota. Pull requests never get
+    # here: ci.yml runs the same suite on the same commit, and reactor/echo does not have the
+    # session quota for both racing it.
     if: needs.detect-version.outputs.bumped == 'true' || (github.event_name == 'workflow_dispatch' && inputs.dry_run)
-    # A runner that can host an arm64 emulator — see ci.yml's android-integration-tests for why no
-    # hosted runner is one. Unlike ci.yml this job does not skip when there is none: `release`
-    # needs it, and a release that has not run the live suite must not publish.
-    runs-on: ${{ vars.ANDROID_EMULATOR_RUNNER || 'ubuntu-latest' }}
+    # An x86_64 emulator on a hosted x86_64 runner, as ci.yml runs it — the one combination a
+    # GitHub-hosted runner can host.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - name: Require a runner that can host the emulator
-        if: vars.ANDROID_EMULATOR_RUNNER == ''
-        run: |
-          echo "::error::ANDROID_EMULATOR_RUNNER is not set, so there is nowhere to run the live suite — and a release does not publish without it."
-          exit 1
       - uses: actions/checkout@v7
       - name: Read mise pin
         shell: bash
@@ -207,15 +201,23 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/share/mise/installs/android-sdk
-          key: android-sdk-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'mise.lock') }}
+          key: android-sdk-emulator-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'sdks/android/sdk-packages-emulator.txt', 'mise.lock') }}
       - run: mise run setup:android:emulator
+      # Only root can open /dev/kvm until this rule says otherwise; without it the emulator falls
+      # back to software emulation and the suite times out.
+      - name: Let the emulator use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
       - uses: actions/download-artifact@v4
         with:
           name: android-natives
           path: sdks/android/reactor-sdk-android/build/reactor-native
       # A 16 KB page-size image, as ci.yml uses: on a 4 KB image a misaligned library loads fine and
       # the suite proves nothing.
-      - name: Run the live suite on an arm64 emulator
+      - name: Run the live suite on an x86_64 emulator
         uses: reactivecircus/android-emulator-runner@v2
         env:
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
@@ -223,7 +225,7 @@ jobs:
         with:
           api-level: 36
           target: google_apis_ps16k
-          arch: arm64-v8a
+          arch: x86_64
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
