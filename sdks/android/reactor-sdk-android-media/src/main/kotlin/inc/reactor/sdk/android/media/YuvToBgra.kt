@@ -11,8 +11,9 @@ import java.nio.ByteBuffer
  * is sheared, or green, or both, on exactly the subset of devices the developer does not own.
  *
  * Written as plain arithmetic over [ByteBuffer]s rather than against `android.media.Image`, so
- * every one of those cases is testable on a JVM with no device attached. The camera wiring hands
- * it planes; this file never imports an Android class.
+ * every one of those cases is testable on a JVM with no device attached; this file never imports
+ * an Android class. [CameraCapture] does not call it per frame — it runs `FrameConverter`, which
+ * converts and rotates in one faster pass and is tested against this as the reference.
  */
 public object YuvToBgra {
     /**
