@@ -335,23 +335,22 @@ internal object NativeClient {
             launch("upload_bytes", decode = Uploads::decode) { ticket -> nativeUploadBytes(context, data, length, name, mimeType, ticket) }
 
         suspend fun requestClip(durationSeconds: Double): Clip =
-            Completions.await("request_clip", decode = Recordings::decodeClip) { ticket ->
-                checkOpen()
-                nativeRequestClip(context, durationSeconds, ticket)
-            }
+            launch("request_clip", decode = Recordings::decodeClip) { ticket -> nativeRequestClip(context, durationSeconds, ticket) }
 
         suspend fun requestRecording(): Clip =
-            Completions.await("request_recording", decode = Recordings::decodeClip) { ticket ->
-                checkOpen()
-                nativeRequestRecording(context, ticket)
-            }
+            launch("request_recording", decode = Recordings::decodeClip) { ticket -> nativeRequestRecording(context, ticket) }
 
         /**
          * Download a clip.
          *
-         * Deliberately does **not** call checkOpen(): a download outlives the handle it was given
-         * one of, and refusing to start one because the client is closing would be inventing a
-         * rule the ABI does not have. The handle may legitimately be null on this call.
+         * Deliberately does **not** refuse a closed handle: a download outlives the handle it was
+         * given, and refusing to start one because the client is closing would be inventing a
+         * rule the ABI does not have — `reactor_download_clip` takes a null handle. What it must
+         * never take is a *freed* one, so the launch is under the lifecycle lock and passes 0, which
+         * the bridge turns into that null, once [close] has run.
+         *
+         * Owned by this handle all the same, so closing it settles the caller rather than leaving
+         * them waiting on a download whose client has gone — with a message saying it may finish.
          */
         suspend fun downloadClip(
             playlistUrl: String,
@@ -362,19 +361,21 @@ internal object NativeClient {
             local: Boolean,
             onProgress: ((Int, Int) -> Unit)?,
         ): DownloadedClip =
-            Completions.await("download_clip", decode = Recordings::decodeDownload) { ticket ->
+            Completions.await("download_clip", decode = Recordings::decodeDownload, owner = this) { ticket ->
                 if (onProgress != null) Completions.watchProgress(ticket, onProgress)
-                nativeDownloadClip(
-                    context,
-                    playlistUrl,
-                    jwt,
-                    outPath,
-                    predictedReadyAtMs,
-                    readyTimeoutSeconds,
-                    local,
-                    onProgress != null,
-                    ticket,
-                )
+                synchronized(lifecycle) {
+                    nativeDownloadClip(
+                        if (closed.get()) 0L else context,
+                        playlistUrl,
+                        jwt,
+                        outPath,
+                        predictedReadyAtMs,
+                        readyTimeoutSeconds,
+                        local,
+                        onProgress != null,
+                        ticket,
+                    )
+                }
             }
 
         val status: String?

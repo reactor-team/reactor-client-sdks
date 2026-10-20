@@ -93,15 +93,16 @@ class RecordingsTest {
     @Test
     fun `closing while a download is in flight settles the caller, saying it may continue`() =
         runTest {
+            val client = Any()
             val ticket = CompletableDeferred<Long>()
             val result =
                 async {
                     runCatching {
-                        Completions.await("download_clip", decode = { it }) { ticket.complete(it) }
+                        Completions.await("download_clip", decode = { it }, owner = client) { ticket.complete(it) }
                     }
                 }
             ticket.await()
-            Completions.abandonAll("The Reactor was closed. Native work already started may still be running.")
+            Completions.abandonAll(client, "The Reactor was closed. Native work already started may still be running.")
             val error = awaitFailure<AbortedException>(result)
             assertTrue(
                 "a download whose client went away is still downloading; saying 'aborted' is worse than saying nothing",
