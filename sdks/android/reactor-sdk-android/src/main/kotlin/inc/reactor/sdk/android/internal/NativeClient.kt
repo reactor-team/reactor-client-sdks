@@ -116,24 +116,31 @@ internal object NativeClient {
          * outside the lock, where it must, since a suspension may not hold a monitor.
          */
         suspend fun connect(sessionId: String?) {
-            Completions.await("connect", decode = { }) { ticket ->
-                withOpenHandle { nativeConnect(context, sessionId, ticket) }
-            }
+            launch("connect", decode = { }) { ticket -> nativeConnect(context, sessionId, ticket) }
         }
 
         /** End the session server-side. */
         suspend fun disconnect() {
-            Completions.await("disconnect", decode = { }) { ticket ->
-                withOpenHandle { nativeDisconnect(context, ticket) }
-            }
+            launch("disconnect", decode = { }) { ticket -> nativeDisconnect(context, ticket) }
         }
 
         /** Cycle the connection, keeping the session. */
         suspend fun reconnect() {
-            Completions.await("reconnect", decode = { }) { ticket ->
-                withOpenHandle { nativeReconnect(context, ticket) }
-            }
+            launch("reconnect", decode = { }) { ticket -> nativeReconnect(context, ticket) }
         }
+
+        /**
+         * Register a completion owned by this handle and launch [call] under the lifecycle lock.
+         *
+         * The one way an operation of this handle starts. Owned, so closing this handle settles
+         * it and no other client's; launched under the lock, so it cannot hand a Context that
+         * [close] has already freed to the native side.
+         */
+        private suspend fun <T> launch(
+            operation: String,
+            decode: (String?) -> T,
+            call: (ticket: Long) -> Unit,
+        ): T = Completions.await(operation, decode, owner = this) { ticket -> withOpenHandle { call(ticket) } }
 
         val status: String?
             get() = withOpenHandle { nativeStatus(context) }
