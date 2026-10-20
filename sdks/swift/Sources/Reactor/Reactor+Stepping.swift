@@ -11,8 +11,10 @@ extension Reactor {
     /// command), then `commands` in order, then every input frame pushed since
     /// the previous step — ``Track/pushFrame(_:width:height:userData:captureTimeUs:)``
     /// does not send in a stepped session, it buffers for the next step — and
-    /// then generates. Each of those is its own call into the model: they are
-    /// not applied as one unit, and nothing is rolled back if a later one fails.
+    /// then generates. The runtime checks the whole request before it applies
+    /// any of it, so a refused step changes nothing. Past that check each part
+    /// is its own call into the model: a handler that fails stops the step, and
+    /// the calls before it stay applied.
     ///
     /// Every argument is optional. `step()` with nothing set and nothing pushed
     /// runs on the model's current state — which commands sent outside a step,
@@ -47,7 +49,8 @@ extension Reactor {
     ///
     /// - Throws: ``ReactorError``:
     ///   - ``ReactorError/Code/stepRefused`` — the runtime or the model turned
-    ///     the step down; calls applied before the refusal stay applied.
+    ///     the step down; nothing it carried was applied.
+    ///     ``ReactorError/entry`` names the part at fault, when one is.
     ///   - ``ReactorError/Code/stepNotReady`` — the session cannot take a step
     ///     yet. The step did not run.
     ///   - ``ReactorError/Code/stepResultTooLarge`` — the step ran, but its
@@ -268,7 +271,7 @@ extension StepResult {
         }
 
         self.init(
-            index: ffi.stepResultIndex(result), tracks: tracks, elapsed: elapsed, files: files,
+            step: ffi.stepResultStep(result), tracks: tracks, elapsed: elapsed, files: files,
             error: String(borrowing: ffi.stepResultError(result)))
     }
 }

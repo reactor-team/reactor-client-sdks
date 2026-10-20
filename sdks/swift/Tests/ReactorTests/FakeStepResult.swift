@@ -118,7 +118,7 @@ final class FakeStepResult: @unchecked Sendable {
         }
     }
 
-    let index: UInt64
+    let step: UInt64
     let tracks: [CTrack]
     let elapsed: Double
     let files: [CFile]
@@ -126,10 +126,10 @@ final class FakeStepResult: @unchecked Sendable {
     let error: UnsafeMutablePointer<CChar>?
 
     init(
-        index: UInt64, tracks: [Track], elapsed: Double = 0, files: [File] = [],
+        step: UInt64, tracks: [Track], elapsed: Double = 0, files: [File] = [],
         error: String? = nil
     ) {
-        self.index = index
+        self.step = step
         self.tracks = tracks.map(CTrack.init)
         self.elapsed = elapsed
         self.files = files.map(CFile.init)

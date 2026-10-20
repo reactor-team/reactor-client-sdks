@@ -102,8 +102,9 @@ public struct StepCommand: Sendable, Hashable, Encodable {
 /// kept, sent across tasks, and outlive the client.
 public struct StepResult: Sendable {
 
-    /// The step's number in the session, counted from 1.
-    public let index: UInt64
+    /// The step's number in the session, counted from 1: the step of the
+    /// session's step routes, `GET /sessions/{id}/steps/{step}`.
+    public let step: UInt64
 
     /// Every output track that produced something, in the order the runtime
     /// sent them.
@@ -118,7 +119,7 @@ public struct StepResult: Sendable {
     /// listed them. Empty when it kept none or the result was not saved.
     ///
     /// The result names them; it does not carry them. Fetch a file's bytes over
-    /// HTTP from the session's step results, `GET /sessions/{id}/steps/{index}`,
+    /// HTTP from the session's step results, `GET /sessions/{id}/steps/{step}`,
     /// which lists each file with a download URL (and answers 202 while the
     /// step is not stored yet).
     public let files: [StepFile]
@@ -133,13 +134,13 @@ public struct StepResult: Sendable {
     /// Assemble a result — for tests and previews; ``Reactor/step(state:commands:)``
     /// is where real ones come from.
     public init(
-        index: UInt64,
+        step: UInt64,
         tracks: [StepTrackOutput],
         elapsed: Duration = .zero,
         files: [StepFile] = [],
         error: String? = nil
     ) {
-        self.index = index
+        self.step = step
         self.tracks = tracks
         self.elapsed = elapsed
         self.files = files

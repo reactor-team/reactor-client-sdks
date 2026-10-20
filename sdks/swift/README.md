@@ -79,7 +79,7 @@ A step that ran but that the model reported as failed returns normally, with
 `ReactorError.stepRefused`; one the session cannot take yet throws
 `stepNotReady` (neither ran); one whose state key or command handler failed
 throws `stepCommandFailed` (the calls before it stay applied, the step did not
-run); one whose session ended before its result was sent throws
+run, and the error's `entry` and `commandCode` name the call and its code); one whose session ended before its result was sent throws
 `stepSessionEnded` (whether it ran is unknown); one whose output
 does not fit in a message throws `stepResultTooLarge`; a request too large to
 send throws `messageTooLarge`. A step refused before it goes out (`invalidState`,

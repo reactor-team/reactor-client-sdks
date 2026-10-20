@@ -81,19 +81,19 @@ await runExample {
                 ? try await reactor.step()
                 : try await reactor.step(state: state, commands: commands)
 
-            print("step \(result.index): ran in \(result.elapsed)")
+            print("step \(result.step): ran in \(result.elapsed)")
             if let error = result.error {
-                print("step \(result.index): the model reported a failure: \(error)")
+                print("step \(result.step): the model reported a failure: \(error)")
             }
             for track in result.tracks {
                 let shapes = track.frames.map { "\($0.shape)" }.joined(separator: ", ")
                 print(
-                    "step \(result.index): \(track.name) (\(track.kind.rawValue)) "
+                    "step \(result.step): \(track.name) (\(track.kind.rawValue)) "
                         + "\(track.frames.count) frame(s) \(shapes)")
             }
             for file in result.files {
                 print(
-                    "step \(result.index): kept \(file.name) (\(file.contentType), "
+                    "step \(result.step): kept \(file.name) (\(file.contentType), "
                         + "\(file.size) bytes)")
             }
         }

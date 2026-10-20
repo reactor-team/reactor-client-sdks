@@ -286,8 +286,8 @@ struct FFI: Sendable {
     /// `reactor_clear_step_inputs` — drop every frame buffered for the next step.
     var clearStepInputs: @Sendable (OpaquePointer?) -> Void
 
-    /// `reactor_step_result_index` — the step's number in the session, from 1.
-    var stepResultIndex: @Sendable (OpaquePointer?) -> UInt64
+    /// `reactor_step_result_step` — the step's number in the session, from 1.
+    var stepResultStep: @Sendable (OpaquePointer?) -> UInt64
 
     /// `reactor_step_result_elapsed` — the seconds the step's `generate()` took.
     var stepResultElapsed: @Sendable (OpaquePointer?) -> Double
@@ -448,7 +448,7 @@ extension FFI {
             reactor_step(handle, stateJSON, commandsJSON, completion, userdata)
         },
         clearStepInputs: { handle in reactor_clear_step_inputs(handle) },
-        stepResultIndex: { result in reactor_step_result_index(result) },
+        stepResultStep: { result in reactor_step_result_step(result) },
         stepResultElapsed: { result in reactor_step_result_elapsed(result) },
         stepResultError: { result in reactor_step_result_error(result) },
         stepResultFileCount: { result in reactor_step_result_file_count(result) },

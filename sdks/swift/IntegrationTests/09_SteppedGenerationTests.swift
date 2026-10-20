@@ -40,7 +40,7 @@ struct SteppedGenerationTests {
         try await withConnectedReactor(model: model, generation: .stepped) { reactor in
             let first = try await reactor.step(state: ["prompt": "a lighthouse in a storm"])
             let second = try await reactor.step()
-            #expect(second.index == first.index + 1)
+            #expect(second.step == first.step + 1)
             #expect(first.elapsed >= .zero)
             #expect(first.error == nil)
             for track in first.tracks {
@@ -65,7 +65,7 @@ struct SteppedGenerationTests {
                 MediaFixtures.solidBGRAFrame(width: 64, height: 64, color: (0, 0, 255)),
                 width: 64, height: 64)
             let result = try await reactor.step(state: ["prompt": "repaint it"])
-            #expect(result.index >= 1)
+            #expect(result.step >= 1)
 
             // Proof the push rode the step whatever the model makes of it: a
             // frame over the 64 MiB a chunked data channel carries can only fail

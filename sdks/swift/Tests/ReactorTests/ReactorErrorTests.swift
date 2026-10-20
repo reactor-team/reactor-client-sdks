@@ -32,6 +32,21 @@ struct ReactorErrorTests {
         #expect(error.timestampMS == 1_712_345_678_000)
     }
 
+    @Test("a failed step's entry and command code decode")
+    func stepFailureFields() {
+        let failed = ReactorError.decode(
+            payload:
+                #"{"code":"step_command_failed","message":"tag failed (queue_full): full","entry":"commands[2]","command_code":"queue_full"}"#
+        )
+        #expect(failed.code == .stepCommandFailed)
+        #expect(failed.entry == "commands[2]")
+        #expect(failed.commandCode == "queue_full")
+
+        let refused = ReactorError.decode(payload: #"{"code":"step_refused","message":"no"}"#)
+        #expect(refused.entry == nil)
+        #expect(refused.commandCode == nil)
+    }
+
     @Test("a code this SDK does not know survives as itself")
     func unknownCode() {
         // The platform's codes for a rejected command are open-ended. An

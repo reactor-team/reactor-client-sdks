@@ -39,9 +39,9 @@ struct SteppingTests {
     }
 
     /// A result with one video track of two RGB frames and one audio track.
-    private func sampleResult(index: UInt64 = 1) -> FakeStepResult {
+    private func sampleResult(step: UInt64 = 1) -> FakeStepResult {
         FakeStepResult(
-            index: index,
+            step: step,
             tracks: [
                 .init(
                     name: "main_video", kind: "video", rate: 24,
@@ -223,7 +223,7 @@ struct SteppingTests {
         // Held weakly and nowhere else, so its release shows the SDK let go.
         weak var watched: FakeStepResult?
         func handedOver() -> FakeStepResult {
-            let native = sampleResult(index: 7)
+            let native = sampleResult(step: 7)
             watched = native
             return native
         }
@@ -232,7 +232,7 @@ struct SteppingTests {
         #expect(fake.freedStepResults == 1)
         #expect(watched == nil, "the SDK kept the library's result alive past the step")
 
-        #expect(result.index == 7)
+        #expect(result.step == 7)
         #expect(result.elapsed == .milliseconds(250))
         #expect(result.tracks.map(\.name) == ["main_video", "main_audio"])
 
@@ -374,13 +374,13 @@ struct SteppingTests {
         defer { client.close() }
 
         let nonFinite = try await stepping(
-            fake, result: FakeStepResult(index: 3, tracks: [], elapsed: .nan)
+            fake, result: FakeStepResult(step: 3, tracks: [], elapsed: .nan)
         ) { try await client.step() }
-        #expect(nonFinite.index == 3)
+        #expect(nonFinite.step == 3)
         #expect(nonFinite.elapsed == .zero)
 
         let huge = try await stepping(
-            fake, result: FakeStepResult(index: 4, tracks: [], elapsed: .greatestFiniteMagnitude)
+            fake, result: FakeStepResult(step: 4, tracks: [], elapsed: .greatestFiniteMagnitude)
         ) { try await client.step() }
         #expect(huge.elapsed == .seconds(1e18))
     }
@@ -392,7 +392,7 @@ struct SteppingTests {
         defer { client.close() }
 
         let bad = FakeStepResult(
-            index: 1,
+            step: 1,
             tracks: [
                 .init(
                     name: "main_video", kind: "video",
@@ -412,7 +412,7 @@ struct SteppingTests {
         defer { client.close() }
 
         let odd = FakeStepResult(
-            index: 1, tracks: [.init(name: "depth", kind: "depth", frames: [])])
+            step: 1, tracks: [.init(name: "depth", kind: "depth", frames: [])])
 
         await #expect {
             _ = try await stepping(fake, result: odd) { try await client.step() }
@@ -475,7 +475,7 @@ struct SteppingTests {
         defer { client.close() }
 
         let native = FakeStepResult(
-            index: 4, tracks: [],
+            step: 4, tracks: [],
             files: [
                 .init(name: "depth.npy", contentType: "application/octet-stream", size: 4096),
                 .init(name: "notes.json", contentType: "application/json", size: 12),
@@ -509,12 +509,12 @@ struct SteppingTests {
         defer { client.close() }
 
         let failed = FakeStepResult(
-            index: 9, tracks: [], elapsed: 0.5,
+            step: 9, tracks: [], elapsed: 0.5,
             files: [.init(name: "trace.txt", contentType: "text/plain", size: 3)],
             error: "generate() raised: out of memory")
         let result = try await stepping(fake, result: failed) { try await client.step() }
 
-        #expect(result.index == 9)
+        #expect(result.step == 9)
         #expect(result.error == "generate() raised: out of memory")
         #expect(result.elapsed == .milliseconds(500))
         #expect(result.files.map(\.name) == ["trace.txt"])
