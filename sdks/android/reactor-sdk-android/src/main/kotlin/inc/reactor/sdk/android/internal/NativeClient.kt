@@ -51,7 +51,7 @@ internal object NativeClient {
         orphanedContexts += 1
     }
 
-    /** A live handle. Not thread-safe against its own [close]; the object model serialises that. */
+    /** A live handle. Safe to use from any thread, including against its own [close] — see [lifecycle]. */
     class Handle internal constructor(
         private val context: Long,
     ) : AutoCloseable {
