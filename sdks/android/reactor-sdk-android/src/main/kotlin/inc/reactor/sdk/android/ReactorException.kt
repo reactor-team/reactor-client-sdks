@@ -8,10 +8,11 @@ package inc.reactor.sdk.android
  * on. Matching on message text is what every SDK above this boundary was reduced to before the
  * codes existed.
  *
- * [recoverable] is **derived from [code]**, never passed in per call site. Two SDKs disagreeing
- * about whether a timeout is worth retrying is the failure that produced two names for one
- * condition — `connect()` reporting `CONNECTION_FAILED` and recoverable on one channel and
- * `UNAUTHORIZED` and not on the other.
+ * [recoverable] is **what the core said**, never decided per call site: the core classifies every
+ * error it reports, and only an error this SDK raised without crossing the FFI falls back to the
+ * table in [ErrorCode]. Two SDKs disagreeing about whether a timeout is worth retrying is the
+ * failure that produced two names for one condition — `connect()` reporting `CONNECTION_FAILED`
+ * and recoverable on one channel and `UNAUTHORIZED` and not on the other.
  */
 public open class ReactorException internal constructor(
     /** One of [ErrorCode]'s wire values, or a code the platform sent that this SDK does not know. */
