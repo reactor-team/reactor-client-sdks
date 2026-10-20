@@ -23,12 +23,10 @@ The Java SDK remains the answer for desktop JVM and desktop Kotlin.
 | --- | --- |
 | `minSdk` | **26** |
 | `compileSdk` | 36 |
-| ABIs | `arm64-v8a` |
+| ABIs | `arm64-v8a`, `x86_64` |
 
-`arm64-v8a` only, today. Every Android device shipped in years is arm64, but an
-x86_64 slice is what emulators on Intel hosts need — and what would let the
-instrumented tests gate a pull request. It waits on reactor-webrtc publishing an
-x86_64 Android build (REA-6551).
+`arm64-v8a` is every phone; `x86_64` is every emulator on an x86_64 host, which
+is also where CI runs the instrumented and live suites.
 
 The AAR is built for **16 KB page sizes** and CI refuses a native library that
 is not, because Android 15 devices with 16 KB pages will not load one that is.
@@ -248,25 +246,18 @@ attached fails before anything is built; a missing
 skips locally, because a contributor should not need production credentials to run
 the unit suite.
 
-#### Why they are not a pull-request gate yet
+#### Where they run in CI
 
-Not by choice. An arm64 emulator needs a hypervisor for the guest, and no
-GitHub-hosted runner provides one for arm64: hosted macOS runners are VMs without
-Hypervisor.framework, and hosted arm64 Linux runners have no `/dev/kvm` at all.
-Both were tried.
+On every Android pull request, on an **x86_64 emulator** with a 16 KB page-size
+image on GitHub's hosted x86_64 runners — the one kind of hosted runner with a
+hypervisor an emulator can use. The instrumented tests run for every pull
+request; the live suite for every one from this repository, since a fork's run
+gets no API key. A release does not publish until the live suite has passed
+against the exact natives it packages.
 
-The CI job exists and is in `ci-complete`'s `needs`. It runs when the repository
-variable **`ANDROID_EMULATOR_RUNNER`** names a runner with a working hypervisor —
-a self-hosted arm64 host — and is skipped otherwise. Setting that variable closes
-the gate with no change to any workflow. While it is unset, `ci-complete` prints a
-warning on every Android run saying so, because a gate that quietly stops being a
-gate is worse than one that was never claimed.
-
-The other way to close it is an x86_64 Android ABI, on ordinary hosted runners that
-do have KVM — REA-6551, waiting on reactor-webrtc publishing one.
-
-What gates every pull request today: the unit tests, the AddressSanitizer harness
-over the JNI boundary, and the native cross-build itself.
+What CI does not run is the `arm64-v8a` libraries on an emulator: no hosted
+runner can host an arm64 one. They are built from the same sources, and every
+pull request cross-compiles them and checks their alignment.
 
 ### The endurance suite
 

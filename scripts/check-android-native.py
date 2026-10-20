@@ -17,12 +17,20 @@ import zipfile
 from pathlib import Path
 
 
-def check_elf(library):
+# e_machine for each Android ABI the SDK ships. Checked against the directory the library was
+# staged into: an x86_64 build copied under arm64-v8a links into the AAR and fails only on a
+# device, as "dlopen failed: ... is for EM_X86_64 (62) instead of EM_AARCH64 (183)".
+MACHINES = {"arm64-v8a": (183, "AArch64"), "x86_64": (62, "x86-64")}
+
+
+def check_elf(library, abi):
+    machine, label = MACHINES[abi]
     data = Path(library).read_bytes()
     if len(data) < 64 or data[:6] != b"\x7fELF\x02\x01":
         raise ValueError("Expected a 64-bit little-endian ELF library")
-    if struct.unpack_from("<H", data, 18)[0] != 183:
-        raise ValueError("Expected an Android AArch64 library")
+    found = struct.unpack_from("<H", data, 18)[0]
+    if found != machine:
+        raise ValueError(f"Expected an Android {label} library for {abi}, found e_machine {found}")
     offset = struct.unpack_from("<Q", data, 32)[0]
     size, count = struct.unpack_from("<HH", data, 54)
     if size < 56 or offset + size * count > len(data):
@@ -43,8 +51,8 @@ def check_elf(library):
     return data, loads
 
 
-def check(library, jar):
-    data, loads = check_elf(library)
+def check(library, jar, abi):
+    data, loads = check_elf(library, abi)
     # InitClassLoader uses a dotted Java name embedded in the native image.
     names = set(
         re.findall(
@@ -61,22 +69,23 @@ def check(library, jar):
                 f"Native bootstrap requires {name}, but {entry} is absent from {jar}. "
                 "Use a matching upstream WebRTC JAR; see REA-6249."
             )
-    return f"AArch64 ELF: {loads} LOAD segments aligned to 16 KB; Java bootstrap class: {name}"
+    return f"{MACHINES[abi][1]} ELF: {loads} LOAD segments aligned to 16 KB; Java bootstrap class: {name}"
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("library", type=Path)
     parser.add_argument("jar", type=Path, nargs="?")
+    parser.add_argument("--abi", required=True, choices=sorted(MACHINES))
     parser.add_argument("--elf-only", action="store_true")
     args = parser.parse_args()
     try:
         if args.elf_only:
-            _, loads = check_elf(args.library)
-            print(f"AArch64 ELF: {loads} LOAD segments aligned to 16 KB")
+            _, loads = check_elf(args.library, args.abi)
+            print(f"{MACHINES[args.abi][1]} ELF: {loads} LOAD segments aligned to 16 KB")
         elif args.jar is None:
             parser.error("jar is required unless --elf-only is used")
         else:
-            print(check(args.library, args.jar))
+            print(check(args.library, args.jar, args.abi))
     except (ValueError, OSError, zipfile.BadZipFile) as error:
         parser.exit(1, f"Android native preflight failed: {error}\n")

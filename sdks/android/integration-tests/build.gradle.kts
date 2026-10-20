@@ -9,7 +9,7 @@
  * It is a library module whose tests live in androidTest, so they run on a device against the
  * same merged native libraries a consumer's APK gets. What it does not prove on its own is AAR
  * packaging — that is what the examples app covers, by assembling an APK and carrying the
- * arm64-v8a shared objects into it.
+ * shared objects of both ABIs into it.
  */
 
 plugins {

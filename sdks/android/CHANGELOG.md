@@ -13,6 +13,8 @@ request as the bump.
 
 ### Added
 
+- An `x86_64` ABI beside `arm64-v8a`, so the SDK runs on emulators on x86_64
+  hosts.
 - Published to Maven Central as `inc.reactor:reactor-sdk-android` and
   `inc.reactor:reactor-sdk-android-media`, with sources and javadoc, signed.
 - `Reactor.SDK_VERSION` is the AAR's own version, which is what the
