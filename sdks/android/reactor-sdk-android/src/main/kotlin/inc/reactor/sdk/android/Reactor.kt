@@ -145,8 +145,16 @@ public class Reactor(
         // the read fresh, which is not the same as making the sequence exclusive.
         //
         // connect() is a suspend function, so this is a coroutine Mutex rather than a monitor.
+        //
+        // close() cannot take it — it is not a suspend function — so `closed` is checked again
+        // around the creation: a close() landing between the check above and the assignment would
+        // otherwise null a handle that is not there yet, and this call would then store a fresh
+        // native client on a closed Reactor that nothing ever releases. Checked *after* assigning,
+        // so whichever of the two runs second sees the other: either close() reads the stored
+        // handle and closes it, or this sees `closed` and closes it itself.
         val client =
             handleLock.withLock {
+                check(!closed.get()) { "This Reactor is closed" }
                 handle ?: NativeClient
                     .create(
                         apiUrl = options.apiUrl,
@@ -155,7 +163,14 @@ public class Reactor(
                         local = options.local,
                         listener = Events(this),
                         sdkVersion = SDK_VERSION,
-                    ).also { handle = it }
+                    ).also { created ->
+                        handle = created
+                        if (closed.get()) {
+                            handle = null
+                            created.close()
+                            throw IllegalStateException("This Reactor is closed")
+                        }
+                    }
             }
         client.connect(sessionId)
     }
