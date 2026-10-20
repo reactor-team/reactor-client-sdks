@@ -15,7 +15,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   to start a session that generates one step at a time, and `connect()` fails
   with the new `GenerationModeMismatchError` when it does not. `step({ state,
   commands })` runs one step — every argument optional, so `step()` runs on the
-  model's current state — and resolves with its output per track (frame data
+  model's current state — and resolves with `step`, the step's number in the
+  session, and its output per track (frame data
   as typed arrays, and `rate`, the frames or samples per second the runtime
   reported for the track, 0 when it did not say), `elapsed` (the seconds the
   step's `generate()` took, or the time the model reported for the step), `files` (`{ name, contentType, size }`
@@ -34,7 +35,10 @@ versioning follows [Semantic Versioning](https://semver.org/).
   Refusals are typed: `StepRefusedError`, the new `StepNotReadyError` (the
   session cannot take a step yet; the step did not run),
   `StepCommandFailedError`, `StepSessionEndedError`,
-  `StepResultTooLargeError`, `UnsupportedFrameEncodingError`.
+  `StepResultTooLargeError`, `UnsupportedFrameEncodingError`. A refused step
+  changed nothing; `ReactorError.entry` names the part of the request at
+  fault, and `ReactorError.command_code` the code a failing step call's
+  handler raised.
 - `publishTrack()` resolves with a `PublishedTrack` handle, whose
   `pushFrame(frame)` feeds that track in a stepped session. Its
   `MediaStreamTrack` argument is now optional: a stepped session ignores one

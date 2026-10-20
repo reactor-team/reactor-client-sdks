@@ -619,9 +619,12 @@ export class Reactor implements Disposable {
    * HTTP from the session's step results, not carried here.
    *
    * Rejects with a `StepRefusedError` when the runtime or the model turns
-   * the step down, `StepNotReadyError` when the session cannot take a step
-   * yet (neither ran the step), `StepCommandFailedError` when a state key or
-   * command failed (the calls before it stay applied; the step did not run),
+   * the step down (the runtime checks a whole request first, so nothing it
+   * carried was applied), `StepNotReadyError` when the session cannot take a
+   * step yet (neither ran the step), `StepCommandFailedError` when a state key
+   * or command failed (the calls before it stay applied; the step did not
+   * run); both name the part at fault in `entry`, and `StepCommandFailedError`
+   * the handler's code in `command_code`,
    * `StepSessionEndedError` when the session ended before the result came
    * back, `StepResultTooLargeError` when the result does not fit in one
    * message, `MessageTooLargeError` when the request itself is too large

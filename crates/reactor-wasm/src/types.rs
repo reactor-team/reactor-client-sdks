@@ -175,6 +175,11 @@ export interface ReactorError {
   operation?: string;
   /** Backoff hint the platform sent. */
   retry_after_ms?: number;
+  /** For `step_refused` and `step_command_failed`, the part of the step
+   *  request at fault, e.g. `"commands[2]"`. */
+  entry?: string;
+  /** For `step_command_failed`, the code the failing handler raised. */
+  command_code?: string;
   timestamp_ms: number;
 }
 

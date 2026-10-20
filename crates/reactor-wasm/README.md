@@ -76,16 +76,18 @@ step's request cannot be sent — `MESSAGE_TOO_LARGE` among the reasons — the
 step rejects and its frames are dropped with it, so the next step starts from
 what is pushed after. `clearStepInputs()` drops whatever is buffered now.
 
-`step()` resolves with `{ index, tracks, elapsed, files, error? }`. Each track
+`step()` resolves with `{ step, tracks, elapsed, files, error? }`. Each track
 is `{ track, kind, rate, frames }`, `rate` being the rate its frames play at as
 the runtime reported it (frames per second for video, samples per second for
 audio; 0 when it did not say). `files`
 describes the files the model kept with the step (`name`, `contentType`,
 `size`); their bytes are served over HTTP from the session's step results.
 `error` is set when the step ran and the model reported a failure — such a
-step still resolves. A step that did not run rejects with `step_refused`,
-`step_not_ready` (the session cannot take a step yet) or `step_command_failed`
-(a state key or command failed). One whose result was too large for a message
+step still resolves. A step that did not run rejects with `step_refused`
+(nothing it carried was applied), `step_not_ready` (the session cannot take a
+step yet) or `step_command_failed` (a state key or command failed; the calls
+before it stay applied). Both of those carry `entry`, the part of the request
+at fault, and `step_command_failed` also `command_code`, its handler's code. One whose result was too large for a message
 rejects with `step_result_too_large`, and one whose session ended before the
 result came back with `step_session_ended`.
 

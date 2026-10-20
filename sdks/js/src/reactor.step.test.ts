@@ -107,7 +107,7 @@ describe('Reactor.step', () => {
   it('sends state and commands and resolves with the binding’s result', async () => {
     const { reactor, client } = await connected('stepped');
     const result: StepResult = {
-      index: 3,
+      step: 3,
       tracks: [
         {
           track: 'main_video',
@@ -150,6 +150,34 @@ describe('Reactor.step', () => {
     expect(reactor.getLastError()).toBe(error);
   });
 
+  it('names the request entry and the handler code a failed step call reported', async () => {
+    const { reactor, client } = await connected('stepped');
+
+    client.stepImpl = () =>
+      Promise.reject(
+        Object.assign(bindingError('step_command_failed', 'tag failed (queue_full): full'), {
+          entry: 'commands[2]',
+          command_code: 'queue_full',
+        }),
+      );
+
+    const error = await reactor.step().catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(StepCommandFailedError);
+    expect(error).toMatchObject({ entry: 'commands[2]', command_code: 'queue_full' });
+  });
+
+  it('leaves entry and command_code unset when the failure names none', async () => {
+    const { reactor, client } = await connected('stepped');
+
+    client.stepImpl = () => Promise.reject(bindingError('step_refused', 'no'));
+
+    const error = (await reactor.step().catch((e: unknown) => e)) as StepRefusedError;
+
+    expect(error.entry).toBeUndefined();
+    expect(error.command_code).toBeUndefined();
+  });
+
   it.each([
     ['step_not_ready', StepNotReadyError],
     ['step_command_failed', StepCommandFailedError],
@@ -170,7 +198,7 @@ describe('Reactor.step', () => {
     const { reactor, client } = await connected('stepped');
 
     client.stepResult = {
-      index: 1,
+      step: 1,
       tracks: [
         { track: 'main_video', kind: 'video', rate: 24, frames: [] },
         { track: 'main_audio', kind: 'audio', rate: 48000, frames: [] },
@@ -193,7 +221,7 @@ describe('Reactor.step', () => {
     const { reactor, client } = await connected('stepped');
 
     client.stepResult = {
-      index: 2,
+      step: 2,
       tracks: [],
       elapsed: 1,
       files: [{ name: 'depth.png', contentType: 'image/png', size: 2048 }],
@@ -208,11 +236,11 @@ describe('Reactor.step', () => {
   it('resolves a step that ran but failed, with its error, rather than rejecting', async () => {
     const { reactor, client } = await connected('stepped');
 
-    client.stepResult = { index: 4, tracks: [], elapsed: 0.5, files: [], error: 'out of memory' };
+    client.stepResult = { step: 4, tracks: [], elapsed: 0.5, files: [], error: 'out of memory' };
 
     const result = await reactor.step();
 
-    expect(result).toMatchObject({ index: 4, error: 'out of memory' });
+    expect(result).toMatchObject({ step: 4, error: 'out of memory' });
     expect(reactor.getLastError()).toBeUndefined();
   });
 

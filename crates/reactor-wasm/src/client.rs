@@ -590,10 +590,12 @@ impl ReactorClient {
     /// Every frame pushed since the previous step rides this one, and belongs
     /// to it: when the request cannot be sent the step fails and its frames
     /// are dropped, not kept for the next step. Rejects with the core's code:
-    /// `step_refused` (calls applied before the refusal stay applied),
+    /// `step_refused` (the runtime checks a whole request first, so a refused
+    /// step changed nothing; `entry` names the part at fault),
     /// `step_not_ready` (the session cannot take a step yet; the step did not
     /// run), `step_command_failed` (a state key or command failed; the calls
-    /// before it stay applied and the step did not run), `step_session_ended`
+    /// before it stay applied and the step did not run; `entry` names the call
+    /// and `command_code` its handler's code), `step_session_ended`
     /// (the session ended before the result came back),
     /// `step_result_too_large`, `MESSAGE_TOO_LARGE` (the request is over the
     /// data channel's message limit; nothing was sent),

@@ -35,7 +35,7 @@ impl From<StepCommandJson> for StepCommand {
 /// `StepOutput` as the `StepResult` the TypeScript declarations promise.
 pub(crate) fn output_to_js(output: StepOutput) -> Result<JsValue, JsValue> {
     let result = Object::new();
-    set(&result, "index", &JsValue::from_f64(output.index as f64))?;
+    set(&result, "step", &JsValue::from_f64(output.step as f64))?;
     let tracks = Array::new();
     for track in output.tracks {
         tracks.push(&track_to_js(track)?);

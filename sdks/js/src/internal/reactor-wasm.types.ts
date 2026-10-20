@@ -190,6 +190,11 @@ export interface ReactorError {
   status?: number;
   operation?: string;
   retry_after_ms?: number;
+  /** For `step_refused` and `step_command_failed`, the part of the step
+   *  request at fault, e.g. `"commands[2]"`. */
+  entry?: string;
+  /** For `step_command_failed`, the code the failing handler raised. */
+  command_code?: string;
   timestamp_ms: number;
 }
 
@@ -250,8 +255,9 @@ export interface StepFile {
 
 /** What one step produced. */
 export interface StepResult {
-  /** The step's number in the session, counted from 1. */
-  index: number;
+  /** The step's number in the session, counted from 1: the `step` of the
+   *  session's step results (`GET /sessions/{id}/steps/{step}`). */
+  step: number;
   tracks: StepTrack[];
   /** Seconds the step's `generate()` took, or the time the model reported for the step. */
   elapsed: number;

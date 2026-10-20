@@ -185,6 +185,17 @@ describe('errorForCode', () => {
     expect(errorForCode('step_session_ended')).toBe(StepSessionEndedError);
   });
 
+  it('carries a step failure\'s entry and command_code from the payload', () => {
+    const error = toReactorError({
+      code: 'step_command_failed',
+      entry: 'state.prompt',
+      command_code: 'bad',
+    });
+
+    expect(error).toBeInstanceOf(StepCommandFailedError);
+    expect([error.entry, error.command_code]).toEqual(['state.prompt', 'bad']);
+  });
+
   it('falls back to the base class for an unknown or missing code', () => {
     expect(errorForCode('SOME_NEW_PLATFORM_CODE')).toBe(ReactorError);
     expect(errorForCode(undefined)).toBe(ReactorError);
