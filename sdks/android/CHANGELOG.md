@@ -13,6 +13,10 @@ request as the bump.
 
 ### Added
 
+- Published to Maven Central as `inc.reactor:reactor-sdk-android` and
+  `inc.reactor:reactor-sdk-android-media`, with sources and javadoc, signed.
+- `Reactor.SDK_VERSION` is the AAR's own version, which is what the
+  coordinator records as `client_info.sdk_version`.
 - `Reactor.fetchJwt(apiUrl, apiKey, options, local)`, the standalone key→token
   exchange Java, Swift and Python already expose. Scope tokens with
   `options = """{"models":["owner/name"]}"""` before handing them to a client
@@ -21,6 +25,9 @@ request as the bump.
 
 ### Fixed
 
+- `kotlinx-coroutines-android` is an `api` dependency. The public surface is
+  `StateFlow` and `suspend`, and as an implementation dependency an app that
+  did not already depend on coroutines could not compile against it.
 - `ReactorOptions.apiKey` no longer connects with no credentials. The option was
   accepted but never read, so an app holding only a key connected without a
   token and the platform answered 401 "Missing Authorization header". `connect()`

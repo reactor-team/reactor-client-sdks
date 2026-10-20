@@ -752,6 +752,10 @@ jobs:
       # It also puts the packaging path back under a pull request: requireNativeArtifacts, the
       # 16 KB alignment check and the AAR's own layout are all on this task.
       - run: mise run build:android
+      # Stages the exact bundle a release uploads, unsigned. A publication Central would refuse —
+      # a POM missing its licence, an AAR without its -sources or -javadoc — fails the pull request
+      # that caused it, here, where the natives it needs are already staged.
+      - run: mise run build:android:central-bundle
       # The AAR's payload, handed to the emulator job rather than rebuilt there. Staging it is
       # minutes and gigabytes; downloading it is seconds.
       - uses: actions/upload-artifact@v4

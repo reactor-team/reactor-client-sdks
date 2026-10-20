@@ -16,7 +16,12 @@
  */
 
 plugins {
-    id("reactor-android-conventions")
+    id("reactor-android-publishing")
+}
+
+reactorPublication {
+    pomName = "Reactor Android SDK media helpers"
+    pomDescription = "Optional camera, microphone, speaker and renderer adapters for the Reactor Android SDK."
 }
 
 android {

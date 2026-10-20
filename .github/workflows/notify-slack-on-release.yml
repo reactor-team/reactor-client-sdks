@@ -22,6 +22,7 @@ on:
       # and this workflow silently never runs).
       - 'Release C\+\+ SDK'
       - "Release Swift SDK"
+      - "Release Android SDK"
     types: [completed]
     # A pull_request build of a release-*.yml workflow runs against the PR's
     # own branch, not main — restricting to main here already excludes those;
@@ -281,3 +282,61 @@ jobs:
           message: |
             `implementation("inc.reactor:reactor-sdk:${{ steps.version.outputs.version }}")`
             <https://central.sonatype.com/artifact/inc.reactor/reactor-sdk/${{ steps.version.outputs.version }}|Maven Central>
+
+  android:
+    name: Notify #sdk-releases (Android)
+    if: >-
+      github.event.workflow_run.name == 'Release Android SDK' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The workflow's top-level conclusion is also "success" for a pull-request build or a dry
+      # run, neither of which published anything — and so is the enclosing job's. release-android.yml
+      # gates its two publishing steps on the PUBLISH_ANDROID_RELEASE kill switch, so a run with the
+      # switch off skips them and still reports "Publish to Maven Central" as a plain success. This
+      # checks the step that actually ships, by the name that file gives it; announcing a release
+      # that never happened is worse than announcing none.
+      - name: Check whether this run actually published a release
+        id: released
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs" --paginate \
+            --jq '[.jobs[] | select(.name == "Publish to Maven Central") | .steps[]? | select(.name == "Publish")] | last | .conclusion // "missing"')
+          echo "publish step conclusion: $conclusion"
+          echo "released=$([ "$conclusion" = "success" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      # Read out of the repository at the commit that was released. A workflow_run carries no
+      # outputs from the run it watched, so the version comes from the same file detect-version
+      # itself reads.
+      - name: Read the released version
+        if: steps.released.outputs.released == 'true'
+        id: version
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          VERSION=$(git show "${HEAD_SHA}:sdks/android/gradle.properties" \
+            | sed -n 's/^version=\(.*\)$/\1/p' \
+            | head -1)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - if: steps.released.outputs.released == 'true'
+        uses: ./.github/actions/notify-slack
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_SDK_RELEASES }}
+          # This run is a different one from the run it reports on, so both the link and the name
+          # are taken from the watched run rather than from this notifier's own.
+          run-url: ${{ github.event.workflow_run.html_url }}
+          actor: ${{ github.event.workflow_run.actor.login }}
+          status: success
+          title: "Android SDK ${{ steps.version.outputs.version }} released"
+          message: |
+            `implementation("inc.reactor:reactor-sdk-android:${{ steps.version.outputs.version }}")`
+            <https://central.sonatype.com/artifact/inc.reactor/reactor-sdk-android/${{ steps.version.outputs.version }}|Maven Central>
