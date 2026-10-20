@@ -103,6 +103,13 @@ public class Reactor(
     private var mintedFor: Authentication.TokenScope? = null
 
     /**
+     * The model [handle] was created for. The native client takes its model at creation and a
+     * later connect cannot change it, so a connect to another model needs a new handle — whatever
+     * the token says. Under [handleLock] only.
+     */
+    private var handleModel: String? = null
+
+    /**
      * The listener the bridge holds.
      *
      * It reaches the client through a [WeakReference] on purpose: the native side keeps this
@@ -459,6 +466,15 @@ public class Reactor(
             handleLock.withLock {
                 check(!closed.get()) { "This Reactor is closed" }
                 mintForConnect(modelName, sessionId)
+                // A token re-mint is one reason to rebuild; another model is the other, and it holds
+                // even when the token text is unchanged. Without it a connect to model B went out on
+                // the client created for model A, because that is fixed at creation.
+                if (handle != null && handleModel != modelName) {
+                    retireHandle(
+                        "The client was rebuilt to connect to a different model. " +
+                            "Native work already started may still be running.",
+                    )
+                }
                 handle ?: NativeClient
                     .create(
                         apiUrl = options.apiUrl,
@@ -469,6 +485,7 @@ public class Reactor(
                         sdkVersion = SDK_VERSION,
                     ).also { created ->
                         handle = created
+                        handleModel = modelName
                         if (closed.get()) {
                             handle = null
                             created.close()
@@ -519,18 +536,27 @@ public class Reactor(
         token = minted
         mintedFor = wanted
         if (!changed) return
-        // Null on the very first mint: there is no handle yet, so nothing to rebuild around.
-        val old = handle ?: return
-        // Closing like close() does: the old handle's in-flight operations are settled rather
-        // than left waiting for completions reactor_destroy has ended — and the message says the
-        // native work may still be running, because a download outlives any handle. Then the
-        // create() in connect() builds the replacement around the new token.
-        Completions.abandonAll(
+        // The create() in connect() builds the replacement around the new token. Null handle on
+        // the very first mint, with nothing to rebuild around, is a no-op there.
+        retireHandle(
             "The token was re-minted for a different scope, which rebuilt the client. " +
                 "Native work already started may still be running.",
         )
-        old.close()
+    }
+
+    /**
+     * Close [handle] so connect() builds a new one, settling the old one's operations.
+     *
+     * The same order close() keeps: the handle first, so nothing more can launch on it, then its
+     * completions — only its own, since the registry is shared with every other client. Under
+     * [handleLock] only.
+     */
+    private fun retireHandle(reason: String) {
+        val old = handle ?: return
         handle = null
+        handleModel = null
+        old.close()
+        Completions.abandonAll(old, reason)
     }
 
     /**
