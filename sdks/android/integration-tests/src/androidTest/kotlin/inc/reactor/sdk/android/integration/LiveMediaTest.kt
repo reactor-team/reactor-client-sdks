@@ -187,11 +187,14 @@ internal class LiveMediaTest : LiveFixture() {
                     stragglers <= 2,
                 )
 
+                // Counted from the resume, not from the pause: the stragglers allowed above would
+                // otherwise satisfy this on their own, and a resume that delivered nothing would pass.
+                val beforeResume = received.get()
                 incoming.resume()
                 assertTrue("the track must report itself resumed", !incoming.paused)
                 Live.await("frames after resuming", timeoutMs = 60_000) {
                     outgoing.pushFrame(frame(0x33), WIDTH, HEIGHT)
-                    received.get() > whilePaused
+                    received.get() > beforeResume
                 }
             } finally {
                 incoming.removeHandlers()
