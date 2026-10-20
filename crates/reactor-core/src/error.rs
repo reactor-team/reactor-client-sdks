@@ -85,9 +85,9 @@ pub mod codes {
     /// outgrows it.
     pub const DATA_CHANNEL_CHUNKING_REQUIRED: &str = "DATA_CHANNEL_CHUNKING_REQUIRED";
     /// The runtime refused a step — the request or the model turned it down.
-    /// The calls it applied before the refusal stay applied: nothing is
-    /// rolled back. Lowercase, as the runtime names the outcome (its
-    /// `StepResult.failure_code` `REFUSED`).
+    /// The runtime checks the whole request before it applies any of it, so a
+    /// refused step changed nothing. Lowercase, as the runtime names the
+    /// outcome (its `StepResult.failure_code` `REFUSED`).
     pub const STEP_REFUSED: &str = "step_refused";
     /// The session cannot run a step yet: it is not in a running state that
     /// can take one. The step did not run. Lowercase, as [`STEP_REFUSED`].
@@ -150,6 +150,13 @@ pub struct ErrorDetails {
     /// Backoff hint in milliseconds, when the platform provided one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after_ms: Option<f64>,
+    /// For a step that did not run, the request entry at fault, such as
+    /// `"commands[2]"` or `"state.prompt"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
+    /// For a step whose call failed, the code the handler failed with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_code: Option<String>,
 }
 
 impl ErrorDetails {
@@ -163,6 +170,8 @@ impl ErrorDetails {
             status: None,
             operation: None,
             retry_after_ms: None,
+            entry: None,
+            command_code: None,
         }
     }
 }
@@ -264,9 +273,15 @@ pub enum CoreError {
     ChunkingRequired,
 
     /// The runtime refused the step (`step_refused`): the request or the model
-    /// turned it down. The calls it applied before the refusal stay applied.
+    /// turned it down. The runtime checks a whole request before it applies
+    /// any of it, so a request it refuses changed nothing; `entry` names the
+    /// part at fault (`state.<key>`, `commands[<i>]`, `media_input[<i>]`) when
+    /// one is.
     #[error("step refused: {message}")]
-    StepRefused { message: String },
+    StepRefused {
+        message: String,
+        entry: Option<String>,
+    },
 
     /// The session could not run the step yet (`step_not_ready`): it is not in
     /// a running state that can take one. The step did not run and nothing it
@@ -281,9 +296,15 @@ pub enum CoreError {
 
     /// The handler of one of the step's state keys or commands failed
     /// (`step_command_failed`). The calls before it stay applied, the ones
-    /// after it were skipped, and the step did not run.
+    /// after it were skipped, and the step did not run. `command_code` is the
+    /// stable code the handler failed with (its `CommandError` code, or
+    /// `internal_error`), and `entry` the call that failed.
     #[error("step command failed: {message}")]
-    StepCommandFailed { message: String },
+    StepCommandFailed {
+        message: String,
+        command_code: Option<String>,
+        entry: Option<String>,
+    },
 
     /// The session ended before the step's result could be sent
     /// (`step_session_ended`); whether the step ran is unknown.
@@ -417,6 +438,15 @@ impl CoreError {
             status: self.status(),
             operation: operation.map(str::to_string),
             retry_after_ms: self.retry_after_ms(),
+            entry: match self {
+                CoreError::StepRefused { entry, .. }
+                | CoreError::StepCommandFailed { entry, .. } => entry.clone(),
+                _ => None,
+            },
+            command_code: match self {
+                CoreError::StepCommandFailed { command_code, .. } => command_code.clone(),
+                _ => None,
+            },
         }
     }
 }
@@ -611,6 +641,7 @@ mod tests {
     fn step_failures_have_their_own_codes() {
         let refused = CoreError::StepRefused {
             message: "no".into(),
+            entry: None,
         };
         assert_eq!(refused.code(), codes::STEP_REFUSED);
         assert!(!refused.recoverable());
@@ -628,9 +659,16 @@ mod tests {
 
         let command_failed = CoreError::StepCommandFailed {
             message: "set_prompt failed".into(),
+            command_code: Some("bad".into()),
+            entry: Some("state.prompt".into()),
         };
         assert_eq!(command_failed.code(), codes::STEP_COMMAND_FAILED);
         assert!(!command_failed.recoverable());
+        let details = serde_json::to_value(command_failed.details(Some("step"))).unwrap();
+        assert_eq!(details["entry"], "state.prompt");
+        assert_eq!(details["command_code"], "bad");
+        let plain = serde_json::to_value(not_ready.details(None)).unwrap();
+        assert!(plain.get("entry").is_none() && plain.get("command_code").is_none());
 
         let session_ended = CoreError::StepSessionEnded {
             message: "gone".into(),

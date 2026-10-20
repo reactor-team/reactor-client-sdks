@@ -20,7 +20,7 @@
 //!
 //! A result names the extra files the model kept with the step
 //! ([`StepFile`]) but does not carry them; their bytes are fetched over HTTP
-//! from the session's step results (`GET /sessions/{id}/steps/{index}`), as
+//! from the session's step results (`GET /sessions/{id}/steps/{step}`), as
 //! in a streamed session.
 //!
 //! Frames travel as [`FrameEncoding::Raw`] today. Decoding goes through
@@ -335,8 +335,9 @@ pub fn raw_audio_frame(interleaved: &[i16], num_channels: u32) -> Option<Frame> 
 /// The outcome of one step: what the model produced, per output track.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StepOutput {
-    /// The step's number in the session, counted from 1.
-    pub index: u64,
+    /// The step's number in the session, counted from 1: the `step` of the
+    /// session's step results (`GET /sessions/{id}/steps/{step}`).
+    pub step: u64,
     pub tracks: Vec<TrackOutput>,
     /// Seconds the step's `generate()` took, or the time the model reported
     /// for the step.
@@ -355,7 +356,7 @@ pub struct StepOutput {
 
 /// A reference to one extra file a model kept with a step. The result carries
 /// the reference, not the bytes: they are fetched over HTTP from the session's
-/// step results (`GET /sessions/{id}/steps/{index}`), by the step's index and
+/// step results (`GET /sessions/{id}/steps/{step}`), by the step's number and
 /// the file's name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepFile {
@@ -492,7 +493,7 @@ impl FrameDecoders {
     /// fails on the first frame that cannot be decoded rather than returning a
     /// partial step.
     pub fn decode_result(&self, result: StepResult) -> Result<StepOutput, CoreError> {
-        if let Some(failure) = step_failure(result.failure_code, result.error.as_deref()) {
+        if let Some(failure) = step_failure(&result) {
             return Err(failure);
         }
         let tracks = result
@@ -523,7 +524,7 @@ impl FrameDecoders {
             })
             .collect::<Result<_, CoreError>>()?;
         Ok(StepOutput {
-            index: result.index,
+            step: result.step,
             tracks,
             elapsed: result.elapsed_seconds,
             files: result.files.into_iter().map(StepFile::from).collect(),
@@ -535,12 +536,15 @@ impl FrameDecoders {
 /// The failure a `StepResult`'s `failure_code` stands for, or `None` when the
 /// result is an output — the step worked, or ran and the model reported a
 /// failure (`FAILED`, which still resolves with its reason).
-fn step_failure(failure_code: i32, error: Option<&str>) -> Option<CoreError> {
+fn step_failure(result: &StepResult) -> Option<CoreError> {
+    let failure_code = result.failure_code;
+    let error = result.error.as_deref();
     let message = |default: &str| error.unwrap_or(default).to_string();
     match StepFailureCode::try_from(failure_code) {
         Ok(StepFailureCode::Unspecified | StepFailureCode::Failed) => None,
         Ok(StepFailureCode::Refused) => Some(CoreError::StepRefused {
             message: message("the runtime refused the step"),
+            entry: result.entry.clone(),
         }),
         Ok(StepFailureCode::NotReady) => Some(CoreError::StepNotReady {
             message: message("the session cannot run a step yet"),
@@ -550,6 +554,8 @@ fn step_failure(failure_code: i32, error: Option<&str>) -> Option<CoreError> {
         }),
         Ok(StepFailureCode::CommandFailed) => Some(CoreError::StepCommandFailed {
             message: message("one of the step's calls failed"),
+            command_code: result.code.clone(),
+            entry: result.entry.clone(),
         }),
         Ok(StepFailureCode::SessionEnded) => Some(CoreError::StepSessionEnded {
             message: message("the session ended before the step's result was sent"),
@@ -802,7 +808,7 @@ mod tests {
     #[test]
     fn decodes_a_step_result_per_track() {
         let result = StepResult {
-            index: 3,
+            step: 3,
             tracks: vec![
                 TrackFrames {
                     track: "main_video".into(),
@@ -825,9 +831,11 @@ mod tests {
             files: vec![],
             error: None,
             failure_code: StepFailureCode::Unspecified as i32,
+            code: None,
+            entry: None,
         };
         let output = FrameDecoders::default().decode_result(result).unwrap();
-        assert_eq!(output.index, 3);
+        assert_eq!(output.step, 3);
         assert_eq!(output.elapsed, 0.25);
         assert_eq!(output.tracks[0].track, "main_video");
         assert_eq!(output.tracks[0].kind, TrackKind::Video);
@@ -850,34 +858,78 @@ mod tests {
     #[test]
     fn a_failed_step_is_a_result_that_says_why() {
         let result = StepResult {
-            index: 5,
+            step: 5,
             tracks: vec![],
             elapsed_seconds: 0.1,
             files: vec![],
             error: Some("out of memory".into()),
             failure_code: StepFailureCode::Failed as i32,
+            code: None,
+            entry: None,
         };
         let output = FrameDecoders::default().decode_result(result).unwrap();
-        assert_eq!(output.index, 5);
+        assert_eq!(output.step, 5);
         assert_eq!(output.error.as_deref(), Some("out of memory"));
     }
 
     /// A step that did not run, or whose result was too large to send, is no
+    /// A refused or failed call names the request entry at fault, and a
+    /// failed handler its own code, so a caller branches on fields.
+    #[test]
+    fn a_failure_carries_its_entry_and_the_handlers_code() {
+        let decoders = FrameDecoders::default();
+        let refused = StepResult {
+            failure_code: StepFailureCode::Refused as i32,
+            error: Some("commands[0] is refused: text".into()),
+            entry: Some("commands[0]".into()),
+            ..Default::default()
+        };
+        match decoders.decode_result(refused) {
+            Err(CoreError::StepRefused { entry, .. }) => {
+                assert_eq!(entry.as_deref(), Some("commands[0]"))
+            }
+            other => panic!("expected StepRefused, got {other:?}"),
+        }
+        let failed = StepResult {
+            failure_code: StepFailureCode::CommandFailed as i32,
+            error: Some("tag failed (queue_full): full".into()),
+            code: Some("queue_full".into()),
+            entry: Some("commands[2]".into()),
+            ..Default::default()
+        };
+        match decoders.decode_result(failed) {
+            Err(CoreError::StepCommandFailed {
+                command_code,
+                entry,
+                ..
+            }) => {
+                assert_eq!(command_code.as_deref(), Some("queue_full"));
+                assert_eq!(entry.as_deref(), Some("commands[2]"));
+            }
+            other => panic!("expected StepCommandFailed, got {other:?}"),
+        }
+    }
+
     /// output: it is its own failure, with the runtime's reason as the message
     /// (or a stand-in when it gave none).
     #[test]
     fn a_failure_code_is_its_own_error() {
         let result = |failure_code: StepFailureCode, error: Option<&str>| StepResult {
-            index: 0,
+            step: 0,
             tracks: vec![],
             elapsed_seconds: 0.0,
             files: vec![],
             error: error.map(str::to_string),
             failure_code: failure_code as i32,
+            code: None,
+            entry: None,
         };
         let decoders = FrameDecoders::default();
         match decoders.decode_result(result(StepFailureCode::Refused, Some("bad command"))) {
-            Err(CoreError::StepRefused { message }) => assert_eq!(message, "bad command"),
+            Err(CoreError::StepRefused { message, entry }) => {
+                assert_eq!(message, "bad command");
+                assert_eq!(entry, None);
+            }
             other => panic!("expected StepRefused, got {other:?}"),
         }
         match decoders.decode_result(result(StepFailureCode::NotReady, Some("starting"))) {
@@ -892,7 +944,7 @@ mod tests {
             StepFailureCode::CommandFailed,
             Some("set_prompt failed (bad): no"),
         )) {
-            Err(CoreError::StepCommandFailed { message }) => {
+            Err(CoreError::StepCommandFailed { message, .. }) => {
                 assert_eq!(message, "set_prompt failed (bad): no")
             }
             other => panic!("expected StepCommandFailed, got {other:?}"),
@@ -913,7 +965,7 @@ mod tests {
     #[test]
     fn decodes_the_files_a_step_kept_in_order() {
         let result = StepResult {
-            index: 2,
+            step: 2,
             tracks: vec![],
             elapsed_seconds: 1.5,
             files: vec![
@@ -930,6 +982,8 @@ mod tests {
             ],
             error: None,
             failure_code: StepFailureCode::Unspecified as i32,
+            code: None,
+            entry: None,
         };
         let output = FrameDecoders::default().decode_result(result).unwrap();
         assert_eq!(output.elapsed, 1.5);
@@ -958,7 +1012,7 @@ mod tests {
         use prost::Message;
 
         let bytes = StepResult {
-            index: 1,
+            step: 1,
             tracks: vec![],
             elapsed_seconds: 0.5,
             files: vec![StepFileRef {
@@ -968,6 +1022,8 @@ mod tests {
             }],
             error: Some("partial".into()),
             failure_code: StepFailureCode::Failed as i32,
+            code: None,
+            entry: None,
         }
         .encode_to_vec();
         let decoded = StepResult::decode(bytes.as_slice()).unwrap();
@@ -987,7 +1043,7 @@ mod tests {
     #[test]
     fn an_unknown_encoding_is_a_typed_error() {
         let result = StepResult {
-            index: 1,
+            step: 1,
             tracks: vec![TrackFrames {
                 track: "v".into(),
                 kind: WireTrackKind::Video as i32,
@@ -1001,6 +1057,8 @@ mod tests {
             files: vec![],
             error: None,
             failure_code: StepFailureCode::Unspecified as i32,
+            code: None,
+            entry: None,
         };
         match FrameDecoders::default().decode_result(result) {
             Err(CoreError::UnsupportedFrameEncoding { track, encoding }) => {

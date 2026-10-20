@@ -204,8 +204,9 @@ export class DataChannelChunkingRequiredError extends ReactorError {
 }
 
 /** The runtime refused a `step()` — the request or the model turned it down.
- *  The calls it applied before the refusal stay applied: nothing is rolled
- *  back. The code is the runtime's own, passed through, hence lowercase. */
+ *  The runtime checks the whole request before it applies any of it, so a
+ *  refused step changed nothing. The code is the runtime's own, passed
+ *  through, hence lowercase. */
 export class StepRefusedError extends ReactorError {
   static override readonly code = 'step_refused';
 }

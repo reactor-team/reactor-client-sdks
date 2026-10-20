@@ -276,8 +276,8 @@ class UnsupportedFrameEncodingError(ReactorError):
 class StepRefusedError(ReactorError):
     """The runtime refused a step — the request or the model turned it down.
 
-    The calls it applied before the refusal stay applied — nothing is rolled
-    back — and the step's input frames are gone with it. Lowercase
+    The runtime checks the whole request before it applies any of it, so a
+    refused step changed nothing; its input frames are gone with it. Lowercase
     because it is the runtime's own code, passed through.
     """
 

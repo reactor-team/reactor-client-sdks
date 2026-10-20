@@ -313,7 +313,7 @@ mod tests {
         let result = encode_response(
             &pending.request_id,
             data_server_message::Payload::StepResult(StepResult {
-                index: 1,
+                step: 1,
                 tracks: vec![],
                 elapsed_seconds: 0.0,
                 files: vec![StepFileRef {
@@ -323,6 +323,8 @@ mod tests {
                 }],
                 error: None,
                 failure_code: StepFailureCode::Unspecified as i32,
+                code: None,
+                entry: None,
             }),
         );
         let handled = c.handle_message(&result).unwrap();

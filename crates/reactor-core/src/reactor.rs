@@ -891,7 +891,7 @@ impl Reactor {
             }
             Some(data_server_message::Payload::StepResult(result)) if !handled.correlated => {
                 // Its step() already gave up (timeout) — nobody to hand it to.
-                log::warn!("dropping uncorrelated result of step {}", result.index);
+                log::warn!("dropping uncorrelated result of step {}", result.step);
             }
             Some(data_server_message::Payload::StepResult(_)) => {
                 // Delivered to the awaiting step() call.
@@ -4866,7 +4866,7 @@ mod tests {
             &sent.request_id,
             MessageKind::Response,
             data_server_message::Payload::StepResult(StepResult {
-                index: 1,
+                step: 1,
                 tracks: vec![TrackFrames {
                     track: "out".into(),
                     kind: WireTrackKind::Video as i32,
@@ -4877,11 +4877,13 @@ mod tests {
                 files: vec![],
                 error: None,
                 failure_code: StepFailureCode::Unspecified as i32,
+                code: None,
+                entry: None,
             }),
         )
         .await;
         let output = stepping.await.unwrap().unwrap();
-        assert_eq!(output.index, 1);
+        assert_eq!(output.step, 1);
         assert_eq!(output.elapsed, 1.5);
         assert_eq!(output.tracks[0].track, "out");
         assert_eq!(output.tracks[0].frames[0].data, [9, 9, 9]);
@@ -4902,7 +4904,7 @@ mod tests {
             &sent.request_id,
             MessageKind::Response,
             data_server_message::Payload::StepResult(StepResult {
-                index: 4,
+                step: 4,
                 tracks: vec![],
                 elapsed_seconds: 0.5,
                 files: vec![StepFileRef {
@@ -4912,11 +4914,13 @@ mod tests {
                 }],
                 error: None,
                 failure_code: StepFailureCode::Unspecified as i32,
+                code: None,
+                entry: None,
             }),
         )
         .await;
         let output = stepping.await.unwrap().unwrap();
-        assert_eq!(output.index, 4);
+        assert_eq!(output.step, 4);
         assert_eq!(output.elapsed, 0.5);
         assert!(output.error.is_none());
         assert_eq!(
@@ -4948,17 +4952,19 @@ mod tests {
             &sent.request_id,
             MessageKind::Response,
             data_server_message::Payload::StepResult(StepResult {
-                index: 2,
+                step: 2,
                 tracks: vec![],
                 elapsed_seconds: 0.2,
                 files: vec![],
                 error: Some("generate() raised".into()),
                 failure_code: StepFailureCode::Failed as i32,
+                code: None,
+                entry: None,
             }),
         )
         .await;
         let output = stepping.await.unwrap().unwrap();
-        assert_eq!(output.index, 2);
+        assert_eq!(output.step, 2);
         assert_eq!(output.error.as_deref(), Some("generate() raised"));
     }
 
@@ -4971,7 +4977,7 @@ mod tests {
             (
                 StepFailureCode::Refused,
                 codes::STEP_REFUSED,
-                |e| matches!(e, CoreError::StepRefused { message } if message == "no"),
+                |e| matches!(e, CoreError::StepRefused { message, .. } if message == "no"),
             ),
             (
                 StepFailureCode::NotReady,
@@ -4995,12 +5001,14 @@ mod tests {
                 &sent.request_id,
                 MessageKind::Response,
                 data_server_message::Payload::StepResult(StepResult {
-                    index: if ran { 3 } else { 0 },
+                    step: if ran { 3 } else { 0 },
                     tracks: vec![],
                     elapsed_seconds: if ran { 0.4 } else { 0.0 },
                     files: vec![],
                     error: Some("no".into()),
                     failure_code: failure_code as i32,
+                    code: None,
+                    entry: None,
                 }),
             )
             .await;
@@ -5050,7 +5058,7 @@ mod tests {
             &sent.request_id,
             MessageKind::Response,
             data_server_message::Payload::StepResult(StepResult {
-                index: 1,
+                step: 1,
                 tracks: vec![TrackFrames {
                     track: "out".into(),
                     kind: WireTrackKind::Video as i32,
@@ -5064,6 +5072,8 @@ mod tests {
                 files: vec![],
                 error: None,
                 failure_code: StepFailureCode::Unspecified as i32,
+                code: None,
+                entry: None,
             }),
         )
         .await;
@@ -5285,12 +5295,14 @@ mod tests {
             &sent.request_id,
             MessageKind::Response,
             data_server_message::Payload::StepResult(StepResult {
-                index: 1,
+                step: 1,
                 tracks: vec![],
                 elapsed_seconds: 0.0,
                 files: vec![],
                 error: None,
                 failure_code: StepFailureCode::Unspecified as i32,
+                code: None,
+                entry: None,
             }),
         )
         .await;
