@@ -131,8 +131,11 @@ A model that supports it can generate one step at a time instead of streaming.
 Ask for it when creating the client, then call `step()`: the runtime applies the
 state (each key as the model's `set_<key>` command), then the commands, then
 every input frame pushed since the previous step, generates, and the step
-completes with what the model produced on each output track. These are separate
-calls, not a transaction — nothing is rolled back if a later one fails. Every
+completes with what the model produced on each output track. The runtime checks
+the whole request before it applies any of it, so a refused step changed nothing
+(`StepRefusedException.entry()` names the part at fault); a step whose call
+failed keeps the calls before it (`StepCommandFailedException.entry()` and
+`commandCode()` name the call and the code its handler raised). Every
 part is optional: `step()` with no arguments runs on the model's current state,
 and commands sent with `sendCommand` outside a step still change the state the
 next step uses.

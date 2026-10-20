@@ -9,7 +9,7 @@ import org.jspecify.annotations.Nullable;
  * Turning the FFI's error JSON into a typed exception.
  *
  * <p>The shape is the header's: {@code {code, message, recoverable, status?, operation?,
- * retry_after_ms?}}, plus {@code timestamp_ms} on the event channel. {@code recoverable} is read
+ * retry_after_ms?, entry?, command_code?}}, plus {@code timestamp_ms} on the event channel. {@code recoverable} is read
  * past deliberately — it is derived from the code here, and in every other SDK, so that two of them
  * cannot disagree about whether a timeout is worth retrying.
  */
@@ -56,7 +56,9 @@ public final class ErrorPayloads {
                 message == null || message.isBlank() ? "the operation failed" : message,
                 integer(fields.get("status")),
                 string(fields.get("operation")) == null ? fallbackOperation : string(fields.get("operation")),
-                longValue(fields.get("retry_after_ms")));
+                longValue(fields.get("retry_after_ms")),
+                string(fields.get("entry")),
+                string(fields.get("command_code")));
     }
 
     private static @Nullable String string(@Nullable Object value) {

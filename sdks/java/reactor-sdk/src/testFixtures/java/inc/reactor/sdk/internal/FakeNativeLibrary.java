@@ -154,7 +154,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
         bind("reactor_create_with_options", Ffi.Symbol.CREATE_WITH_OPTIONS.descriptor(), "createWithOptions");
         bind("reactor_step", Ffi.Symbol.STEP.descriptor(), "step");
         bind("reactor_clear_step_inputs", Ffi.Symbol.CLEAR_STEP_INPUTS.descriptor(), "clearStepInputs");
-        bind("reactor_step_result_index", Ffi.Symbol.STEP_RESULT_INDEX.descriptor(), "stepResultIndex");
+        bind("reactor_step_result_step", Ffi.Symbol.STEP_RESULT_STEP.descriptor(), "stepResultStep");
         bind("reactor_step_result_elapsed", Ffi.Symbol.STEP_RESULT_ELAPSED.descriptor(), "stepResultElapsed");
         bind("reactor_step_result_error", Ffi.Symbol.STEP_RESULT_ERROR.descriptor(), "stepResultError");
         bind("reactor_step_result_file_count", Ffi.Symbol.STEP_RESULT_FILE_COUNT.descriptor(), "stepResultFileCount");
@@ -784,7 +784,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
 
     /** The native side of a result: everything its accessors hand out, allocated once. */
     private record NativeStepResult(
-            long index, List<NativeTrack> tracks, double elapsed, List<NativeFile> files, MemorySegment error) {}
+            long step, List<NativeTrack> tracks, double elapsed, List<NativeFile> files, MemorySegment error) {}
 
     /** One file a fake step result names, as a test describes it. */
     public record StepFileSpec(String name, String contentType, long size) {}
@@ -984,9 +984,9 @@ public final class FakeNativeLibrary implements AutoCloseable {
                 : found.frames().get(f);
     }
 
-    private long stepResultIndex(MemorySegment result) {
+    private long stepResultStep(MemorySegment result) {
         NativeStepResult found = live(result);
-        return found == null ? 0 : found.index();
+        return found == null ? 0 : found.step();
     }
 
     private double stepResultElapsed(MemorySegment result) {

@@ -145,7 +145,7 @@ public final class Ffi {
                 FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS)),
         STEP("reactor_step", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS)),
         CLEAR_STEP_INPUTS("reactor_clear_step_inputs", FunctionDescriptor.ofVoid(ADDRESS)),
-        STEP_RESULT_INDEX("reactor_step_result_index", FunctionDescriptor.of(JAVA_LONG, ADDRESS)),
+        STEP_RESULT_STEP("reactor_step_result_step", FunctionDescriptor.of(JAVA_LONG, ADDRESS)),
         STEP_RESULT_ELAPSED("reactor_step_result_elapsed", FunctionDescriptor.of(JAVA_DOUBLE, ADDRESS)),
         STEP_RESULT_ERROR("reactor_step_result_error", FunctionDescriptor.of(ADDRESS, ADDRESS)),
         STEP_RESULT_FILE_COUNT("reactor_step_result_file_count", FunctionDescriptor.of(JAVA_INT, ADDRESS)),

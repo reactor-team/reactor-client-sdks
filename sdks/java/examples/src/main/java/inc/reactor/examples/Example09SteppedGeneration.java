@@ -91,14 +91,14 @@ public final class Example09SteppedGeneration {
 
                     StepResult result = reactor.step(state, commands).join();
                     System.out.printf(
-                            java.util.Locale.ROOT, "step %d: generated in %.3f s%n", result.index(), result.elapsed());
+                            java.util.Locale.ROOT, "step %d: generated in %.3f s%n", result.step(), result.elapsed());
                     // A step the model reported as failed still completes; only a refused one throws.
                     result.error()
-                            .ifPresent(why -> System.out.println("step " + result.index() + ": model error: " + why));
+                            .ifPresent(why -> System.out.println("step " + result.step() + ": model error: " + why));
                     for (StepFile file : result.files()) {
                         // Named only: fetch the bytes over HTTP from the session's step results.
-                        System.out.println("step " + result.index() + ": kept " + file.name() + " ("
-                                + file.contentType() + ", " + file.size() + " bytes)");
+                        System.out.println("step " + result.step() + ": kept " + file.name() + " (" + file.contentType()
+                                + ", " + file.size() + " bytes)");
                     }
 
                     for (StepTrackOutput track : result.tracks()) {
@@ -106,7 +106,7 @@ public final class Example09SteppedGeneration {
                                 .map(StepFrame::shape)
                                 .map(Arrays::toString)
                                 .collect(Collectors.joining(", "));
-                        System.out.println("step " + result.index() + ": " + track.name() + " ("
+                        System.out.println("step " + result.step() + ": " + track.name() + " ("
                                 + track.kind().name().toLowerCase(java.util.Locale.ROOT) + ") "
                                 + track.frames().size() + " frame(s) " + shapes);
                     }

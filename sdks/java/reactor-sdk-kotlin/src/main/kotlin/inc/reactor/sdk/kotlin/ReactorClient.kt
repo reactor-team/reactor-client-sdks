@@ -187,8 +187,10 @@ public class ReactorClient(
      * The runtime applies, in order: [state] (each key as the model's `set_<key>` command), then
      * [commands], then every input frame pushed since the previous step — in a stepped session
      * [ReactorTrack.pushFrame] buffers for the next step instead of sending — and then generates.
-     * These are separate calls, not a transaction: nothing applied is rolled back if a later one
-     * fails. Both parameters are optional; `step()` with neither runs on the model's current state.
+     * The runtime checks the whole request before it applies any of it, so a step it refuses
+     * changed nothing; past that check these are separate calls, so a call whose handler fails
+     * leaves the calls before it applied. Both parameters are optional; `step()` with neither runs
+     * on the model's current state.
      *
      * A step the model reported as failed still returns, with [StepResult.error] saying why; only a
      * refused step throws. [StepResult.files] names the files the model kept with the step.
@@ -213,11 +215,12 @@ public class ReactorClient(
      * @param commands what to run after the state, in order
      * @return the step's result, copied onto the heap
      * @throws inc.reactor.sdk.StepRefusedException when the runtime or the model turns the step
-     *   down
+     *   down; nothing it carried was applied, and its `entry()` names the part at fault
      * @throws inc.reactor.sdk.StepNotReadyException when the session cannot take a step yet; the
      *   step did not run
      * @throws inc.reactor.sdk.StepCommandFailedException when one of its state keys or commands
-     *   failed; the step did not run, and the calls before it stay applied
+     *   failed; the step did not run, the calls before it stay applied, and its `entry()` and
+     *   `commandCode()` name the call and the code its handler raised
      * @throws inc.reactor.sdk.StepSessionEndedException when the session ended before its result
      *   came; whether it ran is unknown
      * @throws inc.reactor.sdk.StepResultTooLargeException when its output does not fit in a message

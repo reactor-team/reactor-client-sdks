@@ -4,7 +4,9 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * The runtime refused a step — the request or the model turned it down. The runtime checks the
- * whole request before it applies any of it, so a refused step changed nothing.
+ * whole request before it applies any of it, so a refused step changed nothing. {@link #entry()}
+ * names the part of the request at fault ({@code "state.<key>"}, {@code "commands[<i>]"}, {@code
+ * "media_input[<i>]"}), when one is.
  *
  * <p>Code {@code step_refused}: lowercase because it is the runtime's own code, passed through.
  */

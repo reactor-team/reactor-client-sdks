@@ -313,8 +313,9 @@ public final class Reactor implements AutoCloseable {
      * <p>The runtime applies, in order: {@code state} (each key as the model's {@code set_<key>}
      * command), then {@code commands}, then every input frame pushed since the previous step — in
      * a stepped session {@link Track#pushFrame(byte[], int, int)} does not send, it buffers for the
-     * next step — and then generates. These are separate calls, not a transaction: nothing applied
-     * is rolled back if a later one fails. Every part is optional; {@link #step()} with nothing
+     * next step — and then generates. The runtime checks the whole request before it applies any of
+     * it, so a step it refuses changed nothing; past that check these are separate calls, so a call
+     * whose handler fails leaves the calls before it applied. Every part is optional; {@link #step()} with nothing
      * runs on the model's current state. Commands sent with {@link #sendCommand} outside a step
      * still work in a stepped session and change the state the next step uses.
      *
@@ -342,7 +343,7 @@ public final class Reactor implements AutoCloseable {
      *
      * <p>A step that ran but that the model reported as failed still completes normally, with
      * {@link StepResult#error()} saying why. The future fails with {@link StepRefusedException}
-     * when the runtime turns the step down (calls applied before the refusal stay applied), {@link
+     * when the runtime turns the step down (nothing it carried was applied), {@link
      * StepNotReadyException} when the session cannot take a step yet (the step did not run), {@link
      * StepCommandFailedException} when one of its state keys or commands failed (the step did not
      * run; the calls before it stay applied), {@link StepSessionEndedException} when the session

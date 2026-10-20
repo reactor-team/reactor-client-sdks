@@ -80,7 +80,7 @@ class SteppedTest {
             ),
         )
         val result = stepping.await()
-        assertEquals(2L, result.index())
+        assertEquals(2L, result.step())
         assertArrayEquals(
             byteArrayOf(9, 8, 7),
             result.track("screen_out").frames().single().toByteArray(),

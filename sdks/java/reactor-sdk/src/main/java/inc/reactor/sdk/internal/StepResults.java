@@ -66,7 +66,7 @@ final class StepResults {
     }
 
     private static StepResult readOrThrow(Ffi ffi, MemorySegment result) throws Throwable {
-        long index = (long) ffi.handle(Ffi.Symbol.STEP_RESULT_INDEX).invokeExact(result);
+        long step = (long) ffi.handle(Ffi.Symbol.STEP_RESULT_STEP).invokeExact(result);
         int trackCount = (int) ffi.handle(Ffi.Symbol.STEP_RESULT_TRACK_COUNT).invokeExact(result);
         List<StepTrackOutput> tracks = new ArrayList<>(Math.max(trackCount, 0));
         for (int t = 0; t < trackCount; t++) {
@@ -103,7 +103,7 @@ final class StepResults {
         MemorySegment errorText =
                 (MemorySegment) ffi.handle(Ffi.Symbol.STEP_RESULT_ERROR).invokeExact(result);
         Optional<String> error = Optional.ofNullable(NativeStrings.borrow(errorText));
-        return new StepResult(index, tracks, elapsed, files, error);
+        return new StepResult(step, tracks, elapsed, files, error);
     }
 
     @SuppressWarnings("restricted") // reinterpret: bounded by the lengths the accessors report

@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -155,7 +156,7 @@ final class SteppedGenerationTest {
                 0.25);
 
         StepResult result = pending.get();
-        assertEquals(3, result.index());
+        assertEquals(3, result.step());
         assertEquals(0.25, result.elapsed());
         assertEquals(
                 List.of("main_video", "speech"),
@@ -207,7 +208,7 @@ final class SteppedGenerationTest {
         CompletableFuture<StepResult> nulls = reactor.step(null, null);
         assertEquals("[]", fake.lastStepCommands);
         fake.settleLastStep(2, List.of());
-        assertEquals(2, nulls.get().index());
+        assertEquals(2, nulls.get().step());
     }
 
     @Test
@@ -243,6 +244,35 @@ final class SteppedGenerationTest {
         assertStepFailsWith("MESSAGE_TOO_LARGE", MessageTooLargeException.class);
         assertStepFailsWith("UNSUPPORTED_FRAME_ENCODING", UnsupportedFrameEncodingException.class);
         assertStepFailsWith("REQUEST_TIMEOUT", RequestTimeoutException.class);
+    }
+
+    @Test
+    @DisplayName("a failed step's call names its entry and the code its handler raised")
+    void aFailedCallCarriesItsEntryAndCode() {
+        CompletableFuture<StepResult> pending = reactor.step();
+        fake.failLastStep("{\"code\":\"step_command_failed\",\"message\":\"tag failed (queue_full): full\","
+                + "\"recoverable\":false,\"operation\":\"step\",\"entry\":\"commands[2]\","
+                + "\"command_code\":\"queue_full\"}");
+
+        StepCommandFailedException cause = assertInstanceOf(
+                StepCommandFailedException.class,
+                assertThrows(ExecutionException.class, pending::get).getCause());
+        assertEquals("commands[2]", cause.entry());
+        assertEquals("queue_full", cause.commandCode());
+    }
+
+    @Test
+    @DisplayName("a refused step names the entry at fault, and carries no command code")
+    void aRefusedStepCarriesItsEntry() {
+        CompletableFuture<StepResult> pending = reactor.step();
+        fake.failLastStep("{\"code\":\"step_refused\",\"message\":\"media_input[0] holds too many frames\","
+                + "\"recoverable\":false,\"operation\":\"step\",\"entry\":\"media_input[0]\"}");
+
+        StepRefusedException cause = assertInstanceOf(
+                StepRefusedException.class,
+                assertThrows(ExecutionException.class, pending::get).getCause());
+        assertEquals("media_input[0]", cause.entry());
+        assertNull(cause.commandCode());
     }
 
     @Test
@@ -457,7 +487,7 @@ final class SteppedGenerationTest {
         fake.settleLastStep(5, List.of(), 0.1, List.of(), "out of memory");
 
         StepResult result = pending.get();
-        assertEquals(5, result.index());
+        assertEquals(5, result.step());
         assertEquals("out of memory", result.error().orElseThrow());
         assertEquals(List.of(), result.files());
         assertTrue(fake.stepResultsFreedExactlyOnce());
