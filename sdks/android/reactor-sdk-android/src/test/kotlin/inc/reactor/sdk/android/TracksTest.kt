@@ -70,6 +70,18 @@ class TracksTest {
         assertEquals(a.name, b.name)
     }
 
+    /** List's contract: equal elements in the same order are equal lists, whatever the class. */
+    @Test
+    fun `equivalent filters compare equal, as any List must`() {
+        val all = tracks()
+        val a = all.withKind(TrackKind.VIDEO).withDirection(TrackDirection.RECVONLY)
+        val b = all.withDirection(TrackDirection.RECVONLY).withKind(TrackKind.VIDEO)
+        assertEquals(a, b)
+        assertEquals(a.hashCode(), b.hashCode())
+        assertEquals(a, a.toList())
+        assertEquals(a.toList(), a)
+    }
+
     @Test
     fun `one() names the candidates when there is more than one`() {
         val error =

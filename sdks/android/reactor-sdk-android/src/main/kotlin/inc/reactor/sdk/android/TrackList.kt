@@ -58,5 +58,11 @@ public class TrackList internal constructor(
     /** What the *session* declared — see [declared]. Not the filtered subset. */
     private fun describeAll(): String = if (declared.isEmpty()) "nothing" else declared.joinToString(", ") { it.name }
 
+    // Delegation forwards List's members, not Any's, so without these a TrackList compared by
+    // identity — breaking List's contract that two lists with the same elements are equal.
+    override fun equals(other: Any?): Boolean = other is List<*> && tracks == other
+
+    override fun hashCode(): Int = tracks.hashCode()
+
     override fun toString(): String = "TrackList(${tracks.joinToString(", ") { it.name }})"
 }

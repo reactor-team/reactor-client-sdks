@@ -177,14 +177,19 @@ public class Reactor(
      * ordinary — the model generates whether or not anyone collects — and there is nowhere to
      * raise to on an FFI thread. The count is what makes "my handler never fires" diagnosable.
      */
-    @Volatile
-    public var droppedFrames: Long = 0L
-        private set
+    public val droppedFrames: Long
+        get() = dropped.get()
+
+    // Atomic, not @Volatile: video and audio are delivered on separate native threads, and two
+    // drops at once would each read, add and write the same value, losing one.
+    private val dropped =
+        java.util.concurrent.atomic
+            .AtomicLong()
 
     private fun dropFrame(
         @Suppress("UNUSED_PARAMETER") track: String,
     ) {
-        droppedFrames += 1
+        dropped.incrementAndGet()
     }
 
     /**
