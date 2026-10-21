@@ -101,22 +101,33 @@ public class Track internal constructor(
         owner.unpublish(name)
     }
 
-    /** Stop this track's transceiver. Nothing is generated while paused. */
+    /**
+     * Stop this track's transceiver. Nothing is generated while paused.
+     *
+     * @throws InvalidStateException on a sendonly track: what stops one sending is [unpublish].
+     */
     public suspend fun pause() {
+        requireReceivable("pause", "To stop sending into it, unpublish() it.")
         owner.pause(name)
     }
 
-    /** Restart it. */
+    /**
+     * Restart it.
+     *
+     * @throws InvalidStateException on a sendonly track: what starts one sending is [publish].
+     */
     public suspend fun resume() {
+        requireReceivable("resume", "To start sending into it, publish() it.")
         owner.resume(name)
     }
 
     /**
      * Push one BGRA video frame.
      *
-     * @param pixels a **direct** [java.nio.ByteBuffer] of exactly `width * height * 4` bytes.
-     *   Direct because the native layer reads it in place: a heap buffer has no address to pass,
-     *   and copying every frame would be an expensive default for the common case.
+     * @param pixels a **direct** [java.nio.ByteBuffer] with exactly `width * height * 4` bytes
+     *   remaining, read from its current position. Direct because the native layer reads it in
+     *   place: a heap buffer has no address to pass, and copying every frame would be an
+     *   expensive default for the common case.
      * @param userData an opaque per-frame tag. Dropped unless the far end declared that it reads
      *   tags, so attaching one is safe whatever the model supports.
      */
@@ -130,6 +141,15 @@ public class Track internal constructor(
         requireKindForPush(TrackKind.VIDEO, "video frames")
         requirePublished()
 
+        // Positive first: the native layer takes both as unsigned, so -1 x -1 would pass the
+        // length check below with a 4-byte buffer and then be read as an enormous frame.
+        if (width <= 0 || height <= 0) {
+            throw ErrorCode.toException(
+                wire = "BAD_REQUEST",
+                message = "'$name' was given a ${width}x$height frame; both dimensions must be positive.",
+                operation = "pushFrame",
+            )
+        }
         val expected = width.toLong() * height.toLong() * 4L
         if (pixels.remaining().toLong() != expected) {
             throw ErrorCode.toException(
@@ -144,13 +164,19 @@ public class Track internal constructor(
         require(pixels.isDirect) {
             "pushFrame needs a direct ByteBuffer — ByteBuffer.allocateDirect(), not allocate()"
         }
-        owner.pushVideoFrame(name, pixels, width, height, userData)
+        // A slice, because the native side reads from the buffer's base address: without it a
+        // buffer with a nonzero position would send the wrong bytes.
+        owner.pushVideoFrame(name, pixels.slice(), width, height, userData)
     }
 
     /**
      * Push interleaved signed 16-bit PCM.
      *
+     * @param pcm a **direct** [java.nio.ByteBuffer] with exactly `samplesPerChannel * channels * 2`
+     *   bytes remaining, read from its current position.
      * @param samplesPerChannel frames per channel, **not** total samples — the ABI's own units.
+     * @param sampleRate 8000, 16000, 24000, 32000, 44100 or 48000 Hz.
+     * @param channels 1 or 2.
      */
     public fun pushFrame(
         pcm: java.nio.ByteBuffer,
@@ -161,10 +187,38 @@ public class Track internal constructor(
         requireSendable("pushFrame")
         requireKindForPush(TrackKind.AUDIO, "audio frames")
         requirePublished()
+        // Checked here because the native layer takes every count as unsigned and reads exactly
+        // what they describe: a negative count, or a buffer shorter than they say, reads past it.
+        if (sampleRate !in SUPPORTED_SAMPLE_RATES || channels !in 1..2) {
+            throw ErrorCode.toException(
+                wire = "BAD_REQUEST",
+                message =
+                    "'$name' was given $sampleRate Hz with $channels channel(s); the supported " +
+                        "formats are ${SUPPORTED_SAMPLE_RATES.joinToString()} Hz and 1 or 2 channels.",
+                operation = "pushFrame",
+            )
+        }
+        if (samplesPerChannel <= 0) {
+            throw ErrorCode.toException(
+                wire = "BAD_REQUEST",
+                message = "'$name' was given $samplesPerChannel samples per channel; it must be positive.",
+                operation = "pushFrame",
+            )
+        }
+        val expected = samplesPerChannel.toLong() * channels.toLong() * 2L
+        if (pcm.remaining().toLong() != expected) {
+            throw ErrorCode.toException(
+                wire = "BAD_REQUEST",
+                message =
+                    "'$name' was given ${pcm.remaining()} bytes for $samplesPerChannel samples " +
+                        "per channel x $channels channel(s) of 16-bit PCM, which needs exactly $expected.",
+                operation = "pushFrame",
+            )
+        }
         require(pcm.isDirect) {
             "pushFrame needs a direct ByteBuffer — ByteBuffer.allocateDirect(), not allocate()"
         }
-        owner.pushAudioFrame(name, pcm, samplesPerChannel, sampleRate, channels)
+        owner.pushAudioFrame(name, pcm.slice(), samplesPerChannel, sampleRate, channels)
     }
 
     private fun requireSendable(operation: String) {
@@ -212,14 +266,15 @@ public class Track internal constructor(
         }
     }
 
-    private fun requireReceivable() {
+    private fun requireReceivable(
+        operation: String = "onFrame",
+        instead: String = "A sendonly track is one you push into with pushFrame().",
+    ) {
         if (direction != TrackDirection.RECVONLY) {
             throw ErrorCode.toException(
                 wire = "INVALID_STATE",
-                message =
-                    "'$name' is ${direction.wire} — it never receives frames. " +
-                        "A sendonly track is one you push into with pushFrame().",
-                operation = "onFrame",
+                message = "'$name' is ${direction.wire} — it never receives frames. $instead",
+                operation = operation,
             )
         }
     }
@@ -282,3 +337,6 @@ internal interface TrackOwner {
         channels: Int,
     )
 }
+
+/** The capture rates the native audio path accepts; anything else is logged and dropped there. */
+private val SUPPORTED_SAMPLE_RATES = setOf(8000, 16000, 24000, 32000, 44100, 48000)
