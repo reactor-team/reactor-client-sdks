@@ -1177,6 +1177,7 @@ impl From<ClientConnectionStatJson> for ClientConnectionStat {
             timestamp: stat.timestamp,
             metrics: stat.metrics,
             environment: None,
+            // The browser's data channel exposes no per-message timing.
             message_stages: Vec::new(),
         }
     }

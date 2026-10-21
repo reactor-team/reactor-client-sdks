@@ -64,6 +64,18 @@ pub struct DataCorrelator {
     /// Keyed by `request_id`; the stored command name lets `fail_all`
     /// report which command a disconnect-time rejection belongs to.
     pending: Mutex<HashMap<String, (String, oneshot::Sender<DataResult>)>>,
+    /// When each correlated reply was read off the channel and when it
+    /// resolved its request, by `request_id`, for the awaiting caller to take
+    /// with [`DataCorrelator::take_arrival`].
+    arrivals: Mutex<HashMap<String, ReplyArrival>>,
+}
+
+/// When a correlated reply was read off the channel, and when it resolved its
+/// request after being decoded, on the platform's monotonic clock.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReplyArrival {
+    pub arrived_ms: f64,
+    pub resolved_ms: f64,
 }
 
 impl DataCorrelator {
@@ -103,6 +115,19 @@ impl DataCorrelator {
     /// awaited reply is still broadcast as a `message` event for listeners
     /// that prefer that surface.
     pub fn handle_message(&self, raw: &[u8]) -> Option<HandledMessage> {
+        self.handle_message_at(raw, None)
+    }
+
+    /// [`DataCorrelator::handle_message`], noting with *clock* when the
+    /// message was read and when it resolved its request. The times are kept
+    /// for a reply that resolves a request, before the request resolves, so
+    /// the awaiting caller always finds them.
+    pub fn handle_message_at(
+        &self,
+        raw: &[u8],
+        clock: Option<&dyn Fn() -> f64>,
+    ) -> Option<HandledMessage> {
+        let arrived_ms = clock.map(|now| now());
         let message = match DataServerMessage::decode(raw) {
             Ok(m) => m,
             Err(error) => {
@@ -115,9 +140,10 @@ impl DataCorrelator {
         // oneof entirely unset. `None` still resolves the pending
         // correlation below instead of being silently dropped.
         let payload = message.payload;
+        let request_id = message.request_id;
         let mut correlated = false;
-        if !message.request_id.is_empty() {
-            match self.pending.lock().unwrap().remove(&message.request_id) {
+        if !request_id.is_empty() {
+            match self.pending.lock().unwrap().remove(&request_id) {
                 // A step's result goes to its step() call alone, and can carry
                 // megabytes of frames: moved there, not copied for a caller
                 // that has nothing to dispatch for it.
@@ -131,14 +157,20 @@ impl DataCorrelator {
                     });
                 }
                 Some((_, tx)) => {
+                    if let (Some(now), Some(arrived_ms)) = (clock, arrived_ms) {
+                        self.arrivals.lock().unwrap().insert(
+                            request_id.clone(),
+                            ReplyArrival {
+                                arrived_ms,
+                                resolved_ms: now(),
+                            },
+                        );
+                    }
                     let _ = tx.send(Ok(payload.clone()));
                     correlated = true;
                 }
                 None => {
-                    log::warn!(
-                        "data response for unknown request_id {}",
-                        message.request_id
-                    );
+                    log::warn!("data response for unknown request_id {request_id}");
                 }
             }
         }
@@ -152,6 +184,13 @@ impl DataCorrelator {
     /// delivered to a dropped receiver.
     pub fn cancel(&self, request_id: &str) {
         self.pending.lock().unwrap().remove(request_id);
+        self.arrivals.lock().unwrap().remove(request_id);
+    }
+
+    /// When the reply to *request_id* was read and resolved, if it was noted,
+    /// and forget it.
+    pub fn take_arrival(&self, request_id: &str) -> Option<ReplyArrival> {
+        self.arrivals.lock().unwrap().remove(request_id)
     }
 
     /// Reject every in-flight request (on disconnect).
@@ -381,5 +420,56 @@ mod tests {
             CoreError::CommandRequest { command, .. } => assert_eq!(command, "set_brightness"),
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_correlated_reply_notes_when_it_arrived_and_resolved() {
+        let c = DataCorrelator::new();
+        let pending = c.begin(data_client_message::Payload::Command(Command {
+            r#type: "get_state".into(),
+            data: None,
+            uploads: Default::default(),
+        }));
+        let bytes = encode_response(
+            &pending.request_id,
+            data_server_message::Payload::Message(ModelMessage {
+                r#type: "get_state_reply".into(),
+                data: None,
+            }),
+        );
+        let ticks = std::cell::Cell::new(10.0);
+        let clock = || {
+            ticks.set(ticks.get() + 1.0);
+            ticks.get()
+        };
+
+        c.handle_message_at(&bytes, Some(&clock)).unwrap();
+
+        assert_eq!(
+            c.take_arrival(&pending.request_id),
+            Some(ReplyArrival {
+                arrived_ms: 11.0,
+                resolved_ms: 12.0,
+            })
+        );
+        // Taken once.
+        assert_eq!(c.take_arrival(&pending.request_id), None);
+    }
+
+    #[test]
+    fn a_reply_with_no_waiting_request_notes_nothing() {
+        let c = DataCorrelator::new();
+        let bytes = encode_response(
+            "data_99",
+            data_server_message::Payload::Message(ModelMessage {
+                r#type: "late".into(),
+                data: None,
+            }),
+        );
+        let clock = || 1.0;
+
+        c.handle_message_at(&bytes, Some(&clock)).unwrap();
+
+        assert_eq!(c.take_arrival("data_99"), None);
     }
 }

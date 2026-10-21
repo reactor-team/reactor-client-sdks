@@ -55,6 +55,7 @@ use reactor_core::auth::{fetch_jwt, TokenRequest};
 use reactor_core::error::CoreError;
 use reactor_core::events::ReactorEvent;
 use reactor_core::http::{check_status, StaticAuth};
+use reactor_core::message_stages::{self, CommandEntry};
 use reactor_core::peer::PeerEvent;
 use reactor_core::protocol::session::GenerationMode;
 use reactor_core::protocol::upload::FileRef;
@@ -357,6 +358,9 @@ struct Completion {
     /// The entry point this completion belongs to, reported as `operation` so a
     /// host can say which call failed without tracking it itself.
     operation: &'static str,
+    /// Run just before a successful result calls the host back, to time the
+    /// way back to the host.
+    before_success: Option<Box<dyn FnOnce() + Send>>,
 }
 unsafe impl Send for Completion {}
 unsafe impl Sync for Completion {}
@@ -373,7 +377,14 @@ impl Completion {
             userdata,
             gate,
             operation,
+            before_success: None,
         }
+    }
+
+    /// Run *hook* just before a successful result calls the host back.
+    fn before_success(mut self, hook: impl FnOnce() + Send + 'static) -> Self {
+        self.before_success = Some(Box::new(hook));
+        self
     }
 
     fn resolve(self, result: Result<Option<serde_json::Value>, CoreError>) {
@@ -388,6 +399,9 @@ impl Completion {
             Ok(v) => {
                 let json = v.map(|j| j.to_string()).unwrap_or_else(|| "{}".to_string());
                 if let Ok(cs) = CString::new(json) {
+                    if let Some(hook) = self.before_success {
+                        hook();
+                    }
                     unsafe { func(1, cs.as_ptr(), std::ptr::null(), self.userdata) }
                 }
             }
@@ -1744,6 +1758,8 @@ pub unsafe extern "C" fn reactor_send_command(
     if handle.is_null() {
         return;
     }
+    // The command's `ffi_parse` stage starts here, on the core's clock.
+    let entered_ms = (*handle).reactor.monotonic_ms();
     let name = CStr::from_ptr(name).to_string_lossy().into_owned();
     let args: serde_json::Value = if args_json.is_null() {
         serde_json::json!({})
@@ -1777,15 +1793,31 @@ pub unsafe extern "C" fn reactor_send_command(
             }
         }
     };
-    async_op!(
-        "send_command",
-        handle,
-        completion,
-        userdata,
-        move |r: Arc<Reactor>, _tasks: TaskSet| async move {
-            r.send_command(&name, args, uploads).await
-        }
-    );
+    let handle = &*handle;
+    let reactor = handle.reactor.clone();
+    let entry = CommandEntry {
+        entered_ms,
+        parsed_ms: reactor.monotonic_ms(),
+    };
+    // As async_op!, with the command's way back to the host timed as
+    // `ffi_return`: from the core returning the reply to the host called back.
+    let generation = reactor.message_generation();
+    let completion = Completion::new(completion, userdata, handle.gate.clone(), "send_command");
+    let control_tx: HostSender<HostJob> = handle.hosts.control.sender();
+    spawn_tracked(&handle.tasks, async move {
+        let result = reactor
+            .send_command_from(&name, args, uploads, Some(entry))
+            .await;
+        let returned_ms = reactor.monotonic_ms();
+        let completion = completion.before_success(move || {
+            reactor.add_message_stage(
+                generation,
+                message_stages::FFI_RETURN,
+                reactor.monotonic_ms() - returned_ms,
+            );
+        });
+        control_tx.send(Box::new(move || completion.resolve(result)));
+    });
 }
 
 /// Upload a local file and return a reference to pass as a command argument.

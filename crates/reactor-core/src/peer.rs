@@ -317,6 +317,41 @@ pub struct TransportStats {
     pub inbound: Vec<InboundRtpStats>,
     pub outbound: Vec<OutboundRtpStats>,
     pub candidate_pairs: Vec<CandidatePairStats>,
+    /// The running totals of the `"data"` channel's chunked messages. `None`
+    /// when the channel does not chunk, or the transport cannot tell.
+    pub data_chunking: Option<ChunkingTotals>,
+}
+
+/// Running totals of one chunked data channel's messages, since it opened.
+///
+/// Every time is in seconds and summed over the messages that finished the
+/// step, so a window's average is the change in a time over the change in its
+/// count.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ChunkingTotals {
+    /// Messages whose last frame was handed to the native channel.
+    pub messages_sent: u64,
+    /// From `send` to the message's first frame leaving the queue.
+    pub queue_wait_s: f64,
+    /// From a message's first frame to its last handed to the native channel.
+    pub send_s: f64,
+    /// The time the send pump stopped because the native buffer was full.
+    pub stall_s: f64,
+    /// Messages the reassembler completed.
+    pub messages_received: u64,
+    /// From a message's first frame arriving to its last.
+    pub reassembly_s: f64,
+    /// From `send` to the message in the queue: its copy into the queue.
+    pub enqueue_s: f64,
+    /// Within `queue_wait`: reading the native buffered amount before the
+    /// message's first frame.
+    pub first_check_s: f64,
+    /// Within `queue_wait`: cutting the message's first frame off the queue.
+    pub first_build_s: f64,
+    /// Within `queue_wait`: the native `Send` of the message's first frame.
+    pub first_native_s: f64,
+    /// The native `Send` of every frame.
+    pub native_send_s: f64,
 }
 
 /// Result of [`PeerTransport::prepare`]: a local SDP offer plus the

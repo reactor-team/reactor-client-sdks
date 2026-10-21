@@ -27,6 +27,7 @@ mod device;
 pub mod error;
 pub mod events;
 pub mod http;
+pub mod message_stages;
 pub mod messaging;
 pub mod peer;
 pub mod reactor;

@@ -20,6 +20,9 @@ use crate::coordinator::{CoordinatorClient, CoordinatorConfig};
 use crate::data::{DataCorrelator, PendingData};
 use crate::error::{codes, CoreError, ErrorDetails, ReactorError};
 use crate::events::{Dispatcher, ReactorEvent};
+use crate::message_stages::{
+    self, sort_message_stages, CommandEntry, MessageStageReporter, MessageTimes,
+};
 use crate::messaging::build_command_payload;
 use crate::peer::{PeerConnectionState, PeerEvent, PreparedOffer};
 use crate::protocol::recording::message_type;
@@ -270,6 +273,19 @@ pub struct Reactor {
     step_inputs: StepInputs,
     /// Stepped mode: how a step result's frames are decoded, per encoding.
     frame_decoders: FrameDecoders,
+    /// The data-channel stages the SDK times itself, reported likewise.
+    message_times: MessageTimes,
+}
+
+/// A command's timing until it is built, for [`Reactor::data_request`] to
+/// count once the data channel took it.
+struct CommandTiming {
+    /// The connection the command's timing belongs to.
+    generation: u64,
+    /// When the command was built, on the monotonic clock.
+    built_ms: f64,
+    /// The stages timed until then, and their milliseconds.
+    stages: Vec<(&'static str, f64)>,
 }
 
 impl Reactor {
@@ -308,6 +324,7 @@ impl Reactor {
             stage_times: Arc::new(StageTimes::new()),
             step_inputs: StepInputs::new(),
             frame_decoders: FrameDecoders::default(),
+            message_times: MessageTimes::new(),
             state: Mutex::new(State {
                 auto_resume_tracks: options.auto_resume_tracks,
                 sdp_max_attempts: options.sdp_poll.max_attempts,
@@ -382,6 +399,7 @@ impl Reactor {
         // here, at the boundary, not when the reporter task first runs: the host
         // can push frames before that.
         self.stage_times.begin_connection();
+        self.message_times.begin_connection();
         self.dispatcher
             .dispatch(ReactorEvent::StatusChanged(ReactorStatus::Connecting));
 
@@ -536,6 +554,7 @@ impl Reactor {
         };
         // As in connect(): the previous connection's frames end here.
         self.stage_times.begin_connection();
+        self.message_times.begin_connection();
         self.dispatcher
             .dispatch(ReactorEvent::StatusChanged(ReactorStatus::Connecting));
         self.set_status(ReactorStatus::Waiting);
@@ -860,7 +879,11 @@ impl Reactor {
     }
 
     fn on_data_message(&self, raw: &[u8]) {
-        let Some(handled) = self.data.handle_message(raw) else {
+        // The start of a reply's `reply_decode` stage, for the awaiting
+        // send_command(). Taken here, after the host's event queue: the hop
+        // from the engine's thread to this loop is not timed.
+        let clock = || self.platform.monotonic_ms();
+        let Some(handled) = self.data.handle_message_at(raw, Some(&clock)) else {
             return;
         };
         match handled.payload {
@@ -969,17 +992,46 @@ impl Reactor {
         data: Value,
         uploads: Option<BTreeMap<String, FileRef>>,
     ) -> Result<Option<Value>, CoreError> {
+        self.send_command_from(command, data, uploads, None).await
+    }
+
+    /// [`Reactor::send_command`], for a binding that tells when its call came
+    /// in (*entry*), so the command's `ffi_parse` and `spawn` stages are timed
+    /// too.
+    pub async fn send_command_from(
+        &self,
+        command: &str,
+        data: Value,
+        uploads: Option<BTreeMap<String, FileRef>>,
+        entry: Option<CommandEntry>,
+    ) -> Result<Option<Value>, CoreError> {
+        let generation = self.message_times.generation();
+        let started_ms = self.platform.monotonic_ms();
         self.ensure_ready()?;
         let payload = build_command_payload(command, data, uploads)?;
-        let response = self
+        let built_ms = self.platform.monotonic_ms();
+        let mut stages = vec![(message_stages::BUILD, built_ms - started_ms)];
+        if let Some(entry) = entry {
+            stages.push((
+                message_stages::FFI_PARSE,
+                entry.parsed_ms - entry.entered_ms,
+            ));
+            stages.push((message_stages::SPAWN, started_ms - entry.parsed_ms));
+        }
+        let (response, resolved_ms) = self
             .data_request(
                 "send_command",
                 command,
                 payload,
                 self.options.control_request_timeout,
+                CommandTiming {
+                    generation,
+                    built_ms,
+                    stages,
+                },
             )
             .await?;
-        match response {
+        let reply = match response {
             None => Ok(None),
             Some(data_server_message::Payload::Message(model_message)) => Ok(Some(json!({
                 "type": model_message.r#type,
@@ -993,20 +1045,78 @@ impl Reactor {
             Some(data_server_message::Payload::StepResult(_)) => Err(CoreError::decode(format!(
                 "unexpected step reply to command '{command}'"
             ))),
+        };
+        if let (Some(resolved_ms), Ok(_)) = (resolved_ms, &reply) {
+            self.message_times.add_from(
+                generation,
+                message_stages::DELIVERY,
+                self.platform.monotonic_ms() - resolved_ms,
+            );
         }
+        reply
     }
 
+    /// The monotonic clock the SDK times its stages on, for a binding that
+    /// times a stage of its own (see [`Reactor::send_command_from`]).
+    pub fn monotonic_ms(&self) -> f64 {
+        self.platform.monotonic_ms()
+    }
+
+    /// The connection a command's timing belongs to, to pass back with
+    /// [`Reactor::add_message_stage`].
+    pub fn message_generation(&self) -> u64 {
+        self.message_times.generation()
+    }
+
+    /// Add one command's time in a stage a binding timed itself, such as
+    /// `ffi_return`. A command of an earlier connection is left out.
+    pub fn add_message_stage(&self, generation: u64, stage: &'static str, ms: f64) {
+        self.message_times.add_from(generation, stage, ms);
+    }
+
+    /// Send *payload* and await its correlated reply, with when the reply
+    /// resolved its request, if that was noted. The `encode` stage runs from
+    /// *timing*'s `built_ms` until the command is handed to the data channel's
+    /// send, and `reply_decode` from the reply's arrival until it resolved the
+    /// request. The stages timed before, in *timing*, count once the channel
+    /// took the command, with `encode`.
     async fn data_request(
         &self,
         operation: &str,
         label: &str,
         payload: data_client_message::Payload,
         request_timeout: Duration,
-    ) -> Result<Option<data_server_message::Payload>, CoreError> {
+        timing: CommandTiming,
+    ) -> Result<(Option<data_server_message::Payload>, Option<f64>), CoreError> {
+        let CommandTiming {
+            generation,
+            built_ms,
+            stages,
+        } = timing;
         let pending = self.data.begin(payload);
+        let request_id = pending.request_id.clone();
+        // `encode` ends as the command reaches the channel: from there the
+        // chunked channel's own `queue_wait` and `send` take over, so the two
+        // must not overlap. Counted once the channel took it.
+        let handed_ms = self.platform.monotonic_ms();
         self.send_pending(operation, &pending)?;
-        self.await_data_response(label, pending, request_timeout)
-            .await
+        for (stage, ms) in stages {
+            self.message_times.add_from(generation, stage, ms);
+        }
+        self.message_times
+            .add_from(generation, message_stages::ENCODE, handed_ms - built_ms);
+        let outcome = self
+            .await_data_response(label, pending, request_timeout)
+            .await;
+        let arrival = self.data.take_arrival(&request_id);
+        if let (Some(arrival), Ok(_)) = (arrival, &outcome) {
+            self.message_times.add_from(
+                generation,
+                message_stages::REPLY_DECODE,
+                arrival.resolved_ms - arrival.arrived_ms,
+            );
+        }
+        outcome.map(|response| (response, arrival.map(|a| a.resolved_ms)))
     }
 
     /// Check a registered data request against the channel's limit and send
@@ -1952,7 +2062,9 @@ impl Reactor {
         // This connection's stage times; a newer connection's are not this
         // reporter's to send.
         let generation = self.stage_times.generation();
+        let message_generation = self.message_times.generation();
         let mut reporter = ClientStatsReporter::new();
+        let mut message_reporter = MessageStageReporter::new();
         let mut sent_connect_time = false;
         // Fixed for the connection, sent on every batch so any one reading
         // can be grouped on its own.
@@ -1987,20 +2099,35 @@ impl Reactor {
             let Some(sdk_stages) = self.stage_times.take_from(generation) else {
                 break;
             };
+            let Some(sdk_message_stages) = self.message_times.take_from(message_generation) else {
+                self.stage_times.give_back(generation, sdk_stages);
+                break;
+            };
             let mut track_stats = reporter.track_stats(&raw, &tracks, &paused, now);
             let unmatched = add_sdk_stages(&mut track_stats, sdk_stages.clone());
-            let connection_stat =
+            let mut connection_stat =
                 client_connection_stat(&raw, time_to_connect_ms, &environment, now);
+            let mut message_stages = message_reporter.stages(raw.data_chunking);
+            message_stages.extend(sdk_message_stages.iter().cloned());
+            sort_message_stages(&mut message_stages);
+            connection_stat.message_stages = message_stages;
             // A batch with no reading goes out once, for the environment it
             // carries: a connection with no media, or none measured yet,
             // still says what it runs on.
-            if track_stats.is_empty() && connection_stat.metrics.is_empty() && sent_environment {
+            if track_stats.is_empty()
+                && connection_stat.metrics.is_empty()
+                && connection_stat.message_stages.is_empty()
+                && sent_environment
+            {
                 self.stage_times.give_back(generation, sdk_stages);
+                self.message_times
+                    .give_back(message_generation, sdk_message_stages);
                 continue;
             }
             match self.client_stats(track_stats, Some(connection_stat)) {
                 Ok(()) => {
                     reporter.commit();
+                    message_reporter.commit();
                     // A track the engine has no reading for yet keeps its
                     // stages for a batch that has one.
                     self.stage_times.give_back(generation, unmatched);
@@ -2009,6 +2136,8 @@ impl Reactor {
                 }
                 Err(e) => {
                     self.stage_times.give_back(generation, sdk_stages);
+                    self.message_times
+                        .give_back(message_generation, sdk_message_stages);
                     log::debug!("[reactor] client stats send skipped: {e}");
                 }
             }
@@ -2348,14 +2477,115 @@ mod tests {
         reactor.state.lock().unwrap().status = ReactorStatus::Ready;
         let mut events = reactor.subscribe();
 
-        let refused = reactor.send_command("big", json!({}), None).await;
+        let generation = reactor.message_times.generation();
+        let now = reactor.monotonic_ms();
+        let entry = CommandEntry {
+            entered_ms: now,
+            parsed_ms: now,
+        };
+
+        let refused = reactor
+            .send_command_from("big", json!({}), None, Some(entry))
+            .await;
         assert!(matches!(refused, Err(CoreError::MessageTooLarge { .. })));
+        // The command never left, so none of its stages count: every stage
+        // counts the same commands.
+        assert!(reactor
+            .message_times
+            .take_from(generation)
+            .unwrap()
+            .is_empty());
         while let Ok(event) = events.try_recv() {
             assert!(
                 !matches!(event, ReactorEvent::Error(_)),
                 "a too-large refusal emitted an error event"
             );
         }
+    }
+
+    /// A command the channel took and the model answered counts once in each
+    /// stage the SDK times: from `send_command_from`'s binding entry to the
+    /// reply returned.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_command_counts_once_in_each_sdk_stage() {
+        let reactor = make_reactor();
+        reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+        let generation = reactor.message_times.generation();
+        let now = reactor.monotonic_ms();
+        let entry = CommandEntry {
+            entered_ms: now,
+            parsed_ms: now,
+        };
+
+        let r = reactor.clone();
+        let call = tokio::spawn(async move {
+            r.send_command_from("get_state", json!({}), None, Some(entry))
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        reactor.on_data_message(&encode_data_response(
+            "data_1",
+            data_server_message::Payload::Message(ModelMessage {
+                r#type: "get_state_reply".into(),
+                data: None,
+            }),
+        ));
+        tokio::time::timeout(Duration::from_millis(300), call)
+            .await
+            .expect("send_command should resolve")
+            .unwrap()
+            .unwrap();
+
+        let mut stages = reactor.message_times.take_from(generation).unwrap();
+        sort_message_stages(&mut stages);
+        let names: Vec<_> = stages.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                message_stages::FFI_PARSE,
+                message_stages::SPAWN,
+                message_stages::BUILD,
+                message_stages::ENCODE,
+                message_stages::REPLY_DECODE,
+                message_stages::DELIVERY,
+            ]
+        );
+        assert!(stages.iter().all(|s| s.messages == 1 && s.total_ms >= 0.0));
+    }
+
+    /// From the second batch on, the connection's reading carries the data
+    /// channel's stages over the window since the batch before, with each
+    /// part naming its stage.
+    #[tokio::test]
+    async fn client_stats_carry_the_data_channels_stages() {
+        let peer = Arc::new(StatsPeer::default());
+        let reactor = make_reactor_with_stats_peer(peer.clone(), Duration::from_millis(20));
+
+        let r = reactor.clone();
+        let task = tokio::spawn(async move { r.run_client_stats().await });
+        tokio::time::sleep(Duration::from_millis(110)).await;
+        reactor.state.lock().unwrap().heartbeat_epoch += 1;
+        tokio::time::timeout(Duration::from_millis(200), task)
+            .await
+            .expect("the reporter exits when the epoch changes")
+            .unwrap();
+
+        let batches = sent_client_stats(&peer);
+        assert!(batches.len() >= 2, "got {} batch(es)", batches.len());
+        let first = batches[0].connection_stat.as_ref().unwrap();
+        assert!(first.message_stages.is_empty());
+        let second = batches[1].connection_stat.as_ref().unwrap();
+        let stage = |name: &str| {
+            second
+                .message_stages
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap_or_else(|| panic!("no {name} stage"))
+        };
+        assert_eq!(stage("queue_wait").messages, 2);
+        assert!((stage("queue_wait").total_ms - 2.0).abs() < 1e-9);
+        assert_eq!(stage("queue_wait").part_of, "");
+        assert_eq!(stage("first_native").part_of, "queue_wait");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -3296,6 +3526,9 @@ mod tests {
         /// Report no streams and no candidate pair, as a connection with no
         /// media measured yet does.
         no_readings: bool,
+        /// Readings taken, which the data channel's chunking totals grow with:
+        /// two messages sent per reading, each 1 ms in the queue.
+        readings: std::sync::atomic::AtomicU64,
     }
 
     #[async_trait::async_trait]
@@ -3351,6 +3584,19 @@ mod tests {
                     nominated: true,
                     ..crate::peer::CandidatePairStats::default()
                 }],
+                data_chunking: {
+                    let n = self
+                        .readings
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        + 1;
+                    Some(crate::peer::ChunkingTotals {
+                        messages_sent: 2 * n,
+                        queue_wait_s: 0.002 * n as f64,
+                        first_native_s: 0.001 * n as f64,
+                        native_send_s: 0.001 * n as f64,
+                        ..crate::peer::ChunkingTotals::default()
+                    })
+                },
             })
         }
         async fn close(&self) -> Result<(), CoreError> {

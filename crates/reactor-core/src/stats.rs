@@ -1021,7 +1021,7 @@ pub fn client_connection_stat(
         timestamp: now_ms as i64,
         metrics: m.0,
         environment: Some(environment.clone()),
-        // The client does not time its data channel's messages.
+        // Filled by the reporter, which holds the previous batch's totals.
         message_stages: Vec::new(),
     }
 }
@@ -1220,6 +1220,7 @@ mod tests {
             inbound: vec![inbound(1, 1, 10, 0)],
             outbound: vec![outbound(2, 1)],
             candidate_pairs: vec![nominated(9, received, sent)],
+            ..TransportStats::default()
         };
 
         sampler.sample(&at(1_000, 500), 1_000.0);
