@@ -166,7 +166,12 @@ impl DataCorrelator {
                             },
                         );
                     }
-                    let _ = tx.send(Ok(payload.clone()));
+                    // Kept before the request resolves, so the awaiting caller
+                    // finds it; dropped when no caller is left to take it (its
+                    // future was cancelled), or it would stay forever.
+                    if tx.send(Ok(payload.clone())).is_err() {
+                        self.arrivals.lock().unwrap().remove(&request_id);
+                    }
                     correlated = true;
                 }
                 None => {
@@ -471,5 +476,30 @@ mod tests {
         c.handle_message_at(&bytes, Some(&clock)).unwrap();
 
         assert_eq!(c.take_arrival("data_99"), None);
+    }
+
+    #[test]
+    fn a_reply_to_a_cancelled_caller_keeps_no_arrival() {
+        let c = DataCorrelator::new();
+        let pending = c.begin(data_client_message::Payload::Command(Command {
+            r#type: "get_state".into(),
+            data: None,
+            uploads: Default::default(),
+        }));
+        let request_id = pending.request_id.clone();
+        // The caller's future was dropped: nothing awaits the reply any more.
+        drop(pending.receiver);
+        let bytes = encode_response(
+            &request_id,
+            data_server_message::Payload::Message(ModelMessage {
+                r#type: "late".into(),
+                data: None,
+            }),
+        );
+        let clock = || 1.0;
+
+        c.handle_message_at(&bytes, Some(&clock)).unwrap();
+
+        assert!(c.arrivals.lock().unwrap().is_empty());
     }
 }
