@@ -131,7 +131,9 @@ public class Reactor(
             val frame =
                 VideoFrame(
                     trackName = name,
-                    pixels = pixels ?: return,
+                    pixels =
+                        inc.reactor.sdk.android.internal.ReceivedBuffers
+                            .pixels(pixels ?: return),
                     width = width,
                     height = height,
                     frameId = frameId,
@@ -161,7 +163,9 @@ public class Reactor(
             handler(
                 AudioFrame(
                     trackName = name,
-                    samples = (pcm ?: return).order(java.nio.ByteOrder.nativeOrder()).asShortBuffer(),
+                    samples =
+                        inc.reactor.sdk.android.internal.ReceivedBuffers
+                            .samples(pcm ?: return),
                     sampleCount = sampleCount,
                     sampleRate = sampleRate,
                     channels = channels,

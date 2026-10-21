@@ -5,8 +5,8 @@ import java.nio.ShortBuffer
 /**
  * One decoded audio frame: interleaved signed 16-bit PCM.
  *
- * **[samples] is borrowed**, exactly as [VideoFrame.pixels] is — valid only until the handler
- * returns. Roughly 10 ms of audio arrives per frame.
+ * **[samples] is borrowed and read-only**, exactly as [VideoFrame.pixels] is — valid only until
+ * the handler returns. Roughly 10 ms of audio arrives per frame.
  */
 public class AudioFrame internal constructor(
     public val trackName: String,
