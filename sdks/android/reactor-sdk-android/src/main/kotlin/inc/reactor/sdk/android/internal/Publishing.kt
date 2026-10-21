@@ -19,9 +19,11 @@ import kotlinx.coroutines.withContext
  * leave a live track reported as unpublished, refusing every push. So the state follows the
  * answer, and the cancellation reaches the caller once the publish has been answered.
  *
- * [isReady] is asked after the answer: a status change during the publish means the completion
- * is about a connection that has since gone, so the publish fails with [DisconnectedException]
- * rather than recording "published" for a sender that no longer exists.
+ * [isReady] is asked after the answer, under the monitor of [states] — the one a status change
+ * clears them under, so the check and the write cannot straddle it. A status change during the
+ * publish means the completion is about a connection that has since gone, so the publish fails
+ * with [DisconnectedException] rather than recording "published" for a sender that no longer
+ * exists.
  *
  * Publishes of one track are serialised through [lock], the same lock for every call on that
  * track. Two in flight at once both claim the slot, and the one that fails would erase the state
@@ -57,8 +59,20 @@ private suspend fun publishLocked(
         states.remove(track)
         throw t
     }
-    if (!isReady()) {
-        states.remove(track)
+    // Checked and recorded under the states' monitor, which is where a status change clears
+    // them: between a check outside it and the write, the session could leave ready, the clear
+    // run, and PUBLISHED then land on the far side of it.
+    val stillReady =
+        synchronized(states) {
+            if (isReady()) {
+                states[track] = PublishState.PUBLISHED
+                true
+            } else {
+                states.remove(track)
+                false
+            }
+        }
+    if (!stillReady) {
         // Not a success: the session that came back has no sender behind this slot, and a
         // publish that returned normally would hand the caller a track that refuses every push.
         throw ErrorCode.toException(
@@ -70,7 +84,6 @@ private suspend fun publishLocked(
             operation = "publish",
         )
     }
-    states[track] = PublishState.PUBLISHED
 }
 
 /**

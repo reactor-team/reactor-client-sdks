@@ -140,4 +140,20 @@ class RecordPublishTest {
             assertEquals("refused", thrown?.message)
             assertEquals(PublishState.PUBLISHED, states["webcam"])
         }
+
+    /**
+     * A status change clears the states under their own monitor, so the readiness check and the
+     * PUBLISHED write must be under it too — otherwise the clear can land between them.
+     */
+    @Test
+    fun `readiness is checked under the states' monitor, together with the write`() =
+        runTest {
+            var heldDuringCheck = false
+            recordPublish(states, "webcam", lock, {
+                heldDuringCheck = Thread.holdsLock(states)
+                true
+            }) { }
+            assertTrue(heldDuringCheck)
+            assertEquals(PublishState.PUBLISHED, states["webcam"])
+        }
 }

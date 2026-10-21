@@ -188,6 +188,12 @@ public class Reactor(
     private val publishStates =
         java.util.concurrent.ConcurrentHashMap<String, PublishState>()
 
+    /** Whether the last status delivered was `ready`. Under the [publishStates] monitor. */
+    private var ready = false
+
+    /** Bumped every time the session leaves `ready`. Under the [publishStates] monitor. */
+    private var readyGeneration = 0L
+
     /**
      * One lock per track, held across a publish or an unpublish so none of them can race another
      * over the same slot.
@@ -287,7 +293,7 @@ public class Reactor(
                     publishStates,
                     track,
                     publishLock(track),
-                    isReady = { _status.value == ConnectionStatus.READY },
+                    isReady = readyCheck(),
                 ) { client.publishTrack(track) }
             }
 
@@ -365,8 +371,30 @@ public class Reactor(
         // Cleared here rather than on the dispatcher: the drop has to be visible to a caller
         // pushing from any thread the instant the session stops being ready, not one dispatch
         // later. A frame pushed in that window goes into a slot with no sender behind it.
-        if (status != ConnectionStatus.READY) publishStates.clear()
+        //
+        // Readiness is recorded here too, under the same monitor, rather than read back from
+        // `_status`: that is only updated once the launch below runs, and a publish answered in
+        // between would see the old READY and restore PUBLISHED after the sender was lost.
+        synchronized(publishStates) {
+            ready = status == ConnectionStatus.READY
+            if (!ready) {
+                publishStates.clear()
+                readyGeneration += 1
+            }
+        }
         scope.launch { _status.value = status }
+    }
+
+    /**
+     * Whether the session is still in the same `ready` it was in when this was called.
+     *
+     * Captured at the start of a publish and asked once it is answered, under the publish-state
+     * monitor: a session that left `ready` and came back in between is a different connection,
+     * and the sender the publish attached went with the old one.
+     */
+    private fun readyCheck(): () -> Boolean {
+        val generation = synchronized(publishStates) { readyGeneration }
+        return { synchronized(publishStates) { ready && readyGeneration == generation } }
     }
 
     private fun deliverError(error: ReactorException) {
