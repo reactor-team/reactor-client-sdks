@@ -810,7 +810,7 @@ public class Reactor(
          * @param apiKey the key to exchange
          * @param options scoping options as raw JSON — the same style [sendCommand] takes its
          *   arguments — or null for an unscoped token
-         * @param local talk to a local stack instead of authenticating against the coordinator
+         * @param local accept a development coordinator's self-signed certificate; the key is still exchanged
          * @return the token
          * @throws ReactorException `UNAUTHORIZED` for a key the coordinator rejects,
          *   `NETWORK_ERROR` for one it cannot reach
