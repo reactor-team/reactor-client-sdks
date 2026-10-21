@@ -123,6 +123,15 @@ class JsonTest {
     }
 
     @Test
+    fun `whitespace JSON does not allow is refused between tokens`() {
+        for (ws in listOf('\u000B', '\u000C', '\u00A0', '\u2028', '\u3000')) {
+            assertThrows("U+%04X must not count as whitespace".format(ws.code), JsonException::class.java) {
+                obj("{${ws}\"a\":1}")
+            }
+        }
+    }
+
+    @Test
     fun `an empty object and an empty array parse`() {
         assertTrue(obj("{}").isEmpty())
         assertEquals(0, (obj("""{"a":[]}""")["a"] as List<*>).size)
