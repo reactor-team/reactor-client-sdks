@@ -79,6 +79,9 @@ public class Track internal constructor(
      * the FFI. The state does **not** survive the session leaving `ready` — a reconnect resumes
      * recvonly tracks and nothing else — so a slot published before one is not published after.
      *
+     * Not cancellable mid-flight: the native publish runs to its answer regardless, so a cancelled
+     * caller waits for that answer, the state records it, and the cancellation is thrown after.
+     *
      * @throws InvalidStateException on a recvonly track, which nothing can be pushed into.
      */
     public suspend fun publish() {
