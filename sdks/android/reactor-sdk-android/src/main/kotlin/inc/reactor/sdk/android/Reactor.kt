@@ -6,6 +6,7 @@ import inc.reactor.sdk.android.internal.NativeClient
 import inc.reactor.sdk.android.internal.NativeEvents
 import inc.reactor.sdk.android.internal.TrackParsing
 import inc.reactor.sdk.android.internal.recordPublish
+import inc.reactor.sdk.android.internal.recordUnpublish
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -187,9 +188,14 @@ public class Reactor(
     private val publishStates =
         java.util.concurrent.ConcurrentHashMap<String, PublishState>()
 
-    /** One lock per track, held across a publish so two cannot race over the same slot. */
+    /**
+     * One lock per track, held across a publish or an unpublish so none of them can race another
+     * over the same slot.
+     */
     private val publishLocks =
         java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+
+    private fun publishLock(track: String) = publishLocks.getOrPut(track) { kotlinx.coroutines.sync.Mutex() }
 
     private fun requireHandle(operation: String) =
         handle ?: throw ErrorCode.toException(
@@ -280,21 +286,19 @@ public class Reactor(
                 recordPublish(
                     publishStates,
                     track,
-                    publishLocks.getOrPut(track) { kotlinx.coroutines.sync.Mutex() },
+                    publishLock(track),
                     isReady = { _status.value == ConnectionStatus.READY },
                 ) { client.publishTrack(track) }
             }
 
             override suspend fun unpublish(track: String) {
                 val client = requireHandle("unpublish")
-                val error = client.unpublishTrack(track)
-                if (error != null) {
-                    // Deliberately *not* clearing the state: an unpublish that failed leaves the
-                    // sender attached, and forgetting that would make the retry a no-op.
-                    throw inc.reactor.sdk.android.internal.ErrorPayloads
-                        .toException(error, "unpublish")
+                recordUnpublish(publishStates, track, publishLock(track)) {
+                    client.unpublishTrack(track)?.let { error ->
+                        throw inc.reactor.sdk.android.internal.ErrorPayloads
+                            .toException(error, "unpublish")
+                    }
                 }
-                publishStates.remove(track)
             }
 
             override suspend fun pause(track: String) {

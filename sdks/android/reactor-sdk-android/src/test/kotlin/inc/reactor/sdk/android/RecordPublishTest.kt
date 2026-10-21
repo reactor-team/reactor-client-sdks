@@ -1,6 +1,7 @@
 package inc.reactor.sdk.android
 
 import inc.reactor.sdk.android.internal.recordPublish
+import inc.reactor.sdk.android.internal.recordUnpublish
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -108,5 +109,35 @@ class RecordPublishTest {
             assertEquals(PublishState.PUBLISHED, states["webcam"])
             assertEquals("the second publish finds the track published and does not ask again", 1, calls)
             assertNull(secondOutcome)
+        }
+
+    @Test
+    fun `an unpublish during a publish is not undone by the publish's answer`() =
+        runTest {
+            val answer = CompletableDeferred<Unit>()
+            val publishing = launch { recordPublish(states, "webcam", lock, { true }) { answer.await() } }
+            runCurrent()
+            var detached = false
+            val unpublishing = launch { recordUnpublish(states, "webcam", lock) { detached = true } }
+            runCurrent()
+            val waited = !detached
+            // Answered before asserting: the publish runs non-cancellably, so a failed assertion
+            // with it still waiting would leave runTest waiting on it forever.
+            answer.complete(Unit)
+            assertTrue("the unpublish waits for the publish's answer", waited)
+
+            publishing.join()
+            unpublishing.join()
+            assertTrue(detached)
+            assertNull(states["webcam"])
+        }
+
+    @Test
+    fun `a failed unpublish keeps the state, so the retry still detaches`() =
+        runTest {
+            states["webcam"] = PublishState.PUBLISHED
+            val thrown = runCatching { recordUnpublish(states, "webcam", lock) { error("refused") } }.exceptionOrNull()
+            assertEquals("refused", thrown?.message)
+            assertEquals(PublishState.PUBLISHED, states["webcam"])
         }
 }
