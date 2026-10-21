@@ -358,9 +358,9 @@ struct Completion {
     /// The entry point this completion belongs to, reported as `operation` so a
     /// host can say which call failed without tracking it itself.
     operation: &'static str,
-    /// Run just before a successful result calls the host back, to time the
-    /// way back to the host.
-    before_success: Option<Box<dyn FnOnce() + Send>>,
+    /// Run just before the result calls the host back, to time the way back
+    /// to the host.
+    before_callback: Option<Box<dyn FnOnce() + Send>>,
 }
 unsafe impl Send for Completion {}
 unsafe impl Sync for Completion {}
@@ -377,13 +377,13 @@ impl Completion {
             userdata,
             gate,
             operation,
-            before_success: None,
+            before_callback: None,
         }
     }
 
-    /// Run *hook* just before a successful result calls the host back.
-    fn before_success(mut self, hook: impl FnOnce() + Send + 'static) -> Self {
-        self.before_success = Some(Box::new(hook));
+    /// Run *hook* just before the result calls the host back.
+    fn before_callback(mut self, hook: impl FnOnce() + Send + 'static) -> Self {
+        self.before_callback = Some(Box::new(hook));
         self
     }
 
@@ -399,7 +399,7 @@ impl Completion {
             Ok(v) => {
                 let json = v.map(|j| j.to_string()).unwrap_or_else(|| "{}".to_string());
                 if let Ok(cs) = CString::new(json) {
-                    if let Some(hook) = self.before_success {
+                    if let Some(hook) = self.before_callback {
                         hook();
                     }
                     unsafe { func(1, cs.as_ptr(), std::ptr::null(), self.userdata) }
@@ -412,6 +412,9 @@ impl Completion {
                 // the code and whether retrying is worth anything were both in
                 // the `CoreError` and both thrown away here.
                 if let Some(cs) = error_json(&e, self.operation) {
+                    if let Some(hook) = self.before_callback {
+                        hook();
+                    }
                     unsafe { func(0, std::ptr::null(), cs.as_ptr(), self.userdata) }
                 }
             }
@@ -1809,13 +1812,20 @@ pub unsafe extern "C" fn reactor_send_command(
             .send_command_from(&name, args, uploads, Some(entry))
             .await;
         let returned_ms = reactor.monotonic_ms();
-        let completion = completion.before_success(move || {
-            reactor.add_message_stage(
-                generation,
-                message_stages::FFI_RETURN,
-                reactor.monotonic_ms() - returned_ms,
-            );
-        });
+        // Timed for a command the model answered, with a reply or an error, as
+        // the core's other stages are; not for one that never got an answer.
+        let answered = matches!(result, Ok(_) | Err(CoreError::CommandRequest { .. }));
+        let completion = if answered {
+            completion.before_callback(move || {
+                reactor.add_message_stage(
+                    generation,
+                    message_stages::FFI_RETURN,
+                    reactor.monotonic_ms() - returned_ms,
+                );
+            })
+        } else {
+            completion
+        };
         control_tx.send(Box::new(move || completion.resolve(result)));
     });
 }

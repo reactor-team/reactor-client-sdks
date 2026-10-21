@@ -1046,7 +1046,9 @@ impl Reactor {
                 "unexpected step reply to command '{command}'"
             ))),
         };
-        if let (Some(resolved_ms), Ok(_)) = (resolved_ms, &reply) {
+        // A reply the model sent, a message or an error, resolved its request:
+        // it counts here as it did in the stages before.
+        if let Some(resolved_ms) = resolved_ms {
             self.message_times.add_from(
                 generation,
                 message_stages::DELIVERY,
@@ -2586,6 +2588,42 @@ mod tests {
         assert!((stage("queue_wait").total_ms - 2.0).abs() < 1e-9);
         assert_eq!(stage("queue_wait").part_of, "");
         assert_eq!(stage("first_native").part_of, "queue_wait");
+    }
+
+    /// A command the model answered with an error was received and resolved
+    /// like any reply, so it counts in `delivery` as in the stages before it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_command_answered_with_an_error_counts_in_delivery() {
+        let reactor = make_reactor();
+        reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+        let generation = reactor.message_times.generation();
+
+        let r = reactor.clone();
+        let call = tokio::spawn(async move { r.send_command("get_state", json!({}), None).await });
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        reactor.on_data_message(&encode_data_response(
+            "data_1",
+            data_server_message::Payload::Error(crate::protocol::wire::v1::common::Error {
+                code: "BAD_COMMAND".into(),
+                message: "rejected".into(),
+            }),
+        ));
+        let result = tokio::time::timeout(Duration::from_millis(300), call)
+            .await
+            .expect("send_command should resolve")
+            .unwrap();
+        assert!(matches!(result, Err(CoreError::CommandRequest { .. })));
+
+        let stages = reactor.message_times.take_from(generation).unwrap();
+        for name in [
+            message_stages::BUILD,
+            message_stages::ENCODE,
+            message_stages::REPLY_DECODE,
+            message_stages::DELIVERY,
+        ] {
+            let stage = stages.iter().find(|s| s.name == name);
+            assert_eq!(stage.map(|s| s.messages), Some(1), "{name}");
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
