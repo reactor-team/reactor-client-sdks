@@ -102,6 +102,9 @@ void reactor_reconnect(ReactorHandle*, reactor_completion_fn completion, void* u
     remember(completion, userdata);
 }
 
+/// The delivery-stage marker. Stateless in the real library too; nothing here reads it.
+void reactor_frame_delivered(void) {}
+
 // ── Controls, for the harness only ───────────────────────────────────────────
 // Named fake_* rather than reactor_*: a reactor_* symbol here would be a new name in the ABI as
 // far as check-abi-parity.py is concerned.
