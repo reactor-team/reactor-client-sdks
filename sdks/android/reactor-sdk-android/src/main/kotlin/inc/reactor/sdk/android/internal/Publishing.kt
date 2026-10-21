@@ -1,5 +1,7 @@
 package inc.reactor.sdk.android.internal
 
+import inc.reactor.sdk.android.DisconnectedException
+import inc.reactor.sdk.android.ErrorCode
 import inc.reactor.sdk.android.PublishState
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
@@ -16,8 +18,8 @@ import kotlinx.coroutines.withContext
  * answer, and the cancellation reaches the caller once the publish has been answered.
  *
  * [isReady] is asked after the answer: a status change during the publish means the completion
- * is about a connection that has since gone, and recording "published" would outlive the sender
- * it describes.
+ * is about a connection that has since gone, so the publish fails with [DisconnectedException]
+ * rather than recording "published" for a sender that no longer exists.
  */
 internal suspend fun recordPublish(
     states: MutableMap<String, PublishState>,
@@ -35,11 +37,20 @@ internal suspend fun recordPublish(
             states.remove(track)
             throw t
         }
-        if (isReady()) {
-            states[track] = PublishState.PUBLISHED
-        } else {
+        if (!isReady()) {
             states.remove(track)
+            // Not a success: the session that came back has no sender behind this slot, and a
+            // publish that returned normally would hand the caller a track that refuses every push.
+            throw ErrorCode.toException(
+                wire = "DISCONNECTED",
+                message =
+                    "publish of '$track' was answered, but the session left ready before it " +
+                        "completed, so the track is not published. Publish again — a reconnect " +
+                        "resumes recvonly tracks and nothing else.",
+                operation = "publish",
+            )
         }
+        states[track] = PublishState.PUBLISHED
     }
     currentCoroutineContext().ensureActive()
 }

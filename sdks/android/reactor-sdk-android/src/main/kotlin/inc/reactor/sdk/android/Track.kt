@@ -83,6 +83,7 @@ public class Track internal constructor(
      * caller waits for that answer, the state records it, and the cancellation is thrown after.
      *
      * @throws InvalidStateException on a recvonly track, which nothing can be pushed into.
+     * @throws DisconnectedException when the session left `ready` while the publish was in flight.
      */
     public suspend fun publish() {
         requireSendable("publish")
