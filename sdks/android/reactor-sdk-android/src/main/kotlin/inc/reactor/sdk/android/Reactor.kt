@@ -5,6 +5,7 @@ import inc.reactor.sdk.android.internal.ErrorPayloads
 import inc.reactor.sdk.android.internal.NativeClient
 import inc.reactor.sdk.android.internal.NativeEvents
 import inc.reactor.sdk.android.internal.TrackParsing
+import inc.reactor.sdk.android.internal.recordPublish
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -272,23 +273,11 @@ public class Reactor(
 
             override suspend fun publish(track: String) {
                 val client = requireHandle("publish")
-                publishStates[track] = PublishState.PUBLISHING
-                try {
-                    client.publishTrack(track)
-                } catch (t: Throwable) {
-                    // A failed publish leaves no sender behind the slot, so it must not read as
-                    // published — and must stay retryable.
-                    publishStates.remove(track)
-                    throw t
-                }
-                // Only if the session is still ready. A status change during the publish means the
-                // completion is answering about a connection that has since gone, and recording
-                // "published" here would outlive the sender it describes.
-                if (_status.value == ConnectionStatus.READY) {
-                    publishStates[track] = PublishState.PUBLISHED
-                } else {
-                    publishStates.remove(track)
-                }
+                recordPublish(
+                    publishStates,
+                    track,
+                    isReady = { _status.value == ConnectionStatus.READY },
+                ) { client.publishTrack(track) }
             }
 
             override suspend fun unpublish(track: String) {
