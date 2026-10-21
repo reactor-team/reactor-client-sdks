@@ -21,6 +21,9 @@ class PublishingTest {
             val states = mutableMapOf<String, PublishState>()
             var pushedVideo = 0
             var pushedAudio = 0
+            var lastPixels: ByteBuffer? = null
+            var lastPcm: ByteBuffer? = null
+            var paused = 0
 
             override fun setVideoHandler(
                 track: String,
@@ -46,7 +49,9 @@ class PublishingTest {
                 states.remove(track)
             }
 
-            override suspend fun pause(track: String) = Unit
+            override suspend fun pause(track: String) {
+                paused++
+            }
 
             override suspend fun resume(track: String) = Unit
 
@@ -58,6 +63,7 @@ class PublishingTest {
                 userData: ByteArray?,
             ) {
                 pushedVideo++
+                lastPixels = pixels
             }
 
             override fun pushAudioFrame(
@@ -68,6 +74,7 @@ class PublishingTest {
                 channels: Int,
             ) {
                 pushedAudio++
+                lastPcm = pcm
             }
         }
 
@@ -194,4 +201,112 @@ class PublishingTest {
         owner.states["webcam"] = PublishState.PUBLISHED
         assertTrue(track("webcam").published)
     }
+
+    // ── What crosses JNI must describe the buffer exactly ───────────────────
+
+    /** The native layer takes both as unsigned: -1 x -1 "needs" 4 bytes and reads gigabytes. */
+    @Test
+    fun `non-positive dimensions are refused before they reach the native layer`() =
+        runTest {
+            track("webcam").publish()
+            for ((w, h) in listOf(-1 to -1, 0 to 4, 4 to 0, -2 to 2)) {
+                assertThrows("${w}x$h", BadRequestException::class.java) {
+                    track("webcam").pushFrame(ByteBuffer.allocateDirect(4), w, h)
+                }
+            }
+            assertEquals(0, owner.pushedVideo)
+        }
+
+    @Test
+    fun `a video buffer with a nonzero position is passed from that position`() =
+        runTest {
+            track("webcam").publish()
+            val buffer = ByteBuffer.allocateDirect(8 + 2 * 2 * 4)
+            buffer.put(7, 0x5A)
+            buffer.position(8)
+            buffer.put(8, 0x11)
+            track("webcam").pushFrame(buffer, 2, 2)
+            val passed = owner.lastPixels!!
+            assertEquals("the native side reads from the base address", 0, passed.position())
+            assertEquals(16, passed.remaining())
+            assertEquals(0x11.toByte(), passed.get(0))
+        }
+
+    @Test
+    fun `audio of the right length in a supported format is pushed`() =
+        runTest {
+            track("mic").publish()
+            track("mic").pushFrame(ByteBuffer.allocateDirect(480 * 2 * 2), 480, 48000, 2)
+            assertEquals(1, owner.pushedAudio)
+        }
+
+    @Test
+    fun `an audio buffer shorter than its counts say is refused, naming both numbers`() =
+        runTest {
+            track("mic").publish()
+            val error =
+                assertThrows(BadRequestException::class.java) {
+                    // 480 samples x 2 channels x 2 bytes = 1920; give it half.
+                    track("mic").pushFrame(ByteBuffer.allocateDirect(960), 480, 48000, 2)
+                }
+            assertTrue(error.message!!.contains("960"))
+            assertTrue(error.message!!.contains("1920"))
+            assertEquals(0, owner.pushedAudio)
+        }
+
+    @Test
+    fun `audio counts the native layer would read as huge are refused`() =
+        runTest {
+            track("mic").publish()
+            for ((samples, rate, channels) in listOf(
+                Triple(-1, 48000, 1),
+                Triple(0, 48000, 1),
+                Triple(480, -48000, 1),
+                Triple(480, 48000, -1),
+            )) {
+                assertThrows("$samples/$rate/$channels", BadRequestException::class.java) {
+                    track("mic").pushFrame(ByteBuffer.allocateDirect(4), samples, rate, channels)
+                }
+            }
+            assertEquals(0, owner.pushedAudio)
+        }
+
+    @Test
+    fun `an unsupported audio format is refused, listing the supported ones`() =
+        runTest {
+            track("mic").publish()
+            val error =
+                assertThrows(BadRequestException::class.java) {
+                    track("mic").pushFrame(ByteBuffer.allocateDirect(480 * 3 * 2), 480, 22050, 3)
+                }
+            assertTrue(error.message!!.contains("48000"))
+        }
+
+    @Test
+    fun `an audio buffer with a nonzero position is passed from that position`() =
+        runTest {
+            track("mic").publish()
+            val buffer = ByteBuffer.allocateDirect(6 + 160 * 2)
+            buffer.position(6)
+            track("mic").pushFrame(buffer, 160, 16000, 1)
+            assertEquals(0, owner.lastPcm!!.position())
+            assertEquals(320, owner.lastPcm!!.remaining())
+        }
+
+    @Test
+    fun `pause and resume on a sendonly track are refused, pointing at publishing`() =
+        runTest {
+            val pause = assertThrows(InvalidStateException::class.java) { kotlinx.coroutines.runBlocking { track("webcam").pause() } }
+            assertTrue(pause.message!!.contains("unpublish()"))
+            val resume = assertThrows(InvalidStateException::class.java) { kotlinx.coroutines.runBlocking { track("webcam").resume() } }
+            assertTrue(resume.message!!.contains("publish()"))
+            assertEquals(0, owner.paused)
+        }
+
+    @Test
+    fun `pause on a recvonly track reaches the native layer`() =
+        runTest {
+            track("main_video").pause()
+            assertEquals(1, owner.paused)
+        }
 }
