@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.first
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The seven scenarios, numbered as `sdks/python/examples/`.
@@ -126,10 +127,11 @@ public object Scenarios {
     ) {
         withReactor(HELIOS, apiKey, log) { reactor ->
             reactor.status.first { it == ConnectionStatus.READY }
-            var frames = 0
+            // Atomic: onFrame runs on the FFI thread, and the count is read from this one.
+            val frames = AtomicInteger()
             val track = reactor.track(OUTPUT_TRACK)
             track.onFrame { frame: VideoFrame ->
-                frames += 1
+                frames.incrementAndGet()
                 sink?.render(frame)
             }
 
@@ -137,16 +139,19 @@ public object Scenarios {
             reactor.sendCommand("start")
             delay(5_000)
 
-            val beforePause = frames
+            // Counted once the pause has been answered: frames still arriving while it is in
+            // flight are legitimate, and counting them as arrivals while paused would make a
+            // working pause look broken.
             track.pause()
-            log("paused at $beforePause frames")
+            val paused = frames.get()
+            log("paused at $paused frames")
             delay(3_000)
-            log("after 3s paused: $frames frames (expect no change)")
+            log("after 3s paused: ${frames.get()} frames (expect no change)")
 
             track.resume()
             log("resumed")
             delay(5_000)
-            log("after resuming: $frames frames")
+            log("after resuming: ${frames.get()} frames")
         }
     }
 
