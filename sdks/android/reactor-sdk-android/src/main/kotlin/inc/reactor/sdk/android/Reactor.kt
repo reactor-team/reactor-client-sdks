@@ -128,7 +128,7 @@ public class Reactor(
                     reactor.dropFrame(name)
                     return
                 }
-            handler(
+            val frame =
                 VideoFrame(
                     trackName = name,
                     pixels = pixels ?: return,
@@ -137,8 +137,11 @@ public class Reactor(
                     frameId = frameId,
                     timestampUs = timestampUs,
                     userData = userData,
-                ),
-            )
+                )
+            // Here, on the callback's own thread and right before the app's handler, is where the
+            // frame's delivery stage ends — and only for a frame a handler actually receives.
+            NativeClient.frameDelivered()
+            handler(frame)
         }
 
         override fun onAudioFrame(

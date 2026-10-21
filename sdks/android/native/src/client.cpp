@@ -315,6 +315,13 @@ extern "C" JNIEXPORT jstring JNICALL Java_inc_reactor_sdk_android_internal_Nativ
  * Cache the completion entry point. Called once, from Kotlin, on a thread with a class loader
  * that can see application classes.
  */
+// See NativeClient.frameDelivered. No handle and no state: the core reads which frame from the
+// calling thread, which is why this must run on the on_frame thread, inside the callback.
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeFrameDelivered(JNIEnv*, jobject) {
+  reactor_frame_delivered();
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitCompletions(JNIEnv* env, jobject,
                                                                         jclass completions) {

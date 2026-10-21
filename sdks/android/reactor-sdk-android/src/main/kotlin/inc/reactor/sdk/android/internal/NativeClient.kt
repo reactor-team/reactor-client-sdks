@@ -84,6 +84,17 @@ internal object NativeClient {
     @Volatile
     private var completionsWired = false
 
+    private external fun nativeFrameDelivered()
+
+    /**
+     * Mark the frame the current video callback is delivering as handed to the app.
+     *
+     * Ends the frame's delivery stage in the client statistics. Only meaningful from inside the
+     * video callback, on its thread, right before the app's handler runs — `reactor_frame_delivered`
+     * does nothing anywhere else. Takes no handle.
+     */
+    fun frameDelivered() = nativeFrameDelivered()
+
     /** A live handle. Safe to use from any thread, including against its own [close] — see [lifecycle]. */
     class Handle internal constructor(
         private val context: Long,
