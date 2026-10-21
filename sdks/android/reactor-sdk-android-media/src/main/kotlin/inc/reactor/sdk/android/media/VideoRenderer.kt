@@ -72,7 +72,13 @@ public class VideoRenderer
                 field = ((value % 360) + 360) % 360
             }
 
-        /** Mirror horizontally. What a front-camera preview wants, and nothing else does. */
+        /**
+         * Mirror horizontally. What a front-camera preview wants, and nothing else does.
+         *
+         * Volatile, like [rotationDegrees]: it is set on the UI thread and read by [render] on
+         * the FFI delivery thread, which would otherwise have no guarantee of seeing the change.
+         */
+        @Volatile
         public var mirror: Boolean = false
 
         init {
