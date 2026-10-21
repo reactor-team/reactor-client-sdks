@@ -61,9 +61,10 @@ class RecordPublishTest {
         }
 
     @Test
-    fun `a publish answered after the session left ready is not recorded`() =
+    fun `a publish answered after the session left ready fails as disconnected`() =
         runTest {
-            recordPublish(states, "webcam", { false }) { }
+            val thrown = runCatching { recordPublish(states, "webcam", { false }) { } }.exceptionOrNull()
+            assertTrue("got $thrown", thrown is DisconnectedException)
             assertNull(states["webcam"])
         }
 
