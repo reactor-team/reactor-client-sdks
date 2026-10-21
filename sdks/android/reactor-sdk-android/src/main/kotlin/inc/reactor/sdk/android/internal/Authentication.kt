@@ -72,6 +72,43 @@ internal object Authentication {
         return wanted.optionsJson
     }
 
+    /** Why a connect has to replace its native client. */
+    internal enum class Rebuild(
+        val reason: String,
+    ) {
+        TOKEN_CHANGED(
+            "The token was re-minted for a different scope, which rebuilt the client. " +
+                "Native work already started may still be running.",
+        ),
+        MODEL_CHANGED(
+            "The client was rebuilt to connect to a different model. " +
+                "Native work already started may still be running.",
+        ),
+    }
+
+    /**
+     * Whether a connect to [modelName] must replace the native client, and why; null to keep it.
+     *
+     * The native client receives its token and its model at creation and neither changes after,
+     * so either one changing means a new client. [handleModel] is the model of the client there
+     * is now, null when there is none — and with nothing to replace, nothing is rebuilt: the
+     * connect simply creates one.
+     *
+     * The model is checked on its own because it holds even when the token text is unchanged:
+     * without it a connect to model B went out on the client created for model A.
+     */
+    internal fun needsRebuild(
+        handleModel: String?,
+        modelName: String,
+        tokenChanged: Boolean,
+    ): Rebuild? =
+        when {
+            handleModel == null -> null
+            tokenChanged -> Rebuild.TOKEN_CHANGED
+            handleModel != modelName -> Rebuild.MODEL_CHANGED
+            else -> null
+        }
+
     /**
      * The key exchange's reply, as the token.
      *

@@ -157,6 +157,43 @@ class AuthenticationTest {
 
     // ── The reply ────────────────────────────────────────────────────────────
 
+    // ── Rebuilding the native client ─────────────────────────────────────────
+
+    @Test
+    fun `with no client there is nothing to rebuild`() {
+        assertNull(Authentication.needsRebuild(handleModel = null, modelName = "reactor/echo", tokenChanged = true))
+        assertNull(Authentication.needsRebuild(handleModel = null, modelName = "reactor/echo", tokenChanged = false))
+    }
+
+    @Test
+    fun `the same model with the same token keeps the client`() {
+        assertNull(Authentication.needsRebuild(handleModel = "reactor/echo", modelName = "reactor/echo", tokenChanged = false))
+    }
+
+    @Test
+    fun `a re-minted token rebuilds the client`() {
+        assertEquals(
+            Authentication.Rebuild.TOKEN_CHANGED,
+            Authentication.needsRebuild(handleModel = "reactor/echo", modelName = "reactor/echo", tokenChanged = true),
+        )
+    }
+
+    /** The bug this was found by: model B connected on the client created for model A. */
+    @Test
+    fun `another model rebuilds the client even when the token is unchanged`() {
+        assertEquals(
+            Authentication.Rebuild.MODEL_CHANGED,
+            Authentication.needsRebuild(handleModel = "reactor/echo", modelName = "reactor/helios", tokenChanged = false),
+        )
+    }
+
+    @Test
+    fun `another model with a re-minted token rebuilds once`() {
+        assertTrue(
+            Authentication.needsRebuild(handleModel = "reactor/echo", modelName = "reactor/helios", tokenChanged = true) != null,
+        )
+    }
+
     @Test
     fun `a token in an object is the answer`() {
         assertEquals("minted", Authentication.decodeJwt("""{"jwt":"minted"}"""))

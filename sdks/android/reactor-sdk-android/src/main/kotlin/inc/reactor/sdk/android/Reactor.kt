@@ -465,15 +465,10 @@ public class Reactor(
         val client =
             handleLock.withLock {
                 check(!closed.get()) { "This Reactor is closed" }
-                mintForConnect(modelName, sessionId)
-                // A token re-mint is one reason to rebuild; another model is the other, and it holds
-                // even when the token text is unchanged. Without it a connect to model B went out on
-                // the client created for model A, because that is fixed at creation.
-                if (handle != null && handleModel != modelName) {
-                    retireHandle(
-                        "The client was rebuilt to connect to a different model. " +
-                            "Native work already started may still be running.",
-                    )
+                val tokenChanged = mintForConnect(modelName, sessionId)
+                Authentication.needsRebuild(handleModel, modelName, tokenChanged)?.let {
+                    // The create() below builds the replacement around the new token and model.
+                    retireHandle(it.reason)
                 }
                 handle ?: NativeClient
                     .create(
@@ -497,7 +492,7 @@ public class Reactor(
     }
 
     /**
-     * Give [handle] the token this connect needs, minting the API key when that is what it takes.
+     * Mint the token this connect needs, when that is what it takes, and say whether it changed.
      * Runs under [handleLock], which is what serializes one connect's mint-and-rebuild against
      * another connect's create.
      *
@@ -505,6 +500,7 @@ public class Reactor(
      * creation, so a *changed* token reaches it only through a new handle — but an exchange
      * returning the same value (short-lived keys often yield the same token twice) leaves the
      * handle exactly as useful as it was, and rebuilding would end a live session for nothing.
+     * Whether to rebuild is [Authentication.needsRebuild]'s call.
      *
      * The failure a caller gets is the exchange's own — UNAUTHORIZED for a rejected key,
      * NETWORK_ERROR for a coordinator that is not there — propagated rather than rephrased, so a
@@ -513,7 +509,7 @@ public class Reactor(
     private suspend fun mintForConnect(
         modelName: String,
         sessionId: String?,
-    ) {
+    ): Boolean {
         val wanted = Authentication.TokenScope(modelName = modelName, sessionId = sessionId)
         val optionsJson =
             Authentication.planMint(
@@ -523,7 +519,7 @@ public class Reactor(
                 currentToken = token,
                 mintedFor = mintedFor,
                 wanted = wanted,
-            ) ?: return
+            ) ?: return false
         val minted =
             NativeClient.fetchJwt(
                 apiUrl = options.apiUrl,
@@ -535,13 +531,7 @@ public class Reactor(
         val changed = minted != token
         token = minted
         mintedFor = wanted
-        if (!changed) return
-        // The create() in connect() builds the replacement around the new token. Null handle on
-        // the very first mint, with nothing to rebuild around, is a no-op there.
-        retireHandle(
-            "The token was re-minted for a different scope, which rebuilt the client. " +
-                "Native work already started may still be running.",
-        )
+        return changed
     }
 
     /**
