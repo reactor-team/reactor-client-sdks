@@ -89,6 +89,17 @@ class DecodingTest {
         )
     }
 
+    @Test
+    fun `an absent stats payload is a decode failure, not an empty snapshot`() {
+        assertThrows(JsonException::class.java) { decodeStats(null) }
+        assertThrows(JsonException::class.java) { decodeStats("  ") }
+    }
+
+    @Test
+    fun `a whitespace-only command reply is malformed, not an empty reply`() {
+        assertThrows(JsonException::class.java) { decodeCommandReply("   ") }
+    }
+
     /** Counters here are signed, and coercing them is how a negative one becomes a wrong answer. */
     @Test
     fun `a negative counter survives as a negative number`() {
