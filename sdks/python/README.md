@@ -399,8 +399,8 @@ with `auditwheel`. Both the Rust library and its WebRTC/C++ dependencies must
 be built for musl; retagging a glibc wheel is not sufficient. See
 [the musllinux platform specification](https://packaging.python.org/en/latest/specifications/platform-compatibility-tags/#musllinux).
 
-The SDK depends on `reactor-webrtc` 0.16.0, which supports musl and uses the
-`webrtc-7907-a5ddff60-p6` native build. The musl jobs explicitly pin that native
+The SDK depends on `reactor-webrtc` 0.24.0, which supports musl and uses the
+`webrtc-7907-a5ddff60-p11` native build. The musl jobs explicitly pin that native
 release and require its `linux-musl-x64` and `linux-musl-arm64` assets.
 Alpine wheels are available starting with SDK 1.5.0.
 
