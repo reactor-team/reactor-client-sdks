@@ -72,3 +72,26 @@ private suspend fun publishLocked(
     }
     states[track] = PublishState.PUBLISHED
 }
+
+/**
+ * Unpublish [track] through [unpublish], which throws on failure, and forget its state.
+ *
+ * Under the same [lock] as [recordPublish]. Unserialised, an unpublish landing while a publish
+ * awaits its answer would clear the state, and the publish's later answer would write PUBLISHED
+ * back over it — accepting pushes into a slot the unpublish detached, which drops every one.
+ * Serialised, it waits for that answer and then detaches.
+ *
+ * Only a successful unpublish clears the state: a failed one leaves the sender attached, and
+ * forgetting it would make the retry a no-op.
+ */
+internal suspend fun recordUnpublish(
+    states: MutableMap<String, PublishState>,
+    track: String,
+    lock: Mutex,
+    unpublish: () -> Unit,
+) {
+    lock.withLock {
+        unpublish()
+        states.remove(track)
+    }
+}
