@@ -218,6 +218,17 @@ public class Track internal constructor(
         require(pcm.isDirect) {
             "pushFrame needs a direct ByteBuffer — ByteBuffer.allocateDirect(), not allocate()"
         }
+        // The native side reads the samples as 16-bit values straight from the slice's address,
+        // which an odd position would leave misaligned — undefined behaviour, not just slow.
+        if (pcm.position() % 2 != 0) {
+            throw ErrorCode.toException(
+                wire = "BAD_REQUEST",
+                message =
+                    "'$name' was given PCM at byte position ${pcm.position()}; 16-bit samples " +
+                        "must start at an even position.",
+                operation = "pushFrame",
+            )
+        }
         owner.pushAudioFrame(name, pcm.slice(), samplesPerChannel, sampleRate, channels)
     }
 

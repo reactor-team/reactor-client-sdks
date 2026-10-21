@@ -309,4 +309,18 @@ class PublishingTest {
             track("main_video").pause()
             assertEquals(1, owner.paused)
         }
+
+    @Test
+    fun `PCM at an odd position is refused, since the samples would be misaligned`() =
+        runTest {
+            track("mic").publish()
+            val buffer = ByteBuffer.allocateDirect(1 + 160 * 2)
+            buffer.position(1)
+            val error =
+                assertThrows(BadRequestException::class.java) {
+                    track("mic").pushFrame(buffer, 160, 16000, 1)
+                }
+            assertTrue(error.message!!.contains("even"))
+            assertEquals(0, owner.pushedAudio)
+        }
 }
