@@ -87,8 +87,26 @@ for abi in "${ABIS[@]}"; do
   # first ABI built; every later one must agree, which is checked below rather than promised.
   # The loop used to repack over the same path on every pass, so with a second ABI the last one
   # would simply have won — harmless with arm64-v8a alone and wrong the moment REA-6551 lands.
-  jar="$(find "$REPO_ROOT/target/$target/release/build" -name libwebrtc.jar -print -quit)"
+  #
+  # From the reactor-webrtc-sys build directory whose build script ran last, not the first one a
+  # directory walk finds: Cargo keeps one per fingerprint, so after a libwebrtc bump, a feature
+  # change or a cache restore several can hold a libwebrtc.jar, and walk order says nothing about
+  # which goes with the .so just linked. Cargo stamps each run with invoked.timestamp. (Asking
+  # Cargo for the out_dir directly is not possible here: cargo-ndk does not forward its JSON
+  # messages.)
+  jar=""
+  newest=0
+  for run in "$REPO_ROOT/target/$target/release/build"/reactor-webrtc-sys-*/; do
+    candidate="$(find "$run" -name libwebrtc.jar -print -quit)"
+    [ -n "$candidate" ] && [ -f "$run/invoked.timestamp" ] || continue
+    stamp="$(python3 -c 'import os, sys; print(int(os.stat(sys.argv[1]).st_mtime_ns))' "$run/invoked.timestamp")"
+    if [ "$stamp" -gt "$newest" ]; then
+      newest="$stamp"
+      jar="$candidate"
+    fi
+  done
   [ -n "$jar" ] || { echo "error: no libwebrtc.jar under target/$target — did reactor-webrtc-sys build?" >&2; exit 1; }
+  echo "==> libwebrtc.jar from ${jar#"$REPO_ROOT/"}"
 
   # Keep only `inc/`, which is everything the relocation produced: inc/reactor/org/webrtc,
   # inc/reactor/org/jni_zero, and inc/reactor/J/N.class — the generated JNI registration class.
