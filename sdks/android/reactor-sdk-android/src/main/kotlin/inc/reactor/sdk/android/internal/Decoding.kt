@@ -21,7 +21,9 @@ import inc.reactor.sdk.android.Stats
  * that as undecodable would make one SDK refuse a reply the others hand to the caller.
  */
 internal fun decodeCommandReply(resultJson: String?): CommandReply {
-    if (resultJson.isNullOrBlank()) return CommandReply()
+    // Null or empty only: whitespace is a payload, and one that will not parse is a decode
+    // failure rather than a silent handler.
+    if (resultJson.isNullOrEmpty()) return CommandReply()
     val parsed = Json.parse(resultJson)
 
     @Suppress("UNCHECKED_CAST")
@@ -47,8 +49,16 @@ internal fun decodeSchema(resultJson: String?): Map<String, Any?> {
     return Json.parseObject(resultJson)
 }
 
-/** Statistics, kept as the platform sent them. */
+/**
+ * Statistics, kept as the platform sent them.
+ *
+ * `reactor_get_stats` always answers with an object, so an absent payload is a broken response,
+ * not an empty snapshot: reporting it as one would read as a connection with every metric
+ * missing. It throws, as [decodeSchema] does, and the caller gets DECODE_FAILED.
+ */
 internal fun decodeStats(resultJson: String?): Stats {
-    if (resultJson.isNullOrBlank()) return Stats(emptyMap())
+    if (resultJson.isNullOrBlank()) {
+        throw JsonException("The stats request succeeded but carried no statistics.")
+    }
     return Stats(Json.parseObject(resultJson))
 }
