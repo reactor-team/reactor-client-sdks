@@ -187,6 +187,10 @@ public class Reactor(
     private val publishStates =
         java.util.concurrent.ConcurrentHashMap<String, PublishState>()
 
+    /** One lock per track, held across a publish so two cannot race over the same slot. */
+    private val publishLocks =
+        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+
     private fun requireHandle(operation: String) =
         handle ?: throw ErrorCode.toException(
             wire = "INVALID_STATE",
@@ -276,6 +280,7 @@ public class Reactor(
                 recordPublish(
                     publishStates,
                     track,
+                    publishLocks.getOrPut(track) { kotlinx.coroutines.sync.Mutex() },
                     isReady = { _status.value == ConnectionStatus.READY },
                 ) { client.publishTrack(track) }
             }
