@@ -1,5 +1,7 @@
 package inc.reactor.sdk.android.examples
 
+import android.graphics.Bitmap
+import android.graphics.Color
 import inc.reactor.sdk.android.ConnectionStatus
 import inc.reactor.sdk.android.Reactor
 import inc.reactor.sdk.android.TrackDirection
@@ -7,6 +9,7 @@ import inc.reactor.sdk.android.TrackKind
 import inc.reactor.sdk.android.VideoFrame
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
 
@@ -91,16 +94,19 @@ public object Scenarios {
             reactor.track(OUTPUT_TRACK).onFrame(countFrames(log, sink))
 
             // A real app would take this from a picker — see uploadContent for a content:// URI.
-            val bytes = ByteBuffer.allocateDirect(64 * 64 * 3)
-            val ref = reactor.uploadBytes(bytes, name = "reference.rgb")
-            log("uploaded ${ref.name} as ${ref.uploadId} (${ref.size} bytes)")
+            val ref = reactor.uploadBytes(gradientPng(256, 256), name = "reference.png", mimeType = "image/png")
+            log("uploaded ${ref.name} as ${ref.uploadId} (${ref.size} bytes, ${ref.mimeType})")
 
-            reactor.sendCommand(
-                "set_prompt",
-                args = """{"prompt":"$PROMPT"}""",
-                uploads = """{"reference": {"upload_id":"${ref.uploadId}","name":"${ref.name}",
-                    "mime_type":"${ref.mimeType}","size":${ref.size}}}""",
-            )
+            // Helios takes the prompt and the image together, through set_conditioning, so that
+            // start cannot observe a half-set session. The reference fills the `image` parameter.
+            val conditioning =
+                reactor.sendCommand(
+                    "set_conditioning",
+                    args = """{"prompt":"$PROMPT"}""",
+                    uploads = """{"image": {"upload_id":"${ref.uploadId}","name":"${ref.name}",
+                        "mime_type":"${ref.mimeType}","size":${ref.size}}}""",
+                )
+            log("set_conditioning → ${conditioning.type ?: "acknowledged"}")
             reactor.sendCommand("start")
             delay(10_000)
         }
@@ -330,5 +336,29 @@ public object Scenarios {
             delay(12_000)
             if (reported == 0) log("no frames arrived — check the model's minimum")
         }
+    }
+
+    /**
+     * A small gradient, encoded as PNG — Helios conditions on a decodable image, not raw pixels.
+     *
+     * In a direct buffer, because [Reactor.uploadBytes] reads it in place.
+     */
+    private fun gradientPng(
+        width: Int,
+        height: Int,
+    ): ByteBuffer {
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val png =
+            try {
+                for (y in 0 until height) {
+                    for (x in 0 until width) {
+                        bitmap.setPixel(x, y, Color.rgb(x * 255 / width, y * 255 / height, 128))
+                    }
+                }
+                ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+            } finally {
+                bitmap.recycle()
+            }
+        return ByteBuffer.allocateDirect(png.size).put(png).flip() as ByteBuffer
     }
 }
