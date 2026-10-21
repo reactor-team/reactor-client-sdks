@@ -325,10 +325,10 @@ public object Scenarios {
     ) {
         withReactor(HELIOS, apiKey, log) { reactor ->
             reactor.status.first { it == ConnectionStatus.READY }
-            var reported = 0
+            // Atomic: onFrame runs on the FFI thread, and the final check reads it from this one.
+            val reported = AtomicInteger()
             reactor.track(OUTPUT_TRACK).onFrame { frame: VideoFrame ->
-                if (reported < 5) {
-                    reported += 1
+                if (reported.getAndUpdate { if (it < 5) it + 1 else it } < 5) {
                     log(
                         "frame id=${frame.frameId} senderTs=${frame.timestampUs}µs " +
                             "tag=${frame.userData?.size ?: 0} bytes",
@@ -339,7 +339,7 @@ public object Scenarios {
             reactor.sendCommand("set_prompt", """{"prompt":"$PROMPT"}""")
             reactor.sendCommand("start")
             delay(12_000)
-            if (reported == 0) log("no frames arrived — check the model's minimum")
+            if (reported.get() == 0) log("no frames arrived — check the model's minimum")
         }
     }
 
