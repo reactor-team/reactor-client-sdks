@@ -293,7 +293,7 @@ public class Reactor(
                     publishStates,
                     track,
                     publishLock(track),
-                    isReady = readyCheck(),
+                    readyCheck = ::readyCheck,
                 ) { client.publishTrack(track) }
             }
 

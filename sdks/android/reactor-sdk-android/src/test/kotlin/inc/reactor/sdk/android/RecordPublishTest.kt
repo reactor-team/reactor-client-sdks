@@ -30,7 +30,7 @@ class RecordPublishTest {
             var outcome: Throwable? = null
             val caller =
                 launch {
-                    outcome = runCatching { recordPublish(states, "webcam", lock, { true }) { answer.await() } }.exceptionOrNull()
+                    outcome = runCatching { recordPublish(states, "webcam", lock, { { true } }) { answer.await() } }.exceptionOrNull()
                 }
             runCurrent()
             assertEquals(PublishState.PUBLISHING, states["webcam"])
@@ -52,7 +52,7 @@ class RecordPublishTest {
             val answer = CompletableDeferred<Unit>()
             val caller =
                 launch {
-                    runCatching { recordPublish(states, "webcam", lock, { true }) { answer.await() } }
+                    runCatching { recordPublish(states, "webcam", lock, { { true } }) { answer.await() } }
                 }
             runCurrent()
             caller.cancel()
@@ -66,7 +66,7 @@ class RecordPublishTest {
     @Test
     fun `a publish answered after the session left ready fails as disconnected`() =
         runTest {
-            val thrown = runCatching { recordPublish(states, "webcam", lock, { false }) { } }.exceptionOrNull()
+            val thrown = runCatching { recordPublish(states, "webcam", lock, { { false } }) { } }.exceptionOrNull()
             assertTrue("got $thrown", thrown is DisconnectedException)
             assertNull(states["webcam"])
         }
@@ -74,7 +74,7 @@ class RecordPublishTest {
     @Test
     fun `a failed publish is cleared and rethrown`() =
         runTest {
-            val thrown = runCatching { recordPublish(states, "webcam", lock, { true }) { error("refused") } }.exceptionOrNull()
+            val thrown = runCatching { recordPublish(states, "webcam", lock, { { true } }) { error("refused") } }.exceptionOrNull()
             assertEquals("refused", thrown?.message)
             assertNull(states["webcam"])
         }
@@ -87,7 +87,7 @@ class RecordPublishTest {
             var secondOutcome: Throwable? = null
             val a =
                 launch {
-                    recordPublish(states, "webcam", lock, { true }) {
+                    recordPublish(states, "webcam", lock, { { true } }) {
                         calls++
                         first.await()
                     }
@@ -96,7 +96,7 @@ class RecordPublishTest {
                 launch {
                     secondOutcome =
                         runCatching {
-                            recordPublish(states, "webcam", lock, { true }) {
+                            recordPublish(states, "webcam", lock, { { true } }) {
                                 calls++
                                 error("already published")
                             }
@@ -115,7 +115,7 @@ class RecordPublishTest {
     fun `an unpublish during a publish is not undone by the publish's answer`() =
         runTest {
             val answer = CompletableDeferred<Unit>()
-            val publishing = launch { recordPublish(states, "webcam", lock, { true }) { answer.await() } }
+            val publishing = launch { recordPublish(states, "webcam", lock, { { true } }) { answer.await() } }
             runCurrent()
             var detached = false
             val unpublishing = launch { recordUnpublish(states, "webcam", lock) { detached = true } }
@@ -150,10 +150,53 @@ class RecordPublishTest {
         runTest {
             var heldDuringCheck = false
             recordPublish(states, "webcam", lock, {
-                heldDuringCheck = Thread.holdsLock(states)
-                true
+                {
+                    heldDuringCheck = Thread.holdsLock(states)
+                    true
+                }
             }) { }
             assertTrue(heldDuringCheck)
+            assertEquals(PublishState.PUBLISHED, states["webcam"])
+        }
+
+    /** Started too early, a queued publish would be judged by a session it never published on. */
+    @Test
+    fun `the readiness check starts only once the lock is held`() =
+        runTest {
+            val first = CompletableDeferred<Unit>()
+            var generation = 0
+            var firstOutcome: Throwable? = null
+            val a =
+                launch {
+                    firstOutcome =
+                        runCatching {
+                            recordPublish(states, "webcam", lock, {
+                                val g = generation;
+                                { generation == g }
+                            }) { first.await() }
+                        }.exceptionOrNull()
+                }
+            runCurrent()
+            var secondOutcome: Throwable? = null
+            val b =
+                launch {
+                    secondOutcome =
+                        runCatching {
+                            recordPublish(states, "webcam", lock, {
+                                val g = generation;
+                                { generation == g }
+                            }) { }
+                        }.exceptionOrNull()
+                }
+            runCurrent()
+            // The session drops and comes back while the second publish waits for the lock.
+            generation += 1
+            states.clear()
+            first.complete(Unit)
+            a.join()
+            b.join()
+            assertTrue("the first was answered for the session that left", firstOutcome is DisconnectedException)
+            assertNull("the second publish ran on the new session and must succeed", secondOutcome)
             assertEquals(PublishState.PUBLISHED, states["webcam"])
         }
 }
