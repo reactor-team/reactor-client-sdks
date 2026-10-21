@@ -366,7 +366,11 @@ jobs:
           VERSION: ${{ needs.detect-version.outputs.version }}
         run: |
           set -euo pipefail
+          # --target pins the tag to the commit that was built. Without it a missing tag is cut
+          # from the default branch's head when this step runs, which after the build and up to
+          # half an hour of polling can be a later commit than the one published.
           gh release create "android-v${VERSION}" \
+            --target "${{ github.sha }}" \
             --title "Android SDK ${VERSION}" \
             --notes "$(cat <<EOF
           Published to Maven Central:
