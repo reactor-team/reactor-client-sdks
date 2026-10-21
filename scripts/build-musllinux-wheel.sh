@@ -53,7 +53,7 @@ cargo build --locked -p reactor-ffi --release --target "$TARGET"
 LIB="/io/target/$TARGET/release/libreactor_ffi.so"
 
 PYTHON=/opt/python/cp310-cp310/bin/python
-"$PYTHON" -m pip install --quiet --upgrade pip uv auditwheel
+"$PYTHON" -m pip install --quiet --upgrade "pip>=26.2.2" "uv>=0.13.4" auditwheel
 cd /io/sdks/python
 # Let auditwheel inspect the ELF and earn the musllinux tag.
 unset REACTOR_WHEEL_PLATFORM_TAG

@@ -75,3 +75,9 @@ mime_guess  = "2"
 tokio       = { version = "1", features = ["full"] }
 prost       = "0.13"
 prost-types = "0.13"
+
+# Keep native HTTPS and build downloads on the updated CA trust policy.
+rustls = { version = "0.23.43", default-features = false }
+rustls-webpki = { version = "0.103.16", default-features = false }
+webpki-roots = { version = "1.0.10", default-features = false }
+webpki-roots-compat = { package = "webpki-roots", version = "0.26.11", default-features = false }

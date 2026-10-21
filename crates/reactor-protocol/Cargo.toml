@@ -15,6 +15,12 @@ prost-types = { workspace = true }
 [build-dependencies]
 prost-build         = "0.13"
 protoc-bin-vendored = "3"
-ureq                = "2"
+ureq                = "2.12.1"
 flate2              = "1"
 tar                 = "0.4"
+
+# Constrain build-download TLS when a consumer supplies an older lockfile.
+rustls              = { workspace = true }
+rustls-webpki       = { workspace = true }
+webpki-roots        = { workspace = true }
+webpki-roots-compat = { workspace = true }

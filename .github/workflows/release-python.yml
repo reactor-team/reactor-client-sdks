@@ -281,7 +281,7 @@ jobs:
             VENV_PY="$GITHUB_WORKSPACE/buildenv/bin/python"
           fi
           "$HOST_PY" -m venv buildenv
-          "$VENV_PY" -m pip install --quiet --upgrade pip uv
+          "$VENV_PY" -m pip install --quiet --upgrade "pip>=26.2.2" "uv>=0.13.4"
 
           cd sdks/python
           "$VENV_PY" -m uv build --wheel --out-dir "$GITHUB_WORKSPACE/dist"
@@ -314,7 +314,7 @@ jobs:
           else
             PY="smoke/bin/python"
           fi
-          "$GITHUB_WORKSPACE/$PY" -m pip install --quiet --upgrade pip
+          "$GITHUB_WORKSPACE/$PY" -m pip install --quiet --upgrade "pip>=26.2.2"
           "$GITHUB_WORKSPACE/$PY" -m pip install --no-index "$GITHUB_WORKSPACE"/dist/*.whl
           # Run from a directory with no `reactor_sdk/` in it, so the import resolves to
           # the installed package and the library it carries — not the checkout.

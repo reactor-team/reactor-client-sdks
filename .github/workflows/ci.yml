@@ -388,7 +388,7 @@ jobs:
           sha256: ${{ env.MISE_SHA256 }}
       - uses: actions/setup-node@v4   # Node isn't mise-pinned yet; see mise.toml's "JS SDK" section
         with:
-          node-version: "24"
+          node-version: "24.22.1"
       # wasm-pack fetches its own wasm-opt/binaryen binary straight from
       # GitHub releases on first use — outside mise's cache entirely, and a
       # real (if infrequent) source of flaky failures on that download (see
@@ -467,7 +467,7 @@ jobs:
           sha256: ${{ env.MISE_SHA256 }}
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "24.22.1"
       # See the js job's comment above — same download, same flake risk.
       - name: Cache wasm-pack's wasm-opt/binaryen download
         uses: actions/cache@v4

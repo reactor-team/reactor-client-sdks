@@ -167,7 +167,7 @@ jobs:
           sha256: ${{ env.MISE_SHA256 }}
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "24.22.1"
       - run: mise run build:wasm
       - run: mise run lint:js
       - run: mise run build:js
@@ -212,7 +212,7 @@ jobs:
           sha256: ${{ env.MISE_SHA256 }}
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "24.22.1"
       # Real browser, real wasm, real WebRTC, against a live model in
       # production — `build`'s unit suite mocks the client, so this is the
       # only check here that actually runs the SDK end to end.
@@ -328,7 +328,7 @@ jobs:
           sha256: ${{ env.MISE_SHA256 }}
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "24.22.1"
           registry-url: "https://registry.npmjs.org"
       # Only as far as producing the wasm package and installing deps —
       # `npm publish` below triggers `prepack` (REA-5418's build guard), which
