@@ -9,6 +9,7 @@ import java.nio.ByteBuffer
  * only until the handler returns — the FFI frees it the moment it does. Keeping the buffer and
  * reading it later is a use-after-free, which reproduces under load and not in tests. Copy what
  * you keep, or consume it in place with the renderer helpers in `reactor-sdk-android-media`.
+ * It is also **read-only**: writing into it would corrupt the native layer's own frame storage.
  *
  * The trailer fields are 0 when the sender attached no metadata. A tag is dropped unless the far
  * end declared that it reads tags, so an absent [frameId] is a statement about the sender rather
