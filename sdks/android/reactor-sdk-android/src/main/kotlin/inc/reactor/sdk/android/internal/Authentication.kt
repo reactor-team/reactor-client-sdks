@@ -110,6 +110,19 @@ internal object Authentication {
         }
 
     /**
+     * The token to download a clip with: the one its session was connected with, when known.
+     *
+     * Not simply the latest token. A connect that adopts another session re-mints a token bound
+     * to that session, and it cannot fetch a still-valid clip of the one before. A clip with no
+     * session, or one from a session this client never reached, falls back to [current].
+     */
+    internal fun tokenForClip(
+        clipSessionId: String?,
+        sessionTokens: Map<String, String>,
+        current: String?,
+    ): String? = clipSessionId?.let { sessionTokens[it] } ?: current
+
+    /**
      * The key exchange's reply, as the token.
      *
      * Runs before the promise is claimed, so throwing here is how the caller's DECODE_FAILED is
