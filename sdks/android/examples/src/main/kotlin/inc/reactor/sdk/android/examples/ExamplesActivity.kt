@@ -12,9 +12,12 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * A button per scenario, a log below it, and a frame view above.
@@ -69,11 +72,19 @@ public class ExamplesActivity : Activity() {
     }
 
     private fun start(scenario: Scenarios.Scenario) {
-        running?.cancel()
-        log.text = ""
-        append("── ${scenario.number} ${scenario.title} ──")
+        val previous = running
+        previous?.cancel()
         running =
             scope.launch {
+                // Wait out the previous scenario's teardown before connecting: its disconnect is
+                // still in flight after the cancel, and a new connect racing it can find the old
+                // session still holding the lease. Non-cancellable so that a third press, which
+                // cancels this job, still waits for the first one instead of skipping past it.
+                withContext(NonCancellable) { previous?.join() }
+                // Superseded while waiting: leave the log to the scenario that replaced this one.
+                ensureActive()
+                log.text = ""
+                append("── ${scenario.number} ${scenario.title} ──")
                 try {
                     scenario.run(BuildConfig.REACTOR_API_KEY, ::append, FrameSink(frames))
                     append("done")
