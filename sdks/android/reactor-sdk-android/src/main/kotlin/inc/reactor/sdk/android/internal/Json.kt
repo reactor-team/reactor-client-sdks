@@ -40,8 +40,9 @@ internal object Json {
 
         fun fail(what: String): Nothing = throw JsonException("$what at offset $index")
 
+        /** JSON's four whitespace characters only: `isWhitespace` also takes form feed and Unicode separators. */
         fun skipWhitespace() {
-            while (index < text.length && text[index].isWhitespace()) index++
+            while (index < text.length && text[index] in " \t\r\n") index++
         }
 
         fun readValue(): Any? {
