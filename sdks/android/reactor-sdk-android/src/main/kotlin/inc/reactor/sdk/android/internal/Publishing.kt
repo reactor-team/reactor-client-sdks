@@ -19,11 +19,11 @@ import kotlinx.coroutines.withContext
  * leave a live track reported as unpublished, refusing every push. So the state follows the
  * answer, and the cancellation reaches the caller once the publish has been answered.
  *
- * [isReady] is asked after the answer, under the monitor of [states] — the one a status change
- * clears them under, so the check and the write cannot straddle it. A status change during the
- * publish means the completion is about a connection that has since gone, so the publish fails
- * with [DisconnectedException] rather than recording "published" for a sender that no longer
- * exists.
+ * [readyCheck] starts a readiness check once the lock is held; the check is asked after the
+ * answer, under the monitor of [states] — the one a status change clears them under, so the
+ * check and the write cannot straddle it. A status change during the publish means the
+ * completion is about a connection that has since gone, so the publish fails with
+ * [DisconnectedException] rather than recording "published" for a sender that no longer exists.
  *
  * Publishes of one track are serialised through [lock], the same lock for every call on that
  * track. Two in flight at once both claim the slot, and the one that fails would erase the state
@@ -34,11 +34,14 @@ internal suspend fun recordPublish(
     states: MutableMap<String, PublishState>,
     track: String,
     lock: Mutex,
-    isReady: () -> Boolean,
+    readyCheck: () -> () -> Boolean,
     publish: suspend () -> Unit,
 ) {
     withContext(NonCancellable) {
-        lock.withLock { publishLocked(states, track, isReady, publish) }
+        // The check is started only once the lock is held: started earlier, a publish queued
+        // behind another would measure against the session as it was when it queued, and fail
+        // as disconnected after a reconnect it had no part in — with its sender attached.
+        lock.withLock { publishLocked(states, track, readyCheck(), publish) }
     }
     currentCoroutineContext().ensureActive()
 }
