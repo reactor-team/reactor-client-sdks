@@ -157,4 +157,18 @@ class JsonTest {
         assertThrows(JsonException::class.java) { obj("""{"a":"bad escape \q"}""") }
         assertThrows(JsonException::class.java) { obj("""{"a":"\u00"}""") }
     }
+
+    @Test
+    fun `an unescaped control character inside a string is refused`() {
+        for (raw in listOf('\u0000', '\t', '\n', '\r', '\u001F')) {
+            assertThrows("raw U+%04X must not parse".format(raw.code), JsonException::class.java) {
+                obj("{\"a\":\"x${raw}y\"}")
+            }
+            assertThrows("raw U+%04X in a key must not parse".format(raw.code), JsonException::class.java) {
+                obj("{\"a${raw}\":1}")
+            }
+        }
+        // Space is the first character JSON allows unescaped.
+        assertEquals("x y", obj("""{"a":"x y"}""")["a"])
+    }
 }
