@@ -194,6 +194,22 @@ class AuthenticationTest {
         )
     }
 
+    // ── Which token downloads a clip ────────────────────────────────────────
+
+    @Test
+    fun `a clip downloads with its own session's token, not the latest one`() {
+        val tokens = mapOf("ses_a" to "token-a", "ses_b" to "token-b")
+        assertEquals("token-a", Authentication.tokenForClip("ses_a", tokens, current = "token-b"))
+    }
+
+    @Test
+    fun `a clip from an unknown or absent session falls back to the current token`() {
+        val tokens = mapOf("ses_a" to "token-a")
+        assertEquals("token-b", Authentication.tokenForClip("ses_other", tokens, current = "token-b"))
+        assertEquals("token-b", Authentication.tokenForClip(null, tokens, current = "token-b"))
+        assertNull(Authentication.tokenForClip(null, emptyMap(), current = null))
+    }
+
     @Test
     fun `a token in an object is the answer`() {
         assertEquals("minted", Authentication.decodeJwt("""{"jwt":"minted"}"""))

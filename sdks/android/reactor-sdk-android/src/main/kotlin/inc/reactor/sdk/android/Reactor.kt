@@ -96,6 +96,9 @@ public class Reactor(
     @Volatile
     private var token: String? = options.jwt
 
+    /** The token each session this client reached was connected with, by session id. */
+    private val sessionTokens = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     /**
      * What [token] was minted to reach, when it came from an exchange rather than from the
      * caller. Under [handleLock] only.
@@ -424,6 +427,10 @@ public class Reactor(
     }
 
     private fun deliverSessionId(id: String?) {
+        // Remembered with the token that reached it: a later connect can re-mint for another
+        // session, and that token cannot download this session's clips.
+        val current = token
+        if (id != null && current != null) sessionTokens[id] = current
         scope.launch { _sessionId.value = id }
     }
 
@@ -707,9 +714,9 @@ public class Reactor(
             )
         return requireHandle("download_clip").downloadClip(
             playlistUrl = clip.playlistUrl,
-            // The token the session was connected with — which for an apiKey caller is the minted
-            // one, not options.jwt (that caller never had one).
-            jwt = token,
+            // The token the clip's session was connected with — which for an apiKey caller is the
+            // minted one, not options.jwt (that caller never had one).
+            jwt = Authentication.tokenForClip(clip.sessionId, sessionTokens, token),
             outPath = outFile.absolutePath,
             predictedReadyAtMs =
                 inc.reactor.sdk.android.internal.Recordings
