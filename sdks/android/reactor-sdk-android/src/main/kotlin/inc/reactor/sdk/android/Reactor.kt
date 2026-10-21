@@ -218,20 +218,21 @@ public class Reactor(
         )
     }
 
-    private val trackOwner =
+    /** Internal rather than private only so the handler bookkeeping is testable without a device. */
+    internal val trackOwner =
         object : TrackOwner {
             override fun setVideoHandler(
                 track: String,
                 handler: (VideoFrame) -> Unit,
             ) {
-                videoHandlers[track] = handler
+                register(videoHandlers, track, handler)
             }
 
             override fun setAudioHandler(
                 track: String,
                 handler: (AudioFrame) -> Unit,
             ) {
-                audioHandlers[track] = handler
+                register(audioHandlers, track, handler)
             }
 
             override fun clearHandlers(track: String) {
@@ -241,6 +242,37 @@ public class Reactor(
 
             override fun isPaused(track: String): Boolean = track in TrackParsing.parsePaused(handle?.pausedTracks)
         }
+
+    /**
+     * Store a frame handler, unless this Reactor is closed.
+     *
+     * A closed Reactor has no native handle to deliver through, so a handler registered on it
+     * would never run — and, often capturing an Activity, would be kept alive for as long as the
+     * Reactor is. Refused instead, and checked again after storing, so one racing [close]'s clear
+     * cannot land on the far side of it.
+     */
+    private fun <F> register(
+        handlers: MutableMap<String, F>,
+        track: String,
+        handler: F,
+    ) {
+        requireOpen("onFrame")
+        handlers[track] = handler
+        if (closed.get()) {
+            handlers.remove(track)
+            requireOpen("onFrame")
+        }
+    }
+
+    private fun requireOpen(operation: String) {
+        if (closed.get()) {
+            throw ErrorCode.toException(
+                wire = "INVALID_STATE",
+                message = "This Reactor is closed — create a new one to receive frames",
+                operation = operation,
+            )
+        }
+    }
 
     private fun deliverStatus(status: ConnectionStatus) {
         scope.launch { _status.value = status }
@@ -345,6 +377,9 @@ public class Reactor(
                 "The Reactor was closed. Native work already started may still be running.",
             )
         }
+        // Nothing can deliver to these any more; dropped so they stop holding what they capture.
+        videoHandlers.clear()
+        audioHandlers.clear()
         scope.cancel()
     }
 
