@@ -5,6 +5,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -19,6 +20,7 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class RecordPublishTest {
     private val states = mutableMapOf<String, PublishState>()
+    private val lock = Mutex()
 
     @Test
     fun `a cancelled caller still records a publish that then succeeds`() =
@@ -27,7 +29,7 @@ class RecordPublishTest {
             var outcome: Throwable? = null
             val caller =
                 launch {
-                    outcome = runCatching { recordPublish(states, "webcam", { true }) { answer.await() } }.exceptionOrNull()
+                    outcome = runCatching { recordPublish(states, "webcam", lock, { true }) { answer.await() } }.exceptionOrNull()
                 }
             runCurrent()
             assertEquals(PublishState.PUBLISHING, states["webcam"])
@@ -49,7 +51,7 @@ class RecordPublishTest {
             val answer = CompletableDeferred<Unit>()
             val caller =
                 launch {
-                    runCatching { recordPublish(states, "webcam", { true }) { answer.await() } }
+                    runCatching { recordPublish(states, "webcam", lock, { true }) { answer.await() } }
                 }
             runCurrent()
             caller.cancel()
@@ -63,7 +65,7 @@ class RecordPublishTest {
     @Test
     fun `a publish answered after the session left ready fails as disconnected`() =
         runTest {
-            val thrown = runCatching { recordPublish(states, "webcam", { false }) { } }.exceptionOrNull()
+            val thrown = runCatching { recordPublish(states, "webcam", lock, { false }) { } }.exceptionOrNull()
             assertTrue("got $thrown", thrown is DisconnectedException)
             assertNull(states["webcam"])
         }
@@ -71,8 +73,40 @@ class RecordPublishTest {
     @Test
     fun `a failed publish is cleared and rethrown`() =
         runTest {
-            val thrown = runCatching { recordPublish(states, "webcam", { true }) { error("refused") } }.exceptionOrNull()
+            val thrown = runCatching { recordPublish(states, "webcam", lock, { true }) { error("refused") } }.exceptionOrNull()
             assertEquals("refused", thrown?.message)
             assertNull(states["webcam"])
+        }
+
+    @Test
+    fun `a failing publish cannot erase one that succeeded alongside it`() =
+        runTest {
+            val first = CompletableDeferred<Unit>()
+            var calls = 0
+            var secondOutcome: Throwable? = null
+            val a =
+                launch {
+                    recordPublish(states, "webcam", lock, { true }) {
+                        calls++
+                        first.await()
+                    }
+                }
+            val b =
+                launch {
+                    secondOutcome =
+                        runCatching {
+                            recordPublish(states, "webcam", lock, { true }) {
+                                calls++
+                                error("already published")
+                            }
+                        }.exceptionOrNull()
+                }
+            runCurrent()
+            first.complete(Unit)
+            a.join()
+            b.join()
+            assertEquals(PublishState.PUBLISHED, states["webcam"])
+            assertEquals("the second publish finds the track published and does not ask again", 1, calls)
+            assertNull(secondOutcome)
         }
 }
