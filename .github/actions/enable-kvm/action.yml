@@ -1,0 +1,18 @@
+name: Enable KVM
+description: >
+  Let a hosted Linux runner's Android emulator use hardware acceleration.
+
+# Hosted ubuntu runners have /dev/kvm, but only root can open it until a udev rule says
+# otherwise. Without one the emulator falls back to software emulation and the suites time out.
+# One copy here, used by every job that boots an emulator, so the copies cannot drift.
+
+runs:
+  using: composite
+  steps:
+    - name: Let the emulator use KVM
+      shell: bash
+      run: |
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+          | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger --name-match=kvm

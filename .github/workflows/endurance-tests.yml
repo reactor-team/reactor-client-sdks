@@ -1185,12 +1185,7 @@ jobs:
           key: android-sdk-emulator-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'sdks/android/sdk-packages-emulator.txt', 'mise.lock') }}
       - run: mise run setup:android:emulator
       - run: mise run build:android:native
-      - name: Let the emulator use KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
+      - uses: ./.github/actions/enable-kvm
 
       # No debugger wrapper, unlike every other SDK's job here, and it is not an omission. The
       # suite runs inside an app process on a device; a host debugger cannot be its parent. What

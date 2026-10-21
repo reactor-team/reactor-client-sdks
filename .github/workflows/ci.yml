@@ -806,14 +806,7 @@ jobs:
           path: ~/.local/share/mise/installs/android-sdk
           key: android-sdk-emulator-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'sdks/android/sdk-packages-emulator.txt', 'mise.lock') }}
       - run: mise run setup:android:emulator
-      # The runner has /dev/kvm, but only root can open it until this rule says otherwise. Without
-      # it the emulator falls back to software emulation and the suite times out.
-      - name: Let the emulator use KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
+      - uses: ./.github/actions/enable-kvm
       # Built once by android-native and downloaded here: staging it is minutes and gigabytes.
       - uses: actions/download-artifact@v4
         with:
@@ -862,12 +855,7 @@ jobs:
           path: ~/.local/share/mise/installs/android-sdk
           key: android-sdk-emulator-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'sdks/android/sdk-packages-emulator.txt', 'mise.lock') }}
       - run: mise run setup:android:emulator
-      - name: Let the emulator use KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
+      - uses: ./.github/actions/enable-kvm
       - uses: actions/download-artifact@v4
         with:
           name: android-native
