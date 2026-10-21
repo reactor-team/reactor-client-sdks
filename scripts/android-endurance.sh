@@ -35,6 +35,12 @@ adb shell "rm -rf /sdcard/Android/data/$PACKAGE.test/files/endurance-results" >/
 # Logcat from before the run starts, so a crash during startup is covered too.
 adb logcat -c || true
 
+# The device's own clock at the start, so the diagnostics report only a tombstone this run wrote.
+# A reused emulator keeps old ones, and Android recycles their names (tombstone_00..09), so
+# "newest" or "not seen before" alone would attach an unrelated crash to this failure.
+RUN_STARTED_AT="$(adb shell date +%s 2>/dev/null | tr -d '\r' || true)"
+export RUN_STARTED_AT
+
 status=0
 gradle --project-dir "$REPO_ROOT/sdks/android" --console=plain \
   ":endurance-tests:connectedDebugAndroidTest" \

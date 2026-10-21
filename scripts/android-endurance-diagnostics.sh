@@ -24,12 +24,21 @@ logcat="$(adb logcat -d -v time 2>/dev/null | tail -c 200000 || true)"
 # Tombstones need root on a production build; on an emulator `adb root` succeeds and they are the
 # single most useful artifact here. Absent is normal on a physical device, so it is reported as
 # absent rather than treated as an error.
+#
+# Only one written during this run: RUN_STARTED_AT is the device clock when android-endurance.sh
+# started it. An older tombstone, from a previous run on a reused emulator, says nothing about
+# this failure, and reporting it would send a reader after the wrong crash.
 tombstone=""
 if adb root >/dev/null 2>&1; then
   adb wait-for-device
   newest="$(adb shell 'ls -t /data/tombstones/ 2>/dev/null | head -1' | tr -d '\r')"
   if [ -n "$newest" ]; then
-    tombstone="$(adb shell "cat /data/tombstones/$newest" 2>/dev/null | tail -c 100000 || true)"
+    written_at="$(adb shell "stat -c %Y /data/tombstones/$newest" 2>/dev/null | tr -d '\r' || true)"
+    if [ -n "${RUN_STARTED_AT:-}" ] && [ -n "$written_at" ] && [ "$written_at" -lt "$RUN_STARTED_AT" ]; then
+      echo "note: newest tombstone ($newest) predates this run; not reporting it" >&2
+    else
+      tombstone="$(adb shell "cat /data/tombstones/$newest" 2>/dev/null | tail -c 100000 || true)"
+    fi
   fi
 fi
 
