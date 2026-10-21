@@ -454,6 +454,12 @@ public class Reactor(
         // above with extra steps. A mint can take a network round trip, so later connects queue
         // here — the price of a serialized answer being the only correct one.
         //
+        // And it is held until the connect itself has been answered, not just until the handle
+        // exists. Released earlier, a second connect needing another model or scope could retire
+        // the handle this one had just taken, which then connected on a closed client or had its
+        // completion abandoned under it. Waiting on the lock is cancellable; close() still settles
+        // an in-flight connect, which releases it.
+        //
         // connect() is a suspend function, so this is a coroutine Mutex rather than a monitor.
         //
         // close() cannot take it — it is not a suspend function — so `closed` is checked again
@@ -462,14 +468,14 @@ public class Reactor(
         // native client on a closed Reactor that nothing ever releases. Checked *after* assigning,
         // so whichever of the two runs second sees the other: either close() reads the stored
         // handle and closes it, or this sees `closed` and closes it itself.
-        val client =
-            handleLock.withLock {
-                check(!closed.get()) { "This Reactor is closed" }
-                val tokenChanged = mintForConnect(modelName, sessionId)
-                Authentication.needsRebuild(handleModel, modelName, tokenChanged)?.let {
-                    // The create() below builds the replacement around the new token and model.
-                    retireHandle(it.reason)
-                }
+        handleLock.withLock {
+            check(!closed.get()) { "This Reactor is closed" }
+            val tokenChanged = mintForConnect(modelName, sessionId)
+            Authentication.needsRebuild(handleModel, modelName, tokenChanged)?.let {
+                // The create() below builds the replacement around the new token and model.
+                retireHandle(it.reason)
+            }
+            val client =
                 handle ?: NativeClient
                     .create(
                         apiUrl = options.apiUrl,
@@ -487,8 +493,8 @@ public class Reactor(
                             throw IllegalStateException("This Reactor is closed")
                         }
                     }
-            }
-        client.connect(sessionId)
+            client.connect(sessionId)
+        }
     }
 
     /**
