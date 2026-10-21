@@ -26,11 +26,36 @@ public suspend fun Reactor.uploadContent(
         "Expected a content:// URI, got '$uri'. Use uploadFile() for a filesystem path."
     }
     return uploadStream(name, context.cacheDir, maxBytes) {
-        context.contentResolver.openInputStream(uri)
-            ?: throw ErrorCode.toException(
-                wire = "NOT_FOUND",
-                message = "ContentResolver could not open $uri — the grant may have been revoked",
-                operation = "upload_file",
-            )
+        openContent(uri.toString()) { context.contentResolver.openInputStream(uri) }
     }
 }
+
+/**
+ * Open a content stream, or raise [NotFoundException].
+ *
+ * `openInputStream` reports a missing URI by throwing [java.io.FileNotFoundException], and only
+ * occasionally by returning null, so both have to become the documented error. The original
+ * exception is kept as the cause.
+ */
+internal fun openContent(
+    uri: String,
+    open: () -> java.io.InputStream?,
+): java.io.InputStream {
+    val stream =
+        try {
+            open()
+        } catch (e: java.io.FileNotFoundException) {
+            throw contentNotFound(uri, e)
+        }
+    return stream ?: throw contentNotFound(uri, null)
+}
+
+private fun contentNotFound(
+    uri: String,
+    cause: Throwable?,
+) = ErrorCode.toException(
+    wire = "NOT_FOUND",
+    message = "ContentResolver could not open $uri — the grant may have been revoked",
+    operation = "upload_file",
+    cause = cause,
+)
