@@ -178,6 +178,11 @@ pub struct InboundRtpStats {
     /// The sender's stages for the slowest timing frame of the last second.
     /// Video only, and `None` before the first.
     pub timing_frame: Option<TimingFrame>,
+    /// The decoder that runs the stream, e.g. `"libvpx"`. `None` until the
+    /// first frame is decoded.
+    pub decoder_implementation: Option<String>,
+    /// Whether that decoder is the hardware one. `None` when not reported.
+    pub power_efficient_decoder: Option<bool>,
 }
 
 /// One send stream's counters, as the engine reports them.
@@ -232,6 +237,11 @@ pub struct OutboundRtpStats {
     pub frames_encoded: u32,
     /// Cumulative encode time, in seconds.
     pub total_encode_time_s: f64,
+    /// The encoder that runs the stream, e.g. `"libvpx"`. `None` until the
+    /// first frame is encoded.
+    pub encoder_implementation: Option<String>,
+    /// Whether that encoder is the hardware one. `None` when not reported.
+    pub power_efficient_encoder: Option<bool>,
 }
 
 /// State of an ICE candidate pair — mirror of `RTCIceCandidatePairStats::state`.

@@ -199,6 +199,8 @@ fn map_stats(report: StatsReport) -> TransportStats {
                 jitter_buffer_delay_s: s.jitter_buffer_delay_s,
                 jitter_buffer_emitted_count: s.jitter_buffer_emitted_count,
                 timing_frame: s.timing_frame.map(timing_frame),
+                decoder_implementation: s.decoder_implementation,
+                power_efficient_decoder: s.power_efficient_decoder,
             })
             .collect(),
         outbound: report
@@ -226,6 +228,8 @@ fn map_stats(report: StatsReport) -> TransportStats {
                 frame_height: s.frame_height,
                 frames_encoded: s.frames_encoded,
                 total_encode_time_s: s.total_encode_time_s,
+                encoder_implementation: s.encoder_implementation,
+                power_efficient_encoder: s.power_efficient_encoder,
             })
             .collect(),
         candidate_pairs: report
@@ -1067,6 +1071,8 @@ mod tests {
             kind: RwStreamKind::Video,
             mid: Some("0".into()),
             codec_mime_type: Some("video/VP8".into()),
+            decoder_implementation: None,
+            power_efficient_decoder: None,
             packets_received: 0,
             bytes_received: 0,
             jitter_s: 0.0,
@@ -1148,6 +1154,8 @@ mod tests {
                 kind: RwStreamKind::Video,
                 mid: Some("1".into()),
                 codec_mime_type: Some("video/VP8".into()),
+                encoder_implementation: None,
+                power_efficient_encoder: None,
                 packets_sent: 0,
                 bytes_sent: 0,
                 target_bitrate_bps: 0.0,

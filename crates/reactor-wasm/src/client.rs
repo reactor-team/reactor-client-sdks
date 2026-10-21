@@ -941,6 +941,7 @@ fn stage_times(stages: Vec<FrameStageJson>) -> Vec<FrameStage> {
             name: s.name,
             total_ms: s.total_ms,
             frames: s.frames,
+            part_of: String::new(),
         })
         .collect()
 }
@@ -960,6 +961,7 @@ impl From<ClientConnectionStatJson> for ClientConnectionStat {
             timestamp: stat.timestamp,
             metrics: stat.metrics,
             environment: None,
+            message_stages: Vec::new(),
         }
     }
 }
