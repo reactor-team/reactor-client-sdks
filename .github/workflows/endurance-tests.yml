@@ -73,7 +73,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MISE_VERSION: "2026.8.8"    # pinned; must be >= mise.toml min_version
+  MISE_VERSION: "2026.10.17"    # pinned; must be >= mise.toml min_version
   MISE_LOCKED: "1"            # install/run only mise.lock versions; never float
   MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
   # Deliberately no CARGO_PROFILE_RELEASE_DEBUG here, though it would put

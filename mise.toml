@@ -1,10 +1,9 @@
 # mise is the task runner + toolchain manager.
 # Run `mise install` to install pinned tools, `mise run <task>` to run tasks.
 # `mise lock` refreshes the committed mise.lock.
-# 2026.8.8 floor: older mise resolves conda: tools but writes no linux-x64 entry
-# for them into mise.lock, and linux-x64 is where CI runs — `lint:mise-lock`
-# fails on the gap. The clang pin below is the tool that needs it.
-min_version = "2026.8.8"
+# Require the updated CA trust data in mise.
+# This version also retains complete conda lockfile platform entries.
+min_version = "2026.10.17"
 monorepo_root = true
 
 [tools]

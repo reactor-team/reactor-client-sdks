@@ -98,7 +98,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  MISE_VERSION: "2026.8.8"
+  MISE_VERSION: "2026.10.17"
   # One target triple's build tree at a time — four of them come to about
   # 13 GB, and a macOS runner has roughly 14 GB free. Same as ci.yml's
   # swift-package job.

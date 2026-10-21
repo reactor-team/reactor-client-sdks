@@ -60,7 +60,7 @@ env:
   # Only cpp-integration-tests below uses mise (build-archives shells out to
   # cargo/cmake directly, on every platform, and needs no task runner for it) —
   # same pinned version ci.yml and release-python.yml use.
-  MISE_VERSION: "2026.8.8"
+  MISE_VERSION: "2026.10.17"
 
 jobs:
   # ── 0. Is this push a release? ──────────────────────────────────────────────

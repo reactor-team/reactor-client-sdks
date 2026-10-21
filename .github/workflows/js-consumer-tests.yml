@@ -31,7 +31,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  MISE_VERSION: "2026.8.8"
+  MISE_VERSION: "2026.10.17"
   MISE_LOCKED: "1"
   MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
 
