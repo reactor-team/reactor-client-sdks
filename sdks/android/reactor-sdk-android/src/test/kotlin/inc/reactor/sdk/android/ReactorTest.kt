@@ -3,6 +3,7 @@ package inc.reactor.sdk.android
 import kotlinx.coroutines.Dispatchers
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -100,5 +101,19 @@ class ReactorTest {
     fun `an unknown status is treated as disconnected`() {
         assertEquals(ConnectionStatus.DISCONNECTED, ConnectionStatus.of("something-new"))
         assertEquals(ConnectionStatus.DISCONNECTED, ConnectionStatus.of(null))
+    }
+
+    private val recvVideo = """[{"name":"main_video","kind":"video","direction":"recvonly"}]"""
+
+    @Test
+    fun `a frame handler registered after close is refused`() {
+        val reactor = newReactor()
+        val track =
+            inc.reactor.sdk.android.internal.TrackParsing
+                .parse(recvVideo, reactor.trackOwner)
+                .first()
+        reactor.close()
+        val error = assertThrows(InvalidStateException::class.java) { track.onFrame { _: VideoFrame -> } }
+        assertTrue(error.message!!.contains("closed"))
     }
 }
