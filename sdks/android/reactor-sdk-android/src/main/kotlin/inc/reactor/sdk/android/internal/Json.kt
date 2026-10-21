@@ -140,6 +140,11 @@ internal object Json {
                             else -> fail("unknown escape '\\$escape'")
                         }
                     }
+                    // JSON requires these escaped; a raw newline, tab or NUL is a malformed payload.
+                    in '\u0000'..'\u001F' -> {
+                        index--
+                        fail("unescaped control character U+%04X".format(c.code))
+                    }
                     else -> builder.append(c)
                 }
             }
