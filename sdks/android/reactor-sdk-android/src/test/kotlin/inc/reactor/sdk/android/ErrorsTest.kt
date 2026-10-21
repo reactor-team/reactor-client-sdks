@@ -91,6 +91,14 @@ class ErrorsTest {
         )
     }
 
+    /** The core's own fallback is a known code without a subclass, not an unrecognised one. */
+    @Test
+    fun `INTERNAL_ERROR is the base exception, not an unknown one`() {
+        val error = ErrorPayloads.toException("{not json at all")
+        assertEquals(ReactorException::class.java, error.javaClass)
+        assertTrue(ErrorCode.toException("SOMETHING_NEW", "x") is UnknownReactorException)
+    }
+
     @Test
     fun `a payload with no code still reports a failure`() {
         val error = ErrorPayloads.toException("""{"message":"something went wrong"}""")

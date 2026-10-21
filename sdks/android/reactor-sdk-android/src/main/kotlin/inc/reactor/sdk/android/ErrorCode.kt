@@ -64,6 +64,10 @@ internal enum class ErrorCode(
          *
          * The fallback keeps the original code rather than remapping it to `INTERNAL_ERROR`: a
          * caller logging `error.code` should see what the platform actually said.
+         *
+         * `INTERNAL_ERROR` itself is not unknown: it is the core's own fallback, with no subclass
+         * of its own, so it builds the base [ReactorException] as the other SDKs do.
+         * [UnknownReactorException] stays reserved for codes nobody recognises.
          */
         fun toException(
             wire: String,
@@ -80,7 +84,9 @@ internal enum class ErrorCode(
              */
             wireRecoverable: Boolean? = null,
         ): ReactorException {
-            val factory = byWire[wire]?.create ?: ::UnknownReactorException
+            val factory =
+                byWire[wire]?.create
+                    ?: if (wire == "INTERNAL_ERROR") ::ReactorException else ::UnknownReactorException
             return factory(wire, message, status, operation, retryAfterMs, cause, wireRecoverable)
         }
     }
