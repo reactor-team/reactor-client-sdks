@@ -57,6 +57,24 @@ pub const DELIVERY: &str = "delivery";
 /// From the core's `send_command()` returning to the binding called back.
 pub const FFI_RETURN: &str = "ffi_return";
 
+// The engine's stages, from the chunked channel's totals (see the module
+// docs), and the runtime's.
+pub const ENQUEUE: &str = "enqueue";
+pub const QUEUE_WAIT: &str = "queue_wait";
+/// Part of [`QUEUE_WAIT`].
+pub const FIRST_CHECK: &str = "first_check";
+/// Part of [`QUEUE_WAIT`].
+pub const FIRST_BUILD: &str = "first_build";
+/// Part of [`QUEUE_WAIT`].
+pub const FIRST_NATIVE: &str = "first_native";
+pub const SEND: &str = "send";
+/// Part of [`SEND`].
+pub const REST_NATIVE: &str = "rest_native";
+pub const STALL: &str = "stall";
+pub const REASSEMBLY: &str = "reassembly";
+pub const DISPATCH: &str = "dispatch";
+pub const HANDLER: &str = "handler";
+
 /// When a binding's call to send a command came into the FFI, and when the
 /// FFI had parsed its arguments, on [`crate::Reactor::monotonic_ms`]'s clock.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -73,17 +91,17 @@ pub const MESSAGE_STAGES: &[&str] = &[
     SPAWN,
     BUILD,
     ENCODE,
-    "enqueue",
-    "queue_wait",
-    "first_check",
-    "first_build",
-    "first_native",
-    "send",
-    "rest_native",
-    "stall",
-    "reassembly",
-    "dispatch",
-    "handler",
+    ENQUEUE,
+    QUEUE_WAIT,
+    FIRST_CHECK,
+    FIRST_BUILD,
+    FIRST_NATIVE,
+    SEND,
+    REST_NATIVE,
+    STALL,
+    REASSEMBLY,
+    DISPATCH,
+    HANDLER,
     REPLY_DECODE,
     DELIVERY,
     FFI_RETURN,
@@ -182,10 +200,10 @@ pub fn sort_message_stages(stages: &mut [MessageStage]) {
 /// The engine's stages timed in parts, by part: each part's time is within
 /// its stage's, so adding both counts it twice.
 const PARTS: &[(&str, &str)] = &[
-    ("first_check", "queue_wait"),
-    ("first_build", "queue_wait"),
-    ("first_native", "queue_wait"),
-    ("rest_native", "send"),
+    (FIRST_CHECK, QUEUE_WAIT),
+    (FIRST_BUILD, QUEUE_WAIT),
+    (FIRST_NATIVE, QUEUE_WAIT),
+    (REST_NATIVE, SEND),
 ];
 
 /// `rest_native` and `stall` seconds from windows in which no message
@@ -258,14 +276,14 @@ impl MessageStageReporter {
                     held = Held::default();
                     let first_native_s = now.first_native_s - before.first_native_s;
                     for (name, seconds) in [
-                        ("enqueue", now.enqueue_s - before.enqueue_s),
-                        ("queue_wait", now.queue_wait_s - before.queue_wait_s),
-                        ("first_check", now.first_check_s - before.first_check_s),
-                        ("first_build", now.first_build_s - before.first_build_s),
-                        ("first_native", first_native_s),
-                        ("send", now.send_s - before.send_s),
-                        ("rest_native", native_send_s - first_native_s),
-                        ("stall", stall_s),
+                        (ENQUEUE, now.enqueue_s - before.enqueue_s),
+                        (QUEUE_WAIT, now.queue_wait_s - before.queue_wait_s),
+                        (FIRST_CHECK, now.first_check_s - before.first_check_s),
+                        (FIRST_BUILD, now.first_build_s - before.first_build_s),
+                        (FIRST_NATIVE, first_native_s),
+                        (SEND, now.send_s - before.send_s),
+                        (REST_NATIVE, native_send_s - first_native_s),
+                        (STALL, stall_s),
                     ] {
                         add(name, seconds, sent);
                     }
@@ -276,7 +294,7 @@ impl MessageStageReporter {
         if let (Some(now), Some(before)) = (chunking, self.last) {
             if now.messages_received > before.messages_received {
                 add(
-                    "reassembly",
+                    REASSEMBLY,
                     now.reassembly_s - before.reassembly_s,
                     now.messages_received - before.messages_received,
                 );
