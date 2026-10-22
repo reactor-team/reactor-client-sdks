@@ -3,8 +3,10 @@
 
 The exported surface of `reactor-ffi` is declared in three independent places:
 
-  1. `crates/reactor-ffi/src/lib.rs`  — the `#[no_mangle] pub extern "C"` functions
+  1. `crates/reactor-ffi/src/`  — the `#[no_mangle] pub extern "C"` functions
      (`unsafe` for all but the few that take no pointer), which are the actual ABI.
+     Most live in `lib.rs`; a module may keep its own, as `step.rs` keeps the
+     step result's accessors.
   2. `crates/reactor-ffi/include/reactor_ffi.h` — the contract Go, C++, Kotlin and
      Swift bindings compile against. What is missing here does not exist for them.
   3. `sdks/python/reactor_sdk/_ffi.py` — the ctypes declarations. ctypes checks nothing
@@ -43,7 +45,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-RUST_SRC = REPO_ROOT / "crates/reactor-ffi/src/lib.rs"
+RUST_SRC_DIR = REPO_ROOT / "crates/reactor-ffi/src"
 HEADER = REPO_ROOT / "crates/reactor-ffi/include/reactor_ffi.h"
 CTYPES_SRC = REPO_ROOT / "sdks/python/reactor_sdk/_ffi.py"
 CPP_DIR = REPO_ROOT / "sdks/cpp"
@@ -278,7 +280,11 @@ def forbidden_problem(binding: str, hits: dict[str, str]) -> str:
 
 
 def main() -> int:
-    rust = set(RUST_EXPORT.findall(read(RUST_SRC)))
+    rust = {
+        name
+        for path in sorted(RUST_SRC_DIR.rglob("*.rs"))
+        for name in RUST_EXPORT.findall(read(path))
+    }
     # Function-pointer typedefs are part of the contract but are not functions.
     header = {n for n in HEADER_DECL.findall(read(HEADER)) if not n.endswith("_fn")}
     ctypes_decls = set(CTYPES_DECL.findall(read(CTYPES_SRC)))
@@ -350,7 +356,7 @@ def main() -> int:
             kotlin_symbols.setdefault(name, where)
 
     if not rust:
-        sys.exit("error: found no exported reactor_* functions — has lib.rs moved?")
+        sys.exit("error: found no exported reactor_* functions — has crates/reactor-ffi/src moved?")
 
     problems: list[str] = []
 
