@@ -1,5 +1,6 @@
 package inc.reactor.sdk.android
 
+import inc.reactor.sdk.android.internal.Authentication
 import inc.reactor.sdk.android.internal.Completions
 import inc.reactor.sdk.android.internal.ErrorPayloads
 import inc.reactor.sdk.android.internal.NativeClient
@@ -86,6 +87,30 @@ public class Reactor(
 
     @Volatile
     private var handle: NativeClient.Handle? = null
+
+    /**
+     * The token [handle] was created with: the caller's [ReactorOptions.jwt], or the token the
+     * last key exchange minted. Written only under [handleLock]; read by [downloadClip] without
+     * it, so volatile.
+     */
+    @Volatile
+    private var token: String? = options.jwt
+
+    /** The token each session this client reached was connected with, by session id. */
+    private val sessionTokens = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /**
+     * What [token] was minted to reach, when it came from an exchange rather than from the
+     * caller. Under [handleLock] only.
+     */
+    private var mintedFor: Authentication.TokenScope? = null
+
+    /**
+     * The model [handle] was created for. The native client takes its model at creation and a
+     * later connect cannot change it, so a connect to another model needs a new handle — whatever
+     * the token says. Under [handleLock] only.
+     */
+    private var handleModel: String? = null
 
     /**
      * The listener the bridge holds.
@@ -402,6 +427,10 @@ public class Reactor(
     }
 
     private fun deliverSessionId(id: String?) {
+        // Remembered with the token that reached it: a later connect can re-mint for another
+        // session, and that token cannot download this session's clips.
+        val current = token
+        if (id != null && current != null) sessionTokens[id] = current
         scope.launch { _sessionId.value = id }
     }
 
@@ -427,6 +456,17 @@ public class Reactor(
         // life of the process, with a session holding quota nobody could release. @Volatile makes
         // the read fresh, which is not the same as making the sequence exclusive.
         //
+        // The key exchange holds the same lock, and for the same reason: two concurrent connects
+        // minting at once would race to rebuild the handle under each other, which is the leak
+        // above with extra steps. A mint can take a network round trip, so later connects queue
+        // here — the price of a serialized answer being the only correct one.
+        //
+        // And it is held until the connect itself has been answered, not just until the handle
+        // exists. Released earlier, a second connect needing another model or scope could retire
+        // the handle this one had just taken, which then connected on a closed client or had its
+        // completion abandoned under it. Waiting on the lock is cancellable; close() still settles
+        // an in-flight connect, which releases it.
+        //
         // connect() is a suspend function, so this is a coroutine Mutex rather than a monitor.
         //
         // close() cannot take it — it is not a suspend function — so `closed` is checked again
@@ -435,27 +475,91 @@ public class Reactor(
         // native client on a closed Reactor that nothing ever releases. Checked *after* assigning,
         // so whichever of the two runs second sees the other: either close() reads the stored
         // handle and closes it, or this sees `closed` and closes it itself.
-        val client =
-            handleLock.withLock {
-                check(!closed.get()) { "This Reactor is closed" }
+        handleLock.withLock {
+            check(!closed.get()) { "This Reactor is closed" }
+            val tokenChanged = mintForConnect(modelName, sessionId)
+            Authentication.needsRebuild(handleModel, modelName, tokenChanged)?.let {
+                // The create() below builds the replacement around the new token and model.
+                retireHandle(it.reason)
+            }
+            val client =
                 handle ?: NativeClient
                     .create(
                         apiUrl = options.apiUrl,
                         modelName = modelName,
-                        jwt = options.jwt,
+                        jwt = token,
                         local = options.local,
                         listener = Events(this),
                         sdkVersion = SDK_VERSION,
                     ).also { created ->
                         handle = created
+                        handleModel = modelName
                         if (closed.get()) {
                             handle = null
                             created.close()
                             throw IllegalStateException("This Reactor is closed")
                         }
                     }
-            }
-        client.connect(sessionId)
+            client.connect(sessionId)
+        }
+    }
+
+    /**
+     * Mint the token this connect needs, when that is what it takes, and say whether it changed.
+     * Runs under [handleLock], which is what serializes one connect's mint-and-rebuild against
+     * another connect's create.
+     *
+     * A mint does not necessarily mean a rebuild: the native client receives its token at
+     * creation, so a *changed* token reaches it only through a new handle — but an exchange
+     * returning the same value (short-lived keys often yield the same token twice) leaves the
+     * handle exactly as useful as it was, and rebuilding would end a live session for nothing.
+     * Whether to rebuild is [Authentication.needsRebuild]'s call.
+     *
+     * The failure a caller gets is the exchange's own — UNAUTHORIZED for a rejected key,
+     * NETWORK_ERROR for a coordinator that is not there — propagated rather than rephrased, so a
+     * connect that fails names what actually failed.
+     */
+    private suspend fun mintForConnect(
+        modelName: String,
+        sessionId: String?,
+    ): Boolean {
+        val wanted = Authentication.TokenScope(modelName = modelName, sessionId = sessionId)
+        val optionsJson =
+            Authentication.planMint(
+                apiKey = options.apiKey,
+                callerJwt = options.jwt,
+                local = options.local,
+                currentToken = token,
+                mintedFor = mintedFor,
+                wanted = wanted,
+            ) ?: return false
+        val minted =
+            NativeClient.fetchJwt(
+                apiUrl = options.apiUrl,
+                // planMint returns a plan only when the key exists; this is the invariant, said once.
+                apiKey = checkNotNull(options.apiKey),
+                optionsJson = optionsJson,
+                local = options.local,
+            )
+        val changed = minted != token
+        token = minted
+        mintedFor = wanted
+        return changed
+    }
+
+    /**
+     * Close [handle] so connect() builds a new one, settling the old one's operations.
+     *
+     * The same order close() keeps: the handle first, so nothing more can launch on it, then its
+     * completions — only its own, since the registry is shared with every other client. Under
+     * [handleLock] only.
+     */
+    private fun retireHandle(reason: String) {
+        val old = handle ?: return
+        handle = null
+        handleModel = null
+        old.close()
+        Completions.abandonAll(old, reason)
     }
 
     /**
@@ -610,7 +714,9 @@ public class Reactor(
             )
         return requireHandle("download_clip").downloadClip(
             playlistUrl = clip.playlistUrl,
-            jwt = options.jwt,
+            // The token the clip's session was connected with — which for an apiKey caller is the
+            // minted one, not options.jwt (that caller never had one).
+            jwt = Authentication.tokenForClip(clip.sessionId, sessionTokens, token),
             outPath = outFile.absolutePath,
             predictedReadyAtMs =
                 inc.reactor.sdk.android.internal.Recordings
