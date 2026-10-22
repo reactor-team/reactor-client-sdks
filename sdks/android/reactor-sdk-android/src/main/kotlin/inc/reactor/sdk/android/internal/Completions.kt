@@ -35,7 +35,25 @@ internal object Completions {
         val operation: String,
         val decode: (String?) -> T,
         val deferred: CompletableDeferred<T>,
+        val owner: Any?,
     )
+
+    /**
+     * Settle a completion from the native trampoline.
+     *
+     * `@JvmStatic` because `client.cpp` resolves it with `GetStaticMethodID`: a Kotlin `object`'s
+     * members are instance methods on INSTANCE by default, and the bridge would have to carry a
+     * reference to that instance for no reason. The ticket is all the native side holds.
+     */
+    @JvmStatic
+    fun settleFromNative(
+        ticket: Long,
+        ok: Boolean,
+        resultJson: String?,
+        errorJson: String?,
+    ) {
+        settle(ticket, ok, resultJson, errorJson)
+    }
 
     /** How many completions are outstanding. Zero at rest; the endurance suite watches it. */
     val pendingCount: Int
@@ -46,15 +64,20 @@ internal object Completions {
      *
      * [decode] runs on the native completion thread, before the promise is claimed. It receives
      * the raw `result_json`, which is null when the operation has nothing to report.
+     *
+     * [owner] is the client the operation belongs to, which is what [abandonAll] settles by. Null
+     * for an operation that belongs to no client — a download, which outlives the one it was
+     * given, or a token exchange made without one.
      */
     suspend fun <T> await(
         operation: String,
         decode: (String?) -> T,
+        owner: Any? = null,
         start: (ticket: Long) -> Unit,
     ): T {
         val ticket = nextTicket.getAndIncrement()
         val deferred = CompletableDeferred<T>()
-        pending[ticket] = Pending(operation, decode, deferred)
+        pending[ticket] = Pending(operation, decode, deferred, owner)
         try {
             start(ticket)
         } catch (t: Throwable) {
@@ -107,14 +130,25 @@ internal object Completions {
     }
 
     /**
-     * Settle every outstanding completion, because the client is going away.
+     * Settle every outstanding completion [owner] registered, because that client is going away.
+     *
+     * Only that client's. The registry is process-wide, and settling every entry in it failed the
+     * in-flight operations of every *other* client in the app as well — closing one Reactor
+     * aborted another's connect.
+     *
+     * Call it after the client's native handle is destroyed, not before: from then on nothing can
+     * register a completion for it that would be left behind, and whatever its destruction ended
+     * is still in the registry to be settled here.
      *
      * Says what actually happened: the native operation may well still be running — a download
      * whose client was destroyed is still downloading — and telling the caller the file may yet
      * arrive is worth more than "aborted".
      */
-    fun abandonAll(reason: String) {
-        val snapshot = pending.keys.toList()
+    fun abandonAll(
+        owner: Any,
+        reason: String,
+    ) {
+        val snapshot = pending.entries.filter { it.value.owner === owner }.map { it.key }
         for (ticket in snapshot) {
             @Suppress("UNCHECKED_CAST")
             val entry = pending.remove(ticket) as? Pending<Any?> ?: continue
