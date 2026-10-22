@@ -4,6 +4,7 @@ import inc.reactor.sdk.android.internal.Completions
 import inc.reactor.sdk.android.internal.ErrorPayloads
 import inc.reactor.sdk.android.internal.NativeClient
 import inc.reactor.sdk.android.internal.NativeEvents
+import inc.reactor.sdk.android.internal.TrackParsing
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -107,6 +108,176 @@ public class Reactor(
 
         override fun onSessionId(sessionId: String?) {
             owner.get()?.deliverSessionId(sessionId)
+        }
+
+        // Frames are *not* handed to the dispatcher. They run here, on the FFI's thread, because
+        // blocking here is the backpressure — see Track.onFrame.
+        override fun onVideoFrame(
+            trackName: String?,
+            pixels: java.nio.ByteBuffer?,
+            width: Int,
+            height: Int,
+            frameId: Long,
+            timestampUs: Long,
+            userData: ByteArray?,
+        ) {
+            val reactor = owner.get() ?: return
+            val name = trackName.orEmpty()
+            val handler =
+                reactor.videoHandlers[name] ?: run {
+                    reactor.dropFrame(name)
+                    return
+                }
+            val frame =
+                VideoFrame(
+                    trackName = name,
+                    pixels =
+                        inc.reactor.sdk.android.internal.ReceivedBuffers
+                            .pixels(pixels ?: return),
+                    width = width,
+                    height = height,
+                    frameId = frameId,
+                    timestampUs = timestampUs,
+                    userData = userData,
+                )
+            // Here, on the callback's own thread and right before the app's handler, is where the
+            // frame's delivery stage ends — and only for a frame a handler actually receives.
+            NativeClient.frameDelivered()
+            handler(frame)
+        }
+
+        override fun onAudioFrame(
+            trackName: String?,
+            pcm: java.nio.ByteBuffer?,
+            sampleCount: Int,
+            sampleRate: Int,
+            channels: Int,
+        ) {
+            val reactor = owner.get() ?: return
+            val name = trackName.orEmpty()
+            val handler =
+                reactor.audioHandlers[name] ?: run {
+                    reactor.dropFrame(name)
+                    return
+                }
+            handler(
+                AudioFrame(
+                    trackName = name,
+                    samples =
+                        inc.reactor.sdk.android.internal.ReceivedBuffers
+                            .samples(pcm ?: return),
+                    sampleCount = sampleCount,
+                    sampleRate = sampleRate,
+                    channels = channels,
+                ),
+            )
+        }
+    }
+
+    private val videoHandlers = java.util.concurrent.ConcurrentHashMap<String, (VideoFrame) -> Unit>()
+    private val audioHandlers = java.util.concurrent.ConcurrentHashMap<String, (AudioFrame) -> Unit>()
+
+    /**
+     * Frames for a track nobody is listening to.
+     *
+     * Dropped and counted rather than raised: a frame arriving with no matching handler is
+     * ordinary — the model generates whether or not anyone collects — and there is nowhere to
+     * raise to on an FFI thread. The count is what makes "my handler never fires" diagnosable.
+     */
+    public val droppedFrames: Long
+        get() = dropped.get()
+
+    // Atomic, not @Volatile: video and audio are delivered on separate native threads, and two
+    // drops at once would each read, add and write the same value, losing one.
+    private val dropped =
+        java.util.concurrent.atomic
+            .AtomicLong()
+
+    private fun dropFrame(
+        @Suppress("UNUSED_PARAMETER") track: String,
+    ) {
+        dropped.incrementAndGet()
+    }
+
+    /**
+     * The tracks this session declared, in declaration order.
+     *
+     * Empty until [connect] has negotiated capabilities.
+     */
+    public val tracks: TrackList
+        get() =
+            inc.reactor.sdk.android.internal.TrackParsing
+                .parse(handle?.tracks, trackOwner)
+
+    /**
+     * One track by name — what an app that knows its model does.
+     *
+     * @throws InvalidStateException when no such track was declared, listing the names that were.
+     */
+    public fun track(name: String): Track {
+        val all = tracks
+        return all.firstOrNull { it.name == name } ?: throw ErrorCode.toException(
+            wire = "INVALID_STATE",
+            message =
+                "No track named '$name'. This session declared: " +
+                    (if (all.isEmpty()) "nothing yet — connect() first" else all.joinToString(", ") { it.name }),
+            operation = "track",
+        )
+    }
+
+    /** Internal rather than private only so the handler bookkeeping is testable without a device. */
+    internal val trackOwner =
+        object : TrackOwner {
+            override fun setVideoHandler(
+                track: String,
+                handler: (VideoFrame) -> Unit,
+            ) {
+                register(videoHandlers, track, handler)
+            }
+
+            override fun setAudioHandler(
+                track: String,
+                handler: (AudioFrame) -> Unit,
+            ) {
+                register(audioHandlers, track, handler)
+            }
+
+            override fun clearHandlers(track: String) {
+                videoHandlers.remove(track)
+                audioHandlers.remove(track)
+            }
+
+            override fun isPaused(track: String): Boolean = track in TrackParsing.parsePaused(handle?.pausedTracks)
+        }
+
+    /**
+     * Store a frame handler, unless this Reactor is closed.
+     *
+     * A closed Reactor has no native handle to deliver through, so a handler registered on it
+     * would never run — and, often capturing an Activity, would be kept alive for as long as the
+     * Reactor is. Refused instead, and checked again after storing, so one racing [close]'s clear
+     * cannot land on the far side of it.
+     */
+    private fun <F> register(
+        handlers: MutableMap<String, F>,
+        track: String,
+        handler: F,
+    ) {
+        requireOpen("onFrame")
+        handlers[track] = handler
+        if (closed.get()) {
+            handlers.remove(track)
+            requireOpen("onFrame")
+        }
+    }
+
+    private fun requireOpen(operation: String) {
+        if (closed.get()) {
+            throw ErrorCode.toException(
+                wire = "INVALID_STATE",
+                message = "This Reactor is closed — create a new one to receive frames",
+                operation = operation,
+            )
         }
     }
 
@@ -213,6 +384,9 @@ public class Reactor(
                 "The Reactor was closed. Native work already started may still be running.",
             )
         }
+        // Nothing can deliver to these any more; dropped so they stop holding what they capture.
+        videoHandlers.clear()
+        audioHandlers.clear()
         scope.cancel()
     }
 

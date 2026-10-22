@@ -14,6 +14,7 @@
 // zero rather than trusting the sanitizer to notice.
 
 #include <atomic>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -101,6 +102,9 @@ void reactor_reconnect(ReactorHandle*, reactor_completion_fn completion, void* u
     remember(completion, userdata);
 }
 
+/// The delivery-stage marker. Stateless in the real library too; nothing here reads it.
+void reactor_frame_delivered(void) {}
+
 // ── Controls, for the harness only ───────────────────────────────────────────
 // Named fake_* rather than reactor_*: a reactor_* symbol here would be a new name in the ABI as
 // far as check-abi-parity.py is concerned.
@@ -108,6 +112,26 @@ void reactor_reconnect(ReactorHandle*, reactor_completion_fn completion, void* u
 void fake_set_destroy_result(int result) { g_destroy_result = result; }
 
 int fake_last_auto_resume(void) { return g_last_auto_resume; }
+/// Fire a video frame from a thread the JVM has never seen, with a tag attached.
+///
+/// The pixel buffer is a real allocation the "FFI" owns and frees on return, so a binding that
+/// kept the buffer instead of copying reads freed memory — which is what the sanitizer is here to
+/// notice.
+void fake_fire_video_frame_on_foreign_thread(const char* track, uint32_t width, uint32_t height,
+                                             uint64_t frame_id) {
+    std::string name(track == nullptr ? "" : track);
+    std::thread([name, width, height, frame_id]() {
+        if (g_callbacks.on_frame == nullptr) return;
+        const size_t bytes = static_cast<size_t>(width) * height * 4;
+        auto* pixels = static_cast<uint8_t*>(malloc(bytes));
+        memset(pixels, 0x7F, bytes);
+        const uint8_t tag[3] = {1, 2, 3};
+        g_callbacks.on_frame(name.c_str(), pixels, width, height, frame_id,
+                             /*timestamp_us=*/123456, tag, sizeof(tag), g_callbacks.userdata);
+        free(pixels);
+    }).join();
+}
+
 /// Fire the completion the last async call registered, from a thread the JVM has never seen.
 void fake_complete_last_on_foreign_thread(int ok, const char* result_json, const char* error_json) {
     reactor_completion_fn completion = g_completion;
