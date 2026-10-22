@@ -1,6 +1,7 @@
 package inc.reactor.sdk.android.internal
 
 import inc.reactor.sdk.android.CommandReply
+import inc.reactor.sdk.android.FileRef
 import inc.reactor.sdk.android.Stats
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -106,6 +107,21 @@ internal object NativeClient {
 
     private external fun nativeGetStats(
         context: Long,
+        ticket: Long,
+    )
+
+    private external fun nativeUploadFile(
+        context: Long,
+        path: String,
+        ticket: Long,
+    )
+
+    private external fun nativeUploadBytes(
+        context: Long,
+        data: java.nio.ByteBuffer,
+        length: Int,
+        name: String,
+        mimeType: String?,
         ticket: Long,
     )
 
@@ -273,6 +289,22 @@ internal object NativeClient {
             launch("request_schema", decode = ::decodeSchema) { ticket -> nativeRequestSchema(context, ticket) }
 
         suspend fun stats(): Stats = launch("get_stats", decode = ::decodeStats) { ticket -> nativeGetStats(context, ticket) }
+
+        /**
+         * Upload a file the native side opens later, from its own task.
+         *
+         * Started through [launch], like every operation of this handle.
+         */
+        suspend fun uploadFile(path: String): FileRef =
+            launch("upload_file", decode = Uploads::decode) { ticket -> nativeUploadFile(context, path, ticket) }
+
+        suspend fun uploadBytes(
+            data: java.nio.ByteBuffer,
+            length: Int,
+            name: String,
+            mimeType: String?,
+        ): FileRef =
+            launch("upload_bytes", decode = Uploads::decode) { ticket -> nativeUploadBytes(context, data, length, name, mimeType, ticket) }
 
         val status: String?
             get() = withOpenHandle { nativeStatus(context) }
