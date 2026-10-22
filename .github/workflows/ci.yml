@@ -878,6 +878,24 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: mise run test:android:instrumented
+      # Gradle names no failing test on the console, and an x86_64 emulator only runs here — so a
+      # failure prints which tests failed and why, and the full report is kept.
+      - name: Show the failing instrumented tests
+        if: failure()
+        shell: bash
+        run: |
+          shopt -s globstar nullglob
+          for result in sdks/android/reactor-sdk-android/build/outputs/androidTest-results/connected/**/*.xml; do
+            grep -B1 -A15 '<failure' "$result" || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: android-instrumented-report
+          path: |
+            sdks/android/reactor-sdk-android/build/reports/androidTests/connected/
+            sdks/android/reactor-sdk-android/build/outputs/androidTest-results/connected/
+          if-no-files-found: ignore
 
   cpp-integration-tests:
     name: C++ SDK integration tests (real FFI, real model)
