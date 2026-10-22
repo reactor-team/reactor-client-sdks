@@ -59,7 +59,23 @@ public enum ErrorCode {
     /** @see AbortedException */
     ABORTED("ABORTED", false, AbortedException::new),
     /** @see RecorderDisabledException */
-    RECORDER_DISABLED("RECORDER_DISABLED", false, RecorderDisabledException::new);
+    RECORDER_DISABLED("RECORDER_DISABLED", false, RecorderDisabledException::new),
+    /** @see GenerationModeMismatchException */
+    GENERATION_MODE_MISMATCH("GENERATION_MODE_MISMATCH", false, GenerationModeMismatchException::new),
+    /** @see DataChannelChunkingRequiredException */
+    DATA_CHANNEL_CHUNKING_REQUIRED("DATA_CHANNEL_CHUNKING_REQUIRED", false, DataChannelChunkingRequiredException::new),
+    /** @see UnsupportedFrameEncodingException */
+    UNSUPPORTED_FRAME_ENCODING("UNSUPPORTED_FRAME_ENCODING", false, UnsupportedFrameEncodingException::new),
+    /** @see StepRefusedException */
+    STEP_REFUSED("step_refused", false, StepRefusedException::new),
+    /** @see StepNotReadyException */
+    STEP_NOT_READY("step_not_ready", false, StepNotReadyException::new),
+    /** @see StepResultTooLargeException */
+    STEP_RESULT_TOO_LARGE("step_result_too_large", false, StepResultTooLargeException::new),
+    /** @see StepCommandFailedException */
+    STEP_COMMAND_FAILED("step_command_failed", false, StepCommandFailedException::new),
+    /** @see StepSessionEndedException */
+    STEP_SESSION_ENDED("step_session_ended", false, StepSessionEndedException::new);
 
     /** Builds the exception for one code. */
     @FunctionalInterface

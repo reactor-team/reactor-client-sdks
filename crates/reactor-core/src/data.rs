@@ -75,6 +75,7 @@ impl DataCorrelator {
     pub fn begin(&self, payload: data_client_message::Payload) -> PendingData {
         let command = match &payload {
             data_client_message::Payload::Command(c) => c.r#type.clone(),
+            data_client_message::Payload::RequestStep(_) => "request_step".to_string(),
             data_client_message::Payload::Error(_) => "command".to_string(),
         };
         let id = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
@@ -117,6 +118,18 @@ impl DataCorrelator {
         let mut correlated = false;
         if !message.request_id.is_empty() {
             match self.pending.lock().unwrap().remove(&message.request_id) {
+                // A step's result goes to its step() call alone, and can carry
+                // megabytes of frames: moved there, not copied for a caller
+                // that has nothing to dispatch for it.
+                Some((_, tx))
+                    if matches!(payload, Some(data_server_message::Payload::StepResult(_))) =>
+                {
+                    let _ = tx.send(Ok(payload));
+                    return Some(HandledMessage {
+                        payload: None,
+                        correlated: true,
+                    });
+                }
                 Some((_, tx)) => {
                     let _ = tx.send(Ok(payload.clone()));
                     correlated = true;
@@ -283,6 +296,47 @@ mod tests {
         );
         let handled = c.handle_message(&bytes).unwrap();
         assert!(!handled.correlated);
+    }
+
+    /// A step's one response is its `StepResult`: the first message bearing
+    /// the step's request_id resolves it, and nothing else arrives for it.
+    #[test]
+    fn a_step_result_resolves_its_step() {
+        use crate::protocol::wire::v1::step::{
+            RequestStep, StepFailureCode, StepFileRef, StepResult,
+        };
+
+        let c = DataCorrelator::new();
+        let mut pending = c.begin(data_client_message::Payload::RequestStep(
+            RequestStep::default(),
+        ));
+        let result = encode_response(
+            &pending.request_id,
+            data_server_message::Payload::StepResult(StepResult {
+                step: 1,
+                tracks: vec![],
+                elapsed_seconds: 0.0,
+                files: vec![StepFileRef {
+                    name: "f.bin".into(),
+                    content_type: "application/octet-stream".into(),
+                    size: 3,
+                }],
+                error: None,
+                failure_code: StepFailureCode::Unspecified as i32,
+                code: None,
+                entry: None,
+            }),
+        );
+        let handled = c.handle_message(&result).unwrap();
+        assert!(handled.correlated);
+        // Moved to the step, not copied back for dispatch.
+        assert!(handled.payload.is_none());
+        match pending.receiver.try_recv().unwrap().unwrap() {
+            Ok(Some(data_server_message::Payload::StepResult(result))) => {
+                assert_eq!(result.files.len(), 1);
+            }
+            other => panic!("expected the step result, got {other:?}"),
+        }
     }
 
     #[test]

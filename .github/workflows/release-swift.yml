@@ -98,7 +98,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  MISE_VERSION: "2026.8.8"
   # One target triple's build tree at a time — four of them come to about
   # 13 GB, and a macOS runner has roughly 14 GB free. Same as ci.yml's
   # swift-package job.
@@ -295,9 +294,13 @@ jobs:
           # same four slices, and cache-shared-key (not cache-key) is the
           # input that actually pools a cache across jobs/workflows.
           cache-shared-key: reactor-swift-xcframework-${{ hashFiles('mise.lock') }}
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
 
       - run: mise run build:xcframework
 
@@ -381,9 +384,13 @@ jobs:
           cache-on-failure: true
           cache-key: ${{ hashFiles('mise.lock') }}
           cache-shared-key: reactor-swift-${{ hashFiles('mise.lock') }}
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
       - run: mise run build:ffi
       - name: Swift SDK integration tests (real FFI, real model)
         env:

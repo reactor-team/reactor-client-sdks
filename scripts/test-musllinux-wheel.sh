@@ -3,7 +3,7 @@
 set -eu
 python -m venv /tmp/smoke
 PY=/tmp/smoke/bin/python
-"$PY" -m pip install --quiet --upgrade pip
+"$PY" -m pip install --quiet --upgrade "pip>=26.2.2"
 "$PY" -m pip install --no-index /io/dist/*.whl
 cd /tmp
 unset REACTOR_FFI_LIB PYTHONPATH

@@ -21,6 +21,10 @@ log            = { workspace = true }
 env_logger     = { workspace = true }
 mime_guess     = { workspace = true }
 tokio          = { workspace = true }
+# Set consumer floors for the TLS verifier and bundled roots.
+rustls         = { workspace = true }
+rustls-webpki  = { workspace = true }
+webpki-roots   = { workspace = true }
 
 # TLS is pure Rust on every platform. Two reasons, and the mobile targets have
 # always had the first one:
@@ -37,12 +41,12 @@ tokio          = { workspace = true }
 # trusting enterprise CAs and break anyone behind a MITM proxy.
 
 [target.'cfg(target_os = "ios")'.dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
 jni     = "0.21"
 
 # Desktop also gets http2/stream/charset.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "http2", "charset", "rustls-tls-native-roots"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "stream", "http2", "charset", "rustls-tls-native-roots"] }

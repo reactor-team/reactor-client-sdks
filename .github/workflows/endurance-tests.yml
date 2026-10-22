@@ -73,7 +73,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MISE_VERSION: "2026.8.8"    # pinned; must be >= mise.toml min_version
   MISE_LOCKED: "1"            # install/run only mise.lock versions; never float
   MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
   # Deliberately no CARGO_PROFILE_RELEASE_DEBUG here, though it would put
@@ -289,9 +288,13 @@ jobs:
         with:
           cache-on-failure: true
           cache-key: ${{ hashFiles('mise.lock') }}
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
       - name: Install clang for the libwebrtc C++ glue
         uses: ./.github/actions/setup-libwebrtc-cxx
       # A separate, named step — not left folded into the "Endurance tests"
@@ -551,9 +554,13 @@ jobs:
         with:
           cache-on-failure: true
           cache-key: ${{ hashFiles('mise.lock') }}
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
       - name: Cache CMake FetchContent dependencies (Catch2)
         uses: actions/cache@v4
         with:
@@ -782,9 +789,13 @@ jobs:
           cache-on-failure: true
           cache-key: ${{ hashFiles('mise.lock') }}
           cache-shared-key: reactor-swift-${{ hashFiles('mise.lock') }}
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
       - name: Build libreactor_ffi (the library the tests link)
         run: mise run build:ffi
       - name: Endurance tests (real FFI client, real model)
@@ -1047,9 +1058,13 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: gradle
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
       - name: Install clang for the libwebrtc C++ glue
         uses: ./.github/actions/setup-libwebrtc-cxx
       - run: mise run build:ffi

@@ -70,6 +70,15 @@ inline constexpr std::string_view SESSION_TERMINAL = "SESSION_TERMINAL";
 inline constexpr std::string_view MESSAGE_TOO_LARGE = "MESSAGE_TOO_LARGE";
 inline constexpr std::string_view ABORTED = "ABORTED";
 inline constexpr std::string_view RECORDER_DISABLED = "RECORDER_DISABLED";
+inline constexpr std::string_view GENERATION_MODE_MISMATCH = "GENERATION_MODE_MISMATCH";
+inline constexpr std::string_view DATA_CHANNEL_CHUNKING_REQUIRED = "DATA_CHANNEL_CHUNKING_REQUIRED";
+inline constexpr std::string_view UNSUPPORTED_FRAME_ENCODING = "UNSUPPORTED_FRAME_ENCODING";
+// Lowercase: the runtime's own step codes, passed through as it sends them.
+inline constexpr std::string_view STEP_REFUSED = "step_refused";
+inline constexpr std::string_view STEP_NOT_READY = "step_not_ready";
+inline constexpr std::string_view STEP_RESULT_TOO_LARGE = "step_result_too_large";
+inline constexpr std::string_view STEP_COMMAND_FAILED = "step_command_failed";
+inline constexpr std::string_view STEP_SESSION_ENDED = "step_session_ended";
 inline constexpr std::string_view INTERNAL_ERROR = "INTERNAL_ERROR";
 
 }  // namespace codes
@@ -134,27 +143,35 @@ class ReactorError : public std::runtime_error {
 
 /// Declare a subclass.
 ///
-/// Seventeen of these differ only in name and code, so they are generated from one
-/// list: a hand-written set is seventeen chances to paste the wrong code in, or to
+/// Twenty-four of these differ only in name and code, so they are generated from one
+/// list: a hand-written set is twenty-four chances to paste the wrong code in, or to
 /// forget the `rethrow` override that keeps the type from being sliced away.
-#define REACTOR_ERROR_CLASSES(X)                                                       \
-  X(NetworkError, NETWORK_ERROR)              /* the request never got a reply */      \
-  X(UnauthorizedError, UNAUTHORIZED)          /* 401/403: token missing or unscoped */ \
-  X(NotFoundError, NOT_FOUND)                 /* no such model, session or track */    \
-  X(DisconnectedError, DISCONNECTED)          /* the connection went away */           \
-  X(ConflictError, CONFLICT)                  /* 409, usually an orphaned session */   \
-  X(RateLimitedError, RATE_LIMITED)           /* 429 */                                \
-  X(BadRequestError, BAD_REQUEST)             /* the request itself was wrong */       \
-  X(ServerError, SERVER_ERROR)                /* 5xx; may work later */                \
-  X(VersionMismatchError, VERSION_MISMATCH)   /* client and platform disagree */       \
-  X(DecodeError, DECODE_FAILED)               /* a reply arrived, unintelligible */    \
-  X(InvalidStateError, INVALID_STATE)         /* not possible in this state */         \
-  X(SessionTerminalError, SESSION_TERMINAL)   /* start a new session */                \
-  X(MessageTooLargeError, MESSAGE_TOO_LARGE)  /* over what the channel accepts */      \
-  X(TransportError, TRANSPORT_ERROR)          /* the media transport failed */         \
-  X(RequestTimeoutError, REQUEST_TIMEOUT)     /* sent, nothing came back in time */    \
-  X(AbortedError, ABORTED)                    /* abandoned before it finished */       \
-  X(RecorderDisabledError, RECORDER_DISABLED) /* clip/recording: recorder disabled or crashed */
+#define REACTOR_ERROR_CLASSES(X)                                                                   \
+  X(NetworkError, NETWORK_ERROR)              /* the request never got a reply */                  \
+  X(UnauthorizedError, UNAUTHORIZED)          /* 401/403: token missing or unscoped */             \
+  X(NotFoundError, NOT_FOUND)                 /* no such model, session or track */                \
+  X(DisconnectedError, DISCONNECTED)          /* the connection went away */                       \
+  X(ConflictError, CONFLICT)                  /* 409, usually an orphaned session */               \
+  X(RateLimitedError, RATE_LIMITED)           /* 429 */                                            \
+  X(BadRequestError, BAD_REQUEST)             /* the request itself was wrong */                   \
+  X(ServerError, SERVER_ERROR)                /* 5xx; may work later */                            \
+  X(VersionMismatchError, VERSION_MISMATCH)   /* client and platform disagree */                   \
+  X(DecodeError, DECODE_FAILED)               /* a reply arrived, unintelligible */                \
+  X(InvalidStateError, INVALID_STATE)         /* not possible in this state */                     \
+  X(SessionTerminalError, SESSION_TERMINAL)   /* start a new session */                            \
+  X(MessageTooLargeError, MESSAGE_TOO_LARGE)  /* over what the channel accepts */                  \
+  X(TransportError, TRANSPORT_ERROR)          /* the media transport failed */                     \
+  X(RequestTimeoutError, REQUEST_TIMEOUT)     /* sent, nothing came back in time */                \
+  X(AbortedError, ABORTED)                    /* abandoned before it finished */                   \
+  X(RecorderDisabledError, RECORDER_DISABLED) /* clip/recording: recorder disabled or crashed */   \
+  X(GenerationModeMismatchError, GENERATION_MODE_MISMATCH) /* runtime ignored the mode */          \
+  X(DataChannelChunkingRequiredError, DATA_CHANNEL_CHUNKING_REQUIRED) /* stepped, no chunking */   \
+  X(UnsupportedFrameEncodingError, UNSUPPORTED_FRAME_ENCODING)        /* step frame undecodable */ \
+  X(StepRefusedError, STEP_REFUSED)                 /* runtime turned the step down */             \
+  X(StepNotReadyError, STEP_NOT_READY)              /* session cannot step yet */                  \
+  X(StepResultTooLargeError, STEP_RESULT_TOO_LARGE) /* step result over one message */             \
+  X(StepCommandFailedError, STEP_COMMAND_FAILED)    /* a step's call failed */                     \
+  X(StepSessionEndedError, STEP_SESSION_ENDED)      /* session ended before result */
 
 namespace detail {
 

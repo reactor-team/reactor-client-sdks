@@ -245,6 +245,84 @@ class RecorderDisabledError(ReactorError):
     code = "RECORDER_DISABLED"
 
 
+class GenerationModeMismatchError(ReactorError):
+    """`connect()` asked for a generation mode the runtime did not start the session in.
+
+    Most often a stepped request reaching a runtime without stepped generation,
+    which ignores the request rather than refusing it — connecting anyway would
+    leave the client waiting on steps from a streaming session.
+    """
+
+    code = "GENERATION_MODE_MISMATCH"
+
+
+class DataChannelChunkingRequiredError(ReactorError):
+    """A stepped session connected over a data channel without chunking.
+
+    This client or the runtime does not support data-channel chunking. A step's
+    inputs and result each ride one data-channel message, and without chunking
+    a single camera frame outgrows it, so `connect()` fails instead.
+    """
+
+    code = "DATA_CHANNEL_CHUNKING_REQUIRED"
+
+
+class UnsupportedFrameEncodingError(ReactorError):
+    """A step result carried a frame in an encoding this client cannot decode."""
+
+    code = "UNSUPPORTED_FRAME_ENCODING"
+
+
+class StepRefusedError(ReactorError):
+    """The runtime refused a step — the request or the model turned it down.
+
+    The runtime checks the whole request before it applies any of it, so a
+    refused step changed nothing; its input frames are gone with it. Lowercase
+    because it is the runtime's own code, passed through.
+    """
+
+    code = "step_refused"
+
+
+class StepNotReadyError(ReactorError):
+    """The session cannot run a step yet: it is not in a running state that can take one.
+
+    The step did not run and nothing it carried was applied. Lowercase, as the
+    runtime names the outcome.
+    """
+
+    code = "step_not_ready"
+
+
+class StepResultTooLargeError(ReactorError):
+    """A step ran, but its result does not fit in one data-channel message.
+
+    The model did generate it; ask for less per step — fewer frames, a smaller
+    resolution.
+    """
+
+    code = "step_result_too_large"
+
+
+class StepCommandFailedError(ReactorError):
+    """The handler of one of the step's state keys or commands failed.
+
+    The calls before it stay applied, the ones after it were skipped, and the
+    step did not run. Lowercase, as the runtime names the outcome.
+    """
+
+    code = "step_command_failed"
+
+
+class StepSessionEndedError(ReactorError):
+    """The session ended before the step's result could be sent.
+
+    Whether the step ran is unknown. Lowercase, as the runtime names the outcome.
+    """
+
+    code = "step_session_ended"
+
+
 #: Every code this package has a class for. Anything else — a platform code for a
 #: rejected request — falls back to `ReactorError` with `code` set to it.
 ERROR_CLASSES: tuple[type[ReactorError], ...] = (
@@ -265,6 +343,14 @@ ERROR_CLASSES: tuple[type[ReactorError], ...] = (
     RequestTimeoutError,
     AbortedError,
     RecorderDisabledError,
+    GenerationModeMismatchError,
+    DataChannelChunkingRequiredError,
+    UnsupportedFrameEncodingError,
+    StepRefusedError,
+    StepNotReadyError,
+    StepResultTooLargeError,
+    StepCommandFailedError,
+    StepSessionEndedError,
 )
 
 _BY_CODE: dict[str, type[ReactorError]] = {cls.code: cls for cls in ERROR_CLASSES}

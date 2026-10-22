@@ -3,9 +3,11 @@ import {
   AbortedError,
   BadRequestError,
   ConflictError,
+  DataChannelChunkingRequiredError,
   DecodeError,
   DisconnectedError,
   errorForCode,
+  GenerationModeMismatchError,
   InvalidStateError,
   MessageTooLargeError,
   NetworkError,
@@ -16,9 +18,15 @@ import {
   RequestTimeoutError,
   ServerError,
   SessionTerminalError,
+  StepCommandFailedError,
+  StepNotReadyError,
+  StepRefusedError,
+  StepResultTooLargeError,
+  StepSessionEndedError,
   toReactorError,
   TransportError,
   UnauthorizedError,
+  UnsupportedFrameEncodingError,
   VersionMismatchError,
 } from './errors';
 
@@ -133,6 +141,14 @@ describe('typed subclasses', () => {
     [RequestTimeoutError, 'REQUEST_TIMEOUT'],
     [AbortedError, 'ABORTED'],
     [RecorderDisabledError, 'RECORDER_DISABLED'],
+    [GenerationModeMismatchError, 'GENERATION_MODE_MISMATCH'],
+    [DataChannelChunkingRequiredError, 'DATA_CHANNEL_CHUNKING_REQUIRED'],
+    [StepRefusedError, 'step_refused'],
+    [StepNotReadyError, 'step_not_ready'],
+    [StepResultTooLargeError, 'step_result_too_large'],
+    [StepCommandFailedError, 'step_command_failed'],
+    [StepSessionEndedError, 'step_session_ended'],
+    [UnsupportedFrameEncodingError, 'UNSUPPORTED_FRAME_ENCODING'],
   ];
 
   it.each(cases)('%s defaults its code and extends ReactorError', (ErrorClass, code) => {
@@ -159,6 +175,14 @@ describe('errorForCode', () => {
   it('returns the matching subclass for a known code', () => {
     expect(errorForCode('UNAUTHORIZED')).toBe(UnauthorizedError);
     expect(errorForCode('DISCONNECTED')).toBe(DisconnectedError);
+  });
+
+  it("matches the runtime's lowercase step codes exactly as reactor-core passes them through", () => {
+    expect(errorForCode('step_refused')).toBe(StepRefusedError);
+    expect(errorForCode('step_not_ready')).toBe(StepNotReadyError);
+    expect(errorForCode('step_result_too_large')).toBe(StepResultTooLargeError);
+    expect(errorForCode('step_command_failed')).toBe(StepCommandFailedError);
+    expect(errorForCode('step_session_ended')).toBe(StepSessionEndedError);
   });
 
   it('falls back to the base class for an unknown or missing code', () => {

@@ -70,7 +70,7 @@ echo "::endgroup::"
 # SDK reaches the library through ctypes and links no libpython.
 PYTHON=$(echo /opt/python/cp31*-cp31*/bin/python | tr ' ' '\n' | sort | head -1)
 echo "::group::Build wheel with ${PYTHON}"
-"${PYTHON}" -m pip install --quiet --upgrade pip uv
+"${PYTHON}" -m pip install --quiet --upgrade "pip>=26.2.2" "uv>=0.13.4"
 cd /io/sdks/python
 # Deliberately no REACTOR_WHEEL_PLATFORM_TAG: hatchling tags this `linux_<arch>`,
 # and auditwheel below replaces that with the policy the binary has actually earned.

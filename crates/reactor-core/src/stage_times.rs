@@ -110,6 +110,7 @@ impl StageTimes {
                         name: stage.to_string(),
                         total_ms,
                         frames,
+                        // The client's stages are its own, never part of another.
                         part_of: String::new(),
                     })
                     .collect();

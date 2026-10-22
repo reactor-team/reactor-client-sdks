@@ -66,7 +66,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  MISE_VERSION: "2026.8.8"
   MISE_LOCKED: "1"
   MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
 
@@ -168,9 +167,13 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: gradle
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
       - name: Install clang for the libwebrtc C++ glue
         uses: ./.github/actions/setup-libwebrtc-cxx
       - run: mise run build:ffi
@@ -224,10 +227,14 @@ jobs:
       # mise.lock carries no windows-x64 URLs at all, so `mise install --locked` (MISE_LOCKED
       # above) refuses on the Windows runner before it reaches a single tool. release-cpp.yml
       # and release-python.yml shell out to cargo on every platform for the same reason.
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
       - uses: jdx/mise-action@v4
         if: runner.os == 'Linux'
         with:
           version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
       - name: Install clang for the libwebrtc C++ glue
         if: runner.os == 'Linux'
         uses: ./.github/actions/setup-libwebrtc-cxx
@@ -291,9 +298,13 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: gradle
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
 
       - name: Collect every platform's library
         uses: actions/download-artifact@v4

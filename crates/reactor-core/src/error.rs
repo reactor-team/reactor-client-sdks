@@ -75,6 +75,35 @@ pub mod codes {
     /// fix — a structured field on `ClipFailed` — which should replace this
     /// once it lands.
     pub const RECORDER_DISABLED: &str = "RECORDER_DISABLED";
+    /// The runtime did not start the session in the generation mode this
+    /// client asked for — most often a runtime without stepped generation,
+    /// which ignores the request rather than refusing it.
+    pub const GENERATION_MODE_MISMATCH: &str = "GENERATION_MODE_MISMATCH";
+    /// A stepped session connected over a data channel that did not negotiate
+    /// chunking, on either side. A step's inputs and result each ride one
+    /// data-channel message, and without chunking a single camera frame
+    /// outgrows it.
+    pub const DATA_CHANNEL_CHUNKING_REQUIRED: &str = "DATA_CHANNEL_CHUNKING_REQUIRED";
+    /// The runtime refused a step — the request or the model turned it down.
+    /// The runtime checks the whole request before it applies any of it, so a
+    /// refused step changed nothing. Lowercase, as the runtime names the
+    /// outcome (its `StepResult.failure_code` `REFUSED`).
+    pub const STEP_REFUSED: &str = "step_refused";
+    /// The session cannot run a step yet: it is not in a running state that
+    /// can take one. The step did not run. Lowercase, as [`STEP_REFUSED`].
+    pub const STEP_NOT_READY: &str = "step_not_ready";
+    /// A step ran, but its result does not fit in one data-channel message.
+    /// Lowercase, as [`STEP_REFUSED`].
+    pub const STEP_RESULT_TOO_LARGE: &str = "step_result_too_large";
+    /// The handler of one of a step's state keys or commands failed. The
+    /// calls before it stay applied, the ones after it were skipped, and the
+    /// step did not run. Lowercase, as [`STEP_REFUSED`].
+    pub const STEP_COMMAND_FAILED: &str = "step_command_failed";
+    /// The session ended before the step's result could be sent, so whether
+    /// the step ran is unknown. Lowercase, as [`STEP_REFUSED`].
+    pub const STEP_SESSION_ENDED: &str = "step_session_ended";
+    /// A step result carried a frame in an encoding this client cannot decode.
+    pub const UNSUPPORTED_FRAME_ENCODING: &str = "UNSUPPORTED_FRAME_ENCODING";
     /// A failure that fits none of the above.
     pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
 }
@@ -121,6 +150,13 @@ pub struct ErrorDetails {
     /// Backoff hint in milliseconds, when the platform provided one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after_ms: Option<f64>,
+    /// For a step that did not run, the request entry at fault, such as
+    /// `"commands[2]"` or `"state.prompt"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
+    /// For a step whose call failed, the code the handler failed with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_code: Option<String>,
 }
 
 impl ErrorDetails {
@@ -134,6 +170,8 @@ impl ErrorDetails {
             status: None,
             operation: None,
             retry_after_ms: None,
+            entry: None,
+            command_code: None,
         }
     }
 }
@@ -217,6 +255,72 @@ pub enum CoreError {
     #[error("operation aborted")]
     Aborted,
 
+    /// The session did not start in the requested generation mode. `echoed`
+    /// is the mode the runtime reported, `None` when it reported none — which
+    /// is what a runtime without stepped generation does.
+    #[error("requested {requested} generation, but the runtime started the session in {}",
+        echoed.as_deref().unwrap_or("a mode it did not report (no stepped generation support?)"))]
+    GenerationModeMismatch {
+        requested: crate::protocol::session::GenerationMode,
+        echoed: Option<String>,
+    },
+
+    /// A stepped session's data channel did not negotiate chunking: this
+    /// client, or the runtime, does not support it.
+    #[error(
+        "stepped generation needs data-channel chunking, which this connection did not negotiate"
+    )]
+    ChunkingRequired,
+
+    /// The runtime refused the step (`step_refused`): the request or the model
+    /// turned it down. The runtime checks a whole request before it applies
+    /// any of it, so a request it refuses changed nothing; `entry` names the
+    /// part at fault (`state.<key>`, `commands[<i>]`, `media_input[<i>]`) when
+    /// one is.
+    #[error("step refused: {message}")]
+    StepRefused {
+        message: String,
+        entry: Option<String>,
+    },
+
+    /// The session could not run the step yet (`step_not_ready`): it is not in
+    /// a running state that can take one. The step did not run and nothing it
+    /// carried was applied.
+    #[error("step not ready: {message}")]
+    StepNotReady { message: String },
+
+    /// The step ran, but its result did not fit in one data-channel message
+    /// (`step_result_too_large`).
+    #[error("step result too large: {message}")]
+    StepResultTooLarge { message: String },
+
+    /// The handler of one of the step's state keys or commands failed
+    /// (`step_command_failed`). The calls before it stay applied, the ones
+    /// after it were skipped, and the step did not run. `command_code` is the
+    /// stable code the handler failed with (its `CommandError` code, or
+    /// `internal_error`), and `entry` the call that failed.
+    #[error("step command failed: {message}")]
+    StepCommandFailed {
+        message: String,
+        command_code: Option<String>,
+        entry: Option<String>,
+    },
+
+    /// The session ended before the step's result could be sent
+    /// (`step_session_ended`); whether the step ran is unknown.
+    #[error("step session ended: {message}")]
+    StepSessionEnded { message: String },
+
+    /// Any other failed step: an error the runtime answered with, or the
+    /// connection dropping while the step was in flight (`DISCONNECTED`).
+    #[error("step failed ({code}): {message}")]
+    StepFailed { code: String, message: String },
+
+    /// A step result carried a frame in an encoding with no registered
+    /// decoder (see `step::FrameDecoders`).
+    #[error("step result track '{track}' has a frame in unsupported encoding {encoding}")]
+    UnsupportedFrameEncoding { track: String, encoding: i32 },
+
     /// `ReactorOptions::preset_tracks` disagreed with the coordinator's real
     /// `capabilities.tracks` once `poll_session_ready()` resolved. The SDP
     /// offer built from the preset (concurrently, as the optimization this
@@ -245,13 +349,21 @@ impl CoreError {
             CoreError::ControlRequest { code, .. }
             | CoreError::CommandRequest { code, .. }
             | CoreError::Recording { code, .. }
+            | CoreError::StepFailed { code, .. }
                 if !code.is_empty() =>
             {
                 code
             }
             CoreError::ControlRequest { .. }
             | CoreError::CommandRequest { .. }
-            | CoreError::Recording { .. } => codes::INTERNAL_ERROR,
+            | CoreError::Recording { .. }
+            | CoreError::StepFailed { .. } => codes::INTERNAL_ERROR,
+            CoreError::StepRefused { .. } => codes::STEP_REFUSED,
+            CoreError::StepNotReady { .. } => codes::STEP_NOT_READY,
+            CoreError::StepResultTooLarge { .. } => codes::STEP_RESULT_TOO_LARGE,
+            CoreError::StepCommandFailed { .. } => codes::STEP_COMMAND_FAILED,
+            CoreError::StepSessionEnded { .. } => codes::STEP_SESSION_ENDED,
+            CoreError::UnsupportedFrameEncoding { .. } => codes::UNSUPPORTED_FRAME_ENCODING,
             CoreError::Http(_) => codes::NETWORK_ERROR,
             CoreError::Status { status, .. } => match status {
                 401 | 403 => codes::UNAUTHORIZED,
@@ -274,6 +386,8 @@ impl CoreError {
             // An argument (the preset track list) rejected here before anything
             // built from it was sent — same category as a rejected 4xx.
             CoreError::PresetTracksMismatch { .. } => codes::BAD_REQUEST,
+            CoreError::GenerationModeMismatch { .. } => codes::GENERATION_MODE_MISMATCH,
+            CoreError::ChunkingRequired => codes::DATA_CHANNEL_CHUNKING_REQUIRED,
         }
     }
 
@@ -324,6 +438,15 @@ impl CoreError {
             status: self.status(),
             operation: operation.map(str::to_string),
             retry_after_ms: self.retry_after_ms(),
+            entry: match self {
+                CoreError::StepRefused { entry, .. }
+                | CoreError::StepCommandFailed { entry, .. } => entry.clone(),
+                _ => None,
+            },
+            command_code: match self {
+                CoreError::StepCommandFailed { command_code, .. } => command_code.clone(),
+                _ => None,
+            },
         }
     }
 }
@@ -510,6 +633,60 @@ mod tests {
         assert!(!status(501).recoverable());
         assert!(!status(426).recoverable());
         assert!(!CoreError::VersionMismatch("too old".into()).recoverable());
+    }
+
+    /// Each step failure a caller handles differently arrives as its own
+    /// variant and code, so a binding can branch without reading messages.
+    #[test]
+    fn step_failures_have_their_own_codes() {
+        let refused = CoreError::StepRefused {
+            message: "no".into(),
+            entry: None,
+        };
+        assert_eq!(refused.code(), codes::STEP_REFUSED);
+        assert!(!refused.recoverable());
+
+        let too_large = CoreError::StepResultTooLarge {
+            message: "big".into(),
+        };
+        assert_eq!(too_large.code(), codes::STEP_RESULT_TOO_LARGE);
+
+        let not_ready = CoreError::StepNotReady {
+            message: "starting".into(),
+        };
+        assert_eq!(not_ready.code(), codes::STEP_NOT_READY);
+        assert!(!not_ready.recoverable());
+
+        let command_failed = CoreError::StepCommandFailed {
+            message: "set_prompt failed".into(),
+            command_code: Some("bad".into()),
+            entry: Some("state.prompt".into()),
+        };
+        assert_eq!(command_failed.code(), codes::STEP_COMMAND_FAILED);
+        assert!(!command_failed.recoverable());
+        let details = serde_json::to_value(command_failed.details(Some("step"))).unwrap();
+        assert_eq!(details["entry"], "state.prompt");
+        assert_eq!(details["command_code"], "bad");
+        let plain = serde_json::to_value(not_ready.details(None)).unwrap();
+        assert!(plain.get("entry").is_none() && plain.get("command_code").is_none());
+
+        let session_ended = CoreError::StepSessionEnded {
+            message: "gone".into(),
+        };
+        assert_eq!(session_ended.code(), codes::STEP_SESSION_ENDED);
+
+        let dropped = CoreError::StepFailed {
+            code: codes::DISCONNECTED.into(),
+            message: "gone".into(),
+        };
+        assert_eq!(dropped.code(), codes::DISCONNECTED);
+        assert!(dropped.recoverable());
+
+        let unknown = CoreError::UnsupportedFrameEncoding {
+            track: "v".into(),
+            encoding: 7,
+        };
+        assert_eq!(unknown.code(), codes::UNSUPPORTED_FRAME_ENCODING);
     }
 
     #[test]

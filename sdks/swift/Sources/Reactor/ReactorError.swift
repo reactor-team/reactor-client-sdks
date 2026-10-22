@@ -179,6 +179,44 @@ extension ReactorError {
         /// REA-5403 replaces that with a structured field; the code stays.
         public static let recorderDisabled = Code(rawValue: "RECORDER_DISABLED")
 
+        /// The runtime did not start the session in the requested generation
+        /// mode — most often a runtime without stepped generation, which
+        /// ignores the request rather than refusing it.
+        public static let generationModeMismatch = Code(rawValue: "GENERATION_MODE_MISMATCH")
+
+        /// A stepped session connected over a data channel that did not
+        /// negotiate chunking: this client or the runtime does not support it.
+        public static let dataChannelChunkingRequired = Code(
+            rawValue: "DATA_CHANNEL_CHUNKING_REQUIRED")
+
+        /// A step result carried a frame in an encoding this client cannot decode.
+        public static let unsupportedFrameEncoding = Code(rawValue: "UNSUPPORTED_FRAME_ENCODING")
+
+        /// The runtime refused a step — the request or the model turned it
+        /// down. The runtime checks the whole request before it applies any of
+        /// it, so a refused step changed nothing. Lowercase because it is the
+        /// runtime's own code, passed through.
+        public static let stepRefused = Code(rawValue: "step_refused")
+
+        /// The session cannot run a step yet: it is not in a running state
+        /// that can take one. The step did not run and nothing it carried was
+        /// applied. Lowercase, as the runtime names the outcome.
+        public static let stepNotReady = Code(rawValue: "step_not_ready")
+
+        /// A step ran, but its result does not fit in one data-channel message.
+        /// Ask for less per step — fewer frames, a smaller resolution.
+        public static let stepResultTooLarge = Code(rawValue: "step_result_too_large")
+
+        /// The handler of one of the step's state keys or commands failed. The
+        /// calls before it stay applied, the ones after it were skipped, and
+        /// the step did not run. Lowercase, as the runtime names the outcome.
+        public static let stepCommandFailed = Code(rawValue: "step_command_failed")
+
+        /// The session ended before the step's result could be sent, so
+        /// whether the step ran is unknown. Lowercase, as the runtime names
+        /// the outcome.
+        public static let stepSessionEnded = Code(rawValue: "step_session_ended")
+
         /// A failure with no better classification.
         public static let internalError = Code(rawValue: "INTERNAL_ERROR")
     }
@@ -242,6 +280,30 @@ extension ReactorError {
 
     /// Matches an error whose code is ``Code/recorderDisabled``.
     public static var recorderDisabled: Code { .recorderDisabled }
+
+    /// Matches an error whose code is ``Code/generationModeMismatch``.
+    public static var generationModeMismatch: Code { .generationModeMismatch }
+
+    /// Matches an error whose code is ``Code/dataChannelChunkingRequired``.
+    public static var dataChannelChunkingRequired: Code { .dataChannelChunkingRequired }
+
+    /// Matches an error whose code is ``Code/unsupportedFrameEncoding``.
+    public static var unsupportedFrameEncoding: Code { .unsupportedFrameEncoding }
+
+    /// Matches an error whose code is ``Code/stepRefused``.
+    public static var stepRefused: Code { .stepRefused }
+
+    /// Matches an error whose code is ``Code/stepNotReady``.
+    public static var stepNotReady: Code { .stepNotReady }
+
+    /// Matches an error whose code is ``Code/stepResultTooLarge``.
+    public static var stepResultTooLarge: Code { .stepResultTooLarge }
+
+    /// Matches an error whose code is ``Code/stepCommandFailed``.
+    public static var stepCommandFailed: Code { .stepCommandFailed }
+
+    /// Matches an error whose code is ``Code/stepSessionEnded``.
+    public static var stepSessionEnded: Code { .stepSessionEnded }
 
     /// Matches an error whose code is ``Code/internalError``.
     public static var internalError: Code { .internalError }

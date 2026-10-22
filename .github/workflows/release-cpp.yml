@@ -56,12 +56,6 @@ concurrency:
   # Supersede an outdated pull-request build, but never interrupt a release.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  # Only cpp-integration-tests below uses mise (build-archives shells out to
-  # cargo/cmake directly, on every platform, and needs no task runner for it) —
-  # same pinned version ci.yml and release-python.yml use.
-  MISE_VERSION: "2026.8.8"
-
 jobs:
   # ── 0. Is this push a release? ──────────────────────────────────────────────
   detect-version:
@@ -402,9 +396,13 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache-on-failure: true
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
       - name: Install clang for the libwebrtc C++ glue
         uses: ./.github/actions/setup-libwebrtc-cxx
       - name: Build libreactor_ffi (the library the SDK links)
