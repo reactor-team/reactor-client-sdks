@@ -10,8 +10,9 @@
 //! `# Safety` section states only what it adds.
 //!
 //! * **Handles.** A `*mut ReactorHandle` is either null or a pointer returned by
-//!   [`reactor_create`] / [`reactor_create_with_adm`] that has not yet been passed
-//!   to [`reactor_destroy`]. Null is always accepted and handled. A destroyed
+//!   [`reactor_create`] / [`reactor_create_with_adm`] /
+//!   [`reactor_create_with_options`] that has not yet been passed to
+//!   [`reactor_destroy`]. Null is always accepted and handled. A destroyed
 //!   handle is not: reusing one is undefined behaviour.
 //! * **Strings in.** Every `*const c_char` parameter is either explicitly
 //!   documented as nullable or must be a NUL-terminated C string, valid for reads
@@ -42,6 +43,7 @@ mod audio_input;
 mod callbacks;
 mod http;
 mod peer;
+mod step;
 
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
@@ -54,6 +56,7 @@ use reactor_core::error::CoreError;
 use reactor_core::events::ReactorEvent;
 use reactor_core::http::{check_status, StaticAuth};
 use reactor_core::peer::PeerEvent;
+use reactor_core::protocol::session::GenerationMode;
 use reactor_core::protocol::upload::FileRef;
 use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions};
 use reactor_core::recording::{clip_segment_requests, Readiness};
@@ -66,6 +69,16 @@ use reactor_webrtc::AdmMode;
 use self::callbacks::{CallbackGate, HostSender, HostThread, Overflow, Quiescence};
 use self::http::ReqwestHttpClient;
 use self::peer::ReactorWebRtcPeerTransport;
+pub use self::step::{
+    reactor_step_result_elapsed, reactor_step_result_error, reactor_step_result_file_content_type,
+    reactor_step_result_file_count, reactor_step_result_file_name, reactor_step_result_file_size,
+    reactor_step_result_frame_capture_time_us, reactor_step_result_frame_count,
+    reactor_step_result_frame_data, reactor_step_result_frame_dtype,
+    reactor_step_result_frame_encoding, reactor_step_result_frame_metadata,
+    reactor_step_result_frame_shape, reactor_step_result_free, reactor_step_result_step,
+    reactor_step_result_track_count, reactor_step_result_track_kind,
+    reactor_step_result_track_name, reactor_step_result_track_rate, ReactorStepResult,
+};
 
 // ── Android JNI bootstrap ────────────────────────────────────────────────────
 
@@ -384,10 +397,7 @@ impl Completion {
                 // every binding above collapsed all of these into one error type;
                 // the code and whether retrying is worth anything were both in
                 // the `CoreError` and both thrown away here.
-                let details = e.details(Some(self.operation));
-                let json = serde_json::to_string(&details)
-                    .unwrap_or_else(|_| fallback_error_json(&details.message));
-                if let Ok(cs) = CString::new(json) {
+                if let Some(cs) = error_json(&e, self.operation) {
                     unsafe { func(0, std::ptr::null(), cs.as_ptr(), self.userdata) }
                 }
             }
@@ -798,7 +808,7 @@ async fn write_segments<L: Fn() -> bool>(
 /// (unauthenticated local dev). `callbacks` may be null (no events); when
 /// non-null it must point to a readable [`ReactorCallbacks`], which is copied
 /// during the call. `sdk_version` and `sdk_type` may be null; see
-/// [`create_impl`] for what null defaults to.
+/// [`CreateConfig`] for what null defaults to.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_create(
     api_url: *const c_char,
@@ -810,17 +820,8 @@ pub unsafe extern "C" fn reactor_create(
     sdk_version: *const c_char,
     sdk_type: *const c_char,
 ) -> *mut ReactorHandle {
-    create_impl(
-        api_url,
-        model_name,
-        jwt,
-        local,
-        auto_resume_tracks,
-        callbacks,
-        None,
-        sdk_version,
-        sdk_type,
-    )
+    let config = CreateConfig::from_args(local, auto_resume_tracks, None, sdk_version, sdk_type);
+    create_impl(api_url, model_name, jwt, callbacks, config)
 }
 
 /// Like [`reactor_create`], but selects the audio device module explicitly:
@@ -850,55 +851,186 @@ pub unsafe extern "C" fn reactor_create_with_adm(
         1 => Some(AdmMode::Platform),
         _ => None,
     };
-    create_impl(
-        api_url,
-        model_name,
-        jwt,
-        local,
-        auto_resume_tracks,
-        callbacks,
-        adm,
-        sdk_version,
-        sdk_type,
-    )
+    let config = CreateConfig::from_args(local, auto_resume_tracks, adm, sdk_version, sdk_type);
+    create_impl(api_url, model_name, jwt, callbacks, config)
 }
 
-/// `sdk_version` and `sdk_type` are nullable: null keeps the workspace-version /
-/// `"ffi"` defaults [`ReactorOptions::new`](reactor_core::ReactorOptions::new)
-/// already sets, which is what every binding got before these parameters
-/// existed. A binding should pass its own published package version and a
-/// language tag (`"python"`, `"cpp"`, …) so the coordinator sees what actually
-/// shipped instead of `reactor-core`'s internal crate version and a `sdk_type`
-/// that cannot tell one language from another.
-#[allow(clippy::too_many_arguments)]
+/// Create a client from a JSON object of options. The returned handle must be
+/// released with [`reactor_destroy`].
+///
+/// `options_json` may be null for every default; otherwise it is a JSON object
+/// of [`CreateConfig`]'s keys — `local`, `auto_resume_tracks`, `adm`,
+/// `sdk_version`, `sdk_type`, `generation`, `step_timeout_seconds`. **An
+/// unrecognised key is an error**, as is a value of the wrong type: a misspelt
+/// `generation` would otherwise connect a streamed session and leave the host
+/// waiting on steps that never come.
+///
+/// Returns null when the options are refused, and then, if `error_out` is not
+/// null, stores a heap JSON error object there for the caller to release with
+/// [`reactor_free_string`]. On success `*error_out` is left untouched.
+///
+/// # Safety
+///
+/// As [`reactor_create`]; `options_json` may be null, otherwise it must be a
+/// NUL-terminated C string. `error_out` may be null, otherwise it must be
+/// writable.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_create_with_options(
+    api_url: *const c_char,
+    model_name: *const c_char,
+    jwt: *const c_char,
+    callbacks: *const ReactorCallbacks,
+    options_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut ReactorHandle {
+    let config = if options_json.is_null() {
+        Ok(CreateConfig::default())
+    } else {
+        CreateConfig::from_json(&CStr::from_ptr(options_json).to_string_lossy())
+    };
+    match config {
+        Ok(config) => create_impl(api_url, model_name, jwt, callbacks, config),
+        Err(error) => {
+            if !error_out.is_null() {
+                *error_out = error_details_ptr(&error, "create");
+            }
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// What a client is created with, beyond its URL, model, token and callbacks.
+///
+/// The positional `reactor_create*` functions fill the first five fields;
+/// [`reactor_create_with_options`] reads all of them from JSON, so a new
+/// creation-time option is a new key here rather than a changed signature.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct CreateConfig {
+    /// Local-dev mode: the runtime's own HTTP API, self-signed certificates.
+    local: bool,
+    /// See [`ReactorOptions::auto_resume_tracks`].
+    auto_resume_tracks: bool,
+    /// `"synthetic"` or `"platform"`; absent is the default, synthetic. See
+    /// [`reactor_create_with_adm`].
+    #[serde(deserialize_with = "deserialize_adm")]
+    adm: Option<AdmMode>,
+    /// Null keeps the workspace-version / `"ffi"` defaults
+    /// [`ReactorOptions::new`] already sets. A binding should pass its own
+    /// published package version and a language tag (`"python"`, `"cpp"`, …)
+    /// so the coordinator sees what actually shipped.
+    sdk_version: Option<String>,
+    sdk_type: Option<String>,
+    /// `"streamed"` (the default) or `"stepped"`. See
+    /// [`ReactorOptions::generation`].
+    generation: GenerationMode,
+    /// How long a step may take, generation included; absent keeps the core's
+    /// default. See [`ReactorOptions::step_timeout`].
+    step_timeout_seconds: Option<f64>,
+}
+
+impl Default for CreateConfig {
+    fn default() -> Self {
+        Self {
+            local: false,
+            auto_resume_tracks: true,
+            adm: None,
+            sdk_version: None,
+            sdk_type: None,
+            generation: GenerationMode::Streamed,
+            step_timeout_seconds: None,
+        }
+    }
+}
+
+fn deserialize_adm<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<AdmMode>, D::Error> {
+    use serde::Deserialize;
+    match Option::<String>::deserialize(d)?.as_deref() {
+        None => Ok(None),
+        Some("synthetic") => Ok(Some(AdmMode::Synthetic)),
+        Some("platform") => Ok(Some(AdmMode::Platform)),
+        Some(other) => Err(serde::de::Error::custom(format!(
+            "unknown adm \"{other}\" (expected \"synthetic\" or \"platform\")"
+        ))),
+    }
+}
+
+impl CreateConfig {
+    unsafe fn from_args(
+        local: c_int,
+        auto_resume_tracks: c_int,
+        adm: Option<AdmMode>,
+        sdk_version: *const c_char,
+        sdk_type: *const c_char,
+    ) -> Self {
+        Self {
+            local: local != 0,
+            auto_resume_tracks: auto_resume_tracks != 0,
+            adm,
+            sdk_version: opt_string(sdk_version),
+            sdk_type: opt_string(sdk_type),
+            ..Self::default()
+        }
+    }
+
+    fn from_json(raw: &str) -> Result<Self, CoreError> {
+        let invalid =
+            |e: String| CoreError::InvalidState(format!("create options are not valid: {e}"));
+        let value: serde_json::Value =
+            serde_json::from_str(raw).map_err(|e| invalid(e.to_string()))?;
+        // serde would also read a struct from an array, positionally.
+        if !value.is_object() {
+            return Err(invalid("expected a JSON object".into()));
+        }
+        let config: Self = serde_json::from_value(value).map_err(|e| invalid(e.to_string()))?;
+        if let Some(seconds) = config.step_timeout_seconds {
+            // A finite value too long for a Duration saturates in `apply`.
+            if !(seconds.is_finite() && seconds > 0.0) {
+                return Err(CoreError::InvalidState(format!(
+                    "create options are not valid: step_timeout_seconds must be a positive number, got {seconds}"
+                )));
+            }
+        }
+        Ok(config)
+    }
+
+    fn apply(&self, options: &mut ReactorOptions) {
+        options.sdk_type = self.sdk_type.clone().unwrap_or_else(|| "ffi".to_string());
+        if let Some(version) = &self.sdk_version {
+            options.sdk_version = version.clone();
+        }
+        options.local = self.local;
+        options.auto_resume_tracks = self.auto_resume_tracks;
+        options.generation = self.generation;
+        if let Some(seconds) = self.step_timeout_seconds {
+            // `from_secs_f64` would panic on overflow, and a panic here
+            // would cross `extern "C"`.
+            options.step_timeout =
+                std::time::Duration::try_from_secs_f64(seconds).unwrap_or(std::time::Duration::MAX);
+        }
+    }
+}
+
+/// A nullable C string, copied.
+unsafe fn opt_string(s: *const c_char) -> Option<String> {
+    if s.is_null() {
+        None
+    } else {
+        Some(CStr::from_ptr(s).to_string_lossy().into_owned())
+    }
+}
+
 unsafe fn create_impl(
     api_url: *const c_char,
     model_name: *const c_char,
     jwt: *const c_char,
-    local: c_int,
-    auto_resume_tracks: c_int,
     callbacks: *const ReactorCallbacks,
-    adm: Option<AdmMode>,
-    sdk_version: *const c_char,
-    sdk_type: *const c_char,
+    config: CreateConfig,
 ) -> *mut ReactorHandle {
     let api_url = CStr::from_ptr(api_url).to_string_lossy().into_owned();
     let model_name = CStr::from_ptr(model_name).to_string_lossy().into_owned();
-    let jwt = if jwt.is_null() {
-        None
-    } else {
-        Some(CStr::from_ptr(jwt).to_string_lossy().into_owned())
-    };
-    let sdk_version = if sdk_version.is_null() {
-        None
-    } else {
-        Some(CStr::from_ptr(sdk_version).to_string_lossy().into_owned())
-    };
-    let sdk_type = if sdk_type.is_null() {
-        None
-    } else {
-        Some(CStr::from_ptr(sdk_type).to_string_lossy().into_owned())
-    };
+    let jwt = opt_string(jwt);
+    let adm = config.adm;
 
     // Guards every host pointer below, including the media callbacks and the
     // completions of operations still in flight when the handle is destroyed.
@@ -923,7 +1055,7 @@ unsafe fn create_impl(
 
     let (peer_event_tx, peer_event_rx) = futures::channel::mpsc::unbounded::<PeerEvent>();
 
-    let http = Arc::new(ReqwestHttpClient::new(local != 0));
+    let http = Arc::new(ReqwestHttpClient::new(config.local));
     let auth = Arc::new(StaticAuth(jwt));
     let platform = Arc::new(TokioPlatform::new());
 
@@ -1035,12 +1167,7 @@ unsafe fn create_impl(
     let peer_transport = Arc::new(peer_transport);
 
     let mut options = ReactorOptions::new(&api_url, &model_name);
-    options.sdk_type = sdk_type.unwrap_or_else(|| "ffi".to_string());
-    if let Some(version) = sdk_version {
-        options.sdk_version = version;
-    }
-    options.local = local != 0;
-    options.auto_resume_tracks = auto_resume_tracks != 0;
+    config.apply(&mut options);
 
     let deps = ReactorDeps {
         http,
@@ -1757,6 +1884,104 @@ pub unsafe extern "C" fn reactor_upload_bytes(
     );
 }
 
+// ── Stepped generation ───────────────────────────────────────────────────────
+
+/// The completion `reactor_step` takes: a result handle rather than JSON, so a
+/// step's frames reach the host without being serialised.
+type StepCompletionFn =
+    unsafe extern "C" fn(c_int, *mut ReactorStepResult, *const c_char, *mut c_void);
+
+/// [`Completion`], for a step. Ownership of the result passes to the host only
+/// when the callback is actually called; every other path frees it here.
+struct StepCompletion {
+    f: Option<StepCompletionFn>,
+    userdata: *mut c_void,
+    gate: Arc<CallbackGate>,
+}
+unsafe impl Send for StepCompletion {}
+
+impl StepCompletion {
+    fn resolve(self, result: Result<ReactorStepResult, CoreError>) {
+        let Some(func) = self.f else { return };
+        let Some(_admitted) = self.gate.enter() else {
+            return;
+        };
+        match result {
+            Ok(output) => {
+                let output = Box::into_raw(Box::new(output));
+                unsafe { func(1, output, std::ptr::null(), self.userdata) }
+            }
+            Err(e) => {
+                if let Some(cs) = error_json(&e, "step") {
+                    unsafe { func(0, std::ptr::null_mut(), cs.as_ptr(), self.userdata) }
+                }
+            }
+        }
+    }
+}
+
+/// Run one step of a stepped session: `state`, then `commands`, then every
+/// input frame pushed since the last step. See [`Reactor::step`].
+///
+/// `state_json` may be null (no state); otherwise a JSON object of the model's
+/// state fields, or `null`. `commands_json` may be null (no commands);
+/// otherwise a JSON array of `{"command": name, "data": object}`, `data`
+/// optional. Either one malformed fails the step with `DECODE_FAILED` through
+/// the completion, with nothing sent.
+///
+/// On success the completion's second argument is a [`ReactorStepResult`] the
+/// host now owns: read it with the `reactor_step_result_*` accessors and
+/// release it with [`reactor_step_result_free`], from any thread, after the
+/// completion has returned or inside it. On failure it is null and the third
+/// argument is the usual error object — `step_refused`, `step_not_ready`,
+/// `step_result_too_large`, `step_command_failed`, `step_session_ended` (each
+/// named by the result's failure code, with the runtime's reason as the
+/// message), `UNSUPPORTED_FRAME_ENCODING`, `MESSAGE_TOO_LARGE` (nothing sent),
+/// `INVALID_STATE` (not a ready stepped session), `DISCONNECTED` or
+/// `REQUEST_TIMEOUT`. A step refused before it goes out (`INVALID_STATE`,
+/// `DECODE_FAILED`) keeps the buffered input frames for the next step; past
+/// those checks they belong to the step whatever its outcome, and one whose
+/// request cannot be sent (`MESSAGE_TOO_LARGE`) drops them too.
+///
+/// # Safety
+///
+/// `handle` must be null (returns without completing, as every handle-taking
+/// call) or a live handle. `state_json` and `commands_json` may be null,
+/// otherwise NUL-terminated C strings. `completion` as [`reactor_connect`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step(
+    handle: *mut ReactorHandle,
+    state_json: *const c_char,
+    commands_json: *const c_char,
+    completion: Option<StepCompletionFn>,
+    userdata: *mut c_void,
+) {
+    if handle.is_null() {
+        return;
+    }
+    let handle = &*handle;
+    let state_json = opt_string(state_json);
+    let commands_json = opt_string(commands_json);
+    let reactor = handle.reactor.clone();
+    let completion = StepCompletion {
+        f: completion,
+        userdata,
+        gate: handle.gate.clone(),
+    };
+    let control_tx: HostSender<HostJob> = handle.hosts.control.sender();
+    spawn_tracked(&handle.tasks, async move {
+        let result = async {
+            let state = step::parse_state(state_json.as_deref())?;
+            let commands = step::parse_commands(commands_json.as_deref())?;
+            reactor.step(state, commands).await
+        }
+        .await
+        // Built here, on the worker: the control thread does nothing but call.
+        .map(ReactorStepResult::from);
+        control_tx.send(Box::new(move || completion.resolve(result)));
+    });
+}
+
 // ── Synchronous operations ────────────────────────────────────────────────────
 
 /// Deactivate a sendonly track (sync — this never touches the network, only a
@@ -1790,13 +2015,18 @@ pub unsafe extern "C" fn reactor_unpublish_track(
     }
 }
 
-/// Serialise a `CoreError` into the heap JSON payload every completion reports,
-/// for a synchronous caller with no completion callback to hand it to instead.
-fn error_details_ptr(err: &CoreError, operation: &str) -> *mut c_char {
+/// Serialise a `CoreError` into the JSON payload every completion reports.
+fn error_json(err: &CoreError, operation: &str) -> Option<CString> {
     let details = err.details(Some(operation));
     let json =
         serde_json::to_string(&details).unwrap_or_else(|_| fallback_error_json(&details.message));
-    CString::new(json)
+    CString::new(json).ok()
+}
+
+/// [`error_json`] on the heap, for a synchronous caller with no completion
+/// callback to hand it to instead.
+fn error_details_ptr(err: &CoreError, operation: &str) -> *mut c_char {
+    error_json(err, operation)
         .map(|cs| cs.into_raw())
         .unwrap_or(std::ptr::null_mut())
 }
@@ -1897,8 +2127,9 @@ pub unsafe extern "C" fn reactor_paused_tracks(handle: *mut ReactorHandle) -> *m
     }
 }
 
-/// Release a string returned by [`reactor_session_id`], [`reactor_tracks`] or
-/// [`reactor_paused_tracks`].
+/// Release a string returned by [`reactor_session_id`], [`reactor_tracks`],
+/// [`reactor_paused_tracks`], [`reactor_unpublish_track`], or stored in
+/// [`reactor_create_with_options`]'s `error_out`.
 ///
 /// # Safety
 ///
@@ -2161,6 +2392,19 @@ pub unsafe extern "C" fn reactor_push_audio_frame(
     (*handle)
         .reactor
         .push_audio_frame(&name, slice, sample_rate, num_channels);
+}
+
+/// Drop every input frame buffered for the next step. A no-op outside a
+/// stepped session, and on a null handle.
+///
+/// # Safety
+///
+/// `handle` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_clear_step_inputs(handle: *mut ReactorHandle) {
+    if let Some(handle) = handle.as_ref() {
+        handle.reactor.clear_step_inputs();
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -2835,4 +3079,306 @@ mod tests {
         let ptr: *const u32 = &value;
         assert_eq!(unsafe { ptr.as_ref().copied() }, Some(42));
     }
+
+    // ── Stepped generation ──────────────────────────────────────────────────
+
+    /// What a step completion was told: `(ok, result, error_json)`.
+    struct StepRecorded {
+        calls: Mutex<Vec<(bool, usize, String)>>,
+        fired: std::sync::Condvar,
+    }
+
+    impl StepRecorded {
+        fn new() -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                fired: std::sync::Condvar::new(),
+            }
+        }
+
+        fn wait(&self) -> (bool, usize, String) {
+            let mut calls = self.calls.lock().unwrap();
+            while calls.is_empty() {
+                let (guard, timeout) = self
+                    .fired
+                    .wait_timeout(calls, std::time::Duration::from_secs(5))
+                    .unwrap();
+                calls = guard;
+                assert!(!timeout.timed_out(), "the step completion never fired");
+            }
+            calls[0].clone()
+        }
+    }
+
+    unsafe extern "C" fn record_step(
+        ok: c_int,
+        result: *mut ReactorStepResult,
+        error: *const c_char,
+        userdata: *mut c_void,
+    ) {
+        let recorded = &*(userdata as *const StepRecorded);
+        let error = if error.is_null() {
+            String::new()
+        } else {
+            CStr::from_ptr(error).to_string_lossy().into_owned()
+        };
+        recorded
+            .calls
+            .lock()
+            .unwrap()
+            .push((ok == 1, result as usize, error));
+        recorded.fired.notify_all();
+    }
+
+    fn create(options: &str) -> Result<*mut ReactorHandle, serde_json::Value> {
+        let url = CString::new("http://localhost:1").unwrap();
+        let model = CString::new("owner/model").unwrap();
+        let options = CString::new(options).unwrap();
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let handle = unsafe {
+            reactor_create_with_options(
+                url.as_ptr(),
+                model.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                options.as_ptr(),
+                &mut error,
+            )
+        };
+        if handle.is_null() {
+            assert!(!error.is_null(), "a refused create reports why");
+            let json = unsafe { CStr::from_ptr(error) }
+                .to_str()
+                .unwrap()
+                .to_owned();
+            unsafe { reactor_free_string(error) };
+            Err(serde_json::from_str(&json).unwrap())
+        } else {
+            assert!(
+                error.is_null(),
+                "a successful create leaves error_out alone"
+            );
+            Ok(handle)
+        }
+    }
+
+    fn step_on(
+        handle: *mut ReactorHandle,
+        state: Option<&str>,
+        commands: Option<&str>,
+    ) -> (bool, usize, String) {
+        let recorded = StepRecorded::new();
+        let state = state.map(|s| CString::new(s).unwrap());
+        let commands = commands.map(|s| CString::new(s).unwrap());
+        unsafe {
+            reactor_step(
+                handle,
+                state.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+                commands.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+                Some(record_step),
+                &recorded as *const StepRecorded as *mut c_void,
+            );
+        }
+        recorded.wait()
+    }
+
+    #[test]
+    fn create_options_read_every_key_into_the_core_options() {
+        let config = CreateConfig::from_json(
+            r#"{"local":true,"auto_resume_tracks":false,"adm":"synthetic",
+                "sdk_version":"1.2.3","sdk_type":"python",
+                "generation":"stepped","step_timeout_seconds":12.5}"#,
+        )
+        .unwrap();
+        let mut options = ReactorOptions::new("http://x", "m");
+        config.apply(&mut options);
+        assert!(options.local);
+        assert!(!options.auto_resume_tracks);
+        assert_eq!(options.sdk_version, "1.2.3");
+        assert_eq!(options.sdk_type, "python");
+        assert_eq!(options.generation, GenerationMode::Stepped);
+        assert_eq!(
+            options.step_timeout,
+            std::time::Duration::from_millis(12_500)
+        );
+        assert_eq!(config.adm, Some(AdmMode::Synthetic));
+    }
+
+    /// A timeout too long for a Duration means no limit, not a panic that would
+    /// abort the host from inside `reactor_create_with_options`.
+    #[test]
+    fn a_step_timeout_too_long_for_a_duration_saturates() {
+        let config = CreateConfig::from_json(r#"{"step_timeout_seconds":1e20}"#).unwrap();
+        let mut options = ReactorOptions::new("http://x", "m");
+        config.apply(&mut options);
+        assert_eq!(options.step_timeout, std::time::Duration::MAX);
+    }
+
+    /// Absent keys are what `reactor_create` already did, so switching a binding
+    /// over changes nothing it did not ask for.
+    #[test]
+    fn empty_create_options_match_reactor_create() {
+        let config = CreateConfig::from_json("{}").unwrap();
+        assert_eq!(config, CreateConfig::default());
+        let mut options = ReactorOptions::new("http://x", "m");
+        let defaults = options.clone();
+        config.apply(&mut options);
+        assert_eq!(options.generation, GenerationMode::Streamed);
+        assert!(options.auto_resume_tracks);
+        assert!(!options.local);
+        assert_eq!(options.step_timeout, defaults.step_timeout);
+        assert_eq!(options.sdk_type, "ffi");
+    }
+
+    /// A misspelt key or mode would otherwise create a streamed client for a
+    /// caller about to wait on steps.
+    #[test]
+    fn create_options_refuse_what_they_do_not_understand() {
+        for raw in [
+            r#"{"generaton":"stepped"}"#,
+            r#"{"generation":"step"}"#,
+            r#"{"adm":"speaker"}"#,
+            r#"{"local":1}"#,
+            r#"{"step_timeout_seconds":0}"#,
+            r#"{"step_timeout_seconds":-1}"#,
+            "[]",
+            "not json",
+        ] {
+            let error = create(raw).expect_err(raw);
+            assert_eq!(
+                error["code"],
+                reactor_core::error::codes::INVALID_STATE,
+                "{raw}"
+            );
+            assert_eq!(error["operation"], "create", "{raw}");
+        }
+    }
+
+    #[test]
+    fn a_refused_create_with_no_error_out_still_returns_null() {
+        let url = CString::new("http://localhost:1").unwrap();
+        let options = CString::new(r#"{"nope":1}"#).unwrap();
+        let handle = unsafe {
+            reactor_create_with_options(
+                url.as_ptr(),
+                url.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                options.as_ptr(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert!(handle.is_null());
+    }
+
+    /// A step on a client that is not a connected stepped session answers
+    /// through the completion, typed, rather than going quiet.
+    #[test]
+    fn a_step_before_connecting_fails_through_its_completion() {
+        for options in [r#"{"generation":"stepped"}"#, "{}"] {
+            let handle = create(options).unwrap();
+            let (ok, result, error) = step_on(handle, Some(r#"{"prompt":"x"}"#), Some("[]"));
+            assert!(!ok);
+            assert_eq!(result, 0, "no result on failure");
+            let json: serde_json::Value = serde_json::from_str(&error).unwrap();
+            assert_eq!(
+                json["code"],
+                reactor_core::error::codes::INVALID_STATE,
+                "{options}"
+            );
+            assert_eq!(json["operation"], "step");
+            assert_eq!(unsafe { reactor_destroy(handle) }, 0);
+        }
+    }
+
+    /// Malformed arguments are refused before the core sees them, on the
+    /// completion's own thread like any other failure.
+    #[test]
+    fn malformed_step_arguments_fail_as_decode_errors() {
+        let handle = create(r#"{"generation":"stepped"}"#).unwrap();
+        for (state, commands) in [
+            (Some("{"), None),
+            (None, Some(r#"{"command":"x"}"#)),
+            (None, Some(r#"[{"command":"x","args":{}}]"#)),
+        ] {
+            let (ok, _, error) = step_on(handle, state, commands);
+            assert!(!ok);
+            let json: serde_json::Value = serde_json::from_str(&error).unwrap();
+            assert_eq!(json["code"], reactor_core::error::codes::DECODE_FAILED);
+        }
+        assert_eq!(unsafe { reactor_destroy(handle) }, 0);
+    }
+
+    #[test]
+    fn step_entry_points_accept_null() {
+        let recorded = StepRecorded::new();
+        let mut len = 7usize;
+        let mut ndim = 7u32;
+        let mut time = 7i64;
+        unsafe {
+            reactor_step(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
+                Some(record_step),
+                &recorded as *const StepRecorded as *mut c_void,
+            );
+            reactor_clear_step_inputs(std::ptr::null_mut());
+            let null: *const ReactorStepResult = std::ptr::null();
+            assert_eq!(reactor_step_result_step(null), 0);
+            assert_eq!(reactor_step_result_elapsed(null), 0.0);
+            assert!(reactor_step_result_error(null).is_null());
+            assert_eq!(reactor_step_result_file_count(null), 0);
+            assert!(reactor_step_result_file_name(null, 0).is_null());
+            assert!(reactor_step_result_file_content_type(null, 0).is_null());
+            assert_eq!(reactor_step_result_file_size(null, 0), 0);
+            assert_eq!(reactor_step_result_track_count(null), 0);
+            assert!(reactor_step_result_track_name(null, 0).is_null());
+            assert!(reactor_step_result_track_kind(null, 0).is_null());
+            assert_eq!(reactor_step_result_track_rate(null, 0), 0.0);
+            assert_eq!(reactor_step_result_frame_count(null, 0), 0);
+            assert!(reactor_step_result_frame_encoding(null, 0, 0).is_null());
+            assert!(reactor_step_result_frame_dtype(null, 0, 0).is_null());
+            assert!(reactor_step_result_frame_shape(null, 0, 0, &mut ndim).is_null());
+            assert_eq!(ndim, 0);
+            assert!(reactor_step_result_frame_data(null, 0, 0, &mut len).is_null());
+            assert_eq!(len, 0);
+            len = 7;
+            assert!(reactor_step_result_frame_metadata(null, 0, 0, &mut len).is_null());
+            assert_eq!(len, 0);
+            assert_eq!(
+                reactor_step_result_frame_capture_time_us(null, 0, 0, &mut time),
+                0
+            );
+            assert_eq!(time, 7, "left untouched");
+            reactor_step_result_free(std::ptr::null_mut());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            recorded.calls.lock().unwrap().is_empty(),
+            "a null handle never completes"
+        );
+    }
+
+    #[test]
+    fn create_with_options_and_no_callbacks_creates_and_destroys() {
+        let url = CString::new("http://localhost:1").unwrap();
+        let handle = unsafe {
+            reactor_create_with_options(
+                url.as_ptr(),
+                url.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert!(!handle.is_null());
+        unsafe {
+            reactor_clear_step_inputs(handle);
+            assert_eq!(reactor_destroy(handle), 0);
+        }
+    }
+
+    mod step_result;
 }

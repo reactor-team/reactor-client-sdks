@@ -7,7 +7,8 @@ extension ReactorError {
     /// Three shapes have to work, and only one of them is the documented one:
     ///
     /// - the JSON object the header describes — `{ code, message, recoverable,
-    ///   status?, operation?, retry_after_ms?, timestamp_ms? }`;
+    ///   status?, operation?, retry_after_ms?, timestamp_ms?, entry?,
+    ///   command_code? }`;
     /// - **nothing at all**, when a completion failed without saying why;
     /// - **a bare human-readable string**, which is what a `libreactor_ffi`
     ///   older than this SDK sends. An SDK is not always paired with the exact
@@ -40,7 +41,9 @@ extension ReactorError {
             status: object["status"] as? Int,
             operation: object["operation"] as? String,
             retryAfterMS: object["retry_after_ms"] as? Double,
-            timestampMS: object["timestamp_ms"] as? Double
+            timestampMS: object["timestamp_ms"] as? Double,
+            entry: object["entry"] as? String,
+            commandCode: object["command_code"] as? String
         )
     }
 

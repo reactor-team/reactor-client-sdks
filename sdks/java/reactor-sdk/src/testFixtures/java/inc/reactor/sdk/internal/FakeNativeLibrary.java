@@ -151,6 +151,52 @@ public final class FakeNativeLibrary implements AutoCloseable {
         bind("reactor_request_clip", Ffi.Symbol.REQUEST_CLIP.descriptor(), "requestClip");
         bind("reactor_download_clip", Ffi.Symbol.DOWNLOAD_CLIP.descriptor(), "downloadClip");
         bind("reactor_fetch_jwt", Ffi.Symbol.FETCH_JWT.descriptor(), "fetchJwt");
+        bind("reactor_create_with_options", Ffi.Symbol.CREATE_WITH_OPTIONS.descriptor(), "createWithOptions");
+        bind("reactor_step", Ffi.Symbol.STEP.descriptor(), "step");
+        bind("reactor_clear_step_inputs", Ffi.Symbol.CLEAR_STEP_INPUTS.descriptor(), "clearStepInputs");
+        bind("reactor_step_result_step", Ffi.Symbol.STEP_RESULT_STEP.descriptor(), "stepResultStep");
+        bind("reactor_step_result_elapsed", Ffi.Symbol.STEP_RESULT_ELAPSED.descriptor(), "stepResultElapsed");
+        bind("reactor_step_result_error", Ffi.Symbol.STEP_RESULT_ERROR.descriptor(), "stepResultError");
+        bind("reactor_step_result_file_count", Ffi.Symbol.STEP_RESULT_FILE_COUNT.descriptor(), "stepResultFileCount");
+        bind("reactor_step_result_file_name", Ffi.Symbol.STEP_RESULT_FILE_NAME.descriptor(), "stepResultFileName");
+        bind(
+                "reactor_step_result_file_content_type",
+                Ffi.Symbol.STEP_RESULT_FILE_CONTENT_TYPE.descriptor(),
+                "stepResultFileContentType");
+        bind("reactor_step_result_file_size", Ffi.Symbol.STEP_RESULT_FILE_SIZE.descriptor(), "stepResultFileSize");
+        bind(
+                "reactor_step_result_track_count",
+                Ffi.Symbol.STEP_RESULT_TRACK_COUNT.descriptor(),
+                "stepResultTrackCount");
+        bind("reactor_step_result_track_name", Ffi.Symbol.STEP_RESULT_TRACK_NAME.descriptor(), "stepResultTrackName");
+        bind("reactor_step_result_track_kind", Ffi.Symbol.STEP_RESULT_TRACK_KIND.descriptor(), "stepResultTrackKind");
+        bind("reactor_step_result_track_rate", Ffi.Symbol.STEP_RESULT_TRACK_RATE.descriptor(), "stepResultTrackRate");
+        bind(
+                "reactor_step_result_frame_count",
+                Ffi.Symbol.STEP_RESULT_FRAME_COUNT.descriptor(),
+                "stepResultFrameCount");
+        bind(
+                "reactor_step_result_frame_encoding",
+                Ffi.Symbol.STEP_RESULT_FRAME_ENCODING.descriptor(),
+                "stepResultFrameEncoding");
+        bind(
+                "reactor_step_result_frame_dtype",
+                Ffi.Symbol.STEP_RESULT_FRAME_DTYPE.descriptor(),
+                "stepResultFrameDtype");
+        bind(
+                "reactor_step_result_frame_shape",
+                Ffi.Symbol.STEP_RESULT_FRAME_SHAPE.descriptor(),
+                "stepResultFrameShape");
+        bind("reactor_step_result_frame_data", Ffi.Symbol.STEP_RESULT_FRAME_DATA.descriptor(), "stepResultFrameData");
+        bind(
+                "reactor_step_result_frame_metadata",
+                Ffi.Symbol.STEP_RESULT_FRAME_METADATA.descriptor(),
+                "stepResultFrameMetadata");
+        bind(
+                "reactor_step_result_frame_capture_time_us",
+                Ffi.Symbol.STEP_RESULT_FRAME_CAPTURE_TIME_US.descriptor(),
+                "stepResultFrameCaptureTimeUs");
+        bind("reactor_step_result_free", Ffi.Symbol.STEP_RESULT_FREE.descriptor(), "stepResultFree");
     }
 
     /** Makes this library report an ABI version other than the one the binding expects. */
@@ -675,6 +721,385 @@ public final class FakeNativeLibrary implements AutoCloseable {
         MemorySegment segment = arena.allocateFrom("ready");
         staticsOut.add(segment.address());
         return segment;
+    }
+
+    // ── Stepped generation ──────────────────────────────────────────────────
+
+    /** The options JSON of each {@code reactor_create_with_options}, oldest first. */
+    public final List<@Nullable String> createdWithOptions = new ArrayList<>();
+
+    /**
+     * What the next {@code reactor_create_with_options} refuses with, as the error object it
+     * stores in {@code error_out}, or {@code null} to create normally.
+     */
+    public @Nullable String createOptionsError;
+
+    /** The state and commands JSON of the last {@code reactor_step}. */
+    public @Nullable String lastStepState;
+
+    public @Nullable String lastStepCommands;
+
+    /** How many {@code reactor_step} calls arrived. */
+    public int stepCalls;
+
+    /** How many times {@code reactor_clear_step_inputs} was called. */
+    public int clearStepInputsCalls;
+
+    /** The completion and userdata of the last {@code reactor_step}, kept apart from the JSON ones. */
+    private volatile @Nullable MemorySegment lastStepCompletion;
+
+    private volatile @Nullable MemorySegment lastStepUserdata;
+
+    /** Results handed out and not yet freed, by address. */
+    private final Map<Long, NativeStepResult> liveResults = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Every address passed to {@code reactor_step_result_free}, in order, duplicates included. */
+    public final List<Long> freedResults = java.util.Collections.synchronizedList(new ArrayList<>());
+
+    /** Every result address handed to a step completion, in order. */
+    public final List<Long> handedOutResults = java.util.Collections.synchronizedList(new ArrayList<>());
+
+    /** One frame of a fake step result, as a test describes it. */
+    public record StepFrameSpec(
+            String encoding,
+            String dtype,
+            int[] shape,
+            byte[] data,
+            byte @Nullable [] metadata,
+            @Nullable Long captureTimeUs) {}
+
+    /**
+     * One output track of a fake step result.
+     *
+     * @param rate what {@code reactor_step_result_track_rate} answers: frames or samples per second,
+     *     0 for unspecified
+     */
+    public record StepTrackSpec(String name, String kind, double rate, List<StepFrameSpec> frames) {
+
+        /** A track whose rate the runtime did not report. */
+        public StepTrackSpec(String name, String kind, List<StepFrameSpec> frames) {
+            this(name, kind, 0.0, frames);
+        }
+    }
+
+    /** The native side of a result: everything its accessors hand out, allocated once. */
+    private record NativeStepResult(
+            long step, List<NativeTrack> tracks, double elapsed, List<NativeFile> files, MemorySegment error) {}
+
+    /** One file a fake step result names, as a test describes it. */
+    public record StepFileSpec(String name, String contentType, long size) {}
+
+    private record NativeFile(MemorySegment name, MemorySegment contentType, long size) {}
+
+    private record NativeTrack(MemorySegment name, MemorySegment kind, double rate, List<NativeFrame> frames) {}
+
+    private record NativeFrame(
+            MemorySegment encoding,
+            MemorySegment dtype,
+            MemorySegment shape,
+            int ndim,
+            MemorySegment data,
+            long length,
+            MemorySegment metadata,
+            long metadataLength,
+            @Nullable Long captureTimeUs) {}
+
+    @SuppressWarnings("restricted") // reinterpret: the callbacks struct, to call back through it
+    private MemorySegment createWithOptions(
+            MemorySegment apiUrl,
+            MemorySegment modelName,
+            MemorySegment jwt,
+            MemorySegment callbacksStruct,
+            MemorySegment optionsJson,
+            MemorySegment errorOut) {
+        createdWithOptions.add(readString(optionsJson));
+        if (createOptionsError != null) {
+            MemorySegment error = arena.allocateFrom(createOptionsError);
+            ownedOut.add(error.address());
+            if (!errorOut.equals(MemorySegment.NULL)) {
+                errorOut.reinterpret(java.lang.foreign.ValueLayout.ADDRESS.byteSize())
+                        .set(java.lang.foreign.ValueLayout.ADDRESS, 0, error);
+            }
+            return MemorySegment.NULL;
+        }
+        this.createdWithJwt.add(readString(jwt));
+        this.callbacks = callbacksStruct.equals(MemorySegment.NULL)
+                ? null
+                : callbacksStruct.reinterpret(Ffi.Callbacks.LAYOUT.byteSize());
+        return arena.allocate(8);
+    }
+
+    private void step(
+            MemorySegment handle,
+            MemorySegment stateJson,
+            MemorySegment commandsJson,
+            MemorySegment completion,
+            MemorySegment userdata) {
+        stepCalls++;
+        lastStepState = readString(stateJson);
+        lastStepCommands = readString(commandsJson);
+        lastStepCompletion = completion;
+        lastStepUserdata = userdata;
+    }
+
+    private void clearStepInputs(MemorySegment handle) {
+        clearStepInputsCalls++;
+    }
+
+    /** Whether a step is waiting to be settled. */
+    public boolean hasPendingStep() {
+        return lastStepCompletion != null;
+    }
+
+    /**
+     * Settles the last step with a result built from {@code tracks}, the way the FFI hands one
+     * over: an owned pointer the binding must read and then free.
+     *
+     * @return the address handed over, so a test can check that exactly that one came back
+     */
+    @SuppressWarnings("restricted") // downcallHandle: calling the client's own completion stub
+    public long settleLastStep(long index, List<StepTrackSpec> tracks) {
+        return settleLastStep(index, tracks, 0.0);
+    }
+
+    /** As {@link #settleLastStep(long, List)}, with the seconds the step's {@code generate()} took. */
+    @SuppressWarnings("restricted") // downcallHandle: calling the client's own completion stub
+    public long settleLastStep(long index, List<StepTrackSpec> tracks, double elapsed) {
+        return settleLastStep(index, tracks, elapsed, List.of(), null);
+    }
+
+    /**
+     * As {@link #settleLastStep(long, List, double)}, with the files the model kept and, for a step
+     * that ran but failed, its error — still an {@code ok} completion, as the header says.
+     */
+    @SuppressWarnings("restricted") // downcallHandle: calling the client's own completion stub
+    public long settleLastStep(
+            long index, List<StepTrackSpec> tracks, double elapsed, List<StepFileSpec> files, @Nullable String error) {
+        MemorySegment result = buildResult(index, tracks, elapsed, files, error);
+        callStepCompletion(1, result, MemorySegment.NULL);
+        return result.address();
+    }
+
+    /** Fails the last step with an error object, and no result. */
+    public void failLastStep(String errorJson) {
+        callStepCompletion(0, MemorySegment.NULL, arena.allocateFrom(errorJson));
+    }
+
+    /** @return whether every result handed out came back to {@code reactor_step_result_free} exactly once */
+    public boolean stepResultsFreedExactlyOnce() {
+        synchronized (freedResults) {
+            return new HashSet<>(freedResults).equals(new HashSet<>(handedOutResults))
+                    && freedResults.size() == handedOutResults.size();
+        }
+    }
+
+    @SuppressWarnings("restricted") // downcallHandle: calling the client's own completion stub
+    private void callStepCompletion(int ok, MemorySegment result, MemorySegment errorJson) {
+        MemorySegment completion = java.util.Objects.requireNonNull(lastStepCompletion, "no step is outstanding");
+        MemorySegment userdata = java.util.Objects.requireNonNull(lastStepUserdata);
+        lastStepCompletion = null;
+        lastStepUserdata = null;
+        if (!result.equals(MemorySegment.NULL)) {
+            handedOutResults.add(result.address());
+        }
+        MethodHandle call = linker.downcallHandle(completion, Ffi.Callbacks.STEP_COMPLETION);
+        try {
+            call.invokeWithArguments(ok, result, errorJson, userdata);
+        } catch (Throwable t) {
+            throw new AssertionError("settling the step threw out of the stub", t);
+        }
+    }
+
+    private MemorySegment buildResult(
+            long index,
+            List<StepTrackSpec> specs,
+            double elapsed,
+            List<StepFileSpec> fileSpecs,
+            @Nullable String error) {
+        List<NativeTrack> tracks = new ArrayList<>();
+        for (StepTrackSpec spec : specs) {
+            List<NativeFrame> frames = new ArrayList<>();
+            for (StepFrameSpec frame : spec.frames()) {
+                MemorySegment shape =
+                        frame.shape().length == 0 ? MemorySegment.NULL : arena.allocateFrom(JAVA_INT, frame.shape());
+                MemorySegment data = frame.data().length == 0
+                        ? MemorySegment.NULL
+                        : arena.allocateFrom(java.lang.foreign.ValueLayout.JAVA_BYTE, frame.data());
+                byte[] tag = frame.metadata();
+                // An attached but empty tag must still be a non-NULL pointer: that is how the header
+                // tells it apart from no tag at all.
+                MemorySegment metadata = tag == null
+                        ? MemorySegment.NULL
+                        : tag.length == 0
+                                ? arena.allocate(1)
+                                : arena.allocateFrom(java.lang.foreign.ValueLayout.JAVA_BYTE, tag);
+                frames.add(new NativeFrame(
+                        arena.allocateFrom(frame.encoding()),
+                        arena.allocateFrom(frame.dtype()),
+                        shape,
+                        frame.shape().length,
+                        data,
+                        frame.data().length,
+                        metadata,
+                        tag == null ? 0 : tag.length,
+                        frame.captureTimeUs()));
+            }
+            tracks.add(new NativeTrack(
+                    arena.allocateFrom(spec.name()), arena.allocateFrom(spec.kind()), spec.rate(), frames));
+        }
+        MemorySegment address = arena.allocate(8);
+        List<NativeFile> files = new ArrayList<>();
+        for (StepFileSpec file : fileSpecs) {
+            files.add(new NativeFile(
+                    arena.allocateFrom(file.name()), arena.allocateFrom(file.contentType()), file.size()));
+        }
+        MemorySegment errorText = error == null ? MemorySegment.NULL : arena.allocateFrom(error);
+        liveResults.put(address.address(), new NativeStepResult(index, tracks, elapsed, files, errorText));
+        return address;
+    }
+
+    private @Nullable NativeStepResult live(MemorySegment result) {
+        if (result.equals(MemorySegment.NULL)) {
+            return null;
+        }
+        NativeStepResult found = liveResults.get(result.address());
+        if (found == null) {
+            // A real library would be reading freed memory here. Failing loudly is the fake's job.
+            throw new AssertionError("a step result was read after it was freed, or was never handed out");
+        }
+        return found;
+    }
+
+    private @Nullable NativeTrack track(MemorySegment result, int t) {
+        NativeStepResult found = live(result);
+        return found == null || t < 0 || t >= found.tracks().size()
+                ? null
+                : found.tracks().get(t);
+    }
+
+    private @Nullable NativeFrame frame(MemorySegment result, int t, int f) {
+        NativeTrack found = track(result, t);
+        return found == null || f < 0 || f >= found.frames().size()
+                ? null
+                : found.frames().get(f);
+    }
+
+    private long stepResultStep(MemorySegment result) {
+        NativeStepResult found = live(result);
+        return found == null ? 0 : found.step();
+    }
+
+    private double stepResultElapsed(MemorySegment result) {
+        NativeStepResult found = live(result);
+        return found == null ? 0.0 : found.elapsed();
+    }
+
+    private MemorySegment stepResultError(MemorySegment result) {
+        NativeStepResult found = live(result);
+        return found == null ? MemorySegment.NULL : found.error();
+    }
+
+    private @Nullable NativeFile file(MemorySegment result, int f) {
+        NativeStepResult found = live(result);
+        return found == null || f < 0 || f >= found.files().size()
+                ? null
+                : found.files().get(f);
+    }
+
+    private int stepResultFileCount(MemorySegment result) {
+        NativeStepResult found = live(result);
+        return found == null ? 0 : found.files().size();
+    }
+
+    private MemorySegment stepResultFileName(MemorySegment result, int f) {
+        NativeFile found = file(result, f);
+        return found == null ? MemorySegment.NULL : found.name();
+    }
+
+    private MemorySegment stepResultFileContentType(MemorySegment result, int f) {
+        NativeFile found = file(result, f);
+        return found == null ? MemorySegment.NULL : found.contentType();
+    }
+
+    private long stepResultFileSize(MemorySegment result, int f) {
+        NativeFile found = file(result, f);
+        return found == null ? 0 : found.size();
+    }
+
+    private int stepResultTrackCount(MemorySegment result) {
+        NativeStepResult found = live(result);
+        return found == null ? 0 : found.tracks().size();
+    }
+
+    private MemorySegment stepResultTrackName(MemorySegment result, int t) {
+        NativeTrack found = track(result, t);
+        return found == null ? MemorySegment.NULL : found.name();
+    }
+
+    private MemorySegment stepResultTrackKind(MemorySegment result, int t) {
+        NativeTrack found = track(result, t);
+        return found == null ? MemorySegment.NULL : found.kind();
+    }
+
+    private double stepResultTrackRate(MemorySegment result, int t) {
+        NativeTrack found = track(result, t);
+        return found == null ? 0.0 : found.rate();
+    }
+
+    private int stepResultFrameCount(MemorySegment result, int t) {
+        NativeTrack found = track(result, t);
+        return found == null ? 0 : found.frames().size();
+    }
+
+    private MemorySegment stepResultFrameEncoding(MemorySegment result, int t, int f) {
+        NativeFrame found = frame(result, t, f);
+        return found == null ? MemorySegment.NULL : found.encoding();
+    }
+
+    private MemorySegment stepResultFrameDtype(MemorySegment result, int t, int f) {
+        NativeFrame found = frame(result, t, f);
+        return found == null ? MemorySegment.NULL : found.dtype();
+    }
+
+    @SuppressWarnings("restricted") // reinterpret: writing the binding's own out-parameter
+    private MemorySegment stepResultFrameShape(MemorySegment result, int t, int f, MemorySegment ndim) {
+        NativeFrame found = frame(result, t, f);
+        ndim.reinterpret(Integer.BYTES).set(JAVA_INT, 0, found == null ? 0 : found.ndim());
+        return found == null ? MemorySegment.NULL : found.shape();
+    }
+
+    @SuppressWarnings("restricted") // reinterpret: writing the binding's own out-parameter
+    private MemorySegment stepResultFrameData(MemorySegment result, int t, int f, MemorySegment length) {
+        NativeFrame found = frame(result, t, f);
+        length.reinterpret(Long.BYTES)
+                .set(java.lang.foreign.ValueLayout.JAVA_LONG, 0, found == null ? 0 : found.length());
+        return found == null ? MemorySegment.NULL : found.data();
+    }
+
+    @SuppressWarnings("restricted") // reinterpret: writing the binding's own out-parameter
+    private MemorySegment stepResultFrameMetadata(MemorySegment result, int t, int f, MemorySegment length) {
+        NativeFrame found = frame(result, t, f);
+        length.reinterpret(Long.BYTES)
+                .set(java.lang.foreign.ValueLayout.JAVA_LONG, 0, found == null ? 0 : found.metadataLength());
+        return found == null ? MemorySegment.NULL : found.metadata();
+    }
+
+    @SuppressWarnings("restricted") // reinterpret: writing the binding's own out-parameter
+    private int stepResultFrameCaptureTimeUs(MemorySegment result, int t, int f, MemorySegment captured) {
+        NativeFrame found = frame(result, t, f);
+        if (found == null || found.captureTimeUs() == null) {
+            return 0;
+        }
+        captured.reinterpret(Long.BYTES).set(java.lang.foreign.ValueLayout.JAVA_LONG, 0, found.captureTimeUs());
+        return 1;
+    }
+
+    private void stepResultFree(MemorySegment result) {
+        if (result.equals(MemorySegment.NULL)) {
+            return;
+        }
+        freedResults.add(result.address());
+        liveResults.remove(result.address());
     }
 
     // ── Plumbing ────────────────────────────────────────────────────────────

@@ -38,4 +38,19 @@ final class ErrorPayloadsTest {
 
         assertEquals(404, parsed.status());
     }
+
+    @Test
+    @DisplayName("a step failure's entry and command code come through, and are absent elsewhere")
+    void aStepFailuresEntryAndCommandCodeAreKept() {
+        ReactorException failed = ErrorPayloads.parse(
+                "{\"code\":\"step_command_failed\",\"message\":\"m\",\"entry\":\"state.prompt\","
+                        + "\"command_code\":\"bad_prompt\"}",
+                "step");
+        ReactorException plain = ErrorPayloads.parse("{\"code\":\"not_found\",\"message\":\"m\"}", "connect");
+
+        assertEquals("state.prompt", failed.entry());
+        assertEquals("bad_prompt", failed.commandCode());
+        assertNull(plain.entry());
+        assertNull(plain.commandCode());
+    }
 }

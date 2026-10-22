@@ -81,10 +81,12 @@ public final class Track {
      * @param handler called inline on the FFI's delivery thread, with a frame valid only for the
      *     duration of the call
      * @return a subscription that removes the handler
-     * @throws ReactorException when this track is sendonly, or carries audio rather than video
+     * @throws ReactorException when this track is sendonly, carries audio rather than video, or
+     *     belongs to a stepped session, whose output arrives in {@link StepResult} instead
      */
     public Subscription onFrame(VideoFrameHandler handler) {
         requireReceivable();
+        requireStreamed();
         requireKind(TrackKind.VIDEO, "VideoFrameHandler", "AudioFrameHandler");
         return peer.onVideoFrame(name, handler);
     }
@@ -95,7 +97,8 @@ public final class Track {
      * @param handler called inline on the FFI's delivery thread, with a frame valid only for the
      *     duration of the call
      * @return a subscription that removes the handler
-     * @throws ReactorException when this track is sendonly, or carries video rather than audio
+     * @throws ReactorException when this track is sendonly, carries video rather than audio, or
+     *     belongs to a stepped session, whose output arrives in {@link StepResult} instead
      */
     // Overloaded on two functional interfaces, so an implicitly-typed lambda cannot pick between
     // them: `onFrame(frame -> ...)` is ambiguous and `onFrame((AudioFrame frame) -> ...)` is not.
@@ -105,6 +108,7 @@ public final class Track {
     @SuppressWarnings("overloads")
     public Subscription onFrame(AudioFrameHandler handler) {
         requireReceivable();
+        requireStreamed();
         requireKind(TrackKind.AUDIO, "AudioFrameHandler", "VideoFrameHandler");
         return peer.onAudioFrame(name, handler);
     }
@@ -167,6 +171,13 @@ public final class Track {
     /**
      * Pushes one BGRA video frame.
      *
+     * <p><b>In a stepped session this sends nothing.</b> The frame is buffered, with its tag and
+     * capture time, and the next {@link Reactor#step} carries the frames pushed since the one
+     * before — per track, in push order, converted to an {@code (height, width, 3)} {@code uint8}
+     * RGB array. The buffer holds at most one data-channel message's worth of frame bytes: pushing
+     * faster than steps run drops the oldest frames, across tracks. Publish the track first, as for
+     * a streamed session.
+     *
      * @param bgra exactly {@code width * height * 4} bytes, in B, G, R, A order
      * @param width frame width in pixels
      * @param height frame height in pixels
@@ -199,6 +210,10 @@ public final class Track {
 
     /**
      * Pushes interleaved 16-bit PCM.
+     *
+     * <p><b>In a stepped session this sends nothing.</b> The samples are buffered for the next
+     * {@link Reactor#step} as one planar {@code (channels, samples)} {@code int16} frame per push. A
+     * step frame carries no sample rate, so push at the rate the model's track declares.
      *
      * @param pcm the samples, across every channel
      * @param sampleRate samples per second
@@ -283,6 +298,21 @@ public final class Track {
 
     private static ReactorException refusal(String operation, String message) {
         return ReactorException.of(ErrorCode.INVALID_STATE.code(), message, null, operation, null);
+    }
+
+    private void requireStreamed() {
+        if (peer.generation() == Generation.STEPPED) {
+            // Nothing streams in a stepped session, so a handler here would never fire — a client
+            // that looks healthy and receives nothing, which is what every refusal here prevents.
+            throw ReactorException.of(
+                    ErrorCode.INVALID_STATE.code(),
+                    "track \"" + name + "\" belongs to a stepped session, which streams nothing: what the"
+                            + " model produces on it arrives in the StepResult that Reactor.step() answers"
+                            + " with. Read result.track(\"" + name + "\").frames() instead.",
+                    null,
+                    "onFrame",
+                    null);
+        }
     }
 
     private void requireReceivable() {

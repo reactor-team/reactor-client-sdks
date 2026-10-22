@@ -132,7 +132,48 @@ public final class Ffi {
         FRAME_DELIVERED("reactor_frame_delivered", FunctionDescriptor.ofVoid()),
         PUSH_AUDIO_FRAME(
                 "reactor_push_audio_frame",
-                FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT));
+                FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT)),
+
+        // ── Stepped generation ──────────────────────────────────────────────
+        //
+        // Added without an ABI bump, as the header says adding a function should be. They are bound
+        // as strictly as everything above: a library missing one is refused at load, naming it,
+        // rather than at the first step() of a client someone configured as stepped.
+
+        CREATE_WITH_OPTIONS(
+                "reactor_create_with_options",
+                FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS)),
+        STEP("reactor_step", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS)),
+        CLEAR_STEP_INPUTS("reactor_clear_step_inputs", FunctionDescriptor.ofVoid(ADDRESS)),
+        STEP_RESULT_STEP("reactor_step_result_step", FunctionDescriptor.of(JAVA_LONG, ADDRESS)),
+        STEP_RESULT_ELAPSED("reactor_step_result_elapsed", FunctionDescriptor.of(JAVA_DOUBLE, ADDRESS)),
+        STEP_RESULT_ERROR("reactor_step_result_error", FunctionDescriptor.of(ADDRESS, ADDRESS)),
+        STEP_RESULT_FILE_COUNT("reactor_step_result_file_count", FunctionDescriptor.of(JAVA_INT, ADDRESS)),
+        STEP_RESULT_FILE_NAME("reactor_step_result_file_name", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT)),
+        STEP_RESULT_FILE_CONTENT_TYPE(
+                "reactor_step_result_file_content_type", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT)),
+        STEP_RESULT_FILE_SIZE("reactor_step_result_file_size", FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_INT)),
+        STEP_RESULT_TRACK_COUNT("reactor_step_result_track_count", FunctionDescriptor.of(JAVA_INT, ADDRESS)),
+        STEP_RESULT_TRACK_NAME("reactor_step_result_track_name", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT)),
+        STEP_RESULT_TRACK_KIND("reactor_step_result_track_kind", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT)),
+        STEP_RESULT_TRACK_RATE("reactor_step_result_track_rate", FunctionDescriptor.of(JAVA_DOUBLE, ADDRESS, JAVA_INT)),
+        STEP_RESULT_FRAME_COUNT("reactor_step_result_frame_count", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT)),
+        STEP_RESULT_FRAME_ENCODING(
+                "reactor_step_result_frame_encoding", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT, JAVA_INT)),
+        STEP_RESULT_FRAME_DTYPE(
+                "reactor_step_result_frame_dtype", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT, JAVA_INT)),
+        STEP_RESULT_FRAME_SHAPE(
+                "reactor_step_result_frame_shape",
+                FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS)),
+        STEP_RESULT_FRAME_DATA(
+                "reactor_step_result_frame_data", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS)),
+        STEP_RESULT_FRAME_METADATA(
+                "reactor_step_result_frame_metadata",
+                FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS)),
+        STEP_RESULT_FRAME_CAPTURE_TIME_US(
+                "reactor_step_result_frame_capture_time_us",
+                FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS)),
+        STEP_RESULT_FREE("reactor_step_result_free", FunctionDescriptor.ofVoid(ADDRESS));
 
         private final String cName;
         private final FunctionDescriptor descriptor;
@@ -197,6 +238,14 @@ public final class Ffi {
 
         /** {@code (int ok, const char *result_json, const char *error_json, void *userdata)} */
         public static final FunctionDescriptor COMPLETION =
+                FunctionDescriptor.ofVoid(JAVA_INT, ADDRESS, ADDRESS, ADDRESS);
+
+        /**
+         * {@code (int ok, ReactorStepResult *result, const char *error_json, void *userdata)} — the
+         * same layout as {@link #COMPLETION}, but {@code result} is an owned result to free with
+         * {@code reactor_step_result_free} rather than a borrowed string.
+         */
+        public static final FunctionDescriptor STEP_COMPLETION =
                 FunctionDescriptor.ofVoid(JAVA_INT, ADDRESS, ADDRESS, ADDRESS);
 
         /** {@code (uint32_t done, uint32_t total, void *userdata)} */

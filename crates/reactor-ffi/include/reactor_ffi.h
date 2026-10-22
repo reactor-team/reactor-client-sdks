@@ -21,7 +21,8 @@
  *
  *   - Control events (on_status, on_error, on_message, on_runtime_message,
  *     on_track, on_capabilities, on_session_id) and the completion callbacks
- *     (reactor_completion_fn, invoked exactly once per call) share one thread,
+ *     (reactor_completion_fn and reactor_step_completion_fn, invoked exactly
+ *     once per call) share one thread,
  *     with an unbounded queue: they are low-rate, and losing one would leave you
  *     with a wrong view of the session.
  *   - on_frame has its own thread and a one-deep queue.  If you are slower than
@@ -184,13 +185,23 @@ typedef struct ReactorCallbacks {
  *     "recoverable": bool — whether the same call could pass later
  *     "status":      HTTP status, present only when the failure came from one
  *     "operation":   which call failed, e.g. "connect", "send_command"
+ *     "entry":       for step_refused and step_command_failed, the part of the
+ *                    step request at fault ("state.<key>", "commands[<i>]",
+ *                    "media_input[<i>]"), present only when one is
+ *     "command_code": for step_command_failed, the code the failing handler
+ *                    raised (its CommandError code, or internal_error)
  *   }
  *
  * "code" is one of INVALID_STATE, DISCONNECTED, NETWORK_ERROR, REQUEST_TIMEOUT,
  * TRANSPORT_ERROR, UNAUTHORIZED, NOT_FOUND, CONFLICT, RATE_LIMITED, BAD_REQUEST,
  * SERVER_ERROR, VERSION_MISMATCH, DECODE_FAILED, SESSION_TERMINAL,
- * MESSAGE_TOO_LARGE, ABORTED, INTERNAL_ERROR — *or* a code the platform sent for
- * a rejected control request, command or recording, which is open-ended.  Treat
+ * MESSAGE_TOO_LARGE, ABORTED, GENERATION_MODE_MISMATCH,
+ * DATA_CHANNEL_CHUNKING_REQUIRED, UNSUPPORTED_FRAME_ENCODING, INTERNAL_ERROR,
+ * step_refused, step_not_ready, step_result_too_large, step_command_failed,
+ * step_session_ended — *or* a code the platform sent for a
+ * rejected control request, command, recording or step, which is open-ended.
+ * (The five lowercase ones name the outcomes the runtime reports for a step;
+ * see reactor_step.)  Treat
  * an unrecognised code as an error you cannot classify, never as a parse failure.
  *
  * on_error reports the same codes, in the same shape plus "timestamp_ms".  The
@@ -316,6 +327,56 @@ ReactorHandle *reactor_create_with_adm(
     int                   adm_mode,
     const char           *sdk_version, /* nullable */
     const char           *sdk_type     /* nullable */
+);
+
+/*
+ * Create a client from a JSON object of options — the creation call to use for
+ * stepped generation, and the one new creation-time options will be added to,
+ * since a key is not a signature change.
+ *
+ *   api_url, model_name, jwt, callbacks — as reactor_create.
+ *   options_json     — nullable (every default).  JSON object, every key optional:
+ *                        {
+ *                          "local":                bool,   // default false
+ *                          "auto_resume_tracks":   bool,   // default true
+ *                          "adm":                  "synthetic" | "platform",
+ *                                                          // default as reactor_create:
+ *                                                          // synthetic, unless the
+ *                                                          // REACTOR_WEBRTC_ADM env var
+ *                                                          // says "platform"
+ *                          "sdk_version":          "…",    // as reactor_create
+ *                          "sdk_type":             "…",    // as reactor_create
+ *                          "generation":           "streamed" | "stepped",
+ *                                                          // default "streamed"
+ *                          "step_timeout_seconds": n       // > 0; default 300;
+ *                                                          // too long = no limit
+ *                        }
+ *                      An **unrecognised key, or a value of the wrong type, is
+ *                      an error**: a misspelt "generation" would otherwise create
+ *                      a streamed client for a caller about to wait on steps.
+ *   error_out        — nullable.  When the options are refused this returns NULL
+ *                      and, if error_out is not NULL, stores there a heap JSON
+ *                      error object (code INVALID_STATE, operation "create") to
+ *                      free with reactor_free_string().  Untouched on success.
+ *
+ * "generation": "stepped" asks the runtime for a stepped session.
+ * reactor_connect() then fails with GENERATION_MODE_MISMATCH when the runtime
+ * does not report starting in that mode — a runtime without stepped generation
+ * ignores the request, and the client would otherwise wait on steps from a
+ * streaming session.  A streamed request accepts a runtime that reports nothing.
+ * A stepped session also needs data-channel chunking: reactor_connect() fails
+ * with DATA_CHANNEL_CHUNKING_REQUIRED when this library or the runtime did not
+ * negotiate it, since without it a single camera frame outgrows a message.
+ *
+ * The returned handle must be destroyed with reactor_destroy().
+ */
+ReactorHandle *reactor_create_with_options(
+    const char             *api_url,
+    const char             *model_name,
+    const char             *jwt,          /* nullable */
+    const ReactorCallbacks *callbacks,    /* nullable */
+    const char             *options_json, /* nullable */
+    char                  **error_out     /* nullable */
 );
 
 /*
@@ -624,6 +685,218 @@ void reactor_upload_bytes(
     void                *userdata
 );
 
+/* ── Stepped generation ───────────────────────────────────────────────────── */
+
+/*
+ * A stepped session (reactor_create_with_options with "generation": "stepped")
+ * generates one step per request instead of streaming.  The runtime applies a
+ * step's state, then its commands, then every input frame pushed since the
+ * previous step, as separate calls in that order, then runs the step and
+ * answers with what the model produced on each output track.  Any part may be
+ * empty.  The runtime checks the whole request before it applies any of it, so
+ * a refused step changed nothing; a step whose call failed keeps the calls
+ * before that one applied.
+ *
+ * Input frames use the push functions below, unchanged: in a stepped session
+ * reactor_push_video_frame* and reactor_push_audio_frame do not reach the
+ * network, they buffer the frame for the next step (video as (H, W, 3) uint8
+ * RGB, audio as planar (channels, samples) int16).  Input tracks get no RTP
+ * sender in a stepped session; a step's output frames arrive in its result.
+ *
+ * The buffer holds at most one data-channel message's worth of frame bytes, as
+ * a step can never send more: pushing faster than steps run drops the oldest
+ * frames, across tracks.  Once the session's tracks are known, a push to a
+ * track the session does not take as input is dropped with a warning.
+ */
+
+/* One step's output.  Opaque; owned by the host once delivered. */
+typedef struct ReactorStepResult ReactorStepResult;
+
+/*
+ * Called exactly once when a step completes.
+ *   ok         : 1 on success, 0 on error
+ *   result     : on success, a result the callee now OWNS — read it with the
+ *                reactor_step_result_* accessors, release it with
+ *                reactor_step_result_free(), from any thread, inside the
+ *                callback or any time after (after reactor_destroy() too).
+ *                NULL on error.
+ *   error_json : the usual error object on failure (see reactor_completion_fn);
+ *                NULL on success.  Freed after the callback returns.
+ */
+typedef void (*reactor_step_completion_fn)(
+    int                ok,
+    ReactorStepResult *result,
+    const char        *error_json,
+    void              *userdata
+);
+
+/*
+ * Run one step.
+ *   state_json    — nullable (no state).  A JSON object of the model's state
+ *                   fields — each key runs as the model's set_<key> command,
+ *                   before `commands` — or JSON null.
+ *   commands_json — nullable (no commands).  A JSON array of
+ *                   [{"command": "name", "data": {…}}, …], run in order; "data"
+ *                   may be omitted or null.  Any other key is an error.
+ *   completion    — see reactor_step_completion_fn.
+ *
+ * The runtime answers every step with one result whose failure code names the
+ * outcome.  The completion fires once: with the step's result — when it ran,
+ * whether it worked or the model reported a failure — or with one of these,
+ * the runtime's reason as "message":
+ *
+ *   step_refused               the request or the model turned the step down;
+ *                              nothing it carried was applied.  "entry" names
+ *                              the part at fault, when one is.
+ *   step_not_ready             the session is not in a running state that can
+ *                              take a step yet.  The step did not run.
+ *   step_result_too_large      the step ran, but its result does not fit in one
+ *                              data-channel message.
+ *   step_command_failed        one of the step's commands failed, so the step
+ *                              did not run; the calls before it stay applied.
+ *                              "entry" names the call and "command_code" the
+ *                              code its handler raised.
+ *   step_session_ended         the session ended before the step's result came.
+ *   MESSAGE_TOO_LARGE          the request (state + commands + buffered inputs)
+ *                              exceeds the data channel's limit.  Nothing was
+ *                              sent.
+ *   UNSUPPORTED_FRAME_ENCODING the result carries a frame this library cannot
+ *                              decode.
+ *   DECODE_FAILED              state_json / commands_json malformed, or state /
+ *                              a command's data not an object.  Nothing sent.
+ *   INVALID_STATE              not a ready stepped session.
+ *   DISCONNECTED, REQUEST_TIMEOUT (after step_timeout_seconds).
+ *
+ * A step that ran but that the model reported as failed is a result, not an
+ * error: ok is 1 and reactor_step_result_error() says why.
+ *
+ * A step refused before it goes out (INVALID_STATE, DECODE_FAILED) keeps the
+ * buffered input frames for the next step.  Past those checks they belong to
+ * the step whatever its outcome: one whose request cannot be sent
+ * (MESSAGE_TOO_LARGE) drops them too.
+ */
+void reactor_step(
+    ReactorHandle             *handle,
+    const char                *state_json,     /* nullable */
+    const char                *commands_json,  /* nullable */
+    reactor_step_completion_fn completion,
+    void                      *userdata
+);
+
+/*
+ * Drop every input frame buffered for the next step.  A no-op outside a stepped
+ * session.
+ */
+void reactor_clear_step_inputs(ReactorHandle *handle);
+
+/*
+ * Reading a result.  Every accessor accepts a NULL result and out-of-range
+ * indexes, answering NULL / 0.  Every pointer returned borrows from the result:
+ * valid until reactor_step_result_free(), never to be freed on its own, and the
+ * same pointer on every call — reading a frame's data does not copy it.
+ *
+ * Tracks are in the order the runtime sent them; frames in production order.
+ */
+
+/*
+ * The step's number in the session, counted from 1: the step of the session's
+ * step routes (GET /sessions/{id}/steps/{step}).
+ */
+uint64_t reactor_step_result_step(const ReactorStepResult *result);
+
+/*
+ * Seconds the step's generate() took, or the time the model reported for the
+ * step.  0.0 for a null result.
+ */
+double reactor_step_result_elapsed(const ReactorStepResult *result);
+
+/*
+ * Why the step failed, when it ran and the model reported a failure; NULL when
+ * it worked.  A step that did not run never has a result: its completion fails
+ * with step_refused, step_not_ready or step_command_failed instead.
+ */
+const char *reactor_step_result_error(const ReactorStepResult *result);
+
+/*
+ * The extra files the model kept with the step, in the order the runtime listed
+ * them.  None when it kept none or its result was not saved.  The result names
+ * them; it does not carry them: fetch a file's bytes over HTTP from the
+ * session's step results (GET /sessions/{id}/steps/{step}), by the step's number
+ * and the file's name, as for a streamed session.
+ */
+uint32_t reactor_step_result_file_count(const ReactorStepResult *result);
+
+/* The file's name, one path segment. */
+const char *reactor_step_result_file_name(const ReactorStepResult *result, uint32_t file);
+
+/* The file's media type, guessed from its name. */
+const char *reactor_step_result_file_content_type(
+    const ReactorStepResult *result, uint32_t file);
+
+/* The file's size in bytes.  0 when out of range. */
+uint64_t reactor_step_result_file_size(const ReactorStepResult *result, uint32_t file);
+
+uint32_t reactor_step_result_track_count(const ReactorStepResult *result);
+
+/* The output track's declared name. */
+const char *reactor_step_result_track_name(const ReactorStepResult *result, uint32_t track);
+
+/* "video" | "audio" — a static string. */
+const char *reactor_step_result_track_kind(const ReactorStepResult *result, uint32_t track);
+
+/*
+ * The rate the track's frames play at, as the runtime reported it: frames per
+ * second for video, samples per second for audio.  0.0 when the runtime did not
+ * say, or when out of range.
+ */
+double reactor_step_result_track_rate(const ReactorStepResult *result, uint32_t track);
+
+uint32_t reactor_step_result_frame_count(const ReactorStepResult *result, uint32_t track);
+
+/*
+ * How the frame travelled on the wire — "raw" today; a static string.  The bytes
+ * from reactor_step_result_frame_data() are decoded whatever this says.
+ */
+const char *reactor_step_result_frame_encoding(
+    const ReactorStepResult *result, uint32_t track, uint32_t frame);
+
+/* Element type in NumPy notation: "uint8" for video, "int16" for audio. */
+const char *reactor_step_result_frame_dtype(
+    const ReactorStepResult *result, uint32_t track, uint32_t frame);
+
+/*
+ * The array's shape, *ndim dimensions: (height, width, 3) for video,
+ * (channels, samples) for audio.  NULL with *ndim 0 when out of range.
+ */
+const uint32_t *reactor_step_result_frame_shape(
+    const ReactorStepResult *result, uint32_t track, uint32_t frame, uint32_t *ndim);
+
+/*
+ * The array's bytes, *len of them: row-major, little-endian for multi-byte
+ * elements — product(shape) * sizeof(dtype).  NULL with *len 0 when out of range.
+ */
+const uint8_t *reactor_step_result_frame_data(
+    const ReactorStepResult *result, uint32_t track, uint32_t frame, size_t *len);
+
+/*
+ * What the sender attached to the frame, *len bytes, opaque to the transport.
+ * NULL with *len 0 when it attached nothing (or out of range); an attached but
+ * empty tag is non-NULL with *len 0.
+ */
+const uint8_t *reactor_step_result_frame_metadata(
+    const ReactorStepResult *result, uint32_t track, uint32_t frame, size_t *len);
+
+/*
+ * When the sender says the frame was captured, in microseconds.  Returns 1 and
+ * writes *capture_time_us, or 0 — leaving it untouched — when the frame carries
+ * none (or out of range).
+ */
+int reactor_step_result_frame_capture_time_us(
+    const ReactorStepResult *result, uint32_t track, uint32_t frame, int64_t *capture_time_us);
+
+/* Release a result and everything its accessors returned.  NULL is a no-op. */
+void reactor_step_result_free(ReactorStepResult *result);
+
 /* ── Clip download ────────────────────────────────────────────────────────── */
 
 /* Segments written so far, out of how many the clip has. */
@@ -737,8 +1010,9 @@ char *reactor_tracks(ReactorHandle *handle);
 char *reactor_paused_tracks(ReactorHandle *handle);
 
 /*
- * Free a string returned by reactor_session_id(), reactor_tracks() or
- * reactor_paused_tracks().
+ * Free a string returned by reactor_session_id(), reactor_tracks(),
+ * reactor_paused_tracks() or reactor_unpublish_track(), or stored in
+ * reactor_create_with_options()'s error_out.
  */
 void reactor_free_string(char *s);
 
@@ -750,6 +1024,10 @@ void reactor_free_string(char *s);
  *   height     — frame height in pixels
  * No-op if handle is NULL, track_name is NULL, data is NULL, or the named
  * track has no attached video source.
+ *
+ * In a stepped session this and the two variants below buffer the frame for the
+ * next reactor_step() instead of sending it, with its metadata and capture time;
+ * see "Stepped generation".
  */
 void reactor_push_video_frame(
     ReactorHandle *handle,
@@ -871,6 +1149,10 @@ void reactor_push_video_frame_timed(
  * to the negotiated send format. Pace pushes at the capture rate. A format
  * change discards any buffered partial block; disconnect discards all tails.
  * The synthetic audio device is still shared by all local audio tracks.
+ *
+ * In a stepped session the samples are buffered for the next reactor_step()
+ * instead, as one planar int16 frame per push.  The step frame carries no sample
+ * rate, so push at the rate the model's track declares.
  */
 void reactor_push_audio_frame(
     ReactorHandle  *handle,

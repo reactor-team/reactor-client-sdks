@@ -28,6 +28,7 @@
 #include "reactor/json.hpp"
 #include "reactor/reactor.hpp"
 #include "reactor/recording.hpp"
+#include "reactor/step.hpp"
 #include "reactor/track.hpp"
 #include "reactor/version.hpp"
 
@@ -244,6 +245,8 @@ class PendingFileRef final : public Pending {
                                           {},
                                           "upload_file",
                                           {},
+                                          {},
+                                          {},
                                           {}}));
         return;
       }
@@ -258,12 +261,54 @@ class PendingFileRef final : public Pending {
                        {},
                        "upload_file",
                        {},
+                       {},
+                       {},
                        {}}));
       return;
     }
     promise.set_value(std::move(ref));
   }
   void deliver_error(const std::exception_ptr& error) override { promise.set_exception(error); }
+};
+
+/// A step in flight. Its completion is `step_completion_trampoline`, not the
+/// shared JSON one: the answer is a native result to copy out, not a string.
+class PendingStep final : public Pending {
+ public:
+  std::promise<StepResult> promise;
+
+  /// Settle with a result already copied out of the native one.
+  ///
+  /// Decoded first and settled second, never the other way round: a decode that
+  /// throws after `settle` has claimed the call would leave nothing able to fail
+  /// it, and the caller with a broken promise instead of the typed error.
+  void settle_step(StepResult result) {
+    result_ = std::move(result);
+    settle(Json::object());
+  }
+
+ private:
+  void deliver(Json /*result*/) override {
+    if (result_) {
+      promise.set_value(std::move(*result_));
+      return;
+    }
+    // Only reachable through a plain `settle`, which nothing on the step path
+    // calls — but a future answered with an empty step would read as a model
+    // that produced nothing, so it is a failure rather than a default.
+    promise.set_exception(as_exception_ptr(ErrorDetails{std::string{codes::DECODE_FAILED},
+                                                        "a step succeeded with no result",
+                                                        false,
+                                                        {},
+                                                        "step",
+                                                        {},
+                                                        {},
+                                                        {},
+                                                        {}}));
+  }
+  void deliver_error(const std::exception_ptr& error) override { promise.set_exception(error); }
+
+  std::optional<StepResult> result_;
 };
 
 // ── The client's state ───────────────────────────────────────────────────────
@@ -286,6 +331,11 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
                                                                      : std::move(options.api_url)),
         local_(options.local),
         auto_resume_tracks_(options.auto_resume_tracks),
+        generation_(options.generation),
+        // Checked here, before `dispatcher_` starts a thread: a refused option
+        // should cost nothing.
+        step_timeout_seconds_(
+            checked_step_timeout(options.generation, options.step_timeout_seconds)),
         dispatcher_(std::move(options.executor)) {}
 
   // NOLINTNEXTLINE(bugprone-exception-escape)
@@ -511,6 +561,19 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   void push_audio(const std::string& name, Samples pcm, std::uint32_t sample_rate,
                   std::uint32_t channels);
 
+  // ── Stepped generation ─────────────────────────────────────────────────────
+
+  Generation generation() const noexcept { return generation_; }
+
+  void begin_step(std::unique_ptr<PendingStep> op, const Json& state,
+                  const std::vector<StepCommand>& commands);
+  void clear_step_inputs();
+
+  /// The C completion for `reactor_step`. `userdata` is a `PendingStep*`, tracked
+  /// like every other call's; `result` is this call's to free, whatever happens.
+  static void step_completion_trampoline(int ok, ReactorStepResult* result, const char* error_json,
+                                         void* userdata) noexcept;
+
   // ── Session ────────────────────────────────────────────────────────────────
 
   /// Exchange the key for a token if there is one to exchange, then connect.
@@ -531,6 +594,8 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
                                              false,
                                              {},
                                              "reconnect",
+                                             {},
+                                             {},
                                              {},
                                              {}}));
       return;
@@ -617,6 +682,14 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     callbacks.on_frame = &on_frame_trampoline;
     callbacks.on_audio = &on_audio_trampoline;
     callbacks.userdata = context.get();
+
+    if (generation_ == Generation::Stepped) {
+      // Its own creation call: only `reactor_create_with_options` takes the
+      // generation mode. It pins the synthetic audio module too, by name.
+      handle_ = create_stepped_handle(callbacks);
+      context_ = context.release();
+      return;
+    }
 
     // Mode 0: the synthetic audio module, always. `reactor_create` takes its mode
     // from an environment variable, and a library whose audience is scripts and
@@ -737,6 +810,8 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
                        {},
                        "download_clip",
                        {},
+                       {},
+                       {},
                        {}}));
     }
 
@@ -755,6 +830,8 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
                                              false,
                                              {},
                                              op->operation,
+                                             {},
+                                             {},
                                              {},
                                              {}}));
       if (quiesced != 0) {
@@ -829,6 +906,15 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
                                   std::uint32_t num_samples, std::uint32_t sample_rate,
                                   std::uint32_t channels, void* userdata) noexcept;
 
+  /// `timeout`, or a thrown `BadRequestError` for one that could not mean
+  /// anything: set on a streamed client, or not a finite number above zero.
+  static std::optional<double> checked_step_timeout(Generation generation,
+                                                    std::optional<double> timeout);
+
+  /// `reactor_create_with_options` for a stepped session. Called with `mutex_`
+  /// held; throws the library's typed error when it refuses the options.
+  ReactorHandle* create_stepped_handle(const ReactorCallbacks& callbacks) const;
+
   void deliver_video(const std::string& name, const VideoFrame& frame);
   void deliver_audio(const std::string& name, const AudioFrame& frame);
 
@@ -851,6 +937,8 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   std::string api_url_;
   bool local_ = false;
   bool auto_resume_tracks_ = true;
+  Generation generation_ = Generation::Streamed;
+  std::optional<double> step_timeout_seconds_;
 
   /// At most one of these: whichever constructor was used.
   std::optional<std::string> api_key_;

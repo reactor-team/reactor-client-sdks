@@ -7,6 +7,40 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Stepped generation. `Reactor(..., generation: .stepped)` asks for a session
+  that generates one step at a time, and `try await reactor.step(state: ...,
+  commands: [...])` runs one and returns a `StepResult`: per output track, its
+  `rate` (frames per second for video, samples per second for audio, 0 when
+  unspecified) and the frames it produced, each as `Data` with its `dtype`,
+  `shape`, metadata and capture time; `elapsed`, the `Duration` the step's
+  `generate()` took (or the time the model reported for the step); `files`, the
+  `StepFile`s (name, content type, size) the model kept with the step, fetched
+  over HTTP from the session's step results; and `error`, set when the step ran
+  but the model reported a failure — such a step returns rather than throws.
+  Every argument of `step` is optional: `step()` runs on the model's current
+  state. `Track.pushFrame` buffers into the next step in such a session, up to
+  one data-channel message's worth of frame bytes (the oldest frames drop first,
+  across tracks); a push to a track the session does not take as input is
+  dropped with a warning. A step's buffered frames belong to it whatever its
+  outcome, sent or not. `clearStepInputs()` drops what is buffered now, and
+  `stepTimeout:` bounds a step. `connect()` throws `generationModeMismatch` when
+  the runtime did not start the session stepped, and `dataChannelChunkingRequired`
+  when the data channel did not negotiate chunking; a step can throw `stepRefused`,
+  `stepNotReady` (the session cannot take a step yet; the step did not run),
+  `stepCommandFailed` (a state key or command handler failed; the step did not
+  run), `stepSessionEnded` (the session ended first; whether the step ran is
+  unknown), `stepResultTooLarge`, `messageTooLarge` or
+  `unsupportedFrameEncoding`. New example: `09_stepped_generation`.
+
+### Fixed
+
+- `Track.pushFrame` without a `captureTimeUs` no longer stamps the frame with a
+  capture time of 0. It now reaches the library unstamped, so a streamed session
+  stamps it as it is pushed and a stepped session sends it with no capture time,
+  rather than telling the model it was captured at 0.
+
 ## [1.5.0] - 2026-10-13
 
 ### Added

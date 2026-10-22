@@ -25,6 +25,8 @@ extern "C" void jwt_completion(int ok, const char* result_json, const char* erro
                                      {},
                                      "fetch_jwt",
                                      {},
+                                     {},
+                                     {},
                                      {}}};
     }
     promise->set_value(result["jwt"].get<std::string>());

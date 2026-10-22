@@ -58,7 +58,8 @@ ReactorError::ReactorError(ErrorDetails details)
 }
 
 ReactorError::ReactorError(std::string message, std::string_view code)
-    : ReactorError(ErrorDetails{std::string{code}, std::move(message), false, {}, {}, {}, {}}) {}
+    : ReactorError(
+          ErrorDetails{std::string{code}, std::move(message), false, {}, {}, {}, {}, {}, {}}) {}
 
 void ReactorError::rethrow() const { throw *this; }
 
@@ -127,6 +128,8 @@ std::unique_ptr<ReactorError> error_from_payload(const char* json_or_null,
   details.status = optional_field<int>(payload, "status");
   details.retry_after_ms = optional_field<double>(payload, "retry_after_ms");
   details.timestamp_ms = optional_field<double>(payload, "timestamp_ms");
+  details.entry = optional_field<std::string>(payload, "entry");
+  details.command_code = optional_field<std::string>(payload, "command_code");
   if (auto operation = optional_field<std::string>(payload, "operation");
       operation && !operation->empty()) {
     // The payload knows better than the caller's guess: it names the call that

@@ -300,6 +300,126 @@ public final class Reactor implements AutoCloseable {
         return peer.sendCommand(name, args.toJsonString(), named.build().toJsonString());
     }
 
+    // ── Stepped generation ──────────────────────────────────────────────────
+
+    /** @return how this client's sessions generate, as {@link ReactorOptions.Builder#generation} set it */
+    public Generation generation() {
+        return peer.generation();
+    }
+
+    /**
+     * Runs one step of a stepped session and answers with what it produced.
+     *
+     * <p>The runtime applies, in order: {@code state} (each key as the model's {@code set_<key>}
+     * command), then {@code commands}, then every input frame pushed since the previous step — in
+     * a stepped session {@link Track#pushFrame(byte[], int, int)} does not send, it buffers for the
+     * next step — and then generates. The runtime checks the whole request before it applies any of
+     * it, so a step it refuses changed nothing; past that check these are separate calls, so a call
+     * whose handler fails leaves the calls before it applied. Every part is optional; {@link #step()} with nothing
+     * runs on the model's current state. Commands sent with {@link #sendCommand} outside a step
+     * still work in a stepped session and change the state the next step uses.
+     *
+     * <p>A file input is an upload reference, as for any command: {@link #uploadFile upload} it
+     * first, then put the reference in a command's arguments or in the value of an upload-typed
+     * state field.
+     *
+     * <pre>{@code
+     * Reactor reactor = Reactor.open(ReactorOptions.builder(apiUrl, "owner/model")
+     *         .apiKey(key)
+     *         .generation(Generation.STEPPED)
+     *         .build());
+     * reactor.connect().join();
+     * Track camera = reactor.track("camera");
+     * camera.publish().join();
+     * camera.pushFrame(bgra, width, height);          // buffered, not sent
+     * StepResult result = reactor.step(
+     *                 JsonValue.object().put("prompt", "a red fox").build(),
+     *                 List.of(StepCommand.of("advance", JsonValue.object().put("frames", 4).build())))
+     *         .join();
+     * for (StepFrame frame : result.track("main_video").frames()) {
+     *     show(frame.data(), frame.shape());          // (height, width, 3) uint8 RGB
+     * }
+     * }</pre>
+     *
+     * <p>A step that ran but that the model reported as failed still completes normally, with
+     * {@link StepResult#error()} saying why. The future fails with {@link StepRefusedException}
+     * when the runtime turns the step down (nothing it carried was applied), {@link
+     * StepNotReadyException} when the session cannot take a step yet (the step did not run), {@link
+     * StepCommandFailedException} when one of its state keys or commands failed (the step did not
+     * run; the calls before it stay applied), {@link StepSessionEndedException} when the session
+     * ended before its result came (whether it ran is unknown), {@link StepResultTooLargeException}
+     * when the step ran but its output does not fit in one message, {@link MessageTooLargeException}
+     * when the request does not (nothing was sent), {@link UnsupportedFrameEncodingException} for a
+     * frame this SDK cannot decode, {@link RequestTimeoutException} after {@link
+     * ReactorOptions#stepTimeoutSeconds()}, {@link BadRequestException} for a state that is not a
+     * JSON object, and {@link InvalidStateException} outside a connected stepped session.
+     *
+     * <p>A step refused before it goes out ({@link InvalidStateException}, malformed arguments)
+     * keeps the buffered input frames for the next step. Past that they belong to the step whatever
+     * its outcome: one that could not be sent, {@link MessageTooLargeException} included, drops them
+     * too, and nothing is resent. The buffer holds at most one data-channel message's
+     * worth of frame bytes, so pushing faster than steps run drops the oldest frames, across tracks.
+     * Once the session's tracks are known, a push to a track the session does not take as input is
+     * dropped with a warning.
+     *
+     * @param state the model's state fields as a JSON object, or {@code null} to change none
+     * @param commands what to run after the state, in order; empty or {@code null} for none
+     * @return the step's result, copied onto the heap once and safe to keep
+     */
+    public CompletableFuture<StepResult> step(
+            @Nullable JsonValue state, java.util.@Nullable List<StepCommand> commands) {
+        if (commands == null) {
+            commands = java.util.List.of();
+        }
+        if (state instanceof JsonValue.JsonNull) {
+            state = null;
+        }
+        if (state != null && !(state instanceof JsonValue.JsonObject)) {
+            return CompletableFuture.failedFuture(ReactorException.of(
+                    ErrorCode.BAD_REQUEST.code(),
+                    "a step's state must be a JSON object of state fields, or null; got " + state.toJsonString(),
+                    null,
+                    "step",
+                    null));
+        }
+        String commandsJson = JsonValue.array(
+                        commands.stream().map(StepCommand::toWire).toList())
+                .toJsonString();
+        return peer.step(state == null ? null : state.toJsonString(), commandsJson);
+    }
+
+    /**
+     * Runs one step that sets state and runs no commands.
+     *
+     * @param state the model's state fields as a JSON object, or {@code null} to change none
+     * @return the step's result
+     * @see #step(JsonValue, java.util.List)
+     */
+    public CompletableFuture<StepResult> step(@Nullable JsonValue state) {
+        return step(state, java.util.List.of());
+    }
+
+    /**
+     * Runs one step with no state change and no commands — the buffered input frames, and whatever
+     * the model does by itself.
+     *
+     * @return the step's result
+     * @see #step(JsonValue, java.util.List)
+     */
+    public CompletableFuture<StepResult> step() {
+        return step(null, java.util.List.of());
+    }
+
+    /**
+     * Drops every input frame buffered for the next step, so that step carries only what is pushed
+     * after this. A no-op on a streamed client.
+     *
+     * @throws ReactorException ({@code INVALID_STATE}) when the client is closed
+     */
+    public void clearStepInputs() {
+        peer.clearStepInputs();
+    }
+
     /**
      * Uploads a file for a later command.
      *

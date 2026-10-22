@@ -83,6 +83,11 @@ final class FakeLibrary: @unchecked Sendable {
         var events: [Event] = []
         var whileReadingStatus: (@Sendable () -> Void)?
         var whileStartingDownload: (@Sendable () -> Void)?
+        var createOptionsCalls: [CreateOptionsCall] = []
+        var stepCalls: [StepCall] = []
+        var lastStepCompletion: (fn: reactor_step_completion_fn, userdata: UnsafeMutableRawPointer)?
+        var clearStepInputsCalls = 0
+        var freedStepResults = 0
     }
 
     private let state = Locked(State())
@@ -98,7 +103,8 @@ final class FakeLibrary: @unchecked Sendable {
         var firstByte: UInt8?
         var byteCount: Int
         var userData: String?
-        var captureTimeUs: Int64
+        /// `nil` when the push carried no capture time at all.
+        var captureTimeUs: Int64?
         var bindingMs: Double
         var generation: UInt64
     }
@@ -137,6 +143,29 @@ final class FakeLibrary: @unchecked Sendable {
         var local: Int32
     }
 
+    /// What the SDK handed `reactor_create_with_options`.
+    struct CreateOptionsCall {
+        var apiURL: String?
+        var model: String?
+        var jwt: String?
+        var optionsJSON: String?
+
+        /// The options, parsed — so a test asserts on values rather than on
+        /// how an encoder happened to order the keys.
+        var options: [String: Any] {
+            guard let data = optionsJSON?.data(using: .utf8),
+                let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return [:] }
+            return object
+        }
+    }
+
+    /// What the SDK handed `reactor_step`.
+    struct StepCall {
+        var stateJSON: String?
+        var commandsJSON: String?
+    }
+
     /// What the SDK handed `reactor_fetch_jwt`.
     struct JWTCall {
         var apiURL: String?
@@ -155,6 +184,10 @@ final class FakeLibrary: @unchecked Sendable {
 
     /// Which ABI version the fake library claims to speak.
     var abiVersion: UInt32 = ABI.compiledAgainst
+
+    /// A JSON error object `reactor_create_with_options` should refuse with, or
+    /// nil to create.
+    var createOptionsFailure: String?
 
     deinit {
         handle.deallocate()
@@ -217,6 +250,32 @@ final class FakeLibrary: @unchecked Sendable {
     var recordingCalls: Int { state.withLock { $0.recordingCalls } }
     var downloadCalls: [DownloadCall] { state.withLock { $0.downloadCalls } }
     var hasPendingDownload: Bool { state.withLock { $0.lastDownload != nil } }
+    var createOptionsCalls: [CreateOptionsCall] { state.withLock { $0.createOptionsCalls } }
+    var stepCalls: [StepCall] { state.withLock { $0.stepCalls } }
+    var clearStepInputsCalls: Int { state.withLock { $0.clearStepInputsCalls } }
+    /// How many results `reactor_step_result_free` released.
+    var freedStepResults: Int { state.withLock { $0.freedStepResults } }
+    /// Whether a step is waiting on a completion the fake has not fired.
+    var hasPendingStep: Bool { state.withLock { $0.lastStepCompletion != nil } }
+
+    /// Answer the step in flight, handing over `result` the way the library
+    /// does: owned by the callee, to be released through
+    /// `reactor_step_result_free`.
+    ///
+    /// Deliberately usable after a `-1` destroy, like the library itself.
+    func completeLastStep(ok: Bool, result: FakeStepResult? = nil, error: String? = nil) {
+        guard
+            let call = state.withLock({
+                state -> (fn: reactor_step_completion_fn, userdata: UnsafeMutableRawPointer)? in
+                defer { state.lastStepCompletion = nil }
+                return state.lastStepCompletion
+            })
+        else { return }
+        let pointer = result.map { OpaquePointer(Unmanaged.passRetained($0).toOpaque()) }
+        withOptionalCString(error) { errorPointer in
+            call.fn(ok ? 1 : 0, pointer, errorPointer, call.userdata)
+        }
+    }
 
     /// Report progress on the download in flight, as the library's own download
     /// thread would.
@@ -433,6 +492,27 @@ final class FakeLibrary: @unchecked Sendable {
                 }
                 return OpaquePointer(handle)
             },
+            createWithOptions: {
+                [self] apiURL, model, jwt, callbacks, optionsJSON, errorOut in
+                let failure = createOptionsFailure
+                state.withLock { state in
+                    state.createOptionsCalls.append(
+                        CreateOptionsCall(
+                            apiURL: String(borrowing: apiURL),
+                            model: String(borrowing: model),
+                            jwt: String(borrowing: jwt),
+                            optionsJSON: String(borrowing: optionsJSON)))
+                    if failure == nil {
+                        state.callbacks = callbacks?.pointee
+                    }
+                }
+                if let failure {
+                    // Heap-allocated, for the SDK to free.
+                    errorOut?.pointee = strdup(failure)
+                    return nil
+                }
+                return OpaquePointer(handle)
+            },
             destroy: { [self] _ in
                 state.withLock {
                     $0.destroyCount += 1
@@ -600,6 +680,73 @@ final class FakeLibrary: @unchecked Sendable {
                 }
                 hook?()
                 state.withLock { $0.events.append(.downloadReturned) }
+            },
+            step: { [self] _, stateJSON, commandsJSON, completion, userdata in
+                state.withLock {
+                    $0.stepCalls.append(
+                        StepCall(
+                            stateJSON: String(borrowing: stateJSON),
+                            commandsJSON: String(borrowing: commandsJSON)))
+                }
+                guard let completion, let userdata else { return }
+                let object = Unmanaged<AnyObject>.fromOpaque(userdata).takeUnretainedValue()
+                state.withLock {
+                    $0.lastStepCompletion = (completion, userdata)
+                    $0.lastUserdataObject = object
+                }
+            },
+            clearStepInputs: { [self] _ in state.withLock { $0.clearStepInputsCalls += 1 } },
+            stepResultStep: { FakeStepResult.from($0)?.step ?? 0 },
+            stepResultElapsed: { FakeStepResult.from($0)?.elapsed ?? 0 },
+            stepResultError: { FakeStepResult.from($0)?.error.map { UnsafePointer($0) } },
+            stepResultFileCount: { UInt32(FakeStepResult.from($0)?.files.count ?? 0) },
+            stepResultFileName: {
+                FakeStepResult.from($0)?.file($1).map { UnsafePointer($0.name) }
+            },
+            stepResultFileContentType: {
+                FakeStepResult.from($0)?.file($1).map { UnsafePointer($0.contentType) }
+            },
+            stepResultFileSize: { FakeStepResult.from($0)?.file($1)?.size ?? 0 },
+            stepResultTrackCount: { UInt32(FakeStepResult.from($0)?.tracks.count ?? 0) },
+            stepResultTrackName: {
+                FakeStepResult.from($0)?.track($1).map { UnsafePointer($0.name) }
+            },
+            stepResultTrackKind: {
+                FakeStepResult.from($0)?.track($1).map { UnsafePointer($0.kind) }
+            },
+            stepResultTrackRate: { FakeStepResult.from($0)?.track($1)?.rate ?? 0 },
+            stepResultFrameCount: { UInt32(FakeStepResult.from($0)?.track($1)?.frames.count ?? 0) },
+            stepResultFrameEncoding: {
+                FakeStepResult.from($0)?.frame($1, $2).map { UnsafePointer($0.encoding) }
+            },
+            stepResultFrameDtype: {
+                FakeStepResult.from($0)?.frame($1, $2).map { UnsafePointer($0.dtype) }
+            },
+            stepResultFrameShape: { result, track, frame, ndim in
+                let found = FakeStepResult.from(result)?.frame(track, frame)
+                ndim?.pointee = UInt32(found?.ndim ?? 0)
+                return found.map { UnsafePointer($0.shape) }
+            },
+            stepResultFrameData: { result, track, frame, length in
+                let found = FakeStepResult.from(result)?.frame(track, frame)
+                length?.pointee = found?.dataCount ?? 0
+                return found.map { UnsafePointer($0.data) }
+            },
+            stepResultFrameMetadata: { result, track, frame, length in
+                let found = FakeStepResult.from(result)?.frame(track, frame)
+                length?.pointee = found?.metadataCount ?? 0
+                return found?.metadata.map { UnsafePointer($0) }
+            },
+            stepResultFrameCaptureTimeUs: { result, track, frame, out in
+                guard let time = FakeStepResult.from(result)?.frame(track, frame)?.captureTimeUs
+                else { return 0 }
+                out?.pointee = time
+                return 1
+            },
+            stepResultFree: { [self] result in
+                guard let result else { return }
+                state.withLock { $0.freedStepResults += 1 }
+                Unmanaged<FakeStepResult>.fromOpaque(UnsafeRawPointer(result)).release()
             }
         )
     }

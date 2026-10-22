@@ -108,6 +108,12 @@ struct ErrorDetails {
   /// When this happened. Only ever set on the `on_error` event — a thrown
   /// exception is already happening now.
   std::optional<double> timestamp_ms;
+  /// For a step that did not run, the part of its request at fault:
+  /// "state.<key>", "commands[<i>]", or "media_input[<i>]".
+  std::optional<std::string> entry;
+  /// For `StepCommandFailedError`, the code the failing handler raised (its
+  /// `CommandError` code, or internal_error).
+  std::optional<std::string> command_code;
 };
 
 /// A Reactor operation failed, or an `on_error` event arrived.
@@ -126,6 +132,8 @@ class ReactorError : public std::runtime_error {
   const std::optional<int>& status() const noexcept { return details_.status; }
   const std::optional<std::string>& operation() const noexcept { return details_.operation; }
   const std::optional<double>& retry_after_ms() const noexcept { return details_.retry_after_ms; }
+  const std::optional<std::string>& entry() const noexcept { return details_.entry; }
+  const std::optional<std::string>& command_code() const noexcept { return details_.command_code; }
   const std::optional<double>& timestamp_ms() const noexcept { return details_.timestamp_ms; }
 
   /// Throw this error with its own dynamic type.

@@ -125,6 +125,102 @@ rebuilds its native client with the new token. That token cannot create
 sessions. To mint one yourself, pass `{"sessions": ["<id>"]}` as the options
 of `Reactor.fetchJwt`.
 
+## Stepped generation
+
+A model that supports it can generate one step at a time instead of streaming.
+Ask for it when creating the client, then call `step()`: the runtime applies the
+state (each key as the model's `set_<key>` command), then the commands, then
+every input frame pushed since the previous step, generates, and the step
+completes with what the model produced on each output track. The runtime checks
+the whole request before it applies any of it, so a refused step changed nothing
+(`StepRefusedException.entry()` names the part at fault); a step whose call
+failed keeps the calls before it (`StepCommandFailedException.entry()` and
+`commandCode()` name the call and the code its handler raised). Every
+part is optional: `step()` with no arguments runs on the model's current state,
+and commands sent with `sendCommand` outside a step still change the state the
+next step uses.
+
+```java
+try (Reactor reactor = Reactor.open(ReactorOptions.builder(apiUrl, "owner/model")
+        .apiKey(apiKey)
+        .generation(Generation.STEPPED)
+        .build())) {
+    reactor.connect().join();              // GenerationModeMismatchException if the runtime cannot
+
+    Track camera = reactor.track("camera");
+    camera.publish().join();
+    camera.pushFrame(bgra, width, height); // buffered for the next step, not sent
+
+    StepResult result = reactor.step(
+                    JsonValue.object().put("prompt", "a red fox").build(),
+                    List.of(StepCommand.of("advance", JsonValue.object().put("frames", 4).build())))
+            .join();
+    for (StepFrame frame : result.track("main_video").frames()) {
+        frame.shape();                     // [height, width, 3], uint8 RGB
+        frame.data();                      // read-only little-endian ByteBuffer
+        frame.metadata();
+        frame.captureTimeUs();
+    }
+    result.track("main_video").rate();     // frames per second (samples per second on audio); 0 if unspecified
+    result.elapsed();                      // seconds the step's generate() took (or the model reported)
+    result.error().ifPresent(why -> System.err.println("the model failed the step: " + why));
+    for (StepFile file : result.files()) {  // named only; fetch bytes over HTTP
+        System.out.println(file.name() + " " + file.contentType() + " " + file.size());
+    }
+}
+```
+
+```kotlin
+val result = client.step(
+    state = JsonValue.`object`().put("prompt", "a red fox").build(),
+    commands = listOf(StepCommand.of("advance")),
+)
+val bare = client.step()                    // no state, no commands
+```
+
+`Track.pushFrame` keeps its signature: in a stepped session it buffers the frame
+for the next step instead of sending it, converted to `(height, width, 3)` RGB.
+Audio comes back as `(channels, samples)` `int16`, so `frame.data().asShortBuffer()`
+reads the samples. A frame handler on a stepped session's track is refused,
+because nothing streams there — the output is in the result.
+
+A step refused before it goes out (outside a connected stepped session, or with
+malformed arguments) keeps the buffered frames for the next step. Past that they
+belong to the step whatever its outcome: one that could not be sent,
+`MessageTooLargeException` included, drops them too, and nothing is resent.
+`clearStepInputs()` drops what is buffered now. The buffer holds at most one data-channel message's
+worth of frame bytes, so pushing faster than steps run drops the oldest frames,
+across tracks. Once the session's tracks are known, a push to a track the
+session does not take as input is dropped with a warning.
+
+The result is copied onto the heap once, when the step completes, and the native
+one is freed straight away: a `StepResult` holds no native memory and can be kept.
+
+`result.files()` names the extra files the model kept with the step — empty when
+it kept none or the result was not saved. The result does not carry their
+bytes: fetch them over HTTP from the session's step results,
+`GET /sessions/{id}/steps/{index}`, which lists each file with a download URL
+(202 while they are not stored yet).
+
+To pass a file into a step, upload it first (`uploadFile` / `uploadBytes`) and put
+the reference in a command's arguments or in the value of an upload-typed state
+field, exactly as for a normal command.
+
+A step that ran but that the model reported as failed is not an exception: it
+completes with `result.error()` saying why.
+
+A step the runtime refuses fails with `StepRefusedException`; one the session
+cannot take yet with `StepNotReadyException`; one whose state key or command
+failed with `StepCommandFailedException` (none of these three ran); one whose
+output does not fit in a message with `StepResultTooLargeException`; one whose
+session ended before its result came with `StepSessionEndedException` (whether it
+ran is unknown); a request too large to send with `MessageTooLargeException`
+(nothing was sent). A stepped `connect()` fails with
+`DataChannelChunkingRequiredException` when the data channel did not negotiate
+chunking, which a stepped session needs.
+`stepTimeoutSeconds(...)` bounds a step (default 300 s). See
+[`Example09SteppedGeneration`](examples/src/main/java/inc/reactor/examples/Example09SteppedGeneration.java).
+
 ## From Kotlin
 
 `reactor-sdk-kotlin` is a facade over the same binding, not a second one. It holds

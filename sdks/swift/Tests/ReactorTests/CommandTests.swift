@@ -164,6 +164,14 @@ struct CommandTests {
         #expect(call.uploadsJSON?.contains("image/jpeg") == true)
     }
 
+    @Test("JSONValue(FileRef) is the object a FileRef encodes as")
+    func jsonValueOfAFileRefMatchesItsEncoding() throws {
+        let ref = FileRef(uploadID: "up_1", name: "photo.jpg", mimeType: "image/jpeg", size: 12)
+        let encoded = try JSONDecoder().decode(
+            JSONValue.self, from: JSON.encoder().encode(ref))
+        #expect(JSONValue(ref) == encoded)
+    }
+
     @Test("a FileRef inside a typed command's arguments encodes as an upload reference")
     func nestedFileRefEncodesInTheWireShape() async throws {
         struct Enqueue: Encodable {

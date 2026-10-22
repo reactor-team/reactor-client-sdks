@@ -33,6 +33,8 @@ public class ReactorException extends RuntimeException {
     private final @Nullable Integer status;
     private final @Nullable String operation;
     private final @Nullable Long retryAfterMs;
+    private @Nullable String entry;
+    private @Nullable String commandCode;
 
     /**
      * @param code the stable, matchable code — one of {@link ErrorCode}, or one the platform sent
@@ -81,6 +83,32 @@ public class ReactorException extends RuntimeException {
     }
 
     /**
+     * The typed exception for a code, with the part of a step request it concerns.
+     *
+     * @param code the stable code
+     * @param message the human-readable message
+     * @param status the HTTP status, when the failure came from one
+     * @param operation which call failed
+     * @param retryAfterMs a backoff hint, when the platform sent one
+     * @param entry for a step that did not run, the part of the request at fault
+     * @param commandCode for a step whose call failed, the code the handler raised
+     * @return the exception for that code
+     */
+    public static ReactorException of(
+            String code,
+            String message,
+            @Nullable Integer status,
+            @Nullable String operation,
+            @Nullable Long retryAfterMs,
+            @Nullable String entry,
+            @Nullable String commandCode) {
+        ReactorException error = of(code, message, status, operation, retryAfterMs);
+        error.entry = entry;
+        error.commandCode = commandCode;
+        return error;
+    }
+
+    /**
      * The stable code for this failure.
      *
      * <p>Usually one of {@link ErrorCode}'s, but the platform's set is open-ended: a rejected
@@ -125,6 +153,32 @@ public class ReactorException extends RuntimeException {
      */
     public @Nullable Long retryAfterMs() {
         return retryAfterMs;
+    }
+
+    /**
+     * The part of a step request this failure concerns.
+     *
+     * <p>Set on a {@link StepRefusedException} or {@link StepCommandFailedException} when the
+     * runtime named one: {@code "state.<key>"}, {@code "commands[<i>]"} or {@code
+     * "media_input[<i>]"}.
+     *
+     * @return the entry, or {@code null} when the failure names none
+     */
+    public @Nullable String entry() {
+        return entry;
+    }
+
+    /**
+     * The code a step's failing call raised.
+     *
+     * <p>Set on a {@link StepCommandFailedException}: the handler's {@code CommandError} code, or
+     * {@code internal_error} for an unplanned failure — the stable token to branch on, rather than
+     * the message.
+     *
+     * @return the code, or {@code null} when the failure carries none
+     */
+    public @Nullable String commandCode() {
+        return commandCode;
     }
 
     @Override

@@ -21,9 +21,9 @@ use reactor_core::backoff::PollConfig;
 use reactor_core::error::{CoreError, ErrorDetails, ReactorError};
 use reactor_core::events::ReactorEvent;
 use reactor_core::peer::{PeerEvent, PeerTransport};
-use reactor_core::protocol::session::TrackCapability;
 use reactor_core::protocol::session::{
-    TrackDirection as SessionTrackDirection, TrackKind as SessionTrackKind,
+    GenerationMode, TrackCapability, TrackDirection as SessionTrackDirection,
+    TrackKind as SessionTrackKind,
 };
 use reactor_core::protocol::upload::FileRef;
 use reactor_core::protocol::wire::v1::platform::{
@@ -31,17 +31,21 @@ use reactor_core::protocol::wire::v1::platform::{
 };
 use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions};
 use reactor_core::stats::{bounded_name, client_track_codec};
+use reactor_core::step::{PixelLayout, StepCommand};
 
 use crate::auth::WasmAuthProvider;
 use crate::http::WasmHttpClient;
 use crate::peer::WasmPeerTransport;
+use crate::pixels::{check_size, PixelFormat};
 use crate::platform::WasmPlatform;
+use crate::step::{output_to_js, StepCommandJson};
 use crate::types::{
     CapabilitiesListener, CapabilitiesOutput, ClientConnectionStatInput, ClientOptionsInput,
     ClientTrackStatsInput, ClipOutput, CommandData, CommandReply, ConnectOptionsInput,
-    ErrorListener, FileRefOutput, JwtSourceInput, MessageListener, ReactorErrorOutput,
-    SchemaOutput, SessionIdListener, SessionInfoOutput, Status, StatusListener, StringsOutput,
-    TrackListener, TrackMappingOutput, TracksOutput, UploadsInput,
+    ErrorListener, FileRefOutput, JwtSourceInput, MessageListener, PixelFormatInput,
+    ReactorErrorOutput, SchemaOutput, SessionIdListener, SessionInfoOutput, Status, StatusListener,
+    StepCommandsInput, StepResultOutput, StepStateInput, StringsOutput, TrackListener,
+    TrackMappingOutput, TracksOutput, UploadsInput,
 };
 
 /// Coordinator URL used when none is given.
@@ -85,6 +89,10 @@ struct ClientOptions {
     sdp_backoff_multiplier: Option<f64>,
     /// See `ReactorOptions::preset_tracks`.
     model_tracks: Option<Vec<TrackCapability>>,
+    /// `"streamed"` (the default) or `"stepped"`. See `ReactorOptions::generation`.
+    generation: Option<GenerationMode>,
+    /// How long `step()` waits for a step's result, generation included.
+    step_timeout_ms: Option<u64>,
     /// `"off"`, `"error"`, `"warn"`, `"info"`, `"debug"` or `"trace"`.
     /// Defaults to `"warn"`: the core logs freely at debug, and a browser
     /// console is a user-facing surface.
@@ -157,6 +165,12 @@ impl ClientOptions {
             };
         }
         options.preset_tracks = self.model_tracks;
+        if let Some(generation) = self.generation {
+            options.generation = generation;
+        }
+        if let Some(ms) = self.step_timeout_ms {
+            options.step_timeout = Duration::from_millis(ms);
+        }
         Ok(options)
     }
 }
@@ -260,6 +274,9 @@ pub struct ReactorClient {
     peer: Arc<WasmPeerTransport>,
     auth: Arc<WasmAuthProvider>,
     callbacks: SharedCallbacks,
+    /// Whether the session generates one `step()` at a time. Input tracks
+    /// then have no RTP sender: their frames are pushed and ride the step.
+    stepped: bool,
     /// Dropped by `Drop`, which is what ends the spawned tasks.
     shutdown_tx: Option<oneshot::Sender<()>>,
     shutdown: Shutdown,
@@ -286,6 +303,7 @@ impl ReactorClient {
             .map_err(|e| invalid(&format!("options: {e}")))?;
         init_logging(options.log_level.as_deref());
         let options = options.into_reactor_options()?;
+        let stepped = options.generation == GenerationMode::Stepped;
 
         let auth = Arc::new(WasmAuthProvider::new());
         auth.set(jwt.map(JsValue::from).unwrap_or(JsValue::UNDEFINED))
@@ -338,6 +356,7 @@ impl ReactorClient {
             peer,
             auth,
             callbacks,
+            stepped,
             shutdown_tx: Some(shutdown_tx),
             shutdown,
         })
@@ -438,18 +457,42 @@ impl ReactorClient {
     // ── Tracks ────────────────────────────────────────────────────────────────
 
     /// Claim a sendonly track and start sending `track` on it.
+    ///
+    /// In a stepped session the track has no RTP sender, so there is nothing
+    /// to attach a `MediaStreamTrack` to: `publishTrack(name)` only claims the
+    /// track, and its frames come from `pushVideoFrame` / `pushAudioFrame`.
+    /// A `MediaStreamTrack` passed there is ignored, with a warning.
     #[wasm_bindgen(js_name = publishTrack)]
     pub async fn publish_track(
         &self,
         name: String,
-        track: web_sys::MediaStreamTrack,
+        track: Option<web_sys::MediaStreamTrack>,
     ) -> Result<(), JsValue> {
+        let track = match (self.stepped, track) {
+            (true, Some(_)) => {
+                log::warn!(
+                    "publishTrack('{name}'): ignoring the MediaStreamTrack; a stepped session \
+                     sends no RTP and takes frames through pushVideoFrame / pushAudioFrame"
+                );
+                None
+            }
+            (true, None) => None,
+            (false, Some(track)) => Some(track),
+            (false, None) => {
+                return Err(invalid(&format!(
+                    "publishTrack('{name}') needs a MediaStreamTrack in a streamed session"
+                )))
+            }
+        };
         // Claim the slot first (a control round-trip): attaching media to a
         // track the runtime has not accepted would send into a void.
         self.reactor
             .publish_track(&name)
             .await
             .map_err(|e| error_value(&e.details(Some("publishTrack"))))?;
+        let Some(track) = track else {
+            return Ok(());
+        };
         self.peer
             .replace_sender_track(&name, Some(&track))
             .await
@@ -462,6 +505,10 @@ impl ReactorClient {
         self.reactor
             .unpublish_track(&name)
             .map_err(|e| error_value(&e.details(Some("unpublishTrack"))))?;
+        if self.stepped {
+            // No sender to detach: a stepped input track never had one.
+            return Ok(());
+        }
         self.peer
             .replace_sender_track(&name, None)
             .await
@@ -530,6 +577,135 @@ impl ReactorClient {
     #[wasm_bindgen(js_name = pausedTracks)]
     pub fn paused_tracks(&self) -> Result<StringsOutput, JsValue> {
         cast(&self.reactor.paused_tracks())
+    }
+
+    // ── Stepped generation ────────────────────────────────────────────────────
+
+    /// Run one step of a stepped session and resolve with what it produced.
+    ///
+    /// * `state` — an object of the model's state fields, each applied as its
+    ///   `set_<key>` command before `commands`; `null`/`undefined` for none.
+    /// * `commands` — `[{ command, data? }]`, run in order after the state.
+    ///
+    /// Every frame pushed since the previous step rides this one, and belongs
+    /// to it: when the request cannot be sent the step fails and its frames
+    /// are dropped, not kept for the next step. Rejects with the core's code:
+    /// `step_refused` (the runtime checks a whole request first, so a refused
+    /// step changed nothing; `entry` names the part at fault),
+    /// `step_not_ready` (the session cannot take a step yet; the step did not
+    /// run), `step_command_failed` (a state key or command failed; the calls
+    /// before it stay applied and the step did not run; `entry` names the call
+    /// and `command_code` its handler's code), `step_session_ended`
+    /// (the session ended before the result came back),
+    /// `step_result_too_large`, `MESSAGE_TOO_LARGE` (the request is over the
+    /// data channel's message limit; nothing was sent),
+    /// `UNSUPPORTED_FRAME_ENCODING`, or the code of whatever else failed the
+    /// step (`DISCONNECTED`, `REQUEST_TIMEOUT`, …).
+    pub async fn step(
+        &self,
+        state: Option<StepStateInput>,
+        commands: Option<StepCommandsInput>,
+    ) -> Result<StepResultOutput, JsValue> {
+        let state: serde_json::Value = match state.map(JsValue::from).filter(|v| !v.is_null()) {
+            Some(state) => serde_wasm_bindgen::from_value(state)
+                .map_err(|e| invalid(&format!("step state: {e}")))?,
+            None => serde_json::Value::Null,
+        };
+        let commands: Vec<StepCommandJson> = from_optional(commands, "step commands")?;
+        let commands = commands.into_iter().map(StepCommand::from).collect();
+        let output = self
+            .reactor
+            .step(state, commands)
+            .await
+            .map_err(|e| error_value(&e.details(Some("step"))))?;
+        output_to_js(output).map(JsCast::unchecked_into)
+    }
+
+    /// Buffer a video frame for the next `step()` on the sendonly track `name`.
+    ///
+    /// * `data` — `width * height` pixels in `format`: `"rgba"` (the default,
+    ///   what `ImageData` holds), `"rgb"` or `"bgra"`. Sent as RGB.
+    /// * `metadata` — opaque bytes the frame carries to the model.
+    /// * `captureTimeUs` — when the frame was captured, in microseconds.
+    ///
+    /// Stepped sessions only: a streamed session sends media from a
+    /// `MediaStreamTrack` given to `publishTrack`.
+    #[wasm_bindgen(js_name = pushVideoFrame)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_video_frame(
+        &self,
+        name: String,
+        data: &[u8],
+        width: u32,
+        height: u32,
+        format: Option<PixelFormatInput>,
+        metadata: Option<Vec<u8>>,
+        capture_time_us: Option<f64>,
+    ) -> Result<(), JsValue> {
+        self.ensure_pushable("pushVideoFrame", &name, SessionTrackKind::Video)?;
+        let format =
+            PixelFormat::parse(format.and_then(|f| JsValue::from(f).as_string()).as_deref())
+                .map_err(|e| invalid(&format!("pushVideoFrame('{name}'): {e}")))?;
+        check_size(data, width, height, format)
+            .map_err(|e| invalid(&format!("pushVideoFrame('{name}'): {e}")))?;
+        let layout = match format {
+            PixelFormat::Rgba => PixelLayout::Rgba,
+            PixelFormat::Rgb => PixelLayout::Rgb,
+            PixelFormat::Bgra => PixelLayout::Bgra,
+        };
+        let capture_time_us = capture_time_us
+            .map(|us| {
+                if us.is_finite() {
+                    Ok(us.round() as i64)
+                } else {
+                    Err(invalid(&format!(
+                        "pushVideoFrame('{name}'): captureTimeUs must be a finite number"
+                    )))
+                }
+            })
+            .transpose()?;
+        // In the caller's own layout: the core converts it to the step's RGB
+        // in one pass.
+        self.reactor.push_step_video_frame(
+            &name,
+            data,
+            width,
+            height,
+            layout,
+            metadata.as_deref(),
+            capture_time_us,
+        );
+        Ok(())
+    }
+
+    /// Buffer a block of audio for the next `step()` on the sendonly track
+    /// `name`: interleaved signed 16-bit PCM, `channels` samples per frame,
+    /// already at the rate the model's track declares (a step's frame carries
+    /// no sample rate). Stepped sessions only, as `pushVideoFrame`.
+    #[wasm_bindgen(js_name = pushAudioFrame)]
+    pub fn push_audio_frame(
+        &self,
+        name: String,
+        samples: &[i16],
+        sample_rate: u32,
+        channels: u32,
+    ) -> Result<(), JsValue> {
+        self.ensure_pushable("pushAudioFrame", &name, SessionTrackKind::Audio)?;
+        if channels == 0 || !samples.len().is_multiple_of(channels as usize) {
+            return Err(invalid(&format!(
+                "pushAudioFrame('{name}'): {} samples do not divide into {channels} channels",
+                samples.len()
+            )));
+        }
+        self.reactor
+            .push_audio_frame(&name, samples, sample_rate, channels);
+        Ok(())
+    }
+
+    /// Drop every frame buffered for the next step.
+    #[wasm_bindgen(js_name = clearStepInputs)]
+    pub fn clear_step_inputs(&self) {
+        self.reactor.clear_step_inputs();
     }
 
     // ── Recording ─────────────────────────────────────────────────────────────
@@ -761,6 +937,39 @@ impl ReactorClient {
         });
     }
 
+    /// Refuse a frame push the core would otherwise drop with only a log
+    /// line: outside a stepped session, or — once the runtime has declared
+    /// its tracks — onto a name that is not a sendonly track of that kind.
+    fn ensure_pushable(
+        &self,
+        operation: &str,
+        name: &str,
+        kind: SessionTrackKind,
+    ) -> Result<(), JsValue> {
+        if !self.stepped {
+            return Err(invalid(&format!(
+                "{operation}('{name}') needs a session created with generation: \"stepped\"; \
+                 a streamed session sends media from a MediaStreamTrack given to publishTrack"
+            )));
+        }
+        let tracks = self.reactor.tracks();
+        if tracks.is_empty() {
+            return Ok(());
+        }
+        match tracks.iter().find(|t| t.name == name) {
+            Some(t) if t.direction == SessionTrackDirection::Sendonly && t.kind == kind => Ok(()),
+            Some(t) => Err(invalid(&format!(
+                "{operation}('{name}'): '{name}' is a {} {} track, not a sendonly {} one",
+                t.direction.as_str(),
+                track_kind_name(t.kind),
+                track_kind_name(kind),
+            ))),
+            None => Err(invalid(&format!(
+                "{operation}('{name}'): the model declares no track named '{name}'"
+            ))),
+        }
+    }
+
     fn mid_of(&self, name: &str) -> Option<String> {
         self.reactor
             .track_mapping()
@@ -833,6 +1042,13 @@ fn dispatch(callbacks: &SharedCallbacks, event: ReactorEvent) {
                 call(&callback, &[value]);
             }
         }
+    }
+}
+
+fn track_kind_name(kind: SessionTrackKind) -> &'static str {
+    match kind {
+        SessionTrackKind::Video => "video",
+        SessionTrackKind::Audio => "audio",
     }
 }
 

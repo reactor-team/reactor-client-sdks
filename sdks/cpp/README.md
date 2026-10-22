@@ -287,6 +287,8 @@ receiving nothing. Every one of these throws instead, with the fix in the messag
 | a pixel buffer that is not `width * height * 4` | `BadRequestError`, naming both sizes |
 | anything after the session leaves `Ready` | `InvalidStateError`, naming the status |
 | `one()` matching zero or several tracks | `NotFoundError` / `InvalidStateError` |
+| `step()` on a streamed client | `InvalidStateError`, naming `Generation::Stepped` |
+| a step state, or a command's data, that is not a JSON object | `BadRequestError`, before anything is sent |
 
 Publishing state is not something the session records, so the SDK keeps it — and
 **clears it whenever the status leaves `Ready`**. A reconnect resumes recvonly
@@ -294,8 +296,10 @@ tracks and nothing else, so a slot published before one is not published after i
 
 ## Errors
 
-One base `reactor::ReactorError` and seventeen subclasses over the codes the
-core defines. The same type is what a failed call throws *and* what `on_error`
+One base `reactor::ReactorError` and twenty-four subclasses over the codes the
+core defines — seven of them only for stepped sessions:
+`GenerationModeMismatchError`, `StepRefusedError`, `StepNotReadyError`, `StepResultTooLargeError`,
+`StepCommandFailedError`, `StepSessionEndedError` and `UnsupportedFrameEncodingError`. The same type is what a failed call throws *and* what `on_error`
 delivers — they used to disagree in the Python SDK, and anything listening to the
 event reconnected in a loop against a token that would never work.
 
@@ -304,6 +308,81 @@ matter. Codes are open-ended: a command the model refuses reports the model's ow
 code, which arrives on `ReactorError` itself with `code()` set to it — match on
 `code()` for anything not in the list, and never treat an unrecognised one as a
 parse failure.
+
+## Stepped generation
+
+A model that supports it can generate one step at a time instead of streaming.
+Ask for it when creating the client, then call `step()`: it applies the state,
+the commands and every input frame pushed since the previous step, runs the model
+once, and resolves with what the model produced on each output track. The runtime
+applies those as individual calls, in that order, before generating — not as a
+transaction. Both arguments are optional: `client.step()` runs the model on its
+current state, and commands sent with `send_command()` between steps still change
+the state the next step uses.
+
+```cpp
+reactor::Options options;
+options.generation = reactor::Generation::Stepped;
+reactor::Reactor client{"owner/model", reactor::ApiKey{key}, options};
+
+client.connect().get();          // GenerationModeMismatchError if the runtime cannot
+
+auto camera = client.track("camera");
+camera.publish().get();
+camera.push_frame(reactor::Bytes{bgra.data(), bgra.size()}, width, height);  // buffered, not sent
+
+const auto result = client.step({{"prompt", "a red fox"}},
+                                {{"advance", {{"frames", 4}}}}).get();
+result.track("main_video").rate;  // frames/s (samples/s for audio); 0 if unspecified
+for (const auto& frame : result.track("main_video").frames) {
+  frame.data;                    // (height, width, 3) uint8 RGB, frame.shape says so
+  frame.metadata, frame.capture_time_us;
+}
+result.elapsed;                  // seconds the step's generate() took (or the model reported)
+for (const auto& file : result.files) {
+  file.name, file.content_type, file.size;  // bytes: GET /sessions/{id}/steps/{step}
+}
+if (result.error) { /* the step ran, and the model reported this failure */ }
+
+const auto next = client.step().get();      // no new state or commands
+```
+
+A step that ran but that the model reported failing resolves normally with
+`error` set; only a step that did not run, or whose result could not be
+delivered, throws. `files` describes the extra files the model kept with the
+step; their bytes are fetched over HTTP
+from the session's step results, `GET /sessions/{id}/steps/{step}`, which
+answers 202 until they are stored. `files` is empty when the model kept none or
+the result was not saved.
+Files go *into* a step the way they go into a command: upload first, then put the
+`FileRef` in a command's data or in the state value of an upload-typed field.
+
+`Track::push_frame` keeps its signature: in a stepped session it buffers the frame
+for the next step instead of sending it, and still needs `publish()` first. The
+buffer holds at most one data-channel message's worth of frame bytes, so pushing
+faster than steps run drops the oldest frames, across tracks; once the session's
+tracks are known, a frame pushed to a track the session does not take as input is
+dropped with a warning. The frames buffered when a step goes out belong to that
+step whatever its outcome — one that could not be sent drops them too — and
+`clear_step_inputs()` drops what is buffered now. Audio comes back as
+`(channels, samples)` `int16`, and each output track's `rate` is what the runtime
+reported: frames per second for video, samples per second for audio, 0 when it
+did not say. A step the runtime refuses throws
+`StepRefusedError` (the runtime checks the whole request first, so it changed
+nothing; `entry()` names the part at fault); one the session cannot take yet
+throws `StepNotReadyError` (neither ran); one whose state key or command handler
+fails throws `StepCommandFailedError` (the calls before it stay applied, the step
+did not run; `entry()` names the call and `command_code()` the code its handler
+raised); one whose session ends before its result is sent throws
+`StepSessionEndedError` (whether it ran is unknown); one whose output does not
+fit in a message throws `StepResultTooLargeError`; a request too large to send throws
+`MessageTooLargeError`. `Options::step_timeout_seconds` bounds a step (default 300 s).
+
+The result is copied out of the native library once, when the step completes, and
+the native result is freed there and then: a `StepResult` owns its bytes and
+outlives the client. `step()` refuses a streamed client rather than waiting on
+something that cannot happen. See
+[`examples/09_stepped_generation.cpp`](examples/09_stepped_generation.cpp).
 
 ## Recordings
 
@@ -362,8 +441,9 @@ differences:
 
 ## Examples
 
-Eight, one capability each, in [`examples/`](examples) — and each one has been run
-against a published model in production. Start with
+Nine, one capability each, in [`examples/`](examples). The first eight have been run
+against a published model in production; 09 waits on a published model with stepped
+generation. Start with
 [`01_connect_and_receive.cpp`](examples/01_connect_and_receive.cpp); the diff
 against it is the lesson in every other one. `examples/README.md` has the matrix,
 including the two results that look like faults and are not.
@@ -405,7 +485,7 @@ it is.
 | `src/detail/` | the FFI boundary: the symbol table, RAII strings, the dispatcher |
 | `src/audio/` | the optional device helpers |
 | `tests/` | Catch2 unit tests, run against a fake library |
-| `examples/` | the eight |
+| `examples/` | the nine |
 
 ### Dependencies
 

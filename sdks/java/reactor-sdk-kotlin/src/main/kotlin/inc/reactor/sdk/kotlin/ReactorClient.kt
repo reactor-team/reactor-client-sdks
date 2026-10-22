@@ -6,10 +6,13 @@ import inc.reactor.sdk.CommandReply
 import inc.reactor.sdk.ConnectionStatus
 import inc.reactor.sdk.DownloadedClip
 import inc.reactor.sdk.FileRef
+import inc.reactor.sdk.Generation
 import inc.reactor.sdk.JsonValue
 import inc.reactor.sdk.Reactor
 import inc.reactor.sdk.ReactorOptions
 import inc.reactor.sdk.Stats
+import inc.reactor.sdk.StepCommand
+import inc.reactor.sdk.StepResult
 import java.nio.file.Path
 import kotlinx.coroutines.future.await
 
@@ -171,6 +174,69 @@ public class ReactorClient(
 
     /** What the platform reports about this session. */
     public suspend fun getStats(): Stats = java.getStats().await()
+
+    // ── Stepped generation ──────────────────────────────────────────────────
+
+    /** How this client's sessions generate, as [ReactorOptions.Builder.generation] set it. */
+    public val generation: Generation
+        get() = java.generation()
+
+    /**
+     * Runs one step of a stepped session and returns what it produced.
+     *
+     * The runtime applies, in order: [state] (each key as the model's `set_<key>` command), then
+     * [commands], then every input frame pushed since the previous step — in a stepped session
+     * [ReactorTrack.pushFrame] buffers for the next step instead of sending — and then generates.
+     * The runtime checks the whole request before it applies any of it, so a step it refuses
+     * changed nothing; past that check these are separate calls, so a call whose handler fails
+     * leaves the calls before it applied. Both parameters are optional; `step()` with neither runs
+     * on the model's current state.
+     *
+     * A step the model reported as failed still returns, with [StepResult.error] saying why; only a
+     * refused step throws. [StepResult.files] names the files the model kept with the step.
+     *
+     * ```kotlin
+     * val client = ReactorClient.open(reactorOptions(apiUrl, "owner/model") {
+     *     apiKey(key)
+     *     generation(Generation.STEPPED)
+     * })
+     * client.connect()
+     * val result = client.step(
+     *     state = JsonValue.`object`().put("prompt", "a red fox").build(),
+     *     commands = listOf(StepCommand.of("advance")),
+     * )
+     * result.track("main_video").frames().forEach { show(it.data(), it.shape()) }
+     * ```
+     *
+     * Cancelling the await does not recall the step: once sent, the runtime runs it and its input
+     * frames are spent.
+     *
+     * @param state the model's state fields as a JSON object, or null to change none
+     * @param commands what to run after the state, in order
+     * @return the step's result, copied onto the heap
+     * @throws inc.reactor.sdk.StepRefusedException when the runtime or the model turns the step
+     *   down; nothing it carried was applied, and its `entry()` names the part at fault
+     * @throws inc.reactor.sdk.StepNotReadyException when the session cannot take a step yet; the
+     *   step did not run
+     * @throws inc.reactor.sdk.StepCommandFailedException when one of its state keys or commands
+     *   failed; the step did not run, the calls before it stay applied, and its `entry()` and
+     *   `commandCode()` name the call and the code its handler raised
+     * @throws inc.reactor.sdk.StepSessionEndedException when the session ended before its result
+     *   came; whether it ran is unknown
+     * @throws inc.reactor.sdk.StepResultTooLargeException when its output does not fit in a message
+     * @throws inc.reactor.sdk.MessageTooLargeException when the request does not; nothing was sent,
+     *   and the step's buffered input frames are dropped with it
+     */
+    public suspend fun step(
+        state: JsonValue? = null,
+        commands: List<StepCommand> = emptyList(),
+    ): StepResult = java.step(state, commands).await()
+
+    /**
+     * Drops every input frame buffered for the next step, so that step carries only what is pushed
+     * after this. A no-op on a streamed client.
+     */
+    public fun clearStepInputs(): Unit = java.clearStepInputs()
 
     // ── Recording ───────────────────────────────────────────────────────────
 

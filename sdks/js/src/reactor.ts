@@ -1,9 +1,10 @@
 import { AwaitQueue } from 'awaitqueue';
 import { toPublicCapabilities } from './internal/capabilities';
 import { debugLog } from './internal/debug-log';
-import { toReactorError, type ReactorError } from './errors';
+import { InvalidStateError, toReactorError, type ReactorError } from './errors';
 import { Emitter } from './internal/emitter';
-import { extractFileRefs, toPublicFileRef } from './internal/file-ref';
+import { extractFileRefs, rewriteNestedFileRefs, toPublicFileRef } from './internal/file-ref';
+import { holdFrame, isAudioFrame, toPixels } from './internal/push-frames';
 import { toPublicClip } from './internal/recording';
 import type { ReactorClient } from './internal/reactor-wasm.types';
 import {
@@ -29,11 +30,16 @@ import type {
   MessageScope,
   ModelSchema,
   NotFunction,
+  PushFrame,
+  PublishedTrack,
+  PushFrameOptions,
   ReactorEventMap,
   ReactorMessage,
   ReactorOptions,
   ReactorStatus,
   SessionResponse,
+  StepOptions,
+  StepResult,
   TrackCapability,
   TrackMappingEntry,
 } from './types';
@@ -74,6 +80,11 @@ export class Reactor implements Disposable {
   private connectStartTime: number | undefined;
   private waitingStartTime: number | undefined;
 
+  /** The tail of every `pushFrame()` so far, settled either way — pushes
+   *  reach the binding in call order however long each one's pixels take to
+   *  read, and `step()` waits for the ones called before it. */
+  private pendingPushes: Promise<void> = Promise.resolve();
+
   private readonly emitter = new Emitter<ReactorEventMap>();
   /** Serializes connect()/reconnect()/disconnect() (and the free() inside
    *  disconnect()/[Symbol.dispose]) against each other. Calling into the
@@ -92,6 +103,15 @@ export class Reactor implements Disposable {
    *  out every read active when it started, before it releases the ones
    *  that arrived while it ran. */
   private writerActive = false;
+  /** Counts `disconnect()`s and disposal. A push captures it when called, and
+   *  one whose frame was still being read when it moved is dropped, rather
+   *  than recreating a client to carry the frame into the next session. */
+  private connectionEpoch = 0;
+  /** Input tracks published on this connection, each with the publication
+   *  that claimed it: a push needs one, and a `PublishedTrack` only feeds the
+   *  publication it came from. Cleared with the connection. */
+  private readonly publishedInputs = new Map<string, number>();
+  private publications = 0;
   /** Readers parked in `withReaderAccess()`'s wait loop, woken once
    *  `withWriterAccess()` finishes; each re-checks `writerActive` rather
    *  than assuming its turn, since another writer already queued behind the
@@ -427,15 +447,54 @@ export class Reactor implements Disposable {
    * disconnect() freeing the wasm client mid-await would otherwise resume
    * into a freed client — the same class of use-after-free `queue` exists to
    * prevent for connect/disconnect/reconnect themselves.
+   *
+   * Resolves with a `PublishedTrack` handle whose `pushFrame()` feeds the
+   * track in a stepped session.
+   *
+   * In a `generation: "stepped"` session, input frames never travel over
+   * RTP: `track` is optional, and the frames are pushed with
+   * `published.pushFrame(...)` for the next `step()`. A `MediaStreamTrack`
+   * passed there is ignored, with a console warning — nothing is sent from
+   * it. In a streamed session `track` is required, and omitting it rejects
+   * with an `InvalidStateError`.
+   *
+   * ```ts
+   * const camera = await reactor.publishTrack('camera');
+   * await camera.pushFrame(imageData);
+   * const result = await reactor.step();
+   * ```
    */
-  async publishTrack(name: string, track: MediaStreamTrack): Promise<void> {
+  async publishTrack(name: string, track?: MediaStreamTrack): Promise<PublishedTrack> {
     this.assertNotDisposed();
     try {
+      let media = track;
+
+      if (this.isStepped() && media !== undefined) {
+        console.warn(
+          `[Reactor] publishTrack('${name}'): ignoring the MediaStreamTrack — a stepped session ` +
+            'sends no RTP and takes frames through track.pushFrame(...) on the track publishTrack() returns.',
+        );
+        media = undefined;
+      }
+      if (!this.isStepped() && media === undefined) {
+        throw new InvalidStateError(
+          `publishTrack('${name}') needs a MediaStreamTrack in a streamed session.`,
+          { operation: 'publishTrack' },
+        );
+      }
+      const publication = (this.publications += 1);
+
       await this.queue.push(async () => {
         const client = await this.getOrCreateClient();
 
-        await client.publishTrack(name, track);
+        await client.publishTrack(name, media);
+        this.publishedInputs.set(name, publication);
       }, 'publishTrack');
+
+      return {
+        name,
+        pushFrame: (frame, options) => this.pushTo(name, publication, frame, options),
+      };
     } catch (cause) {
       throw this.captureError(cause);
     }
@@ -454,6 +513,7 @@ export class Reactor implements Disposable {
         const client = await this.getOrCreateClient();
 
         await client.unpublishTrack(name);
+        this.publishedInputs.delete(name);
       }, 'unpublishTrack');
     } catch (cause) {
       this.emitError(cause);
@@ -531,6 +591,203 @@ export class Reactor implements Disposable {
 
         await client.resumeTrack(name);
       }, 'resumeTrack');
+    } catch (cause) {
+      throw this.captureError(cause);
+    }
+  }
+
+  // ── Stepped generation ──────────────────────────────────────────────────
+
+  /**
+   * Runs one step of a `generation: "stepped"` session and resolves with
+   * what it produced, per output track.
+   *
+   * The request carries `state`, `commands` and every frame pushed since the
+   * previous step. The runtime applies them in that order — each `state` key
+   * as the model's `set_<key>` command, then `commands`, then the frames —
+   * and then generates. They are separate calls, not a transaction: one that
+   * fails does not undo the ones before it. All of it is optional:
+   * `step()` with nothing set and nothing pushed runs on the model's current
+   * state, which commands sent outside a step (`sendCommand()`) also change.
+   * A file goes in the way it does for a command: upload it with
+   * `uploadFile()`, then put the `FileRef` in a command's `data` or a state
+   * value.
+   *
+   * A step that ran but that the model reported as failed still resolves,
+   * with `result.error` set. `result.files` lists the files the model kept
+   * with the step (name, content type, size); their bytes are served over
+   * HTTP from the session's step results, not carried here.
+   *
+   * Rejects with a `StepRefusedError` when the runtime or the model turns
+   * the step down (the runtime checks a whole request first, so nothing it
+   * carried was applied), `StepNotReadyError` when the session cannot take a
+   * step yet (neither ran the step), `StepCommandFailedError` when a state key
+   * or command failed (the calls before it stay applied; the step did not
+   * run); both name the part at fault in `entry`, and `StepCommandFailedError`
+   * the handler's code in `command_code`,
+   * `StepSessionEndedError` when the session ended before the result came
+   * back, `StepResultTooLargeError` when the result does not fit in one
+   * message, `MessageTooLargeError` when the request itself is too large
+   * (nothing was sent), `InvalidStateError` outside a ready stepped
+   * session, or whatever else failed the step (`DisconnectedError`,
+   * `RequestTimeoutError`, ...). The frames pushed for a step belong to it:
+   * when its request cannot be sent, they are dropped with it rather than
+   * kept for the next step.
+   *
+   * ```ts
+   * const camera = await reactor.publishTrack('camera');
+   * await camera.pushFrame(imageData);
+   * const result = await reactor.step({ state: { prompt: 'a cat' } });
+   * if (result.error) console.warn('step failed:', result.error);
+   * const frame = result.tracks.find((t) => t.track === 'main_video')?.frames[0];
+   * if (frame) ctx.putImageData(stepFrameToImageData(frame), 0, 0);
+   * ```
+   */
+  async step(options: StepOptions = {}): Promise<StepResult> {
+    this.assertNotDisposed();
+    try {
+      // A step has no uploads map: a FileRef rides inline, in its wire shape.
+      const state = rewriteNestedFileRefs(options.state ?? null);
+      const commands = (options.commands ?? []).map((command) =>
+        command.data ? { ...command, data: rewriteNestedFileRefs(command.data) } : command,
+      );
+
+      await this.pendingPushes;
+      // Excluded from connect()/disconnect()/reconnect() like sendCommand():
+      // a step can take minutes, and must neither be freed out from under
+      // nor block unrelated reads.
+      return await this.withReaderAccess(async () => {
+        const client = await this.getOrCreateClient();
+
+        return client.step(state, commands);
+      });
+    } catch (cause) {
+      throw this.captureError(cause);
+    }
+  }
+
+  /**
+   * Buffers one input frame for the next `step()` on the sendonly track
+   * `trackName`. Nothing is sent until that step, which carries every frame
+   * pushed since the one before it, per track in push order. The
+   * `PublishedTrack` that `publishTrack()` resolves with does the same
+   * through `track.pushFrame(frame)`.
+   *
+   * Video: a `VideoFrame` (cloned when called, so the caller may close it as
+   * soon as this returns; it stays the caller's), an
+   * `ImageData`, or `{ data, width, height, format? }` raw pixels (`"rgba"`
+   * by default, or `"rgb"`/`"bgra"`). Sent to the model as RGB. A
+   * `VideoFrame` is sent as it is displayed: its `rotation` and `flip` are
+   * applied, so a 90° frame arrives with its width and height swapped.
+   * Audio: `{ samples, sampleRate, channels? }`, interleaved `Int16Array`
+   * PCM at the rate the model's track declares.
+   *
+   * Pushes keep their call order, and a `step()` waits for every push called
+   * before it. A refused push rejects: await it, or `.catch()` it in a frame
+   * loop, or every bad frame is an unhandled rejection. What waits for
+   * the next step is at most one message's worth of frames: pushing faster
+   * than steps run drops the oldest frames, across tracks. Rejects with
+   * an `InvalidStateError` outside a stepped session, for a track not
+   * published on this connection (`publishTrack(trackName)` first), for a
+   * frame whose size does not match its dimensions, or for a name the model
+   * does not declare as a sendonly track of that kind.
+   */
+  async pushFrame(trackName: string, frame: PushFrame, options: PushFrameOptions = {}): Promise<void> {
+    return this.pushTo(trackName, undefined, frame, options);
+  }
+
+  /** `pushFrame()`, for the track's current publication or, from a
+   *  `PublishedTrack`, only for the `publication` it came from. */
+  private async pushTo(
+    trackName: string,
+    publication: number | undefined,
+    frame: PushFrame,
+    options: PushFrameOptions = {},
+  ): Promise<void> {
+    this.assertNotDisposed();
+    const epoch = this.connectionEpoch;
+    let held: ReturnType<typeof holdFrame>;
+
+    try {
+      held = holdFrame(frame);
+    } catch (cause) {
+      throw this.captureError(cause);
+    }
+    const push = this.pendingPushes.then(async () => {
+      let pixels;
+
+      try {
+        if (!this.isStepped()) {
+          throw new InvalidStateError(
+            `pushFrame('${trackName}') needs a session created with generation: "stepped"; ` +
+              'a streamed session sends media from a MediaStreamTrack given to publishTrack().',
+            { operation: 'pushFrame' },
+          );
+        }
+        pixels = isAudioFrame(held.frame) ? undefined : await toPixels(held.frame);
+      } finally {
+        held.release();
+      }
+
+      // Read access, like step(): a disconnect() must not free the client
+      // between resolving it and the (synchronous) push into it.
+      await this.withReaderAccess(async () => {
+        if (epoch !== this.connectionEpoch) {
+          throw new InvalidStateError(
+            `pushFrame('${trackName}'): the connection it was pushed to ended while its frame was read`,
+            { operation: 'pushFrame' },
+          );
+        }
+        const current = this.publishedInputs.get(trackName);
+
+        if (current === undefined || (publication !== undefined && publication !== current)) {
+          throw new InvalidStateError(
+            publication === undefined
+              ? `pushFrame('${trackName}') needs publishTrack('${trackName}') first.`
+              : `pushFrame('${trackName}'): this track was unpublished, or its connection ended.`,
+            { operation: 'pushFrame' },
+          );
+        }
+        const client = await this.getOrCreateClient();
+
+        if (pixels) {
+          client.pushVideoFrame(
+            trackName,
+            pixels.data,
+            pixels.width,
+            pixels.height,
+            pixels.format,
+            options.metadata ?? null,
+            options.captureTimeUs ?? null,
+          );
+        } else if (isAudioFrame(frame)) {
+          client.pushAudioFrame(trackName, frame.samples, frame.sampleRate, frame.channels ?? 1);
+        }
+      });
+    });
+
+    this.pendingPushes = push.catch(() => undefined);
+    try {
+      await push;
+    } catch (cause) {
+      throw this.captureError(cause);
+    }
+  }
+
+  /** Drops every frame buffered for the next step, pushes called before it
+   *  included: it waits its turn behind them, as a `step()` does. */
+  async clearStepInputs(): Promise<void> {
+    this.assertNotDisposed();
+    const clear = this.pendingPushes.then(() =>
+      this.withReaderAccess(() => {
+        this.client?.clearStepInputs();
+        return Promise.resolve();
+      }),
+    );
+
+    this.pendingPushes = clear.catch(() => undefined);
+    try {
+      await clear;
     } catch (cause) {
       throw this.captureError(cause);
     }
@@ -980,6 +1237,8 @@ export class Reactor implements Disposable {
    *  leave `getCapabilities()` returning the previous session's stale
    *  tracks/commands until a new `capabilitiesReceived` lands. */
   private resetConnectionState(): void {
+    this.connectionEpoch += 1;
+    this.publishedInputs.clear();
     this.stopStatsPolling();
     this.connectionTimings = undefined;
     this.connectStartTime = undefined;
@@ -1002,6 +1261,10 @@ export class Reactor implements Disposable {
    *  so `getLastError()` never drifts from what listeners were told. */
   private emitError(cause: unknown): void {
     this.emitter.emit('error', this.captureError(cause));
+  }
+
+  private isStepped(): boolean {
+    return this.clientOptions.generation === 'stepped';
   }
 
   private assertNotDisposed(): void {

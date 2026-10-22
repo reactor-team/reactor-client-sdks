@@ -47,7 +47,8 @@ rather than `any`:
 | Lifecycle | `connect(options?)`, `disconnect()`, `reconnect()` |
 | Configuration | `setJwt(jwt)` |
 | Messaging | `sendCommand(command, data?, uploads?)`, `requestSchema()` |
-| Tracks | `publishTrack(name, track)`, `unpublishTrack(name)`, `pauseTrack(name)`, `resumeTrack(name)`, `tracks()`, `trackMapping()`, `pausedTracks()` |
+| Tracks | `publishTrack(name, track?)`, `unpublishTrack(name)`, `pauseTrack(name)`, `resumeTrack(name)`, `tracks()`, `trackMapping()`, `pausedTracks()` |
+| Stepped generation | `step(state?, commands?)`, `pushVideoFrame(name, data, width, height, format?, metadata?, captureTimeUs?)`, `pushAudioFrame(name, samples, sampleRate, channels)`, `clearStepInputs()` |
 | Recording | `requestClip(seconds)`, `requestRecording()` |
 | Uploads | `uploadFile(file, name?)` |
 | Introspection | `status()`, `sessionId()`, `sessionInfo()`, `capabilities()`, `lastError()` |
@@ -56,7 +57,39 @@ rather than `any`:
 
 Payloads that come out of the core keep their wire names (`protocol_version`,
 `retry_after_ms`, `playlist_url`); the options this crate defines itself are
-camelCase, because nothing on the wire constrains them.
+camelCase, because nothing on the wire constrains them. So is a step's result:
+it is built by hand rather than serialized, because its frame data are typed
+arrays (`Uint8Array` video, `Int16Array` audio) and serde has no word for one.
+
+A client created with `generation: "stepped"` sends no input media over RTP.
+`publishTrack(name)` only claims an input track (a `MediaStreamTrack` passed
+there is ignored, with a console warning), `pushVideoFrame` / `pushAudioFrame`
+buffer frames in the core, and the next `step()` carries them inside its one
+`RequestStep`. Both of `step()`'s arguments are optional: an empty step runs on
+the model's current state. Video arrives as RGBA, RGB or BGRA, and the core
+converts it to the RGB a step sends in one pass.
+
+The buffer holds at most one data-channel message's worth of frames: pushing
+faster than steps run drops the oldest frames, across tracks, and the next step
+logs how many. Pushed frames belong to the step that takes them: when that
+step's request cannot be sent — `MESSAGE_TOO_LARGE` among the reasons — the
+step rejects and its frames are dropped with it, so the next step starts from
+what is pushed after. `clearStepInputs()` drops whatever is buffered now.
+
+`step()` resolves with `{ step, tracks, elapsed, files, error? }`. Each track
+is `{ track, kind, rate, frames }`, `rate` being the rate its frames play at as
+the runtime reported it (frames per second for video, samples per second for
+audio; 0 when it did not say). `files`
+describes the files the model kept with the step (`name`, `contentType`,
+`size`); their bytes are served over HTTP from the session's step results.
+`error` is set when the step ran and the model reported a failure — such a
+step still resolves. A step that did not run rejects with `step_refused`
+(nothing it carried was applied), `step_not_ready` (the session cannot take a
+step yet) or `step_command_failed` (a state key or command failed; the calls
+before it stay applied). Both of those carry `entry`, the part of the request
+at fault, and `step_command_failed` also `command_code`, its handler's code. One whose result was too large for a message
+rejects with `step_result_too_large`, and one whose session ended before the
+result came back with `step_session_ended`.
 
 ```js
 import init, { ReactorClient } from "./pkg/reactor_wasm.js";

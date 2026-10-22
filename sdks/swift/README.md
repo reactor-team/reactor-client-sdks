@@ -26,6 +26,77 @@ does. `reactor.tracks` and its `.withKind`/`.withDirection` filters are for
 *discovering* what a session declares, not for everyday use. See
 [Examples/](Examples/) for the seven scenarios every Reactor SDK ships.
 
+## Stepped generation
+
+A model that supports it can generate one step at a time instead of streaming.
+Ask for it when creating the client, then call `step(state:commands:)`: the
+runtime applies the state, then the commands, then every input frame pushed
+since the previous step — each as its own call, not as one unit — generates,
+and returns what the model produced on each output track. Both arguments are
+optional: `step()` runs on the model's current state, which commands sent with
+`sendCommand` between steps can change.
+
+```swift
+let reactor = try await Reactor(model: "owner/model", apiKey: apiKey, generation: .stepped)
+
+try await reactor.connect()          // generationModeMismatch if the runtime cannot step,
+                                     // dataChannelChunkingRequired without chunking
+
+let camera = try reactor.track("camera")
+try await camera.publish()
+try camera.pushFrame(pixels, width: 640, height: 360)   // buffered for the next step, not sent
+
+let result = try await reactor.step(
+    state: ["prompt": "a red fox"],
+    commands: [StepCommand("advance", ["frames": 4])])
+for frame in try result.track("main_video").frames {
+    frame.data      // (height, width, 3) uint8 RGB — frame.shape, frame.dtype
+    frame.metadata  // what the sender attached, if anything
+    frame.captureTimeUs
+}
+result.elapsed      // Duration — how long the step's generate() took (or the model reported)
+result.error        // String? — set when the step ran but the model reported a failure
+for file in result.files {
+    file.name; file.contentType; file.size   // bytes: GET /sessions/{id}/steps/{index}
+}
+
+let next = try await reactor.step()       // nothing new: run on the current state
+```
+
+`Track.pushFrame` keeps its signatures: in a stepped session it buffers the frame
+for the next step instead of sending it. The buffer holds at most one
+data-channel message's worth of frame bytes, so pushing faster than steps run
+drops the oldest frames, across tracks; once the session's tracks are known, a
+push to a track the session does not take as input is dropped with a warning.
+Audio comes back as planar `(channels, samples)` `int16`. Each output track
+carries `rate`, the rate its frames play at as the runtime reported it — frames
+per second for video, samples per second for audio, `0` when unspecified. The
+result is copied out of the library once and the native copy freed at once, so a
+`StepResult` can be kept and passed around freely.
+
+A step that ran but that the model reported as failed returns normally, with
+`result.error` saying why. A step the runtime refuses throws
+`ReactorError.stepRefused`; one the session cannot take yet throws
+`stepNotReady` (neither ran); one whose state key or command handler failed
+throws `stepCommandFailed` (the calls before it stay applied, the step did not
+run, and the error's `entry` and `commandCode` name the call and its code); one whose session ended before its result was sent throws
+`stepSessionEnded` (whether it ran is unknown); one whose output
+does not fit in a message throws `stepResultTooLarge`; a request too large to
+send throws `messageTooLarge`. A step refused before it goes out (`invalidState`,
+`badRequest`) keeps its pushed frames for the next step; past that they belong to
+the step whatever its outcome, so one that could not be sent drops them too, and
+nothing is resent. `clearStepInputs()` drops what is
+buffered now. `stepTimeout:` bounds a step (default 300 s).
+
+`result.files` names the extra files the model kept with the step; it does not
+carry them. Fetch their bytes over HTTP from the session's step results,
+`GET /sessions/{id}/steps/{index}`, which lists each with a download URL (202
+while the step is not stored yet). Files go *into* a step as they go into any
+command: upload with `uploadFile(at:)` or `uploadData(_:name:mimeType:)`, then
+put the `FileRef` in a command's arguments (`StepCommand(_:arguments:)`) or,
+as `JSONValue(fileRef)`, in the state value of a field that takes an upload. See
+[`Examples/09_stepped_generation`](Examples/09_stepped_generation/main.swift).
+
 ## Where the manifest lives
 
 `Package.swift` is at the **repository root**, not in this directory. SwiftPM

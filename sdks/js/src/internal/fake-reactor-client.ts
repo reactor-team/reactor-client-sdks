@@ -5,9 +5,12 @@ import type {
   Clip as WireClip,
   ConnectOptions,
   FileRef,
+  PixelFormat,
   ReactorMessage,
   ReactorStatus,
   SessionInfo,
+  StepCommand,
+  StepResult,
   TrackCapability,
   TrackMappingEntry,
 } from './reactor-wasm.types';
@@ -70,7 +73,7 @@ export class FakeReactorClient {
   freeCalls = 0;
   private _status: ReactorStatus = 'disconnected';
 
-  publishTrackCalls: Array<{ name: string; track: MediaStreamTrack }> = [];
+  publishTrackCalls: Array<{ name: string; track: MediaStreamTrack | null | undefined }> = [];
   unpublishTrackCalls: string[] = [];
   pauseTrackCalls: string[] = [];
   setTrackBitrateCalls: Array<{
@@ -252,10 +255,72 @@ export class FakeReactorClient {
     this.capabilitiesReceivedListener?.(capabilities);
   }
 
+  stepCalls: Array<{
+    state: Record<string, unknown> | null | undefined;
+    commands: StepCommand[] | null | undefined;
+  }> = [];
+  stepResult: StepResult = { step: 1, tracks: [], elapsed: 0, files: [] };
+  // Overridable so a test can hold a step open or fail it.
+  stepImpl: (() => Promise<StepResult>) | undefined;
+  step(
+    state?: Record<string, unknown> | null,
+    commands?: StepCommand[] | null,
+  ): Promise<StepResult> {
+    this.stepCalls.push({ state, commands });
+    if (this.stepImpl) {
+      return this.stepImpl();
+    }
+    return Promise.resolve(this.stepResult);
+  }
+
+  pushVideoFrameCalls: Array<{
+    name: string;
+    data: Uint8Array;
+    width: number;
+    height: number;
+    format: PixelFormat | null | undefined;
+    metadata: Uint8Array | null | undefined;
+    captureTimeUs: number | null | undefined;
+  }> = [];
+  // Overridable so a test can simulate the binding refusing a frame — the
+  // real one throws synchronously.
+  pushVideoFrameError: Error | undefined;
+  pushVideoFrame(
+    name: string,
+    data: Uint8Array,
+    width: number,
+    height: number,
+    format?: PixelFormat | null,
+    metadata?: Uint8Array | null,
+    captureTimeUs?: number | null,
+  ): void {
+    if (this.pushVideoFrameError) {
+      throw this.pushVideoFrameError;
+    }
+    this.pushVideoFrameCalls.push({ name, data, width, height, format, metadata, captureTimeUs });
+  }
+
+  pushAudioFrameCalls: Array<{
+    name: string;
+    samples: Int16Array;
+    sampleRate: number;
+    channels: number;
+  }> = [];
+  pushAudioFrame(name: string, samples: Int16Array, sampleRate: number, channels: number): void {
+    this.pushAudioFrameCalls.push({ name, samples, sampleRate, channels });
+  }
+
+  clearStepInputsCalls = 0;
+  clearStepInputs(): void {
+    this.clearStepInputsCalls += 1;
+  }
+
   // Overridable so a test can fail a specific publish call, e.g. to
   // simulate one of two concurrent publishTrack() calls rejecting.
-  publishTrackImpl: ((name: string, track: MediaStreamTrack) => Promise<void>) | undefined;
-  publishTrack(name: string, track: MediaStreamTrack): Promise<void> {
+  publishTrackImpl:
+    | ((name: string, track: MediaStreamTrack | null | undefined) => Promise<void>)
+    | undefined;
+  publishTrack(name: string, track?: MediaStreamTrack | null): Promise<void> {
     this.publishTrackCalls.push({ name, track });
     if (this.publishTrackImpl) {
       return this.publishTrackImpl(name, track);

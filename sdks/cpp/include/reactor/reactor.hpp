@@ -31,6 +31,7 @@
 #include "reactor/recording.hpp"
 #include "reactor/stats.hpp"
 #include "reactor/status.hpp"
+#include "reactor/step.hpp"
 #include "reactor/subscription.hpp"
 #include "reactor/track.hpp"
 
@@ -126,6 +127,21 @@ struct Options {
   /// — `Options{url, local, executor}` — still selects the executor rather
   /// than silently becoming the flag.
   bool auto_resume_tracks = true;
+
+  /// How the session generates: `Streamed` over media tracks (the default), or
+  /// `Stepped`, one `Reactor::step()` at a time. A stepped client fails
+  /// `connect()` with `GenerationModeMismatchError` when the runtime does not
+  /// start the session that way. Appended, like `auto_resume_tracks`, so an
+  /// aggregate initializer written before it existed means what it meant.
+  Generation generation = Generation::Streamed;
+
+  /// Seconds a `step()` may take, generation included, before it fails with
+  /// `RequestTimeoutError`. Stepped sessions only — the constructor throws
+  /// `BadRequestError` for one set on a streamed client, or for a value that is
+  /// not a finite number above zero. Unset keeps the library's default of 300.
+  /// Brace-initialised so an aggregate initializer that stops before it does
+  /// not trip -Wmissing-field-initializers in a consumer's -Werror build.
+  std::optional<double> step_timeout_seconds{};
 };
 
 /// What `connect` may adopt instead of creating.
@@ -381,6 +397,76 @@ class Reactor {
   /// `dynamic_cast`; `recoverable()` is the property to branch on when the
   /// specific code does not matter.
   Subscription on_error(std::function<void(const ReactorError&)> handler);
+
+  // ── Stepped generation ─────────────────────────────────────────────────────
+
+  /// How this client's sessions generate, as `Options::generation` chose.
+  Generation generation() const noexcept;
+
+  /// Run one step of a stepped session and resolve with what it produced.
+  ///
+  /// Before the model generates, the runtime applies `state` (each key as the
+  /// model's `set_<key>` command), then `commands` in order, then every input
+  /// frame pushed since the previous step — `Track::push_frame` does not send in
+  /// a stepped session, it buffers for the next step. These are individual
+  /// calls, not a transaction: one that fails does not undo the ones before it.
+  ///
+  /// The buffer holds at most one data-channel message's worth of frame bytes:
+  /// pushing faster than steps run drops the oldest frames, across tracks. Once
+  /// the session's tracks are known, a frame pushed to a track the session does
+  /// not take as input is dropped with a warning. The frames buffered when a step
+  /// goes out belong to it whatever its outcome: one that could not be sent,
+  /// `MessageTooLargeError` included, drops them too, and nothing is resent. A
+  /// step refused before it goes out keeps them for the next step.
+  ///
+  /// ```cpp
+  /// auto camera = client.track("camera");
+  /// camera.publish().get();
+  /// camera.push_frame(reactor::Bytes{bgra.data(), bgra.size()}, width, height);
+  /// const auto result = client.step({{"prompt", "a red fox"}},
+  ///                                 {{"advance", {{"frames", 4}}}}).get();
+  /// for (const auto& frame : result.track("main_video").frames) { … }
+  /// ```
+  ///
+  /// Both arguments are optional: `client.step()` with nothing pushed runs the
+  /// model once on its current state. Commands sent with `send_command` outside a
+  /// step still work in a stepped session and change the state the next step
+  /// uses.
+  ///
+  /// `state` is a JSON object or null (no state). Each command's `data` is an
+  /// object or null. Files go in the way they do for `send_command`: upload them
+  /// first, then put the `FileRef` in a command's data or in the state value of
+  /// an upload-typed field, where it converts into its upload reference.
+  ///
+  /// A step that ran but that the model reported failing still resolves, with
+  /// `StepResult::error` set; a step that did not run, or whose result was too
+  /// large to send, fails the future.
+  ///
+  /// Fails with `InvalidStateError` on a streamed client or a session that is
+  /// not `Ready`; `BadRequestError` for a state or command data that is not an
+  /// object, or a command with no name; `StepRefusedError` when the runtime
+  /// refuses the step (it checks the whole request first, so a refused step
+  /// changed nothing); `StepNotReadyError` when the session cannot take a step
+  /// yet (the step did not run); `StepCommandFailedError` when the handler of
+  /// one of its state keys or commands fails (the calls before it stay applied,
+  /// the step did not run); `StepSessionEndedError` when the session ends before
+  /// the result is sent (whether the step ran is unknown);
+  /// `StepResultTooLargeError` when its output does not fit in one message;
+  /// `MessageTooLargeError` when the request does not (nothing was sent, and the
+  /// pushed frames are dropped with it); `UnsupportedFrameEncodingError` for an
+  /// output frame the library cannot decode; `RequestTimeoutError` after
+  /// `Options::step_timeout_seconds`.
+  ///
+  /// The result is copied out of the native library once, on the library's
+  /// completion thread, and owns its bytes.
+  // By value, like send_command: an exported symbol whose mangled name is the
+  // parameter types.
+  // NOLINTNEXTLINE(performance-unnecessary-value-param)
+  std::future<StepResult> step(Json state = nullptr, std::vector<StepCommand> commands = {});
+
+  /// Drop every frame buffered for the next step, so that step runs without
+  /// them. A no-op before a session exists and on a streamed client.
+  void clear_step_inputs();
 
  private:
   /// Shared, not unique, for two reasons: the callbacks the library holds capture

@@ -26,6 +26,8 @@ export interface ReactorErrorOptions {
   operation?: string | undefined;
   retry_after_ms?: number | undefined;
   timestamp_ms?: number | undefined;
+  entry?: string | undefined;
+  command_code?: string | undefined;
   /** The underlying error, kept as the standard `Error.cause`. */
   cause?: unknown;
 }
@@ -48,6 +50,14 @@ export class ReactorError extends Error {
   readonly operation: string | undefined;
   /** Backoff hint the platform sent. */
   readonly retry_after_ms: number | undefined;
+  /** For a refused step or a step whose call failed, the part of the step
+   *  request at fault: `"state.<key>"`, `"commands[<i>]"` or
+   *  `"media_input[<i>]"`. */
+  readonly entry: string | undefined;
+  /** For a step whose call failed, the stable code its handler raised (its
+   *  `CommandError` code, or `internal_error`), to branch on instead of the
+   *  message. */
+  readonly command_code: string | undefined;
   /** When `reactor-core` reported this failure. For a purely local one (no
    *  payload at all — see {@link ReactorErrorOptions}), this is synthesized
    *  as the construction time instead, since there's nothing to report —
@@ -72,6 +82,8 @@ export class ReactorError extends Error {
     this.operation = options.operation;
     this.retry_after_ms = options.retry_after_ms;
     this.retryAfter = options.retry_after_ms;
+    this.entry = options.entry;
+    this.command_code = options.command_code;
     this.timestamp_ms = options.timestamp_ms ?? Date.now();
     this.timestamp = this.timestamp_ms;
   }
@@ -296,6 +308,8 @@ interface ReactorErrorLike {
   operation?: string;
   retry_after_ms?: number;
   timestamp_ms?: number;
+  entry?: string;
+  command_code?: string;
 }
 
 /**
@@ -325,6 +339,8 @@ export function toReactorError(cause: unknown): ReactorError {
     operation: payload.operation,
     retry_after_ms: payload.retry_after_ms,
     timestamp_ms: payload.timestamp_ms,
+    entry: payload.entry,
+    command_code: payload.command_code,
     // A thrown JS error (a failed wasm load, say) keeps its stack and its own
     // `cause` reachable; reactor-core's plain payload objects have neither.
     cause: cause instanceof Error ? cause : undefined,

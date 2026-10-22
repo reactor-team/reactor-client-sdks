@@ -32,7 +32,9 @@ import CReactorFFI
 /// model happened to declare a sendonly audio track. The SDK uses
 /// `reactor_create_with_adm` with mode 0 (synthetic) and cannot do otherwise,
 /// because the other function is absent from this table —
-/// `scripts/check-abi-parity.py` is what keeps it absent.
+/// `scripts/check-abi-parity.py` is what keeps it absent. A stepped client is
+/// created through `reactor_create_with_options` instead, whose options name
+/// `"adm": "synthetic"` for the same reason.
 struct FFI: Sendable {
 
     /// `reactor_abi_version` — the ABI the loaded library speaks.
@@ -84,6 +86,24 @@ struct FFI: Sendable {
             _ admMode: Int32,
             _ sdkVersion: UnsafePointer<CChar>?,
             _ sdkType: UnsafePointer<CChar>?
+        ) -> OpaquePointer?
+
+    /// `reactor_create_with_options` — a client from a JSON object of options.
+    ///
+    /// Only a stepped client is created through here: the generation mode is a
+    /// creation option this is the only entry for. The options name `"adm":
+    /// "synthetic"` explicitly, for the reason ``createWithADM`` passes mode 0.
+    ///
+    /// Null when the options are refused, with a heap JSON error object stored
+    /// through `errorOut` for the caller to free.
+    var createWithOptions:
+        @Sendable (
+            _ apiURL: UnsafePointer<CChar>?,
+            _ model: UnsafePointer<CChar>?,
+            _ jwt: UnsafePointer<CChar>?,
+            _ callbacks: UnsafePointer<ReactorCallbacks>?,
+            _ optionsJSON: UnsafePointer<CChar>?,
+            _ errorOut: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
         ) -> OpaquePointer?
 
     /// `reactor_destroy` — 0 when no callback is running and none will start,
@@ -152,18 +172,22 @@ struct FFI: Sendable {
         ) -> Void
 
     /// `reactor_push_video_frame_timed` — BGRA pixels, optionally tagged,
-    /// stamped with the caller's own capture time, and the milliseconds this
-    /// SDK already spent on the frame, which count toward its submit stage.
+    /// stamped with the caller's own capture time when it gave one, and the
+    /// milliseconds this SDK already spent on the frame, which count toward
+    /// its submit stage.
     ///
-    /// The one push the SDK calls: the plain and tagged variants are this one
-    /// with nothing to tag and nothing to stamp, so there is a single path to
-    /// get wrong rather than three.
+    /// The one push the SDK calls. A null tag with length 0 sends the frame
+    /// untagged. A `nil` capture time reaches the library as no capture time
+    /// at all, and the library stamps the frame as it is pushed: there is no
+    /// value of `captureTimeUs` that means "none", since 0 is a time like any
+    /// other, and a stepped session sends it to the model as the frame's
+    /// capture time.
     var pushVideoFrame:
         @Sendable (
             _ handle: OpaquePointer?, _ track: UnsafePointer<CChar>?,
             _ pixels: UnsafePointer<UInt8>?, _ width: UInt32, _ height: UInt32,
             _ userData: UnsafePointer<UInt8>?, _ userDataLen: UInt32,
-            _ captureTimeUs: Int64, _ bindingMs: Double, _ generation: UInt64
+            _ captureTimeUs: Int64?, _ bindingMs: Double, _ generation: UInt64
         ) -> Void
 
     /// `reactor_push_begin` — the connection a frame push belongs to, read as
@@ -244,6 +268,90 @@ struct FFI: Sendable {
             _ progress: reactor_progress_fn?, _ completion: reactor_completion_fn?,
             _ userdata: UnsafeMutableRawPointer?
         ) -> Void
+
+    // MARK: Stepped generation
+
+    /// `reactor_step` — run one step of a stepped session.
+    ///
+    /// Its completion hands over an **owned** `ReactorStepResult`, which the
+    /// accessors below read in place and ``stepResultFree`` releases. Bounded
+    /// by `reactor_destroy` like every other completion.
+    var step:
+        @Sendable (
+            _ handle: OpaquePointer?, _ stateJSON: UnsafePointer<CChar>?,
+            _ commandsJSON: UnsafePointer<CChar>?, _ completion: reactor_step_completion_fn?,
+            _ userdata: UnsafeMutableRawPointer?
+        ) -> Void
+
+    /// `reactor_clear_step_inputs` — drop every frame buffered for the next step.
+    var clearStepInputs: @Sendable (OpaquePointer?) -> Void
+
+    /// `reactor_step_result_step` — the step's number in the session, from 1.
+    var stepResultStep: @Sendable (OpaquePointer?) -> UInt64
+
+    /// `reactor_step_result_elapsed` — the seconds the step's `generate()` took.
+    var stepResultElapsed: @Sendable (OpaquePointer?) -> Double
+
+    /// `reactor_step_result_error` — why a step that ran failed, borrowed from
+    /// the result; null when it worked.
+    var stepResultError: @Sendable (OpaquePointer?) -> UnsafePointer<CChar>?
+
+    /// `reactor_step_result_file_count` — the extra files the model kept.
+    var stepResultFileCount: @Sendable (OpaquePointer?) -> UInt32
+
+    /// `reactor_step_result_file_name` — borrowed from the result.
+    var stepResultFileName: @Sendable (OpaquePointer?, UInt32) -> UnsafePointer<CChar>?
+
+    /// `reactor_step_result_file_content_type` — borrowed from the result.
+    var stepResultFileContentType: @Sendable (OpaquePointer?, UInt32) -> UnsafePointer<CChar>?
+
+    /// `reactor_step_result_file_size` — bytes; 0 when out of range.
+    var stepResultFileSize: @Sendable (OpaquePointer?, UInt32) -> UInt64
+
+    /// `reactor_step_result_track_count`.
+    var stepResultTrackCount: @Sendable (OpaquePointer?) -> UInt32
+
+    /// `reactor_step_result_track_name` — borrowed from the result.
+    var stepResultTrackName: @Sendable (OpaquePointer?, UInt32) -> UnsafePointer<CChar>?
+
+    /// `reactor_step_result_track_kind` — `"video"` or `"audio"`, static.
+    var stepResultTrackKind: @Sendable (OpaquePointer?, UInt32) -> UnsafePointer<CChar>?
+
+    /// `reactor_step_result_track_rate` — frames per second for video, samples
+    /// per second for audio; 0 when unspecified or out of range.
+    var stepResultTrackRate: @Sendable (OpaquePointer?, UInt32) -> Double
+
+    /// `reactor_step_result_frame_count`.
+    var stepResultFrameCount: @Sendable (OpaquePointer?, UInt32) -> UInt32
+
+    /// `reactor_step_result_frame_encoding` — static.
+    var stepResultFrameEncoding: @Sendable (OpaquePointer?, UInt32, UInt32) -> UnsafePointer<CChar>?
+
+    /// `reactor_step_result_frame_dtype` — NumPy notation, borrowed.
+    var stepResultFrameDtype: @Sendable (OpaquePointer?, UInt32, UInt32) -> UnsafePointer<CChar>?
+
+    /// `reactor_step_result_frame_shape` — `*ndim` dimensions, borrowed.
+    var stepResultFrameShape:
+        @Sendable (OpaquePointer?, UInt32, UInt32, UnsafeMutablePointer<UInt32>?) ->
+            UnsafePointer<UInt32>?
+
+    /// `reactor_step_result_frame_data` — `*len` bytes, borrowed.
+    var stepResultFrameData:
+        @Sendable (OpaquePointer?, UInt32, UInt32, UnsafeMutablePointer<Int>?) ->
+            UnsafePointer<UInt8>?
+
+    /// `reactor_step_result_frame_metadata` — `*len` bytes, borrowed; null when
+    /// the sender attached nothing, non-null with length 0 for an empty tag.
+    var stepResultFrameMetadata:
+        @Sendable (OpaquePointer?, UInt32, UInt32, UnsafeMutablePointer<Int>?) ->
+            UnsafePointer<UInt8>?
+
+    /// `reactor_step_result_frame_capture_time_us` — 1 and the time written, or 0.
+    var stepResultFrameCaptureTimeUs:
+        @Sendable (OpaquePointer?, UInt32, UInt32, UnsafeMutablePointer<Int64>?) -> Int32
+
+    /// `reactor_step_result_free` — release a result and everything read from it.
+    var stepResultFree: @Sendable (OpaquePointer?) -> Void
 }
 
 extension FFI {
@@ -265,6 +373,10 @@ extension FFI {
             reactor_create_with_adm(
                 apiURL, model, jwt, local, autoResumeTracks, callbacks, admMode, sdkVersion,
                 sdkType)
+        },
+        createWithOptions: {
+            apiURL, model, jwt, callbacks, optionsJSON, errorOut in
+            reactor_create_with_options(apiURL, model, jwt, callbacks, optionsJSON, errorOut)
         },
         destroy: { handle in reactor_destroy(handle) },
         connect: { handle, sessionID, connectionID, completion, userdata in
@@ -294,8 +406,8 @@ extension FFI {
             handle, track, pixels, width, height, userData, userDataLen, captureAt, bindingMs,
             generation in
             reactor_push_video_frame_timed(
-                handle, track, pixels, width, height, userData, userDataLen, 1, captureAt,
-                bindingMs, generation)
+                handle, track, pixels, width, height, userData, userDataLen,
+                captureAt == nil ? 0 : 1, captureAt ?? 0, bindingMs, generation)
         },
         pushBegin: { handle in reactor_push_begin(handle) },
         frameDelivered: { reactor_frame_delivered() },
@@ -331,6 +443,43 @@ extension FFI {
             reactor_download_clip(
                 handle, playlistURL, jwt, outPath, predicted, timeout, local, progress, completion,
                 userdata)
-        }
+        },
+        step: { handle, stateJSON, commandsJSON, completion, userdata in
+            reactor_step(handle, stateJSON, commandsJSON, completion, userdata)
+        },
+        clearStepInputs: { handle in reactor_clear_step_inputs(handle) },
+        stepResultStep: { result in reactor_step_result_step(result) },
+        stepResultElapsed: { result in reactor_step_result_elapsed(result) },
+        stepResultError: { result in reactor_step_result_error(result) },
+        stepResultFileCount: { result in reactor_step_result_file_count(result) },
+        stepResultFileName: { result, file in reactor_step_result_file_name(result, file) },
+        stepResultFileContentType: { result, file in
+            reactor_step_result_file_content_type(result, file)
+        },
+        stepResultFileSize: { result, file in reactor_step_result_file_size(result, file) },
+        stepResultTrackCount: { result in reactor_step_result_track_count(result) },
+        stepResultTrackName: { result, track in reactor_step_result_track_name(result, track) },
+        stepResultTrackKind: { result, track in reactor_step_result_track_kind(result, track) },
+        stepResultTrackRate: { result, track in reactor_step_result_track_rate(result, track) },
+        stepResultFrameCount: { result, track in reactor_step_result_frame_count(result, track) },
+        stepResultFrameEncoding: { result, track, frame in
+            reactor_step_result_frame_encoding(result, track, frame)
+        },
+        stepResultFrameDtype: { result, track, frame in
+            reactor_step_result_frame_dtype(result, track, frame)
+        },
+        stepResultFrameShape: { result, track, frame, ndim in
+            reactor_step_result_frame_shape(result, track, frame, ndim)
+        },
+        stepResultFrameData: { result, track, frame, length in
+            reactor_step_result_frame_data(result, track, frame, length)
+        },
+        stepResultFrameMetadata: { result, track, frame, length in
+            reactor_step_result_frame_metadata(result, track, frame, length)
+        },
+        stepResultFrameCaptureTimeUs: { result, track, frame, captureTimeUs in
+            reactor_step_result_frame_capture_time_us(result, track, frame, captureTimeUs)
+        },
+        stepResultFree: { result in reactor_step_result_free(result) }
     )
 }

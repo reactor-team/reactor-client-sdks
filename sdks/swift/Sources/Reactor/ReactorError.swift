@@ -69,6 +69,16 @@ public struct ReactorError: Error, Sendable, Hashable {
     /// now.
     public let timestampMS: Double?
 
+    /// For ``Code/stepRefused`` and ``Code/stepCommandFailed``, the part of the
+    /// step request at fault: `"state.<key>"`, `"commands[<i>]"` or
+    /// `"media_input[<i>]"`. `nil` when no single part is.
+    public let entry: String?
+
+    /// For ``Code/stepCommandFailed``, the code the failing handler raised —
+    /// its `CommandError` code, or `internal_error` — to branch on rather than
+    /// the message.
+    public let commandCode: String?
+
     /// A failure with every field, as decoded from an FFI payload.
     public init(
         code: Code,
@@ -77,7 +87,9 @@ public struct ReactorError: Error, Sendable, Hashable {
         status: Int? = nil,
         operation: String? = nil,
         retryAfterMS: Double? = nil,
-        timestampMS: Double? = nil
+        timestampMS: Double? = nil,
+        entry: String? = nil,
+        commandCode: String? = nil
     ) {
         self.code = code
         self.message = message
@@ -86,6 +98,8 @@ public struct ReactorError: Error, Sendable, Hashable {
         self.operation = operation
         self.retryAfterMS = retryAfterMS
         self.timestampMS = timestampMS
+        self.entry = entry
+        self.commandCode = commandCode
     }
 
     /// A failure this SDK is raising itself, with no payload behind it.
