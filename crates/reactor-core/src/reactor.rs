@@ -288,6 +288,20 @@ struct CommandTiming {
     stages: Vec<(&'static str, f64)>,
 }
 
+/// Forgets a data request when dropped, so a caller that stops awaiting it
+/// (in a `select!` or a `timeout`) leaves nothing behind, even when the reply
+/// already resolved it.
+struct ForgetOnDrop<'a> {
+    data: &'a DataCorrelator,
+    request_id: String,
+}
+
+impl Drop for ForgetOnDrop<'_> {
+    fn drop(&mut self) {
+        self.data.cancel(&self.request_id);
+    }
+}
+
 impl Reactor {
     pub fn new(deps: ReactorDeps, options: ReactorOptions) -> Self {
         let client_info = ClientInfo {
@@ -1096,7 +1110,10 @@ impl Reactor {
             stages,
         } = timing;
         let pending = self.data.begin(payload);
-        let request_id = pending.request_id.clone();
+        let request = ForgetOnDrop {
+            data: &self.data,
+            request_id: pending.request_id.clone(),
+        };
         // `encode` ends as the command reaches the channel: from there the
         // chunked channel's own `queue_wait` and `send` take over, so the two
         // must not overlap. Counted once the channel took it.
@@ -1110,7 +1127,7 @@ impl Reactor {
         let outcome = self
             .await_data_response(label, pending, request_timeout)
             .await;
-        let arrival = self.data.take_arrival(&request_id);
+        let arrival = self.data.take_arrival(&request.request_id);
         if let (Some(arrival), Ok(_)) = (arrival, &outcome) {
             self.message_times.add_from(
                 generation,
@@ -4011,6 +4028,31 @@ mod tests {
             result,
             Some(json!({"type": "get_state_reply", "data": {"brightness": 1.0}}))
         );
+    }
+
+    /// A caller that stops awaiting `send_command()` after its reply resolved
+    /// the request, but before it took the reply's arrival, leaves none behind.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_command_dropped_after_its_reply_resolved_keeps_no_arrival() {
+        let reactor = make_reactor();
+        reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+
+        let mut call = Box::pin(reactor.send_command("get_state", json!({}), None));
+        // Polled once: the command is sent and awaits its reply.
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(call.as_mut(), &mut cx).is_pending());
+
+        let bytes = encode_data_response(
+            "data_1",
+            data_server_message::Payload::Message(ModelMessage {
+                r#type: "get_state_reply".into(),
+                data: None,
+            }),
+        );
+        reactor.on_data_message(&bytes);
+        drop(call);
+
+        assert!(reactor.data.take_arrival("data_1").is_none());
     }
 
     /// A bodyless ack (a handler that returned no message) resolves
