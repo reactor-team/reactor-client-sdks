@@ -74,6 +74,33 @@ void Java_inc_reactor_sdk_android_internal_NativeClient_nativePushVideoFrame(
     JNIEnv*, jobject, jlong, jstring, jobject, jint, jint, jbyteArray);
 void fake_fire_status_on_foreign_thread(const char* status);
 void fake_fire_session_id_on_foreign_thread(const char* session_id);
+
+jlong Java_inc_reactor_sdk_android_internal_NativeClient_nativeCreateWithOptions(
+    JNIEnv*, jobject, jstring, jstring, jstring, jstring, jobject, jobjectArray);
+void Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitSteps(JNIEnv*, jobject, jclass);
+void Java_inc_reactor_sdk_android_internal_NativeClient_nativeStep(JNIEnv*, jobject, jlong, jstring,
+                                                                  jstring, jlong);
+void Java_inc_reactor_sdk_android_internal_NativeClient_nativeClearStepInputs(JNIEnv*, jobject,
+                                                                             jlong);
+jbyteArray Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeFrameData(JNIEnv*, jobject,
+                                                                                  jlong, jint, jint);
+jbyteArray Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeFrameMetadata(
+    JNIEnv*, jobject, jlong, jint, jint);
+jintArray Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeFrameShape(JNIEnv*, jobject,
+                                                                                  jlong, jint, jint);
+jlong Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeFrameCaptureTimeUs(
+    JNIEnv*, jobject, jlong, jint, jint);
+jstring Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeTrackName(JNIEnv*, jobject,
+                                                                               jlong, jint);
+jstring Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeError(JNIEnv*, jobject,
+                                                                           jlong);
+ReactorStepResult* fake_new_step_result(void);
+long fake_step_results_outstanding(void);
+int fake_clear_step_inputs_calls(void);
+const char* fake_last_create_options(void);
+const char* fake_last_step_state(void);
+const char* fake_last_step_commands(void);
+void fake_complete_last_step_on_foreign_thread(int ok, const char* error_json);
 }
 
 namespace {
@@ -480,6 +507,159 @@ void completions_cross_from_a_foreign_thread() {
   g_env->DeleteGlobalRef(completions);
 }
 
+/// A stepped client is created through reactor_create_with_options, with the ADM still pinned —
+/// and an options object the library refuses comes back as 0 with its error copied out and freed.
+void a_stepped_client_is_created_with_options() {
+  jstring url = g_env->NewStringUTF("https://api.invalid");
+  jstring model = g_env->NewStringUTF("owner/stepped");
+  jclass string_class = g_env->FindClass("java/lang/String");
+
+  jstring good = g_env->NewStringUTF("{\"adm\":\"synthetic\",\"generation\":\"stepped\"}");
+  jobjectArray error_out = g_env->NewObjectArray(1, string_class, nullptr);
+  jlong context = Java_inc_reactor_sdk_android_internal_NativeClient_nativeCreateWithOptions(
+      g_env, nullptr, url, model, nullptr, good, new_listener(), error_out);
+  check(context != 0, "options naming the synthetic ADM create a client");
+  check(std::strstr(fake_last_create_options(), "\"generation\":\"stepped\"") != nullptr,
+        "the options reach reactor_create_with_options verbatim");
+  check(g_env->GetObjectArrayElement(error_out, 0) == nullptr, "and leave error_out empty");
+  fake_set_destroy_result(0);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, context);
+
+  const long strings_before = fake_owned_strings_outstanding();
+  jstring bad = g_env->NewStringUTF("{\"generation\":\"stepped\"}");
+  jlong refused = Java_inc_reactor_sdk_android_internal_NativeClient_nativeCreateWithOptions(
+      g_env, nullptr, url, model, nullptr, bad, new_listener(), error_out);
+  check(refused == 0, "refused options create nothing");
+  auto error = static_cast<jstring>(g_env->GetObjectArrayElement(error_out, 0));
+  const char* chars = error == nullptr ? nullptr : g_env->GetStringUTFChars(error, nullptr);
+  check(chars != nullptr && std::strstr(chars, "INVALID_STATE") != nullptr,
+        "the refusal's error object is copied into error_out");
+  if (chars != nullptr) g_env->ReleaseStringUTFChars(error, chars);
+  check(fake_owned_strings_outstanding() == strings_before,
+        "and the owned error string is returned through reactor_free_string");
+
+  g_env->DeleteLocalRef(good);
+  g_env->DeleteLocalRef(bad);
+  g_env->DeleteLocalRef(error_out);
+  g_env->DeleteLocalRef(string_class);
+  g_env->DeleteLocalRef(url);
+  g_env->DeleteLocalRef(model);
+}
+
+/// A step's result is the host's once its completion fires, and the bridge frees it exactly once:
+/// after a success, after a failure that carries none, and after a settle that throws. The fake
+/// counts results outstanding, and a second free or a read after the free is an ASan report.
+void step_results_are_freed_exactly_once() {
+  jclass local = g_env->FindClass("AsanCompletions");
+  if (local == nullptr) {
+    check(false, "AsanCompletions is on the classpath");
+    return;
+  }
+  jclass completions = static_cast<jclass>(g_env->NewGlobalRef(local));
+  g_env->DeleteLocalRef(local);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitCompletions(g_env, nullptr,
+                                                                          completions);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitSteps(g_env, nullptr, completions);
+
+  jfieldID count_id = g_env->GetStaticFieldID(completions, "stepSettleCount", "I");
+  jfieldID ticket_id = g_env->GetStaticFieldID(completions, "lastStepTicket", "J");
+  jfieldID ok_id = g_env->GetStaticFieldID(completions, "lastStepOk", "Z");
+  jfieldID result_id = g_env->GetStaticFieldID(completions, "lastStepResult", "J");
+  jfieldID error_id = g_env->GetStaticFieldID(completions, "lastStepError", "Ljava/lang/String;");
+  jfieldID throw_id = g_env->GetStaticFieldID(completions, "throwOnStep", "Z");
+
+  jlong context = create();
+  jstring commands = g_env->NewStringUTF("[{\"command\":\"advance\",\"data\":null}]");
+
+  // Success: a result arrives, is read, and is freed when the settle returns.
+  const jint before = g_env->GetStaticIntField(completions, count_id);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeStep(g_env, nullptr, context, nullptr,
+                                                                commands, /*ticket=*/5151);
+  check(std::strcmp(fake_last_step_state(), "<null>") == 0,
+        "a null state reaches reactor_step as NULL, not as \"null\"");
+  check(std::strstr(fake_last_step_commands(), "advance") != nullptr,
+        "the commands reach reactor_step verbatim");
+  fake_complete_last_step_on_foreign_thread(1, nullptr);
+  check(g_env->GetStaticIntField(completions, count_id) == before + 1,
+        "a step settles once, from an FFI-owned thread");
+  check(g_env->GetStaticLongField(completions, ticket_id) == 5151,
+        "with the ticket it was started with");
+  check(g_env->GetStaticBooleanField(completions, ok_id) == JNI_TRUE &&
+            g_env->GetStaticLongField(completions, result_id) != 0,
+        "and its result, as a pointer to read");
+  check(fake_step_results_outstanding() == 0, "the result is freed once the settle returns");
+
+  // Failure: no result, an error, nothing to free.
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeStep(g_env, nullptr, context, nullptr,
+                                                                commands, /*ticket=*/5152);
+  fake_complete_last_step_on_foreign_thread(0, "{\"code\":\"step_refused\",\"entry\":\"commands[0]\"}");
+  auto failure = static_cast<jstring>(g_env->GetStaticObjectField(completions, error_id));
+  const char* why = failure == nullptr ? nullptr : g_env->GetStringUTFChars(failure, nullptr);
+  check(g_env->GetStaticBooleanField(completions, ok_id) == JNI_FALSE && why != nullptr &&
+            std::strstr(why, "step_refused") != nullptr,
+        "a refused step settles as a failure, with the error the ABI sent");
+  if (why != nullptr) g_env->ReleaseStringUTFChars(failure, why);
+  check(fake_step_results_outstanding() == 0, "and leaves nothing to free");
+
+  // A settle that throws: the exception is contained and the result is still freed.
+  g_env->SetStaticBooleanField(completions, throw_id, JNI_TRUE);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeStep(g_env, nullptr, context, nullptr,
+                                                                commands, /*ticket=*/5153);
+  fake_complete_last_step_on_foreign_thread(1, nullptr);
+  check(fake_step_results_outstanding() == 0, "a settle that throws still frees the result");
+
+  const int cleared = fake_clear_step_inputs_calls();
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeClearStepInputs(g_env, nullptr, context);
+  check(fake_clear_step_inputs_calls() == cleared + 1, "clearStepInputs reaches the ABI");
+
+  g_env->DeleteLocalRef(commands);
+  fake_set_destroy_result(0);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, context);
+  g_env->DeleteGlobalRef(completions);
+}
+
+/// The accessors copy what they answer: every array outlives the result it was read from.
+void step_accessors_copy_before_the_free() {
+  ReactorStepResult* result = fake_new_step_result();
+  const jlong pointer = static_cast<jlong>(reinterpret_cast<intptr_t>(result));
+
+  jbyteArray data = Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeFrameData(
+      g_env, nullptr, pointer, 0, 0);
+  jbyteArray tag = Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeFrameMetadata(
+      g_env, nullptr, pointer, 0, 0);
+  jintArray shape = Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeFrameShape(
+      g_env, nullptr, pointer, 0, 0);
+  jstring name = Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeTrackName(
+      g_env, nullptr, pointer, 0);
+  const jlong captured = Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeFrameCaptureTimeUs(
+      g_env, nullptr, pointer, 0, 0);
+  jstring error = Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeError(
+      g_env, nullptr, pointer);
+  reactor_step_result_free(result);
+
+  // Read after the free: a view into the result instead of a copy is a use-after-free here.
+  check(data != nullptr && g_env->GetArrayLength(data) == 12, "a frame's bytes arrive whole");
+  jbyte last = 0;
+  if (data != nullptr) g_env->GetByteArrayRegion(data, 11, 1, &last);
+  check(last == 12, "and are a copy that outlives the result");
+  check(tag != nullptr && g_env->GetArrayLength(tag) == 3, "the frame's tag is copied too");
+  jint dims[3] = {0, 0, 0};
+  if (shape != nullptr) g_env->GetIntArrayRegion(shape, 0, 3, dims);
+  check(shape != nullptr && dims[0] == 2 && dims[1] == 2 && dims[2] == 3, "the shape crosses as an int[]");
+  check(name != nullptr, "a track's name crosses as a Java string");
+  check(captured == 424242, "a capture time crosses as itself");
+  check(error == nullptr, "a step that worked has a null error, not \"\"");
+  check(Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeFrameData(
+            g_env, nullptr, /*result=*/0, 0, 0) == nullptr,
+        "a null result answers null, as the ABI does");
+  check(fake_step_results_outstanding() == 0, "the result read directly was freed once");
+
+  if (data != nullptr) g_env->DeleteLocalRef(data);
+  if (tag != nullptr) g_env->DeleteLocalRef(tag);
+  if (shape != nullptr) g_env->DeleteLocalRef(shape);
+  if (name != nullptr) g_env->DeleteLocalRef(name);
+}
+
 /// The key exchange, end to end on the native side.
 ///
 /// Same detached shape as the download: no handle, the options and the flag cross verbatim, and
@@ -639,6 +819,9 @@ int main() {
   nullable_command_arguments_arrive_as_null();
   completions_cross_from_a_foreign_thread();
   fetch_jwt_crosses_and_settles();
+  a_stepped_client_is_created_with_options();
+  step_results_are_freed_exactly_once();
+  step_accessors_copy_before_the_free();
   destroy_minus_one_keeps_the_references_alive();
   strings_round_trip_outside_the_bmp();
 

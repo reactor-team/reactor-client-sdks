@@ -8,6 +8,7 @@
 #include "jni_support.hpp"
 
 #include <memory>
+#include <utility>
 
 using reactor_jni::JavaString;
 using reactor_jni::OwnedString;
@@ -196,11 +197,51 @@ jstring owned_to_jstring(JNIEnv* env, char* raw) {
   return to_jstring(env, owned.get());
 }
 
-}  // namespace
+/// Where a step settles: Completions.settleStepFromNative, resolved once at load.
+jmethodID g_settle_step = nullptr;
 
-extern "C" JNIEXPORT jlong JNICALL Java_inc_reactor_sdk_android_internal_NativeClient_nativeCreate(
-    JNIEnv* env, jobject, jstring api_url, jstring model_name, jstring jwt, jboolean local,
-    jboolean auto_resume_tracks, jobject listener, jstring sdk_version, jstring sdk_type) {
+/**
+ * Settle one step, then free its result.
+ *
+ * The result is the host's from the moment this is called, and this is the one place it is freed
+ * — after Kotlin has copied what it keeps, whatever Kotlin did: a ticket nobody waits on any more,
+ * a result that failed to read, an exception. Freeing it anywhere else would make "exactly once"
+ * a property of every path through the Kotlin side instead of this one line.
+ */
+void step_trampoline(int ok, ReactorStepResult* result, const char* error_json, void* userdata) {
+  if (g_completions_class == nullptr || g_settle_step == nullptr) {
+    reactor_step_result_free(result);
+    return;
+  }
+
+  ScopedEnv scoped;
+  if (!scoped) {
+    reactor_step_result_free(result);
+    return;
+  }
+  JNIEnv* env = scoped.get();
+
+  // Borrowed, as for every completion: copied before this returns.
+  jstring error = to_jstring(env, error_json);
+  env->CallStaticVoidMethod(g_completions_class, g_settle_step,
+                            static_cast<jlong>(reinterpret_cast<intptr_t>(userdata)),
+                            ok == 1 ? JNI_TRUE : JNI_FALSE,
+                            static_cast<jlong>(reinterpret_cast<intptr_t>(result)), error);
+  if (env->ExceptionCheck()) {
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+  }
+  if (error != nullptr) env->DeleteLocalRef(error);
+  reactor_step_result_free(result);
+}
+
+/**
+ * The Kotlin listener and its callback methods, resolved for one handle.
+ *
+ * Returns null with a NoSuchMethodError pending when NativeEvents and this file have drifted
+ * apart.
+ */
+std::unique_ptr<Context> make_context(JNIEnv* env, jobject listener) {
   auto context = std::make_unique<Context>();
 
   context->listener = env->NewGlobalRef(listener);
@@ -230,16 +271,43 @@ extern "C" JNIEXPORT jlong JNICALL Java_inc_reactor_sdk_android_internal_NativeC
     reactor_jni::fail(env, "java/lang/NoSuchMethodError",
                       "NativeEvents is missing a callback method — the Kotlin interface and "
                       "client.cpp have drifted apart");
-    return 0;
+    return nullptr;
   }
+  return context;
+}
 
+ReactorCallbacks callbacks_for(Context* context) {
   ReactorCallbacks callbacks = {};
   callbacks.on_status = on_status;
   callbacks.on_error = on_error;
   callbacks.on_session_id = on_session_id;
   callbacks.on_frame = on_frame;
   callbacks.on_audio = on_audio;
-  callbacks.userdata = context.get();
+  callbacks.userdata = context;
+  return callbacks;
+}
+
+/// Hand a created handle's context to Kotlin, or release it when there is no handle.
+jlong adopt(JNIEnv* env, std::unique_ptr<Context> context, ReactorHandle* handle) {
+  if (handle == nullptr) {
+    context->release(env);
+    return 0;
+  }
+  context->handle = handle;
+  // The FFI holds a raw pointer to this for the life of the handle. Ownership moves to Kotlin,
+  // which hands it back to nativeDestroy — and which keeps it alive forever if teardown says a
+  // callback is still running.
+  return reinterpret_cast<jlong>(context.release());
+}
+
+}  // namespace
+
+extern "C" JNIEXPORT jlong JNICALL Java_inc_reactor_sdk_android_internal_NativeClient_nativeCreate(
+    JNIEnv* env, jobject, jstring api_url, jstring model_name, jstring jwt, jboolean local,
+    jboolean auto_resume_tracks, jobject listener, jstring sdk_version, jstring sdk_type) {
+  auto context = make_context(env, listener);
+  if (context == nullptr) return 0;
+  ReactorCallbacks callbacks = callbacks_for(context.get());
 
   JavaString url(env, api_url);
   JavaString model(env, model_name);
@@ -253,16 +321,40 @@ extern "C" JNIEXPORT jlong JNICALL Java_inc_reactor_sdk_android_internal_NativeC
   ReactorHandle* handle = reactor_create_with_adm(
       url.get(), model.get(), token.get(), local ? 1 : 0, auto_resume_tracks ? 1 : 0, &callbacks,
       /*adm_mode=*/0, version.get(), type.get());
-  if (handle == nullptr) {
-    context->release(env);
-    return 0;
-  }
+  return adopt(env, std::move(context), handle);
+}
 
-  context->handle = handle;
-  // The FFI holds a raw pointer to this for the life of the handle. Ownership moves to Kotlin,
-  // which hands it back to nativeDestroy — and which keeps it alive forever if teardown says a
-  // callback is still running.
-  return reinterpret_cast<jlong>(context.release());
+/**
+ * Create through reactor_create_with_options, the one creation call that takes the generation
+ * mode. Kotlin builds the options — with the ADM pinned to synthetic, as nativeCreate pins it.
+ *
+ * A refusal returns 0 and leaves the library's error object in `error_out[0]`. That string is an
+ * owned one, freed here once copied, on either outcome.
+ */
+extern "C" JNIEXPORT jlong JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeCreateWithOptions(
+    JNIEnv* env, jobject, jstring api_url, jstring model_name, jstring jwt, jstring options_json,
+    jobject listener, jobjectArray error_out) {
+  auto context = make_context(env, listener);
+  if (context == nullptr) return 0;
+  ReactorCallbacks callbacks = callbacks_for(context.get());
+
+  JavaString url(env, api_url);
+  JavaString model(env, model_name);
+  JavaString token(env, jwt);
+  JavaString options(env, options_json);
+
+  char* refusal = nullptr;
+  ReactorHandle* handle = reactor_create_with_options(url.get(), model.get(), token.get(),
+                                                      &callbacks, options.get(), &refusal);
+  if (refusal != nullptr) {
+    jstring error = owned_to_jstring(env, refusal);
+    if (error_out != nullptr && env->GetArrayLength(error_out) > 0) {
+      env->SetObjectArrayElement(error_out, 0, error);
+    }
+    if (error != nullptr) env->DeleteLocalRef(error);
+  }
+  return adopt(env, std::move(context), handle);
 }
 
 /**
@@ -522,6 +614,45 @@ Java_inc_reactor_sdk_android_internal_NativeClient_nativeGetStats(JNIEnv*, jobje
   if (context == nullptr) return;
   reactor_get_stats(context->handle, completion_trampoline,
                     reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}
+
+// ── Stepped generation ───────────────────────────────────────────────────────
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitSteps(JNIEnv* env, jobject,
+                                                                   jclass completions) {
+  g_settle_step =
+      env->GetStaticMethodID(completions, "settleStepFromNative", "(JZJLjava/lang/String;)V");
+  if (g_settle_step == nullptr) {
+    reactor_jni::fail(env, "java/lang/NoSuchMethodError",
+                      "Completions.settleStepFromNative is missing — the Kotlin registry and "
+                      "client.cpp have drifted apart");
+  }
+}
+
+/**
+ * Run one step. `state_json` may be null; `commands_json` is a JSON array Kotlin built.
+ *
+ * Its completion is step_trampoline, not completion_trampoline: a step answers with a native
+ * result to read and free, not with JSON.
+ */
+extern "C" JNIEXPORT void JNICALL Java_inc_reactor_sdk_android_internal_NativeClient_nativeStep(
+    JNIEnv* env, jobject, jlong context_ptr, jstring state_json, jstring commands_json,
+    jlong ticket) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return;
+  JavaString state(env, state_json);
+  JavaString commands(env, commands_json);
+  reactor_step(context->handle, state.get(), commands.get(), step_trampoline,
+               reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeClearStepInputs(JNIEnv*, jobject,
+                                                                         jlong context_ptr) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return;
+  reactor_clear_step_inputs(context->handle);
 }
 
 // ── Uploads ──────────────────────────────────────────────────────────────────

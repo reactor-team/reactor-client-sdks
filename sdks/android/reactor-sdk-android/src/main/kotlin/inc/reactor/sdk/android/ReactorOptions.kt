@@ -21,4 +21,31 @@ public data class ReactorOptions(
     public val apiKey: String? = null,
     /** Accept a development coordinator's self-signed certificate. Does not authenticate. */
     public val local: Boolean = false,
-)
+    /**
+     * How the session generates. [Generation.STEPPED] asks for a session that generates one
+     * [step][Reactor.step] at a time instead of streaming; [Reactor.connect] then fails with
+     * [GenerationModeMismatchException] when the runtime does not start the session that way, as
+     * one without stepped generation will not.
+     */
+    public val generation: Generation = Generation.STREAMED,
+    /**
+     * How many seconds a [step][Reactor.step] may take, generation included, before it fails with
+     * [RequestTimeoutException]. Stepped sessions only; null for the native library's default of
+     * 300.
+     */
+    public val stepTimeoutSeconds: Double? = null,
+) {
+    init {
+        // Both refused here rather than at connect: the first would be ignored in silence, and the
+        // second cannot become a duration.
+        if (stepTimeoutSeconds != null) {
+            require(generation == Generation.STEPPED) {
+                "stepTimeoutSeconds only applies to a stepped session: set generation = Generation.STEPPED " +
+                    "or drop the timeout"
+            }
+            require(stepTimeoutSeconds.isFinite() && stepTimeoutSeconds > 0.0) {
+                "stepTimeoutSeconds must be a finite, positive number of seconds; got $stepTimeoutSeconds"
+            }
+        }
+    }
+}

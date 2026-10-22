@@ -3,6 +3,7 @@ package inc.reactor.sdk.android.integration
 import android.os.Bundle
 import androidx.test.platform.app.InstrumentationRegistry
 import inc.reactor.sdk.android.ConnectionStatus
+import inc.reactor.sdk.android.Generation
 import inc.reactor.sdk.android.Reactor
 import inc.reactor.sdk.android.ReactorOptions
 import kotlinx.coroutines.flow.first
@@ -49,6 +50,15 @@ internal object Live {
     val apiUrl: String get() = arg("reactorApiUrl") ?: "https://api.reactor.inc"
 
     val model: String get() = arg("reactorModel") ?: "reactor/echo"
+
+    /**
+     * A model with stepped generation, which `reactor/echo` is not. Null skips the stepped
+     * tests, as in every other binding's suite: REACTOR_STEPPED_MODEL_NAME.
+     */
+    val steppedModel: String? get() = arg("reactorSteppedModel")
+
+    /** A sendonly video track of [steppedModel] to push into: REACTOR_STEPPED_INPUT_TRACK. */
+    val steppedInputTrack: String? get() = arg("reactorSteppedInputTrack")
 
     private val inCi: Boolean get() = arg("ci") == "true"
 
@@ -108,12 +118,16 @@ internal object Live {
      * default: `Dispatchers.Main.immediate` needs a looper the instrumentation thread does not
      * have, and a test that deadlocks on its own event delivery proves nothing about the platform.
      */
-    suspend fun connected(sessionId: String? = null): Reactor =
+    suspend fun connected(
+        sessionId: String? = null,
+        model: String = this.model,
+        generation: Generation = Generation.STREAMED,
+    ): Reactor =
         connecting.withLock {
             pace()
             val reactor =
                 Reactor(
-                    ReactorOptions(apiUrl = apiUrl, apiKey = apiKey()),
+                    ReactorOptions(apiUrl = apiUrl, apiKey = apiKey(), generation = generation),
                     dispatcher = kotlinx.coroutines.Dispatchers.Unconfined,
                 )
             try {

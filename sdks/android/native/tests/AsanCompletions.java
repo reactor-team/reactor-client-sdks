@@ -22,4 +22,24 @@ public class AsanCompletions {
         lastError = errorJson;
         settleCount++;
     }
+
+    public static volatile long lastStepTicket = -1;
+    public static volatile boolean lastStepOk = false;
+    public static volatile long lastStepResult = 0;
+    public static volatile String lastStepError = null;
+    public static volatile int stepSettleCount = 0;
+    /** Set to make the next step settle throw, as a Kotlin reader that fails would. */
+    public static volatile boolean throwOnStep = false;
+
+    public static void settleStepFromNative(long ticket, boolean ok, long result, String errorJson) {
+        lastStepTicket = ticket;
+        lastStepOk = ok;
+        lastStepResult = result;
+        lastStepError = errorJson;
+        stepSettleCount++;
+        if (throwOnStep) {
+            throwOnStep = false;
+            throw new IllegalStateException("a step reader that fails");
+        }
+    }
 }
