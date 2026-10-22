@@ -848,9 +848,13 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
       - name: Cache the pinned Android SDK components
         uses: actions/cache@v4
         with:
