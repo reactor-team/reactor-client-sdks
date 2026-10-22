@@ -735,7 +735,13 @@ impl ClientStatsReporter {
                     u64::from(s.frames_decoded),
                 ));
             }
-            stats.push(track_stat(track, codec, paused, m, stages, now_ms));
+            let codec_impl = CodecImplementation {
+                name: s.decoder_implementation.as_deref(),
+                hardware: s.power_efficient_decoder,
+            };
+            stats.push(track_stat(
+                track, codec, codec_impl, paused, m, stages, now_ms,
+            ));
         }
 
         for s in &raw.outbound {
@@ -796,7 +802,13 @@ impl ClientStatsReporter {
                     u64::from(s.frames_encoded),
                 ));
             }
-            stats.push(track_stat(track, codec, paused, m, stages, now_ms));
+            let codec_impl = CodecImplementation {
+                name: s.encoder_implementation.as_deref(),
+                hardware: s.power_efficient_encoder,
+            };
+            stats.push(track_stat(
+                track, codec, codec_impl, paused, m, stages, now_ms,
+            ));
         }
 
         stats
@@ -910,9 +922,16 @@ fn resolve<'a>(
     Some((track, codec))
 }
 
+/// The encoder or decoder the engine reports for a stream.
+struct CodecImplementation<'a> {
+    name: Option<&'a str>,
+    hardware: Option<bool>,
+}
+
 fn track_stat(
     track: &TrackMappingEntry,
     codec: client_track_stat::Codec,
+    codec_impl: CodecImplementation<'_>,
     paused: &HashSet<String>,
     metrics: Metrics,
     frame_stages: Vec<FrameStage>,
@@ -922,6 +941,8 @@ fn track_stat(
         TrackKind::Video => WireTrackKind::Video,
         TrackKind::Audio => WireTrackKind::Audio,
     };
+    // Only a video track has a codec implementation.
+    let video = track.kind == TrackKind::Video;
     let direction = match track.direction {
         TrackDirection::Recvonly => WireTrackDirection::Recvonly,
         TrackDirection::Sendonly => WireTrackDirection::Sendonly,
@@ -935,9 +956,11 @@ fn track_stat(
         paused: paused.contains(&track.name),
         metrics: metrics.0,
         frame_stages,
-        // Filled once the engine reports which encoder or decoder runs.
-        codec_implementation: String::new(),
-        hardware_codec: None,
+        codec_implementation: match codec_impl.name {
+            Some(name) if video => bounded_name(name),
+            _ => String::new(),
+        },
+        hardware_codec: codec_impl.hardware.filter(|_| video),
     }
 }
 
@@ -1852,6 +1875,59 @@ mod tests {
             .iter()
             .find(|s| s.track_name == name)
             .unwrap_or_else(|| panic!("no reading for {name}"))
+    }
+
+    #[test]
+    fn a_video_track_carries_the_codec_implementation_the_engine_reports() {
+        let raw = TransportStats {
+            inbound: vec![
+                InboundRtpStats {
+                    decoder_implementation: Some("libvpx".to_string()),
+                    power_efficient_decoder: Some(false),
+                    ..received(1, "0", "video/VP9", 0)
+                },
+                InboundRtpStats {
+                    decoder_implementation: Some("libopus".to_string()),
+                    power_efficient_decoder: Some(false),
+                    ..received(2, "1", "audio/opus", 0)
+                },
+            ],
+            outbound: vec![OutboundRtpStats {
+                encoder_implementation: Some("VideoToolbox".to_string()),
+                power_efficient_encoder: Some(true),
+                ..sent(3, "2", "video/H264", 0)
+            }],
+            ..TransportStats::default()
+        };
+
+        let stats =
+            ClientStatsReporter::new().track_stats(&raw, &tracks(), &HashSet::new(), 1_000.0);
+
+        let decoded = by_name(&stats, "main_video");
+        assert_eq!(decoded.codec_implementation, "libvpx");
+        assert_eq!(decoded.hardware_codec, Some(false));
+        let encoded = by_name(&stats, "webcam");
+        assert_eq!(encoded.codec_implementation, "VideoToolbox");
+        assert_eq!(encoded.hardware_codec, Some(true));
+        // Only a video track has a codec implementation.
+        let audio = by_name(&stats, "main_audio");
+        assert_eq!(audio.codec_implementation, "");
+        assert_eq!(audio.hardware_codec, None);
+    }
+
+    #[test]
+    fn a_stream_the_engine_names_no_codec_implementation_for_reports_none() {
+        let raw = TransportStats {
+            inbound: vec![received(1, "0", "video/VP9", 0)],
+            ..TransportStats::default()
+        };
+
+        let stats =
+            ClientStatsReporter::new().track_stats(&raw, &tracks(), &HashSet::new(), 1_000.0);
+
+        let video = by_name(&stats, "main_video");
+        assert_eq!(video.codec_implementation, "");
+        assert_eq!(video.hardware_codec, None);
     }
 
     #[test]
