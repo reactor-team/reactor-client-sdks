@@ -5,6 +5,8 @@ import inc.reactor.sdk.android.internal.ErrorPayloads
 import inc.reactor.sdk.android.internal.NativeClient
 import inc.reactor.sdk.android.internal.NativeEvents
 import inc.reactor.sdk.android.internal.TrackParsing
+import inc.reactor.sdk.android.internal.recordPublish
+import inc.reactor.sdk.android.internal.recordUnpublish
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -174,6 +176,40 @@ public class Reactor(
         }
     }
 
+    /**
+     * Publish state, which the session does not record for us.
+     *
+     * `reactor_publish_track` is a request and `reactor_unpublish_track` a notification; neither
+     * leaves anything to query. So the binding keeps it — and **clears it whenever the status
+     * leaves `ready`**, because a reconnect resumes recvonly tracks and nothing else. A slot
+     * published before one is not published after it, and remembering otherwise reintroduces
+     * exactly the silent drop that publishing exists to prevent.
+     */
+    private val publishStates =
+        java.util.concurrent.ConcurrentHashMap<String, PublishState>()
+
+    /** Whether the last status delivered was `ready`. Under the [publishStates] monitor. */
+    private var ready = false
+
+    /** Bumped every time the session leaves `ready`. Under the [publishStates] monitor. */
+    private var readyGeneration = 0L
+
+    /**
+     * One lock per track, held across a publish or an unpublish so none of them can race another
+     * over the same slot.
+     */
+    private val publishLocks =
+        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+
+    private fun publishLock(track: String) = publishLocks.getOrPut(track) { kotlinx.coroutines.sync.Mutex() }
+
+    private fun requireHandle(operation: String) =
+        handle ?: throw ErrorCode.toException(
+            wire = "INVALID_STATE",
+            message = "Not connected — call connect() before $operation",
+            operation = operation,
+        )
+
     private val videoHandlers = java.util.concurrent.ConcurrentHashMap<String, (VideoFrame) -> Unit>()
     private val audioHandlers = java.util.concurrent.ConcurrentHashMap<String, (AudioFrame) -> Unit>()
 
@@ -248,6 +284,56 @@ public class Reactor(
             }
 
             override fun isPaused(track: String): Boolean = track in TrackParsing.parsePaused(handle?.pausedTracks)
+
+            override fun publishState(track: String): PublishState = publishStates[track] ?: PublishState.UNPUBLISHED
+
+            override suspend fun publish(track: String) {
+                val client = requireHandle("publish")
+                recordPublish(
+                    publishStates,
+                    track,
+                    publishLock(track),
+                    readyCheck = ::readyCheck,
+                ) { client.publishTrack(track) }
+            }
+
+            override suspend fun unpublish(track: String) {
+                val client = requireHandle("unpublish")
+                recordUnpublish(publishStates, track, publishLock(track)) {
+                    client.unpublishTrack(track)?.let { error ->
+                        throw inc.reactor.sdk.android.internal.ErrorPayloads
+                            .toException(error, "unpublish")
+                    }
+                }
+            }
+
+            override suspend fun pause(track: String) {
+                requireHandle("pause").pauseTrack(track)
+            }
+
+            override suspend fun resume(track: String) {
+                requireHandle("resume").resumeTrack(track)
+            }
+
+            override fun pushVideoFrame(
+                track: String,
+                pixels: java.nio.ByteBuffer,
+                width: Int,
+                height: Int,
+                userData: ByteArray?,
+            ) {
+                requireHandle("pushFrame").pushVideoFrame(track, pixels, width, height, userData)
+            }
+
+            override fun pushAudioFrame(
+                track: String,
+                pcm: java.nio.ByteBuffer,
+                samplesPerChannel: Int,
+                sampleRate: Int,
+                channels: Int,
+            ) {
+                requireHandle("pushFrame").pushAudioFrame(track, pcm, samplesPerChannel, sampleRate, channels)
+            }
         }
 
     /**
@@ -282,7 +368,33 @@ public class Reactor(
     }
 
     private fun deliverStatus(status: ConnectionStatus) {
+        // Cleared here rather than on the dispatcher: the drop has to be visible to a caller
+        // pushing from any thread the instant the session stops being ready, not one dispatch
+        // later. A frame pushed in that window goes into a slot with no sender behind it.
+        //
+        // Readiness is recorded here too, under the same monitor, rather than read back from
+        // `_status`: that is only updated once the launch below runs, and a publish answered in
+        // between would see the old READY and restore PUBLISHED after the sender was lost.
+        synchronized(publishStates) {
+            ready = status == ConnectionStatus.READY
+            if (!ready) {
+                publishStates.clear()
+                readyGeneration += 1
+            }
+        }
         scope.launch { _status.value = status }
+    }
+
+    /**
+     * Whether the session is still in the same `ready` it was in when this was called.
+     *
+     * Captured at the start of a publish and asked once it is answered, under the publish-state
+     * monitor: a session that left `ready` and came back in between is a different connection,
+     * and the sender the publish attached went with the old one.
+     */
+    private fun readyCheck(): () -> Boolean {
+        val generation = synchronized(publishStates) { readyGeneration }
+        return { synchronized(publishStates) { ready && readyGeneration == generation } }
     }
 
     private fun deliverError(error: ReactorException) {
