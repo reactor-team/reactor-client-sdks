@@ -672,9 +672,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
       # The SDK components sdkmanager installs — the platform, build-tools, adb and the NDK —
       # are pinned in sdks/android/sdk-packages.txt rather than in mise.lock, because the
       # android-sdk tool installs the command-line tools and nothing else. They live inside
@@ -731,9 +735,13 @@ jobs:
         with:
           cache-on-failure: true
           cache-shared-key: reactor-android-${{ hashFiles('mise.lock') }}
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
       - name: Cache the pinned Android SDK components
         uses: actions/cache@v4
         with:
@@ -793,9 +801,13 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
       - uses: jdx/mise-action@v4
         with:
           version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
       - name: Cache the pinned Android SDK components
         uses: actions/cache@v4
         with:
