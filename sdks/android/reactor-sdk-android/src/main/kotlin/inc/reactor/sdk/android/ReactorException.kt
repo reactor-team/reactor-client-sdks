@@ -254,6 +254,118 @@ public class RecorderDisabledException internal constructor(
     wireRecoverable: Boolean? = null,
 ) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
+// The codes below belong to stepped generation, which this SDK does not open a session for. They
+// are declared so every code the core defines has its own class here, as in every other SDK.
+
+/**
+ * The runtime did not start the session in the requested generation mode — most often a runtime
+ * without stepped generation, which ignores the request rather than refusing it.
+ */
+public class GenerationModeMismatchException internal constructor(
+    code: String,
+    message: String,
+    status: Int? = null,
+    operation: String? = null,
+    retryAfterMs: Long? = null,
+    cause: Throwable? = null,
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
+
+/**
+ * A stepped session connected over a data channel that did not negotiate chunking: this client or
+ * the runtime does not support it.
+ */
+public class DataChannelChunkingRequiredException internal constructor(
+    code: String,
+    message: String,
+    status: Int? = null,
+    operation: String? = null,
+    retryAfterMs: Long? = null,
+    cause: Throwable? = null,
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
+
+/** A step result carried a frame in an encoding this client cannot decode. */
+public class UnsupportedFrameEncodingException internal constructor(
+    code: String,
+    message: String,
+    status: Int? = null,
+    operation: String? = null,
+    retryAfterMs: Long? = null,
+    cause: Throwable? = null,
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
+
+/**
+ * The runtime refused a step: the request or the model turned it down, and nothing in it was
+ * applied. Code `step_refused`, lowercase because it is the runtime's own code.
+ */
+public class StepRefusedException internal constructor(
+    code: String,
+    message: String,
+    status: Int? = null,
+    operation: String? = null,
+    retryAfterMs: Long? = null,
+    cause: Throwable? = null,
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
+
+/**
+ * The session cannot run a step yet. The step did not run and nothing it carried was applied.
+ * Code `step_not_ready`.
+ */
+public class StepNotReadyException internal constructor(
+    code: String,
+    message: String,
+    status: Int? = null,
+    operation: String? = null,
+    retryAfterMs: Long? = null,
+    cause: Throwable? = null,
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
+
+/**
+ * A step ran, but its result does not fit in one data-channel message. Code
+ * `step_result_too_large`.
+ */
+public class StepResultTooLargeException internal constructor(
+    code: String,
+    message: String,
+    status: Int? = null,
+    operation: String? = null,
+    retryAfterMs: Long? = null,
+    cause: Throwable? = null,
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
+
+/**
+ * The handler of one of a step's state keys or commands failed: the calls before it stay applied,
+ * the ones after it were skipped, and the step did not run. Code `step_command_failed`.
+ */
+public class StepCommandFailedException internal constructor(
+    code: String,
+    message: String,
+    status: Int? = null,
+    operation: String? = null,
+    retryAfterMs: Long? = null,
+    cause: Throwable? = null,
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
+
+/**
+ * The session ended before a step's result could be sent, so whether the step ran is unknown.
+ * Code `step_session_ended`.
+ */
+public class StepSessionEndedException internal constructor(
+    code: String,
+    message: String,
+    status: Int? = null,
+    operation: String? = null,
+    retryAfterMs: Long? = null,
+    cause: Throwable? = null,
+    wireRecoverable: Boolean? = null,
+) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
+
 /**
  * A code this SDK does not know.
  *

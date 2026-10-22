@@ -43,6 +43,24 @@ internal enum class ErrorCode(
     MESSAGE_TOO_LARGE("MESSAGE_TOO_LARGE", false, ::MessageTooLargeException),
     ABORTED("ABORTED", false, ::AbortedException),
     RECORDER_DISABLED("RECORDER_DISABLED", false, ::RecorderDisabledException),
+    GENERATION_MODE_MISMATCH("GENERATION_MODE_MISMATCH", false, ::GenerationModeMismatchException),
+    DATA_CHANNEL_CHUNKING_REQUIRED(
+        "DATA_CHANNEL_CHUNKING_REQUIRED",
+        false,
+        ::DataChannelChunkingRequiredException,
+    ),
+    UNSUPPORTED_FRAME_ENCODING(
+        "UNSUPPORTED_FRAME_ENCODING",
+        false,
+        ::UnsupportedFrameEncodingException,
+    ),
+
+    // Lowercase on the wire: the runtime's own codes, passed through.
+    STEP_REFUSED("step_refused", false, ::StepRefusedException),
+    STEP_NOT_READY("step_not_ready", false, ::StepNotReadyException),
+    STEP_RESULT_TOO_LARGE("step_result_too_large", false, ::StepResultTooLargeException),
+    STEP_COMMAND_FAILED("step_command_failed", false, ::StepCommandFailedException),
+    STEP_SESSION_ENDED("step_session_ended", false, ::StepSessionEndedException),
     ;
 
     internal companion object {
