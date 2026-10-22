@@ -8,6 +8,7 @@
 //! reading `data` twice returns the same pointer.
 
 use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_int};
 
 use reactor_core::error::CoreError;
 use reactor_core::protocol::session::TrackKind;
@@ -189,6 +190,333 @@ pub(crate) fn parse_commands(commands_json: Option<&str>) -> Result<Vec<StepComm
             Ok(StepCommand::new(command, data))
         })
         .collect()
+}
+
+// ── Accessors of a step result ──────────────────────────────────────────────
+
+/// The step's number in the session, counted from 1. 0 for a null result.
+///
+/// # Safety
+///
+/// `result` must be null or a live result from a `reactor_step` completion,
+/// not yet passed to [`reactor_step_result_free`]. The same holds for every
+/// `reactor_step_result_*` accessor below, and every pointer they return
+/// borrows from `result`: valid until it is freed, and never to be freed on
+/// its own.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_step(result: *const ReactorStepResult) -> u64 {
+    result.as_ref().map_or(0, |r| r.step)
+}
+
+/// Seconds the step's `generate()` took, or the time the model reported for
+/// the step. 0.0 for a null result.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_step`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_elapsed(result: *const ReactorStepResult) -> f64 {
+    result.as_ref().map_or(0.0, |r| r.elapsed)
+}
+
+/// Why the step failed, when it ran and the model reported a failure; null
+/// when it worked, and for a null result. A step that did not run never gets
+/// here: its completion fails with `step_refused` or `step_not_ready`.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_step`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_error(
+    result: *const ReactorStepResult,
+) -> *const c_char {
+    result
+        .as_ref()
+        .and_then(|r| r.error.as_deref())
+        .map_or(std::ptr::null(), CStr::as_ptr)
+}
+
+/// How many extra files the model kept with the step, in the order the
+/// runtime listed them. 0 when it kept none, when its result was not saved,
+/// and for a null result.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_step`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_file_count(result: *const ReactorStepResult) -> u32 {
+    result.as_ref().map_or(0, |r| r.files.len() as u32)
+}
+
+/// The file's name, one path segment — the name to fetch its bytes by from the
+/// session's step results. Null when out of range.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_step`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_file_name(
+    result: *const ReactorStepResult,
+    file: u32,
+) -> *const c_char {
+    result
+        .as_ref()
+        .and_then(|r| r.file(file))
+        .map_or(std::ptr::null(), |f| f.name.as_ptr())
+}
+
+/// The file's media type, guessed from its name. Null when out of range.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_step`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_file_content_type(
+    result: *const ReactorStepResult,
+    file: u32,
+) -> *const c_char {
+    result
+        .as_ref()
+        .and_then(|r| r.file(file))
+        .map_or(std::ptr::null(), |f| f.content_type.as_ptr())
+}
+
+/// The file's size in bytes. 0 when out of range.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_step`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_file_size(
+    result: *const ReactorStepResult,
+    file: u32,
+) -> u64 {
+    result
+        .as_ref()
+        .and_then(|r| r.file(file))
+        .map_or(0, |f| f.size)
+}
+
+/// How many output tracks the step produced frames for, in the order the
+/// runtime sent them. 0 for a null result.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_step`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_track_count(result: *const ReactorStepResult) -> u32 {
+    result.as_ref().map_or(0, |r| r.tracks.len() as u32)
+}
+
+/// The name of track `track`, or null when out of range.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_step`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_track_name(
+    result: *const ReactorStepResult,
+    track: u32,
+) -> *const c_char {
+    result
+        .as_ref()
+        .and_then(|r| r.track(track))
+        .map_or(std::ptr::null(), |t| t.name.as_ptr())
+}
+
+/// `"video"` or `"audio"` for track `track` — a static string — or null when
+/// out of range.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_step`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_track_kind(
+    result: *const ReactorStepResult,
+    track: u32,
+) -> *const c_char {
+    result
+        .as_ref()
+        .and_then(|r| r.track(track))
+        .map_or(std::ptr::null(), |t| t.kind.as_ptr())
+}
+
+/// The rate track `track`'s frames play at, as the runtime reported it:
+/// frames per second for video, samples per second for audio. 0.0 when the
+/// runtime did not say, or when out of range.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_step`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_track_rate(
+    result: *const ReactorStepResult,
+    track: u32,
+) -> f64 {
+    result
+        .as_ref()
+        .and_then(|r| r.track(track))
+        .map_or(0.0, |t| t.rate)
+}
+
+/// How many frames track `track` produced, in production order. 0 when out of
+/// range.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_step`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_frame_count(
+    result: *const ReactorStepResult,
+    track: u32,
+) -> u32 {
+    result
+        .as_ref()
+        .and_then(|r| r.track(track))
+        .map_or(0, |t| t.frames.len() as u32)
+}
+
+/// How the frame travelled on the wire, a static string: `"raw"` today. The
+/// bytes from [`reactor_step_result_frame_data`] are already decoded whatever
+/// this says. Null when out of range.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_step`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_frame_encoding(
+    result: *const ReactorStepResult,
+    track: u32,
+    frame: u32,
+) -> *const c_char {
+    result
+        .as_ref()
+        .and_then(|r| r.frame(track, frame))
+        .map_or(std::ptr::null(), |f| f.encoding.as_ptr())
+}
+
+/// The frame's element type in NumPy notation — `"uint8"` for video, `"int16"`
+/// for audio. Null when out of range.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_step`].
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_frame_dtype(
+    result: *const ReactorStepResult,
+    track: u32,
+    frame: u32,
+) -> *const c_char {
+    result
+        .as_ref()
+        .and_then(|r| r.frame(track, frame))
+        .map_or(std::ptr::null(), |f| f.dtype.as_ptr())
+}
+
+/// The frame's shape: `*ndim` dimensions — `(height, width, 3)` for video,
+/// `(channels, samples)` for audio. Null with `*ndim` 0 when out of range.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_step`]; `ndim` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_frame_shape(
+    result: *const ReactorStepResult,
+    track: u32,
+    frame: u32,
+    ndim: *mut u32,
+) -> *const u32 {
+    let found = result.as_ref().and_then(|r| r.frame(track, frame));
+    if !ndim.is_null() {
+        *ndim = found.map_or(0, |f| f.shape.len() as u32);
+    }
+    found.map_or(std::ptr::null(), |f| f.shape.as_ptr())
+}
+
+/// The frame's array bytes, row-major and little-endian, `*len` of them. Null
+/// with `*len` 0 when out of range.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_step`]; `len` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_frame_data(
+    result: *const ReactorStepResult,
+    track: u32,
+    frame: u32,
+    len: *mut usize,
+) -> *const u8 {
+    let found = result.as_ref().and_then(|r| r.frame(track, frame));
+    if !len.is_null() {
+        *len = found.map_or(0, |f| f.data.len());
+    }
+    found.map_or(std::ptr::null(), |f| f.data.as_ptr())
+}
+
+/// What the sender attached to the frame, `*len` bytes, opaque to the
+/// transport. Null with `*len` 0 when the frame carries none, or when out of
+/// range; an attached but empty tag is non-null with `*len` 0.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_step`]; `len` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_frame_metadata(
+    result: *const ReactorStepResult,
+    track: u32,
+    frame: u32,
+    len: *mut usize,
+) -> *const u8 {
+    let metadata = result
+        .as_ref()
+        .and_then(|r| r.frame(track, frame))
+        .and_then(|f| f.metadata.as_ref());
+    if !len.is_null() {
+        *len = metadata.map_or(0, Vec::len);
+    }
+    metadata.map_or(std::ptr::null(), |m| m.as_ptr())
+}
+
+/// When the sender says the frame was captured, in microseconds: 1 with the
+/// value in `*capture_time_us`, or 0 — leaving it untouched — when the frame
+/// carries none or is out of range.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_step`]; `capture_time_us` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_frame_capture_time_us(
+    result: *const ReactorStepResult,
+    track: u32,
+    frame: u32,
+    capture_time_us: *mut i64,
+) -> c_int {
+    let time = result
+        .as_ref()
+        .and_then(|r| r.frame(track, frame))
+        .and_then(|f| f.capture_time_us);
+    match time {
+        Some(t) if !capture_time_us.is_null() => {
+            *capture_time_us = t;
+            1
+        }
+        _ => 0,
+    }
+}
+
+/// Release a step result, and every pointer its accessors returned. Null is a
+/// no-op.
+///
+/// # Safety
+///
+/// `result` must be null or a result from a `reactor_step` completion that has
+/// not already been freed. It need not outlive the handle: a result is the
+/// host's alone once delivered, and may be freed after [`reactor_destroy`](crate::reactor_destroy).
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_free(result: *mut ReactorStepResult) {
+    if !result.is_null() {
+        drop(Box::from_raw(result));
+    }
 }
 
 #[cfg(test)]
