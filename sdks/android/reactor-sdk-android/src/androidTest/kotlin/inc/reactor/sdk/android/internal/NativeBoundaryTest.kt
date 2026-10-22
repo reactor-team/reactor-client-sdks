@@ -12,10 +12,12 @@ import java.util.concurrent.TimeUnit
 /**
  * The crossing itself, against the real library.
  *
- * None of this connects: `reactor_create_with_adm` builds a client without touching the network,
- * which is exactly what makes the boundary testable without a live model. What is under test is
+ * Nothing here reaches a model: `reactor_create_with_adm` builds a client without touching the
+ * network, which is exactly what makes the boundary testable without one. What is under test is
  * the part that ends a process rather than failing a call — who frees which string, whether the
  * global references survive teardown, and whether destroying twice is a no-op or a double free.
+ * The event tests start a connect to an address that cannot resolve, which is the one way to make
+ * the library fire control events without a platform on the other end.
  */
 class NativeBoundaryTest {
     private class RecordingEvents : NativeEvents {
@@ -73,6 +75,25 @@ class NativeBoundaryTest {
             listener = listener,
             sdkVersion = "0.1.0-test",
         )
+
+    /**
+     * Start a connect to [handle]'s unresolvable address, on a thread of its own, so the library
+     * fires `connecting` and then an error — control events, from its own threads.
+     *
+     * Creating a client alone fires nothing: the core reports a status only when it changes, and a
+     * new client has not changed anything yet. The connect is settled when the client closes, so
+     * the thread waiting on it never outlives the test.
+     */
+    private fun startConnecting(client: NativeClient.Handle) {
+        kotlin.concurrent.thread(isDaemon = true, name = "boundary-connect") {
+            runCatching { kotlinx.coroutines.runBlocking { client.connect(null) } }
+        }
+    }
+
+    private fun closeSettling(client: NativeClient.Handle) {
+        client.close()
+        Completions.abandonAll(client, "the test is over")
+    }
 
     /**
      * `reactor_status` returns a static literal the FFI owns forever. Reading it repeatedly is
@@ -137,10 +158,14 @@ class NativeBoundaryTest {
     @Test
     fun eventsArriveOnForeignThreads() {
         val listener = RecordingEvents()
-        handle(listener).use {
-            // Creation alone emits at least an initial status; a real connection is not needed to
-            // prove the callback path crosses back into Kotlin.
+        val client = handle(listener)
+        try {
+            // A connect that cannot resolve still reports `connecting` first, which is all this
+            // needs: a real connection is not required to prove the callback path crosses back.
+            startConnecting(client)
             listener.received.await(5, TimeUnit.SECONDS)
+        } finally {
+            closeSettling(client)
         }
         synchronized(listener.statuses) {
             // The *contents*, not the list. assertNotNull on a list that is constructed non-null
@@ -196,10 +221,14 @@ class NativeBoundaryTest {
                     throw RuntimeException("handler bug")
                 }
             }
-        handle(throwing).use { client ->
+        val client = handle(throwing)
+        try {
+            startConnecting(client)
             Live.await("a handler to throw") { threw.get() > 0 }
             // Still usable: the exception was the handler's, not the client's.
             assertNotNull(client.status)
+        } finally {
+            closeSettling(client)
         }
         assertTrue("no handler ever threw, so nothing was contained", threw.get() > 0)
     }
