@@ -37,7 +37,9 @@ export function holdFrame(frame: PushFrame): { frame: PushFrame; release: () => 
 }
 
 /** The pixels of a pushed video frame. Async because a `VideoFrame`'s live
- *  in GPU or decoder memory and copying them out is. */
+ *  in GPU or decoder memory and copying them out is. A `VideoFrame` comes out
+ *  as it is displayed: its visible rect, rotated by its `rotation`, then
+ *  flipped by its `flip`, whichever path reads it. */
 export async function toPixels(frame: PushVideoFrame): Promise<Pixels> {
   if (isVideoFrame(frame)) {
     return videoFramePixels(frame);
@@ -63,17 +65,31 @@ const NATIVE_FORMATS: Partial<Record<string, PixelFormat>> = {
   BGRX: 'bgra',
 };
 
+/** A `VideoFrame`'s orientation. Both fields are recent WebCodecs additions,
+ *  so an engine without them reports neither. */
+interface Orientation {
+  rotation: number;
+  flip: boolean;
+}
+
+function orientationOf(frame: VideoFrame): Orientation {
+  const { rotation, flip } = frame as VideoFrame & Partial<Orientation>;
+
+  return { rotation: (((rotation ?? 0) % 360) + 360) % 360, flip: flip ?? false };
+}
+
 async function videoFramePixels(frame: VideoFrame): Promise<Pixels> {
   const rect = frame.visibleRect;
   const width = rect?.width ?? frame.codedWidth;
   const height = rect?.height ?? frame.codedHeight;
   const native = frame.format ? NATIVE_FORMATS[frame.format] : undefined;
+  const orientation = orientationOf(frame);
 
   if (native) {
     const data = new Uint8Array(width * height * 4);
 
     await frame.copyTo(data, { layout: [{ offset: 0, stride: width * 4 }] });
-    return { data, width, height, format: native };
+    return orient({ data, width, height, format: native }, orientation);
   }
   // A YUV frame (a camera's, a decoder's): ask copyTo() to convert. Newer
   // engines can; the rest refuse the `format` option, and a canvas does it.
@@ -82,13 +98,67 @@ async function videoFramePixels(frame: VideoFrame): Promise<Pixels> {
     const options = { format: 'RGBA', layout: [{ offset: 0, stride: width * 4 }] };
 
     await frame.copyTo(data, options as VideoFrameCopyToOptions);
-    return { data, width, height, format: 'rgba' };
+    return orient({ data, width, height, format: 'rgba' }, orientation);
   } catch {
-    return canvasPixels(frame, width, height);
+    return canvasPixels(frame, width, height, orientation);
   }
 }
 
-function canvasPixels(frame: VideoFrame, width: number, height: number): Pixels {
+/** Turn pixels `copyTo()` read in stored orientation into the displayed one:
+ *  rotate clockwise by `rotation`, then flip horizontally if `flip`, as
+ *  WebCodecs renders a frame. A rotation that is not a multiple of 90 is not
+ *  a valid `VideoFrame` rotation and leaves the pixels as they are. */
+export function orient(pixels: Pixels, { rotation, flip }: Orientation): Pixels {
+  if (rotation % 90 !== 0 || (rotation === 0 && !flip)) {
+    return pixels;
+  }
+  const { width: w, height: h } = pixels;
+  const turned = rotation === 90 || rotation === 270;
+  const outWidth = turned ? h : w;
+  const outHeight = turned ? w : h;
+  // One 32-bit word per pixel: the layout is 4 bytes a pixel, whatever order.
+  // A view needs its offset 4-byte aligned; copy the bytes when it is not.
+  const bytes = pixels.data.byteOffset % 4 === 0 ? pixels.data : pixels.data.slice();
+  const source = new Uint32Array(bytes.buffer, bytes.byteOffset, w * h);
+  const data = new Uint8Array(outWidth * outHeight * 4);
+  const target = new Uint32Array(data.buffer);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let tx: number;
+      let ty: number;
+
+      if (rotation === 90) {
+        [tx, ty] = [h - 1 - y, x];
+      } else if (rotation === 180) {
+        [tx, ty] = [w - 1 - x, h - 1 - y];
+      } else if (rotation === 270) {
+        [tx, ty] = [y, w - 1 - x];
+      } else {
+        [tx, ty] = [x, y];
+      }
+      if (flip) {
+        tx = outWidth - 1 - tx;
+      }
+      target[ty * outWidth + tx] = source[y * w + x] as number;
+    }
+  }
+  return { data, width: outWidth, height: outHeight, format: pixels.format };
+}
+
+/** Read a frame through a 2D canvas, which renders it as displayed. The
+ *  canvas takes the visible size, turned for a rotation of 90 or 270, so the
+ *  pixels match what `orient()` makes of a `copyTo()` read. */
+function canvasPixels(
+  frame: VideoFrame,
+  visibleWidth: number,
+  visibleHeight: number,
+  { rotation }: Orientation,
+): Pixels {
+  const turned = rotation === 90 || rotation === 270;
+  const width = turned ? visibleHeight : visibleWidth;
+  const height = turned ? visibleWidth : visibleHeight;
+
   if (typeof OffscreenCanvas === 'undefined') {
     throw new Error(
       `pushFrame: cannot read a ${frame.format ?? 'formatless'} VideoFrame here — ` +

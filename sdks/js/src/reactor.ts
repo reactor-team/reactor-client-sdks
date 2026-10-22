@@ -676,7 +676,9 @@ export class Reactor implements Disposable {
    * Video: a `VideoFrame` (cloned when called, so the caller may close it as
    * soon as this returns; it stays the caller's), an
    * `ImageData`, or `{ data, width, height, format? }` raw pixels (`"rgba"`
-   * by default, or `"rgb"`/`"bgra"`). Sent to the model as RGB.
+   * by default, or `"rgb"`/`"bgra"`). Sent to the model as RGB. A
+   * `VideoFrame` is sent as it is displayed: its `rotation` and `flip` are
+   * applied, so a 90° frame arrives with its width and height swapped.
    * Audio: `{ samples, sampleRate, channels? }`, interleaved `Int16Array`
    * PCM at the rate the model's track declares.
    *
