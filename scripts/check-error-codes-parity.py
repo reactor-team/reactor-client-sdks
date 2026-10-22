@@ -133,8 +133,9 @@ JAVA_ERRORS = REPO_ROOT / "sdks/java/reactor-sdk/src/main/java/inc/reactor/sdk/E
 
 # Android: the same one-declaration-per-code shape as Java, in Kotlin — the constant carries the
 # wire value, the recoverability and a constructor reference:
-# `NETWORK_ERROR("NETWORK_ERROR", true, ::NetworkException),`.
-ANDROID_CODE = re.compile(r'\("([A-Z_]+)",\s*(?:true|false),\s*::\w+\)')
+# `NETWORK_ERROR("NETWORK_ERROR", true, ::NetworkException),`. A declaration too long for one line
+# is wrapped one argument per line, with a trailing comma.
+ANDROID_CODE = re.compile(r'\(\s*"([A-Za-z_]+)",\s*(?:true|false),\s*::\w+,?\s*\)')
 
 ANDROID_ERRORS = (
     REPO_ROOT / "sdks/android/reactor-sdk-android/src/main/kotlin/inc/reactor/sdk/android/ErrorCode.kt"
