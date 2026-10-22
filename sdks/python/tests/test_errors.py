@@ -108,6 +108,29 @@ class TestUnknownCodes:
         assert error.message == "something went wrong"
 
 
+class TestStepFailureFields:
+    def test_a_failed_call_names_its_entry_and_its_handlers_code(self) -> None:
+        error = error_from_payload(
+            _payload(
+                code="step_command_failed",
+                message="tag failed (queue_full): full",
+                entry="commands[2]",
+                command_code="queue_full",
+            )
+        )
+        assert type(error) is StepCommandFailedError
+        assert (error.entry, error.command_code) == ("commands[2]", "queue_full")
+
+    def test_a_refused_step_names_its_entry(self) -> None:
+        error = error_from_payload(_payload(code="step_refused", entry="media_input[0]"))
+        assert type(error) is StepRefusedError
+        assert (error.entry, error.command_code) == ("media_input[0]", None)
+
+    def test_an_error_without_them_leaves_them_none(self) -> None:
+        error = error_from_payload(_payload())
+        assert (error.entry, error.command_code) == (None, None)
+
+
 class TestMalformedPayloads:
     def test_no_payload_at_all(self) -> None:
         assert error_from_payload(None).message == "unknown error"

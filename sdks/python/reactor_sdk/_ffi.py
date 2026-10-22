@@ -318,7 +318,119 @@ def _load() -> ctypes.CDLL:
         ctypes.c_uint32,  # num_channels
     ]
 
+    _bind_stepped(lib)
     return lib
+
+
+#: The functions stepped generation added. They arrived without an ABI bump —
+#: adding a function changes nothing an older binding calls — so a library
+#: reporting `ABI_VERSION` may still predate them. Bound only when present;
+#: `has_stepped()` is what a caller asks before using one. Requiring the
+#: result's error and file accessors also turns away an early build of this
+#: surface whose `reactor_create_with_options` took one more parameter.
+STEPPED_FUNCTIONS = (
+    "reactor_create_with_options",
+    "reactor_step",
+    "reactor_clear_step_inputs",
+    "reactor_step_result_step",
+    "reactor_step_result_elapsed",
+    "reactor_step_result_error",
+    "reactor_step_result_file_count",
+    "reactor_step_result_file_name",
+    "reactor_step_result_file_content_type",
+    "reactor_step_result_file_size",
+    "reactor_step_result_track_count",
+    "reactor_step_result_track_name",
+    "reactor_step_result_track_kind",
+    "reactor_step_result_track_rate",
+    "reactor_step_result_frame_count",
+    "reactor_step_result_frame_encoding",
+    "reactor_step_result_frame_dtype",
+    "reactor_step_result_frame_shape",
+    "reactor_step_result_frame_data",
+    "reactor_step_result_frame_metadata",
+    "reactor_step_result_frame_capture_time_us",
+    "reactor_step_result_free",
+)
+
+
+def has_stepped(lib: object) -> bool:
+    """Whether `lib` exports every stepped-generation function."""
+    return all(hasattr(lib, name) for name in STEPPED_FUNCTIONS)
+
+
+def _bind_stepped(lib: ctypes.CDLL) -> None:
+    if not has_stepped(lib):
+        return
+
+    lib.reactor_create_with_options.restype = ctypes.c_void_p
+    lib.reactor_create_with_options.argtypes = [
+        ctypes.c_char_p,  # api_url
+        ctypes.c_char_p,  # model_name
+        ctypes.c_char_p,  # jwt (nullable)
+        ctypes.c_void_p,  # callbacks (nullable)
+        ctypes.c_char_p,  # options_json (nullable)
+        ctypes.POINTER(ctypes.c_void_p),  # error_out (nullable): heap JSON to free
+    ]
+
+    lib.reactor_step.restype = None
+    lib.reactor_step.argtypes = [
+        ctypes.c_void_p,  # handle
+        ctypes.c_char_p,  # state_json (nullable)
+        ctypes.c_char_p,  # commands_json (nullable)
+        ctypes.c_void_p,  # completion (STEP_COMPLETION_FN)
+        ctypes.c_void_p,  # userdata
+    ]
+
+    lib.reactor_clear_step_inputs.restype = None
+    lib.reactor_clear_step_inputs.argtypes = [ctypes.c_void_p]
+
+    result = ctypes.c_void_p
+    lib.reactor_step_result_step.restype = ctypes.c_uint64
+    lib.reactor_step_result_step.argtypes = [result]
+    lib.reactor_step_result_elapsed.restype = ctypes.c_double
+    lib.reactor_step_result_elapsed.argtypes = [result]
+    # c_char_p: every string accessor borrows from the result, so ctypes copying
+    # the bytes out is exactly right, and nothing is freed through them.
+    lib.reactor_step_result_error.restype = ctypes.c_char_p
+    lib.reactor_step_result_error.argtypes = [result]
+    lib.reactor_step_result_file_count.restype = ctypes.c_uint32
+    lib.reactor_step_result_file_count.argtypes = [result]
+    lib.reactor_step_result_file_name.restype = ctypes.c_char_p
+    lib.reactor_step_result_file_name.argtypes = [result, ctypes.c_uint32]
+    lib.reactor_step_result_file_content_type.restype = ctypes.c_char_p
+    lib.reactor_step_result_file_content_type.argtypes = [result, ctypes.c_uint32]
+    lib.reactor_step_result_file_size.restype = ctypes.c_uint64
+    lib.reactor_step_result_file_size.argtypes = [result, ctypes.c_uint32]
+    lib.reactor_step_result_track_count.restype = ctypes.c_uint32
+    lib.reactor_step_result_track_count.argtypes = [result]
+    lib.reactor_step_result_track_name.restype = ctypes.c_char_p
+    lib.reactor_step_result_track_name.argtypes = [result, ctypes.c_uint32]
+    lib.reactor_step_result_track_kind.restype = ctypes.c_char_p
+    lib.reactor_step_result_track_kind.argtypes = [result, ctypes.c_uint32]
+    lib.reactor_step_result_track_rate.restype = ctypes.c_double
+    lib.reactor_step_result_track_rate.argtypes = [result, ctypes.c_uint32]
+    lib.reactor_step_result_frame_count.restype = ctypes.c_uint32
+    lib.reactor_step_result_frame_count.argtypes = [result, ctypes.c_uint32]
+
+    frame = [result, ctypes.c_uint32, ctypes.c_uint32]
+    lib.reactor_step_result_frame_encoding.restype = ctypes.c_char_p
+    lib.reactor_step_result_frame_encoding.argtypes = frame
+    lib.reactor_step_result_frame_dtype.restype = ctypes.c_char_p
+    lib.reactor_step_result_frame_dtype.argtypes = frame
+    lib.reactor_step_result_frame_shape.restype = ctypes.POINTER(ctypes.c_uint32)
+    lib.reactor_step_result_frame_shape.argtypes = [*frame, ctypes.POINTER(ctypes.c_uint32)]
+    lib.reactor_step_result_frame_data.restype = ctypes.c_void_p
+    lib.reactor_step_result_frame_data.argtypes = [*frame, ctypes.POINTER(ctypes.c_size_t)]
+    lib.reactor_step_result_frame_metadata.restype = ctypes.c_void_p
+    lib.reactor_step_result_frame_metadata.argtypes = [*frame, ctypes.POINTER(ctypes.c_size_t)]
+    lib.reactor_step_result_frame_capture_time_us.restype = ctypes.c_int
+    lib.reactor_step_result_frame_capture_time_us.argtypes = [
+        *frame,
+        ctypes.POINTER(ctypes.c_int64),
+    ]
+    lib.reactor_step_result_free.restype = None
+    lib.reactor_step_result_free.argtypes = [result]
 
 
 # Lazy singleton
@@ -370,6 +482,14 @@ ON_AUDIO_FN = ctypes.CFUNCTYPE(
 # (int, const char*, const char*, void*) -> void  [completion]
 COMPLETION_FN = ctypes.CFUNCTYPE(
     None, ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p
+)
+
+
+# (int ok, ReactorStepResult* result, const char* error_json, void*) -> void.
+# `result` is c_void_p, not a pointer type ctypes would wrap: it arrives owned,
+# and has to be handed back to reactor_step_result_free as the same address.
+STEP_COMPLETION_FN = ctypes.CFUNCTYPE(
+    None, ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p
 )
 
 

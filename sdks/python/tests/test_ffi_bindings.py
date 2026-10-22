@@ -13,6 +13,7 @@ drifted is silent undefined behaviour — these tests are the only place it surf
 
 from __future__ import annotations
 
+import asyncio
 import ctypes
 import json
 from pathlib import Path
@@ -180,3 +181,98 @@ def test_media_push_on_a_null_handle_is_a_noop() -> None:
 
 def test_marking_a_delivery_outside_a_frame_callback_is_a_noop() -> None:
     _ffi.get_lib().reactor_frame_delivered()
+
+
+# ── Stepped generation ──────────────────────────────────────────────────────
+
+
+def test_the_library_exports_stepped_generation() -> None:
+    assert _ffi.has_stepped(_ffi.get_lib())
+
+
+def test_step_on_a_null_handle_skips_the_completion() -> None:
+    calls: list[int] = []
+
+    @_ffi.STEP_COMPLETION_FN
+    def completion(ok: int, _result: int | None, _error: bytes | None, _userdata: int) -> None:
+        calls.append(ok)
+
+    lib = _ffi.get_lib()
+    lib.reactor_step(None, b'{"prompt":"x"}', b"[]", completion, None)
+    lib.reactor_clear_step_inputs(None)
+
+    assert calls == []
+
+
+def test_step_result_accessors_accept_a_null_result() -> None:
+    lib = _ffi.get_lib()
+    ndim = ctypes.c_uint32(7)
+    length = ctypes.c_size_t(7)
+    captured = ctypes.c_int64(7)
+    assert lib.reactor_step_result_step(None) == 0
+    assert lib.reactor_step_result_elapsed(None) == 0.0
+    assert lib.reactor_step_result_error(None) is None
+    assert lib.reactor_step_result_file_count(None) == 0
+    assert lib.reactor_step_result_file_name(None, 0) is None
+    assert lib.reactor_step_result_file_content_type(None, 0) is None
+    assert lib.reactor_step_result_file_size(None, 0) == 0
+    assert lib.reactor_step_result_track_count(None) == 0
+    assert lib.reactor_step_result_track_name(None, 0) is None
+    assert lib.reactor_step_result_track_kind(None, 0) is None
+    assert lib.reactor_step_result_track_rate(None, 0) == 0.0
+    assert lib.reactor_step_result_frame_count(None, 0) == 0
+    assert lib.reactor_step_result_frame_encoding(None, 0, 0) is None
+    assert lib.reactor_step_result_frame_dtype(None, 0, 0) is None
+    assert not lib.reactor_step_result_frame_shape(None, 0, 0, ctypes.byref(ndim))
+    assert ndim.value == 0
+    assert lib.reactor_step_result_frame_data(None, 0, 0, ctypes.byref(length)) is None
+    assert length.value == 0
+    assert lib.reactor_step_result_frame_metadata(None, 0, 0, ctypes.byref(length)) is None
+    assert lib.reactor_step_result_frame_capture_time_us(None, 0, 0, ctypes.byref(captured)) == 0
+    assert captured.value == 7
+    lib.reactor_step_result_free(None)
+
+
+def test_create_with_options_refuses_an_unknown_key_through_error_out() -> None:
+    lib = _ffi.get_lib()
+    error = ctypes.c_void_p()
+    handle = lib.reactor_create_with_options(
+        b"http://localhost:1",
+        b"owner/model",
+        None,
+        None,
+        b'{"generaton":"stepped"}',
+        ctypes.byref(error),
+    )
+    assert not handle
+    assert error.value
+    try:
+        payload = json.loads(ctypes.cast(error.value, ctypes.c_char_p).value)
+        assert payload["code"] == "INVALID_STATE"
+        assert payload["operation"] == "create"
+    finally:
+        lib.reactor_free_string(error)
+
+
+async def test_a_stepped_step_before_connecting_fails_through_its_completion() -> None:
+    """Create a real stepped handle and step it unconnected: the completion
+    answers, typed, on the library's own thread."""
+    lib = _ffi.get_lib()
+    loop = asyncio.get_running_loop()
+    done: asyncio.Future = loop.create_future()
+
+    @_ffi.STEP_COMPLETION_FN
+    def completion(ok: int, result: int | None, error: bytes | None, _userdata: int) -> None:
+        loop.call_soon_threadsafe(done.set_result, (ok, result, error))
+
+    handle = lib.reactor_create_with_options(
+        b"http://localhost:1", b"owner/model", None, None, b'{"generation":"stepped"}', None
+    )
+    assert handle
+    try:
+        lib.reactor_step(ctypes.c_void_p(handle), None, None, completion, None)
+        ok, result, error = await asyncio.wait_for(done, timeout=5)
+    finally:
+        assert lib.reactor_destroy(ctypes.c_void_p(handle)) == 0
+    assert ok == 0 and not result
+    assert json.loads(error)["code"] == "INVALID_STATE"

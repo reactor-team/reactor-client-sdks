@@ -242,7 +242,11 @@ Subclasses: `InvalidStateError`, `DisconnectedError`, `NetworkError`,
 `RequestTimeoutError`, `TransportError`, `UnauthorizedError`, `NotFoundError`,
 `ConflictError`, `RateLimitedError`, `BadRequestError`, `ServerError`,
 `VersionMismatchError`, `DecodeError`, `SessionTerminalError`,
-`MessageTooLargeError`, `AbortedError`.
+`MessageTooLargeError`, `AbortedError`, `RecorderDisabledError`, and for stepped
+sessions `GenerationModeMismatchError`, `DataChannelChunkingRequiredError`,
+`StepRefusedError`, `StepNotReadyError`, `StepCommandFailedError`,
+`StepSessionEndedError`, `StepResultTooLargeError` and
+`UnsupportedFrameEncodingError`.
 
 A command the model itself rejects reports the model's own code, which this package
 cannot enumerate — match on `error.code` for anything outside that list.
@@ -260,6 +264,73 @@ try:
 except AuthError:
     ...                       # the key itself was refused, or the auth host is unreachable
 ```
+
+## Stepped generation
+
+A model that supports it can generate one step at a time instead of streaming.
+Ask for it when creating the client, then call `step()`: the runtime applies the
+state (each key as the model's `set_<key>` command), then the commands, then every
+input frame pushed since the previous step, generates, and the call returns what
+the model produced on each output track. These are applied one by one, in that
+order; a failure part-way does not undo the ones before it.
+
+```python
+from reactor_sdk import Reactor, StepCommand
+
+reactor = Reactor("owner/model", api_key=key, generation="stepped")
+await reactor.connect()          # GenerationModeMismatchError if the runtime cannot
+
+camera = await reactor.track("camera").publish()
+camera.push_frame(frame)         # buffered for the next step, not sent
+
+result = await reactor.step(
+    state={"prompt": "a red fox"},
+    commands=[StepCommand("advance", {"frames": 4})],
+)
+for out in result.track("main_video").frames:
+    out.array                    # numpy (height, width, 3) uint8 RGB
+    out.metadata, out.capture_time_us
+result.track("main_video").rate  # frames per second (audio: samples per second); 0.0 if unreported
+result.elapsed                   # seconds the step's generate() took (or the model reported)
+result.error                     # None, or why the model failed a step that ran
+for f in result.files:           # extra files the model kept with the step
+    f.name, f.content_type, f.size
+
+await reactor.step()             # no arguments: a step on the model's current state
+```
+
+`Track.push_frame` keeps its signature: in a stepped session it buffers the frame
+for the next step instead of sending it. The buffer holds at most one data-channel
+message's worth of frame bytes, so pushing faster than steps run drops the oldest
+frames, across tracks; once the session's tracks are known, a push to a track the
+session does not take as input is dropped with a warning. A step refused before it
+goes out (outside a ready stepped session, or with malformed arguments) keeps the
+buffered frames for the next step; past that they belong to the step whatever its
+outcome, so one that fails or cannot be sent drops them too. Audio comes back as
+`(channels, samples)` `int16`. `send_command` keeps working between steps, and
+what it changes is what the next step uses. A file goes into a step the way it
+goes into a command: upload it with `upload_file()` and put the `FileRef` in a
+command's data, or as the value of an upload-typed state field.
+
+A step that ran but that the model reported as failed returns normally, with
+`result.error` set. `result.files` names the files the model kept with the step;
+their bytes are fetched over HTTP from the session's step results
+(`GET /sessions/{id}/steps/{index}`, which lists each with a download URL and
+answers 202 while they are still being stored). A step the runtime refuses raises
+`StepRefusedError`; one the session cannot take yet raises `StepNotReadyError`;
+one whose state key or command failed raises `StepCommandFailedError` (none of
+these three ran; a refused step changed nothing, since the runtime checks the
+whole request first, while a failed call keeps the calls before it applied;
+both name the part at fault in `entry`, and `StepCommandFailedError` the
+handler's own code in `command_code`); one whose output
+does not fit in a message raises `StepResultTooLargeError`; one whose session
+ended before its result came raises `StepSessionEndedError` (whether it ran is
+unknown); a request too large to send raises `MessageTooLargeError` (nothing was
+sent). A stepped `connect()` raises `DataChannelChunkingRequiredError` when the
+data channel did not negotiate chunking, which stepped sessions need. `clear_step_inputs()` drops
+the frames buffered so far. `step_timeout=` bounds a step (default 300 s).
+`numpy` is needed to read `.array`; `.data`, `.dtype` and `.shape` are there
+without it. See [`examples/09_stepped_generation.py`](examples/09_stepped_generation.py).
 
 ## Recordings
 

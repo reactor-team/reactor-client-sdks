@@ -65,6 +65,11 @@ class ReactorError(Exception):
             for a failure that is not tied to one, like a transport that dropped
             on its own.
         retry_after_ms: A backoff hint, when the platform sent one.
+        entry: For a step that did not run, the part of the request at fault,
+            such as ``"commands[2]"`` or ``"state.prompt"``; None otherwise.
+        command_code: For a step whose call failed, the code the handler
+            raised (its ``CommandError`` code, or ``internal_error``); None
+            otherwise.
         timestamp_ms: When this happened. Only ever set on the `on_error` event —
             a raised exception is already happening now, so there is nothing this
             would tell the caller that catching it does not.
@@ -84,6 +89,8 @@ class ReactorError(Exception):
         operation: str | None = None,
         retry_after_ms: float | None = None,
         timestamp_ms: float | None = None,
+        entry: str | None = None,
+        command_code: str | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -95,6 +102,8 @@ class ReactorError(Exception):
         self.operation = operation
         self.retry_after_ms = retry_after_ms
         self.timestamp_ms = timestamp_ms
+        self.entry = entry
+        self.command_code = command_code
 
     def __str__(self) -> str:
         where = f"{self.operation}: " if self.operation else ""
@@ -308,7 +317,9 @@ class StepCommandFailedError(ReactorError):
     """The handler of one of the step's state keys or commands failed.
 
     The calls before it stay applied, the ones after it were skipped, and the
-    step did not run. Lowercase, as the runtime names the outcome.
+    step did not run. `entry` names the call that failed (``"commands[2]"``,
+    ``"state.prompt"``) and `command_code` the code its handler raised.
+    Lowercase, as the runtime names the outcome.
     """
 
     code = "step_command_failed"
@@ -388,6 +399,8 @@ def error_from_payload(raw: bytes | None) -> ReactorError:
         status=payload.get("status"),
         operation=payload.get("operation"),
         retry_after_ms=payload.get("retry_after_ms"),
+        entry=payload.get("entry"),
+        command_code=payload.get("command_code"),
     )
 
 

@@ -9,6 +9,37 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Stepped generation. `Reactor(..., generation="stepped")` asks for a session
+  that generates one step at a time, and `await reactor.step(state=...,
+  commands=[...])` runs one and returns a `StepResult`: per output track, the
+  frames it produced, each readable as a numpy array (`frame.array`) with its
+  metadata and capture time; `elapsed`, the seconds the step's `generate()`
+  took (or the time the model reported for the step); `files`, the extra files
+  the model kept with the step (`StepFile`: name, content type, size); and
+  `error`, set when the step ran but the model reported it failed — such a
+  step returns, it does not raise. Both arguments of `step()` are optional.
+  `Track.push_frame` buffers into the next step in such a session, and
+  `clear_step_inputs()` drops buffered frames. The buffer holds at most one
+  data-channel message's worth of frame bytes, dropping the oldest frames
+  across tracks when pushes outpace steps; a push to a track the session does
+  not take as input is dropped with a warning. A step refused before it goes
+  out keeps its buffered frames; past that they belong to the step whatever
+  its outcome, including one too large to send, and none carry over. Each
+  output track carries its `rate` (frames per second for video, samples per
+  second for audio; 0.0 when the runtime did not say).
+  New errors:
+  `GenerationModeMismatchError` (the runtime did not start the session stepped),
+  `DataChannelChunkingRequiredError` (the data channel did not negotiate
+  chunking, which a stepped session needs), `StepRefusedError`,
+  `StepNotReadyError` (the session cannot take a step yet; the step did not
+  run), `StepCommandFailedError` (a state key or command failed; the step did
+  not run), `StepSessionEndedError` (the session ended before the result came;
+  whether the step ran is unknown), `StepResultTooLargeError`,
+  `UnsupportedFrameEncodingError`.
+  Needs a `libreactor_ffi` with `reactor_create_with_options`.
+
 ## [1.11.0] - 2026-10-14
 
 ### Added

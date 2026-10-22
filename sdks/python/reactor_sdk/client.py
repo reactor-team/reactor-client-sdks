@@ -11,10 +11,10 @@ import mimetypes
 import os
 import time
 import weakref
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, BinaryIO, ClassVar, overload
+from typing import Any, BinaryIO, ClassVar, Literal, overload
 
 from . import __version__
 from ._auth import DEFAULT_API_URL, fetch_jwt
@@ -24,8 +24,10 @@ from ._ffi import (
     ON_FRAME_FN,
     ON_STRING_FN,
     ON_TRACK_FN,
+    STEP_COMPLETION_FN,
     ReactorCallbacks,
     get_lib,
+    has_stepped,
 )
 
 # Re-exported from `client` as well as their own modules: all of these have been
@@ -35,8 +37,11 @@ from ._ffi import (
 from ._media import _bgra_to_rgb_array, _positional_arity  # noqa: F401  (re-export)
 from ._recording import download_clip
 from ._stats import ConnectionStats, stats_from_payload
+from ._step import StepCommand, StepResult, _read_step_result, _wire_commands
 from .errors import (  # noqa: F401  (ReactorError/error_for_code/error_from_payload re-export)
     AbortedError,
+    DecodeError,
+    InvalidStateError,
     ReactorError,
     error_for_code,
     error_from_payload,
@@ -160,6 +165,11 @@ _SYNTHETIC_ADM = 0
 #: which otherwise reports "ffi" for every language.
 _SDK_TYPE = b"python"
 
+#: How a session generates: `"streamed"` over media tracks (the default, and what
+#: every session did before the choice existed), or `"stepped"`, one
+#: :meth:`Reactor.step` at a time.
+Generation = Literal["streamed", "stepped"]
+
 #: What a registered handler returns: `None` from a plain function, or a coroutine from
 #: an `async def` one — `_fire` inspects this to decide whether to schedule it.
 _HandlerResult = Coroutine[Any, Any, None] | None
@@ -233,6 +243,8 @@ class Reactor:
         local: bool = False,
         auto_resume_tracks: bool = True,
         max_session_duration_seconds: int | None = None,
+        generation: Generation = "streamed",
+        step_timeout: float | None = None,
     ) -> None:
         """
         Args:
@@ -252,9 +264,25 @@ class Reactor:
                 session cannot create sessions, so the limit does not apply. Has no effect
                 when `jwt` is given: that token is already minted, and this client never
                 re-mints one it did not create itself.
+            generation: ``"streamed"`` (the default) generates continuously over the
+                model's media tracks. ``"stepped"`` asks for a session that generates
+                one :meth:`step` at a time; `connect()` raises
+                `GenerationModeMismatchError` when the runtime does not start the
+                session that way, as one without stepped generation will not.
+            step_timeout: Seconds a :meth:`step` may take, generation included, before
+                it fails with `RequestTimeoutError`. Stepped sessions only; None keeps
+                the default of 300.
 
         No audio device is ever opened — see `_SYNTHETIC_ADM`.
         """
+        if generation not in ("streamed", "stepped"):
+            raise ValueError(f'generation must be "streamed" or "stepped", got {generation!r}')
+        if step_timeout is not None:
+            if generation != "stepped":
+                raise ValueError('step_timeout only applies to generation="stepped"')
+            if not (isinstance(step_timeout, (int, float)) and 0 < step_timeout < float("inf")):
+                raise ValueError(f"step_timeout must be a positive number, got {step_timeout!r}")
+
         # Local mode means a local coordinator, so it picks the URL. The production
         # default counts as "no choice made": callers routinely compute
         # `api_url or "https://api.reactor.inc"` and pass that alongside `local=True`,
@@ -271,6 +299,8 @@ class Reactor:
         self._local = local
         self._auto_resume_tracks = auto_resume_tracks
         self._max_session_duration_seconds = max_session_duration_seconds
+        self._generation: Generation = generation
+        self._step_timeout = step_timeout
 
         # A token the caller handed us is theirs: never replaced. One we minted from an
         # API key is ours, and `_minted_for` records the scope it was minted with, so a
@@ -569,6 +599,8 @@ class Reactor:
                     operation=d.get("operation"),
                     retry_after_ms=d.get("retry_after_ms"),
                     timestamp_ms=d.get("timestamp_ms", 0.0),
+                    entry=d.get("entry"),
+                    command_code=d.get("command_code"),
                 )
                 r._fire_on_loop("error", err)
             except Exception:
@@ -710,27 +742,71 @@ class Reactor:
         self._cb_refs = [s_cb, e_cb, m_cb, rm_cb, tr_cb, cap_cb, sid_cb, fr_cb, au_cb]
 
         jwt_bytes = self._jwt.encode() if self._jwt else None
-        local_int = 1 if self._local else 0
-        auto_resume_tracks_int = 1 if self._auto_resume_tracks else 0
 
-        # Named rather than defaulted: `reactor_create` would take the mode from
-        # the REACTOR_WEBRTC_ADM environment variable, and an environment variable
-        # is not something a library should let open the user's microphone.
-        handle = lib.reactor_create_with_adm(
-            self._api_url.encode(),
-            self._model_name.encode(),
-            jwt_bytes,
-            local_int,
-            auto_resume_tracks_int,
-            ctypes.byref(cbs),
-            ctypes.c_int(_SYNTHETIC_ADM),
-            __version__.encode(),
-            _SDK_TYPE,
-        )
+        if self._generation == "stepped":
+            handle = self._create_stepped_handle(lib, jwt_bytes, cbs)
+        else:
+            # Named rather than defaulted: `reactor_create` would take the mode from
+            # the REACTOR_WEBRTC_ADM environment variable, and an environment variable
+            # is not something a library should let open the user's microphone.
+            handle = lib.reactor_create_with_adm(
+                self._api_url.encode(),
+                self._model_name.encode(),
+                jwt_bytes,
+                1 if self._local else 0,
+                1 if self._auto_resume_tracks else 0,
+                ctypes.byref(cbs),
+                ctypes.c_int(_SYNTHETIC_ADM),
+                __version__.encode(),
+                _SDK_TYPE,
+            )
 
         self._handle = handle
         # Now closable, so the atexit hook must know about it.
         _LIVE_CLIENTS.add(self)
+
+    def _create_stepped_handle(
+        self, lib: Any, jwt_bytes: bytes | None, cbs: ReactorCallbacks
+    ) -> int:
+        """Create the handle for a stepped session, through the options-taking entry.
+
+        The generation mode is a creation option rather than a connect one, and
+        only `reactor_create_with_options` takes it.
+        """
+        if not has_stepped(lib):
+            raise RuntimeError(
+                "the loaded libreactor_ffi predates stepped generation (it exports no "
+                "reactor_create_with_options). Rebuild it with "
+                "`cargo build -p reactor-ffi --release`."
+            )
+        options: dict[str, Any] = {
+            "local": self._local,
+            "auto_resume_tracks": self._auto_resume_tracks,
+            "adm": "synthetic",
+            "sdk_version": __version__,
+            "sdk_type": _SDK_TYPE.decode(),
+            "generation": self._generation,
+        }
+        if self._step_timeout is not None:
+            options["step_timeout_seconds"] = float(self._step_timeout)
+        error = ctypes.c_void_p()
+        handle = lib.reactor_create_with_options(
+            self._api_url.encode(),
+            self._model_name.encode(),
+            jwt_bytes,
+            ctypes.byref(cbs),
+            json.dumps(options).encode(),
+            ctypes.byref(error),
+        )
+        if not handle:
+            raw = None
+            if error.value:
+                try:
+                    raw = ctypes.cast(error.value, ctypes.c_char_p).value
+                finally:
+                    lib.reactor_free_string(error)
+            raise error_from_payload(raw)
+        return handle
 
     def _destroy_handle(self) -> None:
         if self._handle is None:
@@ -811,19 +887,41 @@ class Reactor:
         just the trampoline itself, so `_destroy_handle()` can settle it directly
         if the trampoline's own completion never arrives — see there.
         """
+
+        def decode(result_json: bytes | None) -> Any:
+            return json.loads(result_json) if result_json and result_json != b"{}" else None
+
+        return await self._await_completion(COMPLETION_FN, decode, dispatcher)
+
+    async def _await_completion(
+        self, fn_type: Any, decode: Callable[[Any], Any], dispatcher: Callable[[Any], None]
+    ) -> Any:
+        """`_async_op` for any completion shaped ``(ok, result, error_json, userdata)``.
+
+        `decode` turns the success payload into what the await returns. It runs
+        before the future is settled, so a payload that will not decode fails the
+        call with the error rather than leaving it settled with nothing — or never
+        settled at all, which is what an exception escaping into the trampoline did.
+        """
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         pending = self._pending_completions
         holder: list[Any] = []
 
-        def _cb(ok: int, result_json: bytes | None, error_json: bytes | None, _ud: Any) -> None:
+        def _cb(ok: int, result: Any, error_json: bytes | None, _ud: Any) -> None:
             # Runs on the FFI's control thread.
             try:
                 if ok:
-                    payload = (
-                        json.loads(result_json) if result_json and result_json != b"{}" else None
-                    )
-                    _settle_from_foreign_thread(loop, future, payload, None)
+                    try:
+                        payload = decode(result)
+                    except ReactorError as error:
+                        _settle_from_foreign_thread(loop, future, None, error)
+                    except Exception as exc:
+                        _settle_from_foreign_thread(
+                            loop, future, None, DecodeError(f"could not decode the result: {exc}")
+                        )
+                    else:
+                        _settle_from_foreign_thread(loop, future, payload, None)
                 else:
                     error = error_from_payload(error_json)
                     _settle_from_foreign_thread(loop, future, None, error)
@@ -832,7 +930,7 @@ class Reactor:
                 if holder:
                     pending.pop(id(holder[0]), None)
 
-        fn = COMPLETION_FN(_cb)
+        fn = fn_type(_cb)
         holder.append(fn)
         pending[id(fn)] = (fn, future)
 
@@ -1033,6 +1131,122 @@ class Reactor:
                 ctypes.c_void_p(handle), command.encode(), args_json, uploads_json, fn, None
             )
         )
+
+    # ------------------------------------------------------------------
+    # Stepped generation
+    # ------------------------------------------------------------------
+
+    @property
+    def generation(self) -> Generation:
+        """How this client's sessions generate: ``"streamed"`` or ``"stepped"``."""
+        return self._generation
+
+    async def step(
+        self,
+        state: Mapping[str, Any] | None = None,
+        commands: Sequence[StepCommand | Mapping[str, Any]] | None = None,
+    ) -> StepResult:
+        """Run one step of a stepped session and return what it produced.
+
+        The runtime applies `state` (each key as the model's ``set_<key>``
+        command), then `commands` in order, then every input frame pushed since the
+        previous step, and then generates — :meth:`Track.push_frame` does not send
+        in a stepped session, it buffers for the next step. These are individual
+        calls, applied in that order; a failure part-way does not undo the ones
+        before it::
+
+            reactor = Reactor("owner/model", api_key=key, generation="stepped")
+            await reactor.connect()
+            camera = await reactor.track("camera").publish()
+            camera.push_frame(frame)
+            result = await reactor.step(
+                state={"prompt": "a red fox"},
+                commands=[StepCommand("advance", {"frames": 4})],
+            )
+            for out in result.track("main_video").frames:
+                show(out.array)  # (height, width, 3) uint8 RGB
+
+        Both arguments are optional: ``await reactor.step()`` runs a step on the
+        model's current state. :meth:`send_command` keeps working in a stepped
+        session, and what it changes is what the next step uses.
+
+        `commands` entries are `StepCommand`s or ``{"command": ..., "data": ...}``
+        mappings. A file goes in the way it does for :meth:`send_command`: upload it
+        with :meth:`upload_file` and put the `FileRef` in a command's data, or as
+        the value of an upload-typed state field.
+
+        A step that ran but that the model reported as failed returns its result
+        with `StepResult.error` set. Raises `StepRefusedError` when the runtime
+        refuses the step (it checks the whole request first, so nothing it carried
+        was applied),
+        `StepNotReadyError` when the session cannot take a step yet (the step
+        did not run), `StepCommandFailedError` when the handler of one of its
+        state keys or commands fails (the calls before it stay applied, the step
+        did not run), `StepSessionEndedError` when the session ends before the
+        result arrives (whether the step ran is unknown),
+        `StepResultTooLargeError` when its output does not fit in one message,
+        `MessageTooLargeError` when the request does not (nothing was sent), and
+        `InvalidStateError` outside a ready stepped session.
+
+        A step refused before it goes out (``InvalidStateError``, malformed
+        arguments) keeps the frames pushed since the previous step for the next
+        one. Past that they belong to this step whatever its outcome: a step that
+        fails, or could not be sent at all, drops them too, and nothing is resent. The buffer
+        holds at most one message's worth of frame bytes, so pushing faster than
+        steps run drops the oldest frames, across tracks.
+        """
+        if self._generation != "stepped":
+            raise InvalidStateError(
+                'step() needs a stepped session: create the client with generation="stepped"',
+                operation="step",
+            )
+        self._require_handle()
+        if state is not None and not isinstance(state, Mapping):
+            raise TypeError(f"state must be a mapping or None, got {type(state).__name__}")
+        state_json = (
+            json.dumps(dict(state), default=_wire_file_ref).encode() if state is not None else None
+        )
+        commands_json = json.dumps(
+            _wire_commands(() if commands is None else commands), default=_wire_file_ref
+        ).encode()
+        handle = self._handle
+        lib = get_lib()
+
+        def decode(ptr: int | None) -> StepResult:
+            if not ptr:
+                raise DecodeError("a step succeeded with no result", operation="step")
+            try:
+                return _read_step_result(lib, ptr)
+            finally:
+                # Copied out above; the native result has no further use.
+                lib.reactor_step_result_free(ctypes.c_void_p(ptr))
+
+        return await self._await_completion(
+            STEP_COMPLETION_FN,
+            decode,
+            lambda fn: lib.reactor_step(
+                ctypes.c_void_p(handle), state_json, commands_json, fn, None
+            ),
+        )
+
+    def clear_step_inputs(self) -> None:
+        """Drop every frame pushed since the last step.
+
+        The next :meth:`step` then carries only frames pushed after this call. A
+        no-op before the client has a handle, with nothing buffered yet.
+
+        Raises:
+            InvalidStateError: outside a stepped session, as :meth:`step` does.
+        """
+        if self._generation != "stepped":
+            raise InvalidStateError(
+                "clear_step_inputs() needs a stepped session: "
+                'create the client with generation="stepped"',
+                operation="clear_step_inputs",
+            )
+        if self._handle is None:
+            return
+        get_lib().reactor_clear_step_inputs(ctypes.c_void_p(self._handle))
 
     # ------------------------------------------------------------------
     # Schema
