@@ -666,6 +666,13 @@ run = "scripts/build-android-ffi.sh"
 description = "[Build] Build the Android SDK AARs"
 run = "gradle --project-dir sdks/android --console=plain assemble"
 
+[tasks."build:android:central-bundle"]
+description = "[Build] Stage both published Android coordinates and zip the Maven Central bundle"
+# The Portal takes a whole release as one zip, validated and accepted together. Runnable without a
+# signing key and without credentials, which is what lets a pull request find an invalid
+# publication before a release does. Needs the natives staged, like any AAR build.
+run = "gradle --project-dir sdks/android --console=plain centralBundle"
+
 [tasks."setup:android:emulator"]
 description = "[Setup] Install the pinned emulator and 16 KB system image for instrumented tests"
 # Separate from setup:android because these are well over a gigabyte together, and only the

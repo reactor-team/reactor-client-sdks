@@ -784,12 +784,12 @@ public class Reactor(
         public const val DEFAULT_UPLOAD_LIMIT_BYTES: Long = 64L * 1024 * 1024
 
         /**
-         * What the coordinator records as `client_info.sdk_version`.
+         * This SDK's version, which the coordinator records as `client_info.sdk_version`.
          *
-         * A literal until the release wiring replaces it — the AAR's own version is what belongs
-         * here, not reactor-core's, and A15 is where that is read from the manifest.
+         * The AAR's own version rather than reactor-core's, read from gradle.properties at build
+         * time — the same line a release bumps, so the two cannot disagree.
          */
-        const val SDK_VERSION: String = "0.1.0-SNAPSHOT"
+        const val SDK_VERSION: String = BuildConfig.SDK_VERSION
 
         /**
          * Exchange an API key for a short-lived token, without creating a client.

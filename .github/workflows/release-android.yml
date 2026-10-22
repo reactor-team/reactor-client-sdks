@@ -1,0 +1,399 @@
+# Release the Android SDK to Maven Central.
+#
+# The version in sdks/android/gradle.properties is the switch: bumping it and merging to main is
+# what publishes, and everything else on main is a no-op. Same shape as release-java.yml, with
+# what is specific to Android:
+#
+#   * Two coordinates, inc.reactor:reactor-sdk-android and inc.reactor:reactor-sdk-android-media,
+#     staged and uploaded together as one bundle.
+#   * The native libraries are cross-compiled with the NDK and packaged *inside* the AAR, per ABI,
+#     rather than shipped as artifacts of their own.
+#   * The live suite runs on an Android emulator, against the exact natives the release packages.
+#
+# What the `maven` environment has to hold before any of this publishes anything — the same
+# environment and the same four secrets release-java.yml uses, since both publish under the
+# inc.reactor namespace with the same key:
+#
+#   MAVEN_GPG_PRIVATE_KEY   the armoured private key, whole block. Its public half must be on a
+#                           keyserver Central checks (keys.openpgp.org, keyserver.ubuntu.com).
+#   MAVEN_GPG_PASSPHRASE    its passphrase
+#   MAVEN_CENTRAL_USERNAME  a Portal *user token* (central.sonatype.com -> Account -> Generate
+#   MAVEN_CENTRAL_PASSWORD  User Token), not the account login.
+#   PUBLISH_ANDROID_RELEASE "true" (an environment variable, not a secret). Anything else stages
+#                           and uploads nothing, which is what makes merging this safe before
+#                           the rest is in place.
+#
+# To check the credentials without publishing: workflow_dispatch with dry_run=true. It stages and
+# signs the real bundle, the unsigned-artifact guard runs, and it stops before the upload.
+name: Release Android SDK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdks/android/**'
+      - 'crates/**'
+      - 'scripts/build-android-ffi.sh'
+      - '.github/workflows/release-android.yml'
+  pull_request:
+    paths:
+      - 'sdks/android/gradle.properties'
+      - 'sdks/android/buildSrc/**'
+      - '.github/workflows/release-android.yml'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and stage without publishing'
+        type: boolean
+        default: true
+
+concurrency:
+  # Keyed by ref, like the other release workflows: unkeyed, one queued pull-request build held the
+  # group for every ref, and a release push arriving behind it was cancelled with zero jobs run.
+  group: release-android-${{ github.ref }}
+  # Supersede an outdated pull-request build, but never interrupt a release.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  MISE_LOCKED: "1"
+
+permissions:
+  contents: write
+
+jobs:
+  detect-version:
+    name: Detect version bump
+    runs-on: ubuntu-latest
+    outputs:
+      bumped: ${{ steps.diff.outputs.bumped }}
+      version: ${{ steps.diff.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Diff the SDK version across the pushed range
+        id: diff
+        run: |
+          set -euo pipefail
+
+          version_at() {
+            git show "$1:sdks/android/gradle.properties" 2>/dev/null \
+              | grep -m1 '^version=' \
+              | sed -E 's/^version=([0-9]+\.[0-9]+\.[0-9]+.*)$/\1/'
+          }
+
+          NEW_VER=$(version_at "${{ github.sha }}")
+          if [ -z "$NEW_VER" ]; then
+            echo "::error::could not read the version out of sdks/android/gradle.properties"
+            exit 1
+          fi
+          echo "version=$NEW_VER" >> "$GITHUB_OUTPUT"
+
+          # A SNAPSHOT is never a release, whatever changed.
+          case "$NEW_VER" in
+            *-SNAPSHOT)
+              echo "::notice::$NEW_VER is a snapshot — building, not releasing"
+              echo "bumped=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "::notice::${{ github.event_name }} — building $NEW_VER, not releasing"
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # The whole pushed range, not HEAD^. A push can advance main by several commits — a stack
+          # landing at once — and then HEAD^ already carries the new version and the release the
+          # bump asked for silently never happens.
+          BEFORE="${{ github.event.before }}"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "::warning::no previous commit to diff against — not releasing"
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          OLD_VER=$(version_at "$BEFORE" || true)
+          if [ "$NEW_VER" != "$OLD_VER" ]; then
+            echo "::notice::version changed: ${OLD_VER:-none} -> $NEW_VER"
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::version unchanged ($NEW_VER) — building, not releasing"
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A version bump with no changelog entry ships undocumented, and the release notes point at
+      # that file. Writes nothing: the entry is added by hand, in the same pull request as the bump.
+      - name: Verify CHANGELOG.md documents this version
+        if: steps.diff.outputs.bumped == 'true'
+        env:
+          VERSION: ${{ steps.diff.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! grep -qF "## [${VERSION}]" sdks/android/CHANGELOG.md; then
+            echo "::error::sdks/android/CHANGELOG.md has no '## [${VERSION}]' section — move the [Unreleased] entries under one before releasing."
+            exit 1
+          fi
+
+  natives:
+    name: Native libraries
+    needs: detect-version
+    # x86_64 explicitly: the NDK's host toolchain is linux-x86_64 only, and it cross-compiles every
+    # Android ABI from there.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      # Before mise, as ci.yml orders it: with mise first, `cargo` resolves to a toolchain with no
+      # cargo component and the cross-build dies before it starts.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-shared-key: reactor-android-${{ hashFiles('mise.lock') }}
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
+      - name: Cache the pinned Android SDK components
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/mise/installs/android-sdk
+          key: android-sdk-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'mise.lock') }}
+      - run: mise run setup:android
+      - run: mise run build:android:native
+      # Built once and handed to both the live suite and the release, so what was tested is
+      # byte-for-byte what is published.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-natives
+          path: sdks/android/reactor-sdk-android/build/reactor-native
+          retention-days: 7
+          if-no-files-found: error
+
+  integration-tests:
+    name: Integration tests (real FFI, real model)
+    needs: [detect-version, natives]
+    # Only when something will be released or dry-run — the same condition as `release`, which is
+    # the only job that needs this one. An ordinary push to main is a no-op here, and running the
+    # live suite for it would spend the emulator and the session quota, and fail outright where no
+    # emulator runner is configured. Pull requests never get here: ci.yml runs the same suite on
+    # the same commit, and reactor/echo does not have the session quota for both racing it.
+    if: needs.detect-version.outputs.bumped == 'true' || (github.event_name == 'workflow_dispatch' && inputs.dry_run)
+    # A runner that can host an arm64 emulator — see ci.yml's android-integration-tests for why no
+    # hosted runner is one. Unlike ci.yml this job does not skip when there is none: `release`
+    # needs it, and a release that has not run the live suite must not publish.
+    runs-on: ${{ vars.ANDROID_EMULATOR_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    steps:
+      - name: Require a runner that can host the emulator
+        if: vars.ANDROID_EMULATOR_RUNNER == ''
+        run: |
+          echo "::error::ANDROID_EMULATOR_RUNNER is not set, so there is nowhere to run the live suite — and a release does not publish without it."
+          exit 1
+      - uses: actions/checkout@v7
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
+      - name: Cache the pinned Android SDK components
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/mise/installs/android-sdk
+          key: android-sdk-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'mise.lock') }}
+      - run: mise run setup:android:emulator
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-natives
+          path: sdks/android/reactor-sdk-android/build/reactor-native
+      # A 16 KB page-size image, as ci.yml uses: on a 4 KB image a misaligned library loads fine and
+      # the suite proves nothing.
+      - name: Run the live suite on an arm64 emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
+          REACTOR_ANDROID_NATIVE_PRESTAGED: "1"
+        with:
+          api-level: 36
+          target: google_apis_ps16k
+          arch: arm64-v8a
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          # Retries live inside the mise task, as ci.yml relies on too.
+          script: mise run test:android:integration-tests
+
+  release:
+    name: Publish to Maven Central
+    needs: [detect-version, natives, integration-tests]
+    if: needs.detect-version.outputs.bumped == 'true' || (github.event_name == 'workflow_dispatch' && inputs.dry_run)
+    runs-on: ubuntu-24.04
+    # The signing key, its passphrase, the Portal token and the kill switch live in one environment,
+    # and only a job that names it can read them: this is the one Android job able to sign or upload
+    # anything. It is also where a protection rule would go, if a release should need an approval.
+    environment: maven
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
+      - name: Cache the pinned Android SDK components
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/mise/installs/android-sdk
+          key: android-sdk-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'mise.lock') }}
+      - run: mise run setup:android
+
+      # The natives the live suite just ran against, not a rebuild.
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-natives
+          path: sdks/android/reactor-sdk-android/build/reactor-native
+
+      # Not `assemble`. Building the AARs says nothing about whether they can be published: a POM
+      # without its licence block, a coordinate missing its -sources companion — each is a refusal
+      # that only appears when something performs a publish. This stages the exact bundle, so the
+      # shape is checked here rather than by Central after the version has been tagged.
+      - run: mise run build:android:central-bundle
+        env:
+          ORG_GRADLE_PROJECT_signingKey: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          ORG_GRADLE_PROJECT_signingPassword: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+
+      # Read in a step, not in a job-level `if`. An environment-scoped variable is resolved after
+      # the condition decides whether the job runs, and checking it there has already silently
+      # skipped a release that had tagged and built.
+      - name: Is publishing switched on?
+        id: switch
+        env:
+          PUBLISH: ${{ vars.PUBLISH_ANDROID_RELEASE }}
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "::notice::dry run — staging only"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          elif [ "$PUBLISH" != "true" ]; then
+            echo "::notice::PUBLISH_ANDROID_RELEASE is not 'true' — staging only"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A signing block that quietly does nothing publishes an unsigned release the first time a
+      # secret is misspelled. Every file in the bundle that is not a checksum must have its detached
+      # signature beside it. Runs on a dry run too: that is what a dry run is for.
+      - name: Refuse to publish an unsigned bundle
+        run: |
+          set -euo pipefail
+          bundle=$(ls sdks/android/build/central-bundle/*-bundle.zip)
+          rm -rf /tmp/bundle-check
+          unzip -q "$bundle" -d /tmp/bundle-check
+          unsigned=0
+          while IFS= read -r file; do
+            case "$file" in
+              *.md5|*.sha1|*.sha256|*.sha512|*.asc) continue ;;
+            esac
+            if [ ! -f "${file}.asc" ]; then
+              echo "::error::no signature for ${file#/tmp/bundle-check/}"
+              unsigned=$((unsigned + 1))
+            fi
+          done < <(find /tmp/bundle-check -type f)
+          if [ "$unsigned" -gt 0 ]; then
+            echo "::error::$unsigned artifact(s) unsigned — check MAVEN_GPG_PRIVATE_KEY and MAVEN_GPG_PASSPHRASE"
+            exit 1
+          fi
+          echo "::notice::every artifact in the bundle is signed"
+
+      # One upload for the whole release: the Portal validates both coordinates together and
+      # accepts or rejects them as one, which is what keeps a half-published version from existing.
+      - name: Publish
+        if: steps.switch.outputs.publish == 'true'
+        env:
+          CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          VERSION: ${{ needs.detect-version.outputs.version }}
+          PUBLISH_TIMEOUT_SECONDS: '1800'
+        run: |
+          set -euo pipefail
+          bundle=$(ls sdks/android/build/central-bundle/*-bundle.zip)
+          token=$(printf '%s:%s' "$CENTRAL_USERNAME" "$CENTRAL_PASSWORD" | base64 | tr -d '\n')
+          # AUTOMATIC: validated and then released without a second click in the Portal. A manual
+          # gate would leave the GitHub release below pointing at coordinates nobody can resolve.
+          deployment=$(curl --silent --show-error --fail-with-body \
+            --request POST \
+            --header "Authorization: Bearer ${token}" \
+            --form "bundle=@${bundle}" \
+            "https://central.sonatype.com/api/v1/publisher/upload?name=reactor-sdk-android-${VERSION}&publishingType=AUTOMATIC" \
+            | tr -d '[:space:]')
+          if [ -z "$deployment" ]; then
+            echo "::error::the Portal accepted the bundle but named no deployment"
+            exit 1
+          fi
+          echo "::notice::deployment ${deployment}"
+
+          # A 200 means the Portal took the bundle, nothing more: validation and publication run
+          # afterwards and can still end in FAILED, so this waits for the outcome before the next
+          # step announces anything.
+          deadline=$(( $(date +%s) + PUBLISH_TIMEOUT_SECONDS ))
+          while :; do
+            body=$(curl --silent --show-error --fail-with-body \
+              --request POST \
+              --header "Authorization: Bearer ${token}" \
+              "https://central.sonatype.com/api/v1/publisher/status?id=${deployment}")
+            state=$(printf '%s' "$body" | jq -r '.deploymentState // "UNKNOWN"')
+            echo "deployment ${deployment}: ${state}"
+            case "$state" in
+              PUBLISHED)
+                echo "::notice::Central published ${deployment}"
+                break
+                ;;
+              FAILED)
+                echo "::error::Central rejected ${deployment}"
+                printf '%s' "$body" | jq -r '.errors // . '
+                exit 1
+                ;;
+            esac
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::deployment ${deployment} was still ${state} after ${PUBLISH_TIMEOUT_SECONDS}s — check the Portal before re-running"
+              exit 1
+            fi
+            sleep 15
+          done
+
+      - name: Publish the GitHub release
+        if: steps.switch.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # --target pins the tag to the commit that was built. Without it a missing tag is cut
+          # from the default branch's head when this step runs, which after the build and up to
+          # half an hour of polling can be a later commit than the one published.
+          gh release create "android-v${VERSION}" \
+            --target "${{ github.sha }}" \
+            --title "Android SDK ${VERSION}" \
+            --notes "$(cat <<EOF
+          Published to Maven Central:
+
+          \`\`\`kotlin
+          implementation("inc.reactor:reactor-sdk-android:${VERSION}")
+          // Optional camera, microphone, speaker and renderer adapters:
+          implementation("inc.reactor:reactor-sdk-android-media:${VERSION}")
+          \`\`\`
+
+          Android 8.0 (API 26) and newer. The native libraries ride inside the AAR,
+          so there is nothing to install by hand. See \`sdks/android/README.md\` for
+          setup and \`sdks/android/CHANGELOG.md\` for what changed.
+          EOF
+          )"
