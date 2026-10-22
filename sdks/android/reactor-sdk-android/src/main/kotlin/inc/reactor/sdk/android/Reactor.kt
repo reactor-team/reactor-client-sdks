@@ -790,5 +790,36 @@ public class Reactor(
          * here, not reactor-core's, and A15 is where that is read from the manifest.
          */
         const val SDK_VERSION: String = "0.1.0-SNAPSHOT"
+
+        /**
+         * Exchange an API key for a short-lived token, without creating a client.
+         *
+         * What every other binding exposes — Java's `Reactor.fetchJwt`, Swift's
+         * `Reactor.fetchJWT`, Python's `reactor_sdk.fetch_jwt` — so an application backend (or a
+         * one-off tool) mints tokens its Android clients then connect with. A client that holds
+         * only a key does not need this: `connect()` exchanges it itself.
+         *
+         * **Scope the token.** With [options] null the minted token carries everything the key's
+         * roles allow — fine server to server, wrong to hand to a client you do not control. Pass
+         * `{"models":["owner/name"]}` for a token that can only create sessions under one model.
+         * An **unrecognised option key is an error**, not a silent drop: the FFI rejects the
+         * whole request, because a misspelt `models` would otherwise mint exactly the unscoped
+         * token the caller was avoiding.
+         *
+         * @param apiUrl the coordinator's base URL (production is `https://api.reactor.inc`)
+         * @param apiKey the key to exchange
+         * @param options scoping options as raw JSON — the same style [sendCommand] takes its
+         *   arguments — or null for an unscoped token
+         * @param local accept a development coordinator's self-signed certificate; the key is still exchanged
+         * @return the token
+         * @throws ReactorException `UNAUTHORIZED` for a key the coordinator rejects,
+         *   `NETWORK_ERROR` for one it cannot reach
+         */
+        public suspend fun fetchJwt(
+            apiUrl: String,
+            apiKey: String,
+            options: String? = null,
+            local: Boolean = false,
+        ): String = NativeClient.fetchJwt(apiUrl, apiKey, options, local)
     }
 }
