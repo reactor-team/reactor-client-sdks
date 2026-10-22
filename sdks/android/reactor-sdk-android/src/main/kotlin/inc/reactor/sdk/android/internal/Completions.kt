@@ -36,6 +36,8 @@ internal object Completions {
         val decode: (String?) -> T,
         val deferred: CompletableDeferred<T>,
         val owner: Any?,
+        /** For a step: reads the native result, which is only valid while the trampoline runs. */
+        val decodeResult: ((Long) -> T)? = null,
     )
 
     /**
@@ -53,6 +55,49 @@ internal object Completions {
         errorJson: String?,
     ) {
         settle(ticket, ok, resultJson, errorJson)
+    }
+
+    /**
+     * Settle a step from the native step trampoline.
+     *
+     * [result] is the native `ReactorStepResult*` on success and 0 on failure. It is **borrowed**:
+     * the trampoline frees it as soon as this returns, whatever happened here — a ticket nobody
+     * waits on any more included — so it is read now or never, and nothing read from it may point
+     * back into it. That is what keeps the free in one place, on the native side, instead of in
+     * every path through this function.
+     */
+    @JvmStatic
+    fun settleStepFromNative(
+        ticket: Long,
+        ok: Boolean,
+        result: Long,
+        errorJson: String?,
+    ) {
+        progressHandlers.remove(ticket)
+
+        @Suppress("UNCHECKED_CAST")
+        val entry = pending.remove(ticket) as? Pending<Any?> ?: return
+
+        if (!ok || result == 0L) {
+            entry.deferred.completeExceptionally(
+                ErrorPayloads.toException(errorJson, fallbackOperation = entry.operation),
+            )
+            return
+        }
+        val read = checkNotNull(entry.decodeResult) { "${entry.operation} was not registered with awaitResult" }
+        // Read first, as settle() decodes first: claiming the promise and then reading is the shape
+        // that produces a hang rather than an error.
+        val decoded =
+            try {
+                read(result)
+            } catch (e: inc.reactor.sdk.android.ReactorException) {
+                entry.deferred.completeExceptionally(e)
+                return
+            } catch (e: Throwable) {
+                entry.deferred.completeExceptionally(decodeFailure(entry.operation, "a native result", e))
+                return
+            }
+        entry.deferred.complete(decoded)
     }
 
     private val progressHandlers =
@@ -102,10 +147,37 @@ internal object Completions {
         decode: (String?) -> T,
         owner: Any? = null,
         start: (ticket: Long) -> Unit,
+    ): T = register(Pending(operation, decode, CompletableDeferred(), owner), start)
+
+    /**
+     * As [await], for an operation that completes with a native result rather than JSON — a step,
+     * settled through [settleStepFromNative]. [read] runs on the completion thread while the result
+     * is still valid, and must copy whatever it keeps.
+     */
+    suspend fun <T> awaitResult(
+        operation: String,
+        read: (Long) -> T,
+        owner: Any? = null,
+        start: (ticket: Long) -> Unit,
+    ): T =
+        register(
+            Pending(
+                operation,
+                decode = { throw IllegalStateException("$operation completes with a native result, not JSON") },
+                deferred = CompletableDeferred(),
+                owner = owner,
+                decodeResult = read,
+            ),
+            start,
+        )
+
+    private suspend fun <T> register(
+        entry: Pending<T>,
+        start: (ticket: Long) -> Unit,
     ): T {
         val ticket = nextTicket.getAndIncrement()
-        val deferred = CompletableDeferred<T>()
-        pending[ticket] = Pending(operation, decode, deferred, owner)
+        val deferred = entry.deferred
+        pending[ticket] = entry
         try {
             start(ticket)
         } catch (t: Throwable) {

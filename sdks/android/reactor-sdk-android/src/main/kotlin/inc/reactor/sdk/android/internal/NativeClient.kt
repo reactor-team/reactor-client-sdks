@@ -4,7 +4,9 @@ import inc.reactor.sdk.android.Clip
 import inc.reactor.sdk.android.CommandReply
 import inc.reactor.sdk.android.DownloadedClip
 import inc.reactor.sdk.android.FileRef
+import inc.reactor.sdk.android.Generation
 import inc.reactor.sdk.android.Stats
+import inc.reactor.sdk.android.StepResult
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -23,6 +25,30 @@ internal object NativeClient {
         sdkVersion: String?,
         sdkType: String?,
     ): Long
+
+    /**
+     * As [nativeCreate], through `reactor_create_with_options` — the one creation call that takes
+     * the generation mode. A refusal returns 0 and leaves the error payload in `errorOut[0]`.
+     */
+    private external fun nativeCreateWithOptions(
+        apiUrl: String,
+        modelName: String,
+        jwt: String?,
+        optionsJson: String,
+        listener: NativeEvents,
+        errorOut: Array<String?>,
+    ): Long
+
+    private external fun nativeInitSteps(completions: Class<*>)
+
+    private external fun nativeStep(
+        context: Long,
+        stateJson: String?,
+        commandsJson: String,
+        ticket: Long,
+    )
+
+    private external fun nativeClearStepInputs(context: Long)
 
     private external fun nativeDestroy(context: Long): Int
 
@@ -217,6 +243,7 @@ internal object NativeClient {
         if (completionsWired) return
         nativeInitCompletions(Completions::class.java)
         nativeInitProgress(Completions::class.java)
+        nativeInitSteps(Completions::class.java)
         completionsWired = true
     }
 
@@ -350,6 +377,27 @@ internal object NativeClient {
             launch("request_schema", decode = ::decodeSchema) { ticket -> nativeRequestSchema(context, ticket) }
 
         suspend fun stats(): Stats = launch("get_stats", decode = ::decodeStats) { ticket -> nativeGetStats(context, ticket) }
+
+        /**
+         * Run one step. The result is read off the native one on the completion thread, before it
+         * is freed — see [Completions.settleStepFromNative].
+         *
+         * Launched under the lifecycle lock like every other operation: `reactor_step` answers a
+         * null handle by returning without ever calling its completion, so a freed Context here
+         * would be a step that never settles at best.
+         */
+        suspend fun step(
+            stateJson: String?,
+            commandsJson: String,
+        ): StepResult =
+            Completions.awaitResult("step", read = { result -> StepResults.read(NativeStepResults, result) }, owner = this) { ticket ->
+                withOpenHandle { nativeStep(context, stateJson, commandsJson, ticket) }
+            }
+
+        /** Drop every input frame buffered for the next step. A no-op outside a stepped session. */
+        fun clearStepInputs() {
+            withOpenHandle { nativeClearStepInputs(context) }
+        }
 
         /**
          * Upload a file the native side opens later, from its own task.
@@ -495,11 +543,29 @@ internal object NativeClient {
         listener: NativeEvents,
         sdkVersion: String? = null,
         sdkType: String? = "android",
+        generation: Generation = Generation.STREAMED,
+        stepTimeoutSeconds: Double? = null,
     ): Handle {
         NativeLibrary.ensureLoaded()
         ensureCompletionsWired()
         val context =
-            nativeCreate(apiUrl, modelName, jwt, local, autoResumeTracks, listener, sdkVersion, sdkType)
+            if (generation == Generation.STREAMED) {
+                nativeCreate(apiUrl, modelName, jwt, local, autoResumeTracks, listener, sdkVersion, sdkType)
+            } else {
+                val errorOut = arrayOfNulls<String>(1)
+                val created =
+                    nativeCreateWithOptions(
+                        apiUrl,
+                        modelName,
+                        jwt,
+                        createOptionsJson(local, autoResumeTracks, sdkVersion, sdkType, generation, stepTimeoutSeconds),
+                        listener,
+                        errorOut,
+                    )
+                // A refusal of the options names its error; throw that rather than the generic one.
+                if (created == 0L && errorOut[0] != null) throw ErrorPayloads.toException(errorOut[0], "create")
+                created
+            }
         check(context != 0L) { "The native layer refused to create a client for $modelName" }
         // After the check, not before: a refused create produced no handle to close, and counting
         // it would leave the number permanently one too high.
@@ -508,4 +574,31 @@ internal object NativeClient {
         // have to agree about which client this is.
         return Handle(context = context)
     }
+
+    /**
+     * The options object `reactor_create_with_options` takes: everything `reactor_create_with_adm`
+     * does, plus the generation mode and the step timeout.
+     *
+     * The audio device module is named exactly as [create]'s streamed path pins it — `synthetic` —
+     * so this path cannot be the one an environment variable opens a microphone through. The
+     * library refuses an unknown key, so nothing is sent that it does not take.
+     */
+    internal fun createOptionsJson(
+        local: Boolean,
+        autoResumeTracks: Boolean,
+        sdkVersion: String?,
+        sdkType: String?,
+        generation: Generation,
+        stepTimeoutSeconds: Double?,
+    ): String =
+        buildString {
+            append("{\"local\":").append(local)
+            append(",\"auto_resume_tracks\":").append(autoResumeTracks)
+            append(",\"adm\":\"synthetic\"")
+            sdkVersion?.let { append(",\"sdk_version\":").append(Json.quote(it)) }
+            sdkType?.let { append(",\"sdk_type\":").append(Json.quote(it)) }
+            append(",\"generation\":").append(Json.quote(generation.wire))
+            stepTimeoutSeconds?.let { append(",\"step_timeout_seconds\":").append(it) }
+            append('}')
+        }
 }

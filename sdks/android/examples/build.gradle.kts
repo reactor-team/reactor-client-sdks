@@ -50,6 +50,19 @@ android {
             "REACTOR_API_KEY",
             "\"${project.findProperty("reactorApiKey") ?: ""}\"",
         )
+        // The one exception: 09 needs a model with stepped generation, and names none.
+        // -PreactorSteppedModel=owner/name, and optionally
+        // -PreactorSteppedInputTrack=<a sendonly video track it declares> to push into.
+        buildConfigField(
+            "String",
+            "REACTOR_STEPPED_MODEL",
+            "\"${project.findProperty("reactorSteppedModel") ?: ""}\"",
+        )
+        buildConfigField(
+            "String",
+            "REACTOR_STEPPED_INPUT_TRACK",
+            "\"${project.findProperty("reactorSteppedInputTrack") ?: ""}\"",
+        )
     }
 
     buildFeatures {

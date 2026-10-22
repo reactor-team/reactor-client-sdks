@@ -47,6 +47,10 @@ android {
                 "reactorApiKey" to runnerArg("reactorApiKey", "INTEGRATION_TESTS_REACTOR_API_KEY"),
                 "reactorApiUrl" to runnerArg("reactorApiUrl", "REACTOR_API_URL"),
                 "reactorModel" to runnerArg("reactorModel", "INTEGRATION_TESTS_REACTOR_MODEL"),
+                // The stepped scenario's model and input track; unset skips those tests, as in
+                // every other binding's suite.
+                "reactorSteppedModel" to runnerArg("reactorSteppedModel", "REACTOR_STEPPED_MODEL_NAME"),
+                "reactorSteppedInputTrack" to runnerArg("reactorSteppedInputTrack", "REACTOR_STEPPED_INPUT_TRACK"),
                 // Whether a missing key is a skip or a failure — the device cannot see $CI either.
                 "ci" to runnerArg("ci", "CI"),
                 // Empty ones are dropped, not passed: an empty `-e` value breaks the instrumentation

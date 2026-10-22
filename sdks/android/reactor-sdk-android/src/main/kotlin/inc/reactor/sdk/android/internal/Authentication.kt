@@ -41,9 +41,9 @@ internal object Authentication {
         val optionsJson: String
             get() =
                 if (sessionId != null) {
-                    """{"sessions":[${quote(sessionId)}]}"""
+                    """{"sessions":[${Json.quote(sessionId)}]}"""
                 } else {
-                    """{"models":[${quote(modelName!!)}]}"""
+                    """{"models":[${Json.quote(modelName!!)}]}"""
                 }
     }
 
@@ -148,26 +148,4 @@ internal object Authentication {
         }
         return jwt
     }
-
-    /**
-     * One JSON string literal.
-     *
-     * Hand-rolled for the same reason [Json] is: the model name and session id are the only
-     * strings this binding ever *writes*, and neither justifies a serialization dependency on
-     * every consumer's classpath. A name or id with a quote in it is not something the platform
-     * accepts, but a malformed request here is a coordinator's 400 — escaping it is a client one.
-     */
-    private fun quote(value: String): String =
-        buildString(value.length + 2) {
-            append('"')
-            for (c in value) {
-                when {
-                    c == '"' -> append("\\\"")
-                    c == '\\' -> append("\\\\")
-                    c < ' ' -> append("\\u%04x".format(c.code))
-                    else -> append(c)
-                }
-            }
-            append('"')
-        }
 }

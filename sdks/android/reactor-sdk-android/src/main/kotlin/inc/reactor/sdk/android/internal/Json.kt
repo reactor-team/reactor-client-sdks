@@ -31,6 +31,28 @@ internal object Json {
             ?: throw JsonException("expected a JSON object, got ${value?.let { it::class.simpleName } ?: "null"}")
     }
 
+    /**
+     * One JSON string literal.
+     *
+     * The writing half is this one function: the strings this binding writes are names and ids —
+     * a model, a session, a step command — and none justifies a serialization dependency on every
+     * consumer's classpath. A name with a quote in it is not something the platform accepts, but a
+     * malformed request here is a coordinator's 400 — escaping it is a client one.
+     */
+    fun quote(value: String): String =
+        buildString(value.length + 2) {
+            append('"')
+            for (c in value) {
+                when {
+                    c == '"' -> append("\\\"")
+                    c == '\\' -> append("\\\\")
+                    c < ' ' -> append("\\u%04x".format(c.code))
+                    else -> append(c)
+                }
+            }
+            append('"')
+        }
+
     private class Reader(
         private val text: String,
     ) {

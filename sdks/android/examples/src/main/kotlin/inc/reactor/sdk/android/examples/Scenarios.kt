@@ -3,6 +3,7 @@ package inc.reactor.sdk.android.examples
 import android.graphics.Bitmap
 import android.graphics.Color
 import inc.reactor.sdk.android.ConnectionStatus
+import inc.reactor.sdk.android.Generation
 import inc.reactor.sdk.android.Reactor
 import inc.reactor.sdk.android.TrackDirection
 import inc.reactor.sdk.android.TrackKind
@@ -15,7 +16,7 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * The seven scenarios, numbered as `sdks/python/examples/`.
+ * The scenarios, numbered as `sdks/python/examples/`.
  *
  * These are **parity requirements, not documentation**: an example missing from a binding is a
  * code path that binding has never run, and every bug this set has caught was caught by an
@@ -35,6 +36,12 @@ public object Scenarios {
     private const val PROMPT = "a forest at dawn, sunbeams through the canopy"
     private const val OUTPUT_TRACK = "main_video"
 
+    /**
+     * The model 09 runs against, passed at install time: it needs one with stepped generation.
+     * Declared before [all], which reads it — an object's properties initialise in order.
+     */
+    private val steppedModel: String? = BuildConfig.REACTOR_STEPPED_MODEL.takeIf { it.isNotBlank() }
+
     public data class Scenario(
         val number: String,
         val title: String,
@@ -51,6 +58,7 @@ public object Scenarios {
             Scenario("05", "Two clients, one session", HELIOS, ::multiConnection),
             Scenario("06", "Record and download a clip", HELIOS, ::recordClip),
             Scenario("07", "Read the frame trailer", HELIOS, ::frameMetadata),
+            Scenario("09", "Step a stepped session", steppedModel ?: "set -PreactorSteppedModel", ::steppedGeneration),
         )
 
     /**
@@ -341,6 +349,67 @@ public object Scenarios {
             delay(12_000)
             if (reported.get() == 0) log("no frames arrived — check the model's minimum")
         }
+    }
+
+    /**
+     * 09 · Stepped generation — one step at a time instead of a stream.
+     *
+     * A client created with `generation = Generation.STEPPED` asks for a session that generates
+     * only when told to. Each `step()` sends the model's state, a list of commands and every frame
+     * pushed since the previous step, and returns what the model produced on each output track —
+     * as arrays, not a video stream — plus the names of any files the model kept with the step,
+     * and its error when the model reported the step as failed.
+     *
+     * **Pushing into an input track sends nothing in a stepped session**: the frame waits for the
+     * next step. A runtime without stepped generation ignores the request, so `connect()` checks
+     * and fails with `GenerationModeMismatchException` rather than leaving this waiting on a
+     * stream.
+     */
+    private suspend fun steppedGeneration(
+        apiKey: String,
+        log: Log,
+        @Suppress("UNUSED_PARAMETER") sink: FrameSink?,
+    ) {
+        val model =
+            steppedModel ?: run {
+                log("install with -PreactorSteppedModel=owner/name: a model with stepped generation")
+                return
+            }
+        val inputTrack = BuildConfig.REACTOR_STEPPED_INPUT_TRACK.takeIf { it.isNotBlank() }
+        withReactor(model, apiKey, log, generation = Generation.STEPPED) { reactor ->
+            val source = inputTrack?.let { reactor.track(it).also { track -> track.publish() } }
+            for (seq in 0 until 3) {
+                // Buffered, not sent: the step below carries it.
+                source?.pushFrame(solidFrame(seq), STEP_WIDTH, STEP_HEIGHT)
+
+                // State on the first step only: the model keeps it until changed.
+                val result = reactor.step(state = if (seq == 0) """{"prompt":"$PROMPT"}""" else null)
+                log("step ${result.step}: generated in ${"%.3f".format(result.elapsed)} s")
+                // A step the model reported as failed still returns; only a refused one throws.
+                result.error?.let { why -> log("step ${result.step}: model error: $why") }
+                for (file in result.files) {
+                    // Named only: fetch the bytes over HTTP from the session's step results.
+                    log("step ${result.step}: kept ${file.name} (${file.contentType}, ${file.size} bytes)")
+                }
+                for (track in result.tracks) {
+                    log(
+                        "step ${result.step}: ${track.name} (${track.kind.name.lowercase()}) " +
+                            "${track.frames.size} frame(s) ${track.frames.joinToString { it.shape.contentToString() }}",
+                    )
+                }
+            }
+        }
+    }
+
+    private const val STEP_WIDTH = 320
+    private const val STEP_HEIGHT = 180
+
+    /** A solid BGRA frame whose colour follows [seq], in a direct buffer as pushFrame reads it. */
+    private fun solidFrame(seq: Int): ByteBuffer {
+        val pixels = ByteBuffer.allocateDirect(STEP_WIDTH * STEP_HEIGHT * 4)
+        val pixel = byteArrayOf((seq * 7).toByte(), (seq * 13).toByte(), (seq * 29).toByte(), 255.toByte())
+        while (pixels.hasRemaining()) pixels.put(pixel)
+        return pixels.flip() as ByteBuffer
     }
 
     /**

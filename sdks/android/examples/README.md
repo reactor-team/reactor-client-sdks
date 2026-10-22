@@ -1,6 +1,6 @@
 # Reactor Android SDK examples
 
-Seven scenarios, one per capability, numbered as every other Reactor SDK numbers
+Scenarios, one per capability, numbered as every other Reactor SDK numbers
 them. That shared numbering is the point: **an example missing from a binding is
 a code path that binding has never run**, so the set doubles as a conformance
 grid.
@@ -14,6 +14,7 @@ grid.
 | 05 | Two clients on one session, the second adopting it by id | `reactor/helios` |
 | 06 | Request a clip and download it | `reactor/helios` |
 | 07 | The per-frame trailer: id, sender timestamp, `user_data` | `reactor/helios` |
+| 09 | A stepped session: `Generation.STEPPED`, frames pushed into a step, `step()` and its per-track arrays, kept files and model error | any model with stepped generation (`-PreactorSteppedModel`) |
 
 Every example shares one spine — connect, wait for ready, give the model the
 minimum it needs, receive frames — and adds one call on top. The diff against 01
@@ -26,6 +27,10 @@ gradle --project-dir sdks/android :examples:installDebug -PreactorApiKey=rk_…
 ```
 
 Then pick a scenario on the device.
+
+09 has no default model: it needs one with stepped generation. Pass it at install time with `-PreactorSteppedModel=owner/name`, and
+`-PreactorSteppedInputTrack=<track>` to push a frame into each step through a
+sendonly video track it declares.
 
 **The key is passed at install time and never compiled into a committed file.** A
 shipped app would mint a short-lived token on its own backend and pass it as
