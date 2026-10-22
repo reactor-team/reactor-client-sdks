@@ -840,6 +840,7 @@ impl ClientStatsReporter {
             name: key.2.to_string(),
             total_ms: (seconds - seconds_before) * 1_000.0,
             frames: frames - frames_before,
+            part_of: String::new(),
         })
     }
 
@@ -867,6 +868,7 @@ impl ClientStatsReporter {
             name: name.to_string(),
             total_ms,
             frames: 1,
+            part_of: String::new(),
         })
         .collect()
     }
@@ -996,6 +998,8 @@ pub fn client_connection_stat(
         timestamp: now_ms as i64,
         metrics: m.0,
         environment: Some(environment.clone()),
+        // The client does not time its data channel's messages.
+        message_stages: Vec::new(),
     }
 }
 

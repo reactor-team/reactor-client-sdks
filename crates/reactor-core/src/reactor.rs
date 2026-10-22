@@ -3258,6 +3258,7 @@ mod tests {
                 name: "decode".to_string(),
                 total_ms: 120.0,
                 frames: 150,
+                part_of: String::new(),
             }],
             ..ClientTrackStat::default()
         };
@@ -4319,6 +4320,7 @@ mod tests {
             name: name.to_string(),
             total_ms: 1.0,
             frames,
+            part_of: String::new(),
         };
         let mut stats = vec![ClientTrackStat {
             track_name: "main_video".to_string(),

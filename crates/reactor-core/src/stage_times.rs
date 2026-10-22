@@ -110,6 +110,8 @@ impl StageTimes {
                         name: stage.to_string(),
                         total_ms,
                         frames,
+                        // The client's stages are its own, never part of another.
+                        part_of: String::new(),
                     })
                     .collect();
                 (track, stages)
@@ -259,6 +261,7 @@ mod tests {
             name: name.to_string(),
             total_ms: 1.0,
             frames: 1,
+            part_of: String::new(),
         };
         let mut stages = vec![
             stage("custom"),
