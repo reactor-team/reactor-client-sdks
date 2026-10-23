@@ -76,6 +76,25 @@ for f in "${PACKAGE_FILES[@]}"; do
   done < "$f"
 done
 
+# A system image only boots under its own architecture's hypervisor, so of the images pinned per
+# ABI, keep the host's. Everything else is architecture-independent or resolved per host by the
+# SDK itself.
+case "$(uname -m)" in
+  x86_64|amd64) HOST_ABI=x86_64 ;;
+  arm64|aarch64) HOST_ABI=arm64-v8a ;;
+  *) HOST_ABI="" ;;
+esac
+if [ -n "$HOST_ABI" ]; then
+  KEPT=()
+  for pkg in ${PACKAGES[@]+"${PACKAGES[@]}"}; do
+    case "$pkg" in
+      system-images/*/*/*) [ "${pkg##*/}" = "$HOST_ABI" ] && KEPT+=("$pkg") ;;
+      *) KEPT+=("$pkg") ;;
+    esac
+  done
+  PACKAGES=(${KEPT[@]+"${KEPT[@]}"})
+fi
+
 if [ ${#PACKAGES[@]} -eq 0 ]; then
   echo "error: no packages pinned in ${PACKAGE_FILES[*]}" >&2
   exit 1

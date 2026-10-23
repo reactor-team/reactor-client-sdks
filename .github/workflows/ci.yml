@@ -723,8 +723,7 @@ jobs:
     if: github.event_name == 'push' || needs.changes.outputs.android == 'true'
     # x86_64, because the NDK's toolchain is one `linux` archive containing
     # `toolchains/llvm/prebuilt/linux-x86_64` — there is no arm64 Linux *host* build of it. It
-    # cross-compiles to aarch64-linux-android from here, which is what an NDK is for. The
-    # emulator then runs on a native arm64 host in the job below; each half runs where it works.
+    # cross-compiles every Android ABI from here, which is what an NDK is for.
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -766,7 +765,7 @@ jobs:
       # minutes and gigabytes; downloading it is seconds.
       - uses: actions/upload-artifact@v4
         with:
-          name: android-native-arm64-v8a
+          name: android-native
           path: sdks/android/reactor-sdk-android/build/reactor-native
           retention-days: 1
           if-no-files-found: error
@@ -774,30 +773,23 @@ jobs:
   android-integration-tests:
     name: Android SDK integration tests (real FFI, real model)
     needs: [changes, android-native]
-    # Two conditions, and the first is the awkward one.
-    #
-    # `vars.ANDROID_EMULATOR_RUNNER` names a runner with a working arm64 hypervisor. No
-    # GitHub-hosted runner is one: hosted macOS (Apple Silicon) runners are VMs without
-    # Hypervisor.framework, and hosted arm64 Linux runners have no /dev/kvm. Both were tried.
-    # Until that variable is set to a self-hosted label this job is skipped, which `ci-complete`
-    # reports in as many words rather than passing over in silence — a gate that is not yet
-    # closed should be legible in the required check itself, not only in a ticket. Setting the
-    # variable closes it with no change here.
-    #
-    # An x86_64 Android ABI would also close it, on ordinary hosted runners that do have KVM:
-    # REA-6551, waiting on reactor-webrtc publishing one.
-    #
-    # The second is the same fork-PR reasoning as every other integration job: GitHub withholds
-    # repo secrets from a fork's pull_request runs, so INTEGRATION_TESTS_REACTOR_API_KEY would
-    # never be populated there. This suite deliberately *fails* rather than skips when the key is
-    # missing, which without this condition means every external contribution fails here for a
-    # reason that has nothing to do with the contribution.
+    # Same fork-PR reasoning as every other integration job: GitHub withholds repo secrets from a
+    # fork's pull_request runs, so INTEGRATION_TESTS_REACTOR_API_KEY would never be populated
+    # there. This suite deliberately *fails* rather than skips when the key is missing, which
+    # without this condition means every external contribution fails here for a reason that has
+    # nothing to do with the contribution.
     if: >-
-      vars.ANDROID_EMULATOR_RUNNER != '' &&
-      (github.event_name == 'push' ||
-       (needs.changes.outputs.android == 'true' &&
-        github.event.pull_request.head.repo.full_name == github.repository))
-    runs-on: ${{ vars.ANDROID_EMULATOR_RUNNER }}
+      github.event_name == 'push' ||
+      (needs.changes.outputs.android == 'true' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    # An x86_64 emulator on a hosted x86_64 runner, because that is the one combination GitHub's
+    # runners can host: an emulator needs a hypervisor, and only the hosted x86_64 Linux runners
+    # expose one (KVM). The hosted Apple Silicon runners are VMs without Hypervisor.framework and
+    # the hosted arm64 Linux runners have no /dev/kvm — both were tried with an arm64 image.
+    #
+    # ubuntu-24.04 pinned rather than ubuntu-latest, so the image this depends on for KVM does not
+    # change underneath it.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -812,36 +804,98 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/share/mise/installs/android-sdk
-          key: android-sdk-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'mise.lock') }}
+          key: android-sdk-emulator-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'sdks/android/sdk-packages-emulator.txt', 'mise.lock') }}
       - run: mise run setup:android:emulator
-      # Built once by android-native and downloaded here. Staging it is minutes and gigabytes on
-      # a runner that has no NDK host toolchain for its own architecture anyway.
+      - uses: ./.github/actions/enable-kvm
+      # Built once by android-native and downloaded here: staging it is minutes and gigabytes.
       - uses: actions/download-artifact@v4
         with:
-          name: android-native-arm64-v8a
+          name: android-native
           path: sdks/android/reactor-sdk-android/build/reactor-native
       # A 16 KB page-size image on purpose. On an ordinary 4 KB image a misaligned library loads
       # fine and the suite proves nothing; on this one it fails the way an Android 15 device does.
-      - name: Run the live suite on an arm64 emulator
+      - name: Run the live suite on an x86_64 emulator
         uses: reactivecircus/android-emulator-runner@v2
         env:
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.INTEGRATION_TESTS_REACTOR_API_KEY }}
           # The artifact above is this commit's cross-build. Without this the mise task's
-          # `depends` would rebuild it here, on a runner that has no NDK host toolchain for its
-          # own architecture. The script still verifies what it was handed — see its own comment
-          # for why this is opt-in rather than "skip if the files are there".
+          # `depends` would rebuild it here. The script still verifies what it was handed — see
+          # its own comment for why this is opt-in rather than "skip if the files are there".
           REACTOR_ANDROID_NATIVE_PRESTAGED: "1"
         with:
           api-level: 36
           target: google_apis_ps16k
-          arch: arm64-v8a
+          arch: x86_64
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          # Retries live inside the mise task, not around this step: release-android.yml will run
-          # the same task, and a wrapper each caller has to remember is the drift that rule exists
-          # to prevent.
+          # Retries live inside the mise task, not around this step: release-android.yml runs the
+          # same task, and a wrapper each caller has to remember is the drift that rule exists to
+          # prevent.
           script: mise run test:android:integration-tests
+
+  android-instrumented-tests:
+    name: Android SDK instrumented tests (real libraries, 16 KB emulator)
+    needs: [changes, android-native]
+    # Every Android pull request, forks included: unlike the live suite this needs no secret — it
+    # loads the real libraries and drives the JNI boundary, with no model on the other end.
+    if: github.event_name == 'push' || needs.changes.outputs.android == 'true'
+    # Same host as android-integration-tests, for the same reason: an x86_64 emulator under KVM is
+    # the only emulator a GitHub-hosted runner can run.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
+      - name: Cache the pinned Android SDK components
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/mise/installs/android-sdk
+          key: android-sdk-emulator-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'sdks/android/sdk-packages-emulator.txt', 'mise.lock') }}
+      - run: mise run setup:android:emulator
+      - uses: ./.github/actions/enable-kvm
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-native
+          path: sdks/android/reactor-sdk-android/build/reactor-native
+      # A 16 KB page-size image: on a 4 KB one a misaligned library loads fine and the test proves
+      # nothing.
+      - name: Run the instrumented tests on an x86_64 emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          REACTOR_ANDROID_NATIVE_PRESTAGED: "1"
+        with:
+          api-level: 36
+          target: google_apis_ps16k
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: mise run test:android:instrumented
+      # Gradle names no failing test on the console, and an x86_64 emulator only runs here — so a
+      # failure prints which tests failed and why, and the full report is kept.
+      - name: Show the failing instrumented tests
+        if: failure()
+        shell: bash
+        run: |
+          shopt -s globstar nullglob
+          for result in sdks/android/reactor-sdk-android/build/outputs/androidTest-results/connected/**/*.xml; do
+            grep -B1 -A15 '<failure' "$result" || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: android-instrumented-report
+          path: |
+            sdks/android/reactor-sdk-android/build/reports/androidTests/connected/
+            sdks/android/reactor-sdk-android/build/outputs/androidTest-results/connected/
+          if-no-files-found: ignore
 
   cpp-integration-tests:
     name: C++ SDK integration tests (real FFI, real model)
@@ -1104,6 +1158,7 @@ jobs:
         android,
         android-native,
         android-integration-tests,
+        android-instrumented-tests,
         swift,
         swift-integration-tests,
         swift-integration-tests-ios-simulator,
@@ -1131,6 +1186,7 @@ jobs:
                    "${{ needs.android.result }}" \
                    "${{ needs['android-native'].result }}" \
                    "${{ needs['android-integration-tests'].result }}" \
+                   "${{ needs['android-instrumented-tests'].result }}" \
                    "${{ needs.swift.result }}" \
                    "${{ needs.swift-integration-tests.result }}" \
                    "${{ needs.swift-integration-tests-ios-simulator.result }}" \
@@ -1139,15 +1195,4 @@ jobs:
               echo "::error::a required job failed ($r)"; exit 1
             fi
           done
-          # Said out loud rather than left to a skipped row nobody reads. The Android live
-          # suite is a required job with no runner able to host it — an arm64 emulator needs a
-          # hypervisor, and no GitHub-hosted runner provides one. Skipping is a pass here, which
-          # is correct and is also exactly how a gate quietly stops being a gate, so the required
-          # check names it on every run until the runner variable is set.
-          if [ "${{ needs['android-integration-tests'].result }}" = "skipped" ] \
-             && [ "${{ needs.android.result }}" != "skipped" ]; then
-            echo "::warning::The Android live suite did not run: no ANDROID_EMULATOR_RUNNER is" \
-                 "configured. Android changes are gated by unit tests, the AddressSanitizer" \
-                 "harness and the native cross-build only — see REA-6551."
-          fi
           echo "All CI checks passed."

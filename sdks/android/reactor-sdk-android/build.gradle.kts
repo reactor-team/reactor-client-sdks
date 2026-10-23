@@ -82,11 +82,9 @@ android {
         consumerProguardFiles("consumer-rules.pro")
 
         ndk {
-            // arm64-v8a alone, and that is a platform constraint rather than a choice:
-            // reactor-webrtc publishes an android arm64 prebuilt and no other Android ABI.
-            // x86_64 joins it when REA-6551 lands one — which is also what makes an emulator
-            // possible on an x86_64 CI runner.
-            abiFilters += "arm64-v8a"
+            // arm64-v8a for devices, x86_64 for emulators on x86_64 hosts — which is where the
+            // live suite runs in CI. The two ABIs reactor-webrtc publishes an Android prebuilt for.
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
     }
 
