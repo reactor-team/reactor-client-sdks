@@ -9,6 +9,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.3.0]
+
 ### Added
 
 - Stepped generation. `new Reactor({ generation: "stepped" })` asks the runtime
@@ -45,6 +47,11 @@ versioning follows [Semantic Versioning](https://semver.org/).
   passed there, with a console warning, and sends no RTP. A streamed session
   still requires it and rejects `publishTrack(name)` without one with an
   `InvalidStateError`.
+
+### Changed
+
+- The data-channel framing moves to reactor-webrtc-dc-chunking 0.24.2, in step
+  with the native SDKs' engine.
 
 ## [3.2.0]
 

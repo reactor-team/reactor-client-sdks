@@ -9,6 +9,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-23
+
 ### Added
 
 - Stepped generation. `ReactorOptions.Builder.generation(Generation.STEPPED)`
@@ -47,6 +49,13 @@ versioning follows [Semantic Versioning](https://semver.org/).
   `DataChannelChunkingRequiredException` when the data channel did not
   negotiate chunking. The Kotlin facade gains `suspend fun
   step(...)`, `clearStepInputs()`, and `generation`.
+- Client stats now report where each command spends its time, stage by
+  stage, on the way out (the SDK's own stages, then the data channel's
+  `enqueue`, `queue_wait`, `send` and `stall`) and on the way back
+  (`reassembly`, then the SDK's), each reading carrying the stages' time and
+  command count since the previous one. They also name the encoder and decoder
+  each video track runs, and whether it is the hardware one. Nothing changes in
+  the public API.
 
 ### Changed
 
@@ -55,6 +64,10 @@ versioning follows [Semantic Versioning](https://semver.org/).
   every other symbol. The bundled natives carry them; a library supplied
   through `REACTOR_FFI_LIB` that predates them is refused at load, naming the
   missing symbol, instead of failing later.
+- The WebRTC engine moves from reactor-webrtc 0.22.1 to 0.24.2, on libwebrtc
+  `webrtc-7907-a5ddff60-p13`. It does less work per SCTP packet, and a chunked
+  data-channel frame reaches libwebrtc in one trip to the network thread
+  instead of three, so commands leave sooner.
 
 ## [1.2.1] - 2026-10-13
 

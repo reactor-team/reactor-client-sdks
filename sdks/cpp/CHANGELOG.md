@@ -8,6 +8,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-10-23
+
 ### Added
 
 - Stepped generation. `Options::generation = reactor::Generation::Stepped` asks
@@ -36,6 +38,20 @@ versioning follows [Semantic Versioning](https://semver.org/).
   result was sent), `StepResultTooLargeError` or
   `UnsupportedFrameEncodingError`. Needs a
   `libreactor_ffi` with `reactor_create_with_options`.
+- Client stats now report where each command spends its time, stage by
+  stage, on the way out (the SDK's own stages, then the data channel's
+  `enqueue`, `queue_wait`, `send` and `stall`) and on the way back
+  (`reassembly`, then the SDK's), each reading carrying the stages' time and
+  command count since the previous one. They also name the encoder and decoder
+  each video track runs, and whether it is the hardware one. Nothing changes in
+  the public API.
+
+### Changed
+
+- The WebRTC engine moves from reactor-webrtc 0.22.1 to 0.24.2, on libwebrtc
+  `webrtc-7907-a5ddff60-p13`. It does less work per SCTP packet, and a chunked
+  data-channel frame reaches libwebrtc in one trip to the network thread
+  instead of three, so commands leave sooner.
 
 ## [2.5.0] - 2026-10-13
 

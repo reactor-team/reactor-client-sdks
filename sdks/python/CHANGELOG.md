@@ -9,6 +9,16 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.12.1] - 2026-10-23
+
+### Changed
+
+- The WebRTC engine moves from reactor-webrtc 0.24.1 to 0.24.2, on libwebrtc
+  `webrtc-7907-a5ddff60-p13`. It does less work per SCTP packet, and a chunked
+  data-channel frame reaches libwebrtc in one trip to the network thread
+  instead of three, so commands leave sooner.
+- The musl wheels build on the matching native release, `p13`.
+
 ## [1.12.0] - 2026-10-22
 
 ### Added
