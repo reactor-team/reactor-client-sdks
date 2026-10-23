@@ -184,6 +184,8 @@ jobs:
       - name: Test mise pin helper
         run: python3 .github/scripts/test-mise-pin.py
       - name: Test review mise bootstrap
+        env:
+          MISE_REVIEW_TEST_BINARY: mise
         run: python3 .github/scripts/test-mise-review-bootstrap.py
       - run: hk validate
       - name: ABI parity (lib.rs / reactor_ffi.h / _ffi.py / sdks/cpp / sdks/swift)
