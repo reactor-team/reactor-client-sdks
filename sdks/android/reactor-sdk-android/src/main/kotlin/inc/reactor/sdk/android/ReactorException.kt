@@ -49,6 +49,25 @@ public open class ReactorException internal constructor(
     public val recoverable: Boolean
         get() = wireRecoverable ?: ErrorCode.isRecoverable(code)
 
+    /**
+     * The part of a step request this failure concerns.
+     *
+     * Set on a [StepRefusedException] or [StepCommandFailedException] when the runtime named one:
+     * `"state.<key>"`, `"commands[<i>]"` or `"media_input[<i>]"`. Null when the failure names none.
+     */
+    public var entry: String? = null
+        internal set
+
+    /**
+     * The code a step's failing call raised.
+     *
+     * Set on a [StepCommandFailedException]: the handler's `CommandError` code, or
+     * `internal_error` for an unplanned failure — the stable token to branch on, rather than the
+     * message. Null when the failure carries none.
+     */
+    public var commandCode: String? = null
+        internal set
+
     override fun toString(): String =
         buildString {
             append(this@ReactorException::class.simpleName)
@@ -254,8 +273,7 @@ public class RecorderDisabledException internal constructor(
     wireRecoverable: Boolean? = null,
 ) : ReactorException(code, message, status, operation, retryAfterMs, cause, wireRecoverable)
 
-// The codes below belong to stepped generation, which this SDK does not open a session for. They
-// are declared so every code the core defines has its own class here, as in every other SDK.
+// Stepped generation: Generation.STEPPED and Reactor.step().
 
 /**
  * The runtime did not start the session in the requested generation mode — most often a runtime
@@ -298,7 +316,9 @@ public class UnsupportedFrameEncodingException internal constructor(
 
 /**
  * The runtime refused a step: the request or the model turned it down, and nothing in it was
- * applied. Code `step_refused`, lowercase because it is the runtime's own code.
+ * applied. [entry] names the part of the request at fault (`"state.<key>"`, `"commands[<i>]"`,
+ * `"media_input[<i>]"`), when one is. Code `step_refused`, lowercase because it is the runtime's
+ * own code.
  */
 public class StepRefusedException internal constructor(
     code: String,
@@ -340,7 +360,9 @@ public class StepResultTooLargeException internal constructor(
 
 /**
  * The handler of one of a step's state keys or commands failed: the calls before it stay applied,
- * the ones after it were skipped, and the step did not run. Code `step_command_failed`.
+ * the ones after it were skipped, and the step did not run. [entry] names the call that failed
+ * (`"state.<key>"` or `"commands[<i>]"`) and [commandCode] the code its handler raised, when the
+ * runtime reported them. Code `step_command_failed`.
  */
 public class StepCommandFailedException internal constructor(
     code: String,

@@ -1,5 +1,6 @@
 package inc.reactor.sdk.android.examples
 
+import inc.reactor.sdk.android.Generation
 import inc.reactor.sdk.android.Reactor
 import inc.reactor.sdk.android.ReactorOptions
 import inc.reactor.sdk.android.VideoFrame
@@ -29,12 +30,13 @@ public suspend fun withReactor(
     model: String,
     apiKey: String,
     log: Log,
+    generation: Generation = Generation.STREAMED,
     body: suspend (Reactor) -> Unit,
 ) {
     // A real app mints a short-lived token on its own backend and passes it as `jwt`. An API key
     // in an APK is a key anyone can extract; it is used here only because an example has no
     // backend, and it is passed in at install time rather than compiled in.
-    val reactor = Reactor(ReactorOptions(apiKey = apiKey))
+    val reactor = Reactor(ReactorOptions(apiKey = apiKey, generation = generation))
     try {
         log("connecting to $model…")
         reactor.connect(model)

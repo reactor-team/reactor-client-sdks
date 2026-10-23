@@ -13,6 +13,26 @@ request as the bump.
 
 ### Added
 
+- Stepped generation, as the other SDKs have it. `ReactorOptions(generation =
+  Generation.STEPPED)` asks for a session that generates one step at a time,
+  and `reactor.step(state, commands)` runs one and returns a `StepResult`: per
+  output track, the frames it produced as arrays (`StepFrame`: `dtype`,
+  `shape`, little-endian `data()`, metadata and capture time) and the track's
+  `rate`; `elapsed`; the `files` the model kept with the step; and `error`,
+  set when the step ran but the model reported it failed — such a step
+  returns, it does not throw. `state` is a JSON object as a string, and
+  `StepCommand(name, data)` one command. In a stepped session
+  `Track.pushFrame` buffers into the next step instead of sending, and
+  `clearStepInputs()` drops what is buffered; `onFrame` is refused, since
+  nothing streams. `ReactorOptions.stepTimeoutSeconds` bounds a step.
+  `connect()` fails with `GenerationModeMismatchException` against a runtime
+  that does not start the session stepped, and with
+  `DataChannelChunkingRequiredException` when the data channel did not
+  negotiate chunking. A step that does not run throws `StepRefusedException`,
+  `StepNotReadyException` or `StepCommandFailedException`, and
+  `ReactorException.entry` and `commandCode` say which part of the request
+  failed and why.
+
 - An `x86_64` ABI beside `arm64-v8a`, so the SDK runs on emulators on x86_64
   hosts.
 - Published to Maven Central as `inc.reactor:reactor-sdk-android` and

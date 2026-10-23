@@ -51,19 +51,25 @@ internal object ErrorPayloads {
                     operation = fallbackOperation,
                 )
 
-        return ErrorCode.toException(
-            wire = code,
-            message = fields["message"] as? String ?: code,
-            status = (fields["status"] as? Double)?.toInt(),
-            operation = fields["operation"] as? String ?: fallbackOperation,
-            retryAfterMs = (fields["retry_after_ms"] as? Double)?.toLong(),
-            // Read, not re-derived. `recoverable` is a non-optional field of the core's
-            // ErrorDetails and the core is the only place that decides it; dropping it here and
-            // consulting a local table instead made that table a second, unchecked copy of
-            // `code_is_recoverable()`. Still nullable: a payload this SDK cannot find it in falls
-            // back to the table rather than guessing false, which would make every unknown
-            // platform error look permanent.
-            wireRecoverable = fields["recoverable"] as? Boolean,
-        )
+        return ErrorCode
+            .toException(
+                wire = code,
+                message = fields["message"] as? String ?: code,
+                status = (fields["status"] as? Double)?.toInt(),
+                operation = fields["operation"] as? String ?: fallbackOperation,
+                retryAfterMs = (fields["retry_after_ms"] as? Double)?.toLong(),
+                // Read, not re-derived. `recoverable` is a non-optional field of the core's
+                // ErrorDetails and the core is the only place that decides it; dropping it here and
+                // consulting a local table instead made that table a second, unchecked copy of
+                // `code_is_recoverable()`. Still nullable: a payload this SDK cannot find it in falls
+                // back to the table rather than guessing false, which would make every unknown
+                // platform error look permanent.
+                wireRecoverable = fields["recoverable"] as? Boolean,
+            ).apply {
+                // A step's failure names the part of the request at fault, and for a failed call the
+                // code its handler raised. Absent on every other error.
+                entry = fields["entry"] as? String
+                commandCode = fields["command_code"] as? String
+            }
     }
 }

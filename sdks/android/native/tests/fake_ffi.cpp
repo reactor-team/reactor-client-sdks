@@ -31,6 +31,14 @@ struct ReactorHandle {
     int marker;
 };
 
+/// One step's output: a single video track with one 2x2 RGB frame, tagged and timed. Allocated
+/// with new so that freeing it twice, or reading it after the free, is an ASan report.
+struct ReactorStepResult {
+    uint32_t shape[3] = {2, 2, 3};
+    uint8_t data[12] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+    uint8_t tag[3] = {9, 8, 7};
+};
+
 extern "C" {
 
 static ReactorCallbacks g_callbacks;
@@ -321,6 +329,166 @@ void fake_complete_last_on_foreign_thread(int ok, const char* result_json, const
 
 /// Owned strings handed out and not yet returned through reactor_free_string.
 long fake_owned_strings_outstanding(void) { return g_owned_strings.load(); }
+
+// ── Stepped generation ───────────────────────────────────────────────────────
+
+static std::string g_last_create_options;
+static std::atomic<long> g_step_results{0};
+static std::atomic<int> g_clear_step_inputs{0};
+static reactor_step_completion_fn g_step_completion = nullptr;
+static void* g_step_userdata = nullptr;
+static std::string g_last_step_state;
+static std::string g_last_step_commands;
+
+/// Refuses options that do not pin the synthetic ADM, as reactor_create_with_adm refuses any mode
+/// but 0 — through error_out, which is the path the bridge has to free.
+ReactorHandle* reactor_create_with_options(const char*, const char*, const char*,
+                                           const ReactorCallbacks* callbacks,
+                                           const char* options_json, char** error_out) {
+    g_last_create_options = options_json == nullptr ? "<null>" : options_json;
+    if (options_json == nullptr || strstr(options_json, "\"adm\":\"synthetic\"") == nullptr) {
+        if (error_out != nullptr) {
+            *error_out = owned("{\"code\":\"INVALID_STATE\",\"message\":\"adm must be synthetic\"}");
+        }
+        return nullptr;
+    }
+    if (callbacks != nullptr) g_callbacks = *callbacks;
+    return &g_handle;
+}
+
+void reactor_step(ReactorHandle*, const char* state_json, const char* commands_json,
+                  reactor_step_completion_fn completion, void* userdata) {
+    g_last_step_state = state_json == nullptr ? "<null>" : state_json;
+    g_last_step_commands = commands_json == nullptr ? "<null>" : commands_json;
+    g_step_completion = completion;
+    g_step_userdata = userdata;
+}
+
+void reactor_clear_step_inputs(ReactorHandle*) { g_clear_step_inputs.fetch_add(1); }
+
+uint64_t reactor_step_result_step(const ReactorStepResult* r) { return r == nullptr ? 0 : 7; }
+
+double reactor_step_result_elapsed(const ReactorStepResult* r) { return r == nullptr ? 0.0 : 0.25; }
+
+const char* reactor_step_result_error(const ReactorStepResult*) { return nullptr; }
+
+uint32_t reactor_step_result_file_count(const ReactorStepResult*) { return 0; }
+
+const char* reactor_step_result_file_name(const ReactorStepResult*, uint32_t) { return nullptr; }
+
+const char* reactor_step_result_file_content_type(const ReactorStepResult*, uint32_t) {
+    return nullptr;
+}
+
+uint64_t reactor_step_result_file_size(const ReactorStepResult*, uint32_t) { return 0; }
+
+uint32_t reactor_step_result_track_count(const ReactorStepResult* r) { return r == nullptr ? 0 : 1; }
+
+const char* reactor_step_result_track_name(const ReactorStepResult* r, uint32_t track) {
+    return r != nullptr && track == 0 ? "main_video" : nullptr;
+}
+
+const char* reactor_step_result_track_kind(const ReactorStepResult* r, uint32_t track) {
+    return r != nullptr && track == 0 ? "video" : nullptr;
+}
+
+double reactor_step_result_track_rate(const ReactorStepResult* r, uint32_t track) {
+    return r != nullptr && track == 0 ? 30.0 : 0.0;
+}
+
+uint32_t reactor_step_result_frame_count(const ReactorStepResult* r, uint32_t track) {
+    return r != nullptr && track == 0 ? 1 : 0;
+}
+
+static bool in_range(const ReactorStepResult* r, uint32_t track, uint32_t frame) {
+    return r != nullptr && track == 0 && frame == 0;
+}
+
+const char* reactor_step_result_frame_encoding(const ReactorStepResult* r, uint32_t track,
+                                               uint32_t frame) {
+    return in_range(r, track, frame) ? "raw" : nullptr;
+}
+
+const char* reactor_step_result_frame_dtype(const ReactorStepResult* r, uint32_t track,
+                                            uint32_t frame) {
+    return in_range(r, track, frame) ? "uint8" : nullptr;
+}
+
+const uint32_t* reactor_step_result_frame_shape(const ReactorStepResult* r, uint32_t track,
+                                                uint32_t frame, uint32_t* ndim) {
+    if (!in_range(r, track, frame)) {
+        if (ndim != nullptr) *ndim = 0;
+        return nullptr;
+    }
+    if (ndim != nullptr) *ndim = 3;
+    return r->shape;
+}
+
+const uint8_t* reactor_step_result_frame_data(const ReactorStepResult* r, uint32_t track,
+                                              uint32_t frame, size_t* len) {
+    if (!in_range(r, track, frame)) {
+        if (len != nullptr) *len = 0;
+        return nullptr;
+    }
+    if (len != nullptr) *len = sizeof(r->data);
+    return r->data;
+}
+
+const uint8_t* reactor_step_result_frame_metadata(const ReactorStepResult* r, uint32_t track,
+                                                  uint32_t frame, size_t* len) {
+    if (!in_range(r, track, frame)) {
+        if (len != nullptr) *len = 0;
+        return nullptr;
+    }
+    if (len != nullptr) *len = sizeof(r->tag);
+    return r->tag;
+}
+
+int reactor_step_result_frame_capture_time_us(const ReactorStepResult* r, uint32_t track,
+                                              uint32_t frame, int64_t* capture_time_us) {
+    if (!in_range(r, track, frame)) return 0;
+    if (capture_time_us != nullptr) *capture_time_us = 424242;
+    return 1;
+}
+
+void reactor_step_result_free(ReactorStepResult* r) {
+    if (r == nullptr) return;
+    g_step_results.fetch_sub(1);
+    delete r;
+}
+
+/// A result the harness reads directly, to put the accessors under the sanitizer.
+ReactorStepResult* fake_new_step_result(void) {
+    g_step_results.fetch_add(1);
+    return new ReactorStepResult();
+}
+
+/// Step results handed out and not yet returned through reactor_step_result_free.
+long fake_step_results_outstanding(void) { return g_step_results.load(); }
+
+int fake_clear_step_inputs_calls(void) { return g_clear_step_inputs.load(); }
+
+const char* fake_last_create_options(void) { return g_last_create_options.c_str(); }
+
+const char* fake_last_step_state(void) { return g_last_step_state.c_str(); }
+
+const char* fake_last_step_commands(void) { return g_last_step_commands.c_str(); }
+
+/// Complete the last step from a thread the JVM has never seen: with a fresh result when ok, or
+/// with no result and error_json when not.
+void fake_complete_last_step_on_foreign_thread(int ok, const char* error_json) {
+    reactor_step_completion_fn completion = g_step_completion;
+    void* userdata = g_step_userdata;
+    if (completion == nullptr) return;
+    const bool has_error = error_json != nullptr;
+    std::string error(has_error ? error_json : "");
+    std::thread([completion, userdata, ok, error, has_error]() {
+        ReactorStepResult* result = ok == 1 ? fake_new_step_result() : nullptr;
+        completion(ok, result, has_error ? error.c_str() : nullptr, userdata);
+    }).join();
+    g_step_completion = nullptr;
+    g_step_userdata = nullptr;
+}
 
 /// Fire a status event from a thread the "FFI" owns — one the JVM has never seen, which is the
 /// only way to exercise ScopedEnv's attach and detach.

@@ -84,6 +84,7 @@ echo "==> Building the harness with AddressSanitizer"
   "$NATIVE/tests/asan_harness.cpp" \
   "$NATIVE/src/client.cpp" \
   "$NATIVE/src/abi.cpp" \
+  "$NATIVE/src/step.cpp" \
   "$NATIVE/tests/fake_ffi.cpp" \
   -L "$JVM_LIB" -ljvm -Wl,-rpath,"$JVM_LIB"
 
