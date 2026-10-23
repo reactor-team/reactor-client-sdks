@@ -30,7 +30,12 @@ jobs:
         run: |
           git clone --filter=blob:none \
             "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" .
-          git fetch --depth=1 origin \
+          # Full history, not --depth=1: a shallow fetch cuts the head off from
+          # its parents, so base..head holds the head commit alone. Every other
+          # commit on the PR then goes unchecked, and a merge at the head looks
+          # like an ordinary commit that --no-merges cannot skip. The blobless
+          # clone keeps the full history cheap: commits and trees, no contents.
+          git fetch origin \
             "${{ github.event.pull_request.base.sha }}" \
             "${{ github.event.pull_request.head.sha }}"
 
