@@ -17,6 +17,11 @@ repository = "https://github.com/reactor-team/reactor-client-sdks"
 reactor-protocol = { path = "crates/reactor-protocol" }
 reactor-core     = { path = "crates/reactor-core" }
 reactor-wasm     = { path = "crates/reactor-wasm" }
+# 0.24.2: libwebrtc p13 does less work per SCTP packet, and a chunked frame
+# reaches libwebrtc in one trip to the network thread instead of three, so a
+# command leaves sooner. Data-channel callbacks on the network thread and dcsctp
+# tuning (`SctpTuning`) are new, both opt-in; the SDK sets neither yet.
+#
 # 0.24.1: an x86_64-linux-android build links the android-x64 libwebrtc prebuilt
 # instead of falling back to check-only, so the Android SDK can ship x86_64 and
 # run its suites on an emulator. The floor is 0.24.1, not 0.24, for that.
@@ -63,10 +68,10 @@ reactor-wasm     = { path = "crates/reactor-wasm" }
 # instant the engine pushed the frame, and the field is named `capture_time_us`
 # for it (reactor-webrtc #64). 0.10 brought the outbound push that accepts a
 # capture time in the first place (#53); 0.11 is additive.
-reactor-webrtc   = "0.24.1"
+reactor-webrtc   = "0.24.2"
 # The sans-I/O framing reactor-webrtc uses for chunked data channels, for the
 # browser, which never links libwebrtc. Released in lockstep with it.
-reactor-webrtc-dc-chunking = "0.24.1"
+reactor-webrtc-dc-chunking = "0.24.2"
 
 serde       = { version = "1",   features = ["derive"] }
 serde_json  = "1"

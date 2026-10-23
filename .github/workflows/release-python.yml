@@ -229,7 +229,7 @@ jobs:
         if: matrix.musl
         run: |
           docker run --rm -v "$PWD:/io" -w /io \
-            -e REACTOR_WEBRTC_TAG=webrtc-7907-a5ddff60-p11 \
+            -e REACTOR_WEBRTC_TAG=webrtc-7907-a5ddff60-p13 \
             "${{ matrix.container_image }}" \
             bash /io/scripts/build-musllinux-wheel.sh
 
