@@ -1,5 +1,6 @@
 //! Pixel layouts a pushed video frame may arrive in, checked here and handed
 //! to the core as they are: it converts them to the step's RGB in one pass.
+//! Also the codecs a pushed *encoded* frame may carry, checked the same way.
 //!
 //! Plain Rust with no browser dependency, unlike the rest of this crate, so
 //! it compiles — and its tests run — on the host too.
@@ -64,6 +65,37 @@ pub(crate) fn check_size(
     Ok(())
 }
 
+/// The codec of a pushed encoded video frame, as JS names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EncodedCodec {
+    /// One H.264 access unit, Annex B.
+    H264,
+}
+
+impl EncodedCodec {
+    pub(crate) fn parse(name: Option<&str>) -> Result<Self, String> {
+        match name.unwrap_or("h264") {
+            "h264" => Ok(Self::H264),
+            other => Err(format!("unknown codec '{other}' (expected \"h264\")")),
+        }
+    }
+}
+
+/// Whether `data` can be an encoded frame that decodes to `width`x`height`,
+/// or why it cannot: the core would only drop it with a log line. Whether it
+/// really decodes is the runtime's to say.
+pub(crate) fn check_encoded(data: &[u8], width: u32, height: u32) -> Result<(), String> {
+    if data.is_empty() {
+        return Err("an encoded frame needs data".into());
+    }
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "width and height are the decoded frame's, and a {width}x{height} frame has no pixels"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,5 +119,20 @@ mod tests {
         assert_eq!(PixelFormat::parse(None), Ok(PixelFormat::Rgba));
         assert_eq!(PixelFormat::parse(Some("rgb")), Ok(PixelFormat::Rgb));
         assert!(PixelFormat::parse(Some("yuv")).is_err());
+    }
+
+    #[test]
+    fn codecs_parse_with_h264_as_the_default() {
+        assert_eq!(EncodedCodec::parse(None), Ok(EncodedCodec::H264));
+        assert_eq!(EncodedCodec::parse(Some("h264")), Ok(EncodedCodec::H264));
+        assert!(EncodedCodec::parse(Some("vp9")).is_err());
+    }
+
+    #[test]
+    fn an_encoded_frame_needs_data_and_a_size() {
+        assert_eq!(check_encoded(&[0, 0, 1, 0x65], 1280, 720), Ok(()));
+        assert!(check_encoded(&[], 2, 2).is_err());
+        assert!(check_encoded(&[1], 0, 2).is_err());
+        assert!(check_encoded(&[1], 2, 0).is_err());
     }
 }

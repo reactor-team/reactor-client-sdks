@@ -1,6 +1,7 @@
 import type {
   ClientOptions as WasmClientOptions,
   ConnectOptions,
+  EncodedVideoCodec,
   GenerationMode,
   JwtRequestContext,
   JwtSource,
@@ -22,6 +23,7 @@ import type { ReactorError } from './errors';
 
 export type {
   ConnectOptions,
+  EncodedVideoCodec,
   GenerationMode,
   JwtRequestContext,
   JwtSource,
@@ -49,6 +51,38 @@ export interface StepOptions {
   state?: Record<string, unknown>;
   /** Commands to run after the state, in order. */
   commands?: StepCommand[];
+  /** This step's own frames, by input track name: what `pushFrame()` takes,
+   *  or an `EncodedFrame`. They go after the frames pushed to that track
+   *  since the previous step, exactly as if pushed just before the step, so
+   *  each track must be published first. */
+  media?: Record<string, ReadonlyArray<PushFrame | EncodedFrame>>;
+}
+
+/**
+ * An encoded video frame for a step: one H.264 access unit (Annex B), its
+ * bytes sent as they are. `width` and `height` are the frame it decodes to.
+ *
+ * The runtime decodes a track's encoded frames of one step as one stream,
+ * before the step runs, and the model reads the RGB frames as if they had
+ * been pushed raw. So give them in decode order, starting at a keyframe.
+ *
+ * `data` may be a WebCodecs `EncodedVideoChunk` as a `VideoEncoder` hands it
+ * over; configure the encoder with `avc: { format: 'annexb' }`, as its
+ * default (`"avc"`) is length-prefixed, not Annex B.
+ */
+export interface EncodedFrame {
+  /** Tells an encoded frame from a raw one in `step()`'s `media`. */
+  codec: EncodedVideoCodec;
+  /** One access unit. A chunk's bytes are copied out when it is pushed. */
+  data: Uint8Array | ArrayBuffer | EncodedVideoChunk;
+  /** Width of the frame it decodes to. */
+  width: number;
+  /** Height of the frame it decodes to. */
+  height: number;
+  /** Opaque bytes the decoded frame carries to the model. */
+  metadata?: Uint8Array;
+  /** When the frame was captured, in microseconds. */
+  captureTimeUs?: number;
 }
 
 /** Raw pixels for `Reactor.pushFrame()`. `ImageData` is one of these as is. */
@@ -86,6 +120,9 @@ export interface PublishedTrack {
    *  track is unpublished or its connection ends: publish again for a new
    *  handle. */
   pushFrame(frame: PushFrame, options?: PushFrameOptions): Promise<void>;
+  /** Buffers one encoded video frame on this track for the next `step()` —
+   *  `reactor.pushEncodedFrame(name, frame)`. Rejects as `pushFrame()` does. */
+  pushEncodedFrame(frame: EncodedFrame): Promise<void>;
 }
 
 /** Per-frame extras for a pushed video frame. */
