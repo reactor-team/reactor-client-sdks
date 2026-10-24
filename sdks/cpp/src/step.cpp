@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -314,15 +315,22 @@ void ClientImpl::step_completion_trampoline(int ok, ReactorStepResult* result,
 }
 
 void ClientImpl::push_step_media(const StepMedia& media) {
+  // Every frame is checked before the first is pushed: the buffer can only be
+  // cleared whole, so a refusal part-way would leave the frames before it to ride
+  // the next step, with no way to take back just those.
+  std::vector<std::function<void()>> pushes;
   for (const auto& [name, frames] : media) {
     for (const auto& frame : frames) {
       if (const auto* encoded = std::get_if<EncodedFrame>(&frame)) {
-        push_encoded_video(name, *encoded);
+        pushes.push_back(prepare_encoded_video(name, *encoded));
       } else {
         const auto& raw = std::get<RawVideoFrame>(frame);
-        push_video(name, raw.bgra, raw.width, raw.height, raw.options);
+        pushes.push_back(prepare_video(name, raw.bgra, raw.width, raw.height, raw.options));
       }
     }
+  }
+  for (const auto& push : pushes) {
+    push();
   }
 }
 
