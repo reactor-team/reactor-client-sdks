@@ -9,6 +9,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-10-23
+
 ### Added
 
 - Encoded video in a step. `Reactor.step(media={"webcam": [EncodedFrame(...)]})`
