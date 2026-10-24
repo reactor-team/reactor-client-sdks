@@ -1679,6 +1679,51 @@ TEST_CASE("a step whose media is refused fails, and is not sent") {
   media["main_video"].push_back(reactor::EncodedFrame{as_bytes(ACCESS_UNIT), 2, 2});
 
   CHECK_THROWS_AS(fixture.client.step(nullptr, {}, media).get(), reactor::InvalidStateError);
-  // The frame pushed before the refused one stays buffered for the next step.
-  CHECK(fixture.session.calls == std::vector<std::string>{"h264:input_video"});
+  CHECK(fixture.session.calls.empty());
+}
+
+// The buffer can only be cleared whole, so a frame pushed before a later refusal
+// would ride the next step. Every frame is checked before the first is pushed.
+TEST_CASE("a step's media refused anywhere pushes none of it") {
+  Connected fixture{stepped()};
+  fixture.session.redeclare(R"([{"name":"input_video","kind":"video","direction":"sendonly"},)"
+                            R"({"name":"other_video","kind":"video","direction":"sendonly"},)"
+                            R"({"name":"main_video","kind":"video","direction":"recvonly"}])");
+  fixture.client.track("input_video").publish().get();
+  fixture.client.track("other_video").publish().get();
+  const auto raw = bgra_frame(2, 2);
+
+  reactor::StepMedia media;
+  media["input_video"].push_back(reactor::EncodedFrame{as_bytes(ACCESS_UNIT), 2, 2});
+  media["input_video"].push_back(reactor::RawVideoFrame{as_bytes(raw), 2, 2});
+
+  SECTION("a later encoded frame with no data") {
+    media["input_video"].push_back(reactor::EncodedFrame{reactor::Bytes{}, 2, 2});
+    CHECK_THROWS_AS(fixture.client.step(nullptr, {}, media).get(), reactor::BadRequestError);
+  }
+  SECTION("a later encoded frame with no size") {
+    media["input_video"].push_back(reactor::EncodedFrame{as_bytes(ACCESS_UNIT), 0, 2});
+    CHECK_THROWS_AS(fixture.client.step(nullptr, {}, media).get(), reactor::BadRequestError);
+  }
+  SECTION("a later raw frame whose length does not match its size") {
+    media["input_video"].push_back(reactor::RawVideoFrame{as_bytes(raw), 4, 4});
+    CHECK_THROWS_AS(fixture.client.step(nullptr, {}, media).get(), reactor::BadRequestError);
+  }
+  SECTION("a later track that is recvonly") {
+    media["main_video"].push_back(reactor::EncodedFrame{as_bytes(ACCESS_UNIT), 2, 2});
+    CHECK_THROWS_AS(fixture.client.step(nullptr, {}, media).get(), reactor::InvalidStateError);
+  }
+  SECTION("a later track never declared") {
+    media["undeclared"].push_back(reactor::EncodedFrame{as_bytes(ACCESS_UNIT), 2, 2});
+    CHECK_THROWS_AS(fixture.client.step(nullptr, {}, media).get(), reactor::ReactorError);
+  }
+  SECTION("a later track not published") {
+    fixture.client.track("other_video").unpublish();
+    media["other_video"].push_back(reactor::EncodedFrame{as_bytes(ACCESS_UNIT), 2, 2});
+    CHECK_THROWS_AS(fixture.client.step(nullptr, {}, media).get(), reactor::InvalidStateError);
+  }
+
+  CHECK(fixture.session.calls.empty());
+  CHECK(fixture.session.encoded_pushes.empty());
+  CHECK(fixture.session.pushes.empty());
 }

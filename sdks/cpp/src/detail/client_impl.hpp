@@ -562,13 +562,22 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
                   std::uint32_t channels);
   void push_encoded_video(const std::string& name, const EncodedFrame& frame);
 
+  /// Every check `push_video` makes, throwing on the first that fails; what comes
+  /// back does only the native push. It borrows `bgra` and `options`, so it must
+  /// run while they are alive. Split so a step can refuse its media whole.
+  std::function<void()> prepare_video(const std::string& name, Bytes bgra, std::uint32_t width,
+                                      std::uint32_t height, const Track::FrameOptions& options);
+  /// The same split for `push_encoded_video`; what comes back borrows `frame`'s bytes.
+  std::function<void()> prepare_encoded_video(const std::string& name, const EncodedFrame& frame);
+
   // ── Stepped generation ─────────────────────────────────────────────────────
 
   Generation generation() const noexcept { return generation_; }
 
   void begin_step(std::unique_ptr<PendingStep> op, const Json& state,
                   const std::vector<StepCommand>& commands, const StepMedia& media);
-  /// Push a step's own frames, track by track, as `Reactor::step` documents.
+  /// Push a step's own frames, track by track, as `Reactor::step` documents: all
+  /// of them, or — when any one is refused — none.
   void push_step_media(const StepMedia& media);
   void clear_step_inputs();
 

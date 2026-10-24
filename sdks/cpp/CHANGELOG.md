@@ -22,8 +22,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
   before the step runs, so the model reads RGB frames as for a raw push. A
   track's frames of one step go in decode order, starting at a keyframe; a step
   whose frames do not decode fails with `StepRefusedError`. `media` is pushed
-  after the frames already buffered, and only once the state and commands are
-  well formed. Stepped sessions and published sendonly video tracks only. Needs a
+  after the frames already buffered, and only once the state, the commands and
+  every frame of `media` are well formed, so a bad track or frame anywhere in it
+  fails the step before any of its media is pushed. Stepped sessions and published sendonly video tracks only. Needs a
   `libreactor_ffi` with `reactor_push_step_encoded_video_frame`.
 
 ### Fixed

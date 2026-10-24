@@ -481,9 +481,10 @@ class Reactor {
   ///
   /// The same as pushing them just before the step, so each track must be
   /// published first, and the same refusals apply, failing the future. They are
-  /// pushed only once `state` and `commands` are known to be well formed, so a
-  /// step refused for those leaves the buffer as it was; a frame refused part-way
-  /// leaves the ones pushed before it buffered for the next step. A step whose
+  /// pushed only once `state` and `commands` are known to be well formed, and
+  /// only once every frame in `media` passes, so a step refused for any of those
+  /// — a bad track or frame anywhere in `media` included — fails before any of its
+  /// media is pushed, leaving the buffer as it was. A step whose
   /// encoded frames do not decode, or do not start at a keyframe, fails with
   /// `StepRefusedError`, naming the frame in `entry()`; so does a runtime that
   /// predates encoded frames.
