@@ -115,6 +115,158 @@ impl AuthProvider for StaticAuth {
     }
 }
 
+/// Headers the caller asks to have sent on every request.
+///
+/// Sorted by name, which also makes a name given twice in the same case
+/// impossible.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtraHeaders(std::collections::BTreeMap<String, String>);
+
+impl ExtraHeaders {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The headers as the `(name, value)` pairs a request carries.
+    pub fn to_pairs(&self) -> Vec<(String, String)> {
+        self.0.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+
+    /// Add these headers after the SDK's own. A name already in `headers`, in any
+    /// case, is skipped, so an SDK value always wins whatever the reserved list
+    /// says: the clients append rather than replace, and a second copy would
+    /// otherwise reach the server beside it.
+    pub fn append_to(&self, headers: &mut Vec<(String, String)>) {
+        for (name, value) in &self.0 {
+            if !headers
+                .iter()
+                .any(|(own, _)| own.eq_ignore_ascii_case(name))
+            {
+                headers.push((name.clone(), value.clone()));
+            }
+        }
+    }
+
+    /// See [`validate_extra_headers`].
+    pub fn validate(&self) -> Result<(), CoreError> {
+        validate_extra_headers(&self.to_pairs())
+    }
+
+    /// Names, for a caller that needs to look at them (the browser's own
+    /// forbidden-name check does).
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
+    }
+}
+
+/// Read from a JSON object of strings. A name written twice in the same case is
+/// an error rather than a silent last-one-wins, so the duplicate rule holds for
+/// JSON that never passes through a map in the caller's language.
+impl<'de> serde::Deserialize<'de> for ExtraHeaders {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = ExtraHeaders;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an object of header names to string values")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut headers = std::collections::BTreeMap::new();
+                while let Some((name, value)) = map.next_entry::<String, String>()? {
+                    if headers.contains_key(&name) {
+                        return Err(serde::de::Error::custom(format!(
+                            "extra header {name:?} is given more than once"
+                        )));
+                    }
+                    headers.insert(name, value);
+                }
+                Ok(ExtraHeaders(headers))
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
+impl From<std::collections::BTreeMap<String, String>> for ExtraHeaders {
+    fn from(headers: std::collections::BTreeMap<String, String>) -> Self {
+        Self(headers)
+    }
+}
+
+/// Headers the SDK or the transport owns, which [`validate_extra_headers`]
+/// refuses to let a caller set. The HTTP clients append rather than replace, so a
+/// duplicate would go out beside the real one, and a browser drops several of
+/// these without a word.
+const RESERVED_HEADERS: &[&str] = &[
+    "authorization",
+    "content-type",
+    "content-length",
+    "reactor-api-key",
+    "reactor-api-version",
+    "reactor-api-accept-version",
+    "reactor-webrtc-version",
+    "host",
+    "connection",
+    "transfer-encoding",
+    "upgrade",
+    "accept-encoding",
+    "te",
+    "trailer",
+    "expect",
+    "keep-alive",
+];
+
+/// Check the caller's extra headers, sent on every request to the coordinator
+/// and the signaling endpoints.
+///
+/// A name must be an HTTP token and a value visible ASCII (space and tab
+/// allowed), so a bad one fails here instead of as a transport error mid-session.
+/// ASCII only because the transports disagree about anything wider: a browser
+/// `Headers` and Python's `urllib` refuse or Latin-1 encode it, while the native
+/// client sends UTF-8, so the same value would name different bytes on different
+/// requests. A name given twice, whatever its case, is refused because the
+/// native client sends both and a browser keeps one. A header the SDK sets
+/// itself is refused rather than dropped: silently ignoring an `Authorization`
+/// the caller meant to send would look like a working setup.
+pub fn validate_extra_headers(headers: &[(String, String)]) -> Result<(), CoreError> {
+    let mut seen = std::collections::HashSet::new();
+    for (name, value) in headers {
+        let is_token = !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b));
+        if !is_token {
+            return Err(CoreError::InvalidState(format!(
+                "invalid extra header name {name:?}"
+            )));
+        }
+        if RESERVED_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
+            return Err(CoreError::InvalidState(format!(
+                "extra header {name:?} is set by the SDK and cannot be overridden"
+            )));
+        }
+        if value
+            .bytes()
+            .any(|b| !(b == b'\t' || (0x20..0x7f).contains(&b)))
+        {
+            return Err(CoreError::InvalidState(format!(
+                "invalid value for extra header {name:?}: only visible ASCII is allowed"
+            )));
+        }
+        if !seen.insert(name.to_ascii_lowercase()) {
+            return Err(CoreError::InvalidState(format!(
+                "extra header {name:?} is given more than once"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Read a `Retry-After` header as milliseconds.
 ///
 /// Only the delta-seconds form — `Retry-After: 120` — which is what a 429 or a
@@ -227,6 +379,102 @@ mod tests {
     #[test]
     fn a_success_is_not_an_error() {
         assert!(check_status(&response(204, &[]), "terminate session").is_ok());
+    }
+
+    fn pairs(headers: &[(&str, &str)]) -> Vec<(String, String)> {
+        headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn extra_headers_accept_ordinary_names_and_values() {
+        assert!(validate_extra_headers(&pairs(&[
+            ("X-Client-Id", "my-app/2.1.0"),
+            ("x_trace.id", "a b\tc"),
+        ]))
+        .is_ok());
+    }
+
+    #[test]
+    fn extra_headers_reject_names_the_sdk_sets() {
+        for name in [
+            "Authorization",
+            "content-type",
+            "Content-Length",
+            "Reactor-API-Version",
+            "reactor-api-accept-version",
+            "REACTOR-WEBRTC-VERSION",
+            "Reactor-API-Key",
+            "Host",
+            "connection",
+            "Transfer-Encoding",
+            "upgrade",
+            "Accept-Encoding",
+            "TE",
+            "trailer",
+            "Expect",
+            "keep-alive",
+        ] {
+            assert!(
+                validate_extra_headers(&pairs(&[(name, "x")])).is_err(),
+                "{name} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn extra_headers_reject_malformed_names_and_values() {
+        for (name, value) in [
+            ("", "x"),
+            ("a b", "x"),
+            ("a:b", "x"),
+            ("X-A", "a\r\nB: c"),
+            ("X-A", "a\0"),
+            ("X-A", "caf\u{e9}"),
+            ("X-A", "\u{6f22}"),
+            ("X-A", "\u{fffd}"),
+            ("X-A", "a\x7f"),
+        ] {
+            assert!(
+                validate_extra_headers(&pairs(&[(name, value)])).is_err(),
+                "{name:?}: {value:?} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn appended_extra_headers_never_shadow_the_sdks_own() {
+        let extra = ExtraHeaders::from(std::collections::BTreeMap::from([
+            ("authorization".to_string(), "Bearer other".to_string()),
+            ("X-Tenant".to_string(), "a".to_string()),
+        ]));
+        let mut headers = vec![("Authorization".to_string(), "Bearer own".to_string())];
+        extra.append_to(&mut headers);
+        assert_eq!(
+            headers,
+            vec![
+                ("Authorization".to_string(), "Bearer own".to_string()),
+                ("X-Tenant".to_string(), "a".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn extra_headers_json_rejects_a_repeated_key() {
+        let repeated = r#"{"X-Tenant":"a","X-Tenant":"b"}"#;
+        assert!(serde_json::from_str::<ExtraHeaders>(repeated).is_err());
+        assert!(serde_json::from_str::<ExtraHeaders>(r#"{"X-Tenant":1}"#).is_err());
+        let ok = serde_json::from_str::<ExtraHeaders>(r#"{"X-A":"1","X-B":"2"}"#).unwrap();
+        assert_eq!(ok.to_pairs().len(), 2);
+    }
+
+    #[test]
+    fn extra_headers_reject_a_name_given_twice_in_any_case() {
+        assert!(validate_extra_headers(&pairs(&[("X-Tenant", "a"), ("x-tenant", "b")])).is_err());
+        assert!(validate_extra_headers(&pairs(&[("X-A", "1"), ("X-A", "1")])).is_err());
+        assert!(validate_extra_headers(&pairs(&[("X-A", "1"), ("X-B", "1")])).is_ok());
     }
 }
 

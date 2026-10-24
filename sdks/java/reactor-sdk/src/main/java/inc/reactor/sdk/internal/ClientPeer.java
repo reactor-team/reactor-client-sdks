@@ -25,6 +25,7 @@ import java.lang.invoke.MethodType;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -372,6 +373,10 @@ public final class ClientPeer implements Runnable {
         int admMode = 0;
         MemorySegment sdkVersion = arena.allocateFrom(ReactorSdk.version());
         MemorySegment sdkType = arena.allocateFrom("java");
+        // NULL when there are none: the header takes an empty object as "nothing" only as NULL.
+        MemorySegment extraHeaders = options.extraHeaders().isEmpty()
+                ? MemorySegment.NULL
+                : arena.allocateFrom(extraHeadersJson(options.extraHeaders()));
 
         MemorySegment created;
         try {
@@ -385,7 +390,8 @@ public final class ClientPeer implements Runnable {
                             callbacks,
                             admMode,
                             sdkVersion,
-                            sdkType);
+                            sdkType,
+                            extraHeaders);
         } catch (Throwable t) {
             throw new IllegalStateException("reactor_create_with_adm could not be called", t);
         }
@@ -394,6 +400,10 @@ public final class ClientPeer implements Runnable {
                     ReactorException.INTERNAL_ERROR, "the native client could not be allocated", null, "create", null);
         }
         return created;
+    }
+
+    private static String extraHeadersJson(Map<String, String> headers) {
+        return Authentication.extraHeadersObject(headers).toJsonString();
     }
 
     /**
@@ -421,6 +431,9 @@ public final class ClientPeer implements Runnable {
         Double stepTimeout = options.stepTimeoutSeconds();
         if (stepTimeout != null) {
             settings.put("step_timeout_seconds", stepTimeout.doubleValue());
+        }
+        if (!options.extraHeaders().isEmpty()) {
+            settings.put("extra_headers", Authentication.extraHeadersObject(options.extraHeaders()));
         }
         MemorySegment optionsJson = arena.allocateFrom(settings.build().toJsonString());
 
@@ -541,15 +554,17 @@ public final class ClientPeer implements Runnable {
         // server's own default is what every other binding gets, and with no budget a bound token
         // cannot create sessions.
         @Nullable String bound = wanted.sessionId();
-        String mintOptions = bound == null
-                ? JsonValue.object()
-                        .putArray("models", List.of(JsonValue.of(options.modelName())))
-                        .build()
-                        .toJsonString()
-                : JsonValue.object()
-                        .putArray("sessions", List.of(JsonValue.of(bound)))
-                        .build()
-                        .toJsonString();
+        JsonValue.ObjectBuilder mintOptionsObject = JsonValue.object();
+        if (bound == null) {
+            mintOptionsObject.putArray("models", List.of(JsonValue.of(options.modelName())));
+        } else {
+            mintOptionsObject.putArray("sessions", List.of(JsonValue.of(bound)));
+        }
+        // The mint is a coordinator request like every later one, so it carries the same headers.
+        if (!options.extraHeaders().isEmpty()) {
+            mintOptionsObject.put("extra_headers", Authentication.extraHeadersObject(options.extraHeaders()));
+        }
+        String mintOptions = mintOptionsObject.build().toJsonString();
         return Authentication.fetchJwt(ffi, options.apiUrl(), apiKey, mintOptions, options.local())
                 .thenAccept(minted -> adoptMintedToken(minted, wanted));
     }

@@ -2,6 +2,7 @@ package inc.reactor.sdk;
 
 import inc.reactor.sdk.internal.ClientPeer;
 import java.lang.ref.Cleaner;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
@@ -121,6 +122,34 @@ public final class Reactor implements AutoCloseable {
                 apiKey,
                 options == null ? null : options.toJsonString(),
                 local);
+    }
+
+    /**
+     * Exchanges an API key for a scoped token, sending extra HTTP headers on the exchange.
+     *
+     * <p>The headers go on the mint request after the SDK's own and never into its body. The SDK's
+     * own header names are reserved, and a reserved name fails the returned future with the usual
+     * error. An {@code extra_headers} entry already in {@code options} is replaced by {@code
+     * extraHeaders}; an empty map leaves {@code options} exactly as given.
+     *
+     * @param apiUrl the coordinator's base URL
+     * @param apiKey the key to exchange
+     * @param options scoping options, as for {@link #fetchJwt(String, String, JsonValue, boolean)},
+     *     or {@code null} for everything the key allows
+     * @param extraHeaders headers to send on the exchange
+     * @param local whether to accept a dev coordinator's certificate
+     * @return the token
+     * @throws IllegalArgumentException when {@code extraHeaders} is not empty and {@code options}
+     *     is neither {@code null} nor a JSON object, since there is nowhere to put them
+     */
+    public static CompletableFuture<String> fetchJwt(
+            String apiUrl,
+            String apiKey,
+            @Nullable JsonValue options,
+            Map<String, String> extraHeaders,
+            boolean local) {
+        return fetchJwt(
+                apiUrl, apiKey, inc.reactor.sdk.internal.Authentication.withExtraHeaders(options, extraHeaders), local);
     }
 
     /**

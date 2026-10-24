@@ -40,6 +40,7 @@ final class FakeLibrary: @unchecked Sendable {
         var admMode: Int32
         var sdkVersion: String?
         var sdkType: String?
+        var extraHeadersJSON: String?
     }
 
     private struct State {
@@ -476,7 +477,7 @@ final class FakeLibrary: @unchecked Sendable {
             createWithADM: {
                 [self]
                 apiURL, model, jwt, local, autoResumeTracks, callbacks, admMode, sdkVersion,
-                sdkType in
+                sdkType, extraHeadersJSON in
                 state.withLock { state in
                     state.createCalls.append(
                         CreateCall(
@@ -487,7 +488,8 @@ final class FakeLibrary: @unchecked Sendable {
                             autoResumeTracks: autoResumeTracks,
                             admMode: admMode,
                             sdkVersion: String(borrowing: sdkVersion),
-                            sdkType: String(borrowing: sdkType)))
+                            sdkType: String(borrowing: sdkType),
+                            extraHeadersJSON: String(borrowing: extraHeadersJSON)))
                     state.callbacks = callbacks?.pointee
                 }
                 return OpaquePointer(handle)

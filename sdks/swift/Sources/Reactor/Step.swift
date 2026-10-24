@@ -3,7 +3,7 @@ import Foundation
 /// How a session generates.
 ///
 /// Chosen when the client is created — see
-/// ``Reactor/init(model:jwt:apiURL:local:autoResumeTracks:generation:stepTimeout:eventQueue:)``
+/// ``Reactor/init(model:jwt:apiURL:local:autoResumeTracks:generation:stepTimeout:extraHeaders:eventQueue:)``
 /// — and fixed for its lifetime.
 public enum Generation: String, Sendable, Hashable, CaseIterable {
 

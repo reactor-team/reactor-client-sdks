@@ -8,6 +8,16 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-10-23
+
+### Added
+
+- `Options.extra_headers` sets HTTP headers sent on every coordinator and
+  signaling request, including those of a stepped client. Names the SDK sets
+  itself are rejected at `connect()`.
+- `FetchJwtOptions::extra_headers` sets HTTP headers sent on the token
+  exchange. Names the SDK sets itself are rejected.
+
 ## [2.6.0] - 2026-10-23
 
 ### Added

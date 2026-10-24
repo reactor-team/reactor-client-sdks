@@ -531,6 +531,14 @@ describe('Reactor connect/construction options', () => {
     });
   });
 
+  it('forwards extraHeaders to the binding unchanged', async () => {
+    const reactor = new Reactor({ modelName: 'test-model', extraHeaders: { 'X-Client-Id': 'my-app/2.1.0' } });
+
+    expect((await currentClient(reactor)).options).toMatchObject({
+      extraHeaders: { 'X-Client-Id': 'my-app/2.1.0' },
+    });
+  });
+
   it('defaults sdkVersion to this package’s own version, overridable via options', async () => {
     const defaulted = new Reactor({ modelName: 'test-model' });
 

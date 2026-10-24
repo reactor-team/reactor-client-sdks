@@ -86,6 +86,8 @@ class FakeLibrary {
   int fetch_jwt_local = 0;
   int created_with_local = 0;
   int created_with_auto_resume_tracks = -1;
+  bool created_with_null_extra_headers = false;
+  std::string created_with_extra_headers;
   int connects = 0;
   std::string connect_session_id;
 
@@ -186,7 +188,8 @@ class FakeLibrary {
   static ReactorHandle* create_with_adm(const char* api_url, const char* model, const char* jwt,
                                         int local, int auto_resume_tracks,
                                         const ReactorCallbacks* callbacks, int adm_mode,
-                                        const char* sdk_version, const char* sdk_type) {
+                                        const char* sdk_version, const char* sdk_type,
+                                        const char* extra_headers_json) {
     auto& self = current();
     ++self.creates;
     self.adm_mode = adm_mode;
@@ -197,6 +200,8 @@ class FakeLibrary {
     self.created_with_jwt = jwt == nullptr ? "" : jwt;
     self.created_with_sdk_version = sdk_version == nullptr ? "" : sdk_version;
     self.created_with_sdk_type = sdk_type == nullptr ? "" : sdk_type;
+    self.created_with_null_extra_headers = extra_headers_json == nullptr;
+    self.created_with_extra_headers = extra_headers_json == nullptr ? "" : extra_headers_json;
     if (callbacks != nullptr) {
       self.callbacks_ = *callbacks;
     }
@@ -408,6 +413,31 @@ TEST_CASE("an API key is exchanged for a token scoped to the model") {
   CHECK(fixture.library.created_with_jwt == "minted-token");
   CHECK(fixture.library.fetch_jwt_options.find("reactor/helios") != std::string::npos);
   CHECK(fixture.library.fetch_jwt_options.find("models") != std::string::npos);
+}
+
+TEST_CASE("the token exchange carries the client's extra headers") {
+  Fixture fixture;
+
+  {
+    reactor::Options options;
+    options.extra_headers = {{"X-Client", "acme"}};
+    reactor::Reactor client{"reactor/helios", reactor::ApiKey{"key-123"}, options};
+    client.connect().get();
+  }
+
+  CHECK(reactor::Json::parse(fixture.library.fetch_jwt_options)["extra_headers"] ==
+        reactor::Json{{"X-Client", "acme"}});
+}
+
+TEST_CASE("the token exchange has no extra_headers key when the client has none") {
+  Fixture fixture;
+
+  {
+    reactor::Reactor client{"reactor/helios", reactor::ApiKey{"key-123"}};
+    client.connect().get();
+  }
+
+  CHECK_FALSE(reactor::Json::parse(fixture.library.fetch_jwt_options).contains("extra_headers"));
 }
 
 // A scoped token reaches only the sessions it created or was bound to, so the
@@ -852,6 +882,28 @@ TEST_CASE("auto_resume_tracks set false is forwarded as 0") {
   CHECK(fixture.library.created_with_auto_resume_tracks == 0);
 }
 
+TEST_CASE("no extra_headers reaches create_with_adm as NULL") {
+  Fixture fixture;
+  reactor::Options options;
+  options.local = true;
+  reactor::Reactor client{"reactor/echo", options};
+  client.connect().get();
+  CHECK(fixture.library.created_with_null_extra_headers);
+}
+
+TEST_CASE("extra_headers reaches create_with_adm as a JSON object") {
+  Fixture fixture;
+  reactor::Options options;
+  options.local = true;
+  options.extra_headers = {{"X-Tenant", "acme"}, {"X-Quote", "a\"b\\c\n\x01"}};
+  reactor::Reactor client{"reactor/echo", options};
+  client.connect().get();
+  CHECK_FALSE(fixture.library.created_with_null_extra_headers);
+  CHECK(reactor::Json::parse(fixture.library.created_with_extra_headers) ==
+        reactor::Json{{"X-Tenant", "acme"}, {"X-Quote", "a\"b\\c\n\x01"}});
+  CHECK(fixture.library.created_with_extra_headers.find("\\u0001") != std::string::npos);
+}
+
 // `auto_resume_tracks` sits after `executor` in `Options` so an aggregate
 // initializer written before the field existed keeps its meaning: the third
 // position still selects the executor, never the flag.
@@ -940,6 +992,23 @@ TEST_CASE("fetch_jwt forwards a session bind") {
   CHECK(reactor::fetch_jwt(reactor::ApiKey{"secret"}, options).get() == "minted-token");
   CHECK(reactor::Json::parse(fixture.library.fetch_jwt_options) ==
         reactor::Json{{"sessions", {"session-1"}}});
+}
+
+TEST_CASE("fetch_jwt omits extra_headers when none are set") {
+  Fixture fixture;
+  CHECK(reactor::fetch_jwt(reactor::ApiKey{"secret"}).get() == "minted-token");
+  CHECK_FALSE(reactor::Json::parse(fixture.library.fetch_jwt_options).contains("extra_headers"));
+}
+
+TEST_CASE("fetch_jwt forwards extra_headers as an object of strings") {
+  Fixture fixture;
+  reactor::FetchJwtOptions options;
+  options.sessions = std::vector<std::string>{"session-1"};
+  options.extra_headers = {{"X-Tenant", "acme"}, {"X-Quote", "a\"b\\c\n\x01"}};
+  CHECK(reactor::fetch_jwt(reactor::ApiKey{"secret"}, options).get() == "minted-token");
+  CHECK(reactor::Json::parse(fixture.library.fetch_jwt_options) ==
+        reactor::Json{{"sessions", {"session-1"}},
+                      {"extra_headers", {{"X-Tenant", "acme"}, {"X-Quote", "a\"b\\c\n\x01"}}}});
 }
 
 TEST_CASE("fetch_jwt reports typed failures and rejects malformed success payloads") {
