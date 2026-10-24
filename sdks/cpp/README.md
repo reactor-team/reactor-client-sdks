@@ -288,6 +288,8 @@ receiving nothing. Every one of these throws instead, with the fix in the messag
 | anything after the session leaves `Ready` | `InvalidStateError`, naming the status |
 | `one()` matching zero or several tracks | `NotFoundError` / `InvalidStateError` |
 | `step()` on a streamed client | `InvalidStateError`, naming `Generation::Stepped` |
+| `push_encoded_frame` on a streamed client, or an audio track | `InvalidStateError` |
+| an encoded frame with no data or a zero width or height | `BadRequestError` |
 | a step state, or a command's data, that is not a JSON object | `BadRequestError`, before anything is sent |
 
 Publishing state is not something the session records, so the SDK keeps it — and
@@ -377,6 +379,41 @@ raised); one whose session ends before its result is sent throws
 `StepSessionEndedError` (whether it ran is unknown); one whose output does not
 fit in a message throws `StepResultTooLargeError`; a request too large to send throws
 `MessageTooLargeError`. `Options::step_timeout_seconds` bounds a step (default 300 s).
+
+### Encoded video in a step
+
+A step can carry video already encoded as H.264, its bytes as they are: much
+smaller than raw frames. The runtime decodes a track's encoded frames before the
+step runs, so the model reads RGB frames exactly as if they had been pushed raw.
+Give the frames of one step in decode order, starting at a keyframe — the access
+units from the last keyframe to the frame the step is about:
+
+```cpp
+reactor::StepMedia media;
+for (const auto& unit : window) {   // one Annex B access unit each, keyframe first
+  media["webcam"].push_back(reactor::EncodedFrame{reactor::Bytes{unit.data(), unit.size()},
+                                                  1280, 720});
+}
+const auto result = client.step(nullptr, {}, media).get();
+
+// The same, pushed ahead of the step:
+for (const auto& unit : window) {
+  camera.push_encoded_frame(reactor::Bytes{unit.data(), unit.size()}, 1280, 720);
+}
+const auto next = client.step().get();
+```
+
+`width` and `height` are the frame each one decodes to; `EncodedFrame::user_data`
+and `capture_time_us` (or `Track::FrameOptions` for `push_encoded_frame`) tag and
+stamp it as for `push_frame`. `media` takes raw BGRA frames too, as
+`reactor::RawVideoFrame{bgra, width, height}`, and its frames go after the ones
+pushed to the same track since the previous step; they are pushed only once the
+state and commands are well formed. The bytes are borrowed until `step()` or
+`push_encoded_frame()` returns. Encoded frames need a stepped client, a published
+sendonly video track, data, and a non-zero size (`InvalidStateError` /
+`BadRequestError` otherwise). A step whose frames do not decode, or that does not
+start at a keyframe, throws `StepRefusedError`, naming the frame in `entry()`; a
+runtime that predates encoded frames refuses them the same way.
 
 The result is copied out of the native library once, when the step completes, and
 the native result is freed there and then: a `StepResult` owns its bytes and

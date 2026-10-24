@@ -10,6 +10,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
+#include <functional>
+#include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -31,6 +35,14 @@ std::string_view to_string(TrackKind kind) noexcept {
 
 std::string_view to_string(TrackDirection direction) noexcept {
   return direction == TrackDirection::SendOnly ? "sendonly" : "recvonly";
+}
+
+std::string_view to_string(VideoCodec codec) noexcept {
+  switch (codec) {
+    case VideoCodec::H264:
+      return "h264";
+  }
+  return "unknown";
 }
 
 std::optional<TrackKind> track_kind_from_string(std::string_view text) noexcept {
@@ -154,6 +166,16 @@ void Track::push_frame(Bytes bgra, std::uint32_t width, std::uint32_t height,
 
 void Track::push_frame(Samples pcm, std::uint32_t sample_rate, std::uint32_t channels) {
   client("push audio")->push_audio(name_, pcm, sample_rate, channels);
+}
+
+void Track::push_encoded_frame(Bytes data, std::uint32_t width, std::uint32_t height,
+                               const FrameOptions& options, VideoCodec codec) {
+  push_encoded_frame(
+      EncodedFrame{data, width, height, codec, options.user_data, options.capture_time_us});
+}
+
+void Track::push_encoded_frame(const EncodedFrame& frame) {
+  client("push an encoded frame")->push_encoded_video(name_, frame);
 }
 
 // ── TrackList ────────────────────────────────────────────────────────────────
@@ -824,6 +846,12 @@ void ClientImpl::begin_set_track_bitrate(std::unique_ptr<Pending> op, const std:
 
 void ClientImpl::push_video(const std::string& name, Bytes bgra, std::uint32_t width,
                             std::uint32_t height, const Track::FrameOptions& options) {
+  prepare_video(name, bgra, width, height, options)();
+}
+
+std::function<void()> ClientImpl::prepare_video(const std::string& name, Bytes bgra,
+                                                std::uint32_t width, std::uint32_t height,
+                                                const Track::FrameOptions& options) {
   // The frame's submit stage starts here, so this SDK's own checks count.
   const auto started = std::chrono::steady_clock::now();
   const auto tracks = declared_tracks();
@@ -850,18 +878,93 @@ void ClientImpl::push_video(const std::string& name, Bytes bgra, std::uint32_t w
   }
 
   ReactorHandle* handle = require_ready_handle("push a frame into", name);
-  // The connection this frame belongs to; nothing before here can block, so a
-  // reconnect has no time to land between this and the push below.
-  const std::uint64_t generation = ffi().push_begin(handle);
-
   const std::uint8_t* tag = options.user_data.empty() ? nullptr : options.user_data.data;
   const auto tag_len = static_cast<std::uint32_t>(options.user_data.size);
+  const std::optional<std::int64_t> capture_time_us = options.capture_time_us;
 
-  const std::chrono::duration<double, std::milli> binding_ms =
-      std::chrono::steady_clock::now() - started;
-  ffi().push_video_frame_timed(handle, name.c_str(), bgra.data, width, height, tag, tag_len,
-                               options.capture_time_us ? 1 : 0, options.capture_time_us.value_or(0),
-                               binding_ms.count(), generation);
+  // `name` is copied, not borrowed, so the push owns all it holds but the frame's
+  // own bytes; see add_video_handler's own comment on that copy and the NOLINT.
+  // NOLINTNEXTLINE(bugprone-exception-escape)
+  return [handle, name, bgra, width, height, tag, tag_len, capture_time_us, started] {
+    // The connection this frame belongs to; nothing between this and the push
+    // below can block, so a reconnect has no time to land in between.
+    const std::uint64_t generation = ffi().push_begin(handle);
+    const std::chrono::duration<double, std::milli> binding_ms =
+        std::chrono::steady_clock::now() - started;
+    ffi().push_video_frame_timed(handle, name.c_str(), bgra.data, width, height, tag, tag_len,
+                                 capture_time_us ? 1 : 0, capture_time_us.value_or(0),
+                                 binding_ms.count(), generation);
+  };
+}
+
+namespace {
+
+/// The C ABI's `REACTOR_FRAME_ENCODING_*` for `codec`, or nothing for a value
+/// this build does not know (only reachable by casting one into the enum).
+std::optional<int> wire_encoding(VideoCodec codec) noexcept {
+  switch (codec) {
+    case VideoCodec::H264:
+      return REACTOR_FRAME_ENCODING_H264;
+  }
+  return std::nullopt;
+}
+
+}  // namespace
+
+void ClientImpl::push_encoded_video(const std::string& name, const EncodedFrame& frame) {
+  prepare_encoded_video(name, frame)();
+}
+
+std::function<void()> ClientImpl::prepare_encoded_video(const std::string& name,
+                                                        const EncodedFrame& frame) {
+  const auto tracks = declared_tracks();
+  const Declared* found = find_declared(tracks, name);
+  const Declared declared_track =
+      require_sendable(name, found == nullptr ? std::nullopt : std::optional<Declared>{*found},
+                       names_of(tracks), "push an encoded frame into");
+
+  if (declared_track.kind != TrackKind::Video) {
+    throw InvalidStateError{"track \"" + name +
+                            "\" carries audio; only a video track takes encoded frames."};
+  }
+  if (generation_ != Generation::Stepped) {
+    // Encoded frames exist only as a step's input; a streamed session encodes
+    // what it sends itself.
+    throw InvalidStateError{
+        "push_encoded_frame() needs a stepped session: create the client with "
+        "Options::generation = reactor::Generation::Stepped"};
+  }
+  require_published(name);
+
+  const auto encoding = wire_encoding(frame.codec);
+  if (!encoding) {
+    throw BadRequestError{"push_encoded_frame(): unknown codec " +
+                          std::to_string(static_cast<int>(frame.codec)) + "; the one known is " +
+                          std::string{to_string(VideoCodec::H264)}};
+  }
+  if (frame.data.data == nullptr || frame.data.empty()) {
+    throw BadRequestError{"push_encoded_frame(): an encoded frame needs data"};
+  }
+  if (frame.width == 0 || frame.height == 0) {
+    throw BadRequestError{"push_encoded_frame(): width and height are the decoded frame's, got " +
+                          std::to_string(frame.width) + "x" + std::to_string(frame.height)};
+  }
+  if (frame.user_data.size > std::numeric_limits<std::uint32_t>::max()) {
+    throw BadRequestError{"push_encoded_frame(): user_data is " +
+                          std::to_string(frame.user_data.size) +
+                          " bytes, more than a frame's tag can carry"};
+  }
+
+  ReactorHandle* handle = require_ready_handle("push an encoded frame into", name);
+  const std::uint8_t* tag = frame.user_data.empty() ? nullptr : frame.user_data.data;
+  const auto tag_len = static_cast<std::uint32_t>(frame.user_data.size);
+  // See prepare_video on the copy of `name` and the NOLINT.
+  // NOLINTNEXTLINE(bugprone-exception-escape)
+  return [handle, name, encoding = *encoding, frame, tag, tag_len] {
+    ffi().push_step_encoded_video_frame(
+        handle, name.c_str(), encoding, frame.data.data, frame.data.size, frame.width, frame.height,
+        tag, tag_len, frame.capture_time_us ? 1 : 0, frame.capture_time_us.value_or(0));
+  };
 }
 
 void ClientImpl::push_audio(const std::string& name, Samples pcm, std::uint32_t sample_rate,
