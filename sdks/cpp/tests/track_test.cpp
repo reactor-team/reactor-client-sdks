@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <future>
 #include <optional>
 #include <string>
 #include <thread>
@@ -43,6 +44,7 @@ class FakeSession {
     reactor::detail::Ffi filled;
     filled.abi_version = &abi_version;
     filled.create_with_adm = &create_with_adm;
+    filled.create_with_options = &create_with_options;
     filled.destroy = &destroy;
     filled.connect = &connect;
     filled.disconnect = &disconnect;
@@ -62,6 +64,8 @@ class FakeSession {
     filled.frame_delivered = &frame_delivered;
     filled.push_audio_frame = &push_audio_frame;
     filled.time_micros = &time_micros;
+    filled.push_step_encoded_video_frame = &push_step_encoded_video_frame;
+    filled.step = &step;
     return filled;
   }
 
@@ -88,6 +92,22 @@ class FakeSession {
     std::uint32_t channels = 0;
   };
   std::vector<AudioPush> audio_pushes;
+
+  /// One recorded encoded push: what reached `reactor_push_step_encoded_video_frame`.
+  struct EncodedPush {
+    std::string track;
+    int encoding = 0;
+    std::vector<std::uint8_t> data;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::string user_data;
+    std::optional<std::int64_t> capture_time_us;
+  };
+  std::vector<EncodedPush> encoded_pushes;
+
+  /// Every frame push and step, in the order the SDK made them: "raw:<track>",
+  /// "h264:<track>", "step".
+  std::vector<std::string> calls;
 
   std::vector<std::string> published;
   std::vector<std::string> unpublished;
@@ -249,6 +269,49 @@ class FakeSession {
     return reinterpret_cast<ReactorHandle*>(&self.handle_marker_);
   }
 
+  /// A stepped client is created here; it behaves as `create_with_adm`'s.
+  static ReactorHandle* create_with_options(const char* /*api_url*/, const char* /*model*/,
+                                            const char* /*jwt*/, const ReactorCallbacks* callbacks,
+                                            const char* /*options_json*/, char** /*error_out*/) {
+    auto& self = current();
+    if (callbacks != nullptr) {
+      self.callbacks_ = *callbacks;
+    }
+    return reinterpret_cast<ReactorHandle*>(&self.handle_marker_);
+  }
+
+  static void push_step_encoded_video_frame(ReactorHandle* /*handle*/, const char* track,
+                                            int encoding, const std::uint8_t* data,
+                                            std::size_t data_len, std::uint32_t width,
+                                            std::uint32_t height, const std::uint8_t* user_data,
+                                            std::uint32_t user_data_len, int has_capture_time,
+                                            std::int64_t capture_time_us) {
+    auto& self = current();
+    const std::string name = track == nullptr ? "" : track;
+    self.calls.push_back("h264:" + name);
+    self.encoded_pushes.push_back(EncodedPush{
+        name, encoding,
+        data == nullptr ? std::vector<std::uint8_t>{}
+                        : std::vector<std::uint8_t>(data, data + data_len),
+        width, height,
+        user_data == nullptr ? std::string{}
+                             : std::string{reinterpret_cast<const char*>(user_data), user_data_len},
+        has_capture_time != 0 ? std::optional<std::int64_t>{capture_time_us} : std::nullopt});
+  }
+
+  /// Refuses every step, so a test needs no result to read: what it checks is
+  /// what reached the library before the step did.
+  static void step(ReactorHandle* /*handle*/, const char* /*state_json*/,
+                   const char* /*commands_json*/, reactor_step_completion_fn completion,
+                   void* userdata) {
+    auto& self = current();
+    self.calls.emplace_back("step");
+    self.spawn([completion, userdata] {
+      completion(0, nullptr, R"({"code":"step_refused","message":"refused","operation":"step"})",
+                 userdata);
+    });
+  }
+
   static int destroy(ReactorHandle* /*handle*/) {
     current().join_all();
     return 0;
@@ -377,6 +440,7 @@ class FakeSession {
                                      std::uint32_t user_data_len, int has_capture_time,
                                      std::int64_t capture_time_us, double binding_ms,
                                      std::uint64_t generation) {
+    current().calls.push_back("raw:" + std::string{track == nullptr ? "" : track});
     current().pushes.push_back(Push{
         track == nullptr ? "" : track, width, height,
         user_data == nullptr ? std::string{}
@@ -419,13 +483,22 @@ FakeSession* FakeSession::current_instance = nullptr;
 
 /// A connected client against a fake session.
 struct Connected {
-  Connected() : override_(&table_) { client.connect().get(); }
+  explicit Connected(const reactor::Options& options = {})
+      : override_(&table_), client{"reactor/helios", reactor::Jwt{"token"}, options} {
+    client.connect().get();
+  }
 
   FakeSession session;
   reactor::detail::Ffi table_ = session.table();
   reactor::detail::FfiOverride override_;
-  reactor::Reactor client{"reactor/helios", reactor::Jwt{"token"}};
+  reactor::Reactor client;
 };
+
+reactor::Options stepped() {
+  reactor::Options options;
+  options.generation = reactor::Generation::Stepped;
+  return options;
+}
 
 }  // namespace
 
@@ -1412,4 +1485,200 @@ TEST_CASE("pause and resume validate direction for both media kinds before calli
   }
   CHECK(fixture.session.paused_calls == std::vector<std::string>{"main_video", "main_audio"});
   CHECK(fixture.session.resumed_calls == std::vector<std::string>{"main_video", "main_audio"});
+}
+
+// ── Encoded frames in a step ─────────────────────────────────────────────────
+
+namespace {
+
+/// What an H.264 IDR access unit starts with: a start code, then the NAL header.
+const std::vector<std::uint8_t> ACCESS_UNIT{0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84};
+
+}  // namespace
+
+TEST_CASE("an encoded frame reaches the step entry point with its bytes, size and encoding") {
+  Connected fixture{stepped()};
+  auto input = fixture.client.track("input_video");
+  input.publish().get();
+
+  const std::vector<std::uint8_t> tag{'t', 'a', 'g'};
+  reactor::Track::FrameOptions options;
+  options.user_data = as_bytes(tag);
+  options.capture_time_us = 9;
+  input.push_encoded_frame(as_bytes(ACCESS_UNIT), 1280, 720, options);
+
+  REQUIRE(fixture.session.encoded_pushes.size() == 1);
+  const auto& push = fixture.session.encoded_pushes.front();
+  CHECK(push.track == "input_video");
+  CHECK(push.encoding == REACTOR_FRAME_ENCODING_H264);
+  CHECK(push.data == ACCESS_UNIT);
+  CHECK(push.width == 1280);
+  CHECK(push.height == 720);
+  CHECK(push.user_data == "tag");
+  CHECK(push.capture_time_us == std::int64_t{9});
+  // Encoded, not raw: nothing reached the BGRA entry point.
+  CHECK(fixture.session.pushes.empty());
+}
+
+TEST_CASE("an EncodedFrame defaults to H.264, untagged and unstamped") {
+  Connected fixture{stepped()};
+  auto input = fixture.client.track("input_video");
+  input.publish().get();
+
+  input.push_encoded_frame(reactor::EncodedFrame{as_bytes(ACCESS_UNIT), 4, 2});
+
+  REQUIRE(fixture.session.encoded_pushes.size() == 1);
+  const auto& push = fixture.session.encoded_pushes.front();
+  CHECK(push.encoding == REACTOR_FRAME_ENCODING_H264);
+  CHECK(push.width == 4);
+  CHECK(push.height == 2);
+  CHECK(push.user_data.empty());
+  CHECK_FALSE(push.capture_time_us.has_value());
+  CHECK(reactor::to_string(reactor::VideoCodec::H264) == "h264");
+}
+
+TEST_CASE("an encoded frame needs a stepped session") {
+  Connected fixture;
+  auto input = fixture.client.track("input_video");
+  input.publish().get();
+
+  try {
+    input.push_encoded_frame(as_bytes(ACCESS_UNIT), 4, 2);
+    FAIL("a streamed client must refuse an encoded frame");
+  } catch (const reactor::InvalidStateError& error) {
+    CHECK(std::string{error.what()}.find("stepped session") != std::string::npos);
+  }
+  CHECK(fixture.session.encoded_pushes.empty());
+}
+
+TEST_CASE("an encoded frame goes only into a published sendonly video track") {
+  Connected fixture{stepped()};
+  fixture.session.redeclare(R"([{"name":"input_video","kind":"video","direction":"sendonly"},)"
+                            R"({"name":"input_audio","kind":"audio","direction":"sendonly"},)"
+                            R"({"name":"main_video","kind":"video","direction":"recvonly"}])");
+  std::string expected;
+
+  SECTION("an audio track") {
+    fixture.client.track("input_audio").publish().get();
+    try {
+      fixture.client.track("input_audio").push_encoded_frame(as_bytes(ACCESS_UNIT), 4, 2);
+      FAIL("an audio track must refuse an encoded frame");
+    } catch (const reactor::InvalidStateError& error) {
+      expected = "only a video track";
+      CHECK(std::string{error.what()}.find(expected) != std::string::npos);
+    }
+  }
+  SECTION("a recvonly track") {
+    try {
+      fixture.client.track("main_video").push_encoded_frame(as_bytes(ACCESS_UNIT), 4, 2);
+      FAIL("a recvonly track must refuse an encoded frame");
+    } catch (const reactor::InvalidStateError& error) {
+      expected = "recvonly";
+      CHECK(std::string{error.what()}.find(expected) != std::string::npos);
+    }
+  }
+  SECTION("before publish") {
+    try {
+      fixture.client.track("input_video").push_encoded_frame(as_bytes(ACCESS_UNIT), 4, 2);
+      FAIL("an unpublished track must refuse an encoded frame");
+    } catch (const reactor::InvalidStateError& error) {
+      expected = "not published";
+      CHECK(std::string{error.what()}.find(expected) != std::string::npos);
+    }
+  }
+
+  CHECK_FALSE(expected.empty());
+  CHECK(fixture.session.encoded_pushes.empty());
+}
+
+TEST_CASE("a malformed encoded frame is refused before it reaches the library") {
+  Connected fixture{stepped()};
+  auto input = fixture.client.track("input_video");
+  input.publish().get();
+
+  reactor::EncodedFrame frame{as_bytes(ACCESS_UNIT), 4, 2};
+  std::string expected;
+  SECTION("no data") {
+    frame.data = reactor::Bytes{};
+    expected = "needs data";
+  }
+  SECTION("zero width") {
+    frame.width = 0;
+    expected = "decoded frame";
+  }
+  SECTION("zero height") {
+    frame.height = 0;
+    expected = "decoded frame";
+  }
+  SECTION("a codec this build does not know") {
+    frame.codec = static_cast<reactor::VideoCodec>(9);
+    expected = "unknown codec";
+  }
+
+  try {
+    input.push_encoded_frame(frame);
+    FAIL("a malformed encoded frame must be refused");
+  } catch (const reactor::BadRequestError& error) {
+    CHECK(std::string{error.what()}.find(expected) != std::string::npos);
+  }
+  CHECK(fixture.session.encoded_pushes.empty());
+}
+
+TEST_CASE("a step's media is pushed in order, after the state is checked and before the step") {
+  Connected fixture{stepped()};
+  auto input = fixture.client.track("input_video");
+  input.publish().get();
+  const auto raw = bgra_frame(2, 2);
+  const std::vector<std::uint8_t> delta{0x00, 0x00, 0x01, 0x41, 0x9A};
+
+  // Pushed ahead of the step: the step's own media goes after it.
+  input.push_frame(as_bytes(raw), 2, 2);
+
+  reactor::StepMedia media;
+  media["input_video"].push_back(reactor::EncodedFrame{as_bytes(ACCESS_UNIT), 2, 2});
+  media["input_video"].push_back(reactor::EncodedFrame{as_bytes(delta), 2, 2});
+  media["input_video"].push_back(reactor::RawVideoFrame{as_bytes(raw), 2, 2});
+
+  // The fake refuses every step; what matters is what reached it first.
+  CHECK_THROWS_AS(fixture.client.step(nullptr, {}, media).get(), reactor::StepRefusedError);
+
+  CHECK(fixture.session.calls == std::vector<std::string>{"raw:input_video", "h264:input_video",
+                                                          "h264:input_video", "raw:input_video",
+                                                          "step"});
+  REQUIRE(fixture.session.encoded_pushes.size() == 2);
+  CHECK(fixture.session.encoded_pushes[0].data == ACCESS_UNIT);
+  CHECK(fixture.session.encoded_pushes[1].data == delta);
+}
+
+TEST_CASE("a step refused for its state or commands pushes none of its media") {
+  Connected fixture{stepped()};
+  auto input = fixture.client.track("input_video");
+  input.publish().get();
+
+  reactor::StepMedia media;
+  media["input_video"].push_back(reactor::EncodedFrame{as_bytes(ACCESS_UNIT), 2, 2});
+
+  std::future<reactor::StepResult> future;
+  SECTION("state that is not an object") {
+    future = fixture.client.step(reactor::Json::array({1}), {}, media);
+  }
+  SECTION("a command with no name") { future = fixture.client.step(nullptr, {{""}}, media); }
+
+  CHECK_THROWS_AS(future.get(), reactor::BadRequestError);
+  CHECK(fixture.session.calls.empty());
+}
+
+TEST_CASE("a step whose media is refused fails, and is not sent") {
+  Connected fixture{stepped()};
+  fixture.session.redeclare(R"([{"name":"input_video","kind":"video","direction":"sendonly"},)"
+                            R"({"name":"main_video","kind":"video","direction":"recvonly"}])");
+  fixture.client.track("input_video").publish().get();
+
+  reactor::StepMedia media;
+  media["input_video"].push_back(reactor::EncodedFrame{as_bytes(ACCESS_UNIT), 2, 2});
+  media["main_video"].push_back(reactor::EncodedFrame{as_bytes(ACCESS_UNIT), 2, 2});
+
+  CHECK_THROWS_AS(fixture.client.step(nullptr, {}, media).get(), reactor::InvalidStateError);
+  // The frame pushed before the refused one stays buffered for the next step.
+  CHECK(fixture.session.calls == std::vector<std::string>{"h264:input_video"});
 }
