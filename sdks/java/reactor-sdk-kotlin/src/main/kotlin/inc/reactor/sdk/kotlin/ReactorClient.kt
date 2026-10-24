@@ -212,8 +212,10 @@ public class ReactorClient(
      * [media] gives the step input frames of its own, by input track name, after the ones pushed to
      * that track since the previous step: an [inc.reactor.sdk.EncodedFrame], which goes as it is
      * and is decoded by the runtime, or a raw [StepInput.video] or [StepInput.audio]. It is the
-     * same as pushing them just before the step, so each track must be published first; they are
-     * pushed only once [state] is known to be well formed.
+     * same as pushing them just before the step, so each track must be published first. They go all
+     * or nothing: none is pushed until [state] is known to be well formed and every frame has been
+     * checked, so a bad track or frame anywhere in [media] fails the step before any of it is
+     * pushed, leaving the buffer as it was.
      *
      * ```kotlin
      * val frames = window.map { EncodedFrame.h264(it, 1280, 720) } // keyframe first
