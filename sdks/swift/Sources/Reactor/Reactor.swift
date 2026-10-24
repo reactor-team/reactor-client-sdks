@@ -136,7 +136,7 @@ public final class Reactor: @unchecked Sendable {
     /// - Parameters:
     ///   - generation: how the session generates. ``Generation/streamed``, the
     ///     default, generates continuously over the model's media tracks;
-    ///     ``Generation/stepped`` generates one ``step(state:commands:)`` at a
+    ///     ``Generation/stepped`` generates one ``step(state:commands:media:)`` at a
     ///     time, and ``connect(sessionID:connectionID:)`` then fails with
     ///     ``ReactorError/Code/generationModeMismatch`` when the runtime does not
     ///     start the session that way — as one without stepped generation will

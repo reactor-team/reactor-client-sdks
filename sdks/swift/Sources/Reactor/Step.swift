@@ -11,7 +11,7 @@ public enum Generation: String, Sendable, Hashable, CaseIterable {
     /// before the choice existed, and the default.
     case streamed
 
-    /// One ``Reactor/step(state:commands:)`` at a time. Input tracks buffer
+    /// One ``Reactor/step(state:commands:media:)`` at a time. Input tracks buffer
     /// what is pushed into them for the next step, and each step answers with
     /// the frames the model produced rather than streaming them.
     case stepped
@@ -127,11 +127,11 @@ public struct StepResult: Sendable {
     /// Why the step failed, when it ran and the model reported a failure;
     /// `nil` when it worked.
     ///
-    /// A failed step is still a result — ``Reactor/step(state:commands:)``
+    /// A failed step is still a result — ``Reactor/step(state:commands:media:)``
     /// returns it rather than throwing. Only a step that never ran throws.
     public let error: String?
 
-    /// Assemble a result — for tests and previews; ``Reactor/step(state:commands:)``
+    /// Assemble a result — for tests and previews; ``Reactor/step(state:commands:media:)``
     /// is where real ones come from.
     public init(
         step: UInt64,
@@ -292,4 +292,92 @@ public struct StepFrame: Sendable, Hashable {
         }
         return total
     }
+}
+
+// MARK: - Encoded input
+
+/// An encoded video frame for a step: one H.264 access unit, its bytes as they
+/// are.
+///
+/// `width` and `height` are the frame it decodes to. Push it with
+/// ``Track/pushEncodedFrame(_:)``, or give it to
+/// ``Reactor/step(state:commands:media:)`` as ``StepMediaFrame/encoded(_:)``.
+/// The runtime decodes a track's encoded frames of one step as one stream,
+/// before the step runs, and the model reads RGB frames as if they had been
+/// pushed raw. So give them in decode order, starting at a keyframe — the
+/// access units from the last IDR frame to the frame the step is about:
+///
+/// ```swift
+/// let frames = window.map { EncodedFrame($0, width: 1280, height: 720) }
+/// let result = try await reactor.step(media: ["webcam": frames.map(StepMediaFrame.encoded)])
+/// ```
+///
+/// A step whose frames do not decode, or that does not start at a keyframe, is
+/// refused with ``ReactorError/Code/stepRefused``.
+public struct EncodedFrame: Sendable, Hashable {
+
+    /// The codecs an encoded step frame can carry.
+    public enum Codec: String, Sendable, Hashable, CaseIterable {
+
+        /// H.264, one access unit per frame, in Annex B byte-stream format.
+        case h264
+    }
+
+    /// The encoded bytes: one access unit, sent as they are.
+    public let data: Data
+
+    /// The width of the frame this decodes to, in pixels.
+    public let width: UInt32
+
+    /// The height of the frame this decodes to, in pixels.
+    public let height: UInt32
+
+    /// What `data` is encoded with.
+    public let codec: Codec
+
+    /// Bytes to tag the decoded frame with, as for
+    /// ``Track/pushFrame(_:width:height:userData:captureTimeUs:)``.
+    public let userData: Data?
+
+    /// When this frame was captured, read from ``Reactor/timeMicros()``, or
+    /// `nil` to have it stamped as it is pushed.
+    public let captureTimeUs: Int64?
+
+    /// An encoded frame of `width` by `height` once decoded.
+    public init(
+        _ data: Data,
+        width: UInt32,
+        height: UInt32,
+        codec: Codec = .h264,
+        userData: Data? = nil,
+        captureTimeUs: Int64? = nil
+    ) {
+        self.data = data
+        self.width = width
+        self.height = height
+        self.codec = codec
+        self.userData = userData
+        self.captureTimeUs = captureTimeUs
+    }
+}
+
+/// One frame a step carries for an input track, in
+/// ``Reactor/step(state:commands:media:)``'s `media`.
+///
+/// Each case is what the matching push takes, and is pushed exactly as that
+/// push would push it, just before the step goes out.
+public enum StepMediaFrame: Sendable, Hashable {
+
+    /// BGRA pixels, as ``Track/pushFrame(_:width:height:userData:captureTimeUs:)``
+    /// takes them.
+    case video(
+        Data, width: UInt32, height: UInt32, userData: Data? = nil, captureTimeUs: Int64? = nil)
+
+    /// Interleaved 16-bit PCM, as ``Track/pushFrame(_:sampleRate:channels:)``
+    /// takes it.
+    case audio([Int16], sampleRate: UInt32 = 48000, channels: UInt32 = 1)
+
+    /// An encoded video frame, sent as it is and decoded by the runtime, as
+    /// ``Track/pushEncodedFrame(_:)`` takes it.
+    case encoded(EncodedFrame)
 }

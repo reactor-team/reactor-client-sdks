@@ -42,10 +42,30 @@ extension Reactor {
     /// }
     /// ```
     ///
+    /// `media` gives the step frames of its own, by input track name, after the
+    /// ones pushed to that track since the previous step: raw frames as
+    /// ``Track/pushFrame(_:width:height:userData:captureTimeUs:)`` and
+    /// ``Track/pushFrame(_:sampleRate:channels:)`` take them, or
+    /// ``EncodedFrame``s, which go as they are and are decoded by the runtime
+    /// before the step runs:
+    ///
+    /// ```swift
+    /// let frames = window.map { EncodedFrame($0, width: 1280, height: 720) }
+    /// let result = try await reactor.step(media: ["webcam": frames.map(StepMediaFrame.encoded)])
+    /// ```
+    ///
+    /// It is the same as pushing them just before the step, so each track must
+    /// be published first. They are pushed only once `state` and `commands` are
+    /// known to be well formed, so a step refused for those leaves the buffer
+    /// as it was; a frame refused while pushing throws its push's error, the
+    /// frames pushed before it stay buffered, and the step is not sent.
+    ///
     /// - Parameters:
     ///   - state: the model's state fields to set before the commands run, or
     ///     `nil` to leave the state as it is. The model keeps it until changed.
     ///   - commands: commands to run after the state, in order.
+    ///   - media: frames for this step, by input track name, each track's in
+    ///     order. Tracks are pushed in the order of their names.
     ///
     /// - Throws: ``ReactorError``:
     ///   - ``ReactorError/Code/stepRefused`` — the runtime or the model turned
@@ -69,6 +89,9 @@ extension Reactor {
     ///   - ``ReactorError/Code/invalidState`` — not a stepped client, or not a
     ///     ready session.
     ///   - ``ReactorError/Code/badRequest`` — a command with an empty name.
+    ///   - ``ReactorError/Code/notFound`` — `media` names a track the session
+    ///     does not declare.
+    ///   - Any error of the push one of `media`'s frames goes through.
     ///
     ///   A step that ran but that the model reported as failed does not throw:
     ///   it returns a result whose ``StepResult/error`` says why.
@@ -79,7 +102,8 @@ extension Reactor {
     ///   one that could not be sent drops them too, and nothing is resent.
     public func step(
         state: [String: JSONValue]? = nil,
-        commands: [StepCommand] = []
+        commands: [StepCommand] = [],
+        media: [String: [StepMediaFrame]] = [:]
     ) async throws -> StepResult {
         guard generation == .stepped else {
             throw ReactorError(
@@ -94,6 +118,9 @@ extension Reactor {
 
         let stateJSON = try state.map { try encodeJSON(JSONValue.object($0), operation: "step") }
         let commandsJSON = try encodeJSON(commands, operation: "step")
+        // Pushed only once the state and commands are known to be well formed, so
+        // a step refused for those leaves the buffer as the caller left it.
+        try pushStepMedia(media)
 
         return try await perform(
             PendingStep(owner: self, ffi: ffi), completion: stepCompletionTrampoline
@@ -106,8 +133,20 @@ extension Reactor {
         }
     }
 
+    /// Push `media`'s frames, track by track, as ``step(state:commands:media:)``
+    /// documents. Sorted by name, so that what reaches the buffer — and what its
+    /// limit drops first — does not depend on a dictionary's order.
+    func pushStepMedia(_ media: [String: [StepMediaFrame]]) throws {
+        for (name, frames) in media.sorted(by: { $0.key < $1.key }) {
+            let track = try track(name)
+            for frame in frames {
+                try track.push(frame)
+            }
+        }
+    }
+
     /// Drop every frame pushed since the last step, so the next
-    /// ``step(state:commands:)`` carries only what is pushed after this. A
+    /// ``step(state:commands:media:)`` carries only what is pushed after this. A
     /// no-op on a streamed or closed client.
     public func clearStepInputs() {
         guard generation == .stepped else { return }

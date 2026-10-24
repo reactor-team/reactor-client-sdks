@@ -74,6 +74,35 @@ per second for video, samples per second for audio, `0` when unspecified. The
 result is copied out of the library once and the native copy freed at once, so a
 `StepResult` can be kept and passed around freely.
 
+### Encoded video in a step
+
+A step can carry video already encoded as H.264, its bytes as they are: much
+smaller than raw pixels, and no base64. The runtime decodes a track's encoded
+frames before the step runs, so the model reads RGB frames exactly as if they had
+been pushed raw. Give the frames of one step in decode order, starting at a
+keyframe — the access units (Annex B) from the last IDR frame to the frame the
+step is about:
+
+```swift
+let frames = window.map { EncodedFrame($0, width: 1280, height: 720) }
+let result = try await reactor.step(media: ["webcam": frames.map(StepMediaFrame.encoded)])
+
+// The same, pushed ahead of the step:
+for unit in window {
+    try camera.pushEncodedFrame(unit, width: 1280, height: 720)
+}
+let same = try await reactor.step()
+```
+
+`width` and `height` are the frame each one decodes to. `media` takes raw frames
+too (`.video(pixels, width:height:)`, `.audio(samples)`), and its frames go after
+the ones pushed to the same track since the previous step; they are pushed only
+once the state and commands are well formed. `pushEncodedFrame` needs a stepped
+client and a published sendonly video track, and refuses an empty frame or a
+zero size. A step whose frames do not decode, or that does not start at a
+keyframe, throws `ReactorError.stepRefused`, naming the frame in `entry`. A
+runtime that predates encoded frames refuses them the same way.
+
 A step that ran but that the model reported as failed returns normally, with
 `result.error` saying why. A step the runtime refuses throws
 `ReactorError.stepRefused`; one the session cannot take yet throws
