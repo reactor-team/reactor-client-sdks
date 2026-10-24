@@ -24,7 +24,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   `StepRefusedError`. `media` takes what `pushFrame()` takes too, and its
   frames go after the ones already pushed to the track, once `state` and
   `commands` are known to be well formed, so a step refused for those pushes
-  none of them. New types `EncodedFrame` and `EncodedVideoCodec`.
+  none of them, nor does one with a bad track or frame anywhere in `media`.
+  New types `EncodedFrame` and `EncodedVideoCodec`.
 
 ### Fixed
 

@@ -817,16 +817,61 @@ describe('Reactor.step media', () => {
     expect(client.stepCalls).toEqual([]);
   });
 
-  it('rejects before the step goes out when a frame is refused, keeping the ones before it', async () => {
+  it.each([
+    ['a later encoded frame', { camera: [idr, { ...p, width: 0 }, p] }, 'decoded frame'],
+    ['a later raw frame of the wrong size', { camera: [idr, { data: new Uint8Array(3), width: 1, height: 1 }] }, 'bytes is not'],
+    ['a later audio frame', { camera: [idr], mic: [{ samples: new Int16Array(3), sampleRate: 16000, channels: 2 }] }, 'channels'],
+    ['a later track not published', { camera: [idr], speaker: [p] }, "publishTrack('speaker') first"],
+  ])('pushes none of its media when %s is refused, nor sends the step', async (_, media, message) => {
     const { reactor, client } = await steppedWithInputs();
 
     const error = await reactor
-      .step({ media: { camera: [idr, { ...p, width: 0 }, p] } })
+      .step({ media: media as unknown as Record<string, never[]> })
       .catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(InvalidStateError);
-    expect(client.pushEncodedVideoFrameCalls.map((call) => call.data)).toEqual([idr.data]);
+    expect((error as ReactorError).message).toContain(message);
+    expect(client.pushEncodedVideoFrameCalls).toEqual([]);
+    expect(client.pushVideoFrameCalls).toEqual([]);
+    expect(client.pushAudioFrameCalls).toEqual([]);
     expect(client.stepCalls).toEqual([]);
+  });
+
+  it.each([
+    ['not declared', 'speaker', 'declares no track'],
+    ['not sendonly', 'main_video', 'recvonly video'],
+    ['not video', 'mic', 'only a sendonly video track'],
+  ])('pushes none of its media when a later track is %s', async (_, name, message) => {
+    const { reactor, client } = await steppedWithInputs();
+
+    client.tracksResult = [
+      { name: 'camera', kind: 'video', direction: 'sendonly' },
+      { name: 'mic', kind: 'audio', direction: 'sendonly' },
+      { name: 'main_video', kind: 'video', direction: 'recvonly' },
+    ];
+    await reactor.publishTrack(name);
+
+    const error = await reactor
+      .step({ media: { camera: [idr, { data: new Uint8Array(4), width: 1, height: 1 }], [name]: [p] } })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(InvalidStateError);
+    expect((error as ReactorError).message).toContain(message);
+    expect(client.pushEncodedVideoFrameCalls).toEqual([]);
+    expect(client.pushVideoFrameCalls).toEqual([]);
+    expect(client.stepCalls).toEqual([]);
+  });
+
+  it('keeps the frames pushed before the step when its media is refused', async () => {
+    const { reactor, client } = await steppedWithInputs();
+
+    await reactor.pushEncodedFrame('camera', idr);
+    await expect(reactor.step({ media: { camera: [p, { ...p, codec: 'vp9' as 'h264' }] } })).rejects.toThrow(
+      'unknown codec',
+    );
+
+    expect(client.pushEncodedVideoFrameCalls.map((call) => call.data)).toEqual([idr.data]);
+    expect(client.clearStepInputsCalls).toBe(0);
   });
 
   it('needs each media track published first', async () => {
