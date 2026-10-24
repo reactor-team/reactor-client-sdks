@@ -50,7 +50,9 @@ public final class inc/reactor/sdk/kotlin/ReactorClient : java/lang/AutoCloseabl
 	public final fun sendCommand (Ljava/lang/String;Linc/reactor/sdk/JsonValue;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static synthetic fun sendCommand$default (Linc/reactor/sdk/kotlin/ReactorClient;Ljava/lang/String;Linc/reactor/sdk/JsonValue;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public final fun setBitrate (IIILkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public final fun step (Linc/reactor/sdk/JsonValue;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun step (Linc/reactor/sdk/JsonValue;Ljava/util/List;Ljava/util/Map;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final synthetic fun step (Linc/reactor/sdk/JsonValue;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun step$default (Linc/reactor/sdk/kotlin/ReactorClient;Linc/reactor/sdk/JsonValue;Ljava/util/List;Ljava/util/Map;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public static synthetic fun step$default (Linc/reactor/sdk/kotlin/ReactorClient;Linc/reactor/sdk/JsonValue;Ljava/util/List;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public fun toString ()Ljava/lang/String;
 	public final fun track (Ljava/lang/String;)Linc/reactor/sdk/kotlin/ReactorTrack;
@@ -81,6 +83,9 @@ public final class inc/reactor/sdk/kotlin/ReactorTrack {
 	public final fun onVideoFrame (Lkotlin/jvm/functions/Function1;)Linc/reactor/sdk/Subscription;
 	public final fun pause (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun publish (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun pushEncodedFrame (Linc/reactor/sdk/EncodedFrame;)V
+	public final fun pushEncodedFrame ([BIILinc/reactor/sdk/VideoCodec;[BLjava/lang/Long;)V
+	public static synthetic fun pushEncodedFrame$default (Linc/reactor/sdk/kotlin/ReactorTrack;[BIILinc/reactor/sdk/VideoCodec;[BLjava/lang/Long;ILjava/lang/Object;)V
 	public final fun pushFrame ([BII)V
 	public final fun pushFrame ([SII)V
 	public final fun resume (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;

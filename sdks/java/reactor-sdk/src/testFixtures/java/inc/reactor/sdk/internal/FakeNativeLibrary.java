@@ -154,6 +154,10 @@ public final class FakeNativeLibrary implements AutoCloseable {
         bind("reactor_create_with_options", Ffi.Symbol.CREATE_WITH_OPTIONS.descriptor(), "createWithOptions");
         bind("reactor_step", Ffi.Symbol.STEP.descriptor(), "step");
         bind("reactor_clear_step_inputs", Ffi.Symbol.CLEAR_STEP_INPUTS.descriptor(), "clearStepInputs");
+        bind(
+                "reactor_push_step_encoded_video_frame",
+                Ffi.Symbol.PUSH_STEP_ENCODED_VIDEO_FRAME.descriptor(),
+                "pushStepEncodedVideoFrame");
         bind("reactor_step_result_step", Ffi.Symbol.STEP_RESULT_STEP.descriptor(), "stepResultStep");
         bind("reactor_step_result_elapsed", Ffi.Symbol.STEP_RESULT_ELAPSED.descriptor(), "stepResultElapsed");
         bind("reactor_step_result_error", Ffi.Symbol.STEP_RESULT_ERROR.descriptor(), "stepResultError");
@@ -462,6 +466,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
             long generation) {
         lastBindingMs = bindingMs;
         lastGeneration = generation;
+        pushOrder.add(readString(name));
         pushVideoFrame(handle, name, data, width, height);
     }
 
@@ -844,6 +849,49 @@ public final class FakeNativeLibrary implements AutoCloseable {
 
     private void clearStepInputs(MemorySegment handle) {
         clearStepInputsCalls++;
+    }
+
+    /** One {@code reactor_push_step_encoded_video_frame} call, its buffers copied out. */
+    public record EncodedPush(
+            String track,
+            int encoding,
+            byte[] data,
+            int width,
+            int height,
+            byte @Nullable [] userData,
+            boolean hasCaptureTime,
+            long captureTimeUs) {}
+
+    /**
+     * Every frame push that reached the library since the client was opened, in order: an {@link
+     * EncodedPush}, or the track name of a raw video push.
+     */
+    public final List<Object> pushOrder = java.util.Collections.synchronizedList(new ArrayList<>());
+
+    @SuppressWarnings("restricted") // reinterpret: the lengths are the ones the binding passed
+    private void pushStepEncodedVideoFrame(
+            MemorySegment handle,
+            MemorySegment name,
+            int encoding,
+            MemorySegment data,
+            long dataLength,
+            int width,
+            int height,
+            MemorySegment userData,
+            int userDataLength,
+            int hasCaptureTime,
+            long captureTimeUs) {
+        pushOrder.add(new EncodedPush(
+                readString(name),
+                encoding,
+                data.reinterpret(dataLength).toArray(java.lang.foreign.ValueLayout.JAVA_BYTE),
+                width,
+                height,
+                userData.equals(MemorySegment.NULL)
+                        ? null
+                        : userData.reinterpret(userDataLength).toArray(java.lang.foreign.ValueLayout.JAVA_BYTE),
+                hasCaptureTime != 0,
+                captureTimeUs));
     }
 
     /** Whether a step is waiting to be settled. */

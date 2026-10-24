@@ -12,6 +12,7 @@ import inc.reactor.sdk.Reactor
 import inc.reactor.sdk.ReactorOptions
 import inc.reactor.sdk.Stats
 import inc.reactor.sdk.StepCommand
+import inc.reactor.sdk.StepInput
 import inc.reactor.sdk.StepResult
 import java.nio.file.Path
 import kotlinx.coroutines.future.await
@@ -208,11 +209,23 @@ public class ReactorClient(
      * result.track("main_video").frames().forEach { show(it.data(), it.shape()) }
      * ```
      *
+     * [media] gives the step input frames of its own, by input track name, after the ones pushed to
+     * that track since the previous step: an [inc.reactor.sdk.EncodedFrame], which goes as it is
+     * and is decoded by the runtime, or a raw [StepInput.video] or [StepInput.audio]. It is the
+     * same as pushing them just before the step, so each track must be published first; they are
+     * pushed only once [state] is known to be well formed.
+     *
+     * ```kotlin
+     * val frames = window.map { EncodedFrame.h264(it, 1280, 720) } // keyframe first
+     * val result = client.step(media = mapOf("webcam" to frames))
+     * ```
+     *
      * Cancelling the await does not recall the step: once sent, the runtime runs it and its input
      * frames are spent.
      *
      * @param state the model's state fields as a JSON object, or null to change none
      * @param commands what to run after the state, in order
+     * @param media input frames by track name
      * @return the step's result, copied onto the heap
      * @throws inc.reactor.sdk.StepRefusedException when the runtime or the model turns the step
      *   down; nothing it carried was applied, and its `entry()` names the part at fault
@@ -227,6 +240,16 @@ public class ReactorClient(
      * @throws inc.reactor.sdk.MessageTooLargeException when the request does not; nothing was sent,
      *   and the step's buffered input frames are dropped with it
      */
+    public suspend fun step(
+        state: JsonValue? = null,
+        commands: List<StepCommand> = emptyList(),
+        media: Map<String, List<StepInput>> = emptyMap(),
+    ): StepResult = java.step(state, commands, media).await()
+
+    // The 1.3.0 signature, kept in the bytecode so a caller compiled against it still links:
+    // adding `media` changed the JVM signature of `step` and of its defaults stub. Hidden, so it
+    // takes no part in overload resolution and `step()` still means the one above.
+    @Deprecated("Kept for binary compatibility", level = DeprecationLevel.HIDDEN)
     public suspend fun step(
         state: JsonValue? = null,
         commands: List<StepCommand> = emptyList(),

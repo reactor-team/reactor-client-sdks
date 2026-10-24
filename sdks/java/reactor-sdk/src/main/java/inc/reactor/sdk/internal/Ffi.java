@@ -173,14 +173,34 @@ public final class Ffi {
         STEP_RESULT_FRAME_CAPTURE_TIME_US(
                 "reactor_step_result_frame_capture_time_us",
                 FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS)),
-        STEP_RESULT_FREE("reactor_step_result_free", FunctionDescriptor.ofVoid(ADDRESS));
+        STEP_RESULT_FREE("reactor_step_result_free", FunctionDescriptor.ofVoid(ADDRESS)),
+
+        // ── Encoded step frames ─────────────────────────────────────────────
+        //
+        // Added after stepped generation and, like it, without an ABI bump — but bound optionally:
+        // a library that predates it still loads, and Track.pushEncodedFrame says so at the call,
+        // naming the rebuild. Nothing else in the SDK depends on it, so refusing the whole library
+        // for its absence would take every other feature down with one nobody may be using.
+
+        PUSH_STEP_ENCODED_VIDEO_FRAME(
+                "reactor_push_step_encoded_video_frame",
+                FunctionDescriptor.ofVoid(
+                        ADDRESS, ADDRESS, JAVA_INT, ADDRESS, SIZE_T, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT,
+                        JAVA_LONG),
+                true);
 
         private final String cName;
         private final FunctionDescriptor descriptor;
+        private final boolean optional;
 
         Symbol(String cName, FunctionDescriptor descriptor) {
+            this(cName, descriptor, false);
+        }
+
+        Symbol(String cName, FunctionDescriptor descriptor, boolean optional) {
             this.cName = cName;
             this.descriptor = descriptor;
+            this.optional = optional;
         }
 
         /** The symbol's name in the native library. */
@@ -192,7 +212,18 @@ public final class Ffi {
         public FunctionDescriptor descriptor() {
             return descriptor;
         }
+
+        /**
+         * Whether a library without this symbol still loads. Ask {@link Ffi#has} before calling
+         * one.
+         */
+        public boolean optional() {
+            return optional;
+        }
     }
+
+    /** {@code REACTOR_FRAME_ENCODING_H264}: a step frame's {@code encoding} for one H.264 access unit. */
+    public static final int FRAME_ENCODING_H264 = 2;
 
     /**
      * The signatures the FFI calls back through. Every one returns void, and {@link Upcalls} is the
@@ -292,6 +323,9 @@ public final class Ffi {
         Linker linker = nativeLinker();
         Map<Symbol, MethodHandle> bound = new EnumMap<>(Symbol.class);
         for (Symbol symbol : Symbol.values()) {
+            if (symbol.optional() && lookup.find(symbol.cName()).isEmpty()) {
+                continue;
+            }
             MemorySegment address = lookup.find(symbol.cName())
                     .orElseThrow(() ->
                             new AbiMismatchException("the native library exports no symbol named " + symbol.cName()
@@ -308,10 +342,22 @@ public final class Ffi {
      * The handle for a symbol.
      *
      * @param symbol which function
-     * @return its method handle, never {@code null}
+     * @return its method handle, never {@code null} for a required symbol. An {@link
+     *     Symbol#optional() optional} one the library lacks has none: check {@link #has} first
      */
     public MethodHandle handle(Symbol symbol) {
         return handles.get(symbol);
+    }
+
+    /**
+     * Whether the library exports a symbol. Always true for a required one, which {@link #open}
+     * refuses to load without.
+     *
+     * @param symbol which function
+     * @return whether it was bound
+     */
+    public boolean has(Symbol symbol) {
+        return handles.containsKey(symbol);
     }
 
     private void checkAbiVersion() {

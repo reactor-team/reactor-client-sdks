@@ -208,6 +208,42 @@ To pass a file into a step, upload it first (`uploadFile` / `uploadBytes`) and p
 the reference in a command's arguments or in the value of an upload-typed state
 field, exactly as for a normal command.
 
+### Encoded video in a step
+
+A step can carry video already encoded as H.264, its bytes as they are: much
+smaller than raw pixels. The runtime decodes a track's encoded frames before the
+step runs, so the model reads RGB frames exactly as if they had been pushed raw.
+Give the frames of one step in decode order, starting at a keyframe — the access
+units (Annex B) from the last keyframe to the frame the step is about:
+
+```java
+List<EncodedFrame> frames = window.stream()
+        .map(accessUnit -> EncodedFrame.h264(accessUnit, 1280, 720))
+        .toList();
+StepResult result = reactor.step(null, List.of(), Map.of("webcam", frames)).join();
+
+// The same, pushed ahead of the step:
+for (byte[] accessUnit : window) {
+    camera.pushEncodedFrame(accessUnit, 1280, 720);
+}
+StepResult same = reactor.step().join();
+```
+
+```kotlin
+val result = client.step(media = mapOf("webcam" to window.map { EncodedFrame.h264(it, 1280, 720) }))
+```
+
+`width` and `height` are the frame each one decodes to; `EncodedFrame.builder(...)`
+adds a tag (`userData`) and a capture time. A step's media takes raw frames too
+(`StepInput.video(bgra, w, h)`, `StepInput.audio(pcm, rate, channels)`), and its
+frames go after the ones pushed to the same track since the previous step. They
+are pushed only once the state is known to be well formed, so a step refused for
+its state leaves the buffer untouched. A step whose frames do not decode, or that
+does not start at a keyframe, fails with `StepRefusedException`, naming the frame
+in `entry()`; a runtime that predates encoded frames refuses them the same way.
+Needs a `libreactor_ffi` that exports `reactor_push_step_encoded_video_frame`;
+an older one still loads, and `pushEncodedFrame` says to rebuild it.
+
 A step that ran but that the model reported as failed is not an exception: it
 completes with `result.error()` saying why.
 

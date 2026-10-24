@@ -365,9 +365,46 @@ public final class Reactor implements AutoCloseable {
      * @param state the model's state fields as a JSON object, or {@code null} to change none
      * @param commands what to run after the state, in order; empty or {@code null} for none
      * @return the step's result, copied onto the heap once and safe to keep
+     * @see #step(JsonValue, java.util.List, java.util.Map) to give the step input frames of its own
      */
     public CompletableFuture<StepResult> step(
             @Nullable JsonValue state, java.util.@Nullable List<StepCommand> commands) {
+        return step(state, commands, null);
+    }
+
+    /**
+     * Runs one step with input frames of its own, by input track name.
+     *
+     * <p>Each track's frames go after the ones pushed to that track since the previous step, in
+     * list order: an {@link EncodedFrame}, which goes as it is and is decoded by the runtime, or a
+     * raw frame — {@link StepInput#video} or {@link StepInput#audio} — as {@link Track#pushFrame}
+     * takes it. It is the same as pushing them just before the step, so each track must be
+     * published first.
+     *
+     * <pre>{@code
+     * List<EncodedFrame> frames = window.stream()     // keyframe first, in decode order
+     *         .map(accessUnit -> EncodedFrame.h264(accessUnit, 1280, 720))
+     *         .toList();
+     * StepResult result = reactor.step(null, List.of(), Map.of("webcam", frames)).join();
+     * }</pre>
+     *
+     * <p>The frames are pushed only once the state is known to be well formed, so a step refused
+     * for its state leaves the buffer as it was. A frame the push refuses — an unknown or
+     * unpublished track, a raw frame the wrong size — fails the future with the push's own {@link
+     * ReactorException} or {@link IllegalArgumentException} and sends no step; frames pushed before
+     * it stay buffered, and {@link #clearStepInputs()} drops them. Every other outcome is as for
+     * {@link #step(JsonValue, java.util.List)}, and a step whose encoded frames do not decode, or do
+     * not start at a keyframe, fails with {@link StepRefusedException}.
+     *
+     * @param state the model's state fields as a JSON object, or {@code null} to change none
+     * @param commands what to run after the state, in order; empty or {@code null} for none
+     * @param media input frames by track name, or {@code null} for none
+     * @return the step's result, copied onto the heap once and safe to keep
+     */
+    public CompletableFuture<StepResult> step(
+            @Nullable JsonValue state,
+            java.util.@Nullable List<StepCommand> commands,
+            java.util.@Nullable Map<String, ? extends java.util.List<? extends StepInput>> media) {
         if (commands == null) {
             commands = java.util.List.of();
         }
@@ -385,7 +422,42 @@ public final class Reactor implements AutoCloseable {
         String commandsJson = JsonValue.array(
                         commands.stream().map(StepCommand::toWire).toList())
                 .toJsonString();
+        // Pushed only once the state and commands are known to be well formed, so a step refused
+        // for those leaves the buffer as the caller left it.
+        if (media != null && !media.isEmpty()) {
+            try {
+                pushStepMedia(media);
+            } catch (RuntimeException refused) {
+                return CompletableFuture.failedFuture(refused);
+            }
+        }
         return peer.step(state == null ? null : state.toJsonString(), commandsJson);
+    }
+
+    /** Pushes a step's media, track by track, as {@link #step(JsonValue, java.util.List, java.util.Map)} documents. */
+    private void pushStepMedia(java.util.Map<String, ? extends java.util.List<? extends StepInput>> media) {
+        if (peer.generation() != Generation.STEPPED) {
+            // Checked here rather than left to peer.step: in a streamed session a raw push sends,
+            // so the frames would go out live before the step was refused.
+            throw ReactorException.of(
+                    ErrorCode.INVALID_STATE.code(),
+                    "step() needs a stepped session: create the client with"
+                            + " ReactorOptions.builder(...).generation(Generation.STEPPED)",
+                    null,
+                    "step",
+                    null);
+        }
+        // Every track resolved before any frame is pushed, so a misspelt name refuses the step
+        // with the buffer untouched.
+        java.util.List<java.util.Map.Entry<Track, ? extends java.util.List<? extends StepInput>>> byTrack =
+                new java.util.ArrayList<>();
+        media.forEach((name, frames) -> byTrack.add(java.util.Map.entry(
+                track(name), java.util.Objects.requireNonNull(frames, () -> "media[\"" + name + "\"]"))));
+        for (var entry : byTrack) {
+            for (StepInput frame : entry.getValue()) {
+                entry.getKey().push(java.util.Objects.requireNonNull(frame, "a step's media holds a null frame"));
+            }
+        }
     }
 
     /**
