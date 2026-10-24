@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <string>
@@ -844,6 +846,12 @@ void ClientImpl::begin_set_track_bitrate(std::unique_ptr<Pending> op, const std:
 
 void ClientImpl::push_video(const std::string& name, Bytes bgra, std::uint32_t width,
                             std::uint32_t height, const Track::FrameOptions& options) {
+  prepare_video(name, bgra, width, height, options)();
+}
+
+std::function<void()> ClientImpl::prepare_video(const std::string& name, Bytes bgra,
+                                                std::uint32_t width, std::uint32_t height,
+                                                const Track::FrameOptions& options) {
   // The frame's submit stage starts here, so this SDK's own checks count.
   const auto started = std::chrono::steady_clock::now();
   const auto tracks = declared_tracks();
@@ -870,18 +878,23 @@ void ClientImpl::push_video(const std::string& name, Bytes bgra, std::uint32_t w
   }
 
   ReactorHandle* handle = require_ready_handle("push a frame into", name);
-  // The connection this frame belongs to; nothing before here can block, so a
-  // reconnect has no time to land between this and the push below.
-  const std::uint64_t generation = ffi().push_begin(handle);
-
   const std::uint8_t* tag = options.user_data.empty() ? nullptr : options.user_data.data;
   const auto tag_len = static_cast<std::uint32_t>(options.user_data.size);
+  const std::optional<std::int64_t> capture_time_us = options.capture_time_us;
 
-  const std::chrono::duration<double, std::milli> binding_ms =
-      std::chrono::steady_clock::now() - started;
-  ffi().push_video_frame_timed(handle, name.c_str(), bgra.data, width, height, tag, tag_len,
-                               options.capture_time_us ? 1 : 0, options.capture_time_us.value_or(0),
-                               binding_ms.count(), generation);
+  // `name` is copied, not borrowed, so the push owns all it holds but the frame's
+  // own bytes; see add_video_handler's own comment on that copy and the NOLINT.
+  // NOLINTNEXTLINE(bugprone-exception-escape)
+  return [handle, name, bgra, width, height, tag, tag_len, capture_time_us, started] {
+    // The connection this frame belongs to; nothing between this and the push
+    // below can block, so a reconnect has no time to land in between.
+    const std::uint64_t generation = ffi().push_begin(handle);
+    const std::chrono::duration<double, std::milli> binding_ms =
+        std::chrono::steady_clock::now() - started;
+    ffi().push_video_frame_timed(handle, name.c_str(), bgra.data, width, height, tag, tag_len,
+                                 capture_time_us ? 1 : 0, capture_time_us.value_or(0),
+                                 binding_ms.count(), generation);
+  };
 }
 
 namespace {
@@ -899,6 +912,11 @@ std::optional<int> wire_encoding(VideoCodec codec) noexcept {
 }  // namespace
 
 void ClientImpl::push_encoded_video(const std::string& name, const EncodedFrame& frame) {
+  prepare_encoded_video(name, frame)();
+}
+
+std::function<void()> ClientImpl::prepare_encoded_video(const std::string& name,
+                                                        const EncodedFrame& frame) {
   const auto tracks = declared_tracks();
   const Declared* found = find_declared(tracks, name);
   const Declared declared_track =
@@ -940,9 +958,13 @@ void ClientImpl::push_encoded_video(const std::string& name, const EncodedFrame&
   ReactorHandle* handle = require_ready_handle("push an encoded frame into", name);
   const std::uint8_t* tag = frame.user_data.empty() ? nullptr : frame.user_data.data;
   const auto tag_len = static_cast<std::uint32_t>(frame.user_data.size);
-  ffi().push_step_encoded_video_frame(
-      handle, name.c_str(), *encoding, frame.data.data, frame.data.size, frame.width, frame.height,
-      tag, tag_len, frame.capture_time_us ? 1 : 0, frame.capture_time_us.value_or(0));
+  // See prepare_video on the copy of `name` and the NOLINT.
+  // NOLINTNEXTLINE(bugprone-exception-escape)
+  return [handle, name, encoding = *encoding, frame, tag, tag_len] {
+    ffi().push_step_encoded_video_frame(
+        handle, name.c_str(), encoding, frame.data.data, frame.data.size, frame.width, frame.height,
+        tag, tag_len, frame.capture_time_us ? 1 : 0, frame.capture_time_us.value_or(0));
+  };
 }
 
 void ClientImpl::push_audio(const std::string& name, Samples pcm, std::uint32_t sample_rate,
