@@ -233,6 +233,49 @@ await reactor.step();
   belong to it: when its request cannot be sent, the step rejects and its frames are dropped
   with it, not kept for the next step.
 
+### Encoded video in a step
+
+A step can carry video already encoded as H.264, its bytes as they are: much smaller than raw
+RGB. The runtime decodes a track's encoded frames before the step runs, so the model reads RGB
+frames exactly as if they had been pushed raw. Give the frames of one step in decode order,
+starting at a keyframe. A WebCodecs `VideoEncoder`'s chunks go in as they are; configure it for
+Annex B, as its default `avc` format is length-prefixed:
+
+```ts
+import type { EncodedFrame } from "@reactor-team/js-sdk";
+
+let gop: EncodedFrame[] = [];
+const encoder = new VideoEncoder({
+  output: (chunk) => {
+    if (chunk.type === "key") gop = [];
+    gop.push({ codec: "h264", data: chunk, width: 1280, height: 720 });
+  },
+  error: console.error,
+});
+encoder.configure({ codec: "avc1.42001f", width: 1280, height: 720, avc: { format: "annexb" } });
+
+// ... encode frames, then send the ones from the last keyframe with the step:
+const result = await reactor.step({ media: { camera: gop } });
+
+// The same, pushed ahead of the step:
+for (const frame of gop) await camera.pushEncodedFrame(frame);
+await reactor.step();
+```
+
+- An `EncodedFrame` is `{ codec: "h264", data, width, height, metadata?, captureTimeUs? }`:
+  `data` one access unit as a `Uint8Array`, an `ArrayBuffer` or an `EncodedVideoChunk` (its
+  bytes are copied out when pushed), `width` and `height` the frame it decodes to. `codec` is
+  what tells it from a raw frame in `media`.
+- `media` maps input track names to frames: `EncodedFrame`s, or anything `pushFrame()` takes.
+  They go after the frames pushed to the same track since the previous step, and only once
+  `state` and `commands` are known to be well formed, so a step refused for those leaves the
+  buffer as it was. Each track must be published first.
+- `pushEncodedFrame()` rejects with an `InvalidStateError` outside a stepped session, on an
+  audio or recvonly track, a track not published on this connection, empty data or a zero
+  dimension. A step whose frames do not decode, or do not start at a keyframe, rejects with a
+  `StepRefusedError` naming the frame in `entry`; a runtime that predates encoded frames
+  refuses them the same way.
+
 ## Recording and clips
 
 ```ts

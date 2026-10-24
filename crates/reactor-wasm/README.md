@@ -48,7 +48,7 @@ rather than `any`:
 | Configuration | `setJwt(jwt)` |
 | Messaging | `sendCommand(command, data?, uploads?)`, `requestSchema()` |
 | Tracks | `publishTrack(name, track?)`, `unpublishTrack(name)`, `pauseTrack(name)`, `resumeTrack(name)`, `tracks()`, `trackMapping()`, `pausedTracks()` |
-| Stepped generation | `step(state?, commands?)`, `pushVideoFrame(name, data, width, height, format?, metadata?, captureTimeUs?)`, `pushAudioFrame(name, samples, sampleRate, channels)`, `clearStepInputs()` |
+| Stepped generation | `step(state?, commands?)`, `pushVideoFrame(name, data, width, height, format?, metadata?, captureTimeUs?)`, `pushEncodedVideoFrame(name, codec, data, width, height, metadata?, captureTimeUs?)`, `pushAudioFrame(name, samples, sampleRate, channels)`, `clearStepInputs()` |
 | Recording | `requestClip(seconds)`, `requestRecording()` |
 | Uploads | `uploadFile(file, name?)` |
 | Introspection | `status()`, `sessionId()`, `sessionInfo()`, `capabilities()`, `lastError()` |
@@ -67,7 +67,10 @@ there is ignored, with a console warning), `pushVideoFrame` / `pushAudioFrame`
 buffer frames in the core, and the next `step()` carries them inside its one
 `RequestStep`. Both of `step()`'s arguments are optional: an empty step runs on
 the model's current state. Video arrives as RGBA, RGB or BGRA, and the core
-converts it to the RGB a step sends in one pass.
+converts it to the RGB a step sends in one pass. `pushEncodedVideoFrame` buffers
+an H.264 access unit (Annex B) as it is, with the size it decodes to; the runtime
+decodes a track's encoded frames of one step, in push order and starting at a
+keyframe, before the step runs.
 
 The buffer holds at most one data-channel message's worth of frames: pushing
 faster than steps run drops the oldest frames, across tracks, and the next step

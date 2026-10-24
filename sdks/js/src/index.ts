@@ -48,6 +48,8 @@ export type {
   ConnectionStats,
   ConnectionTimings,
   ConnectOptions,
+  EncodedFrame,
+  EncodedVideoCodec,
   GenerationMode,
   JwtRequestContext,
   JwtSource,
