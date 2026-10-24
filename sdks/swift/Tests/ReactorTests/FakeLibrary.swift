@@ -88,6 +88,10 @@ final class FakeLibrary: @unchecked Sendable {
         var lastStepCompletion: (fn: reactor_step_completion_fn, userdata: UnsafeMutableRawPointer)?
         var clearStepInputsCalls = 0
         var freedStepResults = 0
+        var pushedEncoded: [PushedEncodedFrame] = []
+        /// Every push, raw or encoded, as `"<kind>:<track>"`, in the order the
+        /// SDK made them.
+        var pushLog: [String] = []
     }
 
     private let state = Locked(State())
@@ -107,6 +111,18 @@ final class FakeLibrary: @unchecked Sendable {
         var captureTimeUs: Int64?
         var bindingMs: Double
         var generation: UInt64
+    }
+
+    /// What the SDK handed `reactor_push_step_encoded_video_frame`.
+    struct PushedEncodedFrame: Equatable {
+        var track: String?
+        var encoding: Int32
+        var data: [UInt8]
+        var width: UInt32
+        var height: UInt32
+        var userData: [UInt8]?
+        /// `nil` when the push carried no capture time at all.
+        var captureTimeUs: Int64?
     }
 
     /// What the SDK handed `reactor_push_audio_frame`.
@@ -253,6 +269,8 @@ final class FakeLibrary: @unchecked Sendable {
     var createOptionsCalls: [CreateOptionsCall] { state.withLock { $0.createOptionsCalls } }
     var stepCalls: [StepCall] { state.withLock { $0.stepCalls } }
     var clearStepInputsCalls: Int { state.withLock { $0.clearStepInputsCalls } }
+    var pushedEncoded: [PushedEncodedFrame] { state.withLock { $0.pushedEncoded } }
+    var pushLog: [String] { state.withLock { $0.pushLog } }
     /// How many results `reactor_step_result_free` released.
     var freedStepResults: Int { state.withLock { $0.freedStepResults } }
     /// Whether a step is waiting on a completion the fake has not fired.
@@ -600,6 +618,7 @@ final class FakeLibrary: @unchecked Sendable {
                             captureTimeUs: at,
                             bindingMs: bindingMs,
                             generation: generation))
+                    $0.pushLog.append("video:\(String(borrowing: track) ?? "")")
                 }
             },
             pushBegin: { _ in 7 },
@@ -615,6 +634,7 @@ final class FakeLibrary: @unchecked Sendable {
                             samplesPerChannel: perChannel,
                             sampleRate: sampleRate,
                             channels: channels))
+                    $0.pushLog.append("audio:\(String(borrowing: track) ?? "")")
                 }
             },
             timeMicros: { 1_234_000 },
@@ -696,6 +716,23 @@ final class FakeLibrary: @unchecked Sendable {
                 }
             },
             clearStepInputs: { [self] _ in state.withLock { $0.clearStepInputsCalls += 1 } },
+            pushStepEncodedVideoFrame: {
+                [self]
+                _, track, encoding, data, length, width, height, userData, userDataLen, at in
+                let bytes = data.map { Array(UnsafeBufferPointer(start: $0, count: length)) }
+                let tag = userData.flatMap { pointer -> [UInt8]? in
+                    guard userDataLen > 0 else { return nil }
+                    return Array(UnsafeBufferPointer(start: pointer, count: Int(userDataLen)))
+                }
+                let name = String(borrowing: track)
+                state.withLock {
+                    $0.pushedEncoded.append(
+                        PushedEncodedFrame(
+                            track: name, encoding: encoding, data: bytes ?? [], width: width,
+                            height: height, userData: tag, captureTimeUs: at))
+                    $0.pushLog.append("encoded:\(name ?? "")")
+                }
+            },
             stepResultStep: { FakeStepResult.from($0)?.step ?? 0 },
             stepResultElapsed: { FakeStepResult.from($0)?.elapsed ?? 0 },
             stepResultError: { FakeStepResult.from($0)?.error.map { UnsafePointer($0) } },
