@@ -84,6 +84,7 @@ namespace reactor::detail {
   /* Stepped generation. The result accessors borrow from the result; see step.cpp */ \
   X(step, reactor_step)                                                               \
   X(clear_step_inputs, reactor_clear_step_inputs)                                     \
+  X(push_step_encoded_video_frame, reactor_push_step_encoded_video_frame)             \
   X(step_result_step, reactor_step_result_step)                                       \
   X(step_result_elapsed, reactor_step_result_elapsed)                                 \
   X(step_result_track_count, reactor_step_result_track_count)                         \
