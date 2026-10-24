@@ -23,7 +23,9 @@
 //! from the session's step results (`GET /sessions/{id}/steps/{step}`), as
 //! in a streamed session.
 //!
-//! Frames travel as [`FrameEncoding::Raw`] today. Decoding goes through
+//! Input frames travel as [`FrameEncoding::Raw`] or, for video, encoded
+//! ([`encoded_video_frame`]), which the runtime decodes before the step
+//! runs. Result frames are decoded through
 //! [`FrameDecoders`], keyed by encoding, so a compressed encoding is a new
 //! registry entry rather than a change to the result type.
 
@@ -162,6 +164,36 @@ pub fn raw_video_frame(
         dtype: VIDEO_DTYPE.to_string(),
         shape: vec![height, width, 3],
         data: rgb,
+        metadata: metadata.filter(|m| !m.is_empty()).map(<[u8]>::to_vec),
+        capture_time_us,
+    })
+}
+
+/// An encoded video frame: `data` as it is, under `encoding`, with the shape
+/// it decodes to, RGB `uint8` `(height, width, 3)`. The runtime decodes it
+/// before the step runs. `None` for an empty frame, a zero dimension, or an
+/// encoding that is not a compressed one (a raw frame goes through
+/// [`raw_video_frame`]).
+pub fn encoded_video_frame(
+    encoding: FrameEncoding,
+    data: &[u8],
+    width: u32,
+    height: u32,
+    metadata: Option<&[u8]>,
+    capture_time_us: Option<i64>,
+) -> Option<Frame> {
+    if matches!(encoding, FrameEncoding::Unspecified | FrameEncoding::Raw)
+        || data.is_empty()
+        || width == 0
+        || height == 0
+    {
+        return None;
+    }
+    Some(Frame {
+        encoding: encoding as i32,
+        dtype: VIDEO_DTYPE.to_string(),
+        shape: vec![height, width, 3],
+        data: data.to_vec(),
         metadata: metadata.filter(|m| !m.is_empty()).map(<[u8]>::to_vec),
         capture_time_us,
     })
@@ -346,6 +378,38 @@ mod tests {
             assert_eq!(frame.data, rgb, "{layout:?}");
         }
         assert!(raw_video_frame(&rgb, 2, 1, PixelLayout::Rgba, None, None).is_none());
+    }
+
+    #[test]
+    fn an_encoded_frame_carries_its_bytes_as_they_are_and_the_shape_it_decodes_to() {
+        let access_unit = [0, 0, 0, 1, 0x65, 0x88, 0x84];
+        let frame = encoded_video_frame(
+            FrameEncoding::H264,
+            &access_unit,
+            1280,
+            720,
+            Some(b"tag"),
+            Some(42),
+        )
+        .unwrap();
+        assert_eq!(frame.encoding, FrameEncoding::H264 as i32);
+        assert_eq!(frame.dtype, VIDEO_DTYPE);
+        assert_eq!(frame.shape, [720, 1280, 3]);
+        assert_eq!(frame.data, access_unit);
+        assert_eq!(frame.metadata.as_deref(), Some(&b"tag"[..]));
+        assert_eq!(frame.capture_time_us, Some(42));
+
+        let untagged =
+            encoded_video_frame(FrameEncoding::H264, &access_unit, 2, 2, Some(b""), None).unwrap();
+        assert!(untagged.metadata.is_none());
+        assert!(encoded_video_frame(FrameEncoding::H264, &[], 2, 2, None, None).is_none());
+        assert!(encoded_video_frame(FrameEncoding::H264, &access_unit, 0, 2, None, None).is_none());
+        for not_compressed in [FrameEncoding::Raw, FrameEncoding::Unspecified] {
+            assert!(
+                encoded_video_frame(not_compressed, &access_unit, 2, 2, None, None).is_none(),
+                "{not_compressed:?}"
+            );
+        }
     }
 
     #[test]

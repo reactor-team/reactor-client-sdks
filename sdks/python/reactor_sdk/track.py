@@ -425,6 +425,50 @@ class Track:
             generation=generation,
         )
 
+    def push_encoded_frame(
+        self,
+        data: bytes,
+        *,
+        width: int,
+        height: int,
+        codec: str = "h264",
+        user_data: bytes | None = None,
+        capture_time_us: int | None = None,
+    ) -> None:
+        """Buffer one encoded video frame, its bytes as they are, for the next step.
+
+        Stepped sessions only: like :meth:`push_frame` there, this sends nothing,
+        and the next :meth:`Reactor.step` carries the frame. ``data`` is one H.264
+        access unit, and ``width`` and ``height`` the frame it decodes to::
+
+            for packet in window:  # PyAV packets, keyframe first
+                camera.push_encoded_frame(bytes(packet), width=1280, height=720)
+            result = await reactor.step()
+
+        The runtime decodes a track's encoded frames of one step as one stream,
+        before the step runs, and the model reads RGB frames as if they had been
+        pushed raw. So push them in decode order, starting at a keyframe; a step
+        whose frames do not decode is refused. Encoded and raw pushes to one track
+        keep their push order. ``user_data`` and ``capture_time_us`` tag and stamp
+        the decoded frame, as for :meth:`push_frame`.
+        """
+        self._require_direction(TrackDirection.SENDONLY, "push_encoded_frame()")
+        self._require_published("push_encoded_frame()")
+        if self._kind is not TrackKind.VIDEO:
+            raise TypeError(
+                f"push_encoded_frame(): track {self._name!r} is audio; only a video "
+                f"track takes encoded frames."
+            )
+        self._reactor()._push_encoded_video_frame(
+            self._name,
+            bytes(data),
+            width,
+            height,
+            codec=codec,
+            user_data=user_data,
+            capture_time_us=capture_time_us,
+        )
+
     # ------------------------------------------------------------------
     # Receiving
     # ------------------------------------------------------------------

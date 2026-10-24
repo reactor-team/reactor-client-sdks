@@ -65,6 +65,37 @@ class StepCommand:
         return {"command": self.command, "data": None if self.data is None else dict(self.data)}
 
 
+#: The codecs an encoded step frame can carry, by name, to the wire's encoding.
+ENCODED_CODECS = {"h264": 2}
+
+
+@dataclass(frozen=True)
+class EncodedFrame:
+    """An encoded video frame for a step: one H.264 access unit, its bytes as they are.
+
+    ``width`` and ``height`` are the frame it decodes to. Pass it in
+    :meth:`Reactor.step`'s ``media``, or push it with
+    :meth:`Track.push_encoded_frame`. The runtime decodes a track's encoded
+    frames of one step as one stream, before the step runs, and the model reads
+    the RGB frames as if they had been pushed raw. So give them in decode order,
+    starting at a keyframe — with PyAV, the packets from the last keyframe to the
+    frame the step is about::
+
+        frames = [EncodedFrame(bytes(p), width=1280, height=720) for p in window]
+        result = await reactor.step(media={"webcam": frames})
+
+    ``user_data`` tags the decoded frame and ``capture_time_us`` stamps it, as for
+    :meth:`Track.push_frame`.
+    """
+
+    data: bytes
+    width: int
+    height: int
+    codec: str = "h264"
+    user_data: bytes | None = None
+    capture_time_us: int | None = None
+
+
 def _wire_commands(commands: Any) -> list[dict[str, Any]]:
     """Turn `commands` into the ``[{command, data}]`` list the C ABI takes.
 

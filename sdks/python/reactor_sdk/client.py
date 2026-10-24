@@ -27,6 +27,7 @@ from ._ffi import (
     STEP_COMPLETION_FN,
     ReactorCallbacks,
     get_lib,
+    has_encoded_step_frames,
     has_stepped,
 )
 
@@ -37,7 +38,14 @@ from ._ffi import (
 from ._media import _bgra_to_rgb_array, _positional_arity  # noqa: F401  (re-export)
 from ._recording import download_clip
 from ._stats import ConnectionStats, stats_from_payload
-from ._step import StepCommand, StepResult, _read_step_result, _wire_commands
+from ._step import (
+    ENCODED_CODECS,
+    EncodedFrame,
+    StepCommand,
+    StepResult,
+    _read_step_result,
+    _wire_commands,
+)
 from .errors import (  # noqa: F401  (ReactorError/error_for_code/error_from_payload re-export)
     AbortedError,
     DecodeError,
@@ -1145,6 +1153,7 @@ class Reactor:
         self,
         state: Mapping[str, Any] | None = None,
         commands: Sequence[StepCommand | Mapping[str, Any]] | None = None,
+        media: Mapping[str, Sequence[Any]] | None = None,
     ) -> StepResult:
         """Run one step of a stepped session and return what it produced.
 
@@ -1174,6 +1183,17 @@ class Reactor:
         mappings. A file goes in the way it does for :meth:`send_command`: upload it
         with :meth:`upload_file` and put the `FileRef` in a command's data, or as
         the value of an upload-typed state field.
+
+        `media` gives this step frames of its own, by input track name, after the
+        ones pushed to that track since the previous step: an RGB array as
+        :meth:`Track.push_frame` takes it, or an `EncodedFrame`, which goes as it
+        is and is decoded by the runtime::
+
+            frames = [EncodedFrame(bytes(p), width=1280, height=720) for p in window]
+            result = await reactor.step(media={"webcam": frames})
+
+        It is the same as pushing them just before the step, so each track must be
+        published first.
 
         A step that ran but that the model reported as failed returns its result
         with `StepResult.error` set. Raises `StepRefusedError` when the runtime
@@ -1209,6 +1229,10 @@ class Reactor:
         commands_json = json.dumps(
             _wire_commands(() if commands is None else commands), default=_wire_file_ref
         ).encode()
+        # Pushed only once the state and commands are known to be well formed, so
+        # a step refused for those leaves the buffer as the caller left it.
+        if media is not None:
+            self._push_step_media(media)
         handle = self._handle
         lib = get_lib()
 
@@ -1228,6 +1252,29 @@ class Reactor:
                 ctypes.c_void_p(handle), state_json, commands_json, fn, None
             ),
         )
+
+    def _push_step_media(self, media: Mapping[str, Sequence[Any]]) -> None:
+        """Push `media`'s frames, track by track, as :meth:`step` documents."""
+        if not isinstance(media, Mapping):
+            raise TypeError(
+                f"media must be a mapping of track name to frames, got {type(media).__name__}"
+            )
+        for name, frames in media.items():
+            if isinstance(frames, (bytes, str)) or not isinstance(frames, Sequence):
+                raise TypeError(f"media[{name!r}] must be a sequence of frames")
+            track = self.track(name)
+            for frame in frames:
+                if isinstance(frame, EncodedFrame):
+                    track.push_encoded_frame(
+                        frame.data,
+                        width=frame.width,
+                        height=frame.height,
+                        codec=frame.codec,
+                        user_data=frame.user_data,
+                        capture_time_us=frame.capture_time_us,
+                    )
+                else:
+                    track.push_frame(frame)
 
     def clear_step_inputs(self) -> None:
         """Drop every frame pushed since the last step.
@@ -1603,6 +1650,61 @@ class Reactor:
             ctypes.c_int64(capture_time_us or 0),
             ctypes.c_double((time.perf_counter() - started) * 1_000.0),
             ctypes.c_uint64(generation),
+        )
+
+    def _push_encoded_video_frame(
+        self,
+        track_name: str,
+        data: bytes,
+        width: int,
+        height: int,
+        *,
+        codec: str = "h264",
+        user_data: bytes | None = None,
+        capture_time_us: int | None = None,
+    ) -> None:
+        """Buffer one encoded video frame for the next step, its bytes as they are."""
+        if self._generation != "stepped":
+            raise InvalidStateError(
+                "push_encoded_frame() needs a stepped session: create the client with "
+                'generation="stepped"',
+                operation="push_encoded_frame",
+            )
+        encoding = ENCODED_CODECS.get(codec)
+        if encoding is None:
+            raise ValueError(
+                f"push_encoded_frame(): unknown codec {codec!r}; one of {sorted(ENCODED_CODECS)}"
+            )
+        if not data:
+            raise ValueError("push_encoded_frame(): an encoded frame needs data")
+        if width <= 0 or height <= 0:
+            raise ValueError(
+                f"push_encoded_frame(): width and height are the decoded frame's, "
+                f"got {width}x{height}"
+            )
+        self._require_handle()
+        lib = get_lib()
+        if not has_encoded_step_frames(lib):
+            raise RuntimeError(
+                "the loaded libreactor_ffi predates encoded step frames (it exports no "
+                "reactor_push_step_encoded_video_frame). Rebuild it with "
+                "`cargo build -p reactor-ffi --release`."
+            )
+        buf = (ctypes.c_uint8 * len(data)).from_buffer_copy(data)
+        tag_len = len(user_data) if user_data else 0
+        tag = (ctypes.c_uint8 * tag_len).from_buffer_copy(user_data) if user_data else None
+        lib.reactor_push_step_encoded_video_frame(
+            ctypes.c_void_p(self._handle),
+            track_name.encode(),
+            ctypes.c_int(encoding),
+            buf,
+            ctypes.c_size_t(len(data)),
+            ctypes.c_uint32(width),
+            ctypes.c_uint32(height),
+            tag,
+            ctypes.c_uint32(tag_len),
+            ctypes.c_int(capture_time_us is not None),
+            ctypes.c_int64(capture_time_us or 0),
         )
 
     def _push_begin(self) -> int:

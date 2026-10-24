@@ -2341,6 +2341,66 @@ pub unsafe extern "C" fn reactor_push_video_frame_timed(
     );
 }
 
+/// Stepped: buffer one encoded video frame for the next step, its `data_len`
+/// bytes as they are. `encoding` is the wire's `FrameEncoding` value
+/// (`REACTOR_FRAME_ENCODING_H264`); `width` and `height` are the frame it
+/// decodes to. A track's encoded frames of one step are decoded as one stream,
+/// so push them in decode order, starting at a keyframe; the runtime refuses a
+/// step whose frames do not decode. Tagged with `user_data` when
+/// `user_data_len` is not 0, and stamped with `capture_time_us` when
+/// `has_capture_time` is not 0. An unknown or raw `encoding`, an empty frame,
+/// or a push outside a stepped session is dropped with a warning.
+///
+/// # Safety
+///
+/// `handle` must come from `reactor_new`, `track_name` must be a
+/// NUL-terminated C string, `data` must point to `data_len` readable bytes,
+/// and `user_data` to `user_data_len` readable bytes. All are borrowed for the
+/// duration of the call.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn reactor_push_step_encoded_video_frame(
+    handle: *mut ReactorHandle,
+    track_name: *const c_char,
+    encoding: c_int,
+    data: *const u8,
+    data_len: usize,
+    width: u32,
+    height: u32,
+    user_data: *const u8,
+    user_data_len: u32,
+    has_capture_time: c_int,
+    capture_time_us: i64,
+) {
+    if handle.is_null() || track_name.is_null() || data.is_null() {
+        return;
+    }
+    let name = CStr::from_ptr(track_name).to_string_lossy();
+    let Ok(encoding) = reactor_core::protocol::wire::v1::step::FrameEncoding::try_from(encoding)
+    else {
+        log::warn!("dropping an encoded video frame for '{name}': unknown encoding {encoding}");
+        return;
+    };
+    let slice = std::slice::from_raw_parts(data, data_len);
+    let tag: Option<&[u8]> = if user_data.is_null() || user_data_len == 0 {
+        None
+    } else {
+        Some(std::slice::from_raw_parts(
+            user_data,
+            user_data_len as usize,
+        ))
+    };
+    (*handle).reactor.push_step_encoded_video_frame(
+        &name,
+        encoding,
+        slice,
+        width,
+        height,
+        tag,
+        (has_capture_time != 0).then_some(capture_time_us),
+    );
+}
+
 /// The engine's monotonic clock in microseconds — the epoch
 /// [`reactor_push_video_frame_with_metadata_at`] reads its capture time in.
 ///

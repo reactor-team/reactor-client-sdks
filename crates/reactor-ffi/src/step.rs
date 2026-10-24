@@ -70,6 +70,7 @@ fn kind_str(kind: TrackKind) -> &'static CStr {
 fn encoding_str(encoding: FrameEncoding) -> &'static CStr {
     match encoding {
         FrameEncoding::Raw => c"raw",
+        FrameEncoding::H264 => c"h264",
         FrameEncoding::Unspecified => c"unspecified",
     }
 }

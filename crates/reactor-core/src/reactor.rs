@@ -41,6 +41,7 @@ use crate::protocol::wire::v1::platform::{
     ClientConnectionStat, ClientEnvironment, ClientStats, ClientTrackStat, FileUploaded,
     FrameStage, Ping, RequestClip, RequestRecording, RequestSchema,
 };
+use crate::protocol::wire::v1::step::FrameEncoding;
 use crate::protocol::wire::v1::track::{PauseTrack, PublishTrack, ResumeTrack, UnpublishTrack};
 use crate::recording::{clip_failed_code, clip_from_ready, Clip};
 use crate::runtime::timeout;
@@ -49,8 +50,8 @@ use crate::stage_times::{sort_stages, StageTimes, SUBMIT};
 use crate::state::ReactorStatus;
 use crate::stats::{client_connection_stat, ClientStatsReporter, ConnectionStats, StatsSampler};
 use crate::step::{
-    build_request_step, raw_audio_frame, raw_video_frame, FrameDecoders, PixelLayout, StepCommand,
-    StepInputs, StepOutput,
+    build_request_step, encoded_video_frame, raw_audio_frame, raw_video_frame, FrameDecoders,
+    PixelLayout, StepCommand, StepInputs, StepOutput,
 };
 use crate::{SharedAuth, SharedHttp, SharedPeer, SharedPlatform};
 
@@ -1681,6 +1682,48 @@ impl Reactor {
             metadata,
             capture_time_us,
         );
+    }
+
+    /// Stepped: buffer an encoded video frame for the next [`Reactor::step`],
+    /// its bytes as they are. `width` and `height` are the frame it decodes
+    /// to; the runtime decodes the track's encoded frames of one step as one
+    /// stream, so they go in decode order and start at a keyframe, and a step
+    /// whose frames do not decode is refused. An empty frame, a zero dimension,
+    /// a raw `encoding` (push raw pixels with
+    /// [`Reactor::push_step_video_frame`]), or a push outside a stepped session
+    /// is dropped with a warning.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_step_encoded_video_frame(
+        &self,
+        track_name: &str,
+        encoding: FrameEncoding,
+        data: &[u8],
+        width: u32,
+        height: u32,
+        metadata: Option<&[u8]>,
+        capture_time_us: Option<i64>,
+    ) {
+        if !self.is_stepped() {
+            log::warn!(
+                "dropping an encoded video frame for '{track_name}': push_step_encoded_video_frame needs a stepped session"
+            );
+            return;
+        }
+        if !self.takes_step_input(track_name, SessionTrackKind::Video) {
+            return;
+        }
+        match encoded_video_frame(encoding, data, width, height, metadata, capture_time_us) {
+            Some(frame) => self.step_inputs.push(
+                track_name,
+                WireTrackKind::Video,
+                frame,
+                self.peer.max_message_bytes(),
+            ),
+            None => log::warn!(
+                "dropping encoded video frame for '{track_name}': {} bytes of {encoding:?} at {width}x{height} is not a frame",
+                data.len()
+            ),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

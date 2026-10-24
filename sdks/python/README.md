@@ -312,6 +312,32 @@ what it changes is what the next step uses. A file goes into a step the way it
 goes into a command: upload it with `upload_file()` and put the `FileRef` in a
 command's data, or as the value of an upload-typed state field.
 
+### Encoded video in a step
+
+A step can carry video already encoded as H.264, its bytes as they are: much
+smaller than raw RGB, and no base64. The runtime decodes a track's encoded frames
+before the step runs, so the model reads RGB frames exactly as if they had been
+pushed raw. Give the frames of one step in decode order, starting at a keyframe —
+with PyAV, the packets from the last keyframe to the frame the step is about:
+
+```python
+from reactor_sdk import EncodedFrame
+
+frames = [EncodedFrame(bytes(p), width=1280, height=720) for p in window]
+result = await reactor.step(media={"webcam": frames})
+
+# The same, pushed ahead of the step:
+for packet in window:
+    camera.push_encoded_frame(bytes(packet), width=1280, height=720)
+result = await reactor.step()
+```
+
+`width` and `height` are the frame each one decodes to. `media` takes raw RGB
+arrays too, and its frames go after the ones pushed to the same track since the
+previous step. A step whose frames do not decode, or that does not start at a
+keyframe, raises `StepRefusedError`, naming the frame in `entry`. A runtime that
+predates encoded frames refuses them the same way.
+
 A step that ran but that the model reported as failed returns normally, with
 `result.error` set. `result.files` names the files the model kept with the step;
 their bytes are fetched over HTTP from the session's step results

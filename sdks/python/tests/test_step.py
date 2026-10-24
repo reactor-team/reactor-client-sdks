@@ -17,6 +17,7 @@ import pytest
 
 from reactor_sdk import (
     DecodeError,
+    EncodedFrame,
     GenerationModeMismatchError,
     InvalidStateError,
     MessageTooLargeError,
@@ -475,6 +476,32 @@ class TestStep:
         reactor = await _stepped(lib)
         with pytest.raises(TypeError, match="state"):
             await reactor.step(state=["prompt"])  # type: ignore[arg-type]
+
+    async def test_media_is_pushed_before_the_step_goes_out(self, lib: FakeStepLib) -> None:
+        reactor = await _stepped(lib)
+        seen: list = []
+        reactor._push_step_media = lambda media: seen.append((dict(media), len(lib.step_calls)))  # type: ignore[method-assign]
+        lib.step_answer = lambda completion: completion(0, None, _error("step_refused"), None)
+        media = {"webcam": [EncodedFrame(b"idr", width=2, height=2)]}
+
+        with pytest.raises(StepRefusedError):
+            await reactor.step(media=media)
+
+        # Pushed once, while no step had reached the native library yet.
+        assert seen == [(media, 0)]
+        assert len(lib.step_calls) == 1
+
+    async def test_a_step_refused_for_its_state_pushes_none_of_its_media(
+        self, lib: FakeStepLib
+    ) -> None:
+        reactor = await _stepped(lib)
+        seen: list = []
+        reactor._push_step_media = lambda media: seen.append(media)  # type: ignore[method-assign]
+
+        with pytest.raises(TypeError, match="state"):
+            await reactor.step(state=["prompt"], media={"webcam": []})  # type: ignore[arg-type]
+
+        assert seen == []
 
 
 # ── commands and results ───────────────────────────────────────────────────

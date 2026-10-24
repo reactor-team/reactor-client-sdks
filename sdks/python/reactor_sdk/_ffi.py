@@ -319,6 +319,7 @@ def _load() -> ctypes.CDLL:
     ]
 
     _bind_stepped(lib)
+    _bind_encoded_step_frames(lib)
     return lib
 
 
@@ -352,6 +353,39 @@ STEPPED_FUNCTIONS = (
     "reactor_step_result_frame_capture_time_us",
     "reactor_step_result_free",
 )
+
+
+#: Values of a step frame's `encoding`, the wire's FrameEncoding.
+FRAME_ENCODING_H264 = 2
+
+#: Encoded input frames for a step, added after stepped generation and, like
+#: it, without an ABI bump. Bound only when present; `has_encoded_step_frames()`
+#: is what a caller asks before pushing one.
+ENCODED_STEP_FUNCTIONS = ("reactor_push_step_encoded_video_frame",)
+
+
+def has_encoded_step_frames(lib: object) -> bool:
+    """Whether `lib` can buffer an encoded video frame for a step."""
+    return all(hasattr(lib, name) for name in ENCODED_STEP_FUNCTIONS)
+
+
+def _bind_encoded_step_frames(lib: ctypes.CDLL) -> None:
+    if not has_encoded_step_frames(lib):
+        return
+    lib.reactor_push_step_encoded_video_frame.restype = None
+    lib.reactor_push_step_encoded_video_frame.argtypes = [
+        ctypes.c_void_p,  # handle
+        ctypes.c_char_p,  # track_name
+        ctypes.c_int,  # encoding (FRAME_ENCODING_*)
+        ctypes.c_void_p,  # data
+        ctypes.c_size_t,  # data_len
+        ctypes.c_uint32,  # width of the decoded frame
+        ctypes.c_uint32,  # height of the decoded frame
+        ctypes.c_void_p,  # user_data (NULL = untagged)
+        ctypes.c_uint32,  # user_data_len
+        ctypes.c_int,  # has_capture_time
+        ctypes.c_int64,  # capture_time_us
+    ]
 
 
 def has_stepped(lib: object) -> bool:

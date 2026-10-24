@@ -27,7 +27,7 @@ from ._auth import AuthError, fetch_jwt
 from ._media import time_micros
 from ._recording import download_clip
 from ._stats import CandidatePair, ConnectionStats, InboundStream, OutboundStream
-from ._step import StepCommand, StepFile, StepFrame, StepResult, StepTrackOutput
+from ._step import EncodedFrame, StepCommand, StepFile, StepFrame, StepResult, StepTrackOutput
 from .client import (
     DEFAULT_API_URL,
     LOCAL_API_URL,
@@ -82,6 +82,7 @@ __all__ = [
     "CandidatePair",
     # Stepped generation: what step() takes and answers with.
     "StepCommand",
+    "EncodedFrame",
     "StepResult",
     "StepTrackOutput",
     "StepFrame",

@@ -555,6 +555,139 @@ class TestPushFrame:
         assert captured["audio"][0][2] == 240
 
 
+class TestPushEncodedFrame:
+    """An encoded frame goes to the next step as it is, on a sendonly video track."""
+
+    def _stepped(self, monkeypatch: pytest.MonkeyPatch) -> tuple[Reactor, _FakeLib]:
+        reactor, lib = _connected(monkeypatch)
+        reactor._generation = "stepped"
+        return reactor, lib
+
+    def test_the_track_hands_its_bytes_on_untouched(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reactor, _ = self._stepped(monkeypatch)
+        pushed: list = []
+        reactor._push_encoded_video_frame = lambda *a, **k: pushed.append((a, k))  # type: ignore[method-assign]
+
+        reactor.track("camera").push_encoded_frame(
+            bytearray(b"\x00\x00\x01\x65au"),
+            width=1280,
+            height=720,
+            user_data=b"t",
+            capture_time_us=9,
+        )
+
+        ((args, kwargs),) = pushed
+        assert args == ("camera", b"\x00\x00\x01\x65au", 1280, 720)
+        assert isinstance(args[1], bytes)
+        assert kwargs == {"codec": "h264", "user_data": b"t", "capture_time_us": 9}
+
+    def test_an_audio_track_takes_no_encoded_frame(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reactor, _ = self._stepped(monkeypatch)
+        with pytest.raises(TypeError, match="only a video track"):
+            reactor.track("mic").push_encoded_frame(b"x", width=2, height=2)
+
+    def test_a_recvonly_track_takes_no_encoded_frame(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reactor, _ = self._stepped(monkeypatch)
+        with pytest.raises(ValueError, match="recvonly"):
+            reactor.track("output").push_encoded_frame(b"x", width=2, height=2)
+
+    def test_it_needs_a_stepped_session(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reactor, _ = _connected(monkeypatch)
+        with pytest.raises(InvalidStateError, match="stepped session"):
+            reactor.track("camera").push_encoded_frame(b"x", width=2, height=2)
+
+    @pytest.mark.parametrize(
+        ("data", "width", "height", "codec", "match"),
+        [
+            (b"x", 2, 2, "vp9", "unknown codec"),
+            (b"", 2, 2, "h264", "needs data"),
+            (b"x", 0, 2, "h264", "decoded frame"),
+        ],
+    )
+    def test_malformed_frames_are_refused(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        data: bytes,
+        width: int,
+        height: int,
+        codec: str,
+        match: str,
+    ) -> None:
+        reactor, _ = self._stepped(monkeypatch)
+        with pytest.raises(ValueError, match=match):
+            reactor.track("camera").push_encoded_frame(
+                data, width=width, height=height, codec=codec
+            )
+
+    def test_it_reaches_the_ffi_with_its_length_and_encoding(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reactor, lib = self._stepped(monkeypatch)
+        calls: list = []
+
+        def push(
+            handle, name, encoding, data, data_len, width, height, tag, tag_len, has_time, time_us
+        ):  # type: ignore[no-untyped-def]
+            calls.append(
+                (
+                    name,
+                    encoding.value,
+                    bytes(data)[: data_len.value],
+                    width.value,
+                    height.value,
+                    bytes(tag) if tag is not None else None,
+                    has_time.value,
+                    time_us.value,
+                )
+            )
+
+        lib.reactor_push_step_encoded_video_frame = push  # type: ignore[attr-defined]
+        reactor.track("camera").push_encoded_frame(
+            b"\x00\x00\x01\x65", width=4, height=2, capture_time_us=5
+        )
+
+        assert calls == [(b"camera", 2, b"\x00\x00\x01\x65", 4, 2, None, 1, 5)]
+
+    def test_a_library_without_encoded_frames_says_so(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reactor, _ = self._stepped(monkeypatch)
+        with pytest.raises(RuntimeError, match="predates encoded step frames"):
+            reactor.track("camera").push_encoded_frame(b"x", width=2, height=2)
+
+    def test_step_media_pushes_raw_and_encoded_frames_in_order(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from reactor_sdk import EncodedFrame
+
+        reactor, _ = self._stepped(monkeypatch)
+        order: list = []
+        reactor._push_video_frame = lambda name, *a, **k: order.append(("raw", name))  # type: ignore[method-assign]
+        reactor._push_encoded_video_frame = lambda name, data, *a, **k: order.append(
+            ("h264", name, data)
+        )  # type: ignore[method-assign]
+
+        reactor._push_step_media(
+            {
+                "camera": [
+                    EncodedFrame(b"idr", width=2, height=2),
+                    EncodedFrame(b"p", width=2, height=2),
+                    np.zeros((2, 2, 3), dtype=np.uint8),
+                ]
+            }
+        )
+
+        assert order == [("h264", "camera", b"idr"), ("h264", "camera", b"p"), ("raw", "camera")]
+
+    @pytest.mark.parametrize("media", [[], {"camera": b"x"}, {"camera": 3}])
+    def test_step_media_must_map_tracks_to_frame_sequences(
+        self, monkeypatch: pytest.MonkeyPatch, media: object
+    ) -> None:
+        reactor, _ = self._stepped(monkeypatch)
+        with pytest.raises(TypeError):
+            reactor._push_step_media(media)  # type: ignore[arg-type]
+
+
 class TestOnFrame:
     def test_only_this_track_s_frames_arrive(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The gap this closes. Every recvonly video track decodes into one callback;

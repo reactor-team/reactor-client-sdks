@@ -86,6 +86,7 @@ fn frame_to_js(frame: DecodedFrame) -> Result<JsValue, JsValue> {
     let object = Object::new();
     let encoding = match frame.encoding {
         FrameEncoding::Raw => "raw",
+        FrameEncoding::H264 => "h264",
         FrameEncoding::Unspecified => "unspecified",
     };
     set(&object, "encoding", &JsValue::from_str(encoding))?;

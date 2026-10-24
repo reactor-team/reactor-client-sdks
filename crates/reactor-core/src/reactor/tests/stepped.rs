@@ -904,6 +904,59 @@ async fn a_disconnect_fails_the_step_in_flight() {
 
 // ── Stepped generation: input buffering ─────────────────────────────────
 
+/// Encoded frames ride the next step as they were pushed, in push order
+/// beside the raw ones, under their own encoding; outside a stepped session
+/// they are dropped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn encoded_stepped_pushes_ride_the_next_step_as_they_are() {
+    use crate::protocol::wire::v1::step::FrameEncoding;
+
+    let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+    let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+    let idr = [0, 0, 0, 1, 0x65, 1, 2];
+    let p_frame = [0, 0, 0, 1, 0x41, 3];
+    reactor.push_step_encoded_video_frame(
+        "cam",
+        FrameEncoding::H264,
+        &idr,
+        4,
+        2,
+        Some(b"k"),
+        Some(7),
+    );
+    reactor.push_step_encoded_video_frame("cam", FrameEncoding::H264, &p_frame, 4, 2, None, None);
+    reactor.push_video_frame("cam", &[1, 2, 3, 255], 1, 1);
+    // Not a frame: dropped, not buffered.
+    reactor.push_step_encoded_video_frame("cam", FrameEncoding::H264, &[], 4, 2, None, None);
+    reactor.push_step_encoded_video_frame("cam", FrameEncoding::Raw, &idr, 4, 2, None, None);
+    assert_eq!(reactor.step_inputs.len(), 3);
+
+    let (_stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+    let Some(data_client_message::Payload::RequestStep(request)) = sent.payload else {
+        panic!("expected a RequestStep");
+    };
+    let [cam] = request.media_input.try_into().unwrap();
+    assert_eq!(cam.track, "cam");
+    assert_eq!(
+        cam.frames.iter().map(|f| f.encoding).collect::<Vec<_>>(),
+        [
+            FrameEncoding::H264 as i32,
+            FrameEncoding::H264 as i32,
+            FrameEncoding::Raw as i32
+        ]
+    );
+    assert_eq!(cam.frames[0].data, idr);
+    assert_eq!(cam.frames[0].shape, [2, 4, 3]);
+    assert_eq!(cam.frames[0].metadata.as_deref(), Some(&b"k"[..]));
+    assert_eq!(cam.frames[0].capture_time_us, Some(7));
+    assert_eq!(cam.frames[1].data, p_frame);
+    assert_eq!(cam.frames[2].data, [3, 2, 1]);
+
+    let streamed = make_ready_reactor(peer.clone(), GenerationMode::Streamed);
+    streamed.push_step_encoded_video_frame("cam", FrameEncoding::H264, &idr, 4, 2, None, None);
+    assert!(streamed.step_inputs.is_empty());
+}
+
 /// In a stepped session the push calls buffer instead of reaching the
 /// media transport, and the next step carries the buffer, per track in
 /// push order, as RAW frames — then starts over empty.

@@ -1134,6 +1134,34 @@ void reactor_push_video_frame_timed(
     uint64_t       generation
 );
 
+/* Values of a step frame's `encoding`, the wire's FrameEncoding. */
+#define REACTOR_FRAME_ENCODING_H264 2
+
+/*
+ * Stepped: buffer one encoded video frame for the next step, its `data_len`
+ * bytes as they are.  `encoding` is a REACTOR_FRAME_ENCODING_* value; `width`
+ * and `height` are the frame it decodes to.  A track's encoded frames of one
+ * step are decoded as one stream, so push them in decode order, starting at a
+ * keyframe; the runtime refuses a step whose frames do not decode.  Tagged with
+ * `user_data` when `user_data_len` is not 0, and stamped with `capture_time_us`
+ * (as reactor_push_video_frame_with_metadata_at()) when `has_capture_time` is
+ * not 0.  An unknown encoding, an empty frame, or a push outside a stepped
+ * session is dropped with a warning.
+ */
+void reactor_push_step_encoded_video_frame(
+    ReactorHandle *handle,
+    const char    *track_name,
+    int            encoding,
+    const uint8_t *data,
+    size_t         data_len,
+    uint32_t       width,
+    uint32_t       height,
+    const uint8_t *user_data,   /* nullable with user_data_len 0 */
+    uint32_t       user_data_len,
+    int            has_capture_time,
+    int64_t        capture_time_us
+);
+
 /*
  * Push interleaved i16 PCM audio into a named sendonly track.
  *   track_name          — name of the sendonly audio track
