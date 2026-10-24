@@ -1,11 +1,13 @@
 package inc.reactor.sdk.kotlin
 
 import inc.reactor.sdk.AudioFrame
+import inc.reactor.sdk.EncodedFrame
 import inc.reactor.sdk.PublishState
 import inc.reactor.sdk.Subscription
 import inc.reactor.sdk.Track
 import inc.reactor.sdk.TrackDirection
 import inc.reactor.sdk.TrackKind
+import inc.reactor.sdk.VideoCodec
 import inc.reactor.sdk.VideoFrame
 import java.util.Objects
 import kotlinx.coroutines.future.await
@@ -105,6 +107,50 @@ public class ReactorTrack(
      */
     public fun pushFrame(pcm: ShortArray, sampleRate: Int, channels: Int): Unit =
         java.pushFrame(pcm, sampleRate, channels)
+
+    /**
+     * Buffers one encoded video frame, its bytes as they are, for the next step.
+     *
+     * Stepped sessions only: this sends nothing, and the next [ReactorClient.step] carries the
+     * frame. The runtime decodes a track's encoded frames of one step as one stream, before the
+     * step runs, so push them in decode order, starting at a keyframe:
+     * ```kotlin
+     * window.forEach { accessUnit -> camera.pushEncodedFrame(accessUnit, 1280, 720) }
+     * val result = client.step()
+     * ```
+     *
+     * @param data one access unit, Annex B
+     * @param width the width of the frame it decodes to
+     * @param height the height of the frame it decodes to
+     * @param codec how [data] is encoded
+     * @param userData a tag for the decoded frame, or null
+     * @param captureTimeUs when it was captured on the engine clock, or null for now
+     * @throws IllegalArgumentException when [data] is empty or a dimension is not positive
+     * @throws inc.reactor.sdk.ReactorException when this track is recvonly, carries audio, belongs
+     *   to a streamed session, has no sender yet, or the native library predates encoded frames
+     */
+    public fun pushEncodedFrame(
+        data: ByteArray,
+        width: Int,
+        height: Int,
+        codec: VideoCodec = VideoCodec.H264,
+        userData: ByteArray? = null,
+        captureTimeUs: Long? = null,
+    ): Unit =
+        java.pushEncodedFrame(
+            EncodedFrame.builder(data, width, height)
+                .codec(codec)
+                .userData(userData)
+                .captureTimeUs(captureTimeUs)
+                .build()
+        )
+
+    /**
+     * Buffers one encoded video frame for the next step. See the other overload.
+     *
+     * @param frame the frame
+     */
+    public fun pushEncodedFrame(frame: EncodedFrame): Unit = java.pushEncodedFrame(frame)
 
     /**
      * Asks the platform for a different bitrate on this track.

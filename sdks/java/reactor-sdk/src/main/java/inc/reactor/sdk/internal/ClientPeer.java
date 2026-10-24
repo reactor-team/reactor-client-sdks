@@ -1345,6 +1345,60 @@ public final class ClientPeer implements Runnable {
         }
     }
 
+    /**
+     * Buffers one encoded video frame for the next step, its bytes as they are.
+     *
+     * <p>Stepped sessions only, which {@link inc.reactor.sdk.Track} checks before calling this.
+     *
+     * @param name the declared track
+     * @param encoding a {@code REACTOR_FRAME_ENCODING_*} value
+     * @param data the encoded frame, not empty
+     * @param width the width of the frame it decodes to
+     * @param height the height of the frame it decodes to
+     * @param userData a tag for the decoded frame, or {@code null}
+     * @param captureTimeUs when this was captured on the engine clock, or {@code null} for now
+     */
+    public void pushEncodedVideoFrame(
+            String name,
+            int encoding,
+            byte[] data,
+            int width,
+            int height,
+            byte @Nullable [] userData,
+            @Nullable Long captureTimeUs) {
+        requireOpen("pushEncodedFrame");
+        if (!ffi.has(Ffi.Symbol.PUSH_STEP_ENCODED_VIDEO_FRAME)) {
+            // The library would otherwise be refused at load for something most callers never use;
+            // this is where the absence costs something, so this is where it is said.
+            throw ReactorException.of(
+                    ErrorCode.INVALID_STATE.code(),
+                    "the loaded libreactor_ffi predates encoded step frames (it exports no "
+                            + Ffi.Symbol.PUSH_STEP_ENCODED_VIDEO_FRAME.cName()
+                            + "). Rebuild it with: cargo build -p reactor-ffi --release",
+                    null,
+                    "pushEncodedFrame",
+                    null);
+        }
+        try (Arena call = Arena.ofConfined()) {
+            MemorySegment tag = userData == null
+                    ? MemorySegment.NULL
+                    : call.allocateFrom(java.lang.foreign.ValueLayout.JAVA_BYTE, userData);
+            invokeMixed(
+                    Ffi.Symbol.PUSH_STEP_ENCODED_VIDEO_FRAME,
+                    handle,
+                    call.allocateFrom(name),
+                    encoding,
+                    call.allocateFrom(java.lang.foreign.ValueLayout.JAVA_BYTE, data),
+                    (long) data.length,
+                    width,
+                    height,
+                    tag,
+                    userData == null ? 0 : userData.length,
+                    captureTimeUs == null ? 0 : 1,
+                    captureTimeUs == null ? 0L : captureTimeUs.longValue());
+        }
+    }
+
     private long pushBegin() {
         acquireHandle(Ffi.Symbol.PUSH_BEGIN.cName());
         try {
