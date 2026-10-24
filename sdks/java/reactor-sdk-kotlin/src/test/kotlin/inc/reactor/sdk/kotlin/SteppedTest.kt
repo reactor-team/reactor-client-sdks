@@ -1,11 +1,13 @@
 package inc.reactor.sdk.kotlin
 
+import inc.reactor.sdk.EncodedFrame
 import inc.reactor.sdk.FakeClients
 import inc.reactor.sdk.Generation
 import inc.reactor.sdk.InvalidStateException
 import inc.reactor.sdk.JsonValue
 import inc.reactor.sdk.StepCommand
 import inc.reactor.sdk.StepFile
+import inc.reactor.sdk.StepInput
 import inc.reactor.sdk.StepNotReadyException
 import inc.reactor.sdk.StepRefusedException
 import inc.reactor.sdk.StepResultTooLargeException
@@ -18,6 +20,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
@@ -153,6 +156,59 @@ class SteppedTest {
             assertEquals("the model gave up", result.error().orElseThrow())
             assertEquals(listOf(StepFile("out.png", "image/png", 42)), result.files())
         }
+
+    @Test
+    fun `an encoded frame is pushed through the Java track, untouched`() {
+        val camera = publishedCamera()
+        camera.pushEncodedFrame(byteArrayOf(0, 0, 0, 1, 0x65), 4, 2, captureTimeUs = 9L)
+
+        val push = fake.pushOrder.single() as FakeNativeLibrary.EncodedPush
+        assertEquals("camera_in", push.track())
+        assertArrayEquals(byteArrayOf(0, 0, 0, 1, 0x65), push.data())
+        assertEquals(4, push.width())
+        assertEquals(2, push.height())
+        assertNull(push.userData())
+        assertTrue(push.hasCaptureTime())
+        assertEquals(9L, push.captureTimeUs())
+    }
+
+    @Test
+    fun `an encoded frame on an audio track is refused by the Java track`() {
+        assertThrows<InvalidStateException> {
+            client.track("mic_in").pushEncodedFrame(byteArrayOf(1), 2, 2)
+        }
+    }
+
+    @Test
+    fun `step media is pushed, encoded and raw, before the step goes out`() = runBlocking {
+        publishedCamera()
+        val stepping =
+            async(Dispatchers.Default) {
+                client.step(
+                    media =
+                        mapOf(
+                            "camera_in" to
+                                listOf(
+                                    EncodedFrame.h264(byteArrayOf(0, 0, 0, 1, 0x65), 2, 2),
+                                    StepInput.video(ByteArray(2 * 2 * 4), 2, 2),
+                                )
+                        )
+                )
+            }
+        awaitStep()
+        assertEquals(2, fake.pushOrder.size)
+        assertTrue(fake.pushOrder[0] is FakeNativeLibrary.EncodedPush)
+        assertEquals("camera_in", fake.pushOrder[1])
+        fake.settleLastStep(1, emptyList())
+        assertEquals(1L, stepping.await().step())
+    }
+
+    private fun publishedCamera(): ReactorTrack {
+        val camera = client.track("camera_in")
+        camera.java.publish()
+        fake.settleLastCall(true, "{}", null)
+        return camera
+    }
 
     private fun awaitStep() {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
