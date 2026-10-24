@@ -237,8 +237,9 @@ val result = client.step(media = mapOf("webcam" to window.map { EncodedFrame.h26
 adds a tag (`userData`) and a capture time. A step's media takes raw frames too
 (`StepInput.video(bgra, w, h)`, `StepInput.audio(pcm, rate, channels)`), and its
 frames go after the ones pushed to the same track since the previous step. They
-are pushed only once the state is known to be well formed, so a step refused for
-its state leaves the buffer untouched. A step whose frames do not decode, or that
+go all or nothing: none is pushed until the state is known to be well formed and
+every frame has been checked, so a step refused for its state, or for a bad track
+or frame anywhere in its media, leaves the buffer untouched. A step whose frames do not decode, or that
 does not start at a keyframe, fails with `StepRefusedException`, naming the frame
 in `entry()`; a runtime that predates encoded frames refuses them the same way.
 Needs a `libreactor_ffi` that exports `reactor_push_step_encoded_video_frame`;

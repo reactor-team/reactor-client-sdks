@@ -272,6 +272,79 @@ final class EncodedFramesTest {
     }
 
     @Test
+    @DisplayName("a bad frame late in the media fails the step before any of the media is pushed")
+    void aLaterBadFramePushesNoMedia() {
+        published("camera_in");
+
+        CompletableFuture<StepResult> refused = reactor.step(
+                null,
+                null,
+                Map.of(
+                        "camera_in",
+                        List.of(
+                                EncodedFrame.h264(IDR, 2, 2),
+                                StepInput.video(new byte[2 * 2 * 4], 2, 2),
+                                StepInput.video(new byte[3], 2, 2))));
+
+        InvalidStateException cause = assertInstanceOf(
+                InvalidStateException.class,
+                assertThrows(ExecutionException.class, refused::get).getCause());
+        assertTrue(cause.getMessage().contains("needs exactly"), cause.getMessage());
+        assertTrue(fake.pushOrder.isEmpty(), "the frames before the bad one would ride the next step");
+        assertEquals(0, fake.stepCalls);
+    }
+
+    @Test
+    @DisplayName("a bad track late in the media fails the step before any of the media is pushed")
+    void aLaterBadTrackPushesNoMedia() {
+        published("camera_in");
+        Map<String, List<StepInput>> media = new java.util.LinkedHashMap<>();
+        media.put("camera_in", List.of(EncodedFrame.h264(IDR, 2, 2), StepInput.video(new byte[2 * 2 * 4], 2, 2)));
+        media.put("mic_in", List.of(StepInput.audio(new short[480], 48_000, 1))); // never published
+
+        CompletableFuture<StepResult> refused = reactor.step(null, null, media);
+
+        InvalidStateException cause = assertInstanceOf(
+                InvalidStateException.class,
+                assertThrows(ExecutionException.class, refused::get).getCause());
+        assertTrue(cause.getMessage().contains("mic_in"), cause.getMessage());
+        assertTrue(fake.pushOrder.isEmpty(), "the camera's frames would ride the next step");
+        assertEquals(0, fake.stepCalls);
+
+        // The next step carries only its own media.
+        reactor.step(null, null, Map.of("camera_in", List.of(EncodedFrame.h264(P_FRAME, 2, 2))));
+        assertEquals(1, fake.pushOrder.size());
+        assertEquals(1, fake.stepCalls);
+    }
+
+    @Test
+    @DisplayName("a library without encoded step frames refuses the step before its raw frames are pushed")
+    void aLibraryWithoutTheSymbolPushesNoMedia() {
+        try (FakeNativeLibrary old = new FakeNativeLibrary()) {
+            old.tracksJson = TRACKS;
+            old.removeSymbol("reactor_push_step_encoded_video_frame");
+            try (Reactor client = open(old, Generation.STEPPED)) {
+                client.track("camera_in").publish();
+                old.settleLastCall(true, "{}", null);
+
+                CompletableFuture<StepResult> refused = client.step(
+                        null,
+                        null,
+                        Map.of(
+                                "camera_in",
+                                List.of(StepInput.video(new byte[2 * 2 * 4], 2, 2), EncodedFrame.h264(IDR, 2, 2))));
+
+                InvalidStateException cause = assertInstanceOf(
+                        InvalidStateException.class,
+                        assertThrows(ExecutionException.class, refused::get).getCause());
+                assertTrue(cause.getMessage().contains("predates encoded step frames"), cause.getMessage());
+                assertEquals(0, old.videoFramesPushed);
+                assertEquals(0, old.stepCalls);
+            }
+        }
+    }
+
+    @Test
     @DisplayName("media on a streamed client is refused before a raw frame could go out live")
     void mediaOnAStreamedClientIsRefused() {
         try (FakeNativeLibrary streamedLibrary = new FakeNativeLibrary()) {

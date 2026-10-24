@@ -388,13 +388,14 @@ public final class Reactor implements AutoCloseable {
      * StepResult result = reactor.step(null, List.of(), Map.of("webcam", frames)).join();
      * }</pre>
      *
-     * <p>The frames are pushed only once the state is known to be well formed, so a step refused
-     * for its state leaves the buffer as it was. A frame the push refuses — an unknown or
-     * unpublished track, a raw frame the wrong size — fails the future with the push's own {@link
-     * ReactorException} or {@link IllegalArgumentException} and sends no step; frames pushed before
-     * it stay buffered, and {@link #clearStepInputs()} drops them. Every other outcome is as for
-     * {@link #step(JsonValue, java.util.List)}, and a step whose encoded frames do not decode, or do
-     * not start at a keyframe, fails with {@link StepRefusedException}.
+     * <p>The media goes all or nothing: every frame is checked before any is pushed, and none is
+     * pushed until the state is known to be well formed. So a step refused for its state, or for a
+     * bad track or frame anywhere in its media — an unknown or unpublished track, a raw frame the
+     * wrong size — fails before any of the media is pushed, leaving the buffer as it was; a refused
+     * frame fails the future with the push's own {@link ReactorException}, and no step is sent.
+     * Every other outcome is as for {@link #step(JsonValue, java.util.List)}, and a step whose
+     * encoded frames do not decode, or do not start at a keyframe, fails with {@link
+     * StepRefusedException}.
      *
      * @param state the model's state fields as a JSON object, or {@code null} to change none
      * @param commands what to run after the state, in order; empty or {@code null} for none
@@ -447,17 +448,17 @@ public final class Reactor implements AutoCloseable {
                     "step",
                     null);
         }
-        // Every track resolved before any frame is pushed, so a misspelt name refuses the step
-        // with the buffer untouched.
-        java.util.List<java.util.Map.Entry<Track, ? extends java.util.List<? extends StepInput>>> byTrack =
-                new java.util.ArrayList<>();
-        media.forEach((name, frames) -> byTrack.add(java.util.Map.entry(
-                track(name), java.util.Objects.requireNonNull(frames, () -> "media[\"" + name + "\"]"))));
-        for (var entry : byTrack) {
-            for (StepInput frame : entry.getValue()) {
-                entry.getKey().push(java.util.Objects.requireNonNull(frame, "a step's media holds a null frame"));
+        // Every track resolved and every frame checked before any is pushed, so a misspelt name or
+        // a bad frame late in the media refuses the step with the buffer untouched. The native
+        // buffer can only be cleared whole, so there is no taking back a push once made.
+        java.util.List<Runnable> pushes = new java.util.ArrayList<>();
+        media.forEach((name, frames) -> {
+            Track track = track(name);
+            for (StepInput frame : java.util.Objects.requireNonNull(frames, () -> "media[\"" + name + "\"]")) {
+                pushes.add(track.prepare(java.util.Objects.requireNonNull(frame, "a step's media holds a null frame")));
             }
-        }
+        });
+        pushes.forEach(Runnable::run);
     }
 
     /**
