@@ -54,7 +54,8 @@ export interface StepOptions {
   /** This step's own frames, by input track name: what `pushFrame()` takes,
    *  or an `EncodedFrame`. They go after the frames pushed to that track
    *  since the previous step, exactly as if pushed just before the step, so
-   *  each track must be published first. */
+   *  each track must be published first. A bad track or frame anywhere fails
+   *  the step before any of them is pushed, leaving the buffer as it was. */
   media?: Record<string, ReadonlyArray<PushFrame | EncodedFrame>>;
 }
 
