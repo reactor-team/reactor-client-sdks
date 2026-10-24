@@ -48,6 +48,7 @@ struct EncodedFrameTests {
     }
 
     private static let idr = Data([0, 0, 0, 1, 0x65, 0xAA])
+    private static let keyframe = StepMediaFrame.encoded(EncodedFrame(idr, width: 2, height: 2))
 
     // MARK: - pushEncodedFrame
 
@@ -236,6 +237,52 @@ struct EncodedFrameTests {
             _ = try await client.step(
                 media: ["camera": [.encoded(EncodedFrame(Data(), width: 2, height: 2))]])
         } throws: { ($0 as? ReactorError)?.code == .badRequest }
+        #expect(fake.stepCalls.isEmpty)
+    }
+
+    @Test(
+        "a bad frame or track anywhere in a step's media pushes none of it",
+        arguments: [
+            // A later frame of the same track: an empty encoded one...
+            [
+                "camera": [
+                    EncodedFrameTests.keyframe,
+                    .video(Data(repeating: 7, count: 2 * 2 * 4), width: 2, height: 2),
+                    .encoded(EncodedFrame(Data(), width: 2, height: 2)),
+                ]
+            ],
+            // ...or a raw one too short for its size.
+            [
+                "camera": [
+                    EncodedFrameTests.keyframe,
+                    .video(Data(count: 4), width: 2, height: 2),
+                ]
+            ],
+            // A later track, after one whose frames are all good: unpublished...
+            [
+                "camera": [EncodedFrameTests.keyframe],
+                "mic": [.audio([1, 2], sampleRate: 48_000, channels: 1)],
+            ],
+            // ...recvonly...
+            [
+                "camera": [EncodedFrameTests.keyframe],
+                "output": [EncodedFrameTests.keyframe],
+            ],
+            // ...or not declared at all.
+            [
+                "camera": [EncodedFrameTests.keyframe],
+                "webcam": [EncodedFrameTests.keyframe],
+            ],
+        ])
+    func badMediaPushesNothing(media: [String: [StepMediaFrame]]) async throws {
+        let fake = FakeLibrary()
+        let (client, _) = try await publishedCamera(fake)
+        defer { client.close() }
+
+        await #expect(throws: ReactorError.self) {
+            _ = try await client.step(media: media)
+        }
+        #expect(fake.pushLog.isEmpty, "frames before the bad one were pushed")
         #expect(fake.stepCalls.isEmpty)
     }
 }

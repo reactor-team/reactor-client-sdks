@@ -56,9 +56,9 @@ extension Reactor {
     ///
     /// It is the same as pushing them just before the step, so each track must
     /// be published first. They are pushed only once `state` and `commands` are
-    /// known to be well formed, so a step refused for those leaves the buffer
-    /// as it was; a frame refused while pushing throws its push's error, the
-    /// frames pushed before it stay buffered, and the step is not sent.
+    /// known to be well formed and every frame passes its push's checks, so a
+    /// bad track or frame anywhere in `media` throws its push's error before any
+    /// of it is pushed: the buffer is left as it was, and the step is not sent.
     ///
     /// - Parameters:
     ///   - state: the model's state fields to set before the commands run, or
@@ -136,12 +136,20 @@ extension Reactor {
     /// Push `media`'s frames, track by track, as ``step(state:commands:media:)``
     /// documents. Sorted by name, so that what reaches the buffer — and what its
     /// limit drops first — does not depend on a dictionary's order.
+    ///
+    /// Every frame is checked before the first is pushed: the buffer can only
+    /// be cleared whole, so a frame refused halfway would leave the ones before
+    /// it to ride the next step.
     func pushStepMedia(_ media: [String: [StepMediaFrame]]) throws {
+        var pushes: [() -> Void] = []
         for (name, frames) in media.sorted(by: { $0.key < $1.key }) {
             let track = try track(name)
             for frame in frames {
-                try track.push(frame)
+                pushes.append(try track.preparePush(frame))
             }
+        }
+        for push in pushes {
+            push()
         }
     }
 

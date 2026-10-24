@@ -73,6 +73,13 @@ extension Reactor {
     }
 
     // MARK: - Pushing
+    //
+    // Each push is split in two: a `prepare` that makes every check and throws
+    // on anything it refuses, and the closure it returns, which only calls into
+    // the library. A single push runs both at once; a step's media prepares
+    // every frame before it pushes the first, so a bad frame anywhere fails the
+    // step with nothing pushed — the buffer can only be cleared whole, so a
+    // half-pushed step could not be taken back.
 
     /// Push BGRA pixels into a sendonly video track.
     func push(
@@ -85,10 +92,50 @@ extension Reactor {
     ) throws {
         // The frame's submit stage starts here, so this SDK's own checks count.
         let started = ContinuousClock.now
+        let handle = try requireVideoPushable(
+            track: name, byteCount: pixels.count, width: width, height: height)
+        pushVideo(
+            handle, track: name, pixels: pixels, width: width, height: height,
+            userData: userData, captureTimeUs: captureTimeUs,
+            checking: ContinuousClock.now - started)
+    }
+
+    /// Check BGRA pixels for a sendonly video track, and answer the push that
+    /// sends them.
+    func preparePush(
+        track name: String,
+        pixels: Data,
+        width: UInt32,
+        height: UInt32,
+        userData: Data?,
+        captureTimeUs: Int64?
+    ) throws -> () -> Void {
+        let started = ContinuousClock.now
+        let handle = try requireVideoPushable(
+            track: name, byteCount: pixels.count, width: width, height: height)
+        let checking = ContinuousClock.now - started
+        return {
+            pixels.withUnsafeBytes { pixelBytes in
+                guard let userData else {
+                    return self.pushVideo(
+                        handle, track: name, pixels: pixelBytes, width: width, height: height,
+                        userData: nil, captureTimeUs: captureTimeUs, checking: checking)
+                }
+                userData.withUnsafeBytes { tagBytes in
+                    self.pushVideo(
+                        handle, track: name, pixels: pixelBytes, width: width, height: height,
+                        userData: tagBytes, captureTimeUs: captureTimeUs, checking: checking)
+                }
+            }
+        }
+    }
+
+    /// Everything a BGRA push needs beyond ``requirePushable(track:kind:method:)``:
+    /// a buffer that holds the frame it claims to.
+    private func requireVideoPushable(
+        track name: String, byteCount count: Int, width: UInt32, height: UInt32
+    ) throws -> OpaquePointer {
         let handle = try requirePushable(track: name, kind: .video, method: "pushFrame")
-        // The connection this frame belongs to; nothing between here and the
-        // push can wait, so a reconnect has no time to land in between.
-        let generation = ffi.pushBegin(handle)
 
         // Checked rather than `Int(width) * Int(height) * 4`: both are UInt32 and
         // the caller picks them, so dimensions near UInt32.max overflow Int and
@@ -109,21 +156,40 @@ extension Reactor {
         }
 
         let expected = byteCount.partialValue
-        guard pixels.count >= expected else {
+        guard count >= expected else {
             // The FFI reads width * height * 4 bytes whatever it was handed, so
             // a short buffer is a read past the end rather than a smaller frame.
             throw ReactorError(
                 .badRequest,
-                "pushFrame on '\(name)' was given \(pixels.count) bytes for a "
+                "pushFrame on '\(name)' was given \(count) bytes for a "
                     + "\(width)x\(height) BGRA frame, which needs \(expected).",
                 operation: "pushFrame")
         }
+        return handle
+    }
+
+    /// Hand checked BGRA pixels to the library. `checking` is how long the
+    /// checks took, the part of the submit stage that is this SDK's.
+    private func pushVideo(
+        _ handle: OpaquePointer,
+        track name: String,
+        pixels: UnsafeRawBufferPointer,
+        width: UInt32,
+        height: UInt32,
+        userData: UnsafeRawBufferPointer?,
+        captureTimeUs: Int64?,
+        checking: Duration
+    ) {
+        let started = ContinuousClock.now
+        // The connection this frame belongs to; nothing between here and the
+        // push can wait, so a reconnect has no time to land in between.
+        let generation = ffi.pushBegin(handle)
 
         let base = pixels.bindMemory(to: UInt8.self).baseAddress
         let tag = userData.flatMap { $0.isEmpty ? nil : $0 }
         let tagBase = tag?.bindMemory(to: UInt8.self).baseAddress
         let tagLength = UInt32(tag?.count ?? 0)
-        let elapsed = ContinuousClock.now - started
+        let elapsed = checking + (ContinuousClock.now - started)
         let bindingMs =
             Double(elapsed.components.seconds) * 1_000
             + Double(elapsed.components.attoseconds) / 1e15
@@ -142,6 +208,17 @@ extension Reactor {
         sampleRate: UInt32,
         channels: UInt32
     ) throws {
+        try preparePush(track: name, samples: samples, sampleRate: sampleRate, channels: channels)()
+    }
+
+    /// Check interleaved i16 PCM for a sendonly audio track, and answer the
+    /// push that sends it.
+    func preparePush(
+        track name: String,
+        samples: [Int16],
+        sampleRate: UInt32,
+        channels: UInt32
+    ) throws -> () -> Void {
         let handle = try requirePushable(track: name, kind: .audio, method: "pushFrame")
 
         guard [8000, 16000, 24000, 32000, 44100, 48000].contains(sampleRate),
@@ -163,13 +240,22 @@ extension Reactor {
         }
 
         let perChannel = UInt32(samples.count / Int(channels))
-        samples.withUnsafeBufferPointer { buffer in
-            ffi.pushAudioFrame(handle, name, buffer.baseAddress, perChannel, sampleRate, channels)
+        return {
+            samples.withUnsafeBufferPointer { buffer in
+                self.ffi.pushAudioFrame(
+                    handle, name, buffer.baseAddress, perChannel, sampleRate, channels)
+            }
         }
     }
 
     /// Buffer one encoded video frame for the next step.
     func push(track name: String, encoded frame: EncodedFrame) throws {
+        try preparePush(track: name, encoded: frame)()
+    }
+
+    /// Check one encoded video frame for the next step, and answer the push
+    /// that buffers it.
+    func preparePush(track name: String, encoded frame: EncodedFrame) throws -> () -> Void {
         let method = "pushEncodedFrame"
         guard generation == .stepped else {
             throw ReactorError(
@@ -206,14 +292,16 @@ extension Reactor {
         }
 
         let tag = frame.userData.flatMap { $0.isEmpty ? nil : $0 } ?? Data()
-        frame.data.withUnsafeBytes { bytes in
-            tag.withUnsafeBytes { tagBytes in
-                ffi.pushStepEncodedVideoFrame(
-                    handle, name, frame.codec.encoding,
-                    bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count,
-                    frame.width, frame.height,
-                    tagBytes.isEmpty ? nil : tagBytes.bindMemory(to: UInt8.self).baseAddress,
-                    UInt32(tagBytes.count), frame.captureTimeUs)
+        return {
+            frame.data.withUnsafeBytes { bytes in
+                tag.withUnsafeBytes { tagBytes in
+                    self.ffi.pushStepEncodedVideoFrame(
+                        handle, name, frame.codec.encoding,
+                        bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count,
+                        frame.width, frame.height,
+                        tagBytes.isEmpty ? nil : tagBytes.bindMemory(to: UInt8.self).baseAddress,
+                        UInt32(tagBytes.count), frame.captureTimeUs)
+                }
             }
         }
     }
@@ -514,17 +602,21 @@ extension Track {
                 captureTimeUs: captureTimeUs))
     }
 
-    /// Push one of a step's ``StepMediaFrame``s the way its own push would.
-    func push(_ frame: StepMediaFrame) throws {
+    /// Check one of a step's ``StepMediaFrame``s as its own push would, and
+    /// answer the push that buffers it. Nothing reaches the library until the
+    /// answer is called.
+    func preparePush(_ frame: StepMediaFrame) throws -> () -> Void {
+        guard let client else { return {} }
         switch frame {
         case .video(let pixels, let width, let height, let userData, let captureTimeUs):
-            try pushFrame(
-                pixels, width: width, height: height, userData: userData,
+            return try client.preparePush(
+                track: name, pixels: pixels, width: width, height: height, userData: userData,
                 captureTimeUs: captureTimeUs)
         case .audio(let samples, let sampleRate, let channels):
-            try pushFrame(samples, sampleRate: sampleRate, channels: channels)
+            return try client.preparePush(
+                track: name, samples: samples, sampleRate: sampleRate, channels: channels)
         case .encoded(let encoded):
-            try pushEncodedFrame(encoded)
+            return try client.preparePush(track: name, encoded: encoded)
         }
     }
 
