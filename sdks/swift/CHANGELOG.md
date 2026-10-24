@@ -19,8 +19,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
   frames as for a raw push. A track's frames of one step go in decode order,
   starting at a keyframe; a step whose frames do not decode throws
   `stepRefused`. `media` takes raw frames too (`StepMediaFrame.video`,
-  `.audio`), pushed after the ones already buffered and only once the state and
-  commands are well formed. `pushEncodedFrame` throws `invalidState` outside a
+  `.audio`), pushed after the ones already buffered and only once the state,
+  commands and every frame are well formed, so a bad track or frame anywhere
+  pushes none of them. `pushEncodedFrame` throws `invalidState` outside a
   stepped session or on an audio, recvonly or unpublished track, and
   `badRequest` for an empty frame or a zero width or height.
 
