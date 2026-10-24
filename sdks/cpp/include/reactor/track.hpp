@@ -75,6 +75,17 @@ std::string_view to_string(TrackDirection direction) noexcept;
 std::optional<TrackKind> track_kind_from_string(std::string_view text) noexcept;
 std::optional<TrackDirection> track_direction_from_string(std::string_view text) noexcept;
 
+/// The codecs an encoded step frame can carry. See `EncodedFrame`.
+enum class VideoCodec : std::uint8_t {
+  /// One H.264 access unit, Annex B: start codes, then its NAL units.
+  H264,
+};
+
+/// The spellings: "h264".
+std::string_view to_string(VideoCodec codec) noexcept;
+
+struct EncodedFrame;
+
 /// A decoded video frame.
 ///
 /// **Borrowed for the duration of the handler and no longer.** The library frees
@@ -283,6 +294,36 @@ class Track {
   /// discarded on format change or disconnect. Local audio tracks share a device.
   void push_frame(Samples pcm, std::uint32_t sample_rate = 48'000, std::uint32_t channels = 1);
 
+  /// Buffer one encoded video frame for the next step, its bytes as they are.
+  ///
+  /// Stepped sessions only: like `push_frame` there, this sends nothing, and the
+  /// next `Reactor::step()` carries the frame. `data` is one H.264 access unit,
+  /// and `width` and `height` the frame it decodes to:
+  ///
+  /// ```cpp
+  /// for (const auto& packet : window) {   // keyframe first, in decode order
+  ///   camera.push_encoded_frame(reactor::Bytes{packet.data(), packet.size()}, 1280, 720);
+  /// }
+  /// const auto result = client.step().get();
+  /// ```
+  ///
+  /// The runtime decodes a track's encoded frames of one step as one stream,
+  /// before the step runs, and the model reads RGB frames as if they had been
+  /// pushed raw. So push them in decode order, starting at a keyframe; a step
+  /// whose frames do not decode fails with `StepRefusedError`. Encoded and raw
+  /// pushes to one track keep their push order. `options` tags and stamps the
+  /// decoded frame, as for `push_frame`. The bytes are copied before this returns.
+  ///
+  /// Throws `InvalidStateError` on a streamed client, an audio or recvonly track,
+  /// before `publish()`, or once the session has left `Ready`; `BadRequestError`
+  /// for empty `data`, a zero `width` or `height`, or a codec this build does not
+  /// know.
+  void push_encoded_frame(Bytes data, std::uint32_t width, std::uint32_t height,
+                          const FrameOptions& options = {}, VideoCodec codec = VideoCodec::H264);
+
+  /// The same, for a frame described as an `EncodedFrame`.
+  void push_encoded_frame(const EncodedFrame& frame);
+
  private:
   friend class Reactor;
   friend class TrackList;
@@ -296,6 +337,37 @@ class Track {
 
   std::weak_ptr<detail::ClientImpl> client_;
   std::string name_;
+};
+
+/// An encoded video frame for a step: one H.264 access unit, its bytes as they
+/// are, and the size of the frame it decodes to.
+///
+/// Push it with `Track::push_encoded_frame`, or pass it in a step's media
+/// (`Reactor::step(state, commands, media)`). The runtime decodes a track's
+/// encoded frames of one step as one stream, before the step runs, so give them
+/// in decode order, starting at a keyframe:
+///
+///     reactor::StepMedia media;
+///     for (const auto& packet : window) {
+///       media["webcam"].push_back(
+///           reactor::EncodedFrame{reactor::Bytes{packet.data(), packet.size()}, 1280, 720});
+///     }
+///     const auto result = client.step(nullptr, {}, media).get();
+///
+/// **Borrowed**, like `Bytes`: `data` and `user_data` must stay valid until the
+/// call that pushes the frame returns. `step()` pushes its media before it
+/// returns, so a buffer that outlives that call is enough.
+struct EncodedFrame {
+  /// One access unit, Annex B. Not empty.
+  Bytes data{};
+  /// The decoded frame's size in pixels. Neither may be 0.
+  std::uint32_t width = 0;
+  std::uint32_t height = 0;
+  VideoCodec codec = VideoCodec::H264;
+  /// Tags the decoded frame, as `Track::FrameOptions::user_data` does.
+  Bytes user_data{};
+  /// Stamps the decoded frame, as `Track::FrameOptions::capture_time_us` does.
+  std::optional<std::int64_t> capture_time_us{};
 };
 
 /// The tracks a session declared, filterable.

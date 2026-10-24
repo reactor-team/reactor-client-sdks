@@ -19,9 +19,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "reactor/json.hpp"
@@ -54,6 +56,26 @@ struct StepCommand {
   std::string command{};
   Json data = nullptr;
 };
+
+/// A raw BGRA video frame for a step's media, as `Track::push_frame` takes it.
+///
+/// Borrowed, like `Bytes`: `bgra` (and `options.user_data`) must stay valid until
+/// `step()` returns, which pushes it before it does.
+struct RawVideoFrame {
+  /// `width * height * 4` bytes: B, G, R, A per pixel.
+  Bytes bgra{};
+  std::uint32_t width = 0;
+  std::uint32_t height = 0;
+  Track::FrameOptions options{};
+};
+
+/// One input frame of a step's media: raw BGRA, or encoded and decoded by the
+/// runtime before the step runs.
+using StepMediaFrame = std::variant<RawVideoFrame, EncodedFrame>;
+
+/// A step's own input frames, by input track name, each track's in the order they
+/// go: see `Reactor::step(state, commands, media)`.
+using StepMedia = std::map<std::string, std::vector<StepMediaFrame>>;
 
 /// One frame a step produced on an output track.
 ///

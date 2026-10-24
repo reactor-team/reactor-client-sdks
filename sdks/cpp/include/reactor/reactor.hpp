@@ -464,6 +464,35 @@ class Reactor {
   // NOLINTNEXTLINE(performance-unnecessary-value-param)
   std::future<StepResult> step(Json state = nullptr, std::vector<StepCommand> commands = {});
 
+  /// Run one step with frames of its own: `media` gives them by input track name,
+  /// after the ones pushed to that track since the previous step. A frame is
+  /// either a `RawVideoFrame`, BGRA as `Track::push_frame` takes it, or an
+  /// `EncodedFrame`, which goes as it is and is decoded by the runtime before the
+  /// step runs:
+  ///
+  /// ```cpp
+  /// reactor::StepMedia media;
+  /// for (const auto& packet : window) {   // keyframe first, in decode order
+  ///   media["webcam"].push_back(
+  ///       reactor::EncodedFrame{reactor::Bytes{packet.data(), packet.size()}, 1280, 720});
+  /// }
+  /// const auto result = client.step(nullptr, {}, media).get();
+  /// ```
+  ///
+  /// The same as pushing them just before the step, so each track must be
+  /// published first, and the same refusals apply, failing the future. They are
+  /// pushed only once `state` and `commands` are known to be well formed, so a
+  /// step refused for those leaves the buffer as it was; a frame refused part-way
+  /// leaves the ones pushed before it buffered for the next step. A step whose
+  /// encoded frames do not decode, or do not start at a keyframe, fails with
+  /// `StepRefusedError`, naming the frame in `entry()`; so does a runtime that
+  /// predates encoded frames.
+  ///
+  /// The frames are borrowed and pushed (their bytes copied) before this returns.
+  // By value: see the overload above.
+  // NOLINTNEXTLINE(performance-unnecessary-value-param)
+  std::future<StepResult> step(Json state, std::vector<StepCommand> commands, StepMedia media);
+
   /// Drop every frame buffered for the next step, so that step runs without
   /// them. A no-op before a session exists and on a streamed client.
   void clear_step_inputs();

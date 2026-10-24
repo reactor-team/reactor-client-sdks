@@ -560,13 +560,16 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
                   const Track::FrameOptions& options);
   void push_audio(const std::string& name, Samples pcm, std::uint32_t sample_rate,
                   std::uint32_t channels);
+  void push_encoded_video(const std::string& name, const EncodedFrame& frame);
 
   // ── Stepped generation ─────────────────────────────────────────────────────
 
   Generation generation() const noexcept { return generation_; }
 
   void begin_step(std::unique_ptr<PendingStep> op, const Json& state,
-                  const std::vector<StepCommand>& commands);
+                  const std::vector<StepCommand>& commands, const StepMedia& media);
+  /// Push a step's own frames, track by track, as `Reactor::step` documents.
+  void push_step_media(const StepMedia& media);
   void clear_step_inputs();
 
   /// The C completion for `reactor_step`. `userdata` is a `PendingStep*`, tracked
