@@ -367,6 +367,34 @@ class Track:
         passing `user_data` or `capture_time_us` to an audio track means a value
         that never goes anywhere, and that is an error.
         """
+        self._prepare_frame(
+            data,
+            width=width,
+            height=height,
+            user_data=user_data,
+            capture_time_us=capture_time_us,
+            sample_rate=sample_rate,
+            num_channels=num_channels,
+            samples_per_channel=samples_per_channel,
+        )()
+
+    def _prepare_frame(
+        self,
+        data: Any,
+        *,
+        width: int | None = None,
+        height: int | None = None,
+        user_data: bytes | None = None,
+        capture_time_us: int | None = None,
+        sample_rate: int = 48000,
+        num_channels: int = 1,
+        samples_per_channel: int | None = None,
+    ) -> Callable[[], None]:
+        """Check and convert one frame for :meth:`push_frame`; return the push that sends it.
+
+        Whatever can refuse the frame raises here, before anything is pushed, so
+        a caller with several frames can check them all before the first goes in.
+        """
         # A video frame's submit stage starts here, so the conversion counts.
         started = time.perf_counter()
         self._require_direction(TrackDirection.SENDONLY, "push_frame()")
@@ -394,10 +422,10 @@ class Track:
                 samples_per_channel = len(pcm) // 2 // num_channels
             if samples_per_channel < 0 or len(pcm) != samples_per_channel * num_channels * 2:
                 raise ValueError("audio PCM length must match samples_per_channel and num_channels")
-            reactor._push_audio_frame(
-                self._name, pcm, samples_per_channel, sample_rate, num_channels
+            samples = samples_per_channel
+            return lambda: reactor._push_audio_frame(
+                self._name, pcm, samples, sample_rate, num_channels
             )
-            return
 
         generation = reactor._push_begin()
         bgra, actual_width, actual_height = _as_bgra(data, width, height, self._name)
@@ -414,7 +442,7 @@ class Track:
                 f"height={height}. An array carries its own shape; drop the "
                 f"arguments, or pass the bytes if the other size is the intended one."
             )
-        reactor._push_video_frame(
+        return lambda: reactor._push_video_frame(
             self._name,
             bgra,
             actual_width,
@@ -452,6 +480,26 @@ class Track:
         keep their push order. ``user_data`` and ``capture_time_us`` tag and stamp
         the decoded frame, as for :meth:`push_frame`.
         """
+        self._prepare_encoded_frame(
+            data,
+            width=width,
+            height=height,
+            codec=codec,
+            user_data=user_data,
+            capture_time_us=capture_time_us,
+        )()
+
+    def _prepare_encoded_frame(
+        self,
+        data: bytes,
+        *,
+        width: int,
+        height: int,
+        codec: str = "h264",
+        user_data: bytes | None = None,
+        capture_time_us: int | None = None,
+    ) -> Callable[[], None]:
+        """Check one frame for :meth:`push_encoded_frame`; return the push that buffers it."""
         self._require_direction(TrackDirection.SENDONLY, "push_encoded_frame()")
         self._require_published("push_encoded_frame()")
         if self._kind is not TrackKind.VIDEO:
@@ -459,7 +507,7 @@ class Track:
                 f"push_encoded_frame(): track {self._name!r} is audio; only a video "
                 f"track takes encoded frames."
             )
-        self._reactor()._push_encoded_video_frame(
+        return self._reactor()._encoded_video_frame_push(
             self._name,
             bytes(data),
             width,

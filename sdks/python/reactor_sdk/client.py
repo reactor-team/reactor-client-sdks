@@ -1209,7 +1209,8 @@ class Reactor:
         `InvalidStateError` outside a ready stepped session.
 
         A step refused before it goes out (``InvalidStateError``, malformed
-        arguments) keeps the frames pushed since the previous step for the next
+        arguments, including any track or frame of `media`) pushes none of its
+        `media` and keeps the frames pushed since the previous step for the next
         one. Past that they belong to this step whatever its outcome: a step that
         fails, or could not be sent at all, drops them too, and nothing is resent. The buffer
         holds at most one message's worth of frame bytes, so pushing faster than
@@ -1254,27 +1255,36 @@ class Reactor:
         )
 
     def _push_step_media(self, media: Mapping[str, Sequence[Any]]) -> None:
-        """Push `media`'s frames, track by track, as :meth:`step` documents."""
+        """Push `media`'s frames, track by track, as :meth:`step` documents.
+
+        Every frame is checked before the first is pushed, so media refused for
+        one bad track or frame leaves the buffer as the caller left it.
+        """
         if not isinstance(media, Mapping):
             raise TypeError(
                 f"media must be a mapping of track name to frames, got {type(media).__name__}"
             )
+        pushes: list[Callable[[], None]] = []
         for name, frames in media.items():
             if isinstance(frames, (bytes, str)) or not isinstance(frames, Sequence):
                 raise TypeError(f"media[{name!r}] must be a sequence of frames")
             track = self.track(name)
             for frame in frames:
                 if isinstance(frame, EncodedFrame):
-                    track.push_encoded_frame(
-                        frame.data,
-                        width=frame.width,
-                        height=frame.height,
-                        codec=frame.codec,
-                        user_data=frame.user_data,
-                        capture_time_us=frame.capture_time_us,
+                    pushes.append(
+                        track._prepare_encoded_frame(
+                            frame.data,
+                            width=frame.width,
+                            height=frame.height,
+                            codec=frame.codec,
+                            user_data=frame.user_data,
+                            capture_time_us=frame.capture_time_us,
+                        )
                     )
                 else:
-                    track.push_frame(frame)
+                    pushes.append(track._prepare_frame(frame))
+        for push in pushes:
+            push()
 
     def clear_step_inputs(self) -> None:
         """Drop every frame pushed since the last step.
@@ -1652,7 +1662,7 @@ class Reactor:
             ctypes.c_uint64(generation),
         )
 
-    def _push_encoded_video_frame(
+    def _encoded_video_frame_push(
         self,
         track_name: str,
         data: bytes,
@@ -1662,8 +1672,8 @@ class Reactor:
         codec: str = "h264",
         user_data: bytes | None = None,
         capture_time_us: int | None = None,
-    ) -> None:
-        """Buffer one encoded video frame for the next step, its bytes as they are."""
+    ) -> Callable[[], None]:
+        """Check one encoded video frame; return the push that buffers it, bytes as they are."""
         if self._generation != "stepped":
             raise InvalidStateError(
                 "push_encoded_frame() needs a stepped session: create the client with "
@@ -1693,8 +1703,9 @@ class Reactor:
         buf = (ctypes.c_uint8 * len(data)).from_buffer_copy(data)
         tag_len = len(user_data) if user_data else 0
         tag = (ctypes.c_uint8 * tag_len).from_buffer_copy(user_data) if user_data else None
-        lib.reactor_push_step_encoded_video_frame(
-            ctypes.c_void_p(self._handle),
+        handle = self._handle
+        return lambda: lib.reactor_push_step_encoded_video_frame(
+            ctypes.c_void_p(handle),
             track_name.encode(),
             ctypes.c_int(encoding),
             buf,

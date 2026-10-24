@@ -19,7 +19,14 @@ import json
 import numpy as np
 import pytest
 
-from reactor_sdk import InvalidStateError, Reactor, Track, TrackDirection, TrackKind
+from reactor_sdk import (
+    EncodedFrame,
+    InvalidStateError,
+    Reactor,
+    Track,
+    TrackDirection,
+    TrackKind,
+)
 
 DECLARED = [
     {"name": "camera", "kind": "video", "direction": "sendonly"},
@@ -566,7 +573,7 @@ class TestPushEncodedFrame:
     def test_the_track_hands_its_bytes_on_untouched(self, monkeypatch: pytest.MonkeyPatch) -> None:
         reactor, _ = self._stepped(monkeypatch)
         pushed: list = []
-        reactor._push_encoded_video_frame = lambda *a, **k: pushed.append((a, k))  # type: ignore[method-assign]
+        reactor._encoded_video_frame_push = lambda *a, **k: lambda: pushed.append((a, k))  # type: ignore[method-assign]
 
         reactor.track("camera").push_encoded_frame(
             bytearray(b"\x00\x00\x01\x65au"),
@@ -658,13 +665,11 @@ class TestPushEncodedFrame:
     def test_step_media_pushes_raw_and_encoded_frames_in_order(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from reactor_sdk import EncodedFrame
-
         reactor, _ = self._stepped(monkeypatch)
         order: list = []
         reactor._push_video_frame = lambda name, *a, **k: order.append(("raw", name))  # type: ignore[method-assign]
-        reactor._push_encoded_video_frame = lambda name, data, *a, **k: order.append(
-            ("h264", name, data)
+        reactor._encoded_video_frame_push = lambda name, data, *a, **k: (
+            lambda: order.append(("h264", name, data))
         )  # type: ignore[method-assign]
 
         reactor._push_step_media(
@@ -678,6 +683,30 @@ class TestPushEncodedFrame:
         )
 
         assert order == [("h264", "camera", b"idr"), ("h264", "camera", b"p"), ("raw", "camera")]
+
+    @pytest.mark.parametrize(
+        "media",
+        [
+            # A later frame of the same track is malformed.
+            {"camera": [np.zeros((2, 2, 3), dtype=np.uint8), EncodedFrame(b"", 2, 2)]},
+            # A later track does not take frames.
+            {"camera": [EncodedFrame(b"idr", 2, 2)], "output": [EncodedFrame(b"idr", 2, 2)]},
+            # A later frame is not a frame the track can take.
+            {"camera": [EncodedFrame(b"idr", 2, 2), np.zeros((2, 2), dtype=np.uint8)]},
+        ],
+    )
+    def test_step_media_refused_anywhere_pushes_none_of_it(
+        self, monkeypatch: pytest.MonkeyPatch, media: dict
+    ) -> None:
+        reactor, lib = self._stepped(monkeypatch)
+        pushed: list = []
+        reactor._push_video_frame = lambda *a, **k: pushed.append(a)  # type: ignore[method-assign]
+        lib.reactor_push_step_encoded_video_frame = lambda *a: pushed.append(a)  # type: ignore[attr-defined]
+
+        with pytest.raises((TypeError, ValueError)):
+            reactor._push_step_media(media)
+
+        assert pushed == []
 
     @pytest.mark.parametrize("media", [[], {"camera": b"x"}, {"camera": 3}])
     def test_step_media_must_map_tracks_to_frame_sequences(
