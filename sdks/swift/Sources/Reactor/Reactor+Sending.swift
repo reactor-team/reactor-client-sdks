@@ -168,6 +168,56 @@ extension Reactor {
         }
     }
 
+    /// Buffer one encoded video frame for the next step.
+    func push(track name: String, encoded frame: EncodedFrame) throws {
+        let method = "pushEncodedFrame"
+        guard generation == .stepped else {
+            throw ReactorError(
+                .invalidState,
+                "\(method) on '\(name)' needs a stepped session: create the client with "
+                    + "generation: .stepped",
+                operation: method)
+        }
+        // Said in its own words: the general kind check would point at the
+        // audio push, which is not what someone holding H.264 is after.
+        if let declaration = declaration(of: name), declaration.direction == .sendonly,
+            declaration.kind != .video
+        {
+            throw ReactorError(
+                .invalidState,
+                "\(method) on '\(name)' goes nowhere: the session declares it "
+                    + "\(declaration.kind.rawValue), and only a video track takes encoded frames.",
+                operation: method)
+        }
+        let handle = try requirePushable(track: name, kind: .video, method: method)
+
+        // Both dropped by the library with only a warning, so refused here.
+        guard !frame.data.isEmpty else {
+            throw ReactorError(
+                .badRequest, "\(method) on '\(name)' was given an encoded frame with no data.",
+                operation: method)
+        }
+        guard frame.width > 0, frame.height > 0 else {
+            throw ReactorError(
+                .badRequest,
+                "\(method) on '\(name)' was given \(frame.width)x\(frame.height): width and "
+                    + "height are the decoded frame's, and neither can be 0.",
+                operation: method)
+        }
+
+        let tag = frame.userData.flatMap { $0.isEmpty ? nil : $0 } ?? Data()
+        frame.data.withUnsafeBytes { bytes in
+            tag.withUnsafeBytes { tagBytes in
+                ffi.pushStepEncodedVideoFrame(
+                    handle, name, frame.codec.encoding,
+                    bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count,
+                    frame.width, frame.height,
+                    tagBytes.isEmpty ? nil : tagBytes.bindMemory(to: UInt8.self).baseAddress,
+                    UInt32(tagBytes.count), frame.captureTimeUs)
+            }
+        }
+    }
+
     /// Everything that has to be true before a push can reach the wire.
     ///
     /// Each of these is a case the FFI accepts and then does nothing about: it
@@ -345,7 +395,7 @@ extension Track {
     /// **Stepped sessions.** On a client created with `generation: .stepped`
     /// this sends nothing: the frame is buffered, with its tag and capture time,
     /// as an `(height, width, 3)` `uint8` RGB frame, and the next
-    /// ``Reactor/step(state:commands:)`` carries every frame pushed since the one
+    /// ``Reactor/step(state:commands:media:)`` carries every frame pushed since the one
     /// before — per track, in push order. Publish the track first, as for a
     /// streamed session.
     ///
@@ -401,7 +451,7 @@ extension Track {
     ///
     /// **Stepped sessions.** On a client created with `generation: .stepped`
     /// each push is buffered as one planar `(channels, samples)` `int16` frame
-    /// for the next ``Reactor/step(state:commands:)`` instead of being sent. A
+    /// for the next ``Reactor/step(state:commands:media:)`` instead of being sent. A
     /// step frame carries no sample rate, so push at the rate the model's track
     /// declares. The buffer is the one video frames share, with the same limit.
     public func pushFrame(
@@ -414,6 +464,70 @@ extension Track {
             track: name, samples: samples, sampleRate: sampleRate, channels: channels)
     }
 
+    /// Buffer one encoded video frame, its bytes as they are, for the next step.
+    ///
+    /// Stepped sessions only: like ``pushFrame(_:width:height:userData:captureTimeUs:)``
+    /// there, this sends nothing, and the next
+    /// ``Reactor/step(state:commands:media:)`` carries the frame. `frame.data`
+    /// is one H.264 access unit, and `frame.width` and `frame.height` the frame
+    /// it decodes to:
+    ///
+    /// ```swift
+    /// for unit in window {   // keyframe first
+    ///     try camera.pushEncodedFrame(EncodedFrame(unit, width: 1280, height: 720))
+    /// }
+    /// let result = try await reactor.step()
+    /// ```
+    ///
+    /// The runtime decodes a track's encoded frames of one step as one stream,
+    /// before the step runs, and the model reads RGB frames as if they had been
+    /// pushed raw. So push them in decode order, starting at a keyframe; a step
+    /// whose frames do not decode is refused with
+    /// ``ReactorError/Code/stepRefused``. Encoded and raw pushes to one track
+    /// keep their push order, and share the raw pushes' buffer and its limit.
+    ///
+    /// - Throws: ``ReactorError``:
+    ///   - ``ReactorError/Code/invalidState`` — not a stepped client, a closed
+    ///     one, a track that is recvonly or audio, or one not published.
+    ///   - ``ReactorError/Code/badRequest`` — a frame with no data, or a width
+    ///     or height of 0.
+    public func pushEncodedFrame(_ frame: EncodedFrame) throws {
+        guard let client else { return }
+        try client.push(track: name, encoded: frame)
+    }
+
+    /// Buffer one encoded video frame for the next step, from its parts.
+    ///
+    /// The same as ``pushEncodedFrame(_:)`` with an ``EncodedFrame`` made of
+    /// these arguments.
+    public func pushEncodedFrame(
+        _ data: Data,
+        width: UInt32,
+        height: UInt32,
+        codec: EncodedFrame.Codec = .h264,
+        userData: Data? = nil,
+        captureTimeUs: Int64? = nil
+    ) throws {
+        try pushEncodedFrame(
+            EncodedFrame(
+                data, width: width, height: height, codec: codec, userData: userData,
+                captureTimeUs: captureTimeUs))
+    }
+
+    /// Push one of a step's ``StepMediaFrame``s the way its own push would.
+    func push(_ frame: StepMediaFrame) throws {
+        switch frame {
+        case .video(let pixels, let width, let height, let userData, let captureTimeUs):
+            try pushFrame(
+                pixels, width: width, height: height, userData: userData,
+                captureTimeUs: captureTimeUs)
+        case .audio(let samples, let sampleRate, let channels):
+            try pushFrame(samples, sampleRate: sampleRate, channels: channels)
+        case .encoded(let encoded):
+            try pushEncodedFrame(encoded)
+        }
+    }
+
     /// Refuse an operation that needs a track this client can send on.
     private func requireSendable(method: String) throws {
         guard let declaration = client?.declaration(of: name) else { return }
@@ -423,6 +537,17 @@ extension Track {
                 "\(method) on '\(name)' is not something this client can do: the session "
                     + "declares it \(declaration.direction.rawValue), so the model sends on it.",
                 operation: method)
+        }
+    }
+}
+
+extension EncodedFrame.Codec {
+
+    /// The wire's `FrameEncoding`, as `reactor_push_step_encoded_video_frame`
+    /// takes it.
+    var encoding: Int32 {
+        switch self {
+        case .h264: Int32(REACTOR_FRAME_ENCODING_H264)
         }
     }
 }

@@ -7,6 +7,23 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-23
+
+### Added
+
+- Encoded video in a step. `reactor.step(media: ["webcam": frames])`, with
+  `StepMediaFrame.encoded(EncodedFrame(data, width:, height:))`, and
+  `Track.pushEncodedFrame(_:width:height:codec:userData:captureTimeUs:)` (or
+  `pushEncodedFrame(_ frame: EncodedFrame)`) send H.264 access units as they
+  are, and the runtime decodes them before the step runs, so the model reads RGB
+  frames as for a raw push. A track's frames of one step go in decode order,
+  starting at a keyframe; a step whose frames do not decode throws
+  `stepRefused`. `media` takes raw frames too (`StepMediaFrame.video`,
+  `.audio`), pushed after the ones already buffered and only once the state and
+  commands are well formed. `pushEncodedFrame` throws `invalidState` outside a
+  stepped session or on an audio, recvonly or unpublished track, and
+  `badRequest` for an empty frame or a zero width or height.
+
 ## [1.6.0] - 2026-10-23
 
 ### Added
