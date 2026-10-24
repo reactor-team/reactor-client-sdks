@@ -203,6 +203,25 @@ class SteppedTest {
         assertEquals(1L, stepping.await().step())
     }
 
+    @Test
+    fun `step media with a bad frame late in it pushes none of it`() = runBlocking {
+        publishedCamera()
+        assertThrows<InvalidStateException> {
+            client.step(
+                media =
+                    mapOf(
+                        "camera_in" to
+                            listOf(
+                                EncodedFrame.h264(byteArrayOf(0, 0, 0, 1, 0x65), 2, 2),
+                                StepInput.video(ByteArray(3), 2, 2),
+                            )
+                    )
+            )
+        }
+        assertTrue(fake.pushOrder.isEmpty())
+        assertEquals(0, fake.stepCalls)
+    }
+
     private fun publishedCamera(): ReactorTrack {
         val camera = client.track("camera_in")
         camera.java.publish()

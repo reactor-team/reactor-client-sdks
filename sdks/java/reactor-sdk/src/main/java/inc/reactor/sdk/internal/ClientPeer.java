@@ -1367,18 +1367,7 @@ public final class ClientPeer implements Runnable {
             byte @Nullable [] userData,
             @Nullable Long captureTimeUs) {
         requireOpen("pushEncodedFrame");
-        if (!ffi.has(Ffi.Symbol.PUSH_STEP_ENCODED_VIDEO_FRAME)) {
-            // The library would otherwise be refused at load for something most callers never use;
-            // this is where the absence costs something, so this is where it is said.
-            throw ReactorException.of(
-                    ErrorCode.INVALID_STATE.code(),
-                    "the loaded libreactor_ffi predates encoded step frames (it exports no "
-                            + Ffi.Symbol.PUSH_STEP_ENCODED_VIDEO_FRAME.cName()
-                            + "). Rebuild it with: cargo build -p reactor-ffi --release",
-                    null,
-                    "pushEncodedFrame",
-                    null);
-        }
+        requireEncodedVideoFrames();
         try (Arena call = Arena.ofConfined()) {
             MemorySegment tag = userData == null
                     ? MemorySegment.NULL
@@ -1396,6 +1385,27 @@ public final class ClientPeer implements Runnable {
                     userData == null ? 0 : userData.length,
                     captureTimeUs == null ? 0 : 1,
                     captureTimeUs == null ? 0L : captureTimeUs.longValue());
+        }
+    }
+
+    /**
+     * Refuses when the loaded library cannot take encoded step frames, so a caller can find out
+     * before it pushes anything.
+     *
+     * @throws ReactorException when the library predates {@code reactor_push_step_encoded_video_frame}
+     */
+    public void requireEncodedVideoFrames() {
+        if (!ffi.has(Ffi.Symbol.PUSH_STEP_ENCODED_VIDEO_FRAME)) {
+            // The library would otherwise be refused at load for something most callers never use;
+            // this is where the absence costs something, so this is where it is said.
+            throw ReactorException.of(
+                    ErrorCode.INVALID_STATE.code(),
+                    "the loaded libreactor_ffi predates encoded step frames (it exports no "
+                            + Ffi.Symbol.PUSH_STEP_ENCODED_VIDEO_FRAME.cName()
+                            + "). Rebuild it with: cargo build -p reactor-ffi --release",
+                    null,
+                    "pushEncodedFrame",
+                    null);
         }
     }
 

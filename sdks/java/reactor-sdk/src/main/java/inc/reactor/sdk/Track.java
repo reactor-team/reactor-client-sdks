@@ -201,11 +201,16 @@ public final class Track {
      */
     public void pushFrame(
             byte[] bgra, int width, int height, byte @Nullable [] userData, @Nullable Long captureTimeUs) {
+        prepareFrame(bgra, width, height, userData, captureTimeUs).run();
+    }
+
+    private Runnable prepareFrame(
+            byte[] bgra, int width, int height, byte @Nullable [] userData, @Nullable Long captureTimeUs) {
         requireSendable("pushFrame");
         requireKind(TrackKind.VIDEO, "a BGRA byte[]", "a short[] of PCM");
         requirePublished("pushFrame");
         requireExactFrameSize(bgra, width, height);
-        peer.pushVideoFrame(name, bgra, width, height, userData, captureTimeUs);
+        return () -> peer.pushVideoFrame(name, bgra, width, height, userData, captureTimeUs);
     }
 
     /**
@@ -222,6 +227,10 @@ public final class Track {
      *     the arguments do not describe the buffer
      */
     public void pushFrame(short[] pcm, int sampleRate, int channels) {
+        prepareFrame(pcm, sampleRate, channels).run();
+    }
+
+    private Runnable prepareFrame(short[] pcm, int sampleRate, int channels) {
         requireSendable("pushFrame");
         requireKind(TrackKind.AUDIO, "a short[] of PCM", "a BGRA byte[]");
         requirePublished("pushFrame");
@@ -241,7 +250,7 @@ public final class Track {
                     "interleaved PCM must hold whole frames: " + pcm.length + " samples do not divide into " + channels
                             + " channels.");
         }
-        peer.pushAudioFrame(name, pcm, sampleRate, channels);
+        return () -> peer.pushAudioFrame(name, pcm, sampleRate, channels);
     }
 
     /**
@@ -281,6 +290,10 @@ public final class Track {
      *     session, has no sender yet, or the native library predates encoded step frames
      */
     public void pushEncodedFrame(EncodedFrame frame) {
+        prepareEncodedFrame(frame).run();
+    }
+
+    private Runnable prepareEncodedFrame(EncodedFrame frame) {
         java.util.Objects.requireNonNull(frame, "frame");
         requireSendable("pushEncodedFrame");
         if (kind != TrackKind.VIDEO) {
@@ -296,7 +309,8 @@ public final class Track {
                             + " ReactorOptions.builder(...).generation(Generation.STEPPED)");
         }
         requirePublished("pushEncodedFrame");
-        peer.pushEncodedVideoFrame(
+        peer.requireEncodedVideoFrames();
+        return () -> peer.pushEncodedVideoFrame(
                 name,
                 frame.codec().wireValue(),
                 frame.dataUnsafe(),
@@ -306,14 +320,19 @@ public final class Track {
                 frame.captureTimeUsOrNull());
     }
 
-    /** Pushes one frame of a step's media, as the method that takes its kind would. */
-    void push(StepInput input) {
-        switch (input) {
-            case EncodedFrame encoded -> pushEncodedFrame(encoded);
+    /**
+     * Checks one frame of a step's media as the method that takes its kind would, and returns its
+     * push. The step checks every frame before it pushes any: the native buffer can only be
+     * cleared whole, so a frame refused halfway through would leave the ones before it to ride the
+     * next step.
+     */
+    Runnable prepare(StepInput input) {
+        return switch (input) {
+            case EncodedFrame encoded -> prepareEncodedFrame(encoded);
             case StepInput.Video video ->
-                pushFrame(video.bgra(), video.width(), video.height(), video.userData(), video.captureTimeUs());
-            case StepInput.Audio audio -> pushFrame(audio.pcm(), audio.sampleRate(), audio.channels());
-        }
+                prepareFrame(video.bgra(), video.width(), video.height(), video.userData(), video.captureTimeUs());
+            case StepInput.Audio audio -> prepareFrame(audio.pcm(), audio.sampleRate(), audio.channels());
+        };
     }
 
     /**
