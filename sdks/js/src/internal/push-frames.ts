@@ -57,6 +57,43 @@ function rawPixels(frame: RawVideoFrame | ImageData): Pixels {
   return { data: bytes, width, height, format: ('format' in frame && frame.format) || 'rgba' };
 }
 
+/** Bytes per pixel of each layout the binding accepts. */
+const BYTES_PER_PIXEL: Record<PixelFormat, number> = { rgba: 4, rgb: 3, bgra: 4 };
+
+/** Why the binding would refuse `pixels`, or `undefined` if it would take
+ *  them: what `step()` checks of every frame of its `media` before pushing
+ *  any. */
+export function pixelsFault({ data, width, height, format }: Pixels): string | undefined {
+  const bytesPerPixel = BYTES_PER_PIXEL[format] as number | undefined;
+
+  if (bytesPerPixel === undefined) {
+    return `unknown pixel format ${JSON.stringify(format)}; expected "rgba", "rgb" or "bgra"`;
+  }
+  if (!isDimension(width) || !isDimension(height)) {
+    return `a ${String(width)}x${String(height)} frame has no pixels`;
+  }
+  if (!(data instanceof Uint8Array) || data.byteLength !== width * height * bytesPerPixel) {
+    return `${String(data?.byteLength)} bytes is not a ${width}x${height} ${format} frame`;
+  }
+  return undefined;
+}
+
+/** Why the binding would refuse an audio frame, or `undefined` if it would
+ *  take it. */
+export function audioFault({ samples, channels = 1 }: PushAudioFrame): string | undefined {
+  if (!(samples instanceof Int16Array)) {
+    return 'samples must be an Int16Array';
+  }
+  if (!isDimension(channels) || samples.length % channels !== 0) {
+    return `${samples.length} samples do not divide into ${String(channels)} channels`;
+  }
+  return undefined;
+}
+
+function isDimension(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= 0xffff_ffff;
+}
+
 /** Native layouts `copyTo()` can hand over as they are. */
 const NATIVE_FORMATS: Partial<Record<string, PixelFormat>> = {
   RGBA: 'rgba',
