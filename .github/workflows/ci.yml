@@ -835,6 +835,24 @@ jobs:
           # same task, and a wrapper each caller has to remember is the drift that rule exists to
           # prevent.
           script: mise run test:android:integration-tests
+      # As in android-instrumented-tests: Gradle names no failing test on the console, so a
+      # failure prints which tests failed and why, and the full report is kept.
+      - name: Show the failing live tests
+        if: failure()
+        shell: bash
+        run: |
+          shopt -s globstar nullglob
+          for result in sdks/android/integration-tests/build/outputs/androidTest-results/connected/**/*.xml; do
+            grep -B1 -A15 '<failure' "$result" || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: android-integration-report
+          path: |
+            sdks/android/integration-tests/build/reports/androidTests/connected/
+            sdks/android/integration-tests/build/outputs/androidTest-results/connected/
+          if-no-files-found: ignore
 
   android-instrumented-tests:
     name: Android SDK instrumented tests (real libraries, 16 KB emulator)
