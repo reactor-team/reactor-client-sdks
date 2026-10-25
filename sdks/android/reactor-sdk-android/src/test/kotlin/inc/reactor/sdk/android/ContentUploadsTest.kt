@@ -21,6 +21,17 @@ class ContentUploadsTest {
     }
 
     @Test
+    fun `a SecurityException from a revoked grant becomes NotFoundException, keeping the cause`() {
+        val original = SecurityException("Permission Denial: content://revoked/1")
+        val thrown =
+            assertThrows(NotFoundException::class.java) {
+                openContent("content://revoked/1") { throw original }
+            }
+        assertSame(original, thrown.cause)
+        assertTrue(thrown.message!!.contains("content://revoked/1"))
+    }
+
+    @Test
     fun `a null stream from the resolver becomes NotFoundException`() {
         assertThrows(NotFoundException::class.java) { openContent("content://gone/1") { null } }
     }
