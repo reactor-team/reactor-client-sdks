@@ -14,7 +14,7 @@ import android.net.Uri
  * @param name the filename to upload under. **Give it the right extension**: the platform infers
  *   the MIME type from it, and a content URI's own display name often has none.
  * @throws NotFoundException when the resolver cannot open the URI — usually a grant that expired
- *   between the picker returning and this call.
+ *   or was revoked between the picker returning and this call.
  */
 public suspend fun Reactor.uploadContent(
     context: Context,
@@ -34,8 +34,10 @@ public suspend fun Reactor.uploadContent(
  * Open a content stream, or raise [NotFoundException].
  *
  * `openInputStream` reports a missing URI by throwing [java.io.FileNotFoundException], and only
- * occasionally by returning null, so both have to become the documented error. The original
- * exception is kept as the cause.
+ * occasionally by returning null, so both have to become the documented error. A revoked grant
+ * surfaces as a [SecurityException] instead, which is not a [ReactorException] and would escape
+ * a caller handling those, so it becomes the same error. The original exception is kept as the
+ * cause.
  */
 internal fun openContent(
     uri: String,
@@ -45,6 +47,8 @@ internal fun openContent(
         try {
             open()
         } catch (e: java.io.FileNotFoundException) {
+            throw contentNotFound(uri, e)
+        } catch (e: SecurityException) {
             throw contentNotFound(uri, e)
         }
     return stream ?: throw contentNotFound(uri, null)
