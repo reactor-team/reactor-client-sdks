@@ -66,7 +66,7 @@ internal class LiveSessionTest : LiveFixture() {
     @Test
     fun aCommandAnswersThroughItsOwnCall() =
         runBlocking {
-            val reply = reactor.sendCommand("ping")
+            val reply = reactor.sendCommand("get_status")
             assertNotNull("a command must answer through its own call", reply)
         }
 
