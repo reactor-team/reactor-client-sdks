@@ -17,6 +17,10 @@ versioning follows [Semantic Versioning](https://semver.org/).
   `Closed (START_REFUSED): generation 'stepped' needs a model that runs the
   default ReactorApp step loop ...` for a stepped connect to a model that
   cannot step. The error code is still `SESSION_TERMINAL`.
+- A step's `media` no longer pushes part of itself before refusing a later
+  encoded frame: a `width`, `height` or `capture_time_us` out of the C ABI's
+  range, which ctypes would have wrapped, is now refused with the rest of the
+  frame's checks, before any frame is pushed.
 
 - Same-session `reconnect()` could time out after 30 s ("transport readiness
   did not complete") on high-latency links. Each ICE candidate was POSTed to

@@ -173,6 +173,12 @@ _SYNTHETIC_ADM = 0
 #: which otherwise reports "ffi" for every language.
 _SDK_TYPE = b"python"
 
+#: The C ABI's frame dimensions are `uint32_t` and its capture time `int64_t`.
+#: ctypes wraps an out-of-range int instead of refusing it, so a frame's scalars
+#: are range-checked here, before any of a step's frames is pushed.
+_UINT32_MAX = 2**32 - 1
+_INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
+
 #: How a session generates: `"streamed"` over media tracks (the default, and what
 #: every session did before the choice existed), or `"stepped"`, one
 #: :meth:`Reactor.step` at a time.
@@ -1687,10 +1693,16 @@ class Reactor:
             )
         if not data:
             raise ValueError("push_encoded_frame(): an encoded frame needs data")
-        if width <= 0 or height <= 0:
+        if not all(isinstance(v, int) and 0 < v <= _UINT32_MAX for v in (width, height)):
             raise ValueError(
                 f"push_encoded_frame(): width and height are the decoded frame's, "
                 f"got {width}x{height}"
+            )
+        if capture_time_us is not None and not (
+            isinstance(capture_time_us, int) and _INT64_MIN <= capture_time_us <= _INT64_MAX
+        ):
+            raise ValueError(
+                f"push_encoded_frame(): capture_time_us must be an int64, got {capture_time_us!r}"
             )
         self._require_handle()
         lib = get_lib()
@@ -1703,9 +1715,8 @@ class Reactor:
         buf = (ctypes.c_uint8 * len(data)).from_buffer_copy(data)
         tag_len = len(user_data) if user_data else 0
         tag = (ctypes.c_uint8 * tag_len).from_buffer_copy(user_data) if user_data else None
-        handle = self._handle
-        return lambda: lib.reactor_push_step_encoded_video_frame(
-            ctypes.c_void_p(handle),
+        args = (
+            ctypes.c_void_p(self._handle),
             track_name.encode(),
             ctypes.c_int(encoding),
             buf,
@@ -1717,6 +1728,7 @@ class Reactor:
             ctypes.c_int(capture_time_us is not None),
             ctypes.c_int64(capture_time_us or 0),
         )
+        return lambda: lib.reactor_push_step_encoded_video_frame(*args)
 
     def _push_begin(self) -> int:
         """The connection a frame push belongs to, read as the app hands it over."""

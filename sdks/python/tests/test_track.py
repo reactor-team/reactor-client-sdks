@@ -609,6 +609,8 @@ class TestPushEncodedFrame:
             (b"x", 2, 2, "vp9", "unknown codec"),
             (b"", 2, 2, "h264", "needs data"),
             (b"x", 0, 2, "h264", "decoded frame"),
+            (b"x", 2**32, 2, "h264", "decoded frame"),
+            (b"x", 2, 1.5, "h264", "decoded frame"),
         ],
     )
     def test_malformed_frames_are_refused(
@@ -693,6 +695,14 @@ class TestPushEncodedFrame:
             {"camera": [EncodedFrame(b"idr", 2, 2)], "output": [EncodedFrame(b"idr", 2, 2)]},
             # A later frame is not a frame the track can take.
             {"camera": [EncodedFrame(b"idr", 2, 2), np.zeros((2, 2), dtype=np.uint8)]},
+            # A later frame's scalars do not fit the C ABI, which ctypes would wrap.
+            {"camera": [EncodedFrame(b"idr", 2, 2), EncodedFrame(b"p", 2**32, 2)]},
+            {
+                "camera": [
+                    EncodedFrame(b"idr", 2, 2),
+                    EncodedFrame(b"p", 2, 2, capture_time_us=2**63),
+                ]
+            },
         ],
     )
     def test_step_media_refused_anywhere_pushes_none_of_it(
