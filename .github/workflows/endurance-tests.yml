@@ -1171,7 +1171,6 @@ jobs:
         with:
           cache-on-failure: true
       - name: Read mise pin
-        if: vars.ANDROID_EMULATOR_RUNNER != ''
         shell: bash
         run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
       - uses: jdx/mise-action@v4
