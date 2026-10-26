@@ -57,21 +57,34 @@ struct StepCommand {
   Json data = nullptr;
 };
 
-/// A raw BGRA video frame for a step's media, as `Track::push_frame` takes it.
+/// A raw video frame for a step's media, BGRA or RGB, as `Track::push_frame`
+/// takes it.
 ///
-/// Borrowed, like `Bytes`: `bgra` (and `options.user_data`) must stay valid until
-/// `step()` returns, which pushes it before it does.
+/// Borrowed, like `Bytes`: `pixels` (and `options.user_data`) must stay valid
+/// until `step()` returns, which pushes it before it does.
 struct RawVideoFrame {
-  /// `width * height * 4` bytes: B, G, R, A per pixel.
-  Bytes bgra{};
+  /// `width * height * 4` bytes, B, G, R, A per pixel, or `* 3` and R, G, B for
+  /// `PixelFormat::Rgb`.
+  Bytes pixels{};
   std::uint32_t width = 0;
   std::uint32_t height = 0;
   Track::FrameOptions options{};
+  PixelFormat format = PixelFormat::Bgra;
 };
 
-/// One input frame of a step's media: raw BGRA, or encoded and decoded by the
-/// runtime before the step runs.
-using StepMediaFrame = std::variant<RawVideoFrame, EncodedFrame>;
+/// Interleaved 16-bit PCM for a step's media, as `Track::push_frame` takes it,
+/// for an audio input track.
+///
+/// Borrowed, like `Samples`: `pcm` must stay valid until `step()` returns.
+struct RawAudioFrame {
+  Samples pcm{};
+  std::uint32_t sample_rate = 48'000;
+  std::uint32_t channels = 1;
+};
+
+/// One input frame of a step's media: raw video, encoded video decoded by the
+/// runtime before the step runs, or raw audio.
+using StepMediaFrame = std::variant<RawVideoFrame, EncodedFrame, RawAudioFrame>;
 
 /// A step's own input frames, by input track name, each track's in the order they
 /// go: see `Reactor::step(state, commands, media)`.
