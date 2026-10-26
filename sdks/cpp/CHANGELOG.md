@@ -16,16 +16,21 @@ versioning follows [Semantic Versioning](https://semver.org/).
   own input frames by track name, a `reactor::StepMedia` of
   `reactor::EncodedFrame` (one H.264 access unit, Annex B, with the width and
   height it decodes to, `codec` defaulting to `reactor::VideoCodec::H264`, and
-  optional `user_data` and `capture_time_us`) or `reactor::RawVideoFrame` (BGRA,
-  as `push_frame` takes it). `Track::push_encoded_frame(data, width, height)`
+  optional `user_data` and `capture_time_us`), `reactor::RawVideoFrame` (BGRA or
+  RGB, as `push_frame` takes it) or `reactor::RawAudioFrame` (interleaved PCM,
+  for an audio track). `Track::push_encoded_frame(data, width, height)`
   buffers one ahead of the step. The runtime decodes a track's encoded frames
   before the step runs, so the model reads RGB frames as for a raw push. A
   track's frames of one step go in decode order, starting at a keyframe; a step
   whose frames do not decode fails with `StepRefusedError`. `media` is pushed
   after the frames already buffered, and only once the state, the commands and
   every frame of `media` are well formed, so a bad track or frame anywhere in it
-  fails the step before any of its media is pushed. Stepped sessions and published sendonly video tracks only. Needs a
-  `libreactor_ffi` with `reactor_push_step_encoded_video_frame`.
+  fails the step before any of its media is pushed. Encoded frames take stepped
+  sessions and published sendonly video tracks only, and need a `libreactor_ffi`
+  with `reactor_push_step_encoded_video_frame`.
+- RGB frames. `Track::push_frame(pixels, reactor::PixelFormat::Rgb, width,
+  height)` takes `width * height * 3` bytes of R, G, B and converts them to
+  BGRA, opaque, before the push, as the Python SDK does with an RGB array.
 
 ### Fixed
 

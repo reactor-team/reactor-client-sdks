@@ -323,9 +323,12 @@ void ClientImpl::push_step_media(const StepMedia& media) {
     for (const auto& frame : frames) {
       if (const auto* encoded = std::get_if<EncodedFrame>(&frame)) {
         pushes.push_back(prepare_encoded_video(name, *encoded));
+      } else if (const auto* audio = std::get_if<RawAudioFrame>(&frame)) {
+        pushes.push_back(prepare_audio(name, audio->pcm, audio->sample_rate, audio->channels));
       } else {
         const auto& raw = std::get<RawVideoFrame>(frame);
-        pushes.push_back(prepare_video(name, raw.bgra, raw.width, raw.height, raw.options));
+        pushes.push_back(
+            prepare_video(name, raw.pixels, raw.format, raw.width, raw.height, raw.options));
       }
     }
   }

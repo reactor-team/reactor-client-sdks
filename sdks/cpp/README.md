@@ -232,6 +232,14 @@ Read `time_micros()` **once per unit of produced media** and stamp every track
 with that one value: tracks are synchronised by sharing a capture time, not by
 reaching the encoder at the same moment.
 
+Frames in RGB, as decoders and image libraries tend to hand them over, go in
+with their format; they are converted to BGRA, opaque, before the push:
+
+```cpp
+input.push_frame(reactor::Bytes{rgb.data(), rgb.size()}, reactor::PixelFormat::Rgb,
+                 width, height);   // width * height * 3 bytes
+```
+
 Audio uses the same sending method with interleaved 16-bit PCM:
 
 ```cpp
@@ -284,7 +292,7 @@ receiving nothing. Every one of these throws instead, with the fix in the messag
 | a video handler on an audio track | `InvalidStateError`, naming the required `AudioFrame` handler |
 | `push_frame` on a recvonly track | `InvalidStateError`, naming the direction |
 | `push_frame` before `publish()` | `InvalidStateError` |
-| a pixel buffer that is not `width * height * 4` | `BadRequestError`, naming both sizes |
+| a pixel buffer that is not `width * height * 4` (`* 3` for RGB) | `BadRequestError`, naming both sizes |
 | anything after the session leaves `Ready` | `InvalidStateError`, naming the status |
 | `one()` matching zero or several tracks | `NotFoundError` / `InvalidStateError` |
 | `step()` on a streamed client | `InvalidStateError`, naming `Generation::Stepped` |
@@ -405,15 +413,24 @@ const auto next = client.step().get();
 
 `width` and `height` are the frame each one decodes to; `EncodedFrame::user_data`
 and `capture_time_us` (or `Track::FrameOptions` for `push_encoded_frame`) tag and
-stamp it as for `push_frame`. `media` takes raw BGRA frames too, as
-`reactor::RawVideoFrame{bgra, width, height}`, and its frames go after the ones
-pushed to the same track since the previous step; they are pushed only once the
-state and commands are well formed. The bytes are borrowed until `step()` or
+stamp it as for `push_frame`. `media` takes raw video too, as
+`reactor::RawVideoFrame{bgra, width, height}` (or `{rgb, width, height, {},
+reactor::PixelFormat::Rgb}`), and PCM for an audio track, as
+`reactor::RawAudioFrame{samples, sample_rate, channels}`. Its frames go after the
+ones pushed to the same track since the previous step; they are pushed only once
+the state, the commands and every frame of `media` are well formed. The bytes are
+borrowed until `step()` or
 `push_encoded_frame()` returns. Encoded frames need a stepped client, a published
 sendonly video track, data, and a non-zero size (`InvalidStateError` /
 `BadRequestError` otherwise). A step whose frames do not decode, or that does not
 start at a keyframe, throws `StepRefusedError`, naming the frame in `entry()`; a
 runtime that predates encoded frames refuses them the same way.
+
+A step carries at most one data-channel message's worth of frames, and pushing
+past that drops the oldest ones, whatever their track. For an encoded track that
+is its keyframe, so a step left with the rest of that window throws
+`StepRefusedError` too. Keep the window, and any raw frames sent alongside it,
+within one message.
 
 The result is copied out of the native library once, when the step completes, and
 the native result is freed there and then: a `StepResult` owns its bytes and

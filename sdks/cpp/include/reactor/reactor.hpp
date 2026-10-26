@@ -465,10 +465,10 @@ class Reactor {
   std::future<StepResult> step(Json state = nullptr, std::vector<StepCommand> commands = {});
 
   /// Run one step with frames of its own: `media` gives them by input track name,
-  /// after the ones pushed to that track since the previous step. A frame is
-  /// either a `RawVideoFrame`, BGRA as `Track::push_frame` takes it, or an
-  /// `EncodedFrame`, which goes as it is and is decoded by the runtime before the
-  /// step runs:
+  /// after the ones pushed to that track since the previous step. A frame is a
+  /// `RawVideoFrame`, BGRA or RGB as `Track::push_frame` takes it, a
+  /// `RawAudioFrame` of PCM for an audio track, or an `EncodedFrame`, which goes
+  /// as it is and is decoded by the runtime before the step runs:
   ///
   /// ```cpp
   /// reactor::StepMedia media;

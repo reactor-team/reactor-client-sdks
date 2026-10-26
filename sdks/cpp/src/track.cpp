@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -161,7 +162,12 @@ std::future<void> Track::set_bitrate(Bitrate bounds) {
 
 void Track::push_frame(Bytes bgra, std::uint32_t width, std::uint32_t height,
                        const FrameOptions& options) {
-  client("push a frame")->push_video(name_, bgra, width, height, options);
+  client("push a frame")->push_video(name_, bgra, PixelFormat::Bgra, width, height, options);
+}
+
+void Track::push_frame(Bytes pixels, PixelFormat format, std::uint32_t width, std::uint32_t height,
+                       const FrameOptions& options) {
+  client("push a frame")->push_video(name_, pixels, format, width, height, options);
 }
 
 void Track::push_frame(Samples pcm, std::uint32_t sample_rate, std::uint32_t channels) {
@@ -844,13 +850,15 @@ void ClientImpl::begin_set_track_bitrate(std::unique_ptr<Pending> op, const std:
   }
 }
 
-void ClientImpl::push_video(const std::string& name, Bytes bgra, std::uint32_t width,
-                            std::uint32_t height, const Track::FrameOptions& options) {
-  prepare_video(name, bgra, width, height, options)();
+void ClientImpl::push_video(const std::string& name, Bytes pixels, PixelFormat format,
+                            std::uint32_t width, std::uint32_t height,
+                            const Track::FrameOptions& options) {
+  prepare_video(name, pixels, format, width, height, options)();
 }
 
-std::function<void()> ClientImpl::prepare_video(const std::string& name, Bytes bgra,
-                                                std::uint32_t width, std::uint32_t height,
+std::function<void()> ClientImpl::prepare_video(const std::string& name, Bytes pixels,
+                                                PixelFormat format, std::uint32_t width,
+                                                std::uint32_t height,
                                                 const Track::FrameOptions& options) {
   // The frame's submit stage starts here, so this SDK's own checks count.
   const auto started = std::chrono::steady_clock::now();
@@ -867,17 +875,35 @@ std::function<void()> ClientImpl::prepare_video(const std::string& name, Bytes b
 
   require_published(name);
 
-  const std::size_t expected =
-      static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4U;
-  if (bgra.data == nullptr || bgra.size != expected) {
+  const bool rgb = format == PixelFormat::Rgb;
+  const std::size_t pixel_count =
+      static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+  const std::size_t expected = pixel_count * (rgb ? 3U : 4U);
+  if (pixels.data == nullptr || pixels.size != expected) {
     // The FFI reads what it is told to read, so a wrong length here is a read past
     // the end of the caller's own buffer.
     throw BadRequestError{"a " + std::to_string(width) + "x" + std::to_string(height) +
-                          " BGRA frame is " + std::to_string(expected) + " bytes; this one is " +
-                          std::to_string(bgra.size) + "."};
+                          (rgb ? " RGB" : " BGRA") + " frame is " + std::to_string(expected) +
+                          " bytes; this one is " + std::to_string(pixels.size) + "."};
   }
 
   ReactorHandle* handle = require_ready_handle("push a frame into", name);
+
+  // The native library takes BGRA only, so RGB is converted here, the alpha the
+  // wire format needs added opaque. The push owns the converted buffer.
+  std::shared_ptr<const std::vector<std::uint8_t>> converted;
+  const std::uint8_t* bgra = pixels.data;
+  if (rgb) {
+    auto buffer = std::make_shared<std::vector<std::uint8_t>>(pixel_count * 4U);
+    for (std::size_t i = 0; i < pixel_count; ++i) {
+      (*buffer)[i * 4U] = pixels.data[i * 3U + 2U];
+      (*buffer)[i * 4U + 1U] = pixels.data[i * 3U + 1U];
+      (*buffer)[i * 4U + 2U] = pixels.data[i * 3U];
+      (*buffer)[i * 4U + 3U] = 0xFF;
+    }
+    bgra = buffer->data();
+    converted = std::move(buffer);
+  }
   const std::uint8_t* tag = options.user_data.empty() ? nullptr : options.user_data.data;
   const auto tag_len = static_cast<std::uint32_t>(options.user_data.size);
   const std::optional<std::int64_t> capture_time_us = options.capture_time_us;
@@ -885,13 +911,13 @@ std::function<void()> ClientImpl::prepare_video(const std::string& name, Bytes b
   // `name` is copied, not borrowed, so the push owns all it holds but the frame's
   // own bytes; see add_video_handler's own comment on that copy and the NOLINT.
   // NOLINTNEXTLINE(bugprone-exception-escape)
-  return [handle, name, bgra, width, height, tag, tag_len, capture_time_us, started] {
+  return [handle, name, bgra, converted, width, height, tag, tag_len, capture_time_us, started] {
     // The connection this frame belongs to; nothing between this and the push
     // below can block, so a reconnect has no time to land in between.
     const std::uint64_t generation = ffi().push_begin(handle);
     const std::chrono::duration<double, std::milli> binding_ms =
         std::chrono::steady_clock::now() - started;
-    ffi().push_video_frame_timed(handle, name.c_str(), bgra.data, width, height, tag, tag_len,
+    ffi().push_video_frame_timed(handle, name.c_str(), bgra, width, height, tag, tag_len,
                                  capture_time_us ? 1 : 0, capture_time_us.value_or(0),
                                  binding_ms.count(), generation);
   };
@@ -969,6 +995,11 @@ std::function<void()> ClientImpl::prepare_encoded_video(const std::string& name,
 
 void ClientImpl::push_audio(const std::string& name, Samples pcm, std::uint32_t sample_rate,
                             std::uint32_t channels) {
+  prepare_audio(name, pcm, sample_rate, channels)();
+}
+
+std::function<void()> ClientImpl::prepare_audio(const std::string& name, Samples pcm,
+                                                std::uint32_t sample_rate, std::uint32_t channels) {
   const auto tracks = declared_tracks();
   const Declared* found = find_declared(tracks, name);
   const Declared declared_track =
@@ -996,8 +1027,12 @@ void ClientImpl::push_audio(const std::string& name, Samples pcm, std::uint32_t 
   }
 
   ReactorHandle* handle = require_ready_handle("push audio into", name);
-  ffi().push_audio_frame(handle, name.c_str(), pcm.data,
-                         static_cast<std::uint32_t>(pcm.size / channels), sample_rate, channels);
+  // See prepare_video on the copy of `name` and the NOLINT.
+  // NOLINTNEXTLINE(bugprone-exception-escape)
+  return [handle, name, pcm, sample_rate, channels] {
+    ffi().push_audio_frame(handle, name.c_str(), pcm.data,
+                           static_cast<std::uint32_t>(pcm.size / channels), sample_rate, channels);
+  };
 }
 
 }  // namespace detail

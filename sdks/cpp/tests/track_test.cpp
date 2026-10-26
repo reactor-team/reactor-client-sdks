@@ -74,6 +74,8 @@ class FakeSession {
   /// One recorded push: what reached the timed entry point.
   struct Push {
     std::string track;
+    /// The `width * height * 4` BGRA bytes the push handed over.
+    std::vector<std::uint8_t> bgra;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::string user_data;
@@ -106,7 +108,7 @@ class FakeSession {
   std::vector<EncodedPush> encoded_pushes;
 
   /// Every frame push and step, in the order the SDK made them: "raw:<track>",
-  /// "h264:<track>", "step".
+  /// "h264:<track>", "pcm:<track>", "step".
   std::vector<std::string> calls;
 
   std::vector<std::string> published;
@@ -435,14 +437,18 @@ class FakeSession {
   }
 
   static void push_video_frame_timed(ReactorHandle* /*handle*/, const char* track,
-                                     const std::uint8_t* /*data*/, std::uint32_t width,
+                                     const std::uint8_t* data, std::uint32_t width,
                                      std::uint32_t height, const std::uint8_t* user_data,
                                      std::uint32_t user_data_len, int has_capture_time,
                                      std::int64_t capture_time_us, double binding_ms,
                                      std::uint64_t generation) {
     current().calls.push_back("raw:" + std::string{track == nullptr ? "" : track});
     current().pushes.push_back(Push{
-        track == nullptr ? "" : track, width, height,
+        track == nullptr ? "" : track,
+        data == nullptr
+            ? std::vector<std::uint8_t>{}
+            : std::vector<std::uint8_t>(data, data + static_cast<std::size_t>(width) * height * 4U),
+        width, height,
         user_data == nullptr ? std::string{}
                              : std::string{reinterpret_cast<const char*>(user_data), user_data_len},
         has_capture_time != 0 ? std::optional<std::int64_t>{capture_time_us} : std::nullopt,
@@ -460,6 +466,7 @@ class FakeSession {
   static void push_audio_frame(ReactorHandle* /*handle*/, const char* track,
                                const std::int16_t* /*data*/, std::uint32_t samples_per_channel,
                                std::uint32_t sample_rate, std::uint32_t channels) {
+    current().calls.push_back("pcm:" + std::string{track == nullptr ? "" : track});
     current().audio_pushes.push_back(
         AudioPush{track == nullptr ? "" : track, samples_per_channel, sample_rate, channels});
   }
@@ -1196,6 +1203,37 @@ TEST_CASE("one capture time stamped on two tracks reaches both pushes unchanged"
   CHECK(fixture.session.pushes[1].capture_time_us == options.capture_time_us);
 }
 
+TEST_CASE("an RGB frame reaches the entry point as opaque BGRA") {
+  Connected fixture;
+  auto input = fixture.client.track("input_video");
+  input.publish().get();
+
+  // Two pixels: red, then a grey with distinct channels.
+  const std::vector<std::uint8_t> rgb{0xFF, 0x00, 0x00, 0x10, 0x20, 0x30};
+  input.push_frame(as_bytes(rgb), reactor::PixelFormat::Rgb, 2, 1);
+
+  REQUIRE(fixture.session.pushes.size() == 1);
+  CHECK(fixture.session.pushes[0].width == 2);
+  CHECK(fixture.session.pushes[0].height == 1);
+  CHECK(fixture.session.pushes[0].bgra ==
+        std::vector<std::uint8_t>{0x00, 0x00, 0xFF, 0xFF, 0x30, 0x20, 0x10, 0xFF});
+}
+
+TEST_CASE("a frame is checked against its own format's length") {
+  Connected fixture;
+  auto input = fixture.client.track("input_video");
+  input.publish().get();
+  const auto bgra = bgra_frame(2, 2);
+
+  // BGRA bytes are not an RGB frame of the same size, nor the other way round.
+  CHECK_THROWS_AS(input.push_frame(as_bytes(bgra), reactor::PixelFormat::Rgb, 2, 2),
+                  reactor::BadRequestError);
+  const std::vector<std::uint8_t> rgb(12, 0x40);  // 2x2, 3 bytes a pixel
+  CHECK_THROWS_AS(input.push_frame(as_bytes(rgb), reactor::PixelFormat::Bgra, 2, 2),
+                  reactor::BadRequestError);
+  CHECK(fixture.session.pushes.empty());
+}
+
 TEST_CASE("pushing audio divides the interleaved samples by the channel count") {
   Connected fixture;
   fixture.session.redeclare(R"([{"name":"input_audio","kind":"audio","direction":"sendonly"}])");
@@ -1726,4 +1764,60 @@ TEST_CASE("a step's media refused anywhere pushes none of it") {
   CHECK(fixture.session.calls.empty());
   CHECK(fixture.session.encoded_pushes.empty());
   CHECK(fixture.session.pushes.empty());
+}
+
+TEST_CASE("a step's media takes RGB video and PCM audio, pushed in order") {
+  Connected fixture{stepped()};
+  fixture.session.redeclare(R"([{"name":"input_video","kind":"video","direction":"sendonly"},)"
+                            R"({"name":"input_audio","kind":"audio","direction":"sendonly"}])");
+  fixture.client.track("input_video").publish().get();
+  fixture.client.track("input_audio").publish().get();
+  const std::vector<std::uint8_t> rgb{0xFF, 0x00, 0x00};
+  const std::vector<std::int16_t> pcm(960, 7);
+
+  reactor::StepMedia media;
+  media["input_audio"].push_back(
+      reactor::RawAudioFrame{reactor::Samples{pcm.data(), pcm.size()}, 48'000, 2});
+  media["input_video"].push_back(
+      reactor::RawVideoFrame{as_bytes(rgb), 1, 1, {}, reactor::PixelFormat::Rgb});
+
+  CHECK_THROWS_AS(fixture.client.step(nullptr, {}, media).get(), reactor::StepRefusedError);
+
+  // StepMedia is ordered by track name.
+  CHECK(fixture.session.calls ==
+        std::vector<std::string>{"pcm:input_audio", "raw:input_video", "step"});
+  REQUIRE(fixture.session.audio_pushes.size() == 1);
+  CHECK(fixture.session.audio_pushes[0].samples_per_channel == 480);
+  CHECK(fixture.session.audio_pushes[0].channels == 2);
+  REQUIRE(fixture.session.pushes.size() == 1);
+  CHECK(fixture.session.pushes[0].bgra == std::vector<std::uint8_t>{0x00, 0x00, 0xFF, 0xFF});
+}
+
+TEST_CASE("a step's audio or RGB refused anywhere pushes none of its media") {
+  Connected fixture{stepped()};
+  fixture.session.redeclare(R"([{"name":"input_video","kind":"video","direction":"sendonly"},)"
+                            R"({"name":"input_audio","kind":"audio","direction":"sendonly"}])");
+  fixture.client.track("input_video").publish().get();
+  fixture.client.track("input_audio").publish().get();
+  const std::vector<std::int16_t> pcm(480, 7);
+  const reactor::Samples samples{pcm.data(), pcm.size()};
+
+  reactor::StepMedia media;
+  media["input_audio"].push_back(reactor::RawAudioFrame{samples});
+
+  SECTION("a later audio frame at a rate the engine does not take") {
+    media["input_audio"].push_back(reactor::RawAudioFrame{samples, 11'025});
+  }
+  SECTION("PCM pushed into a video track") {
+    media["input_video"].push_back(reactor::RawAudioFrame{samples});
+  }
+  SECTION("an RGB frame whose length does not match its size") {
+    const std::vector<std::uint8_t> short_rgb(5, 0x40);
+    media["input_video"].push_back(
+        reactor::RawVideoFrame{as_bytes(short_rgb), 1, 2, {}, reactor::PixelFormat::Rgb});
+  }
+
+  CHECK_THROWS_AS(fixture.client.step(nullptr, {}, media).get(), reactor::ReactorError);
+  CHECK(fixture.session.calls.empty());
+  CHECK(fixture.session.audio_pushes.empty());
 }

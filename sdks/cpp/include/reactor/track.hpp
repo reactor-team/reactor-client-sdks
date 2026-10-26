@@ -57,6 +57,15 @@ struct Samples {
   bool empty() const noexcept { return size == 0; }
 };
 
+/// How a pushed video frame's pixels are laid out.
+enum class PixelFormat : std::uint8_t {
+  /// 4 bytes per pixel: B, G, R, A. What the native library takes, as it is.
+  Bgra,
+  /// 3 bytes per pixel: R, G, B, as decoders and image libraries tend to hand
+  /// frames over. Converted to BGRA, opaque, before the push.
+  Rgb,
+};
+
 /// What flows on a track.
 enum class TrackKind : std::uint8_t { Video, Audio };
 
@@ -282,6 +291,12 @@ class Track {
   /// caller pushing at 30fps would see a model receiving nothing and no reason
   /// why.
   void push_frame(Bytes bgra, std::uint32_t width, std::uint32_t height,
+                  const FrameOptions& options = {});
+
+  /// The same, for a frame laid out as `format`: `pixels` must hold exactly
+  /// `width * height * 4` bytes for `PixelFormat::Bgra`, `* 3` for
+  /// `PixelFormat::Rgb`, which is converted to BGRA before the push.
+  void push_frame(Bytes pixels, PixelFormat format, std::uint32_t width, std::uint32_t height,
                   const FrameOptions& options = {});
 
   /// Push interleaved 16-bit PCM into a track whose `kind()` is `Audio`.

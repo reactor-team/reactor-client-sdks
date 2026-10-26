@@ -556,19 +556,24 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   void begin_set_track_bitrate(std::unique_ptr<Pending> op, const std::string& name,
                                const Track::Bitrate& bounds);
 
-  void push_video(const std::string& name, Bytes bgra, std::uint32_t width, std::uint32_t height,
-                  const Track::FrameOptions& options);
+  void push_video(const std::string& name, Bytes pixels, PixelFormat format, std::uint32_t width,
+                  std::uint32_t height, const Track::FrameOptions& options);
   void push_audio(const std::string& name, Samples pcm, std::uint32_t sample_rate,
                   std::uint32_t channels);
   void push_encoded_video(const std::string& name, const EncodedFrame& frame);
 
   /// Every check `push_video` makes, throwing on the first that fails; what comes
-  /// back does only the native push. It borrows `bgra` and `options`, so it must
-  /// run while they are alive. Split so a step can refuse its media whole.
-  std::function<void()> prepare_video(const std::string& name, Bytes bgra, std::uint32_t width,
-                                      std::uint32_t height, const Track::FrameOptions& options);
+  /// back does only the native push. It borrows `pixels` (BGRA ones; RGB is
+  /// converted into a buffer it owns) and `options`, so it must run while they
+  /// are alive. Split so a step can refuse its media whole.
+  std::function<void()> prepare_video(const std::string& name, Bytes pixels, PixelFormat format,
+                                      std::uint32_t width, std::uint32_t height,
+                                      const Track::FrameOptions& options);
   /// The same split for `push_encoded_video`; what comes back borrows `frame`'s bytes.
   std::function<void()> prepare_encoded_video(const std::string& name, const EncodedFrame& frame);
+  /// The same split for `push_audio`; what comes back borrows `pcm`.
+  std::function<void()> prepare_audio(const std::string& name, Samples pcm,
+                                      std::uint32_t sample_rate, std::uint32_t channels);
 
   // ── Stepped generation ─────────────────────────────────────────────────────
 
