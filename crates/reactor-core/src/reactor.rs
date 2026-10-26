@@ -1218,7 +1218,10 @@ impl Reactor {
     /// it exceeds the data channel's `max_message_bytes()`
     /// ([`CoreError::MessageTooLarge`]), the step fails and its frames are
     /// dropped. The buffer itself never holds more than one message's worth of
-    /// frames: pushing past that drops the oldest. Once sent, the frames belong
+    /// frames: pushing past that drops the oldest. When that cut into a
+    /// track's encoded frames and left some of them, which then no longer
+    /// start at their keyframe, the step is refused ([`CoreError::StepRefused`])
+    /// with nothing sent and its frames dropped. Once sent, the frames belong
     /// to that step whatever its outcome. The runtime answers every step with a
     /// `StepResult` whose `failure_code` names the outcome: a refusal is
     /// [`CoreError::StepRefused`], a session not ready to step
@@ -1251,7 +1254,7 @@ impl Reactor {
         }
         self.ensure_ready()?;
         let mut request = build_request_step(state, commands, Vec::new())?;
-        request.media_input = self.step_inputs.take();
+        request.media_input = self.step_inputs.take()?;
 
         // The frames belong to this attempt: a send that fails takes them with
         // it. What the channel accepts, it delivers; the SDK resends nothing.
