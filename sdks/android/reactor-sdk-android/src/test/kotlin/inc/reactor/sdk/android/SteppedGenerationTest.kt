@@ -135,6 +135,30 @@ class SteppedGenerationTest {
     }
 
     @Test
+    fun `a frame of any dtype the core knows is size-checked as the core does`() {
+        val floats = StepResults.read(FakeResult(videoDtype = "float32", videoData = ByteArray(48)), 1L)
+        assertEquals(
+            "float32",
+            floats
+                .track("main_video")
+                .frames
+                .single()
+                .dtype,
+        )
+        assertThrows(DecodeFailedException::class.java) {
+            StepResults.read(FakeResult(videoDtype = "float32", videoData = ByteArray(12)), 1L)
+        }
+    }
+
+    @Test
+    fun `a frame of a dtype the core does not size is kept as raw bytes`() {
+        val result = StepResults.read(FakeResult(videoDtype = "complex64", videoData = ByteArray(5)), 1L)
+        val frame = result.track("main_video").frames.single()
+        assertEquals("complex64", frame.dtype)
+        assertEquals(5, frame.byteSize)
+    }
+
+    @Test
     fun `a track of a kind this SDK does not know is a decode failure`() {
         assertThrows(DecodeFailedException::class.java) { StepResults.read(FakeResult(videoKind = "depth"), 1L) }
     }
@@ -276,6 +300,7 @@ class SteppedGenerationTest {
         private val videoData: ByteArray = ByteArray(12) { (it + 1).toByte() },
         private val videoKind: String = "video",
         private val videoTag: ByteArray? = byteArrayOf(9, 8, 7),
+        private val videoDtype: String = "uint8",
     ) : StepResultSource {
         private val audioData = byteArrayOf(2, 1, 4, 3)
 
@@ -334,7 +359,7 @@ class SteppedGenerationTest {
             result: Long,
             track: Int,
             frame: Int,
-        ) = if (track == 0) "uint8" else "int16"
+        ) = if (track == 0) videoDtype else "int16"
 
         override fun frameShape(
             result: Long,

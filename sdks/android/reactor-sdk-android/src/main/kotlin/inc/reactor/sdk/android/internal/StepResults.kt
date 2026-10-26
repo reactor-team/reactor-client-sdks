@@ -152,18 +152,23 @@ internal object StepResults {
         val dtype = source.frameDtype(result, track, frame) ?: malformed("frame $frame of \"$trackName\" has no dtype")
         val shape = source.frameShape(result, track, frame) ?: malformed("frame $frame of \"$trackName\" has no shape")
         val data = source.frameData(result, track, frame) ?: malformed("frame $frame of \"$trackName\" has no data")
-        val elementSize =
-            when (dtype) {
-                "uint8" -> 1L
-                "int16" -> 2L
-                else -> malformed("frame $frame of \"$trackName\" has dtype $dtype")
+        // Checked only for a dtype whose size is known, as the core does: an unknown one passes
+        // through as raw bytes rather than failing a step that succeeded.
+        elementSize(dtype)?.let { size ->
+            val expected =
+                if (shape.any { it < 0 }) {
+                    null
+                } else {
+                    runCatching {
+                        shape.fold(size) { total, dimension -> Math.multiplyExact(total, dimension.toLong()) }
+                    }.getOrNull()
+                }
+            if (expected != data.size.toLong()) {
+                malformed(
+                    "frame $frame of \"$trackName\" holds ${data.size} bytes, but its shape " +
+                        "${shape.contentToString()} of $dtype needs ${expected ?: "an overflowing size"}",
+                )
             }
-        val expected = shape.fold(elementSize) { size, dimension -> size * dimension.toLong() }
-        if (shape.any { it < 0 } || expected != data.size.toLong()) {
-            malformed(
-                "frame $frame of \"$trackName\" holds ${data.size} bytes, but its shape " +
-                    "${shape.contentToString()} of $dtype needs $expected",
-            )
         }
         return StepFrame(
             encoding = source.frameEncoding(result, track, frame) ?: "raw",
@@ -174,6 +179,16 @@ internal object StepResults {
             captureTimeUs = source.frameCaptureTimeUs(result, track, frame),
         )
     }
+
+    /** The core's table (`step/decode.rs`): the dtypes it size-checks, by bytes per element. */
+    private fun elementSize(dtype: String): Long? =
+        when (dtype) {
+            "uint8", "int8", "bool" -> 1L
+            "uint16", "int16", "float16" -> 2L
+            "uint32", "int32", "float32" -> 4L
+            "uint64", "int64", "float64" -> 8L
+            else -> null
+        }
 
     private fun malformed(what: String): Nothing =
         throw ErrorCode.toException(
