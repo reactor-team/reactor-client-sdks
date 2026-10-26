@@ -267,9 +267,13 @@ pub struct Reactor {
     control: ControlCorrelator,
     data: DataCorrelator,
     state: Mutex<State>,
-    /// Coalescing wake for [`Self::run_ice_flush`]: a single buffered signal
-    /// is enough, because every wake drains the whole candidate buffer.
-    ice_flush_tx: mpsc::Sender<()>,
+    /// Coalescing wake for [`Self::run_ice_flush`]: at most one signal is
+    /// ever pending, which is enough because every wake drains the whole
+    /// candidate buffer. Sent through this one sender rather than a clone: a
+    /// `futures` channel gives every sender a slot of its own, so a fresh
+    /// clone per candidate would queue one wake each instead of collapsing a
+    /// burst into one.
+    ice_flush_tx: Mutex<mpsc::Sender<()>>,
     ice_flush_rx: Mutex<Option<mpsc::Receiver<()>>>,
     /// Holds the previous stats sample, so `get_stats` can answer with rates.
     stats: StatsSampler,
@@ -331,7 +335,8 @@ impl Reactor {
                 local: options.local,
             },
         );
-        let (ice_flush_tx, ice_flush_rx) = mpsc::channel(1);
+        // Capacity 0 plus the one sender's own slot: one pending wake.
+        let (ice_flush_tx, ice_flush_rx) = mpsc::channel(0);
         Self {
             coordinator,
             http: deps.http,
@@ -341,7 +346,7 @@ impl Reactor {
             dispatcher: Dispatcher::new(),
             control: ControlCorrelator::new(),
             data: DataCorrelator::new(),
-            ice_flush_tx,
+            ice_flush_tx: Mutex::new(ice_flush_tx),
             ice_flush_rx: Mutex::new(Some(ice_flush_rx)),
             stats: StatsSampler::new(),
             stage_times: Arc::new(StageTimes::new()),
@@ -2264,7 +2269,7 @@ impl Reactor {
     /// wake is already pending — `flush_ice` drains every buffered candidate,
     /// so a dropped signal loses nothing.
     fn notify_ice_flush(&self) {
-        let _ = self.ice_flush_tx.clone().try_send(());
+        let _ = self.ice_flush_tx.lock().unwrap().try_send(());
     }
 
     async fn flush_ice_current_session(&self) {
@@ -2764,6 +2769,111 @@ mod tests {
         let state = reactor.state.lock().unwrap();
         assert_eq!(state.ice_buffer.len(), 1, "the candidate was not buffered");
         assert!(state.ice_gathering_complete);
+    }
+
+    /// Answers every POST with 204 and records its URL and body, holding the
+    /// first one until the test releases it, so what arrives while a flush
+    /// is in flight can be observed.
+    struct HeldIceHttp {
+        requests: std::sync::Mutex<Vec<(String, Value)>>,
+        posted: tokio::sync::Notify,
+        release_first: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpClient for HeldIceHttp {
+        async fn request(&self, req: HttpRequest) -> Result<HttpResponse, CoreError> {
+            let body = serde_json::from_slice(req.body.as_deref().unwrap_or(b"null")).unwrap();
+            let first = {
+                let mut requests = self.requests.lock().unwrap();
+                requests.push((req.url, body));
+                requests.len() == 1
+            };
+            self.posted.notify_one();
+            if first {
+                self.release_first.notified().await;
+            }
+            Ok(HttpResponse {
+                status: 204,
+                headers: vec![],
+                body: vec![],
+            })
+        }
+    }
+
+    /// The flush loop is what actually delivers the candidates intake buffers:
+    /// they reach `/ice_candidates`, the end-of-gathering flag rides the last
+    /// request, and whatever arrives while a POST is in flight goes out as one
+    /// follow-up flush rather than one POST per candidate.
+    #[tokio::test]
+    async fn the_flush_loop_delivers_a_burst_in_one_follow_up_post() {
+        let http = Arc::new(HeldIceHttp {
+            requests: std::sync::Mutex::new(Vec::new()),
+            posted: tokio::sync::Notify::new(),
+            release_first: tokio::sync::Notify::new(),
+        });
+        let reactor = Arc::new(Reactor::new(
+            ReactorDeps {
+                http: http.clone() as SharedHttp,
+                auth: Arc::new(NoAuth) as SharedAuth,
+                platform: Arc::new(TestPlatform) as SharedPlatform,
+                peer: Arc::new(NullPeer) as SharedPeer,
+            },
+            ReactorOptions::new("http://localhost", "test-model"),
+        ));
+        {
+            let mut state = reactor.state.lock().unwrap();
+            state.session_id = Some("session".to_string());
+            state.connection_id = Some(7);
+            state.ice_ready = true;
+        }
+        let r = reactor.clone();
+        let flush = tokio::spawn(async move { r.run_ice_flush().await });
+        let candidate = |n: u32| IceCandidate {
+            candidate: format!("candidate:{n} 1 udp 2122260223 192.0.2.1 3456{n} typ host"),
+            sdp_mid: None,
+            sdp_mline_index: None,
+        };
+        let wait_for_post = || async {
+            tokio::time::timeout(Duration::from_secs(1), http.posted.notified())
+                .await
+                .expect("no POST reached the coordinator");
+        };
+
+        reactor
+            .handle_peer_event(PeerEvent::IceCandidate(candidate(1)))
+            .await;
+        wait_for_post().await;
+        // The first POST is held: everything from here on arrives mid-flush.
+        for n in 2..=4 {
+            reactor
+                .handle_peer_event(PeerEvent::IceCandidate(candidate(n)))
+                .await;
+        }
+        reactor
+            .handle_peer_event(PeerEvent::IceGatheringComplete)
+            .await;
+        assert_eq!(http.requests.lock().unwrap().len(), 1);
+
+        http.release_first.notify_one();
+        wait_for_post().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let requests = http.requests.lock().unwrap().clone();
+        assert_eq!(
+            requests.len(),
+            2,
+            "a burst must coalesce into one follow-up POST"
+        );
+        for (url, _) in &requests {
+            assert!(url.ends_with("/connections/7/ice_candidates"), "{url}");
+        }
+        let count = |body: &Value| body["candidates"].as_array().unwrap().len();
+        assert_eq!(count(&requests[0].1), 1);
+        assert_eq!(requests[0].1["is_final"], json!(false));
+        assert_eq!(count(&requests[1].1), 3);
+        assert_eq!(requests[1].1["is_final"], json!(true));
+        flush.abort();
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
