@@ -691,7 +691,7 @@ run = "scripts/asan-android-jni.sh"
 description = "[Testing] Android SDK instrumented tests — real libraries, on a device or emulator"
 # Needs a running device: `mise run setup:android:emulator` first, then an AVD from the pinned
 # 16 KB system image. Deliberately not a dependency of `test` / `test:android`, which must stay
-# runnable on a laptop and on a Linux runner with no arm64 emulator.
+# runnable with no booted device or emulator.
 #
 # The native artifacts have to be staged first — the AAR under test is the one carrying them.
 depends = ["build:android:native"]

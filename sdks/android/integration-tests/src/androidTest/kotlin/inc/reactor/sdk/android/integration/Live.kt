@@ -40,9 +40,9 @@ internal object Live {
     /**
      * An instrumentation argument, or null when it was not passed or was passed empty.
      *
-     * Empty and absent are the same thing on purpose: the Gradle side defaults a missing property
-     * to `""` rather than dropping the key, because `am instrument` has no way to express "this
-     * argument exists but has no value" that survives the round trip intact.
+     * The Gradle side drops an unset value rather than passing it empty — an empty `-e` value
+     * breaks `am instrument` — so absent is the normal case. Blank is read as absent too, for a
+     * caller that passes one by hand.
      */
     private fun arg(name: String): String? = args.getString(name)?.takeIf { it.isNotBlank() }
 

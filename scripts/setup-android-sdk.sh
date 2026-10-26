@@ -79,7 +79,14 @@ done
 # A system image only boots under its own architecture's hypervisor, so of the images pinned per
 # ABI, keep the host's. Everything else is architecture-independent or resolved per host by the
 # SDK itself.
-case "$(uname -m)" in
+#
+# The machine's, not this process's: under Rosetta `uname -m` says x86_64 on Apple Silicon, and an
+# x86_64 image cannot use the host's ARM hypervisor.
+HOST_ARCH="$(uname -m)"
+if [ "$(uname -s)" = Darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ]; then
+  HOST_ARCH=arm64
+fi
+case "$HOST_ARCH" in
   x86_64|amd64) HOST_ABI=x86_64 ;;
   arm64|aarch64) HOST_ABI=arm64-v8a ;;
   *) HOST_ABI="" ;;
