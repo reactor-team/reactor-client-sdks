@@ -491,6 +491,41 @@ class TestStep:
         assert seen == [(media, 0)]
         assert len(lib.step_calls) == 1
 
+    async def test_the_step_lock_covers_the_pushes_and_the_native_step_only(
+        self, lib: FakeStepLib
+    ) -> None:
+        reactor = await _stepped(lib)
+        held: list[bool] = []
+        reactor._push_step_media = lambda media: held.append(reactor._step_lock.locked())  # type: ignore[method-assign]
+
+        def answer(completion: Any) -> None:
+            held.append(reactor._step_lock.locked())
+            completion(0, None, _error("step_refused"), None)
+
+        lib.step_answer = answer
+
+        with pytest.raises(StepRefusedError):
+            await reactor.step(media={"webcam": [EncodedFrame(b"idr", width=2, height=2)]})
+
+        # Held through the pushes and into the native step, which takes the buffer;
+        # released before the await, and after a refusal.
+        assert held == [True, True]
+        assert not reactor._step_lock.locked()
+
+    async def test_media_refused_releases_the_step_lock(self, lib: FakeStepLib) -> None:
+        reactor = await _stepped(lib)
+
+        def refuse(media: Any) -> None:
+            raise ValueError("a bad frame")
+
+        reactor._push_step_media = refuse  # type: ignore[method-assign]
+
+        with pytest.raises(ValueError, match="a bad frame"):
+            await reactor.step(media={"webcam": []})
+
+        assert not reactor._step_lock.locked()
+        assert lib.step_calls == []
+
     async def test_a_step_refused_for_its_state_pushes_none_of_its_media(
         self, lib: FakeStepLib
     ) -> None:

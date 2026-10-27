@@ -9,6 +9,7 @@ import json
 import logging
 import mimetypes
 import os
+import threading
 import time
 import weakref
 from collections.abc import Callable, Coroutine, Mapping, Sequence
@@ -315,6 +316,10 @@ class Reactor:
         self._max_session_duration_seconds = max_session_duration_seconds
         self._generation: Generation = generation
         self._step_timeout = step_timeout
+        # Held from a step's first push to the native step taking the buffer, so
+        # steps from two threads cannot interleave their media. Never across an
+        # await: both happen in one synchronous stretch.
+        self._step_lock = threading.Lock()
 
         # A token the caller handed us is theirs: never replaced. One we minted from an
         # API key is ours, and `_minted_for` records the scope it was minted with, so a
@@ -1236,12 +1241,9 @@ class Reactor:
         commands_json = json.dumps(
             _wire_commands(() if commands is None else commands), default=_wire_file_ref
         ).encode()
-        # Pushed only once the state and commands are known to be well formed, so
-        # a step refused for those leaves the buffer as the caller left it.
-        if media is not None:
-            self._push_step_media(media)
         handle = self._handle
         lib = get_lib()
+        lock = self._step_lock
 
         def decode(ptr: int | None) -> StepResult:
             if not ptr:
@@ -1252,13 +1254,27 @@ class Reactor:
                 # Copied out above; the native result has no further use.
                 lib.reactor_step_result_free(ctypes.c_void_p(ptr))
 
-        return await self._await_completion(
-            STEP_COMPLETION_FN,
-            decode,
-            lambda fn: lib.reactor_step(
-                ctypes.c_void_p(handle), state_json, commands_json, fn, None
-            ),
-        )
+        def dispatch(fn: Any) -> None:
+            nonlocal locked
+            try:
+                lib.reactor_step(ctypes.c_void_p(handle), state_json, commands_json, fn, None)
+            finally:
+                # The native step has taken the buffer: later pushes are the next
+                # step's.
+                locked = False
+                lock.release()
+
+        lock.acquire()
+        locked = True
+        try:
+            # Pushed only once the state and commands are known to be well formed,
+            # so a step refused for those leaves the buffer as the caller left it.
+            if media is not None:
+                self._push_step_media(media)
+            return await self._await_completion(STEP_COMPLETION_FN, decode, dispatch)
+        finally:
+            if locked:
+                lock.release()
 
     def _push_step_media(self, media: Mapping[str, Sequence[Any]]) -> None:
         """Push `media`'s frames, track by track, as :meth:`step` documents.
