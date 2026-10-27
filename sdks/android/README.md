@@ -390,3 +390,18 @@ Rebuild the native library — `mise run build:android:native`. The AAR carries 
 compiled `libreactor_ffi.so`, and a stale one links, resolves and then corrupts the
 stack at a call that gained a parameter; it does not fail at load. The load-time
 ABI check catches the version skew, but only once the library is actually rebuilt.
+
+## Documentation
+
+The [full documentation](https://docs.reactor.inc/sdk-reference/using-the-sdk)
+covers platform concepts and the other language SDKs. A model's own reference page
+is the thing to check when a command is rejected or no frame arrives;
+`reactor.requestSchema()` returns the same document from the running model, which
+is the more current of the two.
+
+See the repo-wide [`CONTRIBUTING.md`](../../CONTRIBUTING.md) for the toolchain,
+DCO and commit conventions.
+
+## License
+
+Apache-2.0 — see [`LICENSE`](../../LICENSE).
