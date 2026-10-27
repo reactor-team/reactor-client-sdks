@@ -396,9 +396,6 @@ ABI check catches the version skew, but only once the library is actually rebuil
 The [full documentation](https://docs.reactor.inc/sdk-reference/using-the-sdk)
 covers platform concepts and the other language SDKs.
 
-See the repo-wide [`CONTRIBUTING.md`](../../CONTRIBUTING.md) for the toolchain,
-DCO and commit conventions.
-
 ## License
 
 Apache-2.0 — see [`LICENSE`](../../LICENSE).
