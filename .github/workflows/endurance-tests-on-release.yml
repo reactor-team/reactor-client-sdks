@@ -199,9 +199,10 @@ jobs:
 
   android:
     name: Dispatch Android SDK endurance tests
-    if: >-
-      github.event.workflow_run.name == 'Release Android SDK' &&
-      github.event.workflow_run.conclusion == 'success'
+    # Not gated on the run's conclusion: a failure after "Publish" (the GitHub release, say) fails
+    # the run while the artifacts are already on Maven Central for good. Whether anything shipped is
+    # the Publish step's call, checked below.
+    if: github.event.workflow_run.name == 'Release Android SDK'
     runs-on: ubuntu-latest
     permissions:
       actions: write
