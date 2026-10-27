@@ -92,16 +92,35 @@ extension Reactor {
     ) throws {
         // The frame's submit stage starts here, so this SDK's own checks count.
         let started = ContinuousClock.now
-        let handle = try requireVideoPushable(
+        try requireVideoPushable(
             track: name, byteCount: pixels.count, width: width, height: height)
-        pushVideo(
-            handle, track: name, pixels: pixels, width: width, height: height,
-            userData: userData, captureTimeUs: captureTimeUs,
-            checking: ContinuousClock.now - started)
+        let checking = ContinuousClock.now - started
+        try withLiveHandle(track: name, method: "pushFrame") { handle in
+            pushVideo(
+                handle, track: name, pixels: pixels, width: width, height: height,
+                userData: userData, captureTimeUs: captureTimeUs, checking: checking)
+        }
+    }
+
+    /// Run `push` with the live handle, under the barrier ``perform`` takes, so a
+    /// `close()` either waits for it or has already made it throw: a push must
+    /// never reach the library with a handle `close()` may have destroyed.
+    func withLiveHandle(
+        track name: String, method: String, _ push: (OpaquePointer) -> Void
+    ) throws {
+        let pushed = withHandle(else: false) { handle in
+            push(handle)
+            return true
+        }
+        guard pushed else {
+            throw ReactorError(
+                .invalidState, "the client is closed, so \(method) on '\(name)' cannot run.",
+                operation: method)
+        }
     }
 
     /// Check BGRA pixels for a sendonly video track, and answer the push that
-    /// sends them.
+    /// sends them, to be called with the live handle (see ``withLiveHandle``).
     func preparePush(
         track name: String,
         pixels: Data,
@@ -109,12 +128,12 @@ extension Reactor {
         height: UInt32,
         userData: Data?,
         captureTimeUs: Int64?
-    ) throws -> () -> Void {
+    ) throws -> (OpaquePointer) -> Void {
         let started = ContinuousClock.now
-        let handle = try requireVideoPushable(
+        try requireVideoPushable(
             track: name, byteCount: pixels.count, width: width, height: height)
         let checking = ContinuousClock.now - started
-        return {
+        return { handle in
             pixels.withUnsafeBytes { pixelBytes in
                 guard let userData else {
                     return self.pushVideo(
@@ -134,8 +153,8 @@ extension Reactor {
     /// a buffer that holds the frame it claims to.
     private func requireVideoPushable(
         track name: String, byteCount count: Int, width: UInt32, height: UInt32
-    ) throws -> OpaquePointer {
-        let handle = try requirePushable(track: name, kind: .video, method: "pushFrame")
+    ) throws {
+        try requirePushable(track: name, kind: .video, method: "pushFrame")
 
         // Checked rather than `Int(width) * Int(height) * 4`: both are UInt32 and
         // the caller picks them, so dimensions near UInt32.max overflow Int and
@@ -165,7 +184,6 @@ extension Reactor {
                     + "\(width)x\(height) BGRA frame, which needs \(expected).",
                 operation: "pushFrame")
         }
-        return handle
     }
 
     /// Hand checked BGRA pixels to the library. `checking` is how long the
@@ -208,7 +226,9 @@ extension Reactor {
         sampleRate: UInt32,
         channels: UInt32
     ) throws {
-        try preparePush(track: name, samples: samples, sampleRate: sampleRate, channels: channels)()
+        let push = try preparePush(
+            track: name, samples: samples, sampleRate: sampleRate, channels: channels)
+        try withLiveHandle(track: name, method: "pushFrame", push)
     }
 
     /// Check interleaved i16 PCM for a sendonly audio track, and answer the
@@ -218,8 +238,8 @@ extension Reactor {
         samples: [Int16],
         sampleRate: UInt32,
         channels: UInt32
-    ) throws -> () -> Void {
-        let handle = try requirePushable(track: name, kind: .audio, method: "pushFrame")
+    ) throws -> (OpaquePointer) -> Void {
+        try requirePushable(track: name, kind: .audio, method: "pushFrame")
 
         guard [8000, 16000, 24000, 32000, 44100, 48000].contains(sampleRate),
             channels == 1 || channels == 2
@@ -240,7 +260,7 @@ extension Reactor {
         }
 
         let perChannel = UInt32(samples.count / Int(channels))
-        return {
+        return { handle in
             samples.withUnsafeBufferPointer { buffer in
                 self.ffi.pushAudioFrame(
                     handle, name, buffer.baseAddress, perChannel, sampleRate, channels)
@@ -250,12 +270,15 @@ extension Reactor {
 
     /// Buffer one encoded video frame for the next step.
     func push(track name: String, encoded frame: EncodedFrame) throws {
-        try preparePush(track: name, encoded: frame)()
+        try withLiveHandle(
+            track: name, method: "pushEncodedFrame", try preparePush(track: name, encoded: frame))
     }
 
     /// Check one encoded video frame for the next step, and answer the push
     /// that buffers it.
-    func preparePush(track name: String, encoded frame: EncodedFrame) throws -> () -> Void {
+    func preparePush(
+        track name: String, encoded frame: EncodedFrame
+    ) throws -> (OpaquePointer) -> Void {
         let method = "pushEncodedFrame"
         guard generation == .stepped else {
             throw ReactorError(
@@ -275,7 +298,7 @@ extension Reactor {
                     + "\(declaration.kind.rawValue), and only a video track takes encoded frames.",
                 operation: method)
         }
-        let handle = try requirePushable(track: name, kind: .video, method: method)
+        try requirePushable(track: name, kind: .video, method: method)
 
         // Both dropped by the library with only a warning, so refused here.
         guard !frame.data.isEmpty else {
@@ -292,7 +315,7 @@ extension Reactor {
         }
 
         let tag = frame.userData.flatMap { $0.isEmpty ? nil : $0 } ?? Data()
-        return {
+        return { handle in
             frame.data.withUnsafeBytes { bytes in
                 tag.withUnsafeBytes { tagBytes in
                     self.ffi.pushStepEncodedVideoFrame(
@@ -315,8 +338,8 @@ extension Reactor {
         track name: String,
         kind: TrackKind,
         method: String
-    ) throws -> OpaquePointer {
-        guard let handle = state.withLock({ $0.closed ? nil : $0.handle }) else {
+    ) throws {
+        guard state.withLock({ !$0.closed && $0.handle != nil }) else {
             throw ReactorError(
                 .invalidState,
                 "the client is closed, so \(method) on '\(name)' cannot run.",
@@ -347,7 +370,7 @@ extension Reactor {
 
         switch publishState(of: name) {
         case .published:
-            return handle
+            return
         case .publishing:
             throw ReactorError(
                 .invalidState,
@@ -515,6 +538,22 @@ extension Track {
         }
     }
 
+    /// Push one frame laid out as `format`: ``PixelFormat/rgb`` is converted to
+    /// BGRA, opaque, before the push, and must hold exactly `width * height * 3`
+    /// bytes. Otherwise as ``pushFrame(_:width:height:userData:captureTimeUs:)``.
+    public func pushFrame(
+        _ pixels: Data,
+        format: PixelFormat,
+        width: UInt32,
+        height: UInt32,
+        userData: Data? = nil,
+        captureTimeUs: Int64? = nil
+    ) throws {
+        try pushFrame(
+            Reactor.bgra(pixels, format: format, width: width, height: height, track: name),
+            width: width, height: height, userData: userData, captureTimeUs: captureTimeUs)
+    }
+
     /// Push a BGRA frame the caller already holds as a buffer, copying nothing.
     public func pushFrame(
         _ pixels: UnsafeRawBufferPointer,
@@ -605,13 +644,15 @@ extension Track {
     /// Check one of a step's ``StepMediaFrame``s as its own push would, and
     /// answer the push that buffers it. Nothing reaches the library until the
     /// answer is called.
-    func preparePush(_ frame: StepMediaFrame) throws -> () -> Void {
-        guard let client else { return {} }
+    func preparePush(_ frame: StepMediaFrame) throws -> (OpaquePointer) -> Void {
+        guard let client else { return { _ in } }
         switch frame {
-        case .video(let pixels, let width, let height, let userData, let captureTimeUs):
+        case .video(let pixels, let width, let height, let userData, let captureTimeUs, let format):
             return try client.preparePush(
-                track: name, pixels: pixels, width: width, height: height, userData: userData,
-                captureTimeUs: captureTimeUs)
+                track: name,
+                pixels: Reactor.bgra(
+                    pixels, format: format, width: width, height: height, track: name),
+                width: width, height: height, userData: userData, captureTimeUs: captureTimeUs)
         case .audio(let samples, let sampleRate, let channels):
             return try client.preparePush(
                 track: name, samples: samples, sampleRate: sampleRate, channels: channels)

@@ -28,6 +28,8 @@ final class FakeLibrary: @unchecked Sendable {
         case statusReturned
         case downloadEntered
         case downloadReturned
+        case encodedPushEntered
+        case encodedPushReturned
         case destroyed
     }
 
@@ -82,6 +84,7 @@ final class FakeLibrary: @unchecked Sendable {
         weak var lastUserdataObject: AnyObject?
         var events: [Event] = []
         var whileReadingStatus: (@Sendable () -> Void)?
+        var whilePushingEncoded: (@Sendable () -> Void)?
         var whileStartingDownload: (@Sendable () -> Void)?
         var createOptionsCalls: [CreateOptionsCall] = []
         var stepCalls: [StepCall] = []
@@ -111,6 +114,8 @@ final class FakeLibrary: @unchecked Sendable {
         var captureTimeUs: Int64?
         var bindingMs: Double
         var generation: UInt64
+        /// The `width * height * 4` BGRA bytes the push handed over.
+        var bytes: [UInt8] = []
     }
 
     /// What the SDK handed `reactor_push_step_encoded_video_frame`.
@@ -233,6 +238,13 @@ final class FakeLibrary: @unchecked Sendable {
     var whileReadingStatus: (@Sendable () -> Void)? {
         get { state.withLock { $0.whileReadingStatus } }
         set { state.withLock { $0.whileReadingStatus = newValue } }
+    }
+
+    /// Run inside the next `reactor_push_step_encoded_video_frame`, once, between
+    /// its `encodedPushEntered` and `encodedPushReturned` events.
+    var whilePushingEncoded: (@Sendable () -> Void)? {
+        get { state.withLock { $0.whilePushingEncoded } }
+        set { state.withLock { $0.whilePushingEncoded = newValue } }
     }
 
     /// Run this inside `reactor_download_clip`, before it returns.
@@ -617,7 +629,11 @@ final class FakeLibrary: @unchecked Sendable {
                             userData: tag,
                             captureTimeUs: at,
                             bindingMs: bindingMs,
-                            generation: generation))
+                            generation: generation,
+                            bytes: pixels.map {
+                                Array(UnsafeBufferPointer(start: $0, count: byteCount))
+                            }
+                                ?? []))
                     $0.pushLog.append("video:\(String(borrowing: track) ?? "")")
                 }
             },
@@ -719,6 +735,13 @@ final class FakeLibrary: @unchecked Sendable {
             pushStepEncodedVideoFrame: {
                 [self]
                 _, track, encoding, data, length, width, height, userData, userDataLen, at in
+                let hook = state.withLock { state -> (@Sendable () -> Void)? in
+                    state.events.append(.encodedPushEntered)
+                    defer { state.whilePushingEncoded = nil }
+                    return state.whilePushingEncoded
+                }
+                hook?()
+                state.withLock { $0.events.append(.encodedPushReturned) }
                 let bytes = data.map { Array(UnsafeBufferPointer(start: $0, count: length)) }
                 let tag = userData.flatMap { pointer -> [UInt8]? in
                     guard userDataLen > 0 else { return nil }

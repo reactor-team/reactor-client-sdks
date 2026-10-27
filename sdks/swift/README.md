@@ -95,9 +95,12 @@ let same = try await reactor.step()
 ```
 
 `width` and `height` are the frame each one decodes to. `media` takes raw frames
-too (`.video(pixels, width:height:)`, `.audio(samples)`), and its frames go after
-the ones pushed to the same track since the previous step; they are pushed only
-once the state and commands are well formed. `pushEncodedFrame` needs a stepped
+too (`.video(pixels, width:height:)`, or `.video(rgb, width:height:format: .rgb)`,
+and `.audio(samples)`), and its frames go after the ones pushed to the same track
+since the previous step; they are pushed only once the state, the commands and
+every frame are well formed, right before the step takes them, so another step's
+frames cannot land in between. RGB frames, pushed or in a step, are converted to
+BGRA, opaque: `camera.pushFrame(rgb, format: .rgb, width:, height:)`. `pushEncodedFrame` needs a stepped
 client and a published sendonly video track, and refuses an empty frame or a
 zero size. A step whose frames do not decode, or that does not start at a
 keyframe, throws `ReactorError.stepRefused`, naming the frame in `entry`. A

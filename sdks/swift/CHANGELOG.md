@@ -24,6 +24,17 @@ versioning follows [Semantic Versioning](https://semver.org/).
   pushes none of them. `pushEncodedFrame` throws `invalidState` outside a
   stepped session or on an audio, recvonly or unpublished track, and
   `badRequest` for an empty frame or a zero width or height.
+- RGB frames. `Track.pushFrame(_:format:width:height:userData:captureTimeUs:)`
+  and `StepMediaFrame.video(..., format: .rgb)` take `width * height * 3`
+  bytes of R, G, B and convert them to BGRA, opaque, before the push, as the
+  Python SDK does with an RGB array.
+
+### Fixed
+
+- A push reached the library with a handle read before it, so a `close()` on
+  another thread could destroy the handle in between. Pushes now go in under
+  the barrier `close()` waits on, a step's media together with the step that
+  takes it.
 
 ### Fixed
 
