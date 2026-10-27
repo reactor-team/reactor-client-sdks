@@ -964,6 +964,10 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   std::optional<double> step_timeout_seconds_;
   std::optional<std::uint64_t> max_message_size_;
 
+  /// Held from a step's first push to `reactor_step` taking the buffer, so steps
+  /// from two threads cannot interleave their media.
+  std::mutex step_mutex_;
+
   /// At most one of these: whichever constructor was used.
   std::optional<std::string> api_key_;
   std::optional<std::string> jwt_;

@@ -7,11 +7,13 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <functional>
 #include <future>
 #include <optional>
 #include <string>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -110,6 +112,9 @@ class FakeSession {
   /// Every frame push and step, in the order the SDK made them: "raw:<track>",
   /// "h264:<track>", "pcm:<track>", "step".
   std::vector<std::string> calls;
+
+  /// Run inside the first raw video push, once, on the pushing thread.
+  std::function<void()> during_first_push;
 
   std::vector<std::string> published;
   std::vector<std::string> unpublished;
@@ -443,6 +448,9 @@ class FakeSession {
                                      std::int64_t capture_time_us, double binding_ms,
                                      std::uint64_t generation) {
     current().calls.push_back("raw:" + std::string{track == nullptr ? "" : track});
+    if (auto during = std::exchange(current().during_first_push, nullptr)) {
+      during();
+    }
     current().pushes.push_back(Push{
         track == nullptr ? "" : track,
         data == nullptr
@@ -1820,4 +1828,30 @@ TEST_CASE("a step's audio or RGB refused anywhere pushes none of its media") {
   CHECK_THROWS_AS(fixture.client.step(nullptr, {}, media).get(), reactor::ReactorError);
   CHECK(fixture.session.calls.empty());
   CHECK(fixture.session.audio_pushes.empty());
+}
+
+// A step's media and the native step that takes it go together: a step started
+// from another thread meanwhile pushes its own only after.
+TEST_CASE("steps from two threads do not interleave their media") {
+  Connected fixture{stepped()};
+  fixture.session.redeclare(R"([{"name":"input_video","kind":"video","direction":"sendonly"}])");
+  fixture.client.track("input_video").publish().get();
+  const auto raw = bgra_frame(1, 1);
+  reactor::StepMedia media;
+  media["input_video"].push_back(reactor::RawVideoFrame{as_bytes(raw), 1, 1});
+
+  std::future<reactor::StepResult> second;
+  std::thread other;
+  fixture.session.during_first_push = [&] {
+    other = std::thread{[&] { second = fixture.client.step(nullptr, {}, media); }};
+    // Long enough for the other step to reach its push, were it not held back.
+    std::this_thread::sleep_for(50ms);
+  };
+
+  CHECK_THROWS_AS(fixture.client.step(nullptr, {}, media).get(), reactor::StepRefusedError);
+  other.join();
+  CHECK_THROWS_AS(second.get(), reactor::StepRefusedError);
+
+  CHECK(fixture.session.calls ==
+        std::vector<std::string>{"raw:input_video", "step", "raw:input_video", "step"});
 }
