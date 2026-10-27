@@ -197,12 +197,22 @@ jobs:
         with:
           version: ${{ env.MISE_VERSION }}
           sha256: ${{ env.MISE_SHA256 }}
-      - name: Cache the pinned Android SDK components
-        uses: actions/cache@v4
+      # Restored before setup and saved right after it, never at the end of the job: the
+      # emulator action installs its own build-tools into this SDK root, and a cache saved after it
+      # runs makes the next setup refuse a second build-tools beside the pinned one.
+      - name: Restore the pinned Android SDK components
+        id: android-sdk-cache
+        uses: actions/cache/restore@v4
         with:
           path: ~/.local/share/mise/installs/android-sdk
-          key: android-sdk-emulator-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'sdks/android/sdk-packages-emulator.txt', 'mise.lock') }}
+          key: android-sdk-emulator-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'sdks/android/sdk-packages-emulator.txt', 'mise.lock') }}
       - run: mise run setup:android:emulator
+      - name: Save the pinned Android SDK components
+        if: steps.android-sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.local/share/mise/installs/android-sdk
+          key: android-sdk-emulator-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('sdks/android/sdk-packages.txt', 'sdks/android/sdk-packages-emulator.txt', 'mise.lock') }}
       - uses: ./.github/actions/enable-kvm
       - uses: actions/download-artifact@v4
         with:
