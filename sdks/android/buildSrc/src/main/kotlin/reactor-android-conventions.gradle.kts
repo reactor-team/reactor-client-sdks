@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
 
 /**
  * What every Android module in this build shares.
@@ -86,8 +87,17 @@ configurations.configureEach {
 }
 
 kotlin {
+    // What a consumer's compiler has to read, which is not what this build compiles with. Kotlin
+    // reads metadata at most one minor version ahead of itself, so a library built at 2.4 and
+    // depending on the 2.4 stdlib does not compile in an app on AGP 9's own Kotlin (2.2), or on
+    // anything older. 2.2 is the oldest language version this compiler does not deprecate, and the
+    // one AGP 9 ships, so apps on Kotlin 2.1 and later can use the SDK. The stdlib the POMs name
+    // follows the same line: AGP 9.4.1's own.
+    coreLibrariesVersion = "2.2.10"
     compilerOptions {
         jvmTarget = JvmTarget.JVM_17
+        apiVersion = KotlinVersion.KOTLIN_2_2
+        languageVersion = KotlinVersion.KOTLIN_2_2
         // -Werror on a binding whose mistakes are use-after-frees rather than exceptions. A
         // warning here is cheap; the thing it is warning about is not. Same reasoning as the
         // Java SDK's -Xlint:all -Werror.

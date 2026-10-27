@@ -24,6 +24,7 @@ The Java SDK remains the answer for desktop JVM and desktop Kotlin.
 | `minSdk` | **26** |
 | `compileSdk` | 36 |
 | ABIs | `arm64-v8a`, `x86_64` |
+| Kotlin | 2.1 or newer (the AGP 9 default works) |
 
 `arm64-v8a` is every phone; `x86_64` is every emulator on an x86_64 host, which
 is also where CI runs the instrumented and live suites.

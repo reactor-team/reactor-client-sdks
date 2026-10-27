@@ -14,7 +14,8 @@ request as the bump.
 ## [1.0.0] - 2026-10-27
 
 First release: a Kotlin binding over the same native core as the other Reactor
-SDKs, reached through JNI, for Android 8.0 (API 26) and newer.
+SDKs, reached through JNI, for Android 8.0 (API 26) and newer, and for apps on
+Kotlin 2.1 or newer.
 
 - Published to Maven Central as `inc.reactor:reactor-sdk-android` and
   `inc.reactor:reactor-sdk-android-media`, with sources and javadoc, signed.
