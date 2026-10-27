@@ -2002,7 +2002,9 @@ impl StepCompletion {
 /// `REQUEST_TIMEOUT`. A step refused before it goes out (`INVALID_STATE`,
 /// `DECODE_FAILED`) keeps the buffered input frames for the next step; past
 /// those checks they belong to the step whatever its outcome, and one whose
-/// request cannot be sent (`MESSAGE_TOO_LARGE`) drops them too.
+/// request cannot be sent (`MESSAGE_TOO_LARGE`) drops them too. The checks run
+/// and the frames are taken before this returns, so a frame pushed after it
+/// goes to the next step.
 ///
 /// # Safety
 ///
@@ -2030,13 +2032,18 @@ pub unsafe extern "C" fn reactor_step(
         gate: handle.gate.clone(),
     };
     let control_tx: HostSender<HostJob> = handle.hosts.control.sender();
+    // Checked, and its input frames taken, here on the caller's thread: a frame
+    // pushed once this returns goes to the next step, however long the worker
+    // takes to get to this one.
+    let begun = step::parse_state(state_json.as_deref()).and_then(|state| {
+        let commands = step::parse_commands(commands_json.as_deref())?;
+        reactor.begin_step(state, commands)
+    });
     spawn_tracked(&handle.tasks, async move {
-        let result = async {
-            let state = step::parse_state(state_json.as_deref())?;
-            let commands = step::parse_commands(commands_json.as_deref())?;
-            reactor.step(state, commands).await
+        let result = match begun {
+            Ok(request) => reactor.send_step(request).await,
+            Err(error) => Err(error),
         }
-        .await
         // Built here, on the worker: the control thread does nothing but call.
         .map(ReactorStepResult::from);
         control_tx.send(Box::new(move || completion.resolve(result)));

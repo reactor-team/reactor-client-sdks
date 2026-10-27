@@ -42,7 +42,7 @@ use crate::protocol::wire::v1::platform::{
     ClientConnectionStat, ClientEnvironment, ClientStats, ClientTrackStat, FileUploaded,
     FrameStage, Ping, RequestClip, RequestRecording, RequestSchema,
 };
-use crate::protocol::wire::v1::step::FrameEncoding;
+use crate::protocol::wire::v1::step::{FrameEncoding, RequestStep};
 use crate::protocol::wire::v1::track::{PauseTrack, PublishTrack, ResumeTrack, UnpublishTrack};
 use crate::recording::{clip_failed_code, clip_from_ready, Clip};
 use crate::runtime::timeout;
@@ -254,6 +254,10 @@ fn check_generation(requested: GenerationMode, session: &SessionResponse) -> Res
         })
     }
 }
+
+/// A step [`Reactor::begin_step`] checked and gave its input frames, for
+/// [`Reactor::send_step`] to send.
+pub struct StepRequest(RequestStep);
 
 /// The Reactor client core. See the crate docs for the host contract.
 pub struct Reactor {
@@ -1247,6 +1251,20 @@ impl Reactor {
         state: Value,
         commands: Vec<StepCommand>,
     ) -> Result<StepOutput, CoreError> {
+        let request = self.begin_step(state, commands)?;
+        self.send_step(request).await
+    }
+
+    /// The synchronous half of [`Reactor::step`]: every check that refuses the
+    /// step with nothing sent, then the input frames buffered so far, taken as
+    /// of this call. A binding that runs the step on another thread calls this
+    /// on the caller's first, so a frame pushed once it returns goes to the
+    /// next step instead of racing into this one.
+    pub fn begin_step(
+        &self,
+        state: Value,
+        commands: Vec<StepCommand>,
+    ) -> Result<StepRequest, CoreError> {
         if self.options.generation != GenerationMode::Stepped {
             return Err(CoreError::InvalidState(
                 "step() needs a session connected with generation: stepped".into(),
@@ -1255,12 +1273,17 @@ impl Reactor {
         self.ensure_ready()?;
         let mut request = build_request_step(state, commands, Vec::new())?;
         request.media_input = self.step_inputs.take()?;
+        Ok(StepRequest(request))
+    }
 
+    /// The rest of [`Reactor::step`], for a request [`Reactor::begin_step`]
+    /// returned.
+    pub async fn send_step(&self, request: StepRequest) -> Result<StepOutput, CoreError> {
         // The frames belong to this attempt: a send that fails takes them with
         // it. What the channel accepts, it delivers; the SDK resends nothing.
         let pending = self
             .data
-            .begin(data_client_message::Payload::RequestStep(request));
+            .begin(data_client_message::Payload::RequestStep(request.0));
         self.send_pending("step", &pending)?;
 
         let response = match self
