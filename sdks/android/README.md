@@ -11,16 +11,7 @@ Same object model as every other Reactor SDK — a `Reactor`, the `Track`s a mod
 declares, one flat list of typed errors — spelled in Kotlin, with `StateFlow` for
 state and `suspend` for anything that waits.
 
-## Why this is separate from the Java SDK
-
-`inc.reactor:reactor-sdk` is bound through the Foreign Function & Memory API,
-which does not exist on Android. It also exposes `java.lang.foreign.MemorySegment`
-in its *public* API — `VideoFrame`, `AudioFrame` and `Media` — so an Android
-consumer cannot name those types and there is no shared module to extract. This
-SDK is an independent binding over the same native core, reached through JNI, with
-the same object model spelled in Kotlin.
-
-The Java SDK remains the answer for desktop JVM and desktop Kotlin.
+For desktop JVM or desktop Kotlin, use the [Java SDK](../java/README.md) instead.
 
 ## Requirements
 
