@@ -15,6 +15,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -353,6 +354,8 @@ void ClientImpl::begin_step(std::unique_ptr<PendingStep> op, const Json& state,
     const std::string state_json = state.is_null() ? std::string{} : state.dump();
 
     ReactorHandle* handle = require_ready_session("run a step");
+    // Until reactor_step has taken the buffer: later pushes are the next step's.
+    const std::lock_guard<std::mutex> lock(step_mutex_);
     // Pushed only once the state and commands are known to be well formed, so a
     // step refused for those leaves the buffer as the caller left it.
     push_step_media(media);
