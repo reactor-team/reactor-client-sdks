@@ -216,13 +216,27 @@ final class EncodedFramesTest {
     }
 
     @Test
+    @DisplayName("a step's RGB frame goes to the library as opaque BGRA")
+    void stepMediaTakesRgbVideo() {
+        published("camera_in");
+
+        reactor.step(
+                null,
+                null,
+                Map.of("camera_in", List.of(StepInput.video(new byte[] {(byte) 0xFF, 0, 0}, PixelFormat.RGB, 1, 1))));
+
+        assertEquals(List.of("raw:camera_in", "step"), fake.calls);
+        assertArrayEquals(new byte[] {0, 0, (byte) 0xFF, (byte) 0xFF}, fake.lastVideoBgra);
+    }
+
+    @Test
     @DisplayName("a step's raw audio goes to the library as a push to that track would")
     void stepMediaTakesRawAudio() {
         published("mic_in");
 
         reactor.step(null, null, Map.of("mic_in", List.of(StepInput.audio(new short[480], 48_000, 1))));
 
-        assertEquals(1, fake.stepCalls);
+        assertEquals(List.of("pcm:mic_in", "step"), fake.calls);
     }
 
     @Test
@@ -237,6 +251,61 @@ final class EncodedFramesTest {
                 BadRequestException.class,
                 assertThrows(ExecutionException.class, refused::get).getCause());
         assertTrue(fake.pushOrder.isEmpty(), "the buffer is left as the caller left it");
+        assertEquals(0, fake.stepCalls);
+    }
+
+    @Test
+    @DisplayName("steps from two threads do not interleave their media")
+    void stepsFromTwoThreadsDoNotInterleave() throws Exception {
+        published("camera_in");
+        Map<String, List<StepInput>> media = Map.of("camera_in", List.of(StepInput.video(new byte[4], 1, 1)));
+        Thread[] other = new Thread[1];
+        fake.duringFirstPush = () -> {
+            other[0] = new Thread(() -> reactor.step(null, null, media));
+            other[0].start();
+            try {
+                // Long enough for the other step to reach its push, were it not held back.
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+
+        reactor.step(null, null, media);
+        other[0].join();
+
+        assertEquals(List.of("raw:camera_in", "step", "raw:camera_in", "step"), fake.calls);
+    }
+
+    @Test
+    @DisplayName("a session that is not ready refuses the step before any of its media is pushed")
+    void aSessionNotReadyPushesNoMedia() {
+        published("camera_in");
+        fake.status = "waiting";
+
+        CompletableFuture<StepResult> refused =
+                reactor.step(null, null, Map.of("camera_in", List.of(EncodedFrame.h264(IDR, 2, 2))));
+
+        assertInstanceOf(
+                InvalidStateException.class,
+                assertThrows(ExecutionException.class, refused::get).getCause());
+        assertTrue(fake.pushOrder.isEmpty(), "the core would keep the frames for the next step");
+        assertEquals(0, fake.stepCalls);
+    }
+
+    @Test
+    @DisplayName("a state JSON cannot carry refuses the step before any of its media is pushed")
+    void aStateJsonCannotCarryPushesNoMedia() {
+        published("camera_in");
+        JsonValue state = JsonValue.object().put("strength", Double.NaN).build();
+
+        CompletableFuture<StepResult> refused =
+                reactor.step(state, null, Map.of("camera_in", List.of(EncodedFrame.h264(IDR, 2, 2))));
+
+        assertInstanceOf(
+                BadRequestException.class,
+                assertThrows(ExecutionException.class, refused::get).getCause());
+        assertTrue(fake.pushOrder.isEmpty(), "the frames would ride the next step");
         assertEquals(0, fake.stepCalls);
     }
 

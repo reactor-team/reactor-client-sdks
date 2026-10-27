@@ -25,11 +25,17 @@ versioning follows [Semantic Versioning](https://semver.org/).
   keyframe; a step whose frames do not decode fails with
   `StepRefusedException`. `media` takes raw frames too (`StepInput.video`,
   `StepInput.audio`), pushed after the frames already buffered and only once
-  the state is well formed; a bad track or frame anywhere in it fails the step
-  before any of it is pushed, leaving the buffer as it was. The Kotlin facade has
+  the state is well formed and the session ready; a bad track or frame
+  anywhere in it fails the step before any of it is pushed, leaving the buffer
+  as it was. The Kotlin facade has
   `ReactorTrack.pushEncodedFrame(...)` and `ReactorClient.step(media = ...)`.
   Needs a `libreactor_ffi` with `reactor_push_step_encoded_video_frame`; an
   older library still loads, and `pushEncodedFrame` fails saying to rebuild it.
+- RGB frames. `Track.pushFrame(pixels, PixelFormat.RGB, width, height)` and
+  `StepInput.video(pixels, PixelFormat.RGB, width, height)` take
+  `width * height * 3` bytes of R, G, B and convert them to BGRA, opaque,
+  before the push, as the Python SDK does with an RGB array. The Kotlin facade
+  has `ReactorTrack.pushFrame(pixels, format, width, height)`.
 
 ### Fixed
 

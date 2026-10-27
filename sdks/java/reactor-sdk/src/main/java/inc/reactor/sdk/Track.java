@@ -1,6 +1,7 @@
 package inc.reactor.sdk;
 
 import inc.reactor.sdk.internal.ClientPeer;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import org.jspecify.annotations.Nullable;
@@ -201,16 +202,74 @@ public final class Track {
      */
     public void pushFrame(
             byte[] bgra, int width, int height, byte @Nullable [] userData, @Nullable Long captureTimeUs) {
-        prepareFrame(bgra, width, height, userData, captureTimeUs).run();
+        prepareFrame(bgra, PixelFormat.BGRA, width, height, userData, captureTimeUs)
+                .run();
+    }
+
+    /**
+     * Pushes one video frame laid out as {@code format}. {@link PixelFormat#RGB} is converted to
+     * BGRA, opaque, before the push.
+     *
+     * @param pixels exactly {@code width * height * format.bytesPerPixel()} bytes
+     * @param format how the pixels are laid out
+     * @param width frame width in pixels
+     * @param height frame height in pixels
+     * @throws ReactorException for any of the reasons {@link #pushFrame(byte[], int, int)} gives
+     */
+    public void pushFrame(byte[] pixels, PixelFormat format, int width, int height) {
+        pushFrame(pixels, format, width, height, null, null);
+    }
+
+    /**
+     * Pushes one video frame laid out as {@code format}, with a tag and an explicit capture time.
+     *
+     * @param pixels exactly {@code width * height * format.bytesPerPixel()} bytes
+     * @param format how the pixels are laid out
+     * @param width frame width in pixels
+     * @param height frame height in pixels
+     * @param userData a tag for the far end, which drops it unless it declared that it reads tags
+     * @param captureTimeUs when this was captured, on the engine clock, or {@code null} for now
+     * @throws ReactorException for any of the reasons {@link #pushFrame(byte[], int, int)} gives
+     */
+    public void pushFrame(
+            byte[] pixels,
+            PixelFormat format,
+            int width,
+            int height,
+            byte @Nullable [] userData,
+            @Nullable Long captureTimeUs) {
+        prepareFrame(pixels, format, width, height, userData, captureTimeUs).run();
     }
 
     private Runnable prepareFrame(
-            byte[] bgra, int width, int height, byte @Nullable [] userData, @Nullable Long captureTimeUs) {
+            byte[] pixels,
+            PixelFormat format,
+            int width,
+            int height,
+            byte @Nullable [] userData,
+            @Nullable Long captureTimeUs) {
+        Objects.requireNonNull(format, "format");
         requireSendable("pushFrame");
-        requireKind(TrackKind.VIDEO, "a BGRA byte[]", "a short[] of PCM");
+        requireKind(TrackKind.VIDEO, "a BGRA or RGB byte[]", "a short[] of PCM");
         requirePublished("pushFrame");
-        requireExactFrameSize(bgra, width, height);
+        requireExactFrameSize(pixels, format, width, height);
+        // The native library takes BGRA only, so RGB is converted here, checked first, before the
+        // push is handed back.
+        byte[] bgra = format == PixelFormat.RGB ? rgbToBgra(pixels) : pixels;
         return () -> peer.pushVideoFrame(name, bgra, width, height, userData, captureTimeUs);
+    }
+
+    /** RGB to BGRA, the alpha the wire format needs added opaque, as the Python SDK does. */
+    private static byte[] rgbToBgra(byte[] rgb) {
+        int pixels = rgb.length / 3;
+        byte[] bgra = new byte[pixels * 4];
+        for (int i = 0; i < pixels; i++) {
+            bgra[i * 4] = rgb[i * 3 + 2];
+            bgra[i * 4 + 1] = rgb[i * 3 + 1];
+            bgra[i * 4 + 2] = rgb[i * 3];
+            bgra[i * 4 + 3] = (byte) 0xFF;
+        }
+        return bgra;
     }
 
     /**
@@ -330,7 +389,13 @@ public final class Track {
         return switch (input) {
             case EncodedFrame encoded -> prepareEncodedFrame(encoded);
             case StepInput.Video video ->
-                prepareFrame(video.bgra(), video.width(), video.height(), video.userData(), video.captureTimeUs());
+                prepareFrame(
+                        video.pixels(),
+                        video.format(),
+                        video.width(),
+                        video.height(),
+                        video.userData(),
+                        video.captureTimeUs());
             case StepInput.Audio audio -> prepareFrame(audio.pcm(), audio.sampleRate(), audio.channels());
         };
     }
@@ -372,18 +437,18 @@ public final class Track {
                                 + " the session leaving ready.");
     }
 
-    private void requireExactFrameSize(byte[] bgra, int width, int height) {
+    private void requireExactFrameSize(byte[] pixels, PixelFormat format, int width, int height) {
         if (width <= 0 || height <= 0) {
             throw refusal("pushFrame", "width and height must both be positive; got " + width + "x" + height + ".");
         }
         // Computed in long, because width * height * 4 overflows int at about 23000x23000 and an
         // overflowed comparison would accept a buffer far too small and read past its end.
-        long required = (long) width * height * 4;
-        if (bgra.length != required) {
+        long required = (long) width * height * format.bytesPerPixel();
+        if (pixels.length != required) {
             throw refusal(
                     "pushFrame",
-                    "a " + width + "x" + height + " BGRA frame needs exactly " + required + " bytes; got " + bgra.length
-                            + ".");
+                    "a " + width + "x" + height + " " + format + " frame needs exactly " + required + " bytes; got "
+                            + pixels.length + ".");
         }
     }
 

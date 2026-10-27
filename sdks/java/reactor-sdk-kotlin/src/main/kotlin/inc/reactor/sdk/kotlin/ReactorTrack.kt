@@ -99,6 +99,22 @@ public class ReactorTrack(
         java.pushFrame(bgra, width, height)
 
     /**
+     * Pushes one video frame laid out as [format]. [inc.reactor.sdk.PixelFormat.RGB] is converted
+     * to BGRA, opaque, before the push.
+     *
+     * @param pixels `width * height * format.bytesPerPixel()` bytes
+     * @param format how the pixels are laid out
+     * @param width in pixels
+     * @param height in pixels
+     */
+    public fun pushFrame(
+        pixels: ByteArray,
+        format: inc.reactor.sdk.PixelFormat,
+        width: Int,
+        height: Int,
+    ): Unit = java.pushFrame(pixels, format, width, height)
+
+    /**
      * Pushes one block of audio.
      *
      * @param pcm interleaved signed 16-bit samples
