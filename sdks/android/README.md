@@ -1,5 +1,10 @@
 # Reactor Android SDK
 
+[![Maven Central: reactor-sdk-android](https://img.shields.io/maven-central/v/inc.reactor/reactor-sdk-android.svg?label=reactor-sdk-android)](https://central.sonatype.com/artifact/inc.reactor/reactor-sdk-android)
+[![Maven Central: reactor-sdk-android-media](https://img.shields.io/maven-central/v/inc.reactor/reactor-sdk-android-media.svg?label=reactor-sdk-android-media)](https://central.sonatype.com/artifact/inc.reactor/reactor-sdk-android-media)
+[![build](https://img.shields.io/github/actions/workflow/status/reactor-team/reactor-client-sdks/ci.yml?branch=main)](https://github.com/reactor-team/reactor-client-sdks/actions)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/reactor-team/reactor-client-sdks/blob/main/LICENSE)
+
 A Reactor client for Android, bound to `libreactor_ffi` through a C++ JNI bridge.
 
 Same object model as every other Reactor SDK — a `Reactor`, the `Track`s a model
