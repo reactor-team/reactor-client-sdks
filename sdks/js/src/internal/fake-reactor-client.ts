@@ -124,6 +124,11 @@ export class FakeReactorClient {
   free(): void {
     this.freeCalls += 1;
   }
+  /** Test hook: what `status()` answers from now on. */
+  setStatus(status: ReactorStatus): void {
+    this._status = status;
+  }
+
   status(): ReactorStatus {
     return this._status;
   }

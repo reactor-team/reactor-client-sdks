@@ -874,6 +874,78 @@ describe('Reactor.step media', () => {
     expect(client.clearStepInputsCalls).toBe(0);
   });
 
+  it('keeps each step’s media with its step when steps and pushes are not awaited', async () => {
+    const { reactor, client } = await steppedWithInputs();
+    const order: string[] = [];
+    const pushEncoded = client.pushEncodedVideoFrame.bind(client);
+    const step = client.step.bind(client);
+
+    client.pushEncodedVideoFrame = (...args) => {
+      order.push(`h264 ${args[2][3]}`);
+      pushEncoded(...args);
+    };
+    client.step = (...args) => {
+      order.push('step');
+      return step(...args);
+    };
+
+    const first = reactor.step({ media: { camera: [idr] } });
+    const second = reactor.step({ media: { camera: [p] } });
+    const after = reactor.pushEncodedFrame('camera', idr);
+
+    await Promise.all([first, second, after]);
+
+    expect(order).toEqual([`h264 ${0x65}`, 'step', `h264 ${0x41}`, 'step', `h264 ${0x65}`]);
+  });
+
+  it('pushes a step’s encoded frames with the extras they had when step() was called', async () => {
+    const { reactor, client } = await steppedWithInputs();
+    const frame = { ...idr, captureTimeUs: 5 };
+
+    const stepping = reactor.step({ media: { camera: [frame] } });
+
+    frame.captureTimeUs = Number.NaN;
+    await stepping;
+
+    expect(client.pushEncodedVideoFrameCalls.map((call) => call.captureTimeUs)).toEqual([5]);
+  });
+
+  it('pushes each queued encoded frame with its own extras, however the object changes after', async () => {
+    const { reactor, client } = await steppedWithInputs();
+    const frame = { ...idr, captureTimeUs: 1 };
+
+    const first = reactor.pushEncodedFrame('camera', frame);
+
+    frame.captureTimeUs = 2;
+    const second = reactor.pushEncodedFrame('camera', frame);
+
+    await Promise.all([first, second]);
+
+    expect(client.pushEncodedVideoFrameCalls.map((call) => call.captureTimeUs)).toEqual([1, 2]);
+  });
+
+  it('lets later pushes through once a step’s media is refused', async () => {
+    const { reactor, client } = await steppedWithInputs();
+
+    const refused = reactor.step({ media: { camera: [{ ...p, codec: 'vp9' as 'h264' }] } });
+    const after = reactor.pushEncodedFrame('camera', idr);
+
+    await expect(refused).rejects.toThrow('unknown codec');
+    await after;
+    expect(client.pushEncodedVideoFrameCalls.map((call) => call.data)).toEqual([idr.data]);
+    expect(client.stepCalls).toEqual([]);
+  });
+
+  it('refuses media while the session is not ready, before any of it is pushed', async () => {
+    const { reactor, client } = await steppedWithInputs();
+
+    client.setStatus('waiting');
+
+    await expect(reactor.step({ media: { camera: [idr] } })).rejects.toThrow('needs a ready session');
+    expect(client.pushEncodedVideoFrameCalls).toEqual([]);
+    expect(client.stepCalls).toEqual([]);
+  });
+
   it('needs each media track published first', async () => {
     const { reactor, client } = await connected('stepped');
 

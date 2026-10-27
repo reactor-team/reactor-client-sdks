@@ -10,12 +10,15 @@ import type { EncodedFrame, PushFrame } from '../types';
 /** The codecs an encoded step frame can carry. */
 const CODECS: ReadonlySet<string> = new Set<EncodedVideoCodec>(['h264']);
 
-/** An encoded frame's bytes, ready for the binding. */
+/** An encoded frame's bytes and extras, ready for the binding, read once when
+ *  the call is made: a caller changing the frame afterwards changes nothing. */
 export interface EncodedBytes {
   codec: EncodedVideoCodec;
   data: Uint8Array;
   width: number;
   height: number;
+  metadata: Uint8Array | null;
+  captureTimeUs: number | null;
 }
 
 /** Whether a `step()` media entry is an `EncodedFrame` rather than a frame
@@ -42,7 +45,7 @@ export function toEncodedBytes(frame: EncodedFrame, operation: string, trackName
   if (typeof frame !== 'object' || frame === null) {
     throw refuse('expected an EncodedFrame, { codec, data, width, height }');
   }
-  const { codec, data, width, height } = frame;
+  const { codec, data, width, height, metadata, captureTimeUs } = frame;
 
   if (!CODECS.has(codec)) {
     throw refuse(`unknown codec ${JSON.stringify(codec)}; expected "h264"`);
@@ -65,7 +68,13 @@ export function toEncodedBytes(frame: EncodedFrame, operation: string, trackName
   if (!isDimension(width) || !isDimension(height)) {
     throw refuse(`width and height are the decoded frame's, got ${String(width)}x${String(height)}`);
   }
-  return { codec, data: bytes, width, height };
+  if (metadata != null && !(metadata instanceof Uint8Array)) {
+    throw refuse('metadata must be a Uint8Array');
+  }
+  if (captureTimeUs != null && !Number.isFinite(captureTimeUs)) {
+    throw refuse('captureTimeUs must be a finite number');
+  }
+  return { codec, data: bytes, width, height, metadata: metadata ?? null, captureTimeUs: captureTimeUs ?? null };
 }
 
 function isDimension(value: unknown): value is number {

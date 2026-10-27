@@ -268,9 +268,12 @@ await reactor.step();
   what tells it from a raw frame in `media`.
 - `media` maps input track names to frames: `EncodedFrame`s, or anything `pushFrame()` takes.
   They go after the frames pushed to the same track since the previous step, and only once
-  `state` and `commands` are known to be well formed, so a step refused for those leaves the
-  buffer as it was. Each track must be published first. A bad track or frame anywhere in
-  `media` fails the step before any of it is pushed, leaving the buffer as it was too.
+  `state` and `commands` are known to be well formed and the session is ready, so a step
+  refused for those leaves the buffer as it was. Each track must be published first. A bad
+  track or frame anywhere in `media` fails the step before any of it is pushed, leaving the
+  buffer as it was too. A session that leaves ready once the media is in has the step refused
+  and keeps the frames for the next one, as pushed frames are. A push or step called after
+  `step()` waits for it to take the buffer, so its frames go to the next step, not this one.
 - `pushEncodedFrame()` rejects with an `InvalidStateError` outside a stepped session, on an
   audio or recvonly track, a track not published on this connection, empty data or a zero
   dimension. A step whose frames do not decode, or do not start at a keyframe, rejects with a

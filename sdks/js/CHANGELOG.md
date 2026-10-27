@@ -23,9 +23,12 @@ versioning follows [Semantic Versioning](https://semver.org/).
   starting at a keyframe; a step whose frames do not decode rejects with
   `StepRefusedError`. `media` takes what `pushFrame()` takes too, and its
   frames go after the ones already pushed to the track, once `state` and
-  `commands` are known to be well formed, so a step refused for those pushes
-  none of them, nor does one with a bad track or frame anywhere in `media`.
-  New types `EncodedFrame` and `EncodedVideoCodec`.
+  `commands` are known to be well formed and the session ready, so a step
+  refused for those pushes none of them, nor does one with a bad track or
+  frame anywhere in `media`. A push or step called after `step()` waits for
+  it to take the buffer, so its frames go to the next step. An encoded
+  frame's extras are read when the call is made. New types `EncodedFrame` and
+  `EncodedVideoCodec`.
 
 ### Fixed
 
