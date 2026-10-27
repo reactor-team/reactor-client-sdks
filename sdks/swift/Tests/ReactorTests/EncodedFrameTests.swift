@@ -52,6 +52,89 @@ struct EncodedFrameTests {
 
     // MARK: - pushEncodedFrame
 
+    // The ABI requires a live handle at call time, so a push must go through the
+    // barrier close() waits on. As in ReactorLifetimeTests, this pins the
+    // ordering: a fake cannot make the use-after-free itself observable.
+    private func closeRacing(_ fake: FakeLibrary, _ client: Reactor) -> Thread {
+        let pushIsInside = DispatchSemaphore(value: 0)
+        let closeIsComing = DispatchSemaphore(value: 0)
+        fake.whilePushingEncoded = {
+            pushIsInside.signal()
+            _ = closeIsComing.wait(timeout: .now() + .seconds(2))
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        let closer = Thread {
+            pushIsInside.wait()
+            closeIsComing.signal()
+            client.close()
+        }
+        closer.start()
+        return closer
+    }
+
+    @Test("an RGB frame reaches the library as opaque BGRA, pushed or in a step")
+    func rgbFramesReachTheLibraryAsBgra() async throws {
+        let fake = FakeLibrary()
+        let (client, camera) = try await publishedCamera(fake)
+        defer { client.close() }
+        // Two pixels: red, then a grey with distinct channels.
+        let rgb = Data([0xFF, 0, 0, 0x10, 0x20, 0x30])
+        let bgra: [UInt8] = [0, 0, 0xFF, 0xFF, 0x30, 0x20, 0x10, 0xFF]
+
+        try camera.pushFrame(rgb, format: .rgb, width: 2, height: 1)
+        // The fake never answers the step: what matters is the push before it,
+        // and close() abandons the step once that is in.
+        let stepping = Task {
+            try await client.step(
+                media: ["camera": [.video(rgb, width: 2, height: 1, format: .rgb)]])
+        }
+        #expect(await waitUntil { fake.pushedFrames.count == 2 })
+        client.close()
+        _ = try? await stepping.value
+
+        #expect(fake.pushedFrames.map(\.bytes) == [bgra, bgra])
+    }
+
+    @Test("an RGB frame is checked against its own size")
+    func rgbFramesAreCheckedAgainstTheirSize() async throws {
+        let fake = FakeLibrary()
+        let (client, camera) = try await publishedCamera(fake)
+        defer { client.close() }
+
+        #expect(throws: ReactorError.self) {
+            try camera.pushFrame(Data(count: 16), format: .rgb, width: 2, height: 2)
+        }
+        #expect(fake.pushedFrames.isEmpty)
+    }
+
+    @Test("close() waits for an encoded push already inside the library")
+    func closeWaitsForAnEncodedPush() async throws {
+        let fake = FakeLibrary()
+        let (client, camera) = try await publishedCamera(fake)
+        let closer = closeRacing(fake, client)
+
+        try camera.pushEncodedFrame(EncodedFrame(Self.idr, width: 2, height: 2))
+        while !closer.isFinished {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        #expect(fake.events.suffix(3) == [.encodedPushEntered, .encodedPushReturned, .destroyed])
+    }
+
+    @Test("close() waits for a step's media already going into the library")
+    func closeWaitsForAStepsMedia() async throws {
+        let fake = FakeLibrary()
+        let (client, _) = try await publishedCamera(fake)
+        let closer = closeRacing(fake, client)
+
+        _ = try? await client.step(media: ["camera": [Self.keyframe]])
+        while !closer.isFinished {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        #expect(fake.events.suffix(3) == [.encodedPushEntered, .encodedPushReturned, .destroyed])
+    }
+
     @Test("an encoded frame reaches the library untouched, as H.264, tagged and stamped")
     func encodedFrameReachesTheLibrary() async throws {
         let fake = FakeLibrary()

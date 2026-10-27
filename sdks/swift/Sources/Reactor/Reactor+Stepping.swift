@@ -118,13 +118,19 @@ extension Reactor {
 
         let stateJSON = try state.map { try encodeJSON(JSONValue.object($0), operation: "step") }
         let commandsJSON = try encodeJSON(commands, operation: "step")
-        // Pushed only once the state and commands are known to be well formed, so
+        // Checked only once the state and commands are known to be well formed, so
         // a step refused for those leaves the buffer as the caller left it.
-        try pushStepMedia(media)
+        let pushes = try prepareStepMedia(media)
 
         return try await perform(
             PendingStep(owner: self, ffi: ffi), completion: stepCompletionTrampoline
         ) { handle, completion, userdata in
+            // Pushed here, with the live handle and under the same barrier as the
+            // step that takes them: a close() cannot destroy the handle mid-batch,
+            // and no other step's pushes can land between these and reactor_step.
+            for push in pushes {
+                push(handle)
+            }
             withOptionalCString(stateJSON) { statePointer in
                 commandsJSON.withCString { commandsPointer in
                     self.ffi.step(handle, statePointer, commandsPointer, completion, userdata)
@@ -133,24 +139,26 @@ extension Reactor {
         }
     }
 
-    /// Push `media`'s frames, track by track, as ``step(state:commands:media:)``
-    /// documents. Sorted by name, so that what reaches the buffer — and what its
-    /// limit drops first — does not depend on a dictionary's order.
+    /// Check `media`'s frames, track by track, as ``step(state:commands:media:)``
+    /// documents, and answer their pushes, which the step runs with the live
+    /// handle right before `reactor_step`. Sorted by name, so that what reaches
+    /// the buffer — and what its limit drops first — does not depend on a
+    /// dictionary's order.
     ///
     /// Every frame is checked before the first is pushed: the buffer can only
     /// be cleared whole, so a frame refused halfway would leave the ones before
     /// it to ride the next step.
-    func pushStepMedia(_ media: [String: [StepMediaFrame]]) throws {
-        var pushes: [() -> Void] = []
+    func prepareStepMedia(
+        _ media: [String: [StepMediaFrame]]
+    ) throws -> [(OpaquePointer) -> Void] {
+        var pushes: [(OpaquePointer) -> Void] = []
         for (name, frames) in media.sorted(by: { $0.key < $1.key }) {
             let track = try track(name)
             for frame in frames {
                 pushes.append(try track.preparePush(frame))
             }
         }
-        for push in pushes {
-            push()
-        }
+        return pushes
     }
 
     /// Drop every frame pushed since the last step, so the next

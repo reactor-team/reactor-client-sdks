@@ -368,10 +368,11 @@ public struct EncodedFrame: Sendable, Hashable {
 /// push would push it, just before the step goes out.
 public enum StepMediaFrame: Sendable, Hashable {
 
-    /// BGRA pixels, as ``Track/pushFrame(_:width:height:userData:captureTimeUs:)``
-    /// takes them.
+    /// Raw pixels, BGRA unless `format` says RGB, as
+    /// ``Track/pushFrame(_:format:width:height:userData:captureTimeUs:)`` takes them.
     case video(
-        Data, width: UInt32, height: UInt32, userData: Data? = nil, captureTimeUs: Int64? = nil)
+        Data, width: UInt32, height: UInt32, userData: Data? = nil, captureTimeUs: Int64? = nil,
+        format: PixelFormat = .bgra)
 
     /// Interleaved 16-bit PCM, as ``Track/pushFrame(_:sampleRate:channels:)``
     /// takes it.
