@@ -28,7 +28,21 @@ public sealed interface StepInput permits EncodedFrame, StepInput.Video, StepInp
      * @return the frame
      */
     static Video video(byte[] bgra, int width, int height) {
-        return new Video(bgra, width, height, null, null);
+        return new Video(bgra, width, height, null, null, PixelFormat.BGRA);
+    }
+
+    /**
+     * A raw video frame laid out as {@code format}, as {@link Track#pushFrame(byte[], PixelFormat,
+     * int, int)} takes it.
+     *
+     * @param pixels exactly {@code width * height * format.bytesPerPixel()} bytes
+     * @param format how the pixels are laid out
+     * @param width frame width in pixels
+     * @param height frame height in pixels
+     * @return the frame
+     */
+    static Video video(byte[] pixels, PixelFormat format, int width, int height) {
+        return new Video(pixels, width, height, null, null, format);
     }
 
     /**
@@ -44,25 +58,29 @@ public sealed interface StepInput permits EncodedFrame, StepInput.Video, StepInp
     }
 
     /**
-     * A raw BGRA video frame. Checked when it is pushed, as {@link Track#pushFrame(byte[], int, int,
-     * byte[], Long)} checks one.
+     * A raw video frame, BGRA or RGB. Checked when it is pushed, as {@link Track#pushFrame(byte[],
+     * PixelFormat, int, int, byte[], Long)} checks one.
      *
-     * @param bgra exactly {@code width * height * 4} bytes
+     * @param pixels exactly {@code width * height * format.bytesPerPixel()} bytes
      * @param width frame width in pixels
      * @param height frame height in pixels
      * @param userData a tag for the far end, or {@code null}
      * @param captureTimeUs when it was captured on the engine clock, or {@code null} for now
+     * @param format how the pixels are laid out
      */
     record Video(
-            byte[] bgra,
+            byte[] pixels,
             int width,
             int height,
             byte @Nullable [] userData,
-            @Nullable Long captureTimeUs) implements StepInput {
+            @Nullable Long captureTimeUs,
+            PixelFormat format)
+            implements StepInput {
 
         /** @throws NullPointerException when {@code bgra} is null */
         public Video {
-            Objects.requireNonNull(bgra, "bgra");
+            Objects.requireNonNull(pixels, "pixels");
+            Objects.requireNonNull(format, "format");
         }
 
         /** Equal to another frame with the same pixels, size, tag and capture time. */
@@ -71,21 +89,22 @@ public sealed interface StepInput permits EncodedFrame, StepInput.Video, StepInp
             return other instanceof Video that
                     && width == that.width
                     && height == that.height
-                    && Arrays.equals(bgra, that.bgra)
+                    && format == that.format
+                    && Arrays.equals(pixels, that.pixels)
                     && Arrays.equals(userData, that.userData)
                     && Objects.equals(captureTimeUs, that.captureTimeUs);
         }
 
         @Override
         public int hashCode() {
-            int hash = Objects.hash(width, height, captureTimeUs);
-            hash = 31 * hash + Arrays.hashCode(bgra);
+            int hash = Objects.hash(width, height, captureTimeUs, format);
+            hash = 31 * hash + Arrays.hashCode(pixels);
             return 31 * hash + Arrays.hashCode(userData);
         }
 
         @Override
         public String toString() {
-            return "StepInput.Video[" + width + "x" + height + ", " + bgra.length + " bytes]";
+            return "StepInput.Video[" + width + "x" + height + " " + format + ", " + pixels.length + " bytes]";
         }
     }
 

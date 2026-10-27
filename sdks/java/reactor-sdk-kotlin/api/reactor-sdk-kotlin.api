@@ -87,6 +87,7 @@ public final class inc/reactor/sdk/kotlin/ReactorTrack {
 	public final fun pushEncodedFrame ([BIILinc/reactor/sdk/VideoCodec;[BLjava/lang/Long;)V
 	public static synthetic fun pushEncodedFrame$default (Linc/reactor/sdk/kotlin/ReactorTrack;[BIILinc/reactor/sdk/VideoCodec;[BLjava/lang/Long;ILjava/lang/Object;)V
 	public final fun pushFrame ([BII)V
+	public final fun pushFrame ([BLinc/reactor/sdk/PixelFormat;II)V
 	public final fun pushFrame ([SII)V
 	public final fun resume (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun setBitrate (IILkotlin/coroutines/Continuation;)Ljava/lang/Object;
