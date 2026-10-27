@@ -11,7 +11,7 @@ request as the bump.
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-10-20
+## [1.0.0] - 2026-10-27
 
 First release: a Kotlin binding over the same native core as the other Reactor
 SDKs, reached through JNI, for Android 8.0 (API 26) and newer.
