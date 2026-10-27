@@ -650,10 +650,12 @@ export class Reactor implements Disposable {
    * after the ones already pushed to that track: what `pushFrame()` takes,
    * or an `EncodedFrame` — H.264 the runtime decodes before the step runs,
    * so the model reads RGB frames as for a raw push. They are pushed only
-   * once `state` and `commands` are well formed, so a step refused for those
-   * leaves the frames buffered as they were. They go all or nothing: a bad
-   * track or frame anywhere in `media` rejects the step before any of it is
-   * pushed or sent, leaving the buffer as it was.
+   * once `state` and `commands` are well formed and the session is ready, so
+   * a step refused for those leaves the frames buffered as they were. They go
+   * all or nothing: a bad track or frame anywhere in `media` rejects the step
+   * before any of it is pushed or sent, leaving the buffer as it was. A
+   * session that leaves 'ready' once the media is in has the step refused and
+   * keeps the frames for the next one, as pushed frames are.
    * A track's encoded frames of one step go in decode order, starting at a
    * keyframe; a step whose frames do not decode rejects with a
    * `StepRefusedError`.
@@ -679,18 +681,36 @@ export class Reactor implements Disposable {
 
       // Pushed only once the state and commands are known to be well formed,
       // so a step refused for those leaves the buffer as the caller left it.
-      if (options.media !== undefined) {
-        await this.pushStepMedia(options.media);
-      }
-      await this.pendingPushes;
-      // Excluded from connect()/disconnect()/reconnect() like sendCommand():
-      // a step can take minutes, and must neither be freed out from under
-      // nor block unrelated reads.
-      return await this.withReaderAccess(async () => {
-        const client = await this.getOrCreateClient();
-
-        return client.step(state, commands);
+      const before = options.media !== undefined ? this.pushStepMedia(options.media) : this.pendingPushes;
+      // This step's place in line, taken now, before a later push or step can
+      // queue ahead of it: it goes once its media and every push called before
+      // it are in. A push called after it waits only until the step has taken
+      // the buffer, not for its result.
+      let taken!: () => void;
+      const bufferTaken = new Promise<void>((resolve) => {
+        taken = resolve;
       });
+      const stepping = before.then(() =>
+        // Excluded from connect()/disconnect()/reconnect() like sendCommand():
+        // a step can take minutes, and must neither be freed out from under
+        // nor block unrelated reads.
+        this.withReaderAccess(async () => {
+          const client = await this.getOrCreateClient();
+
+          try {
+            return client.step(state, commands);
+          } finally {
+            // The binding takes the buffer in the step's first poll, already
+            // queued by now: a push queued behind this runs after it.
+            taken();
+          }
+        }),
+      );
+
+      // Refused before it reached the binding, the step lets the line move on.
+      stepping.catch(() => taken());
+      this.pendingPushes = bufferTaken;
+      return await stepping;
     } catch (cause) {
       throw this.captureError(cause);
     }
@@ -833,7 +853,8 @@ export class Reactor implements Disposable {
     let encoded: ReturnType<typeof toEncodedBytes>;
 
     try {
-      // Read now: a chunk is copied, and a malformed frame refused, at call time.
+      // Read now: a chunk is copied, its extras taken, and a malformed frame
+      // refused, at call time.
       encoded = toEncodedBytes(frame, operation, trackName);
     } catch (cause) {
       throw this.captureError(cause);
@@ -864,8 +885,8 @@ export class Reactor implements Disposable {
           encoded.data,
           encoded.width,
           encoded.height,
-          frame.metadata ?? null,
-          frame.captureTimeUs ?? null,
+          encoded.metadata,
+          encoded.captureTimeUs,
         );
       }),
     );
@@ -966,6 +987,14 @@ export class Reactor implements Disposable {
           this.checkPushTarget(frame.operation, frame.track, undefined, epoch);
           checkStepTrack(declared, frame);
         }
+        // The core refuses a step outside 'ready' and keeps what is buffered for
+        // the next one, so the media must not go in first. A session leaving
+        // 'ready' after this still can: then the frames ride the next step.
+        const status = client.status();
+
+        if (status !== 'ready') {
+          throw new InvalidStateError(`step() needs a ready session; it is ${status}`, { operation: 'step' });
+        }
         // Every frame passed: only now does the first go into the buffer.
         for (const frame of ready) {
           if (frame.kind === 'encoded') {
@@ -975,8 +1004,8 @@ export class Reactor implements Disposable {
               frame.encoded.data,
               frame.encoded.width,
               frame.encoded.height,
-              frame.metadata ?? null,
-              frame.captureTimeUs ?? null,
+              frame.encoded.metadata,
+              frame.encoded.captureTimeUs,
             );
           } else if (frame.kind === 'video') {
             const { data, width, height, format } = frame.pixels;
@@ -1501,19 +1530,13 @@ function isJsonObject(value: unknown): boolean {
 
 /** One frame of `step()`'s `media`, held from call time until it is read. */
 type HeldStepFrame = { track: string; release: () => void } & (
-  | { kind: 'encoded'; operation: 'pushEncodedFrame'; encoded: EncodedBytes; frame: EncodedFrame }
+  | { kind: 'encoded'; operation: 'pushEncodedFrame'; encoded: EncodedBytes }
   | { kind: 'raw'; operation: 'pushFrame'; frame: PushFrame }
 );
 
 /** One frame of `step()`'s `media`, read and checked, as the binding takes it. */
 type ReadyStepFrame = { track: string } & (
-  | {
-      kind: 'encoded';
-      operation: 'pushEncodedFrame';
-      encoded: EncodedBytes;
-      metadata: Uint8Array | undefined;
-      captureTimeUs: number | undefined;
-    }
+  | { kind: 'encoded'; operation: 'pushEncodedFrame'; encoded: EncodedBytes }
   | { kind: 'video'; operation: 'pushFrame'; pixels: Pixels }
   | { kind: 'audio'; operation: 'pushFrame'; audio: PushAudioFrame }
 );
@@ -1521,17 +1544,8 @@ type ReadyStepFrame = { track: string } & (
 function holdStepFrame(track: string, frame: PushFrame | EncodedFrame): HeldStepFrame {
   if (isEncodedFrame(frame)) {
     const operation = 'pushEncodedFrame';
-    const encoded = toEncodedBytes(frame, operation, track);
-    const refuse = (why: string) =>
-      new InvalidStateError(`${operation}('${track}'): ${why}`, { operation });
 
-    if (frame.metadata != null && !(frame.metadata instanceof Uint8Array)) {
-      throw refuse('metadata must be a Uint8Array');
-    }
-    if (frame.captureTimeUs != null && !Number.isFinite(frame.captureTimeUs)) {
-      throw refuse('captureTimeUs must be a finite number');
-    }
-    return { track, kind: 'encoded', operation, encoded, frame, release: () => {} };
+    return { track, kind: 'encoded', operation, encoded: toEncodedBytes(frame, operation, track), release: () => {} };
   }
   if (typeof frame !== 'object' || frame === null) {
     throw new InvalidStateError(`pushFrame('${track}'): expected a frame`, { operation: 'pushFrame' });
@@ -1549,9 +1563,7 @@ async function readStepFrame(frame: HeldStepFrame): Promise<ReadyStepFrame> {
     new InvalidStateError(`${operation}('${track}'): ${why}`, { operation });
 
   if (frame.kind === 'encoded') {
-    const { metadata, captureTimeUs } = frame.frame;
-
-    return { track, kind: 'encoded', operation: frame.operation, encoded: frame.encoded, metadata, captureTimeUs };
+    return { track, kind: 'encoded', operation: frame.operation, encoded: frame.encoded };
   }
   if (isAudioFrame(frame.frame)) {
     const fault = audioFault(frame.frame);
