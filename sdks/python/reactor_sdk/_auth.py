@@ -15,6 +15,7 @@ import json
 import logging
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from typing import Any
 
 _log = logging.getLogger(__name__)
@@ -31,6 +32,55 @@ _TOKENS_PATH = "/tokens"
 _TIMEOUT_S = 30.0
 
 
+#: Header names (lowercase) the SDK or the transport owns, which `extra_headers` may not
+#: set. Kept in step with `RESERVED_HEADERS` in crates/reactor-core/src/http.rs, which
+#: is the source of truth.
+_RESERVED_HEADERS = frozenset(
+    {
+        "authorization",
+        "content-type",
+        "content-length",
+        "reactor-api-key",
+        "reactor-api-version",
+        "reactor-api-accept-version",
+        "reactor-webrtc-version",
+        "host",
+        "connection",
+        "transfer-encoding",
+        "upgrade",
+        "accept-encoding",
+        "te",
+        "trailer",
+        "expect",
+        "keep-alive",
+    }
+)
+
+#: Characters an HTTP header name may contain (RFC 9110 `token`).
+_TOKEN_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&'*+-.^_`|~"
+)
+
+
+def _validate_extra_headers(headers: Mapping[str, str]) -> None:
+    """Mirror `validate_extra_headers` in crates/reactor-core/src/http.rs."""
+    seen: set[str] = set()
+    for name, value in headers.items():
+        if not isinstance(name, str) or not isinstance(value, str):
+            raise AuthError(f"extra header {name!r} must map str to str")
+        if not name or not all(c in _TOKEN_CHARS for c in name):
+            raise AuthError(f"invalid extra header name {name!r}")
+        if name.lower() in _RESERVED_HEADERS:
+            raise AuthError(f"extra header {name!r} is set by the SDK and cannot be overridden")
+        # Visible ASCII only: urllib Latin-1 encodes anything wider while the native
+        # client sends UTF-8, so one value would name different bytes per request.
+        if any(not (c == "\t" or 0x20 <= ord(c) < 0x7F) for c in value):
+            raise AuthError(f"invalid value for extra header {name!r}: only visible ASCII")
+        if name.lower() in seen:
+            raise AuthError(f"extra header {name!r} is given more than once")
+        seen.add(name.lower())
+
+
 class AuthError(RuntimeError):
     """Raised when an API key cannot be exchanged for a JWT."""
 
@@ -44,6 +94,7 @@ def fetch_jwt(
     max_sessions: int | None = None,
     max_session_duration_seconds: int | None = None,
     expires_after: int | None = None,
+    extra_headers: Mapping[str, str] | None = None,
 ) -> str:
     """Exchange `api_key` for a JWT, and return the token.
 
@@ -69,10 +120,18 @@ def fetch_jwt(
     clamping it. ``expires_after`` is a lifetime in seconds, which the server clamps to
     its own ceiling.
 
+    ``extra_headers`` are sent on the token request after the SDK's own headers, never
+    in the body. A name the SDK sets itself (``Authorization``, ``Content-Type``,
+    ``Reactor-API-Key`` and the like), a name that is not a valid HTTP token, or a value
+    with control characters is rejected before any request is made.
+
     Raises:
         AuthError: if the exchange fails for any reason, including a response that
-            does not carry a token.
+            does not carry a token, or if ``extra_headers`` is invalid.
     """
+    if extra_headers:
+        _validate_extra_headers(extra_headers)
+
     url = f"{api_url.rstrip('/')}{_TOKENS_PATH}"
 
     body: dict[str, Any] = {}
@@ -101,15 +160,15 @@ def fetch_jwt(
     # expects for an unscoped request.
     payload = json.dumps(body if body else None).encode()
 
-    request = urllib.request.Request(
-        url,
-        data=payload,
-        method="POST",
-        headers={
-            "Reactor-API-Key": api_key,
-            "Content-Type": "application/json",
-        },
+    headers = {
+        "Reactor-API-Key": api_key,
+        "Content-Type": "application/json",
+    }
+    own = {name.lower() for name in headers}
+    headers.update(
+        {name: value for name, value in (extra_headers or {}).items() if name.lower() not in own}
     )
+    request = urllib.request.Request(url, data=payload, method="POST", headers=headers)
 
     try:
         with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as response:

@@ -337,7 +337,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_inc_reactor_sdk_android_internal_NativeC
   // sendonly audio track. reactor_create's env-var default is exactly what this avoids.
   ReactorHandle* handle = reactor_create_with_adm(
       url.get(), model.get(), token.get(), local ? 1 : 0, auto_resume_tracks ? 1 : 0, &callbacks,
-      /*adm_mode=*/0, version.get(), type.get());
+      /*adm_mode=*/0, version.get(), type.get(), /*extra_headers_json=*/nullptr);
   return adopt(env, std::move(context), handle);
 }
 

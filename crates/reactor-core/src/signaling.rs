@@ -26,9 +26,11 @@ pub struct WebRtcSignaling {
     base_url: String,
     client_info: ClientInfo,
     poll: PollConfig,
+    extra_headers: crate::http::ExtraHeaders,
 }
 
 impl WebRtcSignaling {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         http: SharedHttp,
         auth: SharedAuth,
@@ -37,6 +39,7 @@ impl WebRtcSignaling {
         base_url: String,
         client_info: ClientInfo,
         poll: PollConfig,
+        extra_headers: crate::http::ExtraHeaders,
     ) -> Self {
         Self {
             http,
@@ -46,6 +49,7 @@ impl WebRtcSignaling {
             base_url: base_url.trim_end_matches('/').to_string(),
             client_info,
             poll,
+            extra_headers,
         }
     }
 
@@ -71,6 +75,7 @@ impl WebRtcSignaling {
         if let Some(jwt) = self.auth.jwt(&request).await? {
             headers.push(("Authorization".to_string(), format!("Bearer {jwt}")));
         }
+        self.extra_headers.append_to(&mut headers);
         Ok(headers)
     }
 
@@ -205,6 +210,7 @@ mod tests {
                 sdk_type: "test".into(),
             },
             PollConfig::session(),
+            Default::default(),
         );
 
         let _ = signaling.ice_servers().await;
@@ -216,6 +222,30 @@ mod tests {
                 AuthRequest::for_session("sid-1"),
                 AuthRequest::for_session("sid-1"),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn extra_headers_ride_on_signaling_requests() {
+        let signaling = WebRtcSignaling::new(
+            Arc::new(NotFoundHttp),
+            Arc::new(RecordingAuth::default()),
+            Arc::new(NoSleep),
+            "sid-1".into(),
+            "https://api.reactor.inc/sessions/sid-1/transport/webrtc".into(),
+            ClientInfo {
+                sdk_version: "0.0.0".into(),
+                sdk_type: "test".into(),
+            },
+            PollConfig::session(),
+            std::collections::BTreeMap::from([("X-Client-Id".to_string(), "my-app".to_string())])
+                .into(),
+        );
+
+        let headers = signaling.headers(true).await.unwrap();
+        assert_eq!(
+            headers.last(),
+            Some(&("X-Client-Id".to_string(), "my-app".to_string()))
         );
     }
 }

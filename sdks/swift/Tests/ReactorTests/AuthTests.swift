@@ -89,6 +89,31 @@ struct AuthTests {
         #expect(!json.contains("expires_after"))
     }
 
+    @Test("extra headers travel under the platform's key, as an object of strings")
+    func extraHeadersCarryTheKey() async throws {
+        let fake = FakeLibrary()
+
+        _ = try await fetching(
+            fake, result: #"{"jwt":"t"}"#,
+            options: .init(extraHeaders: ["X-Trace": "abc"]))
+
+        let json = try #require(fake.jwtCalls.first?.optionsJSON)
+        #expect(json == #"{"extra_headers":{"X-Trace":"abc"}}"#)
+        #expect(!json.contains("extraHeaders"))
+    }
+
+    @Test("empty extra headers are omitted rather than sent as an empty object")
+    func emptyExtraHeadersAreAbsent() async throws {
+        let fake = FakeLibrary()
+
+        _ = try await fetching(
+            fake, result: #"{"jwt":"t"}"#,
+            options: .init(models: ["reactor/helios"], extraHeaders: [:]))
+
+        let json = try #require(fake.jwtCalls.first?.optionsJSON)
+        #expect(!json.contains("extra_headers"))
+    }
+
     @Test("local dev exchanges the key at the local coordinator, not the production one")
     func localIsPassedThrough() async throws {
         let fake = FakeLibrary()

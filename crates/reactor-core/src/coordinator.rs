@@ -43,6 +43,9 @@ pub struct CoordinatorConfig {
     /// When true, use the local HTTP runtime API (`/start_session`, `/session`,
     /// `/stop_session`) instead of the cloud coordinator API.
     pub local: bool,
+    /// Sent on every request, after the SDK's own headers. See
+    /// [`validate_extra_headers`](crate::http::validate_extra_headers).
+    pub extra_headers: crate::http::ExtraHeaders,
 }
 
 /// Stateless-per-session coordinator API client.
@@ -110,6 +113,7 @@ impl CoordinatorClient {
         if let Some(jwt) = self.auth.jwt(&request).await? {
             headers.push(("Authorization".to_string(), format!("Bearer {jwt}")));
         }
+        self.config.extra_headers.append_to(&mut headers);
         Ok(headers)
     }
 
@@ -127,6 +131,7 @@ impl CoordinatorClient {
         if json_body {
             headers.push(("Content-Type".to_string(), "application/json".to_string()));
         }
+        self.config.extra_headers.append_to(&mut headers);
         headers
     }
 
@@ -341,6 +346,7 @@ mod tests {
             generation,
             poll: PollConfig::session(),
             local,
+            extra_headers: crate::http::ExtraHeaders::default(),
         }
     }
 
@@ -381,6 +387,31 @@ mod tests {
                 AuthRequest::for_session("sid-3"),
             ]
         );
+    }
+
+    /// The caller's headers ride on every coordinator request — cloud and local —
+    /// after the SDK's own, so they can never displace one.
+    #[tokio::test]
+    async fn extra_headers_follow_the_sdks_own_on_every_request() {
+        let extra = [("X-Client-Id".to_string(), "my-app".to_string())];
+        let mut config = client(Arc::new(RecordingAuth::default())).config;
+        config.extra_headers =
+            std::collections::BTreeMap::from([("X-Client-Id".to_string(), "my-app".to_string())])
+                .into();
+        let coordinator = CoordinatorClient::new(
+            Arc::new(NotFoundHttp),
+            Arc::new(RecordingAuth::default()),
+            Arc::new(NoSleep),
+            config,
+        );
+
+        for headers in [
+            coordinator.headers(true, None).await.unwrap(),
+            coordinator.local_headers(true),
+        ] {
+            assert_eq!(headers.last(), extra.last());
+            assert!(headers.iter().any(|(k, _)| k == API_VERSION_HEADER));
+        }
     }
 
     /// Answers every request with a minimal session and keeps each body.

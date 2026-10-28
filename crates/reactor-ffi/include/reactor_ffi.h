@@ -87,7 +87,7 @@ extern "C" {
  * it knows about exactly as before, and refusing to run would strand it for no
  * reason.
  */
-#define REACTOR_ABI_VERSION 3
+#define REACTOR_ABI_VERSION 4
 
 uint32_t reactor_abi_version(void);
 
@@ -236,7 +236,8 @@ typedef void (*reactor_completion_fn)(
  *                      "sessions":                      ["id", …],          // binds it to existing sessions
  *                      "max_sessions":                  n,   // scoped tokens only
  *                      "max_session_duration_seconds":  n,   // scoped tokens only; 1-86400
- *                      "expires_after":                 seconds             // server clamps it
+ *                      "expires_after":                 seconds,            // server clamps it
+ *                      "extra_headers":                 {"Name": "value", …} // sent on the mint request
  *                    }
  *                  Null (or "{}") mints a token carrying everything the key's
  *                  roles allow — fine server-to-server, wrong to hand to a client
@@ -288,8 +289,21 @@ void reactor_fetch_jwt(
  *                        "ffi". Pass a language tag ("python", "cpp", …) so the
  *                        coordinator can tell bindings apart; every FFI binding
  *                        defaults to the same "ffi" otherwise.
+ *   extra_headers_json — nullable.  JSON object of header name to string value,
+ *                        sent on every request to the coordinator and the
+ *                        signaling endpoints (not to presigned upload or clip
+ *                        URLs), after the SDK's own headers.  Names the SDK or
+ *                        transport owns (Authorization, Content-Type, Content-Length,
+ *                        Reactor-API-*, Reactor-WebRTC-Version, Host,
+ *                        Connection, Transfer-Encoding, Upgrade, Accept-Encoding,
+ *                        TE, Trailer, Expect, Keep-Alive), a name given
+ *                        twice in any case, and values that are not visible
+ *                        ASCII are refused by connect with an error.  Not
+ *                        reserved: Reactor-Account-ID, which selects the
+ *                        account to act as when the credentials span several.
  *
- * Returns NULL only on allocation failure (extremely unlikely).
+ * Returns NULL on allocation failure (extremely unlikely) or when
+ * extra_headers_json is not a JSON object of strings.
  * The returned handle must be destroyed with reactor_destroy().
  */
 ReactorHandle *reactor_create(
@@ -300,7 +314,8 @@ ReactorHandle *reactor_create(
     int                   auto_resume_tracks,
     const ReactorCallbacks *callbacks, /* nullable */
     const char           *sdk_version, /* nullable */
-    const char           *sdk_type     /* nullable */
+    const char           *sdk_type,    /* nullable */
+    const char           *extra_headers_json /* nullable */
 );
 
 /*
@@ -315,7 +330,7 @@ ReactorHandle *reactor_create(
  * ask for it with 1.  A model declaring a sendonly audio track is not you asking —
  * under the platform module that alone put live microphone audio on the wire.
  *
- * sdk_version and sdk_type: see reactor_create.
+ * sdk_version, sdk_type and extra_headers_json: see reactor_create.
  */
 ReactorHandle *reactor_create_with_adm(
     const char           *api_url,
@@ -326,7 +341,8 @@ ReactorHandle *reactor_create_with_adm(
     const ReactorCallbacks *callbacks, /* nullable */
     int                   adm_mode,
     const char           *sdk_version, /* nullable */
-    const char           *sdk_type     /* nullable */
+    const char           *sdk_type,    /* nullable */
+    const char           *extra_headers_json /* nullable */
 );
 
 /*
@@ -350,6 +366,9 @@ ReactorHandle *reactor_create_with_adm(
  *                                                          // default "streamed"
  *                          "step_timeout_seconds": n       // > 0; default 300;
  *                                                          // too long = no limit
+ *                          "extra_headers":        {"Name": "value", …}
+ *                                                          // as reactor_create's
+ *                                                          // extra_headers_json
  *                        }
  *                      An **unrecognised key, or a value of the wrong type, is
  *                      an error**: a misspelt "generation" would otherwise create

@@ -205,7 +205,8 @@ class FakeStepped {
                                         const char* /*jwt*/, int /*local*/,
                                         int /*auto_resume_tracks*/,
                                         const ReactorCallbacks* callbacks, int /*adm_mode*/,
-                                        const char* /*sdk_version*/, const char* /*sdk_type*/) {
+                                        const char* /*sdk_version*/, const char* /*sdk_type*/,
+                                        const char* /*extra_headers_json*/) {
     auto& self = current();
     ++self.adm_creates;
     if (callbacks != nullptr) {
@@ -493,6 +494,20 @@ TEST_CASE("a stepped client is created with its options, never through create_wi
                               {"sdk_type", "cpp"},
                               {"generation", "stepped"},
                               {"step_timeout_seconds", 12.5}});
+}
+
+TEST_CASE("a stepped client sends extra_headers in its create options") {
+  Fixture fixture;
+  auto options = stepped();
+  options.extra_headers = {{"X-Client-Id", "my-app"}};
+
+  {
+    reactor::Reactor client{"owner/model", reactor::Jwt{"a-token"}, options};
+    client.connect().get();
+  }
+
+  const auto sent = reactor::Json::parse(fixture.library.options_json);
+  CHECK(sent["extra_headers"] == reactor::Json{{"X-Client-Id", "my-app"}});
 }
 
 TEST_CASE("a streamed client still creates through create_with_adm") {

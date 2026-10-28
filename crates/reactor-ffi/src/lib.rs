@@ -465,7 +465,7 @@ fn fallback_error_json(message: &str) -> String {
 /// type changed, a return value repurposed. Do **not** bump it when a function is
 /// added: a binding built against the older version calls every function it knows
 /// about exactly as before, so refusing to run would strand it for no reason.
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 
 /// The ABI version, so a binding can refuse a library it was not built for.
 ///
@@ -844,8 +844,8 @@ async fn write_segments<L: Fn() -> bool>(
 /// `api_url` and `model_name` must be NUL-terminated C strings. `jwt` may be null
 /// (unauthenticated local dev). `callbacks` may be null (no events); when
 /// non-null it must point to a readable [`ReactorCallbacks`], which is copied
-/// during the call. `sdk_version` and `sdk_type` may be null; see
-/// [`CreateConfig`] for what null defaults to.
+/// during the call. `sdk_version`, `sdk_type` and `extra_headers_json` may be
+/// null; see [`CreateConfig`] for what null means.
 #[no_mangle]
 pub unsafe extern "C" fn reactor_create(
     api_url: *const c_char,
@@ -856,8 +856,18 @@ pub unsafe extern "C" fn reactor_create(
     callbacks: *const ReactorCallbacks,
     sdk_version: *const c_char,
     sdk_type: *const c_char,
+    extra_headers_json: *const c_char,
 ) -> *mut ReactorHandle {
-    let config = CreateConfig::from_args(local, auto_resume_tracks, None, sdk_version, sdk_type);
+    let Some(config) = CreateConfig::from_args(
+        local,
+        auto_resume_tracks,
+        None,
+        sdk_version,
+        sdk_type,
+        extra_headers_json,
+    ) else {
+        return std::ptr::null_mut();
+    };
     create_impl(api_url, model_name, jwt, callbacks, config)
 }
 
@@ -882,13 +892,23 @@ pub unsafe extern "C" fn reactor_create_with_adm(
     adm_mode: c_int,
     sdk_version: *const c_char,
     sdk_type: *const c_char,
+    extra_headers_json: *const c_char,
 ) -> *mut ReactorHandle {
     let adm = match adm_mode {
         0 => Some(AdmMode::Synthetic),
         1 => Some(AdmMode::Platform),
         _ => None,
     };
-    let config = CreateConfig::from_args(local, auto_resume_tracks, adm, sdk_version, sdk_type);
+    let Some(config) = CreateConfig::from_args(
+        local,
+        auto_resume_tracks,
+        adm,
+        sdk_version,
+        sdk_type,
+        extra_headers_json,
+    ) else {
+        return std::ptr::null_mut();
+    };
     create_impl(api_url, model_name, jwt, callbacks, config)
 }
 
@@ -897,10 +917,10 @@ pub unsafe extern "C" fn reactor_create_with_adm(
 ///
 /// `options_json` may be null for every default; otherwise it is a JSON object
 /// of [`CreateConfig`]'s keys — `local`, `auto_resume_tracks`, `adm`,
-/// `sdk_version`, `sdk_type`, `generation`, `step_timeout_seconds`. **An
-/// unrecognised key is an error**, as is a value of the wrong type: a misspelt
-/// `generation` would otherwise connect a streamed session and leave the host
-/// waiting on steps that never come.
+/// `sdk_version`, `sdk_type`, `generation`, `step_timeout_seconds`,
+/// `extra_headers`. **An unrecognised key is an error**, as is a value of the
+/// wrong type: a misspelt `generation` would otherwise connect a streamed
+/// session and leave the host waiting on steps that never come.
 ///
 /// Returns null when the options are refused, and then, if `error_out` is not
 /// null, stores a heap JSON error object there for the caller to release with
@@ -964,6 +984,9 @@ struct CreateConfig {
     /// How long a step may take, generation included; absent keeps the core's
     /// default. See [`ReactorOptions::step_timeout`].
     step_timeout_seconds: Option<f64>,
+    /// A JSON object of header name to string value, sent on every coordinator
+    /// and signaling request. See [`ReactorOptions::extra_headers`].
+    extra_headers: reactor_core::http::ExtraHeaders,
 }
 
 impl Default for CreateConfig {
@@ -976,6 +999,7 @@ impl Default for CreateConfig {
             sdk_type: None,
             generation: GenerationMode::Streamed,
             step_timeout_seconds: None,
+            extra_headers: Default::default(),
         }
     }
 }
@@ -999,15 +1023,21 @@ impl CreateConfig {
         adm: Option<AdmMode>,
         sdk_version: *const c_char,
         sdk_type: *const c_char,
-    ) -> Self {
-        Self {
+        extra_headers_json: *const c_char,
+    ) -> Option<Self> {
+        let extra_headers = match opt_string(extra_headers_json) {
+            None => Default::default(),
+            Some(json) => serde_json::from_str(&json).ok()?,
+        };
+        Some(Self {
             local: local != 0,
             auto_resume_tracks: auto_resume_tracks != 0,
             adm,
             sdk_version: opt_string(sdk_version),
             sdk_type: opt_string(sdk_type),
+            extra_headers,
             ..Self::default()
-        }
+        })
     }
 
     fn from_json(raw: &str) -> Result<Self, CoreError> {
@@ -1019,7 +1049,9 @@ impl CreateConfig {
         if !value.is_object() {
             return Err(invalid("expected a JSON object".into()));
         }
-        let config: Self = serde_json::from_value(value).map_err(|e| invalid(e.to_string()))?;
+        // From the text, not `value`: a `Value` keeps the last of a repeated key,
+        // and `extra_headers` refuses one.
+        let config: Self = serde_json::from_str(raw).map_err(|e| invalid(e.to_string()))?;
         if let Some(seconds) = config.step_timeout_seconds {
             // A finite value too long for a Duration saturates in `apply`.
             if !(seconds.is_finite() && seconds > 0.0) {
@@ -1039,6 +1071,7 @@ impl CreateConfig {
         options.local = self.local;
         options.auto_resume_tracks = self.auto_resume_tracks;
         options.generation = self.generation;
+        options.extra_headers = self.extra_headers.clone();
         if let Some(seconds) = self.step_timeout_seconds {
             // `from_secs_f64` would panic on overflow, and a panic here
             // would cross `extern "C"`.
@@ -3323,6 +3356,19 @@ mod tests {
             std::time::Duration::from_millis(12_500)
         );
         assert_eq!(config.adm, Some(AdmMode::Synthetic));
+    }
+
+    #[test]
+    fn create_options_carry_extra_headers_and_refuse_a_repeated_name() {
+        let config =
+            CreateConfig::from_json(r#"{"extra_headers":{"X-Client-Id":"my-app"}}"#).unwrap();
+        let mut options = ReactorOptions::new("http://x", "m");
+        config.apply(&mut options);
+        assert_eq!(
+            options.extra_headers.to_pairs(),
+            vec![("X-Client-Id".to_string(), "my-app".to_string())]
+        );
+        assert!(CreateConfig::from_json(r#"{"extra_headers":{"X-A":"1","X-A":"2"}}"#).is_err());
     }
 
     /// A timeout too long for a Duration means no limit, not a panic that would

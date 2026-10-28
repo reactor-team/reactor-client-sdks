@@ -5,6 +5,9 @@ import inc.reactor.sdk.JsonValue;
 import inc.reactor.sdk.ReactorException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import org.jspecify.annotations.Nullable;
 
@@ -20,6 +23,43 @@ import org.jspecify.annotations.Nullable;
 public final class Authentication {
 
     private Authentication() {}
+
+    /**
+     * Puts extra headers into a mint's options as {@code extra_headers}.
+     *
+     * @param options the caller's options, or {@code null} for none
+     * @param extraHeaders the headers; empty returns {@code options} untouched
+     * @return the options to send; an {@code extra_headers} entry already in {@code options} is
+     *     replaced
+     * @throws IllegalArgumentException when there are headers and {@code options} is not an object
+     */
+    public static @Nullable JsonValue withExtraHeaders(@Nullable JsonValue options, Map<String, String> extraHeaders) {
+        Objects.requireNonNull(extraHeaders, "extraHeaders");
+        if (extraHeaders.isEmpty()) {
+            return options;
+        }
+        Map<String, JsonValue> merged = new LinkedHashMap<>();
+        if (options instanceof JsonValue.JsonObject object) {
+            merged.putAll(object.fields());
+        } else if (options != null) {
+            throw new IllegalArgumentException("options must be a JSON object to carry extraHeaders");
+        }
+        merged.put("extra_headers", extraHeadersObject(extraHeaders));
+        return new JsonValue.JsonObject(merged);
+    }
+
+    /**
+     * Headers as the JSON object the native side reads them from: string values only, and the
+     * names left exactly as given, since validating them is the core's job.
+     *
+     * @param headers the headers
+     * @return an object of strings
+     */
+    public static JsonValue extraHeadersObject(Map<String, String> headers) {
+        JsonValue.ObjectBuilder object = JsonValue.object();
+        headers.forEach(object::put);
+        return object.build();
+    }
 
     /**
      * Exchanges an API key for a JWT.

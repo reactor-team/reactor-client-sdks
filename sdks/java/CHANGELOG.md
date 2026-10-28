@@ -18,6 +18,19 @@ versioning follows [Semantic Versioning](https://semver.org/).
   readiness events queued behind it past the connect timeout. Candidates now
   flush from a dedicated background task.
 
+## [1.4.0] - 2026-10-23
+
+### Added
+
+- `ReactorOptions.Builder.extraHeaders(...)` sends extra HTTP headers on every
+  coordinator and signaling request, including those of a stepped client. The
+  SDK's own headers are reserved, and a reserved name fails `connect`.
+- `Reactor.fetchJwt(apiUrl, apiKey, options, extraHeaders, local)`, and the same
+  overload on `ReactorClient.fetchJwt`, sends extra HTTP headers on the token
+  exchange. They go on the request, not into its body, and a reserved name
+  fails the call. A client built with `ReactorOptions.apiKey` sends its
+  `extraHeaders` on the exchanges it makes too.
+
 ## [1.3.0] - 2026-10-23
 
 ### Added

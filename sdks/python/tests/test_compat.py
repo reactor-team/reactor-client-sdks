@@ -406,6 +406,64 @@ class TestFetchJwt:
             }
         ]
 
+    def test_extra_headers_follow_the_sdks_own_and_stay_out_of_the_body(self) -> None:
+        with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
+            urlopen.return_value = self._response({"jwt": "tok"})
+            fetch_jwt("secret", "https://api.reactor.inc", extra_headers={"X-Client-Id": "app/1"})
+
+        request = urlopen.call_args[0][0]
+        names = [name.lower() for name, _ in request.header_items()]
+        assert names == ["reactor-api-key", "content-type", "x-client-id"]
+        assert request.get_header("X-client-id") == "app/1"
+        assert json.loads(request.data) is None
+
+    def test_non_string_extra_header_values_are_rejected_at_construction(self) -> None:
+        with pytest.raises(TypeError):
+            Reactor("owner/model", local=True, extra_headers={"X-Tenant": 123})  # type: ignore[dict-item]
+
+    def test_reserved_extra_headers_are_rejected_before_any_request(self) -> None:
+        for name in (
+            "Authorization",
+            "content-type",
+            "REACTOR-API-KEY",
+            "Host",
+            "Upgrade",
+            "Accept-Encoding",
+            "TE",
+            "trailer",
+            "Expect",
+            "keep-alive",
+        ):
+            with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
+                with pytest.raises(AuthError, match="cannot be overridden"):
+                    fetch_jwt("secret", extra_headers={name: "x"})
+            urlopen.assert_not_called()
+
+    def test_malformed_extra_headers_are_rejected_before_any_request(self) -> None:
+        for name, value in [
+            ("", "x"),
+            ("a b", "x"),
+            ("X-A", "a\r\nB: c"),
+            ("X-A", "a\x7f"),
+            ("X-A", "caf\u00e9"),
+            ("X-A", "\u6f22"),
+        ]:
+            with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
+                with pytest.raises(AuthError):
+                    fetch_jwt("secret", extra_headers={name: value})
+            urlopen.assert_not_called()
+
+    def test_a_header_name_given_twice_in_any_case_is_rejected(self) -> None:
+        with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
+            with pytest.raises(AuthError):
+                fetch_jwt("secret", extra_headers={"X-Tenant": "a", "x-tenant": "b"})
+        urlopen.assert_not_called()
+
+    def test_extra_header_values_may_contain_tabs(self) -> None:
+        with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
+            urlopen.return_value = self._response({"jwt": "tok"})
+            fetch_jwt("secret", extra_headers={"X-A": "a\tb"})
+
     def test_binding_sessions_keeps_a_model_match(self) -> None:
         with mock.patch("reactor_sdk._auth.urllib.request.urlopen") as urlopen:
             urlopen.return_value = self._response({"jwt": "tok"})
@@ -476,6 +534,19 @@ class TestTokenResolution:
 
         assert reactor._jwt == "tok"
         assert fetch.call_args.kwargs["models"] == ["hy-world"]
+
+    async def test_the_mint_carries_the_clients_extra_headers(self) -> None:
+        """The coordinator sees the same headers on the exchange as on every later
+        request, and none when the client has none."""
+        with_headers = Reactor(model_name="hy-world", api_key="k", extra_headers={"X-A": "1"})
+        with mock.patch("reactor_sdk.client.fetch_jwt", return_value="tok") as fetch:
+            await with_headers._resolve_token(session_id=None)
+        assert fetch.call_args.kwargs["extra_headers"] == {"X-A": "1"}
+
+        without = Reactor(model_name="hy-world", api_key="k")
+        with mock.patch("reactor_sdk.client.fetch_jwt", return_value="tok") as fetch:
+            await without._resolve_token(session_id=None)
+        assert fetch.call_args.kwargs["extra_headers"] is None
 
     async def test_adopting_a_session_mints_a_token_bound_to_it(self) -> None:
         """A scoped token reaches only the sessions it created or was bound to, and a

@@ -75,6 +75,7 @@ class FacadeCompletenessTest {
                 "downloadClip/4",
                 "fetchJwt/2",
                 "fetchJwt/4",
+                "fetchJwt/5",
                 "getStats/0",
                 "reconnect/0",
                 "requestClip/1",

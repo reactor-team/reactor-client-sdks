@@ -18,6 +18,17 @@ versioning follows [Semantic Versioning](https://semver.org/).
   readiness events queued behind it past the connect timeout. Candidates now
   flush from a dedicated background task.
 
+## [3.4.0] - 2026-10-23
+
+### Added
+
+- `extraHeaders` client option: headers sent on every request to the
+  coordinator and the signaling endpoints. Headers the SDK sets itself
+  (`Authorization`, `Content-Type`, `Reactor-API-*`, ...) and malformed names
+  or values are rejected when the client is constructed. In a browser, a
+  custom header triggers a CORS preflight, so the API's allowed headers must
+  list each name used.
+
 ## [3.3.0]
 
 ### Added

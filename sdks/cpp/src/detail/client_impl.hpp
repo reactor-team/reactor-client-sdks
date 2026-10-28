@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "detail/dispatcher.hpp"
+#include "detail/extra_headers.hpp"
 #include "detail/ffi.hpp"
 #include "detail/handlers.hpp"
 #include "detail/strings.hpp"
@@ -331,6 +332,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
                                                                      : std::move(options.api_url)),
         local_(options.local),
         auto_resume_tracks_(options.auto_resume_tracks),
+        extra_headers_json_(extra_headers_to_json(options.extra_headers)),
         generation_(options.generation),
         // Checked here, before `dispatcher_` starts a thread: a refused option
         // should cost nothing.
@@ -701,7 +703,8 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     // no lifetime management here unlike the other c_str()s above.
     handle_ = ffi().create_with_adm(
         api_url_.c_str(), model_.c_str(), jwt_ ? jwt_->c_str() : nullptr, local_ ? 1 : 0,
-        auto_resume_tracks_ ? 1 : 0, &callbacks, synthetic_adm, REACTOR_SDK_VERSION, "cpp");
+        auto_resume_tracks_ ? 1 : 0, &callbacks, synthetic_adm, REACTOR_SDK_VERSION, "cpp",
+        extra_headers_json_.empty() ? nullptr : extra_headers_json_.c_str());
     if (handle_ == nullptr) {
       throw ReactorError{"libreactor_ffi could not create a client (allocation failed)"};
     }
@@ -937,6 +940,8 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   std::string api_url_;
   bool local_ = false;
   bool auto_resume_tracks_ = true;
+  /// A JSON object of header name -> value; empty when there are none.
+  std::string extra_headers_json_;
   Generation generation_ = Generation::Streamed;
   std::optional<double> step_timeout_seconds_;
 

@@ -122,6 +122,7 @@ extension Reactor {
         var local: Bool
         var autoResumeTracks: Bool
         var stepTimeoutSeconds: Double?
+        var extraHeaders: [String: String]?
         // Named rather than defaulted, for the reason createWithADM passes 0.
         let adm = "synthetic"
         let sdkVersion = ReactorSDK.version
@@ -132,6 +133,7 @@ extension Reactor {
             case local
             case autoResumeTracks = "auto_resume_tracks"
             case stepTimeoutSeconds = "step_timeout_seconds"
+            case extraHeaders = "extra_headers"
             case adm
             case sdkVersion = "sdk_version"
             case sdkType = "sdk_type"

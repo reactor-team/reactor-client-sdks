@@ -151,6 +151,9 @@ public final class Reactor: @unchecked Sendable {
     ///   because past it the stack is corrupted rather than an error reported.
     ///   ``ReactorError/Code/badRequest`` for a `stepTimeout` that is not
     ///   positive, or that was given to a streamed client.
+    ///
+    /// `extraHeaders` are sent on every coordinator and signaling request this
+    /// client makes. Reserved names are rejected by ``connect(sessionID:connectionID:)``.
     public convenience init(
         model: String,
         jwt: String? = nil,
@@ -159,6 +162,7 @@ public final class Reactor: @unchecked Sendable {
         autoResumeTracks: Bool = true,
         generation: Generation = .streamed,
         stepTimeout: Duration? = nil,
+        extraHeaders: [String: String] = [:],
         eventQueue: DispatchQueue? = nil
     ) throws {
         try self.init(
@@ -169,9 +173,16 @@ public final class Reactor: @unchecked Sendable {
             autoResumeTracks: autoResumeTracks,
             generation: generation,
             stepTimeout: stepTimeout,
+            extraHeaders: extraHeaders,
             eventQueue: eventQueue,
             ffi: .system
         )
+    }
+
+    private static func encodeHeaders(_ headers: [String: String]) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(headers)
     }
 
     /// The initialiser the tests use, with the library injected.
@@ -183,6 +194,7 @@ public final class Reactor: @unchecked Sendable {
         autoResumeTracks: Bool = true,
         generation: Generation = .streamed,
         stepTimeout: Duration? = nil,
+        extraHeaders: [String: String] = [:],
         eventQueue: DispatchQueue?,
         ffi: FFI
     ) throws {
@@ -196,6 +208,14 @@ public final class Reactor: @unchecked Sendable {
         self.generation = generation
 
         let resolvedURL = Reactor.resolveAPIURL(apiURL, local: local)
+
+        // A JSON object, or nil when there is nothing to send.
+        let extraHeadersJSON: String? =
+            extraHeaders.isEmpty
+            ? nil
+            : String(
+                decoding: try Self.encodeHeaders(extraHeaders),
+                as: UTF8.self)
 
         let context = CallbackContext(client: self)
         // Retained by hand, and released only once reactor_destroy answers 0.
@@ -228,7 +248,8 @@ public final class Reactor: @unchecked Sendable {
                 return .success(
                     ffi.createWithADM(
                         resolvedURL, model, jwt, local ? 1 : 0, autoResumeTracks ? 1 : 0,
-                        callbacksPointer, 0, ReactorSDK.version, Reactor.sdkType))
+                        callbacksPointer, 0, ReactorSDK.version, Reactor.sdkType,
+                        extraHeadersJSON))
             case .stepped:
                 // The generation mode is a creation option, and only the
                 // options-taking entry takes it.
@@ -237,7 +258,8 @@ public final class Reactor: @unchecked Sendable {
                     callbacks: callbacksPointer,
                     options: CreateOptions(
                         local: local, autoResumeTracks: autoResumeTracks,
-                        stepTimeoutSeconds: stepTimeoutSeconds))
+                        stepTimeoutSeconds: stepTimeoutSeconds,
+                        extraHeaders: extraHeaders.isEmpty ? nil : extraHeaders))
             }
         }
 
@@ -421,7 +443,7 @@ public final class Reactor: @unchecked Sendable {
     /// Tears down the live connection first if there is one, without ending the
     /// session server-side. Fails when there is no session to reconnect to.
     ///
-    /// Note that a reconnect resumes recvonly tracks — unless ``init(model:jwt:apiURL:local:autoResumeTracks:generation:stepTimeout:eventQueue:)``
+    /// Note that a reconnect resumes recvonly tracks — unless ``init(model:jwt:apiURL:local:autoResumeTracks:generation:stepTimeout:extraHeaders:eventQueue:)``
     /// was given `autoResumeTracks: false` at creation, which this client keeps
     /// for its whole lifetime — and nothing else: anything this client published
     /// before it is not published after it.

@@ -18,6 +18,17 @@ versioning follows [Semantic Versioning](https://semver.org/).
   readiness events queued behind it past the connect timeout. Candidates now
   flush from a dedicated background task.
 
+## [1.14.0] - 2026-10-23
+
+### Added
+
+- `Reactor(..., extra_headers={...})` sends extra HTTP headers on every request the
+  client makes to the coordinator and signaling, including those of a stepped
+  client. Reserved names such as `Authorization` are rejected at `connect()`.
+- `fetch_jwt(..., extra_headers={...})` sends extra HTTP headers on the token
+  request, after the SDK's own. Reserved names such as `Authorization` raise
+  `AuthError` before any request is made.
+
 ## [1.13.0] - 2026-10-23
 
 ### Added

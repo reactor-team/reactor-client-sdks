@@ -56,7 +56,8 @@ uint32_t reactor_abi_version(void) { return REACTOR_ABI_VERSION; }
 
 ReactorHandle* reactor_create_with_adm(const char*, const char*, const char*, int,
                                        int auto_resume_tracks, const ReactorCallbacks* callbacks,
-                                       int adm_mode, const char*, const char*) {
+                                       int adm_mode, const char*, const char*,
+                                       const char*) {
     g_last_auto_resume = auto_resume_tracks;
     // The binding must always ask for synthetic. A test that let this through would be the one
     // place a live microphone could reach the wire unnoticed.

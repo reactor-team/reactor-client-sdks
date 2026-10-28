@@ -16,6 +16,16 @@ versioning follows [Semantic Versioning](https://semver.org/).
   readiness events queued behind it past the connect timeout. Candidates now
   flush from a dedicated background task.
 
+## [1.7.0] - 2026-10-23
+
+### Added
+
+- `Reactor(..., extraHeaders: [...])` sends extra HTTP headers on every
+  coordinator and signaling request the client makes, including those of a
+  stepped client. Reserved header names are rejected when the client connects.
+- `Reactor.TokenOptions(extraHeaders: [...])` sends extra HTTP headers on the
+  token request. Reserved header names fail the call.
+
 ## [1.6.0] - 2026-10-23
 
 ### Added

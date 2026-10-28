@@ -250,6 +250,7 @@ class Reactor:
         api_url: str = DEFAULT_API_URL,
         local: bool = False,
         auto_resume_tracks: bool = True,
+        extra_headers: Mapping[str, str] | None = None,
         max_session_duration_seconds: int | None = None,
         generation: Generation = "streamed",
         step_timeout: float | None = None,
@@ -265,6 +266,12 @@ class Reactor:
             auto_resume_tracks: Resume every recvonly track on connect and reconnect.
                 Defaults to True; pass False to leave recvonly tracks paused until the
                 host resumes them itself.
+            extra_headers: Headers to send on every coordinator and signaling request,
+                e.g. for a gateway in front of the coordinator. Reserved names
+                (Authorization, Content-Type, Content-Length, Reactor-API-*,
+                Reactor-WebRTC-Version) are rejected at `connect()`.
+                `Reactor-Account-ID` is allowed: it selects the account to act as
+                when the credentials span several.
             max_session_duration_seconds: Force-terminates every session a token this
                 client mints creates after this many seconds (1-86400), independent of
                 the token's own expiry. Only takes effect on the model-scoped token
@@ -306,6 +313,10 @@ class Reactor:
         self._api_key = api_key
         self._local = local
         self._auto_resume_tracks = auto_resume_tracks
+        self._extra_headers = dict(extra_headers) if extra_headers else {}
+        for name, value in self._extra_headers.items():
+            if not isinstance(name, str) or not isinstance(value, str):
+                raise TypeError(f"extra_headers must map str to str, got {name!r}: {value!r}")
         self._max_session_duration_seconds = max_session_duration_seconds
         self._generation: Generation = generation
         self._step_timeout = step_timeout
@@ -750,6 +761,9 @@ class Reactor:
         self._cb_refs = [s_cb, e_cb, m_cb, rm_cb, tr_cb, cap_cb, sid_cb, fr_cb, au_cb]
 
         jwt_bytes = self._jwt.encode() if self._jwt else None
+        extra_headers_json = (
+            json.dumps(self._extra_headers).encode() if self._extra_headers else None
+        )
 
         if self._generation == "stepped":
             handle = self._create_stepped_handle(lib, jwt_bytes, cbs)
@@ -767,8 +781,11 @@ class Reactor:
                 ctypes.c_int(_SYNTHETIC_ADM),
                 __version__.encode(),
                 _SDK_TYPE,
+                extra_headers_json,
             )
 
+        if not handle:
+            raise RuntimeError("the native client could not be created")
         self._handle = handle
         # Now closable, so the atexit hook must know about it.
         _LIVE_CLIENTS.add(self)
@@ -795,6 +812,8 @@ class Reactor:
             "sdk_type": _SDK_TYPE.decode(),
             "generation": self._generation,
         }
+        if self._extra_headers:
+            options["extra_headers"] = self._extra_headers
         if self._step_timeout is not None:
             options["step_timeout_seconds"] = float(self._step_timeout)
         error = ctypes.c_void_p()
@@ -1091,6 +1110,7 @@ class Reactor:
             max_session_duration_seconds=(
                 self._max_session_duration_seconds if session_id is None else None
             ),
+            extra_headers=self._extra_headers or None,
         )
         self._minted_for = wanted
         return True

@@ -13,6 +13,7 @@ struct ReactorLifetimeTests {
         eventQueue: DispatchQueue? = nil,
         local: Bool = false,
         autoResumeTracks: Bool = true,
+        extraHeaders: [String: String] = [:],
         jwt: String? = nil,
         apiURL: String = Reactor.defaultAPIURL
     ) throws -> Reactor {
@@ -22,6 +23,7 @@ struct ReactorLifetimeTests {
             apiURL: apiURL,
             local: local,
             autoResumeTracks: autoResumeTracks,
+            extraHeaders: extraHeaders,
             eventQueue: eventQueue,
             ffi: fake.table)
     }
@@ -61,6 +63,28 @@ struct ReactorLifetimeTests {
         defer { client.close() }
 
         #expect(fake.createCalls.first?.apiURL == "http://10.0.0.2:8080")
+    }
+
+    @Test("extra headers reach the library as a JSON object")
+    func extraHeadersReachTheLibraryAsJSON() throws {
+        let fake = FakeLibrary()
+        let client = try makeClient(
+            fake: fake, extraHeaders: ["X-Tenant": "acme", "X-Trace": "a\"b"])
+        defer { client.close() }
+
+        #expect(
+            fake.createCalls.first?.extraHeadersJSON
+                == #"{"X-Tenant":"acme","X-Trace":"a\"b"}"#)
+    }
+
+    @Test("no extra headers means NULL, not an empty object")
+    func noExtraHeadersIsNil() throws {
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+
+        #expect(fake.createCalls.count == 1)
+        #expect(fake.createCalls.first?.extraHeadersJSON == nil)
     }
 
     @Test("auto-resume of recvonly tracks defaults to on")

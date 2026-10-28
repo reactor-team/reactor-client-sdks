@@ -247,6 +247,9 @@ ReactorHandle* ClientImpl::create_stepped_handle(const ReactorCallbacks& callbac
   if (step_timeout_seconds_) {
     options["step_timeout_seconds"] = *step_timeout_seconds_;
   }
+  if (!extra_headers_json_.empty()) {
+    options["extra_headers"] = Json::parse(extra_headers_json_);
+  }
   const std::string options_json = options.dump();
 
   char* error = nullptr;

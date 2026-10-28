@@ -4,6 +4,7 @@ import static java.lang.foreign.ValueLayout.ADDRESS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -16,6 +17,7 @@ import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -91,6 +93,25 @@ final class ClientPeerTest {
             ClientPeer client = connected(fake, options);
 
             assertEquals(0, fake.autoResumeTracks, "auto-resume tracks must be off when the caller opts out");
+            client.close();
+        }
+    }
+
+    @Test
+    @DisplayName("extraHeaders reach reactor_create_with_adm as a JSON object, and NULL when empty")
+    void extraHeadersAreForwardedAsJson() {
+        try (FakeNativeLibrary fake = new FakeNativeLibrary()) {
+            ClientPeer none = connected(fake, OPTIONS);
+            assertNull(fake.extraHeadersJson, "no headers must be passed as NULL, not as {}");
+            none.close();
+        }
+        try (FakeNativeLibrary fake = new FakeNativeLibrary()) {
+            ReactorOptions options = ReactorOptions.builder("https://api.example.test", "owner/model")
+                    .extraHeaders(Map.of("X-Tenant", "a \"quoted\" \\ value"))
+                    .build();
+            ClientPeer client = connected(fake, options);
+
+            assertEquals("{\"X-Tenant\":\"a \\\"quoted\\\" \\\\ value\"}", fake.extraHeadersJson);
             client.close();
         }
     }
