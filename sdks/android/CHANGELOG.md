@@ -10,3 +10,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 request as the bump.
 
 ## [Unreleased]
+
+### Added
+
+- `Reactor.fetchJwt(apiUrl, apiKey, options, local)`, the standalone key→token
+  exchange Java, Swift and Python already expose. Scope tokens with
+  `options = """{"models":["owner/name"]}"""` before handing them to a client
+  you do not control; an unrecognised option key is an error, a rejected key
+  reports UNAUTHORIZED, and an unreachable coordinator NETWORK_ERROR.
+
+### Fixed
+
+- `ReactorOptions.apiKey` no longer connects with no credentials. The option was
+  accepted but never read, so an app holding only a key connected without a
+  token and the platform answered 401 "Missing Authorization header". `connect()`
+  now does the key→token exchange the other SDKs do: minting a token scoped to
+  what the connect reaches (the model when creating a session, the session when
+  adopting one), re-minting when the scope changes, and rebuilding the native
+  client around the new token. A caller-supplied `jwt` still wins, and `local`
+  still never authenticates. `downloadClip()` likewise passes the resolved
+  token, not the (possibly absent) options one.

@@ -512,10 +512,8 @@ fn offer_config(ice_servers: &[IceServer]) -> RtcConfiguration {
             .collect(),
         // Gather once, as browsers do. Gathering continually makes libwebrtc
         // regather on failed networks every five minutes and trickle what it
-        // finds mid-session; each of those POSTs to the coordinator holds up
-        // the peer-event pump, stalling command replies queued behind it.
-        // Recovery is a full reconnect, never an ICE restart, so nothing
-        // needs candidates after the connection is up.
+        // finds mid-session — coordinator POSTs nobody has a use for, since
+        // recovery is a full reconnect, never an ICE restart.
         continual_gathering_policy: ContinualGatheringPolicy::GatherOnce,
         sctp_snap: true,
         dc_chunking: true,

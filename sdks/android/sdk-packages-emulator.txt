@@ -6,7 +6,7 @@
 #
 # scripts/setup-android-sdk.sh --emulator installs and verifies these in addition to the base set.
 
-emulator@37.1.11
+emulator@37.2.12
 
 # A **16 KB page size** image, deliberately.
 #
