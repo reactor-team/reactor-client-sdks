@@ -74,6 +74,7 @@ void Java_inc_reactor_sdk_android_internal_NativeClient_nativePushVideoFrame(
     JNIEnv*, jobject, jlong, jstring, jobject, jint, jint, jbyteArray);
 void fake_fire_status_on_foreign_thread(const char* status);
 void fake_fire_session_id_on_foreign_thread(const char* session_id);
+void fake_fire_message_on_foreign_thread(const char* json, bool runtime);
 
 jlong Java_inc_reactor_sdk_android_internal_NativeClient_nativeCreateWithOptions(
     JNIEnv*, jobject, jstring, jstring, jstring, jstring, jobject, jobjectArray);
@@ -229,6 +230,15 @@ void events_cross_from_a_foreign_thread() {
   jfieldID id = g_env->GetStaticFieldID(g_listener_class, "lastSessionIdWasNull", "Z");
   check(g_env->GetStaticBooleanField(g_listener_class, id) == JNI_TRUE,
         "a null session id arrives as Java null rather than as \"\"");
+
+  // Model and runtime messages reach their own listener methods, not each other's.
+  const jint messages = static_int("messageCount");
+  const jint runtime_messages = static_int("runtimeMessageCount");
+  fake_fire_message_on_foreign_thread(R"({"type":"state","data":{"frame":1}})", false);
+  fake_fire_message_on_foreign_thread(R"({"type":"recording_ready"})", true);
+  check(static_int("messageCount") == messages + 1, "a model message reaches onMessage");
+  check(static_int("runtimeMessageCount") == runtime_messages + 1,
+        "a runtime message reaches onRuntimeMessage");
 
   fake_set_destroy_result(0);
   Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, context);

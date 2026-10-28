@@ -499,6 +499,15 @@ void fake_fire_status_on_foreign_thread(const char* status) {
     }).join();
 }
 
+/// Fire a model message (or, with `runtime`, a runtime message) from an FFI-owned thread.
+void fake_fire_message_on_foreign_thread(const char* json, bool runtime) {
+    std::string copy(json == nullptr ? "" : json);
+    std::thread([copy, runtime]() {
+        auto callback = runtime ? g_callbacks.on_runtime_message : g_callbacks.on_message;
+        if (callback != nullptr) callback(copy.c_str(), g_callbacks.userdata);
+    }).join();
+}
+
 void fake_fire_session_id_on_foreign_thread(const char* session_id) {
     const bool null_session = session_id == nullptr;
     std::string copy(null_session ? "" : session_id);

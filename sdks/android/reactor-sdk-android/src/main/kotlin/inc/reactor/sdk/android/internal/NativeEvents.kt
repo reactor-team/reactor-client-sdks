@@ -24,6 +24,12 @@ internal interface NativeEvents {
     /** Null when the session is cleared, which is distinct from "no event". */
     fun onSessionId(sessionId: String?)
 
+    /** A message the model sent, as a JSON object. */
+    fun onMessage(messageJson: String?)
+
+    /** A message the runtime sent about the session, as a JSON object. */
+    fun onRuntimeMessage(messageJson: String?)
+
     /**
      * A decoded video frame, **inline on the FFI's delivery thread**.
      *

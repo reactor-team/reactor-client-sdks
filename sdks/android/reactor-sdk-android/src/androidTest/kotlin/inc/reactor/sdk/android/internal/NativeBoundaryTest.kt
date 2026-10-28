@@ -39,6 +39,10 @@ class NativeBoundaryTest {
             synchronized(sessionIds) { sessionIds += sessionId }
         }
 
+        override fun onMessage(messageJson: String?) {}
+
+        override fun onRuntimeMessage(messageJson: String?) {}
+
         // Media never arrives here: nothing in this class connects, so no track is ever
         // negotiated. Implemented because the interface requires it, and counted rather than
         // ignored so that a frame showing up in a test that cannot receive one is loud.
@@ -197,6 +201,10 @@ class NativeBoundaryTest {
                 override fun onError(errorJson: String?): Unit = fail()
 
                 override fun onSessionId(sessionId: String?): Unit = fail()
+
+                override fun onMessage(messageJson: String?): Unit = fail()
+
+                override fun onRuntimeMessage(messageJson: String?): Unit = fail()
 
                 override fun onVideoFrame(
                     trackName: String?,

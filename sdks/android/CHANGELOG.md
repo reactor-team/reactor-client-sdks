@@ -11,6 +11,18 @@ request as the bump.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-28
+
+### Added
+
+- `Reactor.messages`: messages the model sends, as `{"type", "data"}` JSON
+  objects, including the ones no call returns, such as state updates. 1.0.0
+  delivered a command's reply only as the return value of `sendCommand`, so an
+  Android app could not see anything the model sent on its own. Collect it
+  before `connect()` to see every message.
+- `Reactor.runtimeMessages`: what the platform sends about the session, such as
+  recording lifecycle notices.
+
 ## [1.0.0] - 2026-10-27
 
 First release: a Kotlin binding over the same native core as the other Reactor

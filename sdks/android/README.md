@@ -32,12 +32,12 @@ is not, because Android 15 devices with 16 KB pages will not load one that is.
 
 ```kotlin
 dependencies {
-    implementation("inc.reactor:reactor-sdk-android:1.0.0")
+    implementation("inc.reactor:reactor-sdk-android:1.1.0")
 
     // Optional: microphone and speaker helpers. Left out of the core module on
     // purpose — a library whose audience includes background services must not
     // put a live mic on the wire because a model declared a sendonly track.
-    implementation("inc.reactor:reactor-sdk-android-media:1.0.0")
+    implementation("inc.reactor:reactor-sdk-android-media:1.1.0")
 }
 ```
 
@@ -101,6 +101,21 @@ works by luck of ownership and answers 403 for anybody else's model.
 Control events — status, errors, session id — are delivered on the dispatcher the
 `Reactor` was built with, `Dispatchers.Main.immediate` by default, because an
 Android handler usually touches UI.
+
+Messages the model sends arrive on `messages`, in order, each a `{"type", "data"}`
+object — including the ones no call returns, such as state updates. They run on
+the collector's own context. Collect before `connect()` to see every one:
+
+```kotlin
+lifecycleScope.launch {
+    reactor.messages.collect { message ->
+        if (message["type"] == "state") render(message["data"])
+    }
+}
+```
+
+`runtimeMessages` carries what the platform says about the session, such as
+recording lifecycle notices.
 
 **One `onFrame` for both kinds.** It is overloaded on the handler's parameter
 type — `VideoFrame` or `AudioFrame` — because the object model every Reactor SDK

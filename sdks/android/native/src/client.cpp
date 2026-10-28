@@ -32,6 +32,8 @@ struct Context {
   jmethodID on_status = nullptr;
   jmethodID on_error = nullptr;
   jmethodID on_session_id = nullptr;
+  jmethodID on_message = nullptr;
+  jmethodID on_runtime_message = nullptr;
   jmethodID on_video_frame = nullptr;
   jmethodID on_audio_frame = nullptr;
 
@@ -78,6 +80,14 @@ void on_error(const char* error_json, void* userdata) {
 
 void on_session_id(const char* session_id_or_null, void* userdata) {
   dispatch(userdata, static_cast<Context*>(userdata)->on_session_id, session_id_or_null);
+}
+
+void on_message(const char* msg_json, void* userdata) {
+  dispatch(userdata, static_cast<Context*>(userdata)->on_message, msg_json);
+}
+
+void on_runtime_message(const char* msg_json, void* userdata) {
+  dispatch(userdata, static_cast<Context*>(userdata)->on_runtime_message, msg_json);
 }
 
 /**
@@ -258,6 +268,10 @@ std::unique_ptr<Context> make_context(JNIEnv* env, jobject listener) {
       env->GetMethodID(context->listener_class, "onError", "(Ljava/lang/String;)V");
   context->on_session_id =
       env->GetMethodID(context->listener_class, "onSessionId", "(Ljava/lang/String;)V");
+  context->on_message =
+      env->GetMethodID(context->listener_class, "onMessage", "(Ljava/lang/String;)V");
+  context->on_runtime_message =
+      env->GetMethodID(context->listener_class, "onRuntimeMessage", "(Ljava/lang/String;)V");
   context->on_video_frame = env->GetMethodID(
       context->listener_class, "onVideoFrame",
       "(Ljava/lang/String;Ljava/nio/ByteBuffer;IIJJ[B)V");
@@ -265,7 +279,8 @@ std::unique_ptr<Context> make_context(JNIEnv* env, jobject listener) {
                                              "(Ljava/lang/String;Ljava/nio/ByteBuffer;III)V");
 
   if (context->on_status == nullptr || context->on_error == nullptr ||
-      context->on_session_id == nullptr || context->on_video_frame == nullptr ||
+      context->on_session_id == nullptr || context->on_message == nullptr ||
+      context->on_runtime_message == nullptr || context->on_video_frame == nullptr ||
       context->on_audio_frame == nullptr) {
     context->release(env);
     reactor_jni::fail(env, "java/lang/NoSuchMethodError",
@@ -281,6 +296,8 @@ ReactorCallbacks callbacks_for(Context* context) {
   callbacks.on_status = on_status;
   callbacks.on_error = on_error;
   callbacks.on_session_id = on_session_id;
+  callbacks.on_message = on_message;
+  callbacks.on_runtime_message = on_runtime_message;
   callbacks.on_frame = on_frame;
   callbacks.on_audio = on_audio;
   callbacks.userdata = context;

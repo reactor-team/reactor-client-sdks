@@ -5,7 +5,11 @@ import inc.reactor.sdk.android.ConnectionStatus
 import inc.reactor.sdk.android.ReactorException
 import inc.reactor.sdk.android.TrackDirection
 import inc.reactor.sdk.android.TrackKind
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -62,6 +66,17 @@ internal class LiveSessionTest : LiveFixture() {
             refused!!.message.orEmpty().contains(Live.VIDEO_OUT),
         )
     }
+
+    /** A model message reaches [inc.reactor.sdk.android.Reactor.messages] as `{type, data}`. */
+    @Test
+    fun aModelMessageReachesTheMessagesFlow() =
+        runBlocking {
+            val next = async(start = CoroutineStart.UNDISPATCHED) { reactor.messages.first() }
+            reactor.sendCommand("get_status")
+            val message = withTimeout(10_000) { next.await() }
+            assertTrue("a model message names its type, got $message", message["type"] is String)
+            assertTrue("a model message carries its data key, got $message", "data" in message)
+        }
 
     @Test
     fun aCommandAnswersThroughItsOwnCall() =
