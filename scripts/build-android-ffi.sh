@@ -22,10 +22,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STAGE="$REPO_ROOT/sdks/android/reactor-sdk-android/build/reactor-native"
 
-# arm64-v8a only, and that is a platform constraint rather than a choice: reactor-webrtc
-# publishes an android arm64 prebuilt and no other Android ABI. x86_64 joins this list when
-# REA-6551 lands one, which is also what unblocks an emulator on an x86_64 CI runner.
-ABIS=("arm64-v8a")
+# arm64-v8a is every phone; x86_64 is every emulator on an x86_64 host, including the hosted CI
+# runners the live suite runs on. Both ride in the AAR, and both are always built: the Gradle
+# build compiles the JNI bridge for every ABI in abiFilters and links each against its own
+# libreactor_ffi.so, so staging one alone fails the other's link.
+ABIS=("arm64-v8a" "x86_64")
 
 # A case statement rather than an associative array: macOS ships bash 3.2, where `declare -A` is
 # a syntax error and every lookup reads as an unbound variable under `set -u`. This script has to
@@ -65,7 +66,7 @@ if [ "${REACTOR_ANDROID_NATIVE_PRESTAGED:-}" = "1" ]; then
       echo "error: REACTOR_ANDROID_NATIVE_PRESTAGED=1 but $so is missing" >&2
       exit 1
     }
-    python3 "$REPO_ROOT/scripts/check-android-native.py" "$so" "$STAGE/libs/libwebrtc.jar"
+    python3 "$REPO_ROOT/scripts/check-android-native.py" --abi "$abi" "$so" "$STAGE/libs/libwebrtc.jar"
   done
   echo "==> Staged artifacts accepted from ${STAGE#"$REPO_ROOT"/}"
   exit 0
@@ -113,8 +114,8 @@ for abi in "${ABIS[@]}"; do
 
   # The JAR is architecture-independent, but it is produced per target directory. Taken from the
   # first ABI built; every later one must agree, which is checked below rather than promised.
-  # The loop used to repack over the same path on every pass, so with a second ABI the last one
-  # would simply have won — harmless with arm64-v8a alone and wrong the moment REA-6551 lands.
+  # The loop used to repack over the same path on every pass, so with two ABIs the last one would
+  # simply have won.
   #
   # From the reactor-webrtc-sys build directory whose build script ran last, not the first one a
   # directory walk finds: Cargo keeps one per fingerprint, so after a libwebrtc bump, a feature
@@ -172,7 +173,7 @@ for abi in "${ABIS[@]}"; do
   rm -rf "$repack"
 
   echo "==> Checking $abi artifacts"
-  python3 "$REPO_ROOT/scripts/check-android-native.py" \
+  python3 "$REPO_ROOT/scripts/check-android-native.py" --abi "$abi" \
     "$STAGE/jniLibs/$abi/libreactor_ffi.so" "$STAGE/libs/libwebrtc.jar"
 done
 

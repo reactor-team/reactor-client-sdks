@@ -26,7 +26,8 @@ public class Track internal constructor(
      *
      * The frame's buffer is borrowed and valid only until this returns.
      *
-     * @throws InvalidStateException on a sendonly track, which never receives.
+     * @throws InvalidStateException on a sendonly track, which never receives, and in a stepped
+     *   session, whose output arrives in the [StepResult] that [Reactor.step] returns instead.
      */
     public fun onFrame(handler: (VideoFrame) -> Unit) {
         requireReceivable()
@@ -46,7 +47,7 @@ public class Track internal constructor(
      * resolution. Java callers see `onAudioFrame`; Kotlin callers write `onFrame`, annotating the
      * lambda's parameter when nothing else in the call fixes the type.
      *
-     * @throws InvalidStateException on a sendonly or video track.
+     * @throws InvalidStateException on a sendonly or video track, and in a stepped session.
      */
     @JvmName("onAudioFrame")
     public fun onFrame(handler: (AudioFrame) -> Unit) {
@@ -124,6 +125,12 @@ public class Track internal constructor(
     /**
      * Push one BGRA video frame.
      *
+     * **In a stepped session this sends nothing.** The frame is buffered, with its tag, and the
+     * next [Reactor.step] carries the frames pushed since the one before — per track, in push
+     * order, converted to an `(height, width, 3)` `uint8` RGB array. The buffer holds at most one
+     * data-channel message's worth of frame bytes: pushing faster than steps run drops the oldest
+     * frames, across tracks. Publish the track first, as for a streamed session.
+     *
      * @param pixels a **direct** [java.nio.ByteBuffer] with exactly `width * height * 4` bytes
      *   remaining, read from its current position. Direct because the native layer reads it in
      *   place: a heap buffer has no address to pass, and copying every frame would be an
@@ -171,6 +178,10 @@ public class Track internal constructor(
 
     /**
      * Push interleaved signed 16-bit PCM.
+     *
+     * **In a stepped session this sends nothing.** The samples are buffered for the next
+     * [Reactor.step] as one planar `(channels, samples)` `int16` frame per push. A step frame
+     * carries no sample rate, so push at the rate the model's track declares.
      *
      * @param pcm a **direct** [java.nio.ByteBuffer] with exactly `samplesPerChannel * channels * 2`
      *   bytes remaining, read from its current position.

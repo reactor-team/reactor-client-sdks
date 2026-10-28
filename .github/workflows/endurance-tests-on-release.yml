@@ -28,6 +28,7 @@ on:
       - 'Release C\+\+ SDK'
       - "Release Swift SDK"
       - "Release Java SDK"
+      - "Release Android SDK"
     types: [completed]
     # Restricts to the branch the release actually happened on. A
     # pull_request build of a release-*.yml workflow runs against the PR's
@@ -194,4 +195,40 @@ jobs:
           set -euo pipefail
           gh workflow run endurance-tests.yml --ref main \
             -f sdk=java \
+            -f duration_minutes="$RELEASE_ENDURANCE_DURATION_MINUTES"
+
+  android:
+    name: Dispatch Android SDK endurance tests
+    # Not gated on the run's conclusion: a failure after "Publish" (the GitHub release, say) fails
+    # the run while the artifacts are already on Maven Central for good. Whether anything shipped is
+    # the Publish step's call, checked below.
+    if: github.event.workflow_run.name == 'Release Android SDK'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      # The step, not the job, for the same reason as Java's above: release-android.yml's
+      # PUBLISH_ANDROID_RELEASE switch and its dry runs skip "Publish" without failing "Publish to
+      # Maven Central", so only that step's conclusion says something shipped.
+      - name: Check whether this run actually published a release
+        id: released
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs" --paginate \
+            --jq '[.jobs[] | select(.name == "Publish to Maven Central") | .steps[]? | select(.name == "Publish")] | last | .conclusion // "missing"')
+          echo "publish step conclusion: $conclusion"
+          echo "released=$([ "$conclusion" = "success" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch the Android endurance suite
+        if: steps.released.outputs.released == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh workflow run endurance-tests.yml --ref main \
+            -f sdk=android \
             -f duration_minutes="$RELEASE_ENDURANCE_DURATION_MINUTES"

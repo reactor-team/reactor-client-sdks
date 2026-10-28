@@ -21,6 +21,8 @@ reactor-wasm     = { path = "crates/reactor-wasm" }
 # reaches libwebrtc in one trip to the network thread instead of three, so a
 # command leaves sooner. Data-channel callbacks on the network thread and dcsctp
 # tuning (`SctpTuning`) are new, both opt-in; the SDK sets neither yet.
+# On x86_64 android the glue now uses absolute vtables, as the android-x64
+# prebuilt does; with 0.24.1 every factory create on an x86_64 emulator crashed.
 #
 # 0.24.1: an x86_64-linux-android build links the android-x64 libwebrtc prebuilt
 # instead of falling back to check-only, so the Android SDK can ship x86_64 and

@@ -46,6 +46,19 @@ public class AsanListener {
                              int sampleRate, int channels) {
     }
 
+    public static volatile int messageCount = 0;
+    public static volatile int runtimeMessageCount = 0;
+
+    public void onMessage(String messageJson) {
+        messageCount++;
+        if (throwFromHandlers) throw new RuntimeException("handler bug");
+    }
+
+    public void onRuntimeMessage(String messageJson) {
+        runtimeMessageCount++;
+        if (throwFromHandlers) throw new RuntimeException("handler bug");
+    }
+
     public void onSessionId(String sessionId) {
         sessionIdCount++;
         lastSessionIdWasNull = sessionId == null;

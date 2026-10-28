@@ -7,7 +7,12 @@ import java.util.concurrent.Callable
  */
 
 plugins {
-    id("reactor-android-conventions")
+    id("reactor-android-publishing")
+}
+
+reactorPublication {
+    pomName = "Reactor Android SDK"
+    pomDescription = "Android client SDK for Reactor real-time models."
 }
 
 /** Where scripts/build-android-ffi.sh stages libreactor_ffi.so and the libwebrtc JAR. */
@@ -64,6 +69,10 @@ android {
 
     defaultConfig {
         buildConfigField("int", "REACTOR_ABI_VERSION", "$headerAbiVersion")
+        // The one place the SDK's version is written is gradle.properties. Handed to the code
+        // from there, so what the coordinator records as client_info.sdk_version is the version
+        // of the AAR that is actually running, and a release bump cannot leave it behind.
+        buildConfigField("String", "SDK_VERSION", "\"${project.version}\"")
     }
 
     defaultConfig {
@@ -73,11 +82,9 @@ android {
         consumerProguardFiles("consumer-rules.pro")
 
         ndk {
-            // arm64-v8a alone, and that is a platform constraint rather than a choice:
-            // reactor-webrtc publishes an android arm64 prebuilt and no other Android ABI.
-            // x86_64 joins it when REA-6551 lands one — which is also what makes an emulator
-            // possible on an x86_64 CI runner.
-            abiFilters += "arm64-v8a"
+            // arm64-v8a for devices, x86_64 for emulators on x86_64 hosts — which is where the
+            // live suite runs in CI. The two ABIs reactor-webrtc publishes an Android prebuilt for.
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
     }
 
@@ -174,3 +181,11 @@ tasks
             it.name.startsWith("buildCMake") ||
             it.name.startsWith("configureCMake")
     }.configureEach { dependsOn(requireNativeArtifacts) }
+
+// VersionTest compares Reactor.SDK_VERSION against the version this build publishes. Declared as
+// an input too, so a version bump re-runs it rather than leaving the task up to date.
+tasks.withType<Test>().configureEach {
+    val publishedVersion = project.version.toString()
+    inputs.property("publishedVersion", publishedVersion)
+    systemProperty("reactor.publishedVersion", publishedVersion)
+}

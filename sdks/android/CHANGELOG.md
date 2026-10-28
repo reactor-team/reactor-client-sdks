@@ -11,22 +11,52 @@ request as the bump.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-28
+
 ### Added
 
-- `Reactor.fetchJwt(apiUrl, apiKey, options, local)`, the standalone key→token
-  exchange Java, Swift and Python already expose. Scope tokens with
-  `options = """{"models":["owner/name"]}"""` before handing them to a client
-  you do not control; an unrecognised option key is an error, a rejected key
-  reports UNAUTHORIZED, and an unreachable coordinator NETWORK_ERROR.
+- `Reactor.messages`: messages the model sends, as `{"type", "data"}` JSON
+  objects, including the ones no call returns, such as state updates. 1.0.0
+  delivered a command's reply only as the return value of `sendCommand`, so an
+  Android app could not see anything the model sent on its own. Collect it
+  before `connect()` to see every message.
+- `Reactor.runtimeMessages`: what the platform sends about the session, such as
+  recording lifecycle notices.
 
-### Fixed
+## [1.0.0] - 2026-10-27
 
-- `ReactorOptions.apiKey` no longer connects with no credentials. The option was
-  accepted but never read, so an app holding only a key connected without a
-  token and the platform answered 401 "Missing Authorization header". `connect()`
-  now does the key→token exchange the other SDKs do: minting a token scoped to
-  what the connect reaches (the model when creating a session, the session when
-  adopting one), re-minting when the scope changes, and rebuilding the native
-  client around the new token. A caller-supplied `jwt` still wins, and `local`
-  still never authenticates. `downloadClip()` likewise passes the resolved
-  token, not the (possibly absent) options one.
+First release: a Kotlin binding over the same native core as the other Reactor
+SDKs, reached through JNI, for Android 8.0 (API 26) and newer, and for apps on
+Kotlin 2.1 or newer.
+
+- Published to Maven Central as `inc.reactor:reactor-sdk-android` and
+  `inc.reactor:reactor-sdk-android-media`, with sources and javadoc, signed.
+  The native libraries ride inside the AAR for `arm64-v8a` and `x86_64`, built
+  for 16 KB page sizes.
+- `Reactor`: connect to a model by creating a session or adopting one, with
+  `status`, `errors` and `sessionId` as flows, `reconnect()` and `disconnect()`.
+  Authenticate with a `jwt` from your backend, or with an `apiKey` that
+  `connect()` exchanges for a token scoped to what it reaches.
+  `Reactor.fetchJwt(apiUrl, apiKey, options, local)` is the same exchange on its
+  own, for minting tokens to hand to clients you do not control.
+- Tracks as the session declares them: receive video and audio frames from
+  recvonly tracks, pause and resume them, and publish sendonly tracks and push
+  frames into them. A push the native layer would silently drop (an undeclared
+  track, the wrong direction, one not yet published) throws instead, naming the
+  fix.
+- Correlated commands and their replies, the model's command schema, and an
+  on-demand connection statistics snapshot.
+- Stepped generation: `ReactorOptions(generation = Generation.STEPPED)` and
+  `reactor.step(state, commands)`, which returns what the model produced on
+  each output track as arrays, with the files it kept and its error. Frames
+  pushed into an input track ride the next step.
+- Uploads from a file, from bytes in memory, or from a `content://` URI, as a
+  `FileRef` to pass into a command. Recording and clip requests, and clip
+  downloads that outlive the client.
+- Typed errors, one class per code, each carrying `code`, `message`,
+  `recoverable`, `status`, `operation` and `retryAfterMs`.
+- `reactor-sdk-android-media`: camera, microphone, speaker and renderer
+  adapters on the platform's own classes, so the core artifact opens no
+  hardware and declares no permissions.
+- `Reactor.SDK_VERSION` is the AAR's own version, which is what the coordinator
+  records as `client_info.sdk_version`.

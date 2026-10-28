@@ -80,6 +80,39 @@ public class Reactor(
      */
     public val errors: SharedFlow<ReactorException> = _errors.asSharedFlow()
 
+    private val _messages =
+        MutableSharedFlow<Map<String, Any?>>(
+            replay = 0,
+            extraBufferCapacity = 64,
+            // A collector that falls behind loses the oldest messages rather than stalling the
+            // FFI's event thread, which also delivers everything else.
+            onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        )
+
+    /**
+     * Messages the model sends, in the order it sent them — each a JSON object, `{"type", "data"}`.
+     *
+     * Includes the messages the model sends on its own, such as state updates, which no call
+     * returns. A command's reply is also the return value of [sendCommand]. Only what arrives
+     * while something collects is delivered: start collecting before [connect] to see every one.
+     * Collectors run on their own context, such as `lifecycleScope`; one that falls more than 64
+     * messages behind loses the oldest.
+     */
+    public val messages: SharedFlow<Map<String, Any?>> = _messages.asSharedFlow()
+
+    private val _runtimeMessages =
+        MutableSharedFlow<Map<String, Any?>>(
+            replay = 0,
+            extraBufferCapacity = 16,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        )
+
+    /**
+     * Messages the platform sends about the session, as JSON objects — recording lifecycle and
+     * moderation notices, for example. Distinct from [messages], which come from the model.
+     */
+    public val runtimeMessages: SharedFlow<Map<String, Any?>> = _runtimeMessages.asSharedFlow()
+
     private val _sessionId = MutableStateFlow<String?>(null)
 
     /** The session's id once there is one, null when it is cleared. */
@@ -119,8 +152,10 @@ public class Reactor(
      * object alive for the life of the handle, and a strong reference here would make the client
      * — and therefore the session — unreachable for garbage collection until teardown, which is
      * the opposite of what an Android app needs when an Activity goes away.
+     *
+     * Internal rather than private only so the message routing is testable without a device.
      */
-    private class Events(
+    internal class Events(
         owner: Reactor,
     ) : NativeEvents {
         private val owner = WeakReference(owner)
@@ -135,6 +170,14 @@ public class Reactor(
 
         override fun onSessionId(sessionId: String?) {
             owner.get()?.deliverSessionId(sessionId)
+        }
+
+        override fun onMessage(messageJson: String?) {
+            owner.get()?.deliverMessage(messageJson, runtime = false)
+        }
+
+        override fun onRuntimeMessage(messageJson: String?) {
+            owner.get()?.deliverMessage(messageJson, runtime = true)
         }
 
         // Frames are *not* handed to the dispatcher. They run here, on the FFI's thread, because
@@ -375,6 +418,18 @@ public class Reactor(
         handler: F,
     ) {
         requireOpen("onFrame")
+        if (options.generation == Generation.STEPPED) {
+            // Nothing streams in a stepped session, so a handler here would never fire — a client
+            // that looks healthy and receives nothing, which is what every refusal here prevents.
+            throw ErrorCode.toException(
+                wire = "INVALID_STATE",
+                message =
+                    "Track '$track' belongs to a stepped session, which streams nothing: what the model " +
+                        "produces on it arrives in the StepResult that step() returns. Read " +
+                        "result.track(\"$track\").frames instead.",
+                operation = "onFrame",
+            )
+        }
         handlers[track] = handler
         if (closed.get()) {
             handlers.remove(track)
@@ -424,6 +479,32 @@ public class Reactor(
 
     private fun deliverError(error: ReactorException) {
         scope.launch { _errors.emit(error) }
+    }
+
+    /**
+     * Parsed and emitted here, on the FFI's thread, not launched onto the dispatcher. The FFI
+     * delivers messages on one thread and in order; a launch per message could reorder them on a
+     * multi-threaded dispatcher, and would queue coroutines without bound ahead of the buffer.
+     * `tryEmit` on a drop-oldest flow never fails or suspends, so ordering and the bound both hold.
+     *
+     * A message that is not a JSON object is dropped: the FFI promises an object, and reshaping
+     * something else into one would hand a collector a message the model never sent.
+     */
+    private fun deliverMessage(
+        json: String?,
+        runtime: Boolean,
+    ) {
+        val message =
+            json?.let {
+                try {
+                    inc.reactor.sdk.android.internal.Json
+                        .parseObject(it)
+                } catch (_: inc.reactor.sdk.android.internal.JsonException) {
+                    null
+                }
+            } ?: return
+        val flow = if (runtime) _runtimeMessages else _messages
+        flow.tryEmit(message)
     }
 
     private fun deliverSessionId(id: String?) {
@@ -491,6 +572,8 @@ public class Reactor(
                         local = options.local,
                         listener = Events(this),
                         sdkVersion = SDK_VERSION,
+                        generation = options.generation,
+                        stepTimeoutSeconds = options.stepTimeoutSeconds,
                     ).also { created ->
                         handle = created
                         handleModel = modelName
@@ -592,6 +675,107 @@ public class Reactor(
 
     /** A connection statistics snapshot. */
     public suspend fun stats(): Stats = requireHandle("get_stats").stats()
+
+    // ── Stepped generation ──────────────────────────────────────────────────
+
+    /** How this client's sessions generate, as [ReactorOptions.generation] set it. */
+    public val generation: Generation
+        get() = options.generation
+
+    /**
+     * Run one step of a stepped session and answer with what it produced.
+     *
+     * The runtime applies, in order: [state] (each key as the model's `set_<key>` command), then
+     * [commands], then every input frame pushed since the previous step — in a stepped session
+     * [Track.pushFrame] does not send, it buffers for the next step — and then generates. The
+     * runtime checks the whole request before it applies any of it, so a step it refuses changed
+     * nothing; past that check these are separate calls, so a call whose handler fails leaves the
+     * calls before it applied. Every part is optional; `step()` with nothing runs on the model's
+     * current state. Commands sent with [sendCommand] outside a step still work in a stepped
+     * session and change the state the next step uses.
+     *
+     * A file input is an upload reference, as for any command: [upload][uploadFile] it first, then
+     * put the reference in a command's arguments or in the value of an upload-typed state field.
+     *
+     * ```kotlin
+     * val reactor = Reactor(ReactorOptions(jwt = token, generation = Generation.STEPPED))
+     * reactor.connect("owner/model")
+     * val camera = reactor.track("camera")
+     * camera.publish()
+     * camera.pushFrame(bgra, width, height) // buffered, not sent
+     * val result =
+     *     reactor.step(
+     *         state = """{"prompt": "a red fox"}""",
+     *         commands = listOf(StepCommand("advance", """{"frames": 4}""")),
+     *     )
+     * for (frame in result.track("main_video").frames) {
+     *     show(frame.data(), frame.shape) // (height, width, 3) uint8 RGB
+     * }
+     * ```
+     *
+     * A step that ran but that the model reported as failed still returns, with
+     * [StepResult.error] saying why.
+     *
+     * A step refused before it goes out ([InvalidStateException], malformed arguments) keeps the
+     * buffered input frames for the next step. Past that they belong to the step whatever its
+     * outcome: one that could not be sent, [MessageTooLargeException] included, drops them too, and
+     * nothing is resent. The buffer holds at most one data-channel message's worth of frame bytes,
+     * so pushing faster than steps run drops the oldest frames, across tracks. Once the session's
+     * tracks are known, a push to a track the session does not take as input is dropped with a
+     * warning.
+     *
+     * Not cancellable once sent: nothing in the native layer can withdraw a step, so cancelling
+     * the caller stops the wait, not the step.
+     *
+     * @param state the model's state fields as a raw JSON object, in the form [sendCommand] takes
+     *   its arguments, or null to change none
+     * @param commands what to run after the state, in order
+     * @return the step's result, copied onto the heap once and safe to keep
+     * @throws StepRefusedException when the runtime turns the step down; nothing it carried was
+     *   applied, and [ReactorException.entry] names the part at fault when one is
+     * @throws StepNotReadyException when the session cannot take a step yet; the step did not run
+     * @throws StepCommandFailedException when one of its state keys or commands failed; the step
+     *   did not run, the calls before it stay applied, and [ReactorException.entry] and
+     *   [ReactorException.commandCode] say which and why
+     * @throws StepSessionEndedException when the session ended before the result came; whether
+     *   the step ran is unknown
+     * @throws StepResultTooLargeException when the step ran but its output does not fit in one
+     *   data-channel message
+     * @throws MessageTooLargeException when the request does not fit in one; nothing was sent
+     * @throws UnsupportedFrameEncodingException for a frame this SDK cannot decode
+     * @throws RequestTimeoutException after [ReactorOptions.stepTimeoutSeconds]
+     * @throws DecodeFailedException when [state] is not a JSON object; nothing was sent
+     * @throws InvalidStateException on a streamed client, or before [connect]
+     */
+    public suspend fun step(
+        state: String? = null,
+        commands: List<StepCommand> = emptyList(),
+    ): StepResult {
+        requireStepped("step")
+        val commandsJson = commands.joinToString(separator = ",", prefix = "[", postfix = "]") { it.toWire() }
+        return requireHandle("step").step(state, commandsJson)
+    }
+
+    /**
+     * Drop every input frame buffered for the next step, so that step carries only what is pushed
+     * after this. A no-op on a streamed client, and before [connect], when nothing is buffered.
+     */
+    public fun clearStepInputs() {
+        if (options.generation != Generation.STEPPED) return
+        handle?.clearStepInputs()
+    }
+
+    private fun requireStepped(operation: String) {
+        if (options.generation != Generation.STEPPED) {
+            throw ErrorCode.toException(
+                wire = "INVALID_STATE",
+                message =
+                    "$operation() needs a stepped session: create the Reactor with " +
+                        "ReactorOptions(generation = Generation.STEPPED)",
+                operation = operation,
+            )
+        }
+    }
 
     /**
      * Upload a file from the filesystem.
@@ -784,12 +968,12 @@ public class Reactor(
         public const val DEFAULT_UPLOAD_LIMIT_BYTES: Long = 64L * 1024 * 1024
 
         /**
-         * What the coordinator records as `client_info.sdk_version`.
+         * This SDK's version, which the coordinator records as `client_info.sdk_version`.
          *
-         * A literal until the release wiring replaces it — the AAR's own version is what belongs
-         * here, not reactor-core's, and A15 is where that is read from the manifest.
+         * The AAR's own version rather than reactor-core's, read from gradle.properties at build
+         * time — the same line a release bumps, so the two cannot disagree.
          */
-        const val SDK_VERSION: String = "0.1.0-SNAPSHOT"
+        const val SDK_VERSION: String = BuildConfig.SDK_VERSION
 
         /**
          * Exchange an API key for a short-lived token, without creating a client.

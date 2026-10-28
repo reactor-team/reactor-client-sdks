@@ -23,6 +23,11 @@
 # survive.
 -keepclassmembers interface inc.reactor.sdk.android.internal.NativeEvents { *; }
 -keepclassmembers class * implements inc.reactor.sdk.android.internal.NativeEvents { *; }
+-keepclassmembers class inc.reactor.sdk.android.internal.Completions {
+    public static void settleFromNative(...);
+    public static void settleStepFromNative(...);
+    public static void progressFromNative(...);
+}
 
 # WebRTC's own Java half, looked up from native code by name for the same reason.
 -keep class inc.reactor.org.webrtc.** { *; }

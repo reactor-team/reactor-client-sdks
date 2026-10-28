@@ -9,7 +9,7 @@
  * It is a library module whose tests live in androidTest, so they run on a device against the
  * same merged native libraries a consumer's APK gets. What it does not prove on its own is AAR
  * packaging — that is what the examples app covers, by assembling an APK and carrying the
- * arm64-v8a shared objects into it.
+ * shared objects of both ABIs into it.
  */
 
 plugins {
@@ -19,9 +19,10 @@ plugins {
 // A value the tests need on the device, from a Gradle property or the environment.
 //
 // Instrumented tests run in a process on the device, which has neither this build's environment
-// nor its properties — so anything they need has to be handed to the runner explicitly. The empty
-// default is deliberate: a missing key must reach Live, which decides whether that is a skip or a
-// failure. Defaulting to something plausible here would hide the decision.
+// nor its properties — so anything they need has to be handed to the runner explicitly. A value
+// that is not set is left out rather than defaulted: Live reads an absent argument as unset and
+// decides whether that is a skip or a failure. Defaulting to something plausible here would hide
+// the decision.
 fun runnerArg(
     gradleProperty: String,
     environmentVariable: String,
@@ -46,9 +47,16 @@ android {
                 "reactorApiKey" to runnerArg("reactorApiKey", "INTEGRATION_TESTS_REACTOR_API_KEY"),
                 "reactorApiUrl" to runnerArg("reactorApiUrl", "REACTOR_API_URL"),
                 "reactorModel" to runnerArg("reactorModel", "INTEGRATION_TESTS_REACTOR_MODEL"),
+                // The stepped scenario's model and input track; unset skips those tests, as in
+                // every other binding's suite.
+                "reactorSteppedModel" to runnerArg("reactorSteppedModel", "REACTOR_STEPPED_MODEL_NAME"),
+                "reactorSteppedInputTrack" to runnerArg("reactorSteppedInputTrack", "REACTOR_STEPPED_INPUT_TRACK"),
                 // Whether a missing key is a skip or a failure — the device cannot see $CI either.
                 "ci" to runnerArg("ci", "CI"),
-            )
+                // Empty ones are dropped, not passed: an empty `-e` value breaks the instrumentation
+                // command, and the run then reports success with no test run at all ("Invalid
+                // userId -2").
+            ).filterValues { it.isNotEmpty() }
     }
 }
 

@@ -12,6 +12,7 @@
 [![GitHub release: cpp-sdk](https://img.shields.io/github/v/release/reactor-team/reactor-client-sdks?filter=cpp-*&label=cpp-sdk)](https://github.com/reactor-team/reactor-client-sdks/releases?q=cpp-)
 [![GitHub release: swift-sdk](https://img.shields.io/github/v/release/reactor-team/reactor-client-sdks?filter=v*&label=swift-sdk)](https://github.com/reactor-team/reactor-client-sdks/releases?q=Swift)
 [![Maven Central: reactor-sdk](https://img.shields.io/maven-central/v/inc.reactor/reactor-sdk.svg?label=java-sdk)](https://central.sonatype.com/artifact/inc.reactor/reactor-sdk)
+[![Maven Central: reactor-sdk-android](https://img.shields.io/maven-central/v/inc.reactor/reactor-sdk-android.svg?label=android-sdk)](https://central.sonatype.com/artifact/inc.reactor/reactor-sdk-android)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 </div>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- The SDK declares no permissions, so the test APK asks for the one the live suite needs:
+         without it every socket is refused and the first call, the key exchange, fails with a
+         transport error before anything reaches the platform. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+</manifest>
