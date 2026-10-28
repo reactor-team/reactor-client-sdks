@@ -5,6 +5,7 @@ import inc.reactor.sdk.android.Generation
 import inc.reactor.sdk.android.GenerationModeMismatchException
 import inc.reactor.sdk.android.MessageTooLargeException
 import inc.reactor.sdk.android.Reactor
+import inc.reactor.sdk.android.SessionTerminalException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -21,7 +22,8 @@ import java.nio.ByteBuffer
  * Scenario 09: stepped generation against a real runtime, as every other binding's suite runs it.
  *
  * `reactor/echo` streams, so it is the negative case: a runtime that does not start a stepped
- * session must fail `connect()` typed rather than leave a client waiting on steps. The positive
+ * session must fail `connect()` rather than leave a client waiting on steps. A runtime that ignores
+ * the mode fails it typed; one that refuses the start ends the session before it is ready. The positive
  * cases need a model with stepped generation — set
  * REACTOR_STEPPED_MODEL_NAME (and REACTOR_STEPPED_INPUT_TRACK for the push) or they are skipped.
  *
@@ -41,6 +43,10 @@ internal class LiveSteppedTest {
                 fail("a stepped connect to ${Live.model}, which streams, must throw")
             } catch (expected: GenerationModeMismatchException) {
                 assertEquals("GENERATION_MODE_MISMATCH", expected.code)
+            } catch (expected: SessionTerminalException) {
+                // A runtime that checks the mode refuses the start, and the platform reports the
+                // session closed without saying why.
+                assertEquals("SESSION_TERMINAL", expected.code)
             }
         }
 
