@@ -48,13 +48,15 @@ async def test_a_runtime_that_streams_fails_a_stepped_connect() -> None:
     # A runtime before 3.9.0 ignores the mode and streams, so the ready session
     # does not echo "stepped". A runtime from 3.9.0 refuses the stepped start of
     # a model that overrides run(), such as reactor/echo, and the session closes
-    # before it is ready. The SDK does not yet read the reason the platform
-    # records for that close (REA-7575). The Android suite's LiveSteppedTest
-    # accepts both errors for the same reason.
+    # before it is ready. The error then names the reason the platform recorded,
+    # START_REFUSED, with the runtime's account of the refusal. The Android
+    # suite's LiveSteppedTest accepts both errors for the same reason.
     client = stepped(MODEL_NAME)
     try:
-        with pytest.raises((GenerationModeMismatchError, SessionTerminalError)):
+        with pytest.raises((GenerationModeMismatchError, SessionTerminalError)) as exc_info:
             await paced_connect(client)
+        if isinstance(exc_info.value, SessionTerminalError):
+            assert "(START_REFUSED)" in str(exc_info.value)
     finally:
         client.close()
 
