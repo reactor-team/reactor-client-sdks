@@ -11,7 +11,7 @@ import Testing
 /// REACTOR_STEPPED_INPUT_TRACK names a sendonly video track to push into;
 /// without it the input test is skipped. The streamed `reactor/echo` model
 /// doubles as the negative case: a runtime that does not start a stepped
-/// session must fail `connect()` typed, not stream.
+/// session must fail `connect()`, not stream.
 @Suite("09 - stepped generation")
 struct SteppedGenerationTests {
 
@@ -23,14 +23,19 @@ struct SteppedGenerationTests {
         return raw
     }
 
-    @Test("a runtime that streams fails a stepped connect, typed")
+    /// A runtime before 3.9.0 ignores the mode and streams, so the ready
+    /// session does not echo "stepped". A runtime from 3.9.0 refuses the
+    /// stepped start of a model that overrides `run()`, such as `reactor/echo`,
+    /// and the session closes before it is ready (REA-7575). The Python and
+    /// Android suites accept both errors for the same reason.
+    @Test("a runtime that streams fails a stepped connect")
     func streamingRuntimeFailsSteppedConnect() async throws {
         do {
             try await withConnectedReactor(generation: .stepped) { _ in
                 Issue.record("expected a stepped connect to a streamed model to throw")
             }
         } catch let error as ReactorError {
-            #expect(error.code == .generationModeMismatch)
+            #expect(error.code == .generationModeMismatch || error.code == .sessionTerminal)
         }
     }
 

@@ -98,7 +98,7 @@ rerun rather than debug the harness.
 | 06 | `06_RecordClipTests.swift` | A clip of generated media downloads to a real fragmented-MP4 file |
 | 07 | `07_FrameMetadataTests.swift` | A tag pushed on `webcam` loops back on `main_video`'s `userData` (REA-5972) — `frameID`/`captureTimeUs` are read but not asserted on content, since Python's own suite found `echo`'s values for both unreliable across independent live runs |
 | 08 | `08_ConnectionStatsTests.swift` | `stats()` on a live session: the first call has no measured bitrates, a later one has both, plus RTT, a succeeded nominated pair and inbound/outbound video streams; a disconnected client throws `invalidState` rather than reporting zeroes |
-| 09 | `09_SteppedGenerationTests.swift` | A stepped connect to a streaming runtime throws `generationModeMismatch`; steps resolve in order; a pushed frame rides the next step, proved by an oversized one failing it with `messageTooLarge`. Skipped without `REACTOR_STEPPED_MODEL_NAME` (and `REACTOR_STEPPED_INPUT_TRACK` for the push) |
+| 09 | `09_SteppedGenerationTests.swift` | A stepped connect to a streaming runtime throws `generationModeMismatch`, or `sessionTerminal` when the runtime refuses the start; steps resolve in order; a pushed frame rides the next step, proved by an oversized one failing it with `messageTooLarge`. Skipped without `REACTOR_STEPPED_MODEL_NAME` (and `REACTOR_STEPPED_INPUT_TRACK` for the push) |
 
 ## Fixtures
 
