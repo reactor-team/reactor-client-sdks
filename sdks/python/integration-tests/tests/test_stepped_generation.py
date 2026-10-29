@@ -6,7 +6,7 @@ REACTOR_API_URL) or every test here is skipped. REACTOR_STEPPED_INPUT_TRACK
 names a sendonly video track to push into; without it the input test skips.
 
 The streamed `reactor/echo` model doubles as the negative case: a runtime that
-does not start a stepped session must fail `connect()` typed, not stream.
+does not start a stepped session must fail `connect()`, not stream.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from reactor_sdk import (
     MessageTooLargeError,
     Reactor,
     ReactorStatus,
+    SessionTerminalError,
     StepResult,
 )
 
@@ -44,9 +45,15 @@ def stepped(model_name: str) -> Reactor:
 
 
 async def test_a_runtime_that_streams_fails_a_stepped_connect() -> None:
+    # A runtime before 3.9.0 ignores the mode and streams, so the ready session
+    # does not echo "stepped". A runtime from 3.9.0 refuses the stepped start of
+    # a model that overrides run(), such as reactor/echo, and the session closes
+    # before it is ready. The SDK does not yet read the reason the platform
+    # records for that close (REA-7575). The Android suite's LiveSteppedTest
+    # accepts both errors for the same reason.
     client = stepped(MODEL_NAME)
     try:
-        with pytest.raises(GenerationModeMismatchError):
+        with pytest.raises((GenerationModeMismatchError, SessionTerminalError)):
             await paced_connect(client)
     finally:
         client.close()
