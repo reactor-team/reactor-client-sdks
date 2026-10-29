@@ -42,7 +42,11 @@ export interface ClientOptions {
   heartbeatIntervalMs?: number;
   /** How long to wait for the transport to come up. Default 30000. */
   readyTimeoutMs?: number;
+  /** Wait for command replies and control-channel replies. Default 10000.
+   *  Expiry stops waiting, not runtime execution: a command may still apply.
+   *  Do not automatically resend commands whose effects are unsafe to repeat. */
   controlRequestTimeoutMs?: number;
+  /** Clip/recording request deadline. Default 10000. Does not bound downloads. */
   clipRequestTimeoutMs?: number;
   /** Session-readiness poll attempts. Default 20. */
   maxSessionAttempts?: number;

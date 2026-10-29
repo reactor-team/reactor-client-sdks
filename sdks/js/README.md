@@ -142,6 +142,34 @@ for most:
 Full list — including `schemaReceived`, `capabilitiesReceived`, and `statsUpdate` — in
 [Events](https://docs.reactor.inc/sdk-reference/events).
 
+## Command timeouts
+
+`controlRequestTimeoutMs` sets how long the SDK waits for command replies and control-channel
+replies. The default is 10,000 ms; set it when constructing the client if your application needs
+a longer wait:
+
+```ts
+const reactor = new Reactor({
+  modelName: "my-model",
+  jwt: fetchToken,
+  controlRequestTimeoutMs: 20_000,
+});
+```
+
+`REQUEST_TIMEOUT` means a reply did not arrive within that wait. It does not cancel or roll
+back the command on the runtime: the command may already have applied, or may apply later.
+Do not automatically resend a command whose effects are unsafe to repeat; `recoverable`
+does not guarantee that retrying it is safe.
+
+`Reactor.sendCommand()` reports a timeout through the `error` event and `getLastError()`,
+and resolves with `undefined`. That value can also mean a successful acknowledgement without
+a message, so it alone does not establish whether the command applied. A later reply carrying
+a model message still reaches the `message` event, but does not change the settled call.
+A bodyless acknowledgement has no message to emit.
+
+Clip and recording requests use the separate `clipRequestTimeoutMs` option (also 10,000 ms
+by default); this does not bound clip downloads. `step()` uses `stepTimeoutMs` instead.
+
 ## Model schema and capabilities
 
 ```ts

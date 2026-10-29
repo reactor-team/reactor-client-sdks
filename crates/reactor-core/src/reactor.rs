@@ -2382,7 +2382,7 @@ mod tests {
 
     use std::sync::Arc;
 
-    use futures::StreamExt;
+    use futures::{FutureExt, StreamExt};
 
     use crate::http::{AuthProvider, AuthRequest, HttpClient, HttpRequest, HttpResponse, Method};
     use crate::peer::{PeerTransport, PreparedOffer};
@@ -4431,17 +4431,76 @@ mod tests {
         assert_eq!(error.details.code, "BAD_COMMAND");
     }
 
-    /// A timeout cancels the pending correlation so a late reply is not
-    /// delivered to a dropped receiver.
-    #[tokio::test]
+    /// A late success is still a message, but cannot change the timeout or
+    /// satisfy a later command's waiter.
+    #[tokio::test(start_paused = true)]
     async fn send_command_times_out() {
+        let reactor = make_reactor();
+        reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+        let mut events = reactor.subscribe();
+
+        let mut call = Box::pin(reactor.send_command("set_flush_on_clip_end", json!({}), None));
+        assert!(futures::poll!(&mut call).is_pending());
+        tokio::time::advance(Duration::from_millis(9_999)).await;
+        assert!(futures::poll!(&mut call).is_pending());
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let error = call
+            .now_or_never()
+            .expect("the default deadline expires at 10 seconds")
+            .unwrap_err();
+        assert_eq!(error.code(), crate::error::codes::REQUEST_TIMEOUT);
+        assert!(matches!(error, CoreError::Timeout(_)));
+
+        tokio::time::advance(Duration::from_millis(200)).await;
+        let mut next = Box::pin(reactor.send_command("get_state", json!({}), None));
+        assert!(futures::poll!(&mut next).is_pending());
+        reactor.on_data_message(&encode_data_response(
+            "data_1",
+            data_server_message::Payload::Message(ModelMessage {
+                r#type: "flush_configured".into(),
+                data: None,
+            }),
+        ));
+        assert!(futures::poll!(&mut next).is_pending());
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            ReactorEvent::Message(value) if value["type"] == "flush_configured"
+        ));
+        assert!(reactor.data.take_arrival("data_1").is_none());
+
+        reactor.on_data_message(&encode_data_response(
+            "data_2",
+            data_server_message::Payload::Message(ModelMessage {
+                r#type: "get_state_reply".into(),
+                data: None,
+            }),
+        ));
+        assert_eq!(next.await.unwrap().unwrap()["type"], "get_state_reply");
+        assert!(reactor.data.take_arrival("data_2").is_none());
+    }
+
+    /// The existing option lets a slow reply complete normally without
+    /// extending the default deadline for other clients.
+    #[tokio::test(start_paused = true)]
+    async fn send_command_accepts_a_reply_within_a_configured_timeout() {
         let mut opts = ReactorOptions::new("http://localhost", "test-model");
-        opts.control_request_timeout = Duration::from_millis(20);
+        opts.control_request_timeout = Duration::from_secs(20);
         let reactor = make_reactor_opts(opts);
         reactor.state.lock().unwrap().status = ReactorStatus::Ready;
 
-        let result = reactor.send_command("get_state", json!({}), None).await;
-        assert!(matches!(result, Err(CoreError::Timeout(_))));
+        let mut call = Box::pin(reactor.send_command("set_flush_on_clip_end", json!({}), None));
+        assert!(futures::poll!(&mut call).is_pending());
+        tokio::time::advance(Duration::from_millis(10_200)).await;
+        assert!(futures::poll!(&mut call).is_pending());
+        reactor.on_data_message(&encode_data_response(
+            "data_1",
+            data_server_message::Payload::Message(ModelMessage {
+                r#type: "flush_configured".into(),
+                data: None,
+            }),
+        ));
+        assert_eq!(call.await.unwrap().unwrap()["type"], "flush_configured");
+        assert!(reactor.data.take_arrival("data_1").is_none());
     }
 
     // ── Uploads ─────────────────────────────────────────────────────────────

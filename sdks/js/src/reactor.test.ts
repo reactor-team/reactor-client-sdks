@@ -79,6 +79,34 @@ describe('Reactor.reconnect', () => {
 });
 
 describe('Reactor.sendCommand', () => {
+  it('reports a timeout without resending, and still forwards a later message', async () => {
+    const reactor = new Reactor({ modelName: 'test-model' });
+    const client = await currentClient(reactor);
+    const send = vi.spyOn(client, 'sendCommand').mockRejectedValue(
+      Object.assign(new Error('set_flush_on_clip_end did not complete within 10s'), {
+        code: 'REQUEST_TIMEOUT',
+        operation: 'sendCommand',
+        recoverable: true,
+      }),
+    );
+    const onError = vi.fn();
+    const onMessage = vi.fn();
+
+    reactor.on('error', onError);
+    reactor.on('message', onMessage);
+
+    await expect(reactor.sendCommand('set_flush_on_clip_end')).resolves.toBeUndefined();
+    expect(onError).toHaveBeenCalledExactlyOnceWith(expect.any(RequestTimeoutError));
+    expect(reactor.getLastError()).toBe(onError.mock.calls[0]![0]);
+
+    const lateReply = { type: 'flush_configured', data: null };
+
+    client.emitMessage(lateReply);
+    expect(onMessage).toHaveBeenCalledExactlyOnceWith(lateReply);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
   it("awaits the binding's correlated reply", async () => {
     const reactor = new Reactor({ modelName: 'test-model' });
     const client = await currentClient(reactor);
@@ -517,7 +545,13 @@ describe('Reactor connect/construction options', () => {
   });
 
   it('forwards construction options — including local and apiUrl — straight through to the binding', async () => {
-    const reactor = new Reactor({ modelName: 'test-model', local: true, apiUrl: 'http://example.test' });
+    const reactor = new Reactor({
+      modelName: 'test-model',
+      local: true,
+      apiUrl: 'http://example.test',
+      controlRequestTimeoutMs: 20_000,
+      clipRequestTimeoutMs: 30_000,
+    });
 
     await reactor.connect();
 
@@ -527,6 +561,8 @@ describe('Reactor connect/construction options', () => {
       modelName: 'test-model',
       local: true,
       apiUrl: 'http://example.test',
+      controlRequestTimeoutMs: 20_000,
+      clipRequestTimeoutMs: 30_000,
       sdkVersion: packageJson.version,
     });
   });
