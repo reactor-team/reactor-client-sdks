@@ -11,6 +11,15 @@ request as the bump.
 
 ## [Unreleased]
 
+### Fixed
+
+- A session that closed before it was ready failed `connect()` with only
+  "session entered terminal state Closed". The error now also names why the
+  platform ended the session, when the platform recorded it: for example
+  `Closed (START_REFUSED): generation 'stepped' needs a model that runs the
+  default ReactorApp step loop ...` for a stepped connect to a model that
+  cannot step. The error code is still `SESSION_TERMINAL`.
+
 ## [1.1.0] - 2026-10-28
 
 ### Added

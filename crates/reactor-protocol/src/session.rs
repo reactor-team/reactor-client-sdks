@@ -171,6 +171,26 @@ pub struct CreateSessionRequest {
     pub extra_configs: Option<Value>,
 }
 
+/// Why and when a session ended: the `ended` object of `GET /sessions/{id}`.
+///
+/// Only the platform writes it, so `message` can carry a caller's own words:
+/// read `reason` first, because it names who wrote `message`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SessionEnd {
+    /// When the platform recorded the end (RFC 3339). This is later than the
+    /// moment the model stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    /// The end reason by name, for example `START_REFUSED`. `None` when
+    /// nothing recorded one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// What the author that `reason` names said, for example the runtime's
+    /// account of a start it refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
 /// Session resource returned by `POST /sessions` (slim) and
 /// `GET /sessions/{id}` (progressively populated while the runtime spins up).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -187,6 +207,10 @@ pub struct SessionResponse {
     pub selected_transport: Option<TransportDeclaration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Capabilities>,
+    /// Why the session ended. Only a closed session has it, and only from a
+    /// Coordinator that records it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<SessionEnd>,
     /// Unknown / newer fields are preserved rather than rejected.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
@@ -239,6 +263,31 @@ mod tests {
 
         let back = serde_json::to_value(&resp).unwrap();
         assert_eq!(back["some_future_field"]["x"], 1);
+    }
+
+    #[test]
+    fn a_closed_session_carries_why_it_ended() {
+        let json = r#"{
+            "session_id": "sess_abc",
+            "state": "CLOSED",
+            "ended": {
+                "at": "2026-10-29T14:54:44.384471865Z",
+                "reason": "START_REFUSED",
+                "message": "generation 'stepped' needs a model that runs the default step loop"
+            }
+        }"#;
+        let resp: SessionResponse = serde_json::from_str(json).unwrap();
+        let ended = resp.ended.as_ref().unwrap();
+        assert_eq!(ended.reason.as_deref(), Some("START_REFUSED"));
+        assert_eq!(
+            ended.message.as_deref(),
+            Some("generation 'stepped' needs a model that runs the default step loop")
+        );
+        assert!(!resp.extra.contains_key("ended"));
+
+        let open: SessionResponse =
+            serde_json::from_str(r#"{"session_id": "sess_abc", "state": "ACTIVE"}"#).unwrap();
+        assert!(open.ended.is_none());
     }
 
     #[test]

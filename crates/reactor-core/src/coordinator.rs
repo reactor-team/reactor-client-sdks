@@ -218,7 +218,7 @@ impl CoordinatorClient {
             )));
         }
         if session.state.is_terminal() {
-            return Err(CoreError::TerminalSession(format!("{:?}", session.state)));
+            return Err(terminal_session(&session));
         }
 
         *self.local_session.lock().unwrap() = Some(session.clone());
@@ -256,7 +256,7 @@ impl CoordinatorClient {
         for attempt in 1..=self.config.poll.max_attempts {
             let session = self.get_session(session_id).await?;
             if session.state.is_terminal() {
-                return Err(CoreError::TerminalSession(format!("{:?}", session.state)));
+                return Err(terminal_session(&session));
             }
             if session.is_ready() {
                 log::debug!("session {session_id} ready after {attempt} poll(s)");
@@ -316,6 +316,25 @@ impl CoordinatorClient {
         check_status(&response, "create upload")?;
         response.json()
     }
+}
+
+/// The error for a session found in a terminal state. It names the state and,
+/// when the platform recorded one, why the session ended: for example
+/// `Closed (START_REFUSED): <the runtime's account of the refusal>`. Without
+/// it, a start the runtime refused reads the same as any other early close.
+fn terminal_session(session: &SessionResponse) -> CoreError {
+    let mut detail = format!("{:?}", session.state);
+    if let Some(end) = &session.ended {
+        let reason = end.reason.as_deref().filter(|r| !r.is_empty());
+        let message = end.message.as_deref().filter(|m| !m.is_empty());
+        if let Some(reason) = reason {
+            detail.push_str(&format!(" ({reason})"));
+        }
+        if let Some(message) = message {
+            detail.push_str(&format!(": {message}"));
+        }
+    }
+    CoreError::TerminalSession(detail)
 }
 
 #[cfg(test)]
@@ -476,5 +495,72 @@ mod tests {
             .unwrap();
         let (_, body) = only_body(&http);
         assert_eq!(body, serde_json::json!({"extra_args": {"seed": 1}}));
+    }
+
+    /// Answers every request with the same session body.
+    struct SessionHttp(&'static str);
+
+    #[async_trait::async_trait]
+    impl HttpClient for SessionHttp {
+        async fn request(&self, _req: HttpRequest) -> Result<HttpResponse, CoreError> {
+            Ok(HttpResponse {
+                status: 200,
+                headers: vec![],
+                body: self.0.as_bytes().to_vec(),
+            })
+        }
+    }
+
+    async fn poll_error(session: &'static str) -> CoreError {
+        CoordinatorClient::new(
+            Arc::new(SessionHttp(session)),
+            Arc::new(RecordingAuth::default()),
+            Arc::new(NoSleep),
+            config(false, GenerationMode::Stepped),
+        )
+        .poll_session_ready("sess_1")
+        .await
+        .unwrap_err()
+    }
+
+    /// A start the runtime refused closes the session before it is ready. The
+    /// error carries the reason the platform recorded, so the caller can see
+    /// why, for example that the model cannot run stepped.
+    #[tokio::test]
+    async fn a_session_closed_before_ready_says_why_it_ended() {
+        let err = poll_error(
+            r#"{"session_id": "sess_1", "state": "CLOSED", "ended": {
+                "at": "2026-10-29T14:54:44Z",
+                "reason": "START_REFUSED",
+                "message": "generation 'stepped' needs a model that runs the default step loop"
+            }}"#,
+        )
+        .await;
+        assert_eq!(err.code(), crate::error::codes::SESSION_TERMINAL);
+        assert_eq!(
+            err.to_string(),
+            "session entered terminal state Closed (START_REFUSED): \
+             generation 'stepped' needs a model that runs the default step loop"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_closed_with_a_reason_and_no_message_names_the_reason() {
+        let err = poll_error(
+            r#"{"session_id": "sess_1", "state": "CLOSED", "ended": {"reason": "TIMED_OUT"}}"#,
+        )
+        .await;
+        assert_eq!(
+            err.to_string(),
+            "session entered terminal state Closed (TIMED_OUT)"
+        );
+    }
+
+    /// A Coordinator that does not record why a session ended sends no
+    /// `ended`. The error then names the state alone, as before.
+    #[tokio::test]
+    async fn a_session_closed_without_an_end_names_the_state_alone() {
+        let err = poll_error(r#"{"session_id": "sess_1", "state": "CLOSED"}"#).await;
+        assert_eq!(err.to_string(), "session entered terminal state Closed");
     }
 }

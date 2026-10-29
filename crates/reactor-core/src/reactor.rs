@@ -4810,6 +4810,7 @@ mod tests {
                 server_info: None,
                 selected_transport: None,
                 capabilities: None,
+                ended: None,
                 extra: Default::default(),
             });
         }

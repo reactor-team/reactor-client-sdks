@@ -10,6 +10,13 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A session that closed before it was ready failed `connect()` with only
+  "session entered terminal state Closed". The error now also names why the
+  platform ended the session, when the platform recorded it: for example
+  `Closed (START_REFUSED): generation 'stepped' needs a model that runs the
+  default ReactorApp step loop ...` for a stepped connect to a model that
+  cannot step. The error code is still `SESSION_TERMINAL`.
+
 - Same-session `reconnect()` could time out after 30 s ("transport readiness
   did not complete") on high-latency links. Each ICE candidate was POSTed to
   the coordinator inline in the peer-event pump, so a reconnect's candidate
