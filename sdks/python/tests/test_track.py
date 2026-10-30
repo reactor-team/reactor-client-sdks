@@ -610,7 +610,7 @@ class TestPushEncodedFrame:
             (b"", 2, 2, "h264", "needs data"),
             (b"x", 0, 2, "h264", "decoded frame"),
             (b"x", 2**32, 2, "h264", "decoded frame"),
-            (b"x", 2, 1.5, "h264", "decoded frame"),
+            (b"x", 2, 1.5, "h264", "must be integers"),
         ],
     )
     def test_malformed_frames_are_refused(
@@ -627,6 +627,26 @@ class TestPushEncodedFrame:
             reactor.track("camera").push_encoded_frame(
                 data, width=width, height=height, codec=codec
             )
+
+    def test_numpy_integers_are_taken_as_integers(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Dimensions computed with numpy are numpy integers; ctypes takes them.
+        reactor, lib = self._stepped(monkeypatch)
+        calls: list = []
+
+        def push(*args):  # type: ignore[no-untyped-def]
+            calls.append((args[5].value, args[6].value, args[9].value, args[10].value))
+
+        lib.reactor_push_step_encoded_video_frame = push  # type: ignore[attr-defined]
+        reactor.track("camera").push_encoded_frame(
+            b"x", width=np.int64(1280), height=np.uint32(720), capture_time_us=np.int64(9)
+        )
+
+        assert calls == [(1280, 720, 1, 9)]
+
+    def test_a_float_capture_time_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reactor, _ = self._stepped(monkeypatch)
+        with pytest.raises(ValueError, match="capture_time_us must be an int64"):
+            reactor.track("camera").push_encoded_frame(b"x", width=2, height=2, capture_time_us=1.5)
 
     def test_it_reaches_the_ffi_with_its_length_and_encoding(
         self, monkeypatch: pytest.MonkeyPatch

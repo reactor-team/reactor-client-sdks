@@ -8,6 +8,7 @@ import ctypes
 import json
 import logging
 import mimetypes
+import operator
 import os
 import threading
 import time
@@ -1709,17 +1710,30 @@ class Reactor:
             )
         if not data:
             raise ValueError("push_encoded_frame(): an encoded frame needs data")
-        if not all(isinstance(v, int) and 0 < v <= _UINT32_MAX for v in (width, height)):
+        # operator.index takes any integer-like value (a numpy integer from
+        # computed dimensions, say) and refuses a float, as ctypes does.
+        try:
+            width, height = operator.index(width), operator.index(height)
+        except TypeError:
+            raise ValueError(
+                f"push_encoded_frame(): width and height must be integers, got {width!r}x{height!r}"
+            ) from None
+        if not all(0 < v <= _UINT32_MAX for v in (width, height)):
             raise ValueError(
                 f"push_encoded_frame(): width and height are the decoded frame's, "
                 f"got {width}x{height}"
             )
-        if capture_time_us is not None and not (
-            isinstance(capture_time_us, int) and _INT64_MIN <= capture_time_us <= _INT64_MAX
-        ):
-            raise ValueError(
-                f"push_encoded_frame(): capture_time_us must be an int64, got {capture_time_us!r}"
-            )
+        if capture_time_us is not None:
+            try:
+                in_range = _INT64_MIN <= operator.index(capture_time_us) <= _INT64_MAX
+            except TypeError:
+                in_range = False
+            if not in_range:
+                raise ValueError(
+                    f"push_encoded_frame(): capture_time_us must be an int64, "
+                    f"got {capture_time_us!r}"
+                )
+            capture_time_us = operator.index(capture_time_us)
         self._require_handle()
         lib = get_lib()
         if not has_encoded_step_frames(lib):
