@@ -31,9 +31,10 @@ struct Buffered {
     bytes: usize,
     /// Frames pushed out by the budget since the last take.
     dropped: usize,
-    /// Tracks that lost an encoded frame to the budget since the last take.
-    /// A track's encoded frames decode as one stream from its first, so what
-    /// is left of them no longer starts at its keyframe.
+    /// Buffered tracks that lost an encoded frame to the budget since the last
+    /// take. A track's encoded frames decode as one stream from its first, so
+    /// what is left of them no longer starts at its keyframe. Only tracks still
+    /// buffered are named, so it never outgrows `tracks`.
     cut_encoded: Vec<String>,
 }
 
@@ -74,10 +75,13 @@ impl Buffered {
                 self.cut_encoded.push(self.tracks[index].track.clone());
             }
             // A track left with no frames goes too, so pushes to ever new track
-            // names cannot grow the buffer either.
+            // names cannot grow the buffer either. Its cut goes with it: none of
+            // the cut frames are left, and frames pushed to it afterwards start
+            // a window of their own.
             if self.tracks[index].frames.is_empty() {
                 let track = self.tracks.remove(index);
                 self.bytes -= track_bytes(&track);
+                self.cut_encoded.retain(|cut| *cut != track.track);
                 for later in self.order.iter_mut().filter(|i| **i > index) {
                     *later -= 1;
                 }
@@ -329,6 +333,69 @@ mod tests {
             );
         }
         assert_eq!(inputs.take().unwrap()[0].frames.len(), 2);
+    }
+
+    #[test]
+    fn a_track_whose_encoded_frames_were_all_pushed_out_takes_a_fresh_window() {
+        let encoded = |byte: u8| Frame {
+            encoding: FrameEncoding::H264 as i32,
+            ..raw("uint8", vec![2], vec![byte, byte])
+        };
+        let track = |name: &str| TrackFrames {
+            track: name.into(),
+            kind: WireTrackKind::Video as i32,
+            frames: vec![],
+            rate: 0.0,
+        };
+        // Room for both tracks and 2 frames.
+        let max = REQUEST_STEP_ENVELOPE_BYTES
+            + track_bytes(&track("cam"))
+            + track_bytes(&track("other"))
+            + 2 * frame_bytes(&encoded(0));
+        let inputs = StepInputs::new();
+        inputs.push("cam", WireTrackKind::Video, encoded(0), max);
+        // Raw frames on another track push all of cam's out.
+        for byte in 1..=2 {
+            inputs.push(
+                "other",
+                WireTrackKind::Video,
+                raw("uint8", vec![2], vec![byte; 2]),
+                max,
+            );
+        }
+        assert!(inputs.buffer.lock().unwrap().cut_encoded.is_empty());
+        // A fresh window on cam, from its own keyframe, is sent as it is.
+        inputs.push("cam", WireTrackKind::Video, encoded(1), max);
+        let taken = inputs.take().unwrap();
+        let cam = taken
+            .iter()
+            .find(|t| t.track == "cam")
+            .expect("cam is sent");
+        assert_eq!(cam.frames.len(), 1);
+    }
+
+    #[test]
+    fn encoded_pushes_to_ever_new_tracks_keep_no_cut_names() {
+        let encoded = Frame {
+            encoding: FrameEncoding::H264 as i32,
+            ..raw("uint8", vec![1], vec![1])
+        };
+        let inputs = StepInputs::new();
+        for n in 0..10_000 {
+            inputs.push(
+                &format!("track-{n}"),
+                WireTrackKind::Video,
+                encoded.clone(),
+                1024,
+            );
+        }
+        let buffer = inputs.buffer.lock().unwrap();
+        assert!(
+            buffer.cut_encoded.len() <= buffer.tracks.len(),
+            "{} cut names for {} tracks",
+            buffer.cut_encoded.len(),
+            buffer.tracks.len()
+        );
     }
 
     #[test]
