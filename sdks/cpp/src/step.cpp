@@ -11,12 +11,15 @@
 
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "detail/client_impl.hpp"
@@ -312,8 +315,31 @@ void ClientImpl::step_completion_trampoline(int ok, ReactorStepResult* result,
   }
 }
 
+void ClientImpl::push_step_media(const StepMedia& media) {
+  // Every frame is checked before the first is pushed: the buffer can only be
+  // cleared whole, so a refusal part-way would leave the frames before it to ride
+  // the next step, with no way to take back just those.
+  std::vector<std::function<void()>> pushes;
+  for (const auto& [name, frames] : media) {
+    for (const auto& frame : frames) {
+      if (const auto* encoded = std::get_if<EncodedFrame>(&frame)) {
+        pushes.push_back(prepare_encoded_video(name, *encoded));
+      } else if (const auto* audio = std::get_if<RawAudioFrame>(&frame)) {
+        pushes.push_back(prepare_audio(name, audio->pcm, audio->sample_rate, audio->channels));
+      } else {
+        const auto& raw = std::get<RawVideoFrame>(frame);
+        pushes.push_back(
+            prepare_video(name, raw.pixels, raw.format, raw.width, raw.height, raw.options));
+      }
+    }
+  }
+  for (const auto& push : pushes) {
+    push();
+  }
+}
+
 void ClientImpl::begin_step(std::unique_ptr<PendingStep> op, const Json& state,
-                            const std::vector<StepCommand>& commands) {
+                            const std::vector<StepCommand>& commands, const StepMedia& media) {
   try {
     if (generation_ != Generation::Stepped) {
       throw InvalidStateError{
@@ -328,6 +354,11 @@ void ClientImpl::begin_step(std::unique_ptr<PendingStep> op, const Json& state,
     const std::string state_json = state.is_null() ? std::string{} : state.dump();
 
     ReactorHandle* handle = require_ready_session("run a step");
+    // Until reactor_step has taken the buffer: later pushes are the next step's.
+    const std::lock_guard<std::mutex> lock(step_mutex_);
+    // Pushed only once the state and commands are known to be well formed, so a
+    // step refused for those leaves the buffer as the caller left it.
+    push_step_media(media);
     PendingStep* step = op.get();
     track_pending(std::move(op));
     ffi().step(handle, state_json.empty() ? nullptr : state_json.c_str(), commands_json.c_str(),
@@ -363,9 +394,21 @@ std::future<StepResult> Reactor::step(Json state, std::vector<StepCommand> comma
   auto op = std::make_unique<detail::PendingStep>();
   op->operation = "step";
   auto future = op->promise.get_future();
-  impl_->begin_step(std::move(op), state, commands);
+  impl_->begin_step(std::move(op), state, commands, {});
   return future;
 }
+
+// By value: see the declaration's own comment in reactor.hpp.
+// NOLINTBEGIN(performance-unnecessary-value-param)
+std::future<StepResult> Reactor::step(Json state, std::vector<StepCommand> commands,
+                                      StepMedia media) {
+  auto op = std::make_unique<detail::PendingStep>();
+  op->operation = "step";
+  auto future = op->promise.get_future();
+  impl_->begin_step(std::move(op), state, commands, media);
+  return future;
+}
+// NOLINTEND(performance-unnecessary-value-param)
 
 void Reactor::clear_step_inputs() { impl_->clear_step_inputs(); }
 
