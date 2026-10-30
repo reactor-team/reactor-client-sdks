@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import {
+  DecodeError,
   InvalidStateError,
   StepCommandFailedError,
   StepNotReadyError,
@@ -599,5 +600,408 @@ describe('Reactor.publishTrack and generation', () => {
     await expect(
       camera.pushFrame({ data: new Uint8Array(4), width: 1, height: 1 }),
     ).rejects.toBeInstanceOf(InvalidStateError);
+  });
+});
+
+describe('Reactor.pushEncodedFrame', () => {
+  const idr = new Uint8Array([0, 0, 0, 1, 0x65, 0x88]);
+
+  it('hands the bytes on untouched, with the decoded size and the frame’s extras', async () => {
+    const { reactor, client } = await steppedWithInputs();
+    const metadata = new Uint8Array([7]);
+
+    await reactor.pushEncodedFrame('camera', {
+      codec: 'h264',
+      data: idr,
+      width: 1280,
+      height: 720,
+      metadata,
+      captureTimeUs: 9,
+    });
+
+    expect(client.pushEncodedVideoFrameCalls).toEqual([
+      { name: 'camera', codec: 'h264', data: idr, width: 1280, height: 720, metadata, captureTimeUs: 9 },
+    ]);
+    expect(client.pushEncodedVideoFrameCalls[0]?.data).toBe(idr);
+    expect(client.pushVideoFrameCalls).toEqual([]);
+  });
+
+  it('takes an ArrayBuffer, and no extras as null', async () => {
+    const { reactor, client } = await steppedWithInputs();
+
+    await reactor.pushEncodedFrame('camera', { codec: 'h264', data: idr.slice().buffer, width: 2, height: 2 });
+
+    expect(client.pushEncodedVideoFrameCalls[0]).toMatchObject({
+      data: idr,
+      metadata: null,
+      captureTimeUs: null,
+    });
+  });
+
+  it('copies an EncodedVideoChunk’s bytes out when called', async () => {
+    const { reactor, client } = await steppedWithInputs();
+    const copyTo = vi.fn((destination: Uint8Array) => destination.set(idr));
+    const chunk = { type: 'key', timestamp: 0, byteLength: idr.byteLength, copyTo } as unknown as EncodedVideoChunk;
+
+    await reactor.pushEncodedFrame('camera', { codec: 'h264', data: chunk, width: 4, height: 2 });
+
+    expect(copyTo).toHaveBeenCalledOnce();
+    expect(client.pushEncodedVideoFrameCalls[0]?.data).toEqual(idr);
+  });
+
+  it('feeds the stepped track through the handle’s pushEncodedFrame()', async () => {
+    const { reactor, client } = await connected('stepped');
+    const camera = await reactor.publishTrack('camera');
+
+    await camera.pushEncodedFrame({ codec: 'h264', data: idr, width: 2, height: 2 });
+    await reactor.unpublishTrack('camera');
+
+    await expect(
+      camera.pushEncodedFrame({ codec: 'h264', data: idr, width: 2, height: 2 }),
+    ).rejects.toBeInstanceOf(InvalidStateError);
+    expect(client.pushEncodedVideoFrameCalls).toHaveLength(1);
+  });
+
+  it.each([
+    ['empty data', { codec: 'h264', data: new Uint8Array(0), width: 2, height: 2 }, 'needs data'],
+    ['a zero width', { codec: 'h264', data: new Uint8Array([1]), width: 0, height: 2 }, 'decoded frame'],
+    ['a zero height', { codec: 'h264', data: new Uint8Array([1]), width: 2, height: 0 }, 'decoded frame'],
+    ['another codec', { codec: 'vp9', data: new Uint8Array([1]), width: 2, height: 2 }, 'unknown codec'],
+    ['no data', { codec: 'h264', width: 2, height: 2 }, 'data must be'],
+  ])('refuses %s before touching the binding', async (_, frame, message) => {
+    const { reactor, client } = await steppedWithInputs();
+
+    const error = await reactor
+      .pushEncodedFrame('camera', frame as unknown as Parameters<typeof reactor.pushEncodedFrame>[1])
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(InvalidStateError);
+    expect((error as ReactorError).message).toContain(message);
+    expect((error as ReactorError).operation).toBe('pushEncodedFrame');
+    expect(client.pushEncodedVideoFrameCalls).toEqual([]);
+  });
+
+  it.each([
+    ['an audio', 'mic', 'sendonly audio'],
+    ['a recvonly', 'main_video', 'recvonly video'],
+  ])('refuses %s track', async (_, name, message) => {
+    const { reactor, client } = await connected('stepped');
+
+    client.tracksResult = [
+      { name: 'camera', kind: 'video', direction: 'sendonly' },
+      { name: 'mic', kind: 'audio', direction: 'sendonly' },
+      { name: 'main_video', kind: 'video', direction: 'recvonly' },
+    ];
+    await reactor.publishTrack(name);
+
+    const error = await reactor
+      .pushEncodedFrame(name, { codec: 'h264', data: idr, width: 2, height: 2 })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(InvalidStateError);
+    expect((error as ReactorError).message).toContain(message);
+    expect((error as ReactorError).message).toContain('only a sendonly video track');
+    expect(client.pushEncodedVideoFrameCalls).toEqual([]);
+  });
+
+  it('rejects outside a stepped session', async () => {
+    const { reactor, client } = await connected();
+
+    const error = await reactor
+      .pushEncodedFrame('camera', { codec: 'h264', data: idr, width: 2, height: 2 })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(InvalidStateError);
+    expect((error as ReactorError).message).toContain('generation: "stepped"');
+    expect(client.pushEncodedVideoFrameCalls).toEqual([]);
+  });
+
+  it('refuses a push to a track not published on this connection', async () => {
+    const { reactor, client } = await connected('stepped');
+
+    await expect(
+      reactor.pushEncodedFrame('camera', { codec: 'h264', data: idr, width: 2, height: 2 }),
+    ).rejects.toThrow("publishTrack('camera') first");
+    expect(client.pushEncodedVideoFrameCalls).toEqual([]);
+  });
+
+  it('keeps call order with raw pushes, however long a raw frame takes to read', async () => {
+    const { reactor, client } = await steppedWithInputs();
+    const read = createDeferred();
+    const { frame } = fakeVideoFrame('RGBA', 1, 1, 0);
+    const order: string[] = [];
+    const pushVideo = client.pushVideoFrame.bind(client);
+    const pushEncoded = client.pushEncodedVideoFrame.bind(client);
+
+    client.pushVideoFrame = (...args) => {
+      order.push('raw');
+      pushVideo(...args);
+    };
+    client.pushEncodedVideoFrame = (...args) => {
+      order.push('h264');
+      pushEncoded(...args);
+    };
+    (frame as unknown as { copyTo: unknown }).copyTo = async () => {
+      await read.promise;
+      return [];
+    };
+    const slow = reactor.pushFrame('camera', frame);
+    const fast = reactor.pushEncodedFrame('camera', { codec: 'h264', data: idr, width: 1, height: 1 });
+
+    read.resolve();
+    await Promise.all([slow, fast]);
+
+    expect(order).toEqual(['raw', 'h264']);
+  });
+});
+
+describe('Reactor.step media', () => {
+  const idr = { codec: 'h264', data: new Uint8Array([0, 0, 1, 0x65]), width: 2, height: 2 } as const;
+  const p = { codec: 'h264', data: new Uint8Array([0, 0, 1, 0x41]), width: 2, height: 2 } as const;
+
+  it('pushes raw and encoded frames in order, after the ones already pushed, then steps', async () => {
+    const { reactor, client } = await steppedWithInputs();
+    const order: string[] = [];
+    const pushVideo = client.pushVideoFrame.bind(client);
+    const pushEncoded = client.pushEncodedVideoFrame.bind(client);
+    const step = client.step.bind(client);
+
+    client.pushVideoFrame = (...args) => {
+      order.push(`raw ${args[0]}`);
+      pushVideo(...args);
+    };
+    client.pushEncodedVideoFrame = (...args) => {
+      order.push(`h264 ${args[0]} ${args[2][3]}`);
+      pushEncoded(...args);
+    };
+    client.pushAudioFrame = (name) => order.push(`audio ${name}`);
+    client.step = (...args) => {
+      order.push('step');
+      return step(...args);
+    };
+
+    void reactor.pushFrame('camera', { data: new Uint8Array(4), width: 1, height: 1 });
+    await reactor.step({
+      state: { prompt: 'a cat' },
+      media: {
+        camera: [idr, p, { data: new Uint8Array(4), width: 1, height: 1 }],
+        mic: [{ samples: new Int16Array([1]), sampleRate: 16000 }],
+      },
+    });
+
+    expect(order).toEqual([
+      'raw camera',
+      `h264 camera ${0x65}`,
+      `h264 camera ${0x41}`,
+      'raw camera',
+      'audio mic',
+      'step',
+    ]);
+    expect(client.stepCalls).toEqual([{ state: { prompt: 'a cat' }, commands: [] }]);
+  });
+
+  it.each([
+    ['a state that is not an object', { state: ['prompt'] }, DecodeError],
+    ['commands that are not an array', { commands: { command: 'x' } }, InvalidStateError],
+    ['a command without a name', { commands: [{ data: {} }] }, InvalidStateError],
+    ['command data that is not an object', { commands: [{ command: 'x', data: [1] }] }, DecodeError],
+  ])('pushes none of its media for %s, nor sends the step', async (_, options, ErrorClass) => {
+    const { reactor, client } = await steppedWithInputs();
+
+    const error = await reactor
+      .step({ ...(options as object), media: { camera: [idr] } })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ErrorClass);
+    expect(client.pushEncodedVideoFrameCalls).toEqual([]);
+    expect(client.stepCalls).toEqual([]);
+  });
+
+  it.each([
+    ['a later encoded frame', { camera: [idr, { ...p, width: 0 }, p] }, 'decoded frame'],
+    ['a later raw frame of the wrong size', { camera: [idr, { data: new Uint8Array(3), width: 1, height: 1 }] }, 'bytes is not'],
+    ['a later audio frame', { camera: [idr], mic: [{ samples: new Int16Array(3), sampleRate: 16000, channels: 2 }] }, 'channels'],
+    ['a later track not published', { camera: [idr], speaker: [p] }, "publishTrack('speaker') first"],
+  ])('pushes none of its media when %s is refused, nor sends the step', async (_, media, message) => {
+    const { reactor, client } = await steppedWithInputs();
+
+    const error = await reactor
+      .step({ media: media as unknown as Record<string, never[]> })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(InvalidStateError);
+    expect((error as ReactorError).message).toContain(message);
+    expect(client.pushEncodedVideoFrameCalls).toEqual([]);
+    expect(client.pushVideoFrameCalls).toEqual([]);
+    expect(client.pushAudioFrameCalls).toEqual([]);
+    expect(client.stepCalls).toEqual([]);
+  });
+
+  it.each([
+    ['not declared', 'speaker', 'declares no track'],
+    ['not sendonly', 'main_video', 'recvonly video'],
+    ['not video', 'mic', 'only a sendonly video track'],
+  ])('pushes none of its media when a later track is %s', async (_, name, message) => {
+    const { reactor, client } = await steppedWithInputs();
+
+    client.tracksResult = [
+      { name: 'camera', kind: 'video', direction: 'sendonly' },
+      { name: 'mic', kind: 'audio', direction: 'sendonly' },
+      { name: 'main_video', kind: 'video', direction: 'recvonly' },
+    ];
+    await reactor.publishTrack(name);
+
+    const error = await reactor
+      .step({ media: { camera: [idr, { data: new Uint8Array(4), width: 1, height: 1 }], [name]: [p] } })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(InvalidStateError);
+    expect((error as ReactorError).message).toContain(message);
+    expect(client.pushEncodedVideoFrameCalls).toEqual([]);
+    expect(client.pushVideoFrameCalls).toEqual([]);
+    expect(client.stepCalls).toEqual([]);
+  });
+
+  it('keeps the frames pushed before the step when its media is refused', async () => {
+    const { reactor, client } = await steppedWithInputs();
+
+    await reactor.pushEncodedFrame('camera', idr);
+    await expect(reactor.step({ media: { camera: [p, { ...p, codec: 'vp9' as 'h264' }] } })).rejects.toThrow(
+      'unknown codec',
+    );
+
+    expect(client.pushEncodedVideoFrameCalls.map((call) => call.data)).toEqual([idr.data]);
+    expect(client.clearStepInputsCalls).toBe(0);
+  });
+
+  it('keeps each step’s media with its step when steps and pushes are not awaited', async () => {
+    const { reactor, client } = await steppedWithInputs();
+    const order: string[] = [];
+    const pushEncoded = client.pushEncodedVideoFrame.bind(client);
+    const step = client.step.bind(client);
+
+    client.pushEncodedVideoFrame = (...args) => {
+      order.push(`h264 ${args[2][3]}`);
+      pushEncoded(...args);
+    };
+    client.step = (...args) => {
+      order.push('step');
+      return step(...args);
+    };
+
+    const first = reactor.step({ media: { camera: [idr] } });
+    const second = reactor.step({ media: { camera: [p] } });
+    const after = reactor.pushEncodedFrame('camera', idr);
+
+    await Promise.all([first, second, after]);
+
+    expect(order).toEqual([`h264 ${0x65}`, 'step', `h264 ${0x41}`, 'step', `h264 ${0x65}`]);
+  });
+
+  it('pushes a step’s encoded frames with the extras they had when step() was called', async () => {
+    const { reactor, client } = await steppedWithInputs();
+    const frame = { ...idr, captureTimeUs: 5 };
+
+    const stepping = reactor.step({ media: { camera: [frame] } });
+
+    frame.captureTimeUs = Number.NaN;
+    await stepping;
+
+    expect(client.pushEncodedVideoFrameCalls.map((call) => call.captureTimeUs)).toEqual([5]);
+  });
+
+  it('pushes each queued encoded frame with its own extras, however the object changes after', async () => {
+    const { reactor, client } = await steppedWithInputs();
+    const frame = { ...idr, captureTimeUs: 1 };
+
+    const first = reactor.pushEncodedFrame('camera', frame);
+
+    frame.captureTimeUs = 2;
+    const second = reactor.pushEncodedFrame('camera', frame);
+
+    await Promise.all([first, second]);
+
+    expect(client.pushEncodedVideoFrameCalls.map((call) => call.captureTimeUs)).toEqual([1, 2]);
+  });
+
+  it('lets later pushes through once a step’s media is refused', async () => {
+    const { reactor, client } = await steppedWithInputs();
+
+    const refused = reactor.step({ media: { camera: [{ ...p, codec: 'vp9' as 'h264' }] } });
+    const after = reactor.pushEncodedFrame('camera', idr);
+
+    await expect(refused).rejects.toThrow('unknown codec');
+    await after;
+    expect(client.pushEncodedVideoFrameCalls.map((call) => call.data)).toEqual([idr.data]);
+    expect(client.stepCalls).toEqual([]);
+  });
+
+  it('keeps a slow push called before a refused step ahead of the next step', async () => {
+    const { reactor, client } = await steppedWithInputs();
+    const read = createDeferred();
+    const order: string[] = [];
+    const { frame } = fakeVideoFrame('BGRA', 1, 1, 9);
+    const pushVideo = client.pushVideoFrame.bind(client);
+    const step = client.step.bind(client);
+
+    (frame as unknown as { copyTo: unknown }).copyTo = async (destination: Uint8Array) => {
+      await read.promise;
+      destination.fill(9);
+      return [];
+    };
+    client.pushVideoFrame = (...args) => {
+      order.push('push');
+      pushVideo(...args);
+    };
+    client.step = (...args) => {
+      order.push('step');
+      return step(...args);
+    };
+
+    const pushing = reactor.pushFrame('camera', frame);
+    const refused = reactor.step({ media: { camera: [{ ...idr, data: new Uint8Array(0) }] } });
+    const stepping = reactor.step();
+
+    await expect(refused).rejects.toThrow('needs data');
+    await Promise.resolve();
+    expect(order).toEqual([]);
+
+    read.resolve();
+    await Promise.all([pushing, stepping]);
+
+    expect(order).toEqual(['push', 'step']);
+  });
+
+  it('refuses media while the session is not ready, before any of it is pushed', async () => {
+    const { reactor, client } = await steppedWithInputs();
+
+    client.setStatus('waiting');
+
+    await expect(reactor.step({ media: { camera: [idr] } })).rejects.toThrow('needs a ready session');
+    expect(client.pushEncodedVideoFrameCalls).toEqual([]);
+    expect(client.stepCalls).toEqual([]);
+  });
+
+  it('needs each media track published first', async () => {
+    const { reactor, client } = await connected('stepped');
+
+    await expect(reactor.step({ media: { camera: [idr] } })).rejects.toThrow(
+      "publishTrack('camera') first",
+    );
+    expect(client.stepCalls).toEqual([]);
+  });
+
+  it.each([
+    ['an array', [idr]],
+    ['a track whose frames are not an array', { camera: idr }],
+  ])('refuses media that is %s', async (_, media) => {
+    const { reactor, client } = await steppedWithInputs();
+
+    const error = await reactor
+      .step({ media: media as unknown as Record<string, never[]> })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(InvalidStateError);
+    expect(client.stepCalls).toEqual([]);
   });
 });

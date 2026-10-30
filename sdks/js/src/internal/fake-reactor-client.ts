@@ -4,6 +4,7 @@ import type {
   ClientTrackStat,
   Clip as WireClip,
   ConnectOptions,
+  EncodedVideoCodec,
   FileRef,
   PixelFormat,
   ReactorMessage,
@@ -123,6 +124,11 @@ export class FakeReactorClient {
   free(): void {
     this.freeCalls += 1;
   }
+  /** Test hook: what `status()` answers from now on. */
+  setStatus(status: ReactorStatus): void {
+    this._status = status;
+  }
+
   status(): ReactorStatus {
     return this._status;
   }
@@ -298,6 +304,33 @@ export class FakeReactorClient {
       throw this.pushVideoFrameError;
     }
     this.pushVideoFrameCalls.push({ name, data, width, height, format, metadata, captureTimeUs });
+  }
+
+  pushEncodedVideoFrameCalls: Array<{
+    name: string;
+    codec: EncodedVideoCodec | null | undefined;
+    data: Uint8Array;
+    width: number;
+    height: number;
+    metadata: Uint8Array | null | undefined;
+    captureTimeUs: number | null | undefined;
+  }> = [];
+  // Overridable so a test can simulate the binding refusing a frame — the
+  // real one throws synchronously.
+  pushEncodedVideoFrameError: Error | undefined;
+  pushEncodedVideoFrame(
+    name: string,
+    codec: EncodedVideoCodec | null | undefined,
+    data: Uint8Array,
+    width: number,
+    height: number,
+    metadata?: Uint8Array | null,
+    captureTimeUs?: number | null,
+  ): void {
+    if (this.pushEncodedVideoFrameError) {
+      throw this.pushEncodedVideoFrameError;
+    }
+    this.pushEncodedVideoFrameCalls.push({ name, codec, data, width, height, metadata, captureTimeUs });
   }
 
   pushAudioFrameCalls: Array<{

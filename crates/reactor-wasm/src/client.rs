@@ -29,6 +29,7 @@ use reactor_core::protocol::upload::FileRef;
 use reactor_core::protocol::wire::v1::platform::{
     ClientConnectionStat, ClientTrackStat, FrameStage, TrackDirection, TrackKind,
 };
+use reactor_core::protocol::wire::v1::step::FrameEncoding;
 use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions};
 use reactor_core::stats::{bounded_name, client_track_codec};
 use reactor_core::step::{PixelLayout, StepCommand};
@@ -36,15 +37,15 @@ use reactor_core::step::{PixelLayout, StepCommand};
 use crate::auth::WasmAuthProvider;
 use crate::http::WasmHttpClient;
 use crate::peer::WasmPeerTransport;
-use crate::pixels::{check_size, PixelFormat};
+use crate::pixels::{check_encoded, check_size, EncodedCodec, PixelFormat};
 use crate::platform::WasmPlatform;
 use crate::step::{output_to_js, StepCommandJson};
 use crate::types::{
     CapabilitiesListener, CapabilitiesOutput, ClientConnectionStatInput, ClientOptionsInput,
     ClientTrackStatsInput, ClipOutput, CommandData, CommandReply, ConnectOptionsInput,
-    ErrorListener, FileRefOutput, JwtSourceInput, MessageListener, PixelFormatInput,
-    ReactorErrorOutput, SchemaOutput, SessionIdListener, SessionInfoOutput, Status, StatusListener,
-    StepCommandsInput, StepResultOutput, StepStateInput, StringsOutput, TrackListener,
+    EncodedVideoCodecInput, ErrorListener, FileRefOutput, JwtSourceInput, MessageListener,
+    PixelFormatInput, ReactorErrorOutput, SchemaOutput, SessionIdListener, SessionInfoOutput,
+    Status, StatusListener, StepCommandsInput, StepStateInput, StringsOutput, TrackListener,
     TrackMappingOutput, TracksOutput, UploadsInput,
 };
 
@@ -610,11 +611,16 @@ impl ReactorClient {
     /// data channel's message limit; nothing was sent),
     /// `UNSUPPORTED_FRAME_ENCODING`, or the code of whatever else failed the
     /// step (`DISCONNECTED`, `REQUEST_TIMEOUT`, …).
-    pub async fn step(
+    ///
+    /// The step is checked and its frames taken before this returns, so a
+    /// frame pushed once it has returned goes to the next step. A step refused
+    /// by those checks throws rather than rejecting.
+    #[wasm_bindgen(unchecked_return_type = "Promise<StepResult>")]
+    pub fn step(
         &self,
         state: Option<StepStateInput>,
         commands: Option<StepCommandsInput>,
-    ) -> Result<StepResultOutput, JsValue> {
+    ) -> Result<js_sys::Promise, JsValue> {
         let state: serde_json::Value = match state.map(JsValue::from).filter(|v| !v.is_null()) {
             Some(state) => serde_wasm_bindgen::from_value(state)
                 .map_err(|e| invalid(&format!("step state: {e}")))?,
@@ -622,12 +628,21 @@ impl ReactorClient {
         };
         let commands: Vec<StepCommandJson> = from_optional(commands, "step commands")?;
         let commands = commands.into_iter().map(StepCommand::from).collect();
-        let output = self
+        // Synchronous, unlike the send: an async export first runs in a later
+        // microtask, which would leave the buffer open to pushes made after
+        // this call returned.
+        let request = self
             .reactor
-            .step(state, commands)
-            .await
+            .begin_step(state, commands)
             .map_err(|e| error_value(&e.details(Some("step"))))?;
-        output_to_js(output).map(JsCast::unchecked_into)
+        let reactor = Rc::clone(&self.reactor);
+        Ok(wasm_bindgen_futures::future_to_promise(async move {
+            let output = reactor
+                .send_step(request)
+                .await
+                .map_err(|e| error_value(&e.details(Some("step"))))?;
+            output_to_js(output)
+        }))
     }
 
     /// Buffer a video frame for the next `step()` on the sendonly track `name`.
@@ -662,17 +677,7 @@ impl ReactorClient {
             PixelFormat::Rgb => PixelLayout::Rgb,
             PixelFormat::Bgra => PixelLayout::Bgra,
         };
-        let capture_time_us = capture_time_us
-            .map(|us| {
-                if us.is_finite() {
-                    Ok(us.round() as i64)
-                } else {
-                    Err(invalid(&format!(
-                        "pushVideoFrame('{name}'): captureTimeUs must be a finite number"
-                    )))
-                }
-            })
-            .transpose()?;
+        let capture_time_us = capture_time(capture_time_us, "pushVideoFrame", &name)?;
         // In the caller's own layout: the core converts it to the step's RGB
         // in one pass.
         self.reactor.push_step_video_frame(
@@ -681,6 +686,55 @@ impl ReactorClient {
             width,
             height,
             layout,
+            metadata.as_deref(),
+            capture_time_us,
+        );
+        Ok(())
+    }
+
+    /// Buffer an encoded video frame for the next `step()` on the sendonly
+    /// video track `name`, its bytes as they are.
+    ///
+    /// * `codec` — `"h264"` (the default): `data` is one H.264 access unit,
+    ///   Annex B.
+    /// * `width`, `height` — the frame it decodes to.
+    /// * `metadata`, `captureTimeUs` — as for `pushVideoFrame`, carried with
+    ///   the decoded frame.
+    ///
+    /// The runtime decodes a track's encoded frames of one step as one
+    /// stream before the step runs, so push them in decode order, starting at
+    /// a keyframe; a step whose frames do not decode is refused
+    /// (`step_refused`). Encoded and raw pushes to one track keep their push
+    /// order. Stepped sessions only; throws on empty data or a zero dimension.
+    #[wasm_bindgen(js_name = pushEncodedVideoFrame)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_encoded_video_frame(
+        &self,
+        name: String,
+        codec: Option<EncodedVideoCodecInput>,
+        data: &[u8],
+        width: u32,
+        height: u32,
+        metadata: Option<Vec<u8>>,
+        capture_time_us: Option<f64>,
+    ) -> Result<(), JsValue> {
+        const OPERATION: &str = "pushEncodedVideoFrame";
+        self.ensure_pushable(OPERATION, &name, SessionTrackKind::Video)?;
+        let codec =
+            EncodedCodec::parse(codec.and_then(|c| JsValue::from(c).as_string()).as_deref())
+                .map_err(|e| invalid(&format!("{OPERATION}('{name}'): {e}")))?;
+        check_encoded(data, width, height)
+            .map_err(|e| invalid(&format!("{OPERATION}('{name}'): {e}")))?;
+        let capture_time_us = capture_time(capture_time_us, OPERATION, &name)?;
+        let encoding = match codec {
+            EncodedCodec::H264 => FrameEncoding::H264,
+        };
+        self.reactor.push_step_encoded_video_frame(
+            &name,
+            encoding,
+            data,
+            width,
+            height,
             metadata.as_deref(),
             capture_time_us,
         );
@@ -1227,6 +1281,20 @@ fn error_value(details: &ErrorDetails) -> JsValue {
         }
     }
     error.into()
+}
+
+/// A pushed frame's `captureTimeUs`, in whole microseconds.
+fn capture_time(us: Option<f64>, operation: &str, name: &str) -> Result<Option<i64>, JsValue> {
+    us.map(|us| {
+        if us.is_finite() {
+            Ok(us.round() as i64)
+        } else {
+            Err(invalid(&format!(
+                "{operation}('{name}'): captureTimeUs must be a finite number"
+            )))
+        }
+    })
+    .transpose()
 }
 
 /// A caller mistake — bad options, an unreadable file, a listener of the wrong

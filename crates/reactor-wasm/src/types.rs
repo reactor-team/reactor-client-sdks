@@ -22,6 +22,8 @@ export type TrackDirection = "recvonly" | "sendonly";
 export type GenerationMode = "streamed" | "stepped";
 /** Byte layout of a frame given to `pushVideoFrame`. */
 export type PixelFormat = "rgba" | "rgb" | "bgra";
+/** Codec of an encoded frame given to `pushEncodedVideoFrame`. */
+export type EncodedVideoCodec = "h264";
 
 /** Construction options. Only `modelName` is required. */
 export interface ClientOptions {
@@ -398,9 +400,9 @@ extern "C" {
     #[wasm_bindgen(typescript_type = "StepCommand[]")]
     pub type StepCommandsInput;
 
-    #[wasm_bindgen(typescript_type = "StepResult")]
-    pub type StepResultOutput;
-
     #[wasm_bindgen(typescript_type = "PixelFormat")]
     pub type PixelFormatInput;
+
+    #[wasm_bindgen(typescript_type = "EncodedVideoCodec")]
+    pub type EncodedVideoCodecInput;
 }

@@ -9,6 +9,27 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.4.0]
+
+### Added
+
+- Encoded video in a step. `step({ media: { camera: [{ codec: "h264", data,
+  width, height }] } })` and `pushEncodedFrame(track, frame)` (also on the
+  handle `publishTrack()` resolves with) send H.264 access units (Annex B) as
+  they are, and the runtime decodes them before the step runs, so the model
+  reads RGB frames as for a raw push. `data` is a `Uint8Array`, an
+  `ArrayBuffer`, or a WebCodecs `EncodedVideoChunk`; `width` and `height` are
+  the frame it decodes to. A track's frames of one step go in decode order,
+  starting at a keyframe; a step whose frames do not decode rejects with
+  `StepRefusedError`. `media` takes what `pushFrame()` takes too, and its
+  frames go after the ones already pushed to the track, once `state` and
+  `commands` are known to be well formed and the session ready, so a step
+  refused for those pushes none of them, nor does one with a bad track or
+  frame anywhere in `media`. A push or step called after `step()` waits for
+  it to take the buffer, so its frames go to the next step. An encoded
+  frame's extras are read when the call is made. New types `EncodedFrame` and
+  `EncodedVideoCodec`.
+
 ### Fixed
 
 - A session that closed before it was ready failed `connect()` with only
