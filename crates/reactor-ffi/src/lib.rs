@@ -2002,9 +2002,11 @@ impl StepCompletion {
 /// `REQUEST_TIMEOUT`. A step refused before it goes out (`INVALID_STATE`,
 /// `DECODE_FAILED`) keeps the buffered input frames for the next step; past
 /// those checks they belong to the step whatever its outcome, and one whose
-/// request cannot be sent (`MESSAGE_TOO_LARGE`) drops them too. The checks run
-/// and the frames are taken before this returns, so a frame pushed after it
-/// goes to the next step.
+/// request cannot be sent (`MESSAGE_TOO_LARGE`) drops them too. So does a step
+/// refused, before anything is sent, because the buffer's budget cut a track's
+/// encoded frames from their keyframe (`step_refused`). The checks run and the
+/// frames are taken before this returns, so a frame pushed after it goes to the
+/// next step.
 ///
 /// # Safety
 ///
