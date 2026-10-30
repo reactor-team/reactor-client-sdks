@@ -902,11 +902,16 @@ TEST_CASE("on_track hands over a Track, not a name") {
 
   fixture.session.push_track("main_video", "0");
 
+  // The sleep is outside the lock. Held across it, this loop owns `mutex` all but
+  // an instant per pass, and an unfair mutex can keep the handler waiting on it
+  // past the deadline on a loaded runner.
   const auto deadline = std::chrono::steady_clock::now() + 2000ms;
   while (std::chrono::steady_clock::now() < deadline) {
-    const std::lock_guard<std::mutex> lock(mutex);
-    if (!names.empty()) {
-      break;
+    {
+      const std::lock_guard<std::mutex> lock(mutex);
+      if (!names.empty()) {
+        break;
+      }
     }
     std::this_thread::sleep_for(1ms);
   }
