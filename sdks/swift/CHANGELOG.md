@@ -34,7 +34,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - A push reached the library with a handle read before it, so a `close()` on
   another thread could destroy the handle in between. Pushes now go in under
   the barrier `close()` waits on, a step's media together with the step that
-  takes it.
+  takes it. So does the read of the session's tracks that every push, every
+  step's media and `Reactor.tracks` make, as does `pausedTracks`.
 - A session that closed before it was ready failed `connect()` with only
   "session entered terminal state Closed". The error now also names why the
   platform ended the session, when the platform recorded it: for example

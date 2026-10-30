@@ -135,6 +135,36 @@ struct EncodedFrameTests {
         #expect(fake.events.suffix(3) == [.encodedPushEntered, .encodedPushReturned, .destroyed])
     }
 
+    @Test("close() waits for a push's track check already inside the library")
+    func closeWaitsForAPushsTrackCheck() async throws {
+        let fake = FakeLibrary()
+        let (client, camera) = try await publishedCamera(fake)
+        let checkIsInside = DispatchSemaphore(value: 0)
+        let closeIsComing = DispatchSemaphore(value: 0)
+        fake.whileReadingTracks = {
+            checkIsInside.signal()
+            _ = closeIsComing.wait(timeout: .now() + .seconds(2))
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        let closer = Thread {
+            checkIsInside.wait()
+            closeIsComing.signal()
+            client.close()
+        }
+        closer.start()
+
+        // The check reads the declarations before the push takes the barrier;
+        // close() lands during that read, so the push itself is refused.
+        #expect(throws: ReactorError.self) {
+            try camera.pushEncodedFrame(EncodedFrame(Self.idr, width: 2, height: 2))
+        }
+        while !closer.isFinished {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        #expect(fake.events.suffix(3) == [.tracksEntered, .tracksReturned, .destroyed])
+    }
+
     @Test("an encoded frame reaches the library untouched, as H.264, tagged and stamped")
     func encodedFrameReachesTheLibrary() async throws {
         let fake = FakeLibrary()

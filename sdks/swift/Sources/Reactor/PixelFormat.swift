@@ -40,8 +40,8 @@ extension Reactor {
                 operation: "pushFrame")
         }
         var bgra = Data(count: pixelCount.partialValue * 4)
-        pixels.withUnsafeBytes { rgb in
-            bgra.withUnsafeMutableBytes { out in
+        pixels.withUnsafeBytes { (rgb: UnsafeRawBufferPointer) in
+            bgra.withUnsafeMutableBytes { (out: UnsafeMutableRawBufferPointer) in
                 for i in 0..<pixelCount.partialValue {
                     out[i * 4] = rgb[i * 3 + 2]
                     out[i * 4 + 1] = rgb[i * 3 + 1]

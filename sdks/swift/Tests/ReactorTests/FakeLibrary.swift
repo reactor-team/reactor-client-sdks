@@ -30,6 +30,8 @@ final class FakeLibrary: @unchecked Sendable {
         case downloadReturned
         case encodedPushEntered
         case encodedPushReturned
+        case tracksEntered
+        case tracksReturned
         case destroyed
     }
 
@@ -85,6 +87,7 @@ final class FakeLibrary: @unchecked Sendable {
         var events: [Event] = []
         var whileReadingStatus: (@Sendable () -> Void)?
         var whilePushingEncoded: (@Sendable () -> Void)?
+        var whileReadingTracks: (@Sendable () -> Void)?
         var whileStartingDownload: (@Sendable () -> Void)?
         var createOptionsCalls: [CreateOptionsCall] = []
         var stepCalls: [StepCall] = []
@@ -245,6 +248,13 @@ final class FakeLibrary: @unchecked Sendable {
     var whilePushingEncoded: (@Sendable () -> Void)? {
         get { state.withLock { $0.whilePushingEncoded } }
         set { state.withLock { $0.whilePushingEncoded = newValue } }
+    }
+
+    /// Run inside the next `reactor_tracks`, once, between its `tracksEntered`
+    /// and `tracksReturned` events.
+    var whileReadingTracks: (@Sendable () -> Void)? {
+        get { state.withLock { $0.whileReadingTracks } }
+        set { state.withLock { $0.whileReadingTracks = newValue } }
     }
 
     /// Run this inside `reactor_download_clip`, before it returns.
@@ -588,7 +598,18 @@ final class FakeLibrary: @unchecked Sendable {
                 // exercised if the fake really allocates.
                 return strdup(sessionID)
             },
-            tracks: { [self] _ in strdup(state.withLock { $0.tracksJSON }) },
+            tracks: { [self] _ in
+                let hook = state.withLock { state -> (@Sendable () -> Void)? in
+                    state.events.append(.tracksEntered)
+                    defer { state.whileReadingTracks = nil }
+                    return state.whileReadingTracks
+                }
+                hook?()
+                return state.withLock { state in
+                    state.events.append(.tracksReturned)
+                    return strdup(state.tracksJSON)
+                }
+            },
             pausedTracks: { [self] _ in strdup(state.withLock { $0.pausedJSON }) },
             publishTrack: { [self] _, name, completion, userdata in
                 state.withLock { $0.publishCalls.append(String(borrowing: name) ?? "") }
