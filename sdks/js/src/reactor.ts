@@ -701,8 +701,8 @@ export class Reactor implements Disposable {
           try {
             return client.step(state, commands);
           } finally {
-            // The binding takes the buffer in the step's first poll, already
-            // queued by now: a push queued behind this runs after it.
+            // The binding has taken the buffer by the time step() returns (or
+            // throws), so a push queued behind this goes to the next step.
             taken();
           }
         }),
