@@ -7,15 +7,41 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-23
+
+### Added
+
+- Encoded video in a step. `reactor.step(media: ["webcam": frames])`, with
+  `StepMediaFrame.encoded(EncodedFrame(data, width:, height:))`, and
+  `Track.pushEncodedFrame(_:width:height:codec:userData:captureTimeUs:)` (or
+  `pushEncodedFrame(_ frame: EncodedFrame)`) send H.264 access units as they
+  are, and the runtime decodes them before the step runs, so the model reads RGB
+  frames as for a raw push. A track's frames of one step go in decode order,
+  starting at a keyframe; a step whose frames do not decode throws
+  `stepRefused`. `media` takes raw frames too (`StepMediaFrame.video`,
+  `.audio`), pushed after the ones already buffered and only once the state,
+  commands and every frame are well formed, so a bad track or frame anywhere
+  pushes none of them. `pushEncodedFrame` throws `invalidState` outside a
+  stepped session or on an audio, recvonly or unpublished track, and
+  `badRequest` for an empty frame or a zero width or height.
+- RGB frames. `Track.pushFrame(_:format:width:height:userData:captureTimeUs:)`
+  and `StepMediaFrame.video(..., format: .rgb)` take `width * height * 3`
+  bytes of R, G, B and convert them to BGRA, opaque, before the push, as the
+  Python SDK does with an RGB array.
+
 ### Fixed
 
+- A push reached the library with a handle read before it, so a `close()` on
+  another thread could destroy the handle in between. Pushes now go in under
+  the barrier `close()` waits on, a step's media together with the step that
+  takes it. So does the read of the session's tracks that every push, every
+  step's media and `Reactor.tracks` make, as does `pausedTracks`.
 - A session that closed before it was ready failed `connect()` with only
   "session entered terminal state Closed". The error now also names why the
   platform ended the session, when the platform recorded it: for example
   `Closed (START_REFUSED): generation 'stepped' needs a model that runs the
   default ReactorApp step loop ...` for a stepped connect to a model that
   cannot step. The error code is still `SESSION_TERMINAL`.
-
 - Same-session `reconnect()` could time out after 30 s ("transport readiness
   did not complete") on high-latency links. Each ICE candidate was POSTed to
   the coordinator inline in the peer-event pump, so a reconnect's candidate

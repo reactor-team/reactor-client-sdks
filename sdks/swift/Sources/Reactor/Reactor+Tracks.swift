@@ -52,9 +52,12 @@ extension Reactor {
     /// Recvonly tracks resume automatically once connected, so this is empty on a
     /// healthy session until the caller pauses something.
     public var pausedTracks: Set<String> {
-        let handle = state.withLock { $0.handle }
-        guard let handle,
-            let json = String(takingOwnership: ffi.pausedTracks(handle), freeing: ffi.freeString),
+        // Read under the barrier: a close() between reading the handle and the
+        // call would hand the library a handle it has already destroyed.
+        let json = withHandle(else: nil) { handle in
+            String(takingOwnership: ffi.pausedTracks(handle), freeing: ffi.freeString)
+        }
+        guard let json,
             let data = json.data(using: .utf8),
             let names = try? JSONSerialization.jsonObject(with: data) as? [String]
         else { return [] }
@@ -86,9 +89,13 @@ extension Reactor {
     /// session declared. Keeping it is part of the contract ``TrackList``
     /// documents.
     func declarations() -> [TrackDeclaration] {
-        let handle = state.withLock { $0.handle }
-        guard let handle,
-            let json = String(takingOwnership: ffi.tracks(handle), freeing: ffi.freeString),
+        // Read under the barrier, like every entry into the ABI: the pushes and
+        // the step check their tracks through here, and a close() landing
+        // between reading the handle and the call would free it under the read.
+        let json = withHandle(else: nil) { handle in
+            String(takingOwnership: ffi.tracks(handle), freeing: ffi.freeString)
+        }
+        guard let json,
             let data = json.data(using: .utf8),
             let entries = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
         else { return [] }
