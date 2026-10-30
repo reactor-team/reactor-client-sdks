@@ -1106,3 +1106,34 @@ async fn disconnecting_drops_frames_buffered_for_the_session() {
     reactor.disconnect(false).await.unwrap();
     assert!(reactor.step_inputs.is_empty());
 }
+
+/// A binding runs the send on another thread, after `begin_step` returns on
+/// the caller's: the frames are the ones buffered when it was called, and a
+/// frame pushed in between goes to the next step.
+#[tokio::test]
+async fn begin_step_takes_the_inputs_buffered_when_it_is_called() {
+    let peer = Arc::new(DataPeer::new(usize::MAX));
+    let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+    reactor
+        .step_inputs
+        .push("cam", WireTrackKind::Video, raw_frame(1), usize::MAX);
+
+    let request = reactor.begin_step(Value::Null, vec![]).unwrap();
+    reactor
+        .step_inputs
+        .push("cam", WireTrackKind::Video, raw_frame(2), usize::MAX);
+
+    let firsts = |request: &StepRequest| {
+        request.0.media_input[0]
+            .frames
+            .iter()
+            .map(|f| f.data[0])
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(firsts(&request), [1]);
+    assert_eq!(
+        reactor.step_inputs.len(),
+        1,
+        "the later frame waits for the next step"
+    );
+}

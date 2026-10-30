@@ -8,7 +8,9 @@ import ctypes
 import json
 import logging
 import mimetypes
+import operator
 import os
+import threading
 import time
 import weakref
 from collections.abc import Callable, Coroutine, Mapping, Sequence
@@ -173,6 +175,12 @@ _SYNTHETIC_ADM = 0
 #: which otherwise reports "ffi" for every language.
 _SDK_TYPE = b"python"
 
+#: The C ABI's frame dimensions are `uint32_t` and its capture time `int64_t`.
+#: ctypes wraps an out-of-range int instead of refusing it, so a frame's scalars
+#: are range-checked here, before any of a step's frames is pushed.
+_UINT32_MAX = 2**32 - 1
+_INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
+
 #: How a session generates: `"streamed"` over media tracks (the default, and what
 #: every session did before the choice existed), or `"stepped"`, one
 #: :meth:`Reactor.step` at a time.
@@ -309,6 +317,10 @@ class Reactor:
         self._max_session_duration_seconds = max_session_duration_seconds
         self._generation: Generation = generation
         self._step_timeout = step_timeout
+        # Held from a step's first push to the native step taking the buffer, so
+        # steps from two threads cannot interleave their media. Never across an
+        # await: both happen in one synchronous stretch.
+        self._step_lock = threading.Lock()
 
         # A token the caller handed us is theirs: never replaced. One we minted from an
         # API key is ours, and `_minted_for` records the scope it was minted with, so a
@@ -1230,12 +1242,9 @@ class Reactor:
         commands_json = json.dumps(
             _wire_commands(() if commands is None else commands), default=_wire_file_ref
         ).encode()
-        # Pushed only once the state and commands are known to be well formed, so
-        # a step refused for those leaves the buffer as the caller left it.
-        if media is not None:
-            self._push_step_media(media)
         handle = self._handle
         lib = get_lib()
+        lock = self._step_lock
 
         def decode(ptr: int | None) -> StepResult:
             if not ptr:
@@ -1246,13 +1255,27 @@ class Reactor:
                 # Copied out above; the native result has no further use.
                 lib.reactor_step_result_free(ctypes.c_void_p(ptr))
 
-        return await self._await_completion(
-            STEP_COMPLETION_FN,
-            decode,
-            lambda fn: lib.reactor_step(
-                ctypes.c_void_p(handle), state_json, commands_json, fn, None
-            ),
-        )
+        def dispatch(fn: Any) -> None:
+            nonlocal locked
+            try:
+                lib.reactor_step(ctypes.c_void_p(handle), state_json, commands_json, fn, None)
+            finally:
+                # The native step has taken the buffer: later pushes are the next
+                # step's.
+                locked = False
+                lock.release()
+
+        lock.acquire()
+        locked = True
+        try:
+            # Pushed only once the state and commands are known to be well formed,
+            # so a step refused for those leaves the buffer as the caller left it.
+            if media is not None:
+                self._push_step_media(media)
+            return await self._await_completion(STEP_COMPLETION_FN, decode, dispatch)
+        finally:
+            if locked:
+                lock.release()
 
     def _push_step_media(self, media: Mapping[str, Sequence[Any]]) -> None:
         """Push `media`'s frames, track by track, as :meth:`step` documents.
@@ -1687,11 +1710,30 @@ class Reactor:
             )
         if not data:
             raise ValueError("push_encoded_frame(): an encoded frame needs data")
-        if width <= 0 or height <= 0:
+        # operator.index takes any integer-like value (a numpy integer from
+        # computed dimensions, say) and refuses a float, as ctypes does.
+        try:
+            width, height = operator.index(width), operator.index(height)
+        except TypeError:
+            raise ValueError(
+                f"push_encoded_frame(): width and height must be integers, got {width!r}x{height!r}"
+            ) from None
+        if not all(0 < v <= _UINT32_MAX for v in (width, height)):
             raise ValueError(
                 f"push_encoded_frame(): width and height are the decoded frame's, "
                 f"got {width}x{height}"
             )
+        if capture_time_us is not None:
+            try:
+                in_range = _INT64_MIN <= operator.index(capture_time_us) <= _INT64_MAX
+            except TypeError:
+                in_range = False
+            if not in_range:
+                raise ValueError(
+                    f"push_encoded_frame(): capture_time_us must be an int64, "
+                    f"got {capture_time_us!r}"
+                )
+            capture_time_us = operator.index(capture_time_us)
         self._require_handle()
         lib = get_lib()
         if not has_encoded_step_frames(lib):
@@ -1703,9 +1745,8 @@ class Reactor:
         buf = (ctypes.c_uint8 * len(data)).from_buffer_copy(data)
         tag_len = len(user_data) if user_data else 0
         tag = (ctypes.c_uint8 * tag_len).from_buffer_copy(user_data) if user_data else None
-        handle = self._handle
-        return lambda: lib.reactor_push_step_encoded_video_frame(
-            ctypes.c_void_p(handle),
+        args = (
+            ctypes.c_void_p(self._handle),
             track_name.encode(),
             ctypes.c_int(encoding),
             buf,
@@ -1717,6 +1758,7 @@ class Reactor:
             ctypes.c_int(capture_time_us is not None),
             ctypes.c_int64(capture_time_us or 0),
         )
+        return lambda: lib.reactor_push_step_encoded_video_frame(*args)
 
     def _push_begin(self) -> int:
         """The connection a frame push belongs to, read as the app hands it over."""

@@ -338,6 +338,12 @@ previous step. A step whose frames do not decode, or that does not start at a
 keyframe, raises `StepRefusedError`, naming the frame in `entry`. A runtime that
 predates encoded frames refuses them the same way.
 
+A step carries at most one data-channel message's worth of frames, and pushing
+past that drops the oldest ones, whatever their track. For an encoded track that
+is its keyframe, so a step left with the rest of that window raises
+`StepRefusedError` before anything is sent, naming the track in `entry`. Keep
+the window, and any raw frames sent alongside it, within one message.
+
 A step that ran but that the model reported as failed returns normally, with
 `result.error` set. `result.files` names the files the model kept with the step;
 their bytes are fetched over HTTP from the session's step results

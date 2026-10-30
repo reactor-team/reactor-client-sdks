@@ -3,8 +3,9 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
+use crate::error::CoreError;
 use crate::protocol::wire::v1::platform::TrackKind as WireTrackKind;
-use crate::protocol::wire::v1::step::{Frame, TrackFrames};
+use crate::protocol::wire::v1::step::{Frame, FrameEncoding, TrackFrames};
 
 /// Input frames pushed since the last step, per track.
 ///
@@ -30,6 +31,11 @@ struct Buffered {
     bytes: usize,
     /// Frames pushed out by the budget since the last take.
     dropped: usize,
+    /// Buffered tracks that lost an encoded frame to the budget since the last
+    /// take. A track's encoded frames decode as one stream from its first, so
+    /// what is left of them no longer starts at its keyframe. Only tracks still
+    /// buffered are named, so it never outgrows `tracks`.
+    cut_encoded: Vec<String>,
 }
 
 impl Buffered {
@@ -65,17 +71,30 @@ impl Buffered {
             let frame = self.tracks[index].frames.remove(0);
             self.bytes -= frame_bytes(&frame);
             self.dropped += 1;
+            if is_encoded(&frame) && !self.cut_encoded.contains(&self.tracks[index].track) {
+                self.cut_encoded.push(self.tracks[index].track.clone());
+            }
             // A track left with no frames goes too, so pushes to ever new track
-            // names cannot grow the buffer either.
+            // names cannot grow the buffer either. Its cut goes with it: none of
+            // the cut frames are left, and frames pushed to it afterwards start
+            // a window of their own.
             if self.tracks[index].frames.is_empty() {
                 let track = self.tracks.remove(index);
                 self.bytes -= track_bytes(&track);
+                self.cut_encoded.retain(|cut| *cut != track.track);
                 for later in self.order.iter_mut().filter(|i| **i > index) {
                     *later -= 1;
                 }
             }
         }
     }
+}
+
+fn is_encoded(frame: &Frame) -> bool {
+    !matches!(
+        FrameEncoding::try_from(frame.encoding),
+        Ok(FrameEncoding::Raw | FrameEncoding::Unspecified)
+    )
 }
 
 /// Room a step's message needs besides its frames: the envelope, the request
@@ -112,7 +131,12 @@ impl StepInputs {
     }
 
     /// Everything buffered, leaving the buffer empty.
-    pub fn take(&self) -> Vec<TrackFrames> {
+    ///
+    /// Refused as [`CoreError::StepRefused`], the buffer emptied all the same,
+    /// when the budget pushed out the start of a track's encoded frames and
+    /// some of them are left: those no longer decode, and sent as they are the
+    /// runtime would refuse the step as undecodable without saying why.
+    pub fn take(&self) -> Result<Vec<TrackFrames>, CoreError> {
         let taken = std::mem::take(&mut *self.buffer.lock().unwrap());
         if taken.dropped > 0 {
             log::warn!(
@@ -120,11 +144,27 @@ impl StepInputs {
                 taken.dropped
             );
         }
-        taken
+        let tracks: Vec<TrackFrames> = taken
             .tracks
             .into_iter()
             .filter(|t| !t.frames.is_empty())
-            .collect()
+            .collect();
+        let cut = tracks
+            .iter()
+            .enumerate()
+            .find(|(_, t)| taken.cut_encoded.contains(&t.track) && t.frames.iter().any(is_encoded));
+        if let Some((index, track)) = cut {
+            return Err(CoreError::StepRefused {
+                message: format!(
+                    "the encoded frames of '{}' no longer start at their keyframe: frames \
+                     pushed past one message's worth pushed out the oldest. Push a shorter \
+                     window, or fewer frames alongside it",
+                    track.track
+                ),
+                entry: Some(format!("media_input[{index}]")),
+            });
+        }
+        Ok(tracks)
     }
 
     pub fn clear(&self) {
@@ -169,7 +209,7 @@ mod tests {
         );
         assert_eq!(inputs.len(), 3);
 
-        let taken = inputs.take();
+        let taken = inputs.take().unwrap();
         assert!(inputs.is_empty());
         assert_eq!(
             taken.iter().map(|t| t.track.as_str()).collect::<Vec<_>>(),
@@ -227,7 +267,7 @@ mod tests {
         );
         assert_eq!(inputs.len(), 3);
 
-        let taken = inputs.take();
+        let taken = inputs.take().unwrap();
         let firsts =
             |track: &TrackFrames| track.frames.iter().map(|f| f.data[0]).collect::<Vec<_>>();
         assert_eq!(taken.len(), 2);
@@ -256,6 +296,109 @@ mod tests {
     }
 
     #[test]
+    fn encoded_frames_cut_from_their_start_refuse_the_step() {
+        let encoded = |byte: u8| Frame {
+            encoding: FrameEncoding::H264 as i32,
+            ..raw("uint8", vec![2], vec![byte, byte])
+        };
+        let track = TrackFrames {
+            track: "cam".into(),
+            kind: WireTrackKind::Video as i32,
+            frames: vec![],
+            rate: 0.0,
+        };
+        // Room for the track and 2 of its frames: the keyframe goes.
+        let max = REQUEST_STEP_ENVELOPE_BYTES + track_bytes(&track) + 2 * frame_bytes(&encoded(0));
+        let inputs = StepInputs::new();
+        for byte in 1..=3 {
+            inputs.push("cam", WireTrackKind::Video, encoded(byte), max);
+        }
+
+        match inputs.take() {
+            Err(CoreError::StepRefused { message, entry }) => {
+                assert!(message.contains("'cam'"), "{message}");
+                assert_eq!(entry.as_deref(), Some("media_input[0]"));
+            }
+            other => panic!("expected StepRefused, got {other:?}"),
+        }
+        assert!(inputs.is_empty());
+
+        // Raw frames cut the same way leave a step that still makes sense.
+        for byte in 1..=3 {
+            inputs.push(
+                "cam",
+                WireTrackKind::Video,
+                raw("uint8", vec![2], vec![byte; 2]),
+                max,
+            );
+        }
+        assert_eq!(inputs.take().unwrap()[0].frames.len(), 2);
+    }
+
+    #[test]
+    fn a_track_whose_encoded_frames_were_all_pushed_out_takes_a_fresh_window() {
+        let encoded = |byte: u8| Frame {
+            encoding: FrameEncoding::H264 as i32,
+            ..raw("uint8", vec![2], vec![byte, byte])
+        };
+        let track = |name: &str| TrackFrames {
+            track: name.into(),
+            kind: WireTrackKind::Video as i32,
+            frames: vec![],
+            rate: 0.0,
+        };
+        // Room for both tracks and 2 frames.
+        let max = REQUEST_STEP_ENVELOPE_BYTES
+            + track_bytes(&track("cam"))
+            + track_bytes(&track("other"))
+            + 2 * frame_bytes(&encoded(0));
+        let inputs = StepInputs::new();
+        inputs.push("cam", WireTrackKind::Video, encoded(0), max);
+        // Raw frames on another track push all of cam's out.
+        for byte in 1..=2 {
+            inputs.push(
+                "other",
+                WireTrackKind::Video,
+                raw("uint8", vec![2], vec![byte; 2]),
+                max,
+            );
+        }
+        assert!(inputs.buffer.lock().unwrap().cut_encoded.is_empty());
+        // A fresh window on cam, from its own keyframe, is sent as it is.
+        inputs.push("cam", WireTrackKind::Video, encoded(1), max);
+        let taken = inputs.take().unwrap();
+        let cam = taken
+            .iter()
+            .find(|t| t.track == "cam")
+            .expect("cam is sent");
+        assert_eq!(cam.frames.len(), 1);
+    }
+
+    #[test]
+    fn encoded_pushes_to_ever_new_tracks_keep_no_cut_names() {
+        let encoded = Frame {
+            encoding: FrameEncoding::H264 as i32,
+            ..raw("uint8", vec![1], vec![1])
+        };
+        let inputs = StepInputs::new();
+        for n in 0..10_000 {
+            inputs.push(
+                &format!("track-{n}"),
+                WireTrackKind::Video,
+                encoded.clone(),
+                1024,
+            );
+        }
+        let buffer = inputs.buffer.lock().unwrap();
+        assert!(
+            buffer.cut_encoded.len() <= buffer.tracks.len(),
+            "{} cut names for {} tracks",
+            buffer.cut_encoded.len(),
+            buffer.tracks.len()
+        );
+    }
+
+    #[test]
     fn a_frame_alone_over_budget_stays_and_a_track_left_empty_is_not_sent() {
         let inputs = StepInputs::new();
         inputs.push("a", WireTrackKind::Video, raw("uint8", vec![1], vec![1]), 4);
@@ -267,7 +410,7 @@ mod tests {
         );
         assert_eq!(inputs.len(), 1);
 
-        let taken = inputs.take();
+        let taken = inputs.take().unwrap();
         assert_eq!(taken.len(), 1);
         assert_eq!(taken[0].track, "b");
     }
