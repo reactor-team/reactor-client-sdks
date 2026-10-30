@@ -936,6 +936,42 @@ describe('Reactor.step media', () => {
     expect(client.stepCalls).toEqual([]);
   });
 
+  it('keeps a slow push called before a refused step ahead of the next step', async () => {
+    const { reactor, client } = await steppedWithInputs();
+    const read = createDeferred();
+    const order: string[] = [];
+    const { frame } = fakeVideoFrame('BGRA', 1, 1, 9);
+    const pushVideo = client.pushVideoFrame.bind(client);
+    const step = client.step.bind(client);
+
+    (frame as unknown as { copyTo: unknown }).copyTo = async (destination: Uint8Array) => {
+      await read.promise;
+      destination.fill(9);
+      return [];
+    };
+    client.pushVideoFrame = (...args) => {
+      order.push('push');
+      pushVideo(...args);
+    };
+    client.step = (...args) => {
+      order.push('step');
+      return step(...args);
+    };
+
+    const pushing = reactor.pushFrame('camera', frame);
+    const refused = reactor.step({ media: { camera: [{ ...idr, data: new Uint8Array(0) }] } });
+    const stepping = reactor.step();
+
+    await expect(refused).rejects.toThrow('needs data');
+    await Promise.resolve();
+    expect(order).toEqual([]);
+
+    read.resolve();
+    await Promise.all([pushing, stepping]);
+
+    expect(order).toEqual(['push', 'step']);
+  });
+
   it('refuses media while the session is not ready, before any of it is pushed', async () => {
     const { reactor, client } = await steppedWithInputs();
 

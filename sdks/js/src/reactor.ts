@@ -1,19 +1,19 @@
 import { AwaitQueue } from 'awaitqueue';
 import { toPublicCapabilities } from './internal/capabilities';
 import { debugLog } from './internal/debug-log';
-import { DecodeError, InvalidStateError, toReactorError, type ReactorError } from './errors';
+import { InvalidStateError, toReactorError, type ReactorError } from './errors';
 import { Emitter } from './internal/emitter';
-import { isEncodedFrame, toEncodedBytes, type EncodedBytes } from './internal/encoded-frames';
+import { toEncodedBytes } from './internal/encoded-frames';
 import { extractFileRefs, rewriteNestedFileRefs, toPublicFileRef } from './internal/file-ref';
-import {
-  audioFault,
-  holdFrame,
-  isAudioFrame,
-  pixelsFault,
-  toPixels,
-  type Pixels,
-} from './internal/push-frames';
+import { holdFrame, isAudioFrame, toPixels } from './internal/push-frames';
 import { toPublicClip } from './internal/recording';
+import {
+  checkStepInput,
+  checkStepTrack,
+  holdStepMedia,
+  readStepFrame,
+  type ReadyStepFrame,
+} from './internal/step-media';
 import type { ReactorClient } from './internal/reactor-wasm.types';
 import {
   LOCAL_STATS_INTERVAL_MS,
@@ -39,7 +39,6 @@ import type {
   MessageScope,
   ModelSchema,
   NotFunction,
-  PushAudioFrame,
   PushFrame,
   PublishedTrack,
   PushFrameOptions,
@@ -679,9 +678,11 @@ export class Reactor implements Disposable {
         command.data ? { ...command, data: rewriteNestedFileRefs(command.data) } : command,
       );
 
+      // Every push called before this step; it never rejects.
+      const previous = this.pendingPushes;
       // Pushed only once the state and commands are known to be well formed,
       // so a step refused for those leaves the buffer as the caller left it.
-      const before = options.media !== undefined ? this.pushStepMedia(options.media) : this.pendingPushes;
+      const before = options.media !== undefined ? this.pushStepMedia(options.media) : previous;
       // This step's place in line, taken now, before a later push or step can
       // queue ahead of it: it goes once its media and every push called before
       // it are in. A push called after it waits only until the step has taken
@@ -707,8 +708,10 @@ export class Reactor implements Disposable {
         }),
       );
 
-      // Refused before it reached the binding, the step lets the line move on.
-      stepping.catch(() => taken());
+      // Refused before it reached the binding, the step lets the line move on,
+      // but only once every push called before it is in: media refused before
+      // it joined the line must not let a later step overtake those pushes.
+      stepping.catch(() => previous.then(taken));
       this.pendingPushes = bufferTaken;
       return await stepping;
     } catch (cause) {
@@ -930,33 +933,9 @@ export class Reactor implements Disposable {
    *  is read and checked before the first is pushed, so a bad track or frame
    *  anywhere leaves the buffer as it was. */
   private async pushStepMedia(media: NonNullable<StepOptions['media']>): Promise<void> {
-    if (typeof media !== 'object' || media === null || Array.isArray(media)) {
-      throw new InvalidStateError('step(): media must map track names to arrays of frames', {
-        operation: 'step',
-      });
-    }
     const epoch = this.connectionEpoch;
-    const held: HeldStepFrame[] = [];
-
-    try {
-      // Read now, as a single push would: a chunk is copied, a VideoFrame
-      // cloned, and a malformed frame refused, at call time.
-      for (const [trackName, frames] of Object.entries(media)) {
-        if (!Array.isArray(frames)) {
-          throw new InvalidStateError(`step(): media['${trackName}'] must be an array of frames`, {
-            operation: 'step',
-          });
-        }
-        for (const frame of frames as ReadonlyArray<PushFrame | EncodedFrame>) {
-          held.push(holdStepFrame(trackName, frame));
-        }
-      }
-    } catch (cause) {
-      for (const frame of held) {
-        frame.release();
-      }
-      throw cause;
-    }
+    // Read now, as a single push would.
+    const held = holdStepMedia(media);
     const push = this.pendingPushes.then(async () => {
       const ready: ReadyStepFrame[] = [];
 
@@ -1522,123 +1501,4 @@ export class Reactor implements Disposable {
       throw new Error("This Reactor was disposed and can't be used again — construct a new one.");
     }
   }
-}
-
-function isJsonObject(value: unknown): boolean {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** One frame of `step()`'s `media`, held from call time until it is read. */
-type HeldStepFrame = { track: string; release: () => void } & (
-  | { kind: 'encoded'; operation: 'pushEncodedFrame'; encoded: EncodedBytes }
-  | { kind: 'raw'; operation: 'pushFrame'; frame: PushFrame }
-);
-
-/** One frame of `step()`'s `media`, read and checked, as the binding takes it. */
-type ReadyStepFrame = { track: string } & (
-  | { kind: 'encoded'; operation: 'pushEncodedFrame'; encoded: EncodedBytes }
-  | { kind: 'video'; operation: 'pushFrame'; pixels: Pixels }
-  | { kind: 'audio'; operation: 'pushFrame'; audio: PushAudioFrame }
-);
-
-function holdStepFrame(track: string, frame: PushFrame | EncodedFrame): HeldStepFrame {
-  if (isEncodedFrame(frame)) {
-    const operation = 'pushEncodedFrame';
-
-    return { track, kind: 'encoded', operation, encoded: toEncodedBytes(frame, operation, track), release: () => {} };
-  }
-  if (typeof frame !== 'object' || frame === null) {
-    throw new InvalidStateError(`pushFrame('${track}'): expected a frame`, { operation: 'pushFrame' });
-  }
-  const held = holdFrame(frame);
-
-  return { track, kind: 'raw', operation: 'pushFrame', frame: held.frame, release: held.release };
-}
-
-/** `frame` read out and checked the way the binding would check it, so a
- *  frame it would refuse is refused before any of the step's are pushed. */
-async function readStepFrame(frame: HeldStepFrame): Promise<ReadyStepFrame> {
-  const { track, operation } = frame;
-  const refuse = (why: string) =>
-    new InvalidStateError(`${operation}('${track}'): ${why}`, { operation });
-
-  if (frame.kind === 'encoded') {
-    return { track, kind: 'encoded', operation: frame.operation, encoded: frame.encoded };
-  }
-  if (isAudioFrame(frame.frame)) {
-    const fault = audioFault(frame.frame);
-
-    if (fault) {
-      throw refuse(fault);
-    }
-    return { track, kind: 'audio', operation: frame.operation, audio: frame.frame };
-  }
-  const pixels = await toPixels(frame.frame);
-  const fault = pixelsFault(pixels);
-
-  if (fault) {
-    throw refuse(fault);
-  }
-  return { track, kind: 'video', operation: frame.operation, pixels };
-}
-
-/** Refuses a `step()` media frame for a track the model declares as other
- *  than a sendonly track of its kind, as the binding would on its push.
- *  Before the runtime declares its tracks, any name passes, as there. */
-function checkStepTrack(declared: ReturnType<ReactorClient['tracks']>, frame: ReadyStepFrame): void {
-  if (declared.length === 0) {
-    return;
-  }
-  const { track, operation } = frame;
-  const kind = frame.kind === 'audio' ? 'audio' : 'video';
-  const found = declared.find((candidate) => candidate.name === track);
-
-  if (found === undefined) {
-    throw new InvalidStateError(
-      `${operation}('${track}'): the model declares no track named '${track}'`,
-      { operation },
-    );
-  }
-  if (found.kind !== kind || found.direction !== 'sendonly') {
-    const wanted =
-      frame.kind === 'encoded'
-        ? '; only a sendonly video track takes encoded frames.'
-        : `, not a sendonly ${kind} one`;
-
-    throw new InvalidStateError(
-      `${operation}('${track}'): '${track}' is a ${found.direction} ${found.kind} track${wanted}`,
-      { operation },
-    );
-  }
-}
-
-/** Refuses a malformed `state` or `commands` the way the binding would, but
- *  before `step()` pushes its `media`: a step that never goes out leaves the
- *  frames buffered as the caller left them. */
-function checkStepInput({ state, commands }: StepOptions): void {
-  if (state != null && !isJsonObject(state)) {
-    throw new DecodeError('step state must be a JSON object', { operation: 'step' });
-  }
-  if (commands === undefined) {
-    return;
-  }
-  if (!Array.isArray(commands)) {
-    throw new InvalidStateError('step commands: expected an array of { command, data? }', {
-      operation: 'step',
-    });
-  }
-  (commands as unknown[]).forEach((entry, index) => {
-    if (!isJsonObject(entry) || typeof (entry as { command?: unknown }).command !== 'string') {
-      throw new InvalidStateError(`step commands[${index}]: expected { command: string, data? }`, {
-        operation: 'step',
-      });
-    }
-    const { command, data } = entry as { command: string; data?: unknown };
-
-    if (data != null && !isJsonObject(data)) {
-      throw new DecodeError(`data of step command '${command}' must be a JSON object`, {
-        operation: 'step',
-      });
-    }
-  });
 }
