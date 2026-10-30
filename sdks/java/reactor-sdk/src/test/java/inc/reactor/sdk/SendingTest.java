@@ -1,5 +1,6 @@
 package inc.reactor.sdk;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -103,6 +104,30 @@ final class SendingTest extends SendingFixture {
 
         assertTrue(thrown.getMessage().contains("64"), "must name what was required: " + thrown.getMessage());
         assertTrue(thrown.getMessage().contains("100"), "must name what was given: " + thrown.getMessage());
+    }
+
+    @Test
+    @DisplayName("an RGB frame reaches the library as opaque BGRA")
+    void anRgbFrameReachesTheLibraryAsBgra() {
+        Track sending = publishedCamera();
+
+        // Two pixels: red, then a grey with distinct channels.
+        sending.pushFrame(new byte[] {(byte) 0xFF, 0, 0, 0x10, 0x20, 0x30}, PixelFormat.RGB, 2, 1);
+
+        assertArrayEquals(
+                new byte[] {0, 0, (byte) 0xFF, (byte) 0xFF, 0x30, 0x20, 0x10, (byte) 0xFF}, fake.lastVideoBgra);
+    }
+
+    @Test
+    @DisplayName("a frame is checked against its own format's size")
+    void aFrameIsCheckedAgainstItsFormat() {
+        Track sending = publishedCamera();
+
+        ReactorException thrown =
+                assertThrows(ReactorException.class, () -> sending.pushFrame(new byte[16], PixelFormat.RGB, 2, 2));
+
+        assertTrue(thrown.getMessage().contains("12"), thrown.getMessage());
+        assertEquals(0, fake.videoFramesPushed);
     }
 
     @Test

@@ -1,6 +1,7 @@
 package inc.reactor.sdk;
 
 import inc.reactor.sdk.internal.ClientPeer;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import org.jspecify.annotations.Nullable;
@@ -201,11 +202,74 @@ public final class Track {
      */
     public void pushFrame(
             byte[] bgra, int width, int height, byte @Nullable [] userData, @Nullable Long captureTimeUs) {
+        prepareFrame(bgra, PixelFormat.BGRA, width, height, userData, captureTimeUs)
+                .run();
+    }
+
+    /**
+     * Pushes one video frame laid out as {@code format}. {@link PixelFormat#RGB} is converted to
+     * BGRA, opaque, before the push.
+     *
+     * @param pixels exactly {@code width * height * format.bytesPerPixel()} bytes
+     * @param format how the pixels are laid out
+     * @param width frame width in pixels
+     * @param height frame height in pixels
+     * @throws ReactorException for any of the reasons {@link #pushFrame(byte[], int, int)} gives
+     */
+    public void pushFrame(byte[] pixels, PixelFormat format, int width, int height) {
+        pushFrame(pixels, format, width, height, null, null);
+    }
+
+    /**
+     * Pushes one video frame laid out as {@code format}, with a tag and an explicit capture time.
+     *
+     * @param pixels exactly {@code width * height * format.bytesPerPixel()} bytes
+     * @param format how the pixels are laid out
+     * @param width frame width in pixels
+     * @param height frame height in pixels
+     * @param userData a tag for the far end, which drops it unless it declared that it reads tags
+     * @param captureTimeUs when this was captured, on the engine clock, or {@code null} for now
+     * @throws ReactorException for any of the reasons {@link #pushFrame(byte[], int, int)} gives
+     */
+    public void pushFrame(
+            byte[] pixels,
+            PixelFormat format,
+            int width,
+            int height,
+            byte @Nullable [] userData,
+            @Nullable Long captureTimeUs) {
+        prepareFrame(pixels, format, width, height, userData, captureTimeUs).run();
+    }
+
+    private Runnable prepareFrame(
+            byte[] pixels,
+            PixelFormat format,
+            int width,
+            int height,
+            byte @Nullable [] userData,
+            @Nullable Long captureTimeUs) {
+        Objects.requireNonNull(format, "format");
         requireSendable("pushFrame");
-        requireKind(TrackKind.VIDEO, "a BGRA byte[]", "a short[] of PCM");
-        requirePublished();
-        requireExactFrameSize(bgra, width, height);
-        peer.pushVideoFrame(name, bgra, width, height, userData, captureTimeUs);
+        requireKind(TrackKind.VIDEO, "a BGRA or RGB byte[]", "a short[] of PCM");
+        requirePublished("pushFrame");
+        requireExactFrameSize(pixels, format, width, height);
+        // The native library takes BGRA only, so RGB is converted here, checked first, before the
+        // push is handed back.
+        byte[] bgra = format == PixelFormat.RGB ? rgbToBgra(pixels) : pixels;
+        return () -> peer.pushVideoFrame(name, bgra, width, height, userData, captureTimeUs);
+    }
+
+    /** RGB to BGRA, the alpha the wire format needs added opaque, as the Python SDK does. */
+    private static byte[] rgbToBgra(byte[] rgb) {
+        int pixels = rgb.length / 3;
+        byte[] bgra = new byte[pixels * 4];
+        for (int i = 0; i < pixels; i++) {
+            bgra[i * 4] = rgb[i * 3 + 2];
+            bgra[i * 4 + 1] = rgb[i * 3 + 1];
+            bgra[i * 4 + 2] = rgb[i * 3];
+            bgra[i * 4 + 3] = (byte) 0xFF;
+        }
+        return bgra;
     }
 
     /**
@@ -222,9 +286,13 @@ public final class Track {
      *     the arguments do not describe the buffer
      */
     public void pushFrame(short[] pcm, int sampleRate, int channels) {
+        prepareFrame(pcm, sampleRate, channels).run();
+    }
+
+    private Runnable prepareFrame(short[] pcm, int sampleRate, int channels) {
         requireSendable("pushFrame");
         requireKind(TrackKind.AUDIO, "a short[] of PCM", "a BGRA byte[]");
-        requirePublished();
+        requirePublished("pushFrame");
         if (!SUPPORTED_SAMPLE_RATES.contains(sampleRate) || channels < 1 || channels > 2) {
             // Positivity was not the contract. The FFI takes 8/16/24/32/44.1/48 kHz in mono or
             // stereo and logs-and-drops anything else, so pushFrame(pcm, 12345, 3) returned
@@ -241,7 +309,95 @@ public final class Track {
                     "interleaved PCM must hold whole frames: " + pcm.length + " samples do not divide into " + channels
                             + " channels.");
         }
-        peer.pushAudioFrame(name, pcm, sampleRate, channels);
+        return () -> peer.pushAudioFrame(name, pcm, sampleRate, channels);
+    }
+
+    /**
+     * Buffers one H.264 access unit, its bytes as they are, for the next step.
+     *
+     * @param data one access unit, Annex B
+     * @param width the width of the frame it decodes to, in pixels
+     * @param height the height of the frame it decodes to, in pixels
+     * @throws IllegalArgumentException when {@code data} is empty or a dimension is not positive
+     * @throws ReactorException for any of the reasons {@link #pushEncodedFrame(EncodedFrame)} gives
+     */
+    public void pushEncodedFrame(byte[] data, int width, int height) {
+        pushEncodedFrame(EncodedFrame.h264(data, width, height));
+    }
+
+    /**
+     * Buffers one encoded video frame, its bytes as they are, for the next step.
+     *
+     * <p>Stepped sessions only: like {@link #pushFrame(byte[], int, int)} there, this sends
+     * nothing, and the next {@link Reactor#step} carries the frame.
+     *
+     * <pre>{@code
+     * for (byte[] accessUnit : window) {             // keyframe first
+     *     camera.pushEncodedFrame(accessUnit, 1280, 720);
+     * }
+     * StepResult result = reactor.step().join();
+     * }</pre>
+     *
+     * <p>The runtime decodes a track's encoded frames of one step as one stream, before the step
+     * runs, and the model reads RGB frames as if they had been pushed raw. So push them in decode
+     * order, starting at a keyframe; a step whose frames do not decode fails with {@link
+     * StepRefusedException}. Encoded and raw pushes to one track keep their push order, and share
+     * the buffer's byte budget.
+     *
+     * @param frame the frame, with the size it decodes to and, optionally, a tag and capture time
+     * @throws ReactorException when this track is recvonly, carries audio, belongs to a streamed
+     *     session, has no sender yet, or the native library predates encoded step frames
+     */
+    public void pushEncodedFrame(EncodedFrame frame) {
+        prepareEncodedFrame(frame).run();
+    }
+
+    private Runnable prepareEncodedFrame(EncodedFrame frame) {
+        java.util.Objects.requireNonNull(frame, "frame");
+        requireSendable("pushEncodedFrame");
+        if (kind != TrackKind.VIDEO) {
+            throw refusal(
+                    "pushEncodedFrame",
+                    "track \"" + name + "\" carries audio; only a video track takes encoded frames.");
+        }
+        if (peer.generation() != Generation.STEPPED) {
+            // A streamed session has no step to carry the frame, and no encoded path to send it on.
+            throw refusal(
+                    "pushEncodedFrame",
+                    "pushEncodedFrame() needs a stepped session: create the client with"
+                            + " ReactorOptions.builder(...).generation(Generation.STEPPED)");
+        }
+        requirePublished("pushEncodedFrame");
+        peer.requireEncodedVideoFrames();
+        return () -> peer.pushEncodedVideoFrame(
+                name,
+                frame.codec().wireValue(),
+                frame.dataUnsafe(),
+                frame.width(),
+                frame.height(),
+                frame.userDataUnsafe(),
+                frame.captureTimeUsOrNull());
+    }
+
+    /**
+     * Checks one frame of a step's media as the method that takes its kind would, and returns its
+     * push. The step checks every frame before it pushes any: the native buffer can only be
+     * cleared whole, so a frame refused halfway through would leave the ones before it to ride the
+     * next step.
+     */
+    Runnable prepare(StepInput input) {
+        return switch (input) {
+            case EncodedFrame encoded -> prepareEncodedFrame(encoded);
+            case StepInput.Video video ->
+                prepareFrame(
+                        video.pixels(),
+                        video.format(),
+                        video.width(),
+                        video.height(),
+                        video.userData(),
+                        video.captureTimeUs());
+            case StepInput.Audio audio -> prepareFrame(audio.pcm(), audio.sampleRate(), audio.channels());
+        };
     }
 
     /**
@@ -264,7 +420,7 @@ public final class Track {
         }
     }
 
-    private void requirePublished() {
+    private void requirePublished(String operation) {
         PublishState state = publishState();
         if (state == PublishState.PUBLISHED) {
             return;
@@ -272,7 +428,7 @@ public final class Track {
         // The FFI would take this frame and drop it: there is no sender behind the slot. A caller
         // pushing at 30fps and seeing nothing arrive is the failure this refusal exists to prevent.
         throw refusal(
-                "pushFrame",
+                operation,
                 state == PublishState.PUBLISHING
                         ? "track \"" + name + "\" is still publishing. Await the future publish() returned"
                                 + " before pushing; until it settles there is no sender behind the slot."
@@ -281,18 +437,18 @@ public final class Track {
                                 + " the session leaving ready.");
     }
 
-    private void requireExactFrameSize(byte[] bgra, int width, int height) {
+    private void requireExactFrameSize(byte[] pixels, PixelFormat format, int width, int height) {
         if (width <= 0 || height <= 0) {
             throw refusal("pushFrame", "width and height must both be positive; got " + width + "x" + height + ".");
         }
         // Computed in long, because width * height * 4 overflows int at about 23000x23000 and an
         // overflowed comparison would accept a buffer far too small and read past its end.
-        long required = (long) width * height * 4;
-        if (bgra.length != required) {
+        long required = (long) width * height * format.bytesPerPixel();
+        if (pixels.length != required) {
             throw refusal(
                     "pushFrame",
-                    "a " + width + "x" + height + " BGRA frame needs exactly " + required + " bytes; got " + bgra.length
-                            + ".");
+                    "a " + width + "x" + height + " " + format + " frame needs exactly " + required + " bytes; got "
+                            + pixels.length + ".");
         }
     }
 

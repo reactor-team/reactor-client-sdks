@@ -39,6 +39,9 @@ public final class Reactor implements AutoCloseable {
     private final ClientPeer peer;
     private final ReactorOptions options;
     private final Cleaner.Cleanable cleanable;
+    /** Held from a step's first push to {@code reactor_step} taking the buffer, so steps from two
+     * threads cannot interleave their media. */
+    private final Object stepLock = new Object();
 
     private Reactor(ClientPeer peer, ReactorOptions options) {
         this.peer = peer;
@@ -365,9 +368,50 @@ public final class Reactor implements AutoCloseable {
      * @param state the model's state fields as a JSON object, or {@code null} to change none
      * @param commands what to run after the state, in order; empty or {@code null} for none
      * @return the step's result, copied onto the heap once and safe to keep
+     * @see #step(JsonValue, java.util.List, java.util.Map) to give the step input frames of its own
      */
     public CompletableFuture<StepResult> step(
             @Nullable JsonValue state, java.util.@Nullable List<StepCommand> commands) {
+        return step(state, commands, null);
+    }
+
+    /**
+     * Runs one step with input frames of its own, by input track name.
+     *
+     * <p>Each track's frames go after the ones pushed to that track since the previous step, in
+     * list order: an {@link EncodedFrame}, which goes as it is and is decoded by the runtime, or a
+     * raw frame — {@link StepInput#video} or {@link StepInput#audio} — as {@link Track#pushFrame}
+     * takes it. It is the same as pushing them just before the step, so each track must be
+     * published first.
+     *
+     * <pre>{@code
+     * List<EncodedFrame> frames = window.stream()     // keyframe first, in decode order
+     *         .map(accessUnit -> EncodedFrame.h264(accessUnit, 1280, 720))
+     *         .toList();
+     * StepResult result = reactor.step(null, List.of(), Map.of("webcam", frames)).join();
+     * }</pre>
+     *
+     * <p>The media goes all or nothing: every frame is checked before any is pushed, and none is
+     * pushed until the state is known to be well formed and the session ready. So a step refused
+     * for its state, a session not {@link ConnectionStatus#READY}, or a bad track or frame anywhere
+     * in its media — an unknown or unpublished track, a raw frame the wrong size — fails before any
+     * of the media is pushed, leaving the buffer as it was; a refused frame fails the future with
+     * the push's own {@link ReactorException}, and no step is sent. A session that leaves READY
+     * after the media went in is refused by the runtime's side, and the frames stay buffered for
+     * the next step, as frames pushed with {@link Track#pushFrame} would.
+     * Every other outcome is as for {@link #step(JsonValue, java.util.List)}, and a step whose
+     * encoded frames do not decode, or do not start at a keyframe, fails with {@link
+     * StepRefusedException}.
+     *
+     * @param state the model's state fields as a JSON object, or {@code null} to change none
+     * @param commands what to run after the state, in order; empty or {@code null} for none
+     * @param media input frames by track name, or {@code null} for none
+     * @return the step's result, copied onto the heap once and safe to keep
+     */
+    public CompletableFuture<StepResult> step(
+            @Nullable JsonValue state,
+            java.util.@Nullable List<StepCommand> commands,
+            java.util.@Nullable Map<String, ? extends java.util.List<? extends StepInput>> media) {
         if (commands == null) {
             commands = java.util.List.of();
         }
@@ -385,7 +429,65 @@ public final class Reactor implements AutoCloseable {
         String commandsJson = JsonValue.array(
                         commands.stream().map(StepCommand::toWire).toList())
                 .toJsonString();
-        return peer.step(state == null ? null : state.toJsonString(), commandsJson);
+        // Written out here, before the media: a state JSON cannot carry (a NaN) fails the step
+        // now, not after the frames are in the buffer to ride the next step.
+        String stateJson;
+        try {
+            stateJson = state == null ? null : state.toJsonString();
+        } catch (RuntimeException unwritable) {
+            return CompletableFuture.failedFuture(unwritable);
+        }
+        // Until reactor_step has taken the buffer: later pushes are the next step's.
+        synchronized (stepLock) {
+            // Pushed only once the state and commands are known to be well formed, so a step
+            // refused for those leaves the buffer as the caller left it.
+            if (media != null && !media.isEmpty()) {
+                try {
+                    pushStepMedia(media);
+                } catch (RuntimeException refused) {
+                    return CompletableFuture.failedFuture(refused);
+                }
+            }
+            return peer.step(stateJson, commandsJson);
+        }
+    }
+
+    /** Pushes a step's media, track by track, as {@link #step(JsonValue, java.util.List, java.util.Map)} documents. */
+    private void pushStepMedia(java.util.Map<String, ? extends java.util.List<? extends StepInput>> media) {
+        if (peer.generation() != Generation.STEPPED) {
+            // Checked here rather than left to peer.step: in a streamed session a raw push sends,
+            // so the frames would go out live before the step was refused.
+            throw ReactorException.of(
+                    ErrorCode.INVALID_STATE.code(),
+                    "step() needs a stepped session: create the client with"
+                            + " ReactorOptions.builder(...).generation(Generation.STEPPED)",
+                    null,
+                    "step",
+                    null);
+        }
+        ConnectionStatus status = peer.status();
+        if (status != ConnectionStatus.READY) {
+            // The core refuses a step outside READY and keeps what is buffered for the next one,
+            // so the media must not go in first. A session leaving READY after this check still
+            // can: then the frames ride the next step, as any push would.
+            throw ReactorException.of(
+                    ErrorCode.INVALID_STATE.code(),
+                    "step() needs a ready session; it is " + status,
+                    null,
+                    "step",
+                    null);
+        }
+        // Every track resolved and every frame checked before any is pushed, so a misspelt name or
+        // a bad frame late in the media refuses the step with the buffer untouched. The native
+        // buffer can only be cleared whole, so there is no taking back a push once made.
+        java.util.List<Runnable> pushes = new java.util.ArrayList<>();
+        media.forEach((name, frames) -> {
+            Track track = track(name);
+            for (StepInput frame : java.util.Objects.requireNonNull(frames, () -> "media[\"" + name + "\"]")) {
+                pushes.add(track.prepare(java.util.Objects.requireNonNull(frame, "a step's media holds a null frame")));
+            }
+        });
+        pushes.forEach(Runnable::run);
     }
 
     /**
