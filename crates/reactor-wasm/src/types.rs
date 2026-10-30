@@ -400,9 +400,6 @@ extern "C" {
     #[wasm_bindgen(typescript_type = "StepCommand[]")]
     pub type StepCommandsInput;
 
-    #[wasm_bindgen(typescript_type = "StepResult")]
-    pub type StepResultOutput;
-
     #[wasm_bindgen(typescript_type = "PixelFormat")]
     pub type PixelFormatInput;
 
