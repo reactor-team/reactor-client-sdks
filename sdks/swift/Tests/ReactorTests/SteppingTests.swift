@@ -157,7 +157,8 @@ struct SteppingTests {
 
     @Test(
         "a message limit outside 256 KiB to 1 GiB is refused before anything is created",
-        arguments: [UInt64(0), 256 * 1024 - 1, 1024 * 1024 * 1024 + 1])
+        // Zero, one byte under 256 KiB, one byte over 1 GiB.
+        arguments: [0, 262_143, 1_073_741_825] as [UInt64])
     func maxMessageSizeMustBeInRange(size: UInt64) {
         let fake = FakeLibrary()
         #expect {

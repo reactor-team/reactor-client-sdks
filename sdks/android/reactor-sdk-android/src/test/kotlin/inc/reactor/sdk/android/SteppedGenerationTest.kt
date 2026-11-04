@@ -110,7 +110,7 @@ class SteppedGenerationTest {
                     stepTimeoutSeconds = null,
                     maxMessageSize = 256L * 1024 * 1024,
                 )
-            assertTrue(json.contains("\"max_message_size\":268435456"), json)
+            assertTrue(json, json.contains("\"max_message_size\":268435456"))
             assertEquals(generation.wire, Json.parseObject(json)["generation"])
         }
     }
@@ -122,7 +122,7 @@ class SteppedGenerationTest {
         }
         assertEquals(256L * 1024, ReactorOptions(maxMessageSize = 256L * 1024).maxMessageSize)
         assertEquals(1024L * 1024 * 1024, ReactorOptions(maxMessageSize = 1024L * 1024 * 1024).maxMessageSize)
-        assertEquals(null, ReactorOptions().maxMessageSize)
+        assertNull(ReactorOptions().maxMessageSize)
     }
 
     // ── The result ──────────────────────────────────────────────────────────
