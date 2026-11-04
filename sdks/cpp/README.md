@@ -377,6 +377,9 @@ raised); one whose session ends before its result is sent throws
 `StepSessionEndedError` (whether it ran is unknown); one whose output does not
 fit in a message throws `StepResultTooLargeError`; a request too large to send throws
 `MessageTooLargeError`. `Options::step_timeout_seconds` bounds a step (default 300 s).
+A message's limit is the smaller of `Options::max_message_size` (default 256 MiB)
+and the runtime's, which is 64 MiB unless the model raises it in its `reactor.yaml`
+(`runtime.webrtc.max_message_size`).
 
 The result is copied out of the native library once, when the step completes, and
 the native result is freed there and then: a `StepResult` owns its bytes and

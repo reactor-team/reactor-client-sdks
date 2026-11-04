@@ -355,8 +355,8 @@ public final class ClientPeer implements Runnable {
      * changes only when a connect needs a scope the last one was not minted for.
      */
     private MemorySegment createHandle(@Nullable String token) {
-        if (options.generation() == Generation.STEPPED) {
-            return createSteppedHandle(token);
+        if (options.generation() == Generation.STEPPED || options.maxMessageSize() != null) {
+            return createHandleWithOptions(token);
         }
         // Every argument goes into a typed local first. invokeExact is signature-polymorphic: it
         // builds the call descriptor from the *static* types at the call site, and a conditional
@@ -397,17 +397,18 @@ public final class ClientPeer implements Runnable {
     }
 
     /**
-     * Builds a stepped client, through the one creation call that takes the generation mode.
+     * Builds a stepped client, or one with a message limit, through the one creation call that
+     * takes the generation mode and the limit.
      *
      * <p>{@code reactor_create_with_options} takes everything {@code reactor_create_with_adm} does,
-     * as JSON, plus {@code generation} and {@code step_timeout_seconds}. The audio device module is
-     * named here exactly as it is there — {@code synthetic} — so this path cannot be the one an
-     * environment variable opens a microphone through.
+     * as JSON, plus {@code generation}, {@code step_timeout_seconds} and {@code max_message_size}.
+     * The audio device module is named here exactly as it is there — {@code synthetic} — so this
+     * path cannot be the one an environment variable opens a microphone through.
      *
      * <p>An options object the library refuses comes back as a {@code NULL} handle and an error
      * object in {@code error_out}, which is read, freed and thrown as the typed error it names.
      */
-    private MemorySegment createSteppedHandle(@Nullable String token) {
+    private MemorySegment createHandleWithOptions(@Nullable String token) {
         MemorySegment apiUrl = arena.allocateFrom(options.apiUrl());
         MemorySegment modelName = arena.allocateFrom(options.modelName());
         MemorySegment jwtArg = token == null ? MemorySegment.NULL : arena.allocateFrom(token);
@@ -421,6 +422,11 @@ public final class ClientPeer implements Runnable {
         Double stepTimeout = options.stepTimeoutSeconds();
         if (stepTimeout != null) {
             settings.put("step_timeout_seconds", stepTimeout.doubleValue());
+        }
+        Long maxMessageSize = options.maxMessageSize();
+        if (maxMessageSize != null) {
+            // Written as an exact integer: the library reads the limit as a whole number of bytes.
+            settings.put("max_message_size", new JsonValue.JsonNumber(maxMessageSize.longValue()));
         }
         MemorySegment optionsJson = arena.allocateFrom(settings.build().toJsonString());
 

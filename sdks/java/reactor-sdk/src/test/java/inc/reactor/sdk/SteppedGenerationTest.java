@@ -115,6 +115,54 @@ final class SteppedGenerationTest {
         }
     }
 
+    @Test
+    @DisplayName("a message limit reaches the options call as an exact integer, on a stepped or a streamed client")
+    void aMessageLimitReachesTheOptionsCall() {
+        for (Generation generation : Generation.values()) {
+            try (FakeNativeLibrary library = new FakeNativeLibrary();
+                    Reactor client = Reactor.open(
+                            ReactorOptions.builder("https://api.example.test", "owner/model")
+                                    .dispatcher(Runnable::run)
+                                    .generation(generation)
+                                    .maxMessageSize(256L * 1024 * 1024)
+                                    .build(),
+                            arena -> Ffi.open(library.lookup()))) {
+                client.connect();
+                library.settleLastCall(true, "{}", null);
+
+                assertEquals(1, library.createdWithOptions.size(), generation.toString());
+                String json = library.createdWithOptions.get(0);
+                assertTrue(json.contains("\"max_message_size\":268435456"), json);
+                JsonValue.JsonObject sent = assertInstanceOf(JsonValue.JsonObject.class, JsonValue.parse(json));
+                assertEquals(
+                        generation.wireValue(), sent.getString("generation").orElseThrow());
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("without a message limit the library's default is left alone")
+    void noMessageLimitSendsNone() {
+        JsonValue.JsonObject sent =
+                assertInstanceOf(JsonValue.JsonObject.class, JsonValue.parse(fake.createdWithOptions.get(0)));
+        assertTrue(sent.get("max_message_size").isEmpty());
+    }
+
+    @Test
+    @DisplayName("a message limit outside 256 KiB to 1 GiB is refused, and either end is taken")
+    void aMessageLimitIsValidated() {
+        for (long bad : new long[] {0, -1, 256L * 1024 - 1, 1024L * 1024 * 1024 + 1}) {
+            ReactorOptions.Builder builder = stepped().maxMessageSize(bad);
+            assertThrows(IllegalArgumentException.class, builder::build, "accepted " + bad);
+        }
+        assertEquals(
+                Long.valueOf(256L * 1024),
+                stepped().maxMessageSize(256L * 1024).build().maxMessageSize());
+        assertEquals(
+                Long.valueOf(1024L * 1024 * 1024),
+                stepped().maxMessageSize(1024L * 1024 * 1024).build().maxMessageSize());
+    }
+
     // ── step() ──────────────────────────────────────────────────────────────
 
     @Test

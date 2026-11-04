@@ -149,8 +149,8 @@ extension Reactor {
     /// minted somewhere else entirely — which is what a real app does, because an
     /// API key does not belong on a device.
     ///
-    /// `generation` and `stepTimeout` are as for
-    /// ``init(model:jwt:apiURL:local:autoResumeTracks:generation:stepTimeout:eventQueue:)``,
+    /// `generation`, `stepTimeout` and `maxMessageSize` are as for
+    /// ``init(model:jwt:apiURL:local:autoResumeTracks:generation:stepTimeout:maxMessageSize:eventQueue:)``,
     /// and are checked before the key is exchanged.
     public convenience init(
         model: String,
@@ -160,14 +160,16 @@ extension Reactor {
         local: Bool = false,
         generation: Generation = .streamed,
         stepTimeout: Duration? = nil,
+        maxMessageSize: UInt64? = nil,
         eventQueue: DispatchQueue? = nil
     ) async throws {
         _ = try Reactor.validateStepTimeout(stepTimeout, for: generation)
+        try Reactor.validateMaxMessageSize(maxMessageSize)
         let token = try await Reactor.fetchJWT(
             apiKey: apiKey, apiURL: apiURL, options: options, local: local)
         try self.init(
             model: model, jwt: token, apiURL: apiURL, local: local, generation: generation,
-            stepTimeout: stepTimeout, eventQueue: eventQueue)
+            stepTimeout: stepTimeout, maxMessageSize: maxMessageSize, eventQueue: eventQueue)
     }
 }
 

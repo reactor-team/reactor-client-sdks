@@ -220,7 +220,9 @@ ran is unknown); a request too large to send with `MessageTooLargeException`
 (nothing was sent). A stepped `connect()` fails with
 `DataChannelChunkingRequiredException` when the data channel did not negotiate
 chunking, which a stepped session needs.
-`stepTimeoutSeconds(...)` bounds a step (default 300 s). See
+`stepTimeoutSeconds(...)` bounds a step (default 300 s). A message's limit is the
+smaller of `maxMessageSize(...)` (default 256 MiB) and the runtime's, which is 64 MiB
+unless the model raises it in its `reactor.yaml` (`runtime.webrtc.max_message_size`). See
 [`Example09SteppedGeneration`](examples/src/main/java/inc/reactor/examples/Example09SteppedGeneration.java).
 
 ## From Kotlin

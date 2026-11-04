@@ -10,6 +10,12 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`Options::max_message_size`** sets the largest data-channel message the
+  client declares and accepts, from 256 KiB to 1 GiB. A stepped session
+  returns each step's result in one message, so a model that raises its own
+  limit can return steps larger than 64 MiB. A connection carries the smaller
+  of the two sides' limits.
+
 - **Client stats carry the same metrics as the JS SDK's**: `concealed_samples`
   and `total_samples_received` on a received audio track, `frames_encoded` on
   a sent video track, and `jitter_ms` on a sent track, the jitter the far end

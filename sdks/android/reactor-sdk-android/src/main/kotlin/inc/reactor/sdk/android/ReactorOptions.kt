@@ -34,7 +34,23 @@ public data class ReactorOptions(
      * 300.
      */
     public val stepTimeoutSeconds: Double? = null,
+    /**
+     * The largest data-channel message, in bytes, the client declares and accepts, from
+     * [MIN_MAX_MESSAGE_SIZE] (256 KiB) to [MAX_MAX_MESSAGE_SIZE] (1 GiB); null for the native
+     * library's default of 256 MiB. A connection carries the smaller of this and the runtime's own
+     * limit, which is 64 MiB unless the model raises it, so a [step][Reactor.step] whose result
+     * is larger than either fails with [StepResultTooLargeException].
+     */
+    public val maxMessageSize: Long? = null,
 ) {
+    public companion object {
+        /** The lowest [maxMessageSize]: 256 KiB, what a data channel carries unchunked. */
+        public const val MIN_MAX_MESSAGE_SIZE: Long = 256L * 1024
+
+        /** The highest [maxMessageSize]: 1 GiB. */
+        public const val MAX_MAX_MESSAGE_SIZE: Long = 1024L * 1024 * 1024
+    }
+
     init {
         // Both refused here rather than at connect: the first would be ignored in silence, and the
         // second cannot become a duration.
@@ -45,6 +61,12 @@ public data class ReactorOptions(
             }
             require(stepTimeoutSeconds.isFinite() && stepTimeoutSeconds > 0.0) {
                 "stepTimeoutSeconds must be a finite, positive number of seconds; got $stepTimeoutSeconds"
+            }
+        }
+        if (maxMessageSize != null) {
+            require(maxMessageSize in MIN_MAX_MESSAGE_SIZE..MAX_MAX_MESSAGE_SIZE) {
+                "maxMessageSize must be from $MIN_MAX_MESSAGE_SIZE (256 KiB) to $MAX_MAX_MESSAGE_SIZE " +
+                    "(1 GiB) bytes; got $maxMessageSize"
             }
         }
     }

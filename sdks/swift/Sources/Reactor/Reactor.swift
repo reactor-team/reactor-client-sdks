@@ -144,13 +144,20 @@ public final class Reactor: @unchecked Sendable {
     ///   - stepTimeout: how long a step may take, generation included, before it
     ///     fails with ``ReactorError/Code/requestTimeout``. Stepped sessions
     ///     only; `nil` keeps the library's default of 300 seconds.
+    ///   - maxMessageSize: the largest data-channel message, in bytes, the
+    ///     client declares and accepts, from 256 KiB to 1 GiB; `nil` keeps the
+    ///     library's default of 256 MiB. A connection carries the smaller of
+    ///     this and the runtime's own limit, which is 64 MiB unless the model
+    ///     raises it, so a step whose result is larger than either fails with
+    ///     ``ReactorError/Code/stepResultTooLarge``.
     ///
     /// - Throws: ``ReactorError`` with ``ReactorError/Code/versionMismatch`` when
     ///   the loaded `libreactor_ffi` speaks a different ABI than this SDK was
     ///   built against — the one failure that has to be caught before any call,
     ///   because past it the stack is corrupted rather than an error reported.
     ///   ``ReactorError/Code/badRequest`` for a `stepTimeout` that is not
-    ///   positive, or that was given to a streamed client.
+    ///   positive, or that was given to a streamed client, and for a
+    ///   `maxMessageSize` outside 256 KiB to 1 GiB.
     public convenience init(
         model: String,
         jwt: String? = nil,
@@ -159,6 +166,7 @@ public final class Reactor: @unchecked Sendable {
         autoResumeTracks: Bool = true,
         generation: Generation = .streamed,
         stepTimeout: Duration? = nil,
+        maxMessageSize: UInt64? = nil,
         eventQueue: DispatchQueue? = nil
     ) throws {
         try self.init(
@@ -169,6 +177,7 @@ public final class Reactor: @unchecked Sendable {
             autoResumeTracks: autoResumeTracks,
             generation: generation,
             stepTimeout: stepTimeout,
+            maxMessageSize: maxMessageSize,
             eventQueue: eventQueue,
             ffi: .system
         )
@@ -183,11 +192,13 @@ public final class Reactor: @unchecked Sendable {
         autoResumeTracks: Bool = true,
         generation: Generation = .streamed,
         stepTimeout: Duration? = nil,
+        maxMessageSize: UInt64? = nil,
         eventQueue: DispatchQueue?,
         ffi: FFI
     ) throws {
         try ABI.check(ffi)
         let stepTimeoutSeconds = try Reactor.validateStepTimeout(stepTimeout, for: generation)
+        try Reactor.validateMaxMessageSize(maxMessageSize)
 
         self.ffi = ffi
         self.dispatcher = eventQueue.map(EventDispatcher.init(queue:)) ?? EventDispatcher()
@@ -218,8 +229,7 @@ public final class Reactor: @unchecked Sendable {
         // crates/reactor-ffi/src/lib.rs), so it does not have to outlive this call.
         let created: Result<OpaquePointer?, ReactorError> = withUnsafePointer(to: &callbacks) {
             callbacksPointer in
-            switch generation {
-            case .streamed:
+            if generation == .streamed && maxMessageSize == nil {
                 // Mode 0 is synthetic, always. Nothing here reaches reactor_create,
                 // which would take the audio device mode from an environment
                 // variable — and a library whose audience is apps and scripts must
@@ -229,16 +239,16 @@ public final class Reactor: @unchecked Sendable {
                     ffi.createWithADM(
                         resolvedURL, model, jwt, local ? 1 : 0, autoResumeTracks ? 1 : 0,
                         callbacksPointer, 0, ReactorSDK.version, Reactor.sdkType))
-            case .stepped:
-                // The generation mode is a creation option, and only the
-                // options-taking entry takes it.
-                return Reactor.createStepped(
-                    ffi: ffi, apiURL: resolvedURL, model: model, jwt: jwt,
-                    callbacks: callbacksPointer,
-                    options: CreateOptions(
-                        local: local, autoResumeTracks: autoResumeTracks,
-                        stepTimeoutSeconds: stepTimeoutSeconds))
             }
+            // The generation mode and the message limit are creation options, and
+            // only the options-taking entry takes them.
+            return Reactor.createWithOptions(
+                ffi: ffi, apiURL: resolvedURL, model: model, jwt: jwt,
+                callbacks: callbacksPointer,
+                options: CreateOptions(
+                    local: local, autoResumeTracks: autoResumeTracks,
+                    generation: generation.rawValue,
+                    stepTimeoutSeconds: stepTimeoutSeconds, maxMessageSize: maxMessageSize))
         }
 
         let handle: OpaquePointer?
@@ -421,7 +431,7 @@ public final class Reactor: @unchecked Sendable {
     /// Tears down the live connection first if there is one, without ending the
     /// session server-side. Fails when there is no session to reconnect to.
     ///
-    /// Note that a reconnect resumes recvonly tracks — unless ``init(model:jwt:apiURL:local:autoResumeTracks:generation:stepTimeout:eventQueue:)``
+    /// Note that a reconnect resumes recvonly tracks — unless ``init(model:jwt:apiURL:local:autoResumeTracks:generation:stepTimeout:maxMessageSize:eventQueue:)``
     /// was given `autoResumeTracks: false` at creation, which this client keeps
     /// for its whole lifetime — and nothing else: anything this client published
     /// before it is not published after it.

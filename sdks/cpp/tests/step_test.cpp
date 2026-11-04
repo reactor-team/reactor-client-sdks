@@ -506,6 +506,58 @@ TEST_CASE("a streamed client still creates through create_with_adm") {
   CHECK(fixture.library.options_creates == 0);
 }
 
+TEST_CASE("a message limit reaches the options entry, on a stepped or a streamed client") {
+  Fixture fixture;
+  reactor::Options options;
+  std::string generation = "streamed";
+  SECTION("stepped") {
+    options = stepped();
+    generation = "stepped";
+  }
+  SECTION("streamed") {}
+  options.max_message_size = 256ULL * 1024 * 1024;
+
+  {
+    reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, options};
+    client.connect().get();
+  }
+
+  CHECK(fixture.library.options_creates == 1);
+  CHECK(fixture.library.adm_creates == 0);
+  const auto sent = reactor::Json::parse(fixture.library.options_json);
+  CHECK(sent["generation"] == generation);
+  CHECK(sent["max_message_size"] == 256ULL * 1024 * 1024);
+}
+
+TEST_CASE("no message limit leaves the default to the library") {
+  Fixture fixture;
+  {
+    reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, stepped()};
+    client.connect().get();
+  }
+  CHECK_FALSE(reactor::Json::parse(fixture.library.options_json).contains("max_message_size"));
+}
+
+TEST_CASE("a message limit outside 256 KiB to 1 GiB is refused at construction") {
+  Fixture fixture;
+  reactor::Options options;
+  SECTION("below") { options.max_message_size = 256ULL * 1024 - 1; }
+  SECTION("above") { options.max_message_size = 1024ULL * 1024 * 1024 + 1; }
+  SECTION("zero") { options.max_message_size = 0; }
+
+  CHECK_THROWS_AS((reactor::Reactor{"owner/model", reactor::Jwt{"token"}, options}),
+                  reactor::BadRequestError);
+}
+
+TEST_CASE("a message limit at either end of the range is taken") {
+  Fixture fixture;
+  reactor::Options options;
+  SECTION("lowest") { options.max_message_size = 256ULL * 1024; }
+  SECTION("highest") { options.max_message_size = 1024ULL * 1024 * 1024; }
+
+  CHECK_NOTHROW((reactor::Reactor{"owner/model", reactor::Jwt{"token"}, options}));
+}
+
 TEST_CASE("options the library refuses fail connect with the typed error, freed once") {
   Fixture fixture;
   fixture.library.create_error =

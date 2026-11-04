@@ -86,7 +86,10 @@ send throws `messageTooLarge`. A step refused before it goes out (`invalidState`
 `badRequest`) keeps its pushed frames for the next step; past that they belong to
 the step whatever its outcome, so one that could not be sent drops them too, and
 nothing is resent. `clearStepInputs()` drops what is
-buffered now. `stepTimeout:` bounds a step (default 300 s).
+buffered now. `stepTimeout:` bounds a step (default 300 s). A message's limit is
+the smaller of `maxMessageSize:` (default 256 MiB) and the runtime's, which is
+64 MiB unless the model raises it in its `reactor.yaml`
+(`runtime.webrtc.max_message_size`).
 
 `result.files` names the extra files the model kept with the step; it does not
 carry them. Fetch their bytes over HTTP from the session's step results,
