@@ -183,6 +183,13 @@ pub struct InboundRtpStats {
     pub decoder_implementation: Option<String>,
     /// Whether that decoder is the hardware one. `None` when not reported.
     pub power_efficient_decoder: Option<bool>,
+    /// Audio samples played out since the stream started, per channel. `0`
+    /// for video.
+    pub total_samples_received: u64,
+    /// The part of [`InboundRtpStats::total_samples_received`] the receiver
+    /// made up because the real samples were lost or arrived too late, since
+    /// the stream started. `0` for video.
+    pub concealed_samples: u64,
 }
 
 /// One send stream's counters, as the engine reports them.

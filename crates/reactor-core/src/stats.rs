@@ -627,9 +627,8 @@ struct ByteSample {
 /// The same readings under the same names as the browser SDK's
 /// `createTrackStatsExtractor` (`sdks/js/src/internal/stats.ts`), so the
 /// runtime sees one vocabulary whichever SDK a session came from. Where the
-/// engine has no reading the browser has — an audio stream's concealed
-/// samples, the far end's jitter on a sent stream, frames encoded — the metric
-/// is left out rather than approximated.
+/// engine has no reading the browser has — the far end's jitter on a sent
+/// stream — the metric is left out rather than approximated.
 ///
 /// Holds each stream's previous byte counter, to turn the cumulative counter
 /// into a bitrate averaged over the interval since the previous batch; a
@@ -720,6 +719,15 @@ impl ClientStatsReporter {
                     "keyframe_requests",
                     Some(f64::from(s.pli_count) + f64::from(s.fir_count)),
                 );
+            } else {
+                // The samples played out, and the part of them made up for
+                // lost or late audio: the browser's concealedSamples over
+                // totalSamplesReceived.
+                m.put("concealed_samples", Some(s.concealed_samples as f64));
+                m.put(
+                    "total_samples_received",
+                    Some(s.total_samples_received as f64),
+                );
             }
             let mut stages = Vec::new();
             if track.kind == TrackKind::Video {
@@ -787,6 +795,7 @@ impl ClientStatsReporter {
             }
             if track.kind == TrackKind::Video {
                 m.put_measured("frames_per_second", s.frames_per_second);
+                m.put("frames_encoded", Some(f64::from(s.frames_encoded)));
                 m.put_measured("frame_width", f64::from(s.frame_width));
                 m.put_measured("frame_height", f64::from(s.frame_height));
                 m.put(
@@ -1126,6 +1135,7 @@ mod tests {
     // Only the tests build raw snapshots; the module itself reads them through
     // `TransportStats`, so importing these at the top would be an unused import.
     use crate::peer::{IceCandidateType, InboundRtpStats, OutboundRtpStats, RelayProtocol};
+    use std::collections::BTreeSet;
 
     fn inbound(ssrc: u32, bytes: u64, packets: u32, lost: i32) -> InboundRtpStats {
         InboundRtpStats {
@@ -2473,10 +2483,12 @@ mod tests {
         assert_eq!(
             keys,
             [
+                "concealed_samples",
                 "jitter_ms",
                 "nack_count",
                 "packets_lost",
-                "packets_received"
+                "packets_received",
+                "total_samples_received"
             ]
         );
     }
@@ -2620,6 +2632,235 @@ mod tests {
                 .metrics
                 .len(),
             1
+        );
+    }
+
+    /// The raw snapshot of a connection with a received video and audio track
+    /// and a sent video and audio track, every reading the engine can report
+    /// set, at *bytes* on every stream.
+    fn every_reading(bytes: u64) -> TransportStats {
+        let mut live = nominated(5, 0, 0);
+        live.available_outgoing_bitrate_bps = 2_500_000.0;
+        live.available_incoming_bitrate_bps = 3_000_000.0;
+        TransportStats {
+            inbound: vec![
+                InboundRtpStats {
+                    packets_received: 900,
+                    packets_lost: 3,
+                    jitter_s: 0.004,
+                    nack_count: 2,
+                    pli_count: 1,
+                    fir_count: 1,
+                    frames_per_second: 30.0,
+                    frames_decoded: 270,
+                    frames_dropped: 2,
+                    frame_width: 1280,
+                    frame_height: 720,
+                    ..received(1, "0", "video/VP9", bytes)
+                },
+                InboundRtpStats {
+                    packets_received: 500,
+                    packets_lost: 1,
+                    jitter_s: 0.002,
+                    nack_count: 1,
+                    total_samples_received: 480_000,
+                    concealed_samples: 960,
+                    ..received(2, "1", "audio/opus", bytes)
+                },
+            ],
+            outbound: vec![
+                OutboundRtpStats {
+                    packets_sent: 900,
+                    retransmitted_packets_sent: 4,
+                    nack_count: 3,
+                    packets_lost: 2,
+                    round_trip_time_s: 0.031,
+                    pli_count: 1,
+                    fir_count: 0,
+                    frames_per_second: 30.0,
+                    frames_encoded: 271,
+                    frame_width: 1280,
+                    frame_height: 720,
+                    ..sent(3, "2", "video/VP9", bytes)
+                },
+                OutboundRtpStats {
+                    packets_sent: 500,
+                    retransmitted_packets_sent: 1,
+                    nack_count: 1,
+                    packets_lost: 1,
+                    round_trip_time_s: 0.031,
+                    ..sent(4, "3", "audio/opus", bytes)
+                },
+            ],
+            candidate_pairs: vec![live],
+            ..TransportStats::default()
+        }
+    }
+
+    fn every_track() -> Vec<TrackMappingEntry> {
+        let mut tracks = tracks();
+        tracks.push(mapping(
+            "mic",
+            TrackKind::Audio,
+            TrackDirection::Sendonly,
+            "3",
+        ));
+        tracks
+    }
+
+    /// The second batch of [`every_reading`], so the bitrates are there too.
+    fn every_track_stat() -> Vec<ClientTrackStat> {
+        let mut reporter = ClientStatsReporter::new();
+        send_batch(
+            &mut reporter,
+            &every_reading(10_000),
+            &every_track(),
+            &HashSet::new(),
+            0.0,
+        );
+        send_batch(
+            &mut reporter,
+            &every_reading(60_000),
+            &every_track(),
+            &HashSet::new(),
+            5_000.0,
+        )
+    }
+
+    #[test]
+    fn a_received_audio_track_carries_its_played_and_concealed_samples() {
+        let stats = every_track_stat();
+
+        let audio = by_name(&stats, "main_audio");
+        assert_eq!(audio.metrics["total_samples_received"], 480_000.0);
+        assert_eq!(audio.metrics["concealed_samples"], 960.0);
+        // Video plays no samples, and the browser reports none for it.
+        let video = by_name(&stats, "main_video");
+        assert!(!video.metrics.contains_key("total_samples_received"));
+        assert!(!video.metrics.contains_key("concealed_samples"));
+    }
+
+    #[test]
+    fn a_sent_video_track_carries_its_frames_encoded() {
+        let stats = every_track_stat();
+
+        assert_eq!(by_name(&stats, "webcam").metrics["frames_encoded"], 271.0);
+        assert!(!by_name(&stats, "mic")
+            .metrics
+            .contains_key("frames_encoded"));
+    }
+
+    /// The metric names `stats.ts` writes with `put('name', …)` in *section*.
+    fn js_names(section: &str) -> BTreeSet<String> {
+        section
+            .split("put('")
+            .skip(1)
+            .map(|rest| rest[..rest.find('\'').unwrap()].to_string())
+            .collect()
+    }
+
+    /// A metric the browser reports and the engine can't yet, by direction.
+    /// reactor-webrtc reads the far end's report on a sent stream for its
+    /// loss and round-trip time only, not its jitter.
+    const NOT_IN_THE_ENGINE: &[(TrackDirection, &str)] = &[(TrackDirection::Sendonly, "jitter_ms")];
+
+    /// The JS SDK and this reporter send the same metrics under the same
+    /// names, for each direction and kind of track and for the connection, so
+    /// a chart reads the same whichever SDK a session came from. Every reading
+    /// the engine has is set, so a name this reporter leaves out is one it
+    /// never sends. `stats.ts` is read in its sections: what both directions
+    /// put, received (shared, then video and audio), sent (shared, then
+    /// video), and the connection.
+    #[test]
+    fn the_native_metrics_match_the_js_sdk() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../sdks/js/src/internal/stats.ts"
+        );
+        let source = std::fs::read_to_string(path).expect("read the JS SDK's stats.ts");
+        let between = |from: &str, to: &str| -> &str {
+            let start = source
+                .find(from)
+                .unwrap_or_else(|| panic!("no {from:?} in stats.ts"));
+            let len = source[start..]
+                .find(to)
+                .unwrap_or_else(|| panic!("no {to:?} after {from:?}"));
+            &source[start..start + len]
+        };
+        // Both directions: the bitrate, put before the stream's direction is
+        // looked at.
+        let both = between(
+            "const metrics: Record<string, number> = {};",
+            "if (inbound) {",
+        );
+        let received = between("if (inbound) {", "const remote = remoteInbound.get(");
+        let (received_shared, received_kinds) = received
+            .split_once("if (track.kind === 'video') {")
+            .expect("received video section");
+        let (received_video, received_audio) = received_kinds
+            .split_once("} else {")
+            .expect("received audio section");
+        let sent = between(
+            "const remote = remoteInbound.get(",
+            "const stages = inbound",
+        );
+        let (sent_shared, sent_video) = sent
+            .split_once("if (track.kind === 'video') {")
+            .expect("sent video section");
+
+        let union = |sections: &[&str]| -> BTreeSet<String> {
+            sections
+                .iter()
+                .flat_map(|section| js_names(section))
+                .collect()
+        };
+        let stats = every_track_stat();
+        for (name, direction, js) in [
+            (
+                "main_video",
+                TrackDirection::Recvonly,
+                union(&[both, received_shared, received_video]),
+            ),
+            (
+                "main_audio",
+                TrackDirection::Recvonly,
+                union(&[both, received_shared, received_audio]),
+            ),
+            (
+                "webcam",
+                TrackDirection::Sendonly,
+                union(&[both, sent_shared, sent_video]),
+            ),
+            ("mic", TrackDirection::Sendonly, union(&[both, sent_shared])),
+        ] {
+            let expected: BTreeSet<String> = js
+                .into_iter()
+                .filter(|key| !NOT_IN_THE_ENGINE.contains(&(direction, key.as_str())))
+                .collect();
+            let native: BTreeSet<String> = by_name(&stats, name).metrics.keys().cloned().collect();
+            assert_eq!(native, expected, "{name}: native metrics against stats.ts");
+        }
+
+        let connection = between("export function toClientConnectionStat", "return {");
+        let js_connection: BTreeSet<String> = connection
+            .split("metrics.")
+            .skip(1)
+            .map(|rest| {
+                rest[..rest
+                    .find(|c: char| !(c.is_ascii_lowercase() || c == '_'))
+                    .unwrap()]
+                    .to_string()
+            })
+            .collect();
+        let native_connection: BTreeSet<String> =
+            client_connection_stat(&every_reading(60_000), Some(812.0), &environment(), 5_000.0)
+                .metrics
+                .keys()
+                .cloned()
+                .collect();
+        assert_eq!(
+            native_connection, js_connection,
+            "connection metrics against stats.ts"
         );
     }
 }

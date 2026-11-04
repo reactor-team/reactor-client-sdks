@@ -8,6 +8,13 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Client stats carry the received audio's concealed samples, and a sent video
+  track's frames encoded**, as the JS SDK's do: `concealed_samples` and
+  `total_samples_received` on a received audio track, `frames_encoded` on a
+  sent video track. They come from reactor-webrtc 0.25.0.
+
 ### Fixed
 
 - A session that closed before it was ready failed `connect()` with only

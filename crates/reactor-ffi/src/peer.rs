@@ -203,6 +203,8 @@ fn map_stats(report: StatsReport) -> TransportStats {
                 timing_frame: s.timing_frame.map(timing_frame),
                 decoder_implementation: s.decoder_implementation,
                 power_efficient_decoder: s.power_efficient_decoder,
+                total_samples_received: s.total_samples_received,
+                concealed_samples: s.concealed_samples,
             })
             .collect(),
         outbound: report
@@ -604,7 +606,7 @@ impl PeerTransport for ReactorWebRtcPeerTransport {
                                         (m.frame_id, m.capture_time_us, m.user_data.as_slice())
                                     })
                                     .unwrap_or((0, 0, &[]));
-                                cb(&track_name, f.bgra, f.width, f.height, frame_id, ts, ud);
+                                cb(&track_name, f.pixels, f.width, f.height, frame_id, ts, ud);
                             });
                         }
                     }
@@ -1131,6 +1133,10 @@ mod tests {
             jitter_buffer_emitted_count: 50,
             total_processing_delay_s: 0.0,
             timing_frame,
+            total_samples_received: 0,
+            concealed_samples: 0,
+            silent_concealed_samples: 0,
+            concealment_events: 0,
         }
     }
 
