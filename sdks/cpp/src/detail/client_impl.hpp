@@ -336,6 +336,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
         // should cost nothing.
         step_timeout_seconds_(
             checked_step_timeout(options.generation, options.step_timeout_seconds)),
+        max_message_size_(checked_max_message_size(options.max_message_size)),
         dispatcher_(std::move(options.executor)) {}
 
   // NOLINTNEXTLINE(bugprone-exception-escape)
@@ -683,10 +684,11 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     callbacks.on_audio = &on_audio_trampoline;
     callbacks.userdata = context.get();
 
-    if (generation_ == Generation::Stepped) {
+    if (generation_ == Generation::Stepped || max_message_size_) {
       // Its own creation call: only `reactor_create_with_options` takes the
-      // generation mode. It pins the synthetic audio module too, by name.
-      handle_ = create_stepped_handle(callbacks);
+      // generation mode and the message limit. It pins the synthetic audio
+      // module too, by name.
+      handle_ = create_handle_with_options(callbacks);
       context_ = context.release();
       return;
     }
@@ -911,9 +913,13 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   static std::optional<double> checked_step_timeout(Generation generation,
                                                     std::optional<double> timeout);
 
-  /// `reactor_create_with_options` for a stepped session. Called with `mutex_`
-  /// held; throws the library's typed error when it refuses the options.
-  ReactorHandle* create_stepped_handle(const ReactorCallbacks& callbacks) const;
+  /// `size`, or a thrown `BadRequestError` for one outside 256 KiB to 1 GiB.
+  static std::optional<std::uint64_t> checked_max_message_size(std::optional<std::uint64_t> size);
+
+  /// `reactor_create_with_options`, for a stepped session or a message limit.
+  /// Called with `mutex_` held; throws the library's typed error when it
+  /// refuses the options.
+  ReactorHandle* create_handle_with_options(const ReactorCallbacks& callbacks) const;
 
   void deliver_video(const std::string& name, const VideoFrame& frame);
   void deliver_audio(const std::string& name, const AudioFrame& frame);
@@ -939,6 +945,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   bool auto_resume_tracks_ = true;
   Generation generation_ = Generation::Streamed;
   std::optional<double> step_timeout_seconds_;
+  std::optional<std::uint64_t> max_message_size_;
 
   /// At most one of these: whichever constructor was used.
   std::optional<std::string> api_key_;

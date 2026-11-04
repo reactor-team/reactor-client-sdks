@@ -210,7 +210,9 @@ data-channel message's worth of frame bytes, so pushing faster than steps run
 drops the oldest frames, across tracks. Once the session's tracks are known, a
 push to a track the session does not take as input is dropped with a warning.
 `ReactorOptions.stepTimeoutSeconds` bounds how long a step may take; the default
-is 300.
+is 300. A message's limit is the smaller of `ReactorOptions.maxMessageSize`
+(default 256 MiB) and the runtime's, which is 64 MiB unless the model raises it in
+its `reactor.yaml` (`runtime.webrtc.max_message_size`).
 
 The result is copied onto the heap once, when the step completes, and the native
 one is freed straight away: a `StepResult` holds no native memory and can be

@@ -10,6 +10,7 @@ struct SteppingTests {
         fake: FakeLibrary,
         generation: Generation = .stepped,
         stepTimeout: Duration? = nil,
+        maxMessageSize: UInt64? = nil,
         eventQueue: DispatchQueue? = nil
     ) throws -> Reactor {
         try Reactor(
@@ -19,6 +20,7 @@ struct SteppingTests {
             local: false,
             generation: generation,
             stepTimeout: stepTimeout,
+            maxMessageSize: maxMessageSize,
             eventQueue: eventQueue,
             ffi: fake.table)
     }
@@ -126,6 +128,43 @@ struct SteppingTests {
         #expect {
             _ = try makeClient(fake: fake, stepTimeout: .zero)
         } throws: { ($0 as? ReactorError)?.code == .badRequest }
+        #expect(fake.createOptionsCalls.isEmpty)
+    }
+
+    @Test(
+        "a message limit reaches the options entry, on a stepped or a streamed client",
+        arguments: [Generation.stepped, .streamed])
+    func maxMessageSizeReachesTheOptions(generation: Generation) throws {
+        let fake = FakeLibrary()
+        let client = try makeClient(
+            fake: fake, generation: generation, maxMessageSize: 256 * 1024 * 1024)
+        defer { client.close() }
+
+        #expect(fake.createCalls.isEmpty)
+        let options = try #require(fake.createOptionsCalls.first).options
+        #expect(options["generation"] as? String == generation.rawValue)
+        #expect(options["max_message_size"] as? Int == 256 * 1024 * 1024)
+    }
+
+    @Test("without a message limit the library's default is left alone")
+    func noMaxMessageSizeSendsNone() throws {
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+
+        #expect(fake.createOptionsCalls.first?.options["max_message_size"] == nil)
+    }
+
+    @Test(
+        "a message limit outside 256 KiB to 1 GiB is refused before anything is created",
+        // Zero, one byte under 256 KiB, one byte over 1 GiB.
+        arguments: [0, 262_143, 1_073_741_825] as [UInt64])
+    func maxMessageSizeMustBeInRange(size: UInt64) {
+        let fake = FakeLibrary()
+        #expect {
+            _ = try makeClient(fake: fake, maxMessageSize: size)
+        } throws: { ($0 as? ReactorError)?.code == .badRequest }
+        #expect(fake.createCalls.isEmpty)
         #expect(fake.createOptionsCalls.isEmpty)
     }
 

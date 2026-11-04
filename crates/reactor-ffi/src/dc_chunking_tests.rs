@@ -48,25 +48,38 @@ fn trickle(from: &Side, to: &PeerConnection) {
 /// A transport connected to a stand-in runtime.
 struct Loopback {
     client: Arc<ReactorWebRtcPeerTransport>,
+    /// The offer the client sent, with the limit its chunking declares.
+    offer: String,
     at_runtime: mpsc::Receiver<Vec<u8>>,
+    at_client: mpsc::Receiver<Vec<u8>>,
     // The runtime's end, kept alive for the test.
-    _runtime_data: DataChannel,
+    runtime_data: DataChannel,
     _runtime: PeerConnection,
 }
 
-/// The transport, connected to a runtime built with or without chunking. The
-/// transport's own `prepare` needs a coordinator, so the test installs the
-/// connection and its data channel into the transport's state directly, as
-/// `prepare` would.
+/// The transport, connected to a runtime built with or without chunking, each
+/// side at its default limit.
 fn connect(runtime_chunks: bool) -> Loopback {
+    connect_with(
+        runtime_chunks.then(DcChunking::default),
+        DEFAULT_MAX_MESSAGE_SIZE,
+    )
+}
+
+/// The transport, declaring `client_max` bytes, connected to a runtime built
+/// with `runtime` chunking, or none. The transport's own `prepare` needs a
+/// coordinator, so the test installs the connection and its data channel into
+/// the transport's state directly, as `prepare` would.
+fn connect_with(runtime: Option<DcChunking>, client_max: u64) -> Loopback {
     let (tx, _rx) = futures::channel::mpsc::unbounded();
-    let client = Arc::new(ReactorWebRtcPeerTransport::with_adm_mode(
+    let client = Arc::new(ReactorWebRtcPeerTransport::with_max_message_size(
         tx,
         AdmMode::Synthetic,
+        client_max,
     ));
     let mut runtime_factory = PeerConnectionFactory::builder().with_adm(AdmMode::Synthetic);
-    if runtime_chunks {
-        runtime_factory = runtime_factory.with_dc_chunking(DcChunking::default());
+    if let Some(chunking) = runtime {
+        runtime_factory = runtime_factory.with_dc_chunking(chunking);
     }
     let runtime_factory = runtime_factory.build().unwrap();
 
@@ -115,6 +128,10 @@ fn connect(runtime_chunks: bool) -> Loopback {
     runtime_data.on_message(move |bytes, _binary| {
         let _ = got_tx.send(bytes.to_vec());
     });
+    let (client_tx, client_rx) = mpsc::channel();
+    data.on_message(move |bytes, _binary| {
+        let _ = client_tx.send(bytes.to_vec());
+    });
 
     {
         let mut s = client.state.lock().unwrap();
@@ -123,10 +140,17 @@ fn connect(runtime_chunks: bool) -> Loopback {
     }
     Loopback {
         client,
+        offer: offer.sdp,
         at_runtime: got_rx,
-        _runtime_data: runtime_data,
+        at_client: client_rx,
+        runtime_data,
         _runtime: pc2,
     }
+}
+
+/// `size` bytes of a pattern that a dropped or reordered frame would break.
+fn pattern(size: usize) -> Vec<u8> {
+    (0..size).map(|i| (i % 251) as u8).collect()
 }
 
 #[test]
@@ -135,16 +159,22 @@ fn a_runtime_that_chunks_lifts_the_limit_and_takes_a_large_command() {
     // the runtime's end.
     let Loopback {
         client,
+        offer,
         at_runtime,
-        _runtime_data,
+        at_client: _,
+        runtime_data: _runtime_data,
         _runtime,
     } = connect(true);
     assert_eq!(
         client.max_message_bytes(),
-        DcChunking::default().max_message_size as usize
+        DEFAULT_MAX_MESSAGE_SIZE as usize
+    );
+    assert!(
+        offer.contains(&format!("max-message-size={DEFAULT_MAX_MESSAGE_SIZE}")),
+        "the offer declares the client's default limit"
     );
 
-    let command: Vec<u8> = (0..MIB).map(|i| (i % 251) as u8).collect();
+    let command = pattern(MIB);
     client
         .send_data(&command, true)
         .expect("a 1 MiB command is sent");
@@ -161,8 +191,10 @@ fn a_runtime_without_chunking_keeps_the_plain_limit() {
     // the runtime's end.
     let Loopback {
         client,
+        offer: _,
         at_runtime,
-        _runtime_data,
+        at_client: _,
+        runtime_data: _runtime_data,
         _runtime,
     } = connect(false);
     assert_eq!(
@@ -177,4 +209,93 @@ fn a_runtime_without_chunking_keeps_the_plain_limit() {
         .expect("the runtime receives it");
     assert_eq!(got, b"small");
     futures::executor::block_on(client.close()).unwrap();
+}
+
+/// A step result past the 64 MiB default, inside the raised limit.
+const LARGE: usize = 72 * MIB;
+const RAISED: u64 = 96 * MIB as u64;
+
+#[test]
+fn a_step_result_past_64_mib_arrives_when_both_sides_raise_the_limit() {
+    let Loopback {
+        client,
+        offer,
+        at_runtime: _,
+        at_client,
+        runtime_data,
+        _runtime,
+    } = connect_with(Some(dc_chunking(RAISED)), RAISED);
+    assert!(offer.contains(&format!("max-message-size={RAISED}")));
+    assert_eq!(client.max_message_bytes(), RAISED as usize);
+
+    let result = pattern(LARGE);
+    runtime_data
+        .send(&result, true)
+        .expect("the runtime sends 72 MiB to a client that takes 96 MiB");
+    let got = at_client
+        .recv_timeout(Duration::from_secs(90))
+        .expect("the client receives it");
+    assert_eq!(got.len(), LARGE);
+    assert!(got == result, "the step result arrived whole");
+    futures::executor::block_on(client.close()).unwrap();
+}
+
+#[test]
+fn a_client_that_declares_less_than_the_runtime_sets_the_limit() {
+    let Loopback {
+        client,
+        offer: _,
+        at_runtime: _,
+        at_client: _,
+        runtime_data,
+        _runtime,
+    } = connect_with(Some(dc_chunking(RAISED)), 64 * MIB as u64);
+
+    match runtime_data.send(&pattern(LARGE), true) {
+        Err(reactor_webrtc::Error::DataChannel(DcSendError::TooLarge { max, .. })) => {
+            assert_eq!(max, 64 * MIB as u64);
+        }
+        other => panic!("expected the runtime's send to be refused as too large, got {other:?}"),
+    }
+    assert_eq!(runtime_data.state(), DataChannelState::Open);
+    futures::executor::block_on(client.close()).unwrap();
+}
+
+/// The client's higher default changes nothing against a runtime that keeps
+/// 64 MiB: the channel refuses a larger message from the client with the same
+/// error the core raises for one past the client's own limit.
+#[test]
+fn a_runtime_at_its_default_still_bounds_the_default_client() {
+    let Loopback {
+        client,
+        offer: _,
+        at_runtime: _,
+        at_client: _,
+        runtime_data: _runtime_data,
+        _runtime,
+    } = connect(true);
+
+    match client.send_data(&pattern(65 * MIB), true) {
+        Err(CoreError::MessageTooLarge { max, .. }) => assert_eq!(max, 64 * MIB),
+        other => panic!("expected MessageTooLarge, got {other:?}"),
+    }
+    futures::executor::block_on(client.close()).unwrap();
+}
+
+#[test]
+fn the_send_buffer_holds_two_messages_and_never_less_than_the_default() {
+    for (max, buffer) in [
+        (MIN_MAX_MESSAGE_SIZE, 128 * MIB as u64),
+        (64 * MIB as u64, 128 * MIB as u64),
+        (DEFAULT_MAX_MESSAGE_SIZE, 512 * MIB as u64),
+        (MAX_MAX_MESSAGE_SIZE, 2048 * MIB as u64),
+    ] {
+        let chunking = dc_chunking(max);
+        assert_eq!(chunking.max_message_size, max);
+        assert_eq!(chunking.send_buffer_limit, buffer, "for {max}");
+        PeerConnectionFactory::builder()
+            .with_dc_chunking(chunking)
+            .build()
+            .expect("reactor-webrtc takes the chunking");
+    }
 }

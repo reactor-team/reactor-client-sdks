@@ -142,6 +142,15 @@ struct Options {
   /// Brace-initialised so an aggregate initializer that stops before it does
   /// not trip -Wmissing-field-initializers in a consumer's -Werror build.
   std::optional<double> step_timeout_seconds{};
+
+  /// The largest data-channel message, in bytes, the client declares and
+  /// accepts, from 256 KiB to 1 GiB; the constructor throws `BadRequestError`
+  /// for a value outside that range. Unset keeps the library's default of
+  /// 256 MiB. A connection carries the smaller of this and the runtime's own
+  /// limit, which is 64 MiB unless the model raises it, so a `step()` whose
+  /// result is larger than either throws `StepResultTooLargeError`.
+  /// Brace-initialised, like `step_timeout_seconds`.
+  std::optional<std::uint64_t> max_message_size{};
 };
 
 /// What `connect` may adopt instead of creating.

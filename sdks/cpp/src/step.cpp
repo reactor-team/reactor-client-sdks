@@ -234,7 +234,20 @@ std::optional<double> ClientImpl::checked_step_timeout(Generation generation,
   return timeout;
 }
 
-ReactorHandle* ClientImpl::create_stepped_handle(const ReactorCallbacks& callbacks) const {
+std::optional<std::uint64_t> ClientImpl::checked_max_message_size(
+    std::optional<std::uint64_t> size) {
+  constexpr std::uint64_t lowest = 256ULL * 1024;
+  constexpr std::uint64_t highest = 1024ULL * 1024 * 1024;
+  if (size && (*size < lowest || *size > highest)) {
+    throw BadRequestError{
+        "Options::max_message_size must be from 262144 (256 KiB) to 1073741824 (1 GiB) bytes, "
+        "got " +
+        std::to_string(*size)};
+  }
+  return size;
+}
+
+ReactorHandle* ClientImpl::create_handle_with_options(const ReactorCallbacks& callbacks) const {
   Json options{
       {"local", local_},
       {"auto_resume_tracks", auto_resume_tracks_},
@@ -247,6 +260,9 @@ ReactorHandle* ClientImpl::create_stepped_handle(const ReactorCallbacks& callbac
   if (step_timeout_seconds_) {
     options["step_timeout_seconds"] = *step_timeout_seconds_;
   }
+  if (max_message_size_) {
+    options["max_message_size"] = *max_message_size_;
+  }
   const std::string options_json = options.dump();
 
   char* error = nullptr;
@@ -258,7 +274,7 @@ ReactorHandle* ClientImpl::create_stepped_handle(const ReactorCallbacks& callbac
     if (refused) {
       throw_error_payload(refused.view(), "connect");
     }
-    throw ReactorError{"libreactor_ffi could not create a stepped client"};
+    throw ReactorError{"libreactor_ffi could not create the client from its options"};
   }
   return handle;
 }

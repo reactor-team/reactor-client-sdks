@@ -355,7 +355,10 @@ these three ran; a refused step changed nothing, since the runtime checks the
 whole request first, while a failed call keeps the calls before it applied;
 both name the part at fault in `entry`, and `StepCommandFailedError` the
 handler's own code in `command_code`); one whose output
-does not fit in a message raises `StepResultTooLargeError`; one whose session
+does not fit in a message raises `StepResultTooLargeError`. A message's limit is
+the smaller of the client's `max_message_size=` (default 256 MiB) and the
+runtime's, which is 64 MiB unless the model raises it in its `reactor.yaml`
+(`runtime.webrtc.max_message_size`). One whose session
 ended before its result came raises `StepSessionEndedError` (whether it ran is
 unknown); a request too large to send raises `MessageTooLargeError` (nothing was
 sent). A stepped `connect()` raises `DataChannelChunkingRequiredError` when the

@@ -93,7 +93,36 @@ class SteppedGenerationTest {
         val defaults =
             Json.parseObject(NativeClient.createOptionsJson(false, true, null, null, Generation.STEPPED, null))
         assertFalse("step_timeout_seconds" in defaults)
+        assertFalse("max_message_size" in defaults)
         assertFalse("sdk_version" in defaults)
+    }
+
+    @Test
+    fun `a message limit is sent as a whole number of bytes, on a stepped or a streamed client`() {
+        for (generation in Generation.entries) {
+            val json =
+                NativeClient.createOptionsJson(
+                    local = false,
+                    autoResumeTracks = true,
+                    sdkVersion = null,
+                    sdkType = "android",
+                    generation = generation,
+                    stepTimeoutSeconds = null,
+                    maxMessageSize = 256L * 1024 * 1024,
+                )
+            assertTrue(json, json.contains("\"max_message_size\":268435456"))
+            assertEquals(generation.wire, Json.parseObject(json)["generation"])
+        }
+    }
+
+    @Test
+    fun `a message limit outside 256 KiB to 1 GiB is refused, and either end is taken`() {
+        for (bad in listOf(0L, -1L, 256L * 1024 - 1, 1024L * 1024 * 1024 + 1)) {
+            assertThrows(IllegalArgumentException::class.java) { ReactorOptions(maxMessageSize = bad) }
+        }
+        assertEquals(256L * 1024, ReactorOptions(maxMessageSize = 256L * 1024).maxMessageSize)
+        assertEquals(1024L * 1024 * 1024, ReactorOptions(maxMessageSize = 1024L * 1024 * 1024).maxMessageSize)
+        assertNull(ReactorOptions().maxMessageSize)
     }
 
     // ── The result ──────────────────────────────────────────────────────────

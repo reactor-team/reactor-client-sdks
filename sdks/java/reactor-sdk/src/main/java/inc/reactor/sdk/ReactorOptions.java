@@ -23,6 +23,13 @@ public final class ReactorOptions {
     private final @Nullable Dispatcher dispatcher;
     private final Generation generation;
     private final @Nullable Double stepTimeoutSeconds;
+    private final @Nullable Long maxMessageSize;
+
+    /** The lowest {@link Builder#maxMessageSize}: 256 KiB, what a data channel carries unchunked. */
+    public static final long MIN_MAX_MESSAGE_SIZE = 256L * 1024;
+
+    /** The highest {@link Builder#maxMessageSize}: 1 GiB. */
+    public static final long MAX_MAX_MESSAGE_SIZE = 1024L * 1024 * 1024;
 
     private ReactorOptions(Builder builder) {
         this.apiUrl = builder.apiUrl;
@@ -34,6 +41,7 @@ public final class ReactorOptions {
         this.dispatcher = builder.dispatcher;
         this.generation = builder.generation;
         this.stepTimeoutSeconds = builder.stepTimeoutSeconds;
+        this.maxMessageSize = builder.maxMessageSize;
     }
 
     /**
@@ -94,6 +102,14 @@ public final class ReactorOptions {
         return stepTimeoutSeconds;
     }
 
+    /**
+     * @return the largest data-channel message, in bytes, the client declares and accepts, or
+     *     {@code null} for the native library's default of 256 MiB
+     */
+    public @Nullable Long maxMessageSize() {
+        return maxMessageSize;
+    }
+
     /** Builds {@link ReactorOptions}. */
     public static final class Builder {
 
@@ -106,6 +122,7 @@ public final class ReactorOptions {
         private @Nullable Dispatcher dispatcher;
         private Generation generation = Generation.STREAMED;
         private @Nullable Double stepTimeoutSeconds;
+        private @Nullable Long maxMessageSize;
 
         private Builder(String apiUrl, String modelName) {
             this.apiUrl = Objects.requireNonNull(apiUrl, "apiUrl");
@@ -200,12 +217,33 @@ public final class ReactorOptions {
         }
 
         /**
+         * The largest data-channel message the client declares and accepts.
+         *
+         * <p>A connection carries the smaller of this and the runtime's own limit, which is 64 MiB
+         * unless the model raises it, so a {@link Reactor#step step} whose result is larger than
+         * either fails with {@link StepResultTooLargeException}.
+         *
+         * @param bytes from {@link ReactorOptions#MIN_MAX_MESSAGE_SIZE} (256 KiB) to {@link
+         *     ReactorOptions#MAX_MAX_MESSAGE_SIZE} (1 GiB); the native library's default is 256 MiB
+         * @return this builder
+         */
+        public Builder maxMessageSize(long bytes) {
+            this.maxMessageSize = bytes;
+            return this;
+        }
+
+        /**
          * @return the options
          * @throws IllegalArgumentException when a step timeout was set for a streamed session, or is
          *     not a finite, positive number — the first would be ignored in silence, and the second
-         *     cannot become a duration
+         *     cannot become a duration — or when a message limit is outside 256 KiB to 1 GiB
          */
         public ReactorOptions build() {
+            if (maxMessageSize != null
+                    && (maxMessageSize < MIN_MAX_MESSAGE_SIZE || maxMessageSize > MAX_MAX_MESSAGE_SIZE)) {
+                throw new IllegalArgumentException("maxMessageSize must be from " + MIN_MAX_MESSAGE_SIZE
+                        + " (256 KiB) to " + MAX_MAX_MESSAGE_SIZE + " (1 GiB) bytes; got " + maxMessageSize);
+            }
             if (stepTimeoutSeconds != null) {
                 if (generation != Generation.STEPPED) {
                     throw new IllegalArgumentException(

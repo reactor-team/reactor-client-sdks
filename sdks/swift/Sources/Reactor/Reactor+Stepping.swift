@@ -114,24 +114,26 @@ extension Reactor {
         withHandle(else: ()) { handle in ffi.clearStepInputs(handle) }
     }
 
-    // MARK: - Creating a stepped client
+    // MARK: - Creating a client from options
 
     /// What `reactor_create_with_options` is handed. Every key is spelled out,
     /// because the library refuses one it does not know rather than ignoring it.
     struct CreateOptions: Encodable {
         var local: Bool
         var autoResumeTracks: Bool
+        var generation: String
         var stepTimeoutSeconds: Double?
+        var maxMessageSize: UInt64?
         // Named rather than defaulted, for the reason createWithADM passes 0.
         let adm = "synthetic"
         let sdkVersion = ReactorSDK.version
         let sdkType = Reactor.sdkType
-        let generation = Generation.stepped.rawValue
 
         private enum CodingKeys: String, CodingKey {
             case local
             case autoResumeTracks = "auto_resume_tracks"
             case stepTimeoutSeconds = "step_timeout_seconds"
+            case maxMessageSize = "max_message_size"
             case adm
             case sdkVersion = "sdk_version"
             case sdkType = "sdk_type"
@@ -139,11 +141,12 @@ extension Reactor {
         }
     }
 
-    /// Create a stepped client's handle.
+    /// Create a client's handle through `reactor_create_with_options`: for a
+    /// stepped session, or for one with a message limit.
     ///
     /// `.success(nil)` is the allocation failure `reactor_create_with_adm` also
     /// reports; `.failure` is the library refusing the options, with its reason.
-    static func createStepped(
+    static func createWithOptions(
         ffi: FFI,
         apiURL: String,
         model: String,
@@ -193,6 +196,23 @@ extension Reactor {
                 .badRequest, "stepTimeout must be positive, got \(seconds)s", operation: "create")
         }
         return seconds
+    }
+
+    /// The lowest `maxMessageSize`: 256 KiB, what a data channel carries unchunked.
+    static let minMaxMessageSize: UInt64 = 256 * 1024
+    /// The highest `maxMessageSize`: 1 GiB.
+    static let maxMaxMessageSize: UInt64 = 1024 * 1024 * 1024
+
+    /// Refuse a message limit the library would refuse, with the range in the message.
+    static func validateMaxMessageSize(_ size: UInt64?) throws {
+        guard let size else { return }
+        guard (minMaxMessageSize...maxMaxMessageSize).contains(size) else {
+            throw ReactorError(
+                .badRequest,
+                "maxMessageSize must be from \(minMaxMessageSize) (256 KiB) to "
+                    + "\(maxMaxMessageSize) (1 GiB) bytes, got \(size)",
+                operation: "create")
+        }
     }
 }
 

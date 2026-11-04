@@ -11,11 +11,24 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`Reactor(max_message_size=...)`** sets the largest data-channel message
+  the client declares and accepts, from 256 KiB to 1 GiB. A stepped session
+  returns each step's result in one message, so a model that raises its own
+  limit (`runtime.webrtc.max_message_size` in its `reactor.yaml`) can return
+  steps larger than 64 MiB. A connection carries the smaller of the two sides'
+  limits.
 - **Client stats carry the same metrics as the JS SDK's**: `concealed_samples`
   and `total_samples_received` on a received audio track, `frames_encoded` on
   a sent video track, and `jitter_ms` on a sent track, the jitter the far end
   reports once its first receiver report arrives. They come from
   reactor-webrtc 0.26.0.
+
+### Changed
+
+- The client declares and accepts data-channel messages of up to 256 MiB by
+  default, up from 64 MiB. A connection carries the smaller of the two sides'
+  limits, so against a runtime that keeps 64 MiB nothing changes. The memory
+  for a message is only taken as it arrives.
 
 ### Fixed
 

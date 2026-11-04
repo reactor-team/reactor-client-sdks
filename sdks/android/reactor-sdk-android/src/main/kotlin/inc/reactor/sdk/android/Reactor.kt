@@ -574,6 +574,7 @@ public class Reactor(
                         sdkVersion = SDK_VERSION,
                         generation = options.generation,
                         stepTimeoutSeconds = options.stepTimeoutSeconds,
+                        maxMessageSize = options.maxMessageSize,
                     ).also { created ->
                         handle = created
                         handleModel = modelName

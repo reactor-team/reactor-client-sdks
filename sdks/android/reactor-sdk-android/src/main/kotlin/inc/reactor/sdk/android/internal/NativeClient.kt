@@ -545,11 +545,12 @@ internal object NativeClient {
         sdkType: String? = "android",
         generation: Generation = Generation.STREAMED,
         stepTimeoutSeconds: Double? = null,
+        maxMessageSize: Long? = null,
     ): Handle {
         NativeLibrary.ensureLoaded()
         ensureCompletionsWired()
         val context =
-            if (generation == Generation.STREAMED) {
+            if (generation == Generation.STREAMED && maxMessageSize == null) {
                 nativeCreate(apiUrl, modelName, jwt, local, autoResumeTracks, listener, sdkVersion, sdkType)
             } else {
                 val errorOut = arrayOfNulls<String>(1)
@@ -558,7 +559,15 @@ internal object NativeClient {
                         apiUrl,
                         modelName,
                         jwt,
-                        createOptionsJson(local, autoResumeTracks, sdkVersion, sdkType, generation, stepTimeoutSeconds),
+                        createOptionsJson(
+                            local,
+                            autoResumeTracks,
+                            sdkVersion,
+                            sdkType,
+                            generation,
+                            stepTimeoutSeconds,
+                            maxMessageSize,
+                        ),
                         listener,
                         errorOut,
                     )
@@ -577,7 +586,7 @@ internal object NativeClient {
 
     /**
      * The options object `reactor_create_with_options` takes: everything `reactor_create_with_adm`
-     * does, plus the generation mode and the step timeout.
+     * does, plus the generation mode, the step timeout and the message limit.
      *
      * The audio device module is named exactly as [create]'s streamed path pins it — `synthetic` —
      * so this path cannot be the one an environment variable opens a microphone through. The
@@ -590,6 +599,7 @@ internal object NativeClient {
         sdkType: String?,
         generation: Generation,
         stepTimeoutSeconds: Double?,
+        maxMessageSize: Long? = null,
     ): String =
         buildString {
             append("{\"local\":").append(local)
@@ -599,6 +609,7 @@ internal object NativeClient {
             sdkType?.let { append(",\"sdk_type\":").append(Json.quote(it)) }
             append(",\"generation\":").append(Json.quote(generation.wire))
             stepTimeoutSeconds?.let { append(",\"step_timeout_seconds\":").append(it) }
+            maxMessageSize?.let { append(",\"max_message_size\":").append(it) }
             append('}')
         }
 }

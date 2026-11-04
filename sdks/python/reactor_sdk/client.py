@@ -65,6 +65,11 @@ from .track import Track, TrackDirection, TrackKind, TrackList
 #: Where a local coordinator listens. `local=True` points at this.
 LOCAL_API_URL = "http://localhost:8080"
 
+#: The lowest `max_message_size`: 256 KiB, what a data channel carries unchunked.
+MIN_MAX_MESSAGE_SIZE = 256 * 1024
+#: The highest `max_message_size`: 1 GiB.
+MAX_MAX_MESSAGE_SIZE = 1024 * 1024 * 1024
+
 
 class ReactorStatus(str, Enum):
     """Connection status.
@@ -261,6 +266,7 @@ class Reactor:
         max_session_duration_seconds: int | None = None,
         generation: Generation = "streamed",
         step_timeout: float | None = None,
+        max_message_size: int | None = None,
     ) -> None:
         """
         Args:
@@ -288,6 +294,13 @@ class Reactor:
             step_timeout: Seconds a :meth:`step` may take, generation included, before
                 it fails with `RequestTimeoutError`. Stepped sessions only; None keeps
                 the default of 300.
+            max_message_size: The largest data-channel message, in bytes, this client
+                declares and accepts, from 256 KiB to 1 GiB. None keeps the default of
+                256 MiB. A connection carries the smaller of this and the runtime's
+                own limit, which is 64 MiB unless the model raises it, so a
+                :meth:`step` whose result is larger than either raises
+                `StepResultTooLargeError`. Raising it only helps against a runtime
+                that raises its own limit too.
 
         No audio device is ever opened — see `_SYNTHETIC_ADM`.
         """
@@ -298,6 +311,14 @@ class Reactor:
                 raise ValueError('step_timeout only applies to generation="stepped"')
             if not (isinstance(step_timeout, (int, float)) and 0 < step_timeout < float("inf")):
                 raise ValueError(f"step_timeout must be a positive number, got {step_timeout!r}")
+        if max_message_size is not None and not (
+            type(max_message_size) is int
+            and MIN_MAX_MESSAGE_SIZE <= max_message_size <= MAX_MAX_MESSAGE_SIZE
+        ):
+            raise ValueError(
+                f"max_message_size must be a number of bytes from {MIN_MAX_MESSAGE_SIZE} "
+                f"(256 KiB) to {MAX_MAX_MESSAGE_SIZE} (1 GiB), got {max_message_size!r}"
+            )
 
         # Local mode means a local coordinator, so it picks the URL. The production
         # default counts as "no choice made": callers routinely compute
@@ -317,6 +338,7 @@ class Reactor:
         self._max_session_duration_seconds = max_session_duration_seconds
         self._generation: Generation = generation
         self._step_timeout = step_timeout
+        self._max_message_size = max_message_size
         # Held from a step's first push to the native step taking the buffer, so
         # steps from two threads cannot interleave their media. Never across an
         # await: both happen in one synchronous stretch.
@@ -763,8 +785,8 @@ class Reactor:
 
         jwt_bytes = self._jwt.encode() if self._jwt else None
 
-        if self._generation == "stepped":
-            handle = self._create_stepped_handle(lib, jwt_bytes, cbs)
+        if self._generation == "stepped" or self._max_message_size is not None:
+            handle = self._create_handle_with_options(lib, jwt_bytes, cbs)
         else:
             # Named rather than defaulted: `reactor_create` would take the mode from
             # the REACTOR_WEBRTC_ADM environment variable, and an environment variable
@@ -785,13 +807,13 @@ class Reactor:
         # Now closable, so the atexit hook must know about it.
         _LIVE_CLIENTS.add(self)
 
-    def _create_stepped_handle(
+    def _create_handle_with_options(
         self, lib: Any, jwt_bytes: bytes | None, cbs: ReactorCallbacks
     ) -> int:
-        """Create the handle for a stepped session, through the options-taking entry.
+        """Create the handle through the options-taking entry.
 
-        The generation mode is a creation option rather than a connect one, and
-        only `reactor_create_with_options` takes it.
+        The generation mode and the message limit are creation options rather
+        than connect ones, and only `reactor_create_with_options` takes them.
         """
         if not has_stepped(lib):
             raise RuntimeError(
@@ -809,6 +831,8 @@ class Reactor:
         }
         if self._step_timeout is not None:
             options["step_timeout_seconds"] = float(self._step_timeout)
+        if self._max_message_size is not None:
+            options["max_message_size"] = self._max_message_size
         error = ctypes.c_void_p()
         handle = lib.reactor_create_with_options(
             self._api_url.encode(),

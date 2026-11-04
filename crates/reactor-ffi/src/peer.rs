@@ -79,6 +79,32 @@ fn send_err(e: reactor_webrtc::Error) -> CoreError {
     }
 }
 
+/// The largest data-channel message the client declares and accepts on a chunked
+/// channel when the host sets none: 256 MiB.
+///
+/// A connection carries the smaller of this and what the runtime declares, so the
+/// runtime's own limit, 64 MiB unless its model raises it, is still the one a
+/// step result meets. This only lets a runtime that raises its limit deliver
+/// larger results. The channel buffers a message as its frames arrive, so a
+/// higher limit costs nothing until a message that large is received.
+pub const DEFAULT_MAX_MESSAGE_SIZE: u64 = 256 * 1024 * 1024;
+/// The lowest limit a host may set: 256 KiB, what a channel carries without chunking.
+pub const MIN_MAX_MESSAGE_SIZE: u64 = 256 * 1024;
+/// The highest limit a host may set: 1 GiB.
+pub const MAX_MAX_MESSAGE_SIZE: u64 = 1024 * 1024 * 1024;
+/// The least a chunked channel may queue ahead of the wire, reactor-webrtc's
+/// default. A larger limit raises it to twice the limit, so one full message can
+/// wait behind another.
+const MIN_SEND_BUFFER_LIMIT: u64 = 128 * 1024 * 1024;
+
+/// Chunking that carries messages of up to `max_message_size` bytes.
+fn dc_chunking(max_message_size: u64) -> DcChunking {
+    let mut chunking = DcChunking::default();
+    chunking.max_message_size = max_message_size;
+    chunking.send_buffer_limit = MIN_SEND_BUFFER_LIMIT.max(max_message_size.saturating_mul(2));
+    chunking
+}
+
 /// Which audio device module to use when the host does not say.
 ///
 /// Synthetic, on every platform — no microphone is opened and nothing is captured
@@ -100,7 +126,7 @@ fn send_err(e: reactor_webrtc::Error) -> CoreError {
 /// `reactor_create_with_adm`, or `REACTOR_WEBRTC_ADM=platform`. That is also what
 /// brings speaker playout back; under Synthetic, decoded audio arrives at `on_audio`
 /// for the host to play.
-fn default_adm_mode() -> AdmMode {
+pub(crate) fn default_adm_mode() -> AdmMode {
     adm_mode_from_env(std::env::var("REACTOR_WEBRTC_ADM").ok().as_deref())
 }
 
@@ -404,11 +430,18 @@ pub struct ReactorWebRtcPeerTransport {
 }
 
 impl ReactorWebRtcPeerTransport {
-    pub fn new(event_tx: UnboundedSender<PeerEvent>) -> Self {
-        Self::with_adm_mode(event_tx, default_adm_mode())
+    #[cfg(test)]
+    pub fn with_adm_mode(event_tx: UnboundedSender<PeerEvent>, mode: AdmMode) -> Self {
+        Self::with_max_message_size(event_tx, mode, DEFAULT_MAX_MESSAGE_SIZE)
     }
 
-    pub fn with_adm_mode(event_tx: UnboundedSender<PeerEvent>, mode: AdmMode) -> Self {
+    /// A transport whose chunked data channel declares and accepts messages of up
+    /// to `max_message_size` bytes; see [`DEFAULT_MAX_MESSAGE_SIZE`].
+    pub fn with_max_message_size(
+        event_tx: UnboundedSender<PeerEvent>,
+        mode: AdmMode,
+        max_message_size: u64,
+    ) -> Self {
         info!("[peer] audio device module: {mode:?}");
         // SPED is factory-wide: libwebrtc reads it from the engine's environment
         // rather than per connection, and so is dcsctp's max_burst, which
@@ -417,7 +450,7 @@ impl ReactorWebRtcPeerTransport {
         let factory = PeerConnectionFactory::builder()
             .with_adm(mode)
             .with_dtls_in_stun(true)
-            .with_dc_chunking(DcChunking::default())
+            .with_dc_chunking(dc_chunking(max_message_size))
             .build()
             .expect("create PeerConnectionFactory");
         Self {
