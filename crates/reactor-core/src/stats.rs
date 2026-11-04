@@ -626,9 +626,7 @@ struct ByteSample {
 ///
 /// The same readings under the same names as the browser SDK's
 /// `createTrackStatsExtractor` (`sdks/js/src/internal/stats.ts`), so the
-/// runtime sees one vocabulary whichever SDK a session came from. Where the
-/// engine has no reading the browser has — the far end's jitter on a sent
-/// stream — the metric is left out rather than approximated.
+/// runtime sees one vocabulary whichever SDK a session came from.
 ///
 /// Holds each stream's previous byte counter, to turn the cumulative counter
 /// into a bitrate averaged over the interval since the previous batch; a
@@ -786,6 +784,12 @@ impl ClientStatsReporter {
             // arrived.
             if s.round_trip_time_s > 0.0 || s.packets_lost != 0 {
                 m.put("packets_lost", Some(f64::from(s.packets_lost)));
+            }
+            // The far end's jitter comes from the same report, so it is
+            // there once a round-trip time or a jitter other than zero says
+            // the report arrived.
+            if s.round_trip_time_s > 0.0 || s.jitter_s > 0.0 {
+                m.put("jitter_ms", Some(round_ms(s.jitter_s * 1_000.0)));
             }
             if s.round_trip_time_s > 0.0 {
                 m.put(
@@ -2675,6 +2679,7 @@ mod tests {
                     nack_count: 3,
                     packets_lost: 2,
                     round_trip_time_s: 0.031,
+                    jitter_s: 0.005,
                     pli_count: 1,
                     fir_count: 0,
                     frames_per_second: 30.0,
@@ -2689,6 +2694,7 @@ mod tests {
                     nack_count: 1,
                     packets_lost: 1,
                     round_trip_time_s: 0.031,
+                    jitter_s: 0.003,
                     ..sent(4, "3", "audio/opus", bytes)
                 },
             ],
@@ -2750,6 +2756,22 @@ mod tests {
             .contains_key("frames_encoded"));
     }
 
+    #[test]
+    fn a_sent_track_carries_the_far_ends_jitter_once_it_reported() {
+        let stats = every_track_stat();
+        assert_eq!(by_name(&stats, "webcam").metrics["jitter_ms"], 5.0);
+        assert_eq!(by_name(&stats, "mic").metrics["jitter_ms"], 3.0);
+
+        // Before the far end's first report, there is no jitter to send.
+        let raw = TransportStats {
+            outbound: vec![sent(3, "2", "video/VP9", 0)],
+            ..TransportStats::default()
+        };
+        let stats =
+            ClientStatsReporter::new().track_stats(&raw, &every_track(), &HashSet::new(), 0.0);
+        assert!(!by_name(&stats, "webcam").metrics.contains_key("jitter_ms"));
+    }
+
     /// The metric names `stats.ts` writes with `put('name', …)` in *section*.
     fn js_names(section: &str) -> BTreeSet<String> {
         section
@@ -2758,11 +2780,6 @@ mod tests {
             .map(|rest| rest[..rest.find('\'').unwrap()].to_string())
             .collect()
     }
-
-    /// A metric the browser reports and the engine can't yet, by direction.
-    /// reactor-webrtc reads the far end's report on a sent stream for its
-    /// loss and round-trip time only, not its jitter.
-    const NOT_IN_THE_ENGINE: &[(TrackDirection, &str)] = &[(TrackDirection::Sendonly, "jitter_ms")];
 
     /// The JS SDK and this reporter send the same metrics under the same
     /// names, for each direction and kind of track and for the connection, so
@@ -2815,28 +2832,18 @@ mod tests {
                 .collect()
         };
         let stats = every_track_stat();
-        for (name, direction, js) in [
+        for (name, expected) in [
             (
                 "main_video",
-                TrackDirection::Recvonly,
                 union(&[both, received_shared, received_video]),
             ),
             (
                 "main_audio",
-                TrackDirection::Recvonly,
                 union(&[both, received_shared, received_audio]),
             ),
-            (
-                "webcam",
-                TrackDirection::Sendonly,
-                union(&[both, sent_shared, sent_video]),
-            ),
-            ("mic", TrackDirection::Sendonly, union(&[both, sent_shared])),
+            ("webcam", union(&[both, sent_shared, sent_video])),
+            ("mic", union(&[both, sent_shared])),
         ] {
-            let expected: BTreeSet<String> = js
-                .into_iter()
-                .filter(|key| !NOT_IN_THE_ENGINE.contains(&(direction, key.as_str())))
-                .collect();
             let native: BTreeSet<String> = by_name(&stats, name).metrics.keys().cloned().collect();
             assert_eq!(native, expected, "{name}: native metrics against stats.ts");
         }

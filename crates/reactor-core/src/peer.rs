@@ -226,6 +226,9 @@ pub struct OutboundRtpStats {
     pub fraction_lost: f64,
     /// Packets the receiver reports as lost. Signed, per RFC 3550.
     pub packets_lost: i32,
+    /// Jitter in seconds, as the receiver reports it about this stream, from
+    /// the same report; `0.0` until it has sent one.
+    pub jitter_s: f64,
     /// 64-bit, for the same reason as [`OutboundRtpStats::packets_sent`].
     pub retransmitted_packets_sent: u64,
     /// Retransmissions the receiver asked this endpoint for.

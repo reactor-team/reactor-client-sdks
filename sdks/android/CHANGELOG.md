@@ -13,10 +13,11 @@ request as the bump.
 
 ### Added
 
-- **Client stats carry the received audio's concealed samples, and a sent video
-  track's frames encoded**, as the JS SDK's do: `concealed_samples` and
-  `total_samples_received` on a received audio track, `frames_encoded` on a
-  sent video track. They come from reactor-webrtc 0.25.0.
+- **Client stats carry the same metrics as the JS SDK's**: `concealed_samples`
+  and `total_samples_received` on a received audio track, `frames_encoded` on
+  a sent video track, and `jitter_ms` on a sent track, the jitter the far end
+  reports once its first receiver report arrives. They come from
+  reactor-webrtc 0.26.0.
 
 ### Fixed
 
