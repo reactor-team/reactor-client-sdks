@@ -19,35 +19,54 @@ use reactor_core::error::CoreError;
 use reactor_webrtc_dc_chunking::sdp::{self, Params};
 use reactor_webrtc_dc_chunking::{
     Delivery, Reassembler, SendConfig, SendError, SendQueue, BROWSER_CHUNK_SIZE,
-    DEFAULT_MAX_MESSAGE_SIZE,
 };
 use web_sys::RtcDataChannel;
 
 use crate::http::js_err;
+use crate::limits;
 
-/// The largest message this side sends or accepts, advertised in the offer.
-const LOCAL_MAX_MESSAGE_SIZE: u64 = DEFAULT_MAX_MESSAGE_SIZE;
-
-/// The offer as the coordinator receives it: the browser's, declaring
-/// chunking.
-pub(crate) fn declare(offer: &str) -> String {
-    sdp::declare(offer, &Params::local(LOCAL_MAX_MESSAGE_SIZE))
+/// One connection's negotiation: the largest message this side declares, and
+/// the runtime's parameters once its answer declared chunking. Shared with the
+/// channel callbacks, which decide from it.
+#[derive(Clone)]
+pub(crate) struct Negotiation {
+    local_max: u64,
+    remote: Rc<Cell<Option<Params>>>,
 }
 
-/// One connection's negotiation: the runtime's parameters, once its answer
-/// declared chunking. Shared with the channel callbacks, which decide from it.
-#[derive(Clone, Default)]
-pub(crate) struct Negotiation(Rc<Cell<Option<Params>>>);
-
 impl Negotiation {
+    /// A negotiation in which this side declares messages of up to `local_max` bytes.
+    pub(crate) fn new(local_max: u64) -> Self {
+        Self {
+            local_max,
+            remote: Rc::default(),
+        }
+    }
+
+    /// The offer as the coordinator receives it: the browser's, declaring
+    /// chunking with this side's limit.
+    pub(crate) fn declare(&self, offer: &str) -> String {
+        sdp::declare(offer, &Params::local(self.local_max))
+    }
+
     /// Record what the runtime's answer declared.
     pub(crate) fn on_answer(&self, answer: &str) {
-        self.0.set(sdp::parse(answer));
+        self.remote.set(sdp::parse(answer));
     }
 
     /// Forget an answer the browser rejected.
     pub(crate) fn clear(&self) {
-        self.0.set(None);
+        self.remote.set(None);
+    }
+
+    /// The send configuration for a channel whose runtime declared `remote`.
+    fn send_config(&self, remote: &Params) -> SendConfig {
+        SendConfig {
+            chunk_size: BROWSER_CHUNK_SIZE,
+            max_message_size: sdp::effective_max_message_size(self.local_max, remote),
+            queue_limit: limits::queue_limit(self.local_max),
+            ..SendConfig::default()
+        }
     }
 }
 
@@ -74,19 +93,15 @@ impl Framing {
     /// Decide from the negotiation, once the channel is open. Returns whether
     /// the channel is chunked.
     pub(crate) fn decide(&self, channel: &RtcDataChannel, negotiation: &Negotiation) -> bool {
-        let Some(remote) = negotiation.0.get() else {
+        let Some(remote) = negotiation.remote.get() else {
             return false;
         };
-        let config = SendConfig {
-            chunk_size: BROWSER_CHUNK_SIZE,
-            max_message_size: sdp::effective_max_message_size(LOCAL_MAX_MESSAGE_SIZE, &remote),
-            ..SendConfig::default()
-        };
+        let config = negotiation.send_config(&remote);
         // Resume pumping at the queue's low-water mark.
         channel.set_buffered_amount_low_threshold(clamp_u32(config.low_water));
         *self.0.borrow_mut() = Some(Chunked {
             queue: SendQueue::new(config),
-            reassembler: Reassembler::new(LOCAL_MAX_MESSAGE_SIZE),
+            reassembler: Reassembler::new(negotiation.local_max),
         });
         true
     }

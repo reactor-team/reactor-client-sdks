@@ -9,6 +9,16 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`maxMessageSize`** in the `Reactor` options sets the largest data-channel
+  message the client declares and accepts, from 256 KiB to 1 GiB. A stepped
+  session returns each step's result in one message, so a model that raises
+  its own limit (`runtime.webrtc.max_message_size` in its `reactor.yaml`) can
+  return steps larger than 64 MiB to a page that raises its limit too. The
+  default stays 64 MiB: a message is held whole in the tab's memory while it
+  arrives.
+
 ### Fixed
 
 - A session that closed before it was ready failed `connect()` with only

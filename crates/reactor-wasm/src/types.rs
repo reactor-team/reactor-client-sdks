@@ -65,6 +65,14 @@ export interface ClientOptions {
   /** How long `step()` waits for a step's result, generation included.
    *  Default 300000. */
   stepTimeoutMs?: number;
+  /** The largest data-channel message, in bytes, the client declares and
+   *  accepts: from 262144 (256 KiB) to 1073741824 (1 GiB). Default 67108864
+   *  (64 MiB). A connection carries the smaller of this and the runtime's own
+   *  limit, which is 64 MiB unless the model raises it, so a `step()` whose
+   *  result is larger than either fails with `StepResultTooLargeError`. A
+   *  message is held whole in memory while it arrives, so raise this only for
+   *  a model whose steps need it. */
+  maxMessageSize?: number;
   /** Console log level. Default "warn". */
   logLevel?: "off" | "error" | "warn" | "info" | "debug" | "trace";
 }

@@ -29,7 +29,7 @@ use reactor_core::protocol::session::{TrackCapability, TrackDirection, TrackKind
 use reactor_core::protocol::webrtc::{IceCandidate, IceServer, TrackMappingEntry};
 use reactor_core::protocol::DEFAULT_MAX_MESSAGE_BYTES;
 
-use crate::chunking::{self, Framing, Negotiation, Received};
+use crate::chunking::{Framing, Negotiation, Received};
 use crate::http::{describe, js_err};
 
 /// A remote track and the stream it arrived on, kept together because the JS
@@ -85,6 +85,9 @@ pub struct WasmPeerTransport {
     received_tracks: ReceivedTracks,
     /// SCTP's negotiated `maxMessageSize`, read once the answer is applied.
     max_message_bytes: Cell<usize>,
+    /// The largest message a chunked channel declares and accepts; see
+    /// [`crate::limits::DEFAULT_MAX_MESSAGE_SIZE`].
+    chunked_max_message_size: u64,
 }
 
 /// Write per-sender bitrate bounds onto one transceiver's sender.
@@ -144,13 +147,16 @@ async fn apply_sender_bitrate(
 }
 
 impl WasmPeerTransport {
-    pub fn new(event_tx: UnboundedSender<PeerEvent>) -> Self {
+    /// A transport whose chunked channels declare and accept messages of up to
+    /// `max_message_size` bytes.
+    pub fn new(event_tx: UnboundedSender<PeerEvent>, max_message_size: u64) -> Self {
         Self {
             state: RefCell::new(None),
             event_tx,
             track_bitrates: RefCell::new(HashMap::new()),
             received_tracks: Rc::new(RefCell::new(HashMap::new())),
             max_message_bytes: Cell::new(DEFAULT_MAX_MESSAGE_BYTES),
+            chunked_max_message_size: max_message_size,
         }
     }
 
@@ -347,7 +353,7 @@ impl PeerTransport for WasmPeerTransport {
         }
 
         // ── Channels ──────────────────────────────────────────────────────────
-        let negotiation = Negotiation::default();
+        let negotiation = Negotiation::new(self.chunked_max_message_size);
         let data_framing = Framing::default();
         let control_framing = Framing::default();
         wire_channel(
@@ -428,6 +434,9 @@ impl PeerTransport for WasmPeerTransport {
             }
         }
 
+        // The coordinator gets the offer declaring data-channel chunking; the
+        // browser keeps the description it wrote (see `chunking`).
+        let declared_offer = negotiation.declare(&sdp_offer);
         *self.state.borrow_mut() = Some(PeerState {
             pc,
             data_channel,
@@ -440,10 +449,8 @@ impl PeerTransport for WasmPeerTransport {
             _closures: closures,
         });
 
-        // The coordinator gets the offer declaring data-channel chunking; the
-        // browser keeps the description it wrote (see `chunking`).
         Ok(PreparedOffer {
-            sdp_offer: chunking::declare(&sdp_offer),
+            sdp_offer: declared_offer,
             track_mapping,
         })
     }

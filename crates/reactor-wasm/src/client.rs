@@ -35,6 +35,7 @@ use reactor_core::step::{PixelLayout, StepCommand};
 
 use crate::auth::WasmAuthProvider;
 use crate::http::WasmHttpClient;
+use crate::limits;
 use crate::peer::WasmPeerTransport;
 use crate::pixels::{check_size, PixelFormat};
 use crate::platform::WasmPlatform;
@@ -93,6 +94,9 @@ struct ClientOptions {
     generation: Option<GenerationMode>,
     /// How long `step()` waits for a step's result, generation included.
     step_timeout_ms: Option<u64>,
+    /// The largest data-channel message, in bytes, the client declares and
+    /// accepts; see [`limits::DEFAULT_MAX_MESSAGE_SIZE`].
+    max_message_size: Option<u64>,
     /// `"off"`, `"error"`, `"warn"`, `"info"`, `"debug"` or `"trace"`.
     /// Defaults to `"warn"`: the core logs freely at debug, and a browser
     /// console is a user-facing surface.
@@ -302,6 +306,8 @@ impl ReactorClient {
         let options: ClientOptions = serde_wasm_bindgen::from_value(options.into())
             .map_err(|e| invalid(&format!("options: {e}")))?;
         init_logging(options.log_level.as_deref());
+        let max_message_size =
+            limits::max_message_size(options.max_message_size).map_err(|e| invalid(&e))?;
         let options = options.into_reactor_options()?;
         let stepped = options.generation == GenerationMode::Stepped;
 
@@ -313,7 +319,7 @@ impl ReactorClient {
         let shutdown = shutdown_rx.shared();
 
         let (peer_event_tx, peer_event_rx) = mpsc::unbounded::<PeerEvent>();
-        let peer = Arc::new(WasmPeerTransport::new(peer_event_tx));
+        let peer = Arc::new(WasmPeerTransport::new(peer_event_tx, max_message_size));
         let callbacks: SharedCallbacks = Rc::new(RefCell::new(Callbacks::default()));
 
         // Under wasm the core's `Shared*` aliases drop their `Send + Sync`
