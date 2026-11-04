@@ -101,6 +101,9 @@ jobs:
             rust:
               - *shared
               - *core
+              # Read by reactor-core's stats tests, which check its codec list
+              # and metric names against the native reporter.
+              - 'sdks/js/src/internal/stats.ts'
             python:
               - *shared
               - *core
