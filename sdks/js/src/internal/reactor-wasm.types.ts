@@ -47,6 +47,9 @@ export interface ClientOptions {
   /** How long `step()` waits for a step's result, generation included.
    *  Default 300000. */
   stepTimeoutMs?: number;
+  /** The largest data-channel message, in bytes, the client declares and
+   *  accepts: 262144 (256 KiB) to 1073741824 (1 GiB). Default 64 MiB. */
+  maxMessageSize?: number;
   logLevel?: 'off' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
 }
 

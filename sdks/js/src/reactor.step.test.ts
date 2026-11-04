@@ -101,6 +101,20 @@ describe('Reactor generation option', () => {
       stepTimeoutMs: 1000,
     });
   });
+
+  it('passes maxMessageSize straight through to the binding', async () => {
+    const reactor = new Reactor({
+      modelName: 'm',
+      generation: 'stepped',
+      maxMessageSize: 256 * 1024 * 1024,
+    });
+
+    await reactor.connect();
+
+    expect(FakeReactorClient.instances.at(-1)?.options).toMatchObject({
+      maxMessageSize: 256 * 1024 * 1024,
+    });
+  });
 });
 
 describe('Reactor.step', () => {

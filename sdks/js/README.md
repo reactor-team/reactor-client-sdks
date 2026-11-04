@@ -232,6 +232,11 @@ await reactor.step();
   `MessageTooLargeError` when the request is too large to send. The frames pushed for a step
   belong to it: when its request cannot be sent, the step rejects and its frames are dropped
   with it, not kept for the next step.
+- A step's result travels in one data-channel message, whose limit is the smaller of the
+  client's `maxMessageSize` option (default 64 MiB) and the runtime's, which is 64 MiB unless
+  the model raises it in its `reactor.yaml` (`runtime.webrtc.max_message_size`). Raise
+  `maxMessageSize` only for a model whose steps need it: a message is held whole in the tab's
+  memory while it arrives.
 
 ## Recording and clips
 
