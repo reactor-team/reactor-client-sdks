@@ -136,6 +136,14 @@ interface StageTotal {
   frames: number;
 }
 
+// The native SDKs send the same readings from reactor-core, and its tests read
+// this file: `crates/reactor-core/src/stats.rs` checks that the native reporter
+// sends exactly the metric names written here, for each direction and kind of
+// track and for the connection, and that `WIRE_CODECS` matches the wire. They
+// find the sections below by their code: the direction and kind branches of
+// the extractor, the remote-inbound lookup, and each named metric write. A
+// change to a metric, or to how this function is laid out, can fail Rust CI.
+
 /**
  * The per-track part of the runtime report: one reading per track, every
  * `RUNTIME_REPORT_INTERVAL_MS`. Not used for `getStats()` / `statsUpdate`.

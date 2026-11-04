@@ -8,6 +8,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Client stats carry the same metrics as the JS SDK's**: `concealed_samples`
+  and `total_samples_received` on a received audio track, `frames_encoded` on
+  a sent video track, and `jitter_ms` on a sent track, the jitter the far end
+  reports once its first receiver report arrives. They come from
+  reactor-webrtc 0.26.0.
+
 ### Fixed
 
 - A session that closed before it was ready failed `connect()` with only

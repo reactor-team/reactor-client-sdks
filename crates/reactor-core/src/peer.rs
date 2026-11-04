@@ -183,6 +183,13 @@ pub struct InboundRtpStats {
     pub decoder_implementation: Option<String>,
     /// Whether that decoder is the hardware one. `None` when not reported.
     pub power_efficient_decoder: Option<bool>,
+    /// Audio samples played out since the stream started, per channel. `0`
+    /// for video.
+    pub total_samples_received: u64,
+    /// The part of [`InboundRtpStats::total_samples_received`] the receiver
+    /// made up because the real samples were lost or arrived too late, since
+    /// the stream started. `0` for video.
+    pub concealed_samples: u64,
 }
 
 /// One send stream's counters, as the engine reports them.
@@ -219,6 +226,9 @@ pub struct OutboundRtpStats {
     pub fraction_lost: f64,
     /// Packets the receiver reports as lost. Signed, per RFC 3550.
     pub packets_lost: i32,
+    /// Jitter in seconds, as the receiver reports it about this stream, from
+    /// the same report; `0.0` until it has sent one.
+    pub jitter_s: f64,
     /// 64-bit, for the same reason as [`OutboundRtpStats::packets_sent`].
     pub retransmitted_packets_sent: u64,
     /// Retransmissions the receiver asked this endpoint for.
