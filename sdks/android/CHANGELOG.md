@@ -19,6 +19,15 @@ request as the bump.
   reports once its first receiver report arrives. They come from
   reactor-webrtc 0.26.0.
 
+### Changed
+
+- The client declares and accepts data-channel messages of up to 256 MiB, up
+  from 64 MiB, so a model that raises its own limit
+  (`runtime.webrtc.max_message_size` in its `reactor.yaml`) can return steps
+  larger than 64 MiB. A connection carries the smaller of the two sides'
+  limits, so against a runtime that keeps 64 MiB nothing changes. The memory
+  for a message is only taken as it arrives.
+
 ### Fixed
 
 - A session that closed before it was ready failed `connect()` with only

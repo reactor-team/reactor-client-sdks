@@ -348,9 +348,17 @@ ReactorHandle *reactor_create_with_adm(
  *                          "sdk_type":             "…",    // as reactor_create
  *                          "generation":           "streamed" | "stepped",
  *                                                          // default "streamed"
- *                          "step_timeout_seconds": n       // > 0; default 300;
+ *                          "step_timeout_seconds": n,      // > 0; default 300;
  *                                                          // too long = no limit
+ *                          "max_message_size":     n       // bytes, 262144 to
+ *                                                          // 1073741824; default
+ *                                                          // 268435456 (256 MiB)
  *                        }
+ *                      max_message_size is the largest data-channel message the
+ *                      client declares and accepts. A connection carries the
+ *                      smaller of it and the runtime's limit (64 MiB unless the
+ *                      model raises it), so a step result larger than either
+ *                      fails with step_result_too_large.
  *                      An **unrecognised key, or a value of the wrong type, is
  *                      an error**: a misspelt "generation" would otherwise create
  *                      a streamed client for a caller about to wait on steps.
@@ -751,7 +759,8 @@ typedef void (*reactor_step_completion_fn)(
  *   step_not_ready             the session is not in a running state that can
  *                              take a step yet.  The step did not run.
  *   step_result_too_large      the step ran, but its result does not fit in one
- *                              data-channel message.
+ *                              data-channel message: the smaller of the
+ *                              client's max_message_size and the runtime's.
  *   step_command_failed        one of the step's commands failed, so the step
  *                              did not run; the calls before it stay applied.
  *                              "entry" names the call and "command_code" the

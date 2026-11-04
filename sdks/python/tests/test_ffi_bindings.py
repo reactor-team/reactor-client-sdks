@@ -254,6 +254,30 @@ def test_create_with_options_refuses_an_unknown_key_through_error_out() -> None:
         lib.reactor_free_string(error)
 
 
+def test_create_with_options_takes_a_message_limit_and_refuses_one_out_of_range() -> None:
+    lib = _ffi.get_lib()
+    handle = lib.reactor_create_with_options(
+        b"http://localhost:1", b"owner/model", None, None, b'{"max_message_size":268435456}', None
+    )
+    assert handle
+    assert lib.reactor_destroy(ctypes.c_void_p(handle)) == 0
+    error = ctypes.c_void_p()
+    assert not lib.reactor_create_with_options(
+        b"http://localhost:1",
+        b"owner/model",
+        None,
+        None,
+        b'{"max_message_size":2147483648}',
+        ctypes.byref(error),
+    )
+    try:
+        payload = json.loads(ctypes.cast(error.value, ctypes.c_char_p).value)
+        assert payload["code"] == "INVALID_STATE"
+        assert "max_message_size" in payload["message"]
+    finally:
+        lib.reactor_free_string(error)
+
+
 async def test_a_stepped_step_before_connecting_fails_through_its_completion() -> None:
     """Create a real stepped handle and step it unconnected: the completion
     answers, typed, on the library's own thread."""

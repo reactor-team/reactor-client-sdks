@@ -897,7 +897,8 @@ pub unsafe extern "C" fn reactor_create_with_adm(
 ///
 /// `options_json` may be null for every default; otherwise it is a JSON object
 /// of [`CreateConfig`]'s keys — `local`, `auto_resume_tracks`, `adm`,
-/// `sdk_version`, `sdk_type`, `generation`, `step_timeout_seconds`. **An
+/// `sdk_version`, `sdk_type`, `generation`, `step_timeout_seconds`,
+/// `max_message_size`. **An
 /// unrecognised key is an error**, as is a value of the wrong type: a misspelt
 /// `generation` would otherwise connect a streamed session and leave the host
 /// waiting on steps that never come.
@@ -964,6 +965,12 @@ struct CreateConfig {
     /// How long a step may take, generation included; absent keeps the core's
     /// default. See [`ReactorOptions::step_timeout`].
     step_timeout_seconds: Option<f64>,
+    /// The largest data-channel message, in bytes, the client declares and
+    /// accepts, from 256 KiB to 1 GiB; absent is
+    /// [`peer::DEFAULT_MAX_MESSAGE_SIZE`]. A connection carries the smaller of
+    /// this and the runtime's limit, so a step result larger than either
+    /// fails with `step_result_too_large`.
+    max_message_size: Option<u64>,
 }
 
 impl Default for CreateConfig {
@@ -976,6 +983,7 @@ impl Default for CreateConfig {
             sdk_type: None,
             generation: GenerationMode::Streamed,
             step_timeout_seconds: None,
+            max_message_size: None,
         }
     }
 }
@@ -1025,6 +1033,15 @@ impl CreateConfig {
             if !(seconds.is_finite() && seconds > 0.0) {
                 return Err(CoreError::InvalidState(format!(
                     "create options are not valid: step_timeout_seconds must be a positive number, got {seconds}"
+                )));
+            }
+        }
+        if let Some(size) = config.max_message_size {
+            if !(peer::MIN_MAX_MESSAGE_SIZE..=peer::MAX_MAX_MESSAGE_SIZE).contains(&size) {
+                return Err(CoreError::InvalidState(format!(
+                    "create options are not valid: max_message_size must be from {} to {} bytes, got {size}",
+                    peer::MIN_MAX_MESSAGE_SIZE,
+                    peer::MAX_MAX_MESSAGE_SIZE,
                 )));
             }
         }
@@ -1096,10 +1113,13 @@ unsafe fn create_impl(
     let auth = Arc::new(StaticAuth(jwt));
     let platform = Arc::new(TokioPlatform::new());
 
-    let mut peer_transport = match adm {
-        Some(mode) => ReactorWebRtcPeerTransport::with_adm_mode(peer_event_tx, mode),
-        None => ReactorWebRtcPeerTransport::new(peer_event_tx),
-    };
+    let mut peer_transport = ReactorWebRtcPeerTransport::with_max_message_size(
+        peer_event_tx,
+        adm.unwrap_or_else(peer::default_adm_mode),
+        config
+            .max_message_size
+            .unwrap_or(peer::DEFAULT_MAX_MESSAGE_SIZE),
+    );
     let stage_times = Arc::new(StageTimes::new());
     let mut video: Option<HostThread<VideoFrame>> = None;
     let mut audio: Option<HostThread<AudioFrame>> = None;
@@ -3317,9 +3337,11 @@ mod tests {
         let config = CreateConfig::from_json(
             r#"{"local":true,"auto_resume_tracks":false,"adm":"synthetic",
                 "sdk_version":"1.2.3","sdk_type":"python",
-                "generation":"stepped","step_timeout_seconds":12.5}"#,
+                "generation":"stepped","step_timeout_seconds":12.5,
+                "max_message_size":134217728}"#,
         )
         .unwrap();
+        assert_eq!(config.max_message_size, Some(128 * 1024 * 1024));
         let mut options = ReactorOptions::new("http://x", "m");
         config.apply(&mut options);
         assert!(options.local);
@@ -3360,6 +3382,15 @@ mod tests {
         assert_eq!(options.sdk_type, "ffi");
     }
 
+    #[test]
+    fn a_message_limit_from_256_kib_to_1_gib_is_taken() {
+        for size in [peer::MIN_MAX_MESSAGE_SIZE, peer::MAX_MAX_MESSAGE_SIZE] {
+            let config =
+                CreateConfig::from_json(&format!(r#"{{"max_message_size":{size}}}"#)).unwrap();
+            assert_eq!(config.max_message_size, Some(size));
+        }
+    }
+
     /// A misspelt key or mode would otherwise create a streamed client for a
     /// caller about to wait on steps.
     #[test]
@@ -3371,6 +3402,10 @@ mod tests {
             r#"{"local":1}"#,
             r#"{"step_timeout_seconds":0}"#,
             r#"{"step_timeout_seconds":-1}"#,
+            r#"{"max_message_size":262143}"#,
+            r#"{"max_message_size":1073741825}"#,
+            r#"{"max_message_size":-1}"#,
+            r#"{"max_message_size":"256Mi"}"#,
             "[]",
             "not json",
         ] {

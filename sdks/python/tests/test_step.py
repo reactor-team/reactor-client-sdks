@@ -275,6 +275,35 @@ class TestConstruction:
         await Reactor("m", jwt="t").connect()
         assert lib.created_with == {"via": "reactor_create_with_adm"}
 
+    async def test_a_message_limit_reaches_the_options_entry(self, lib: FakeStepLib) -> None:
+        await _stepped(lib, max_message_size=256 * 1024 * 1024)
+        assert lib.created_with["max_message_size"] == 256 * 1024 * 1024
+
+    async def test_a_streamed_client_with_a_message_limit_creates_through_the_options_entry(
+        self, lib: FakeStepLib
+    ) -> None:
+        await Reactor("m", jwt="t", max_message_size=96 * 1024 * 1024).connect()
+        assert lib.created_with["generation"] == "streamed"
+        assert lib.created_with["max_message_size"] == 96 * 1024 * 1024
+        assert "step_timeout_seconds" not in lib.created_with
+
+    async def test_no_message_limit_leaves_the_default_to_the_library(
+        self, lib: FakeStepLib
+    ) -> None:
+        await _stepped(lib)
+        assert "max_message_size" not in lib.created_with
+
+    @pytest.mark.parametrize("size", [256 * 1024, 1024 * 1024 * 1024])
+    def test_a_message_limit_from_256_kib_to_1_gib_is_taken(self, size: int) -> None:
+        Reactor("m", max_message_size=size)
+
+    @pytest.mark.parametrize(
+        "size", [0, -1, 256 * 1024 - 1, 1024 * 1024 * 1024 + 1, True, 64.0, "256Mi"]
+    )
+    def test_a_message_limit_outside_the_range_is_refused(self, size: Any) -> None:
+        with pytest.raises(ValueError, match="max_message_size"):
+            Reactor("m", max_message_size=size)
+
     async def test_refused_options_raise_the_typed_error_and_free_it(
         self, lib: FakeStepLib
     ) -> None:
