@@ -286,6 +286,20 @@ struct FFI: Sendable {
     /// `reactor_clear_step_inputs` — drop every frame buffered for the next step.
     var clearStepInputs: @Sendable (OpaquePointer?) -> Void
 
+    /// `reactor_push_step_encoded_video_frame` — buffer one encoded video frame
+    /// for the next step, its bytes as they are.
+    ///
+    /// `encoding` is a `REACTOR_FRAME_ENCODING_*` value, and `width` and
+    /// `height` the frame it decodes to. A null tag with length 0 leaves the
+    /// frame untagged, and a `nil` capture time reaches the library as none,
+    /// as for ``pushVideoFrame``.
+    var pushStepEncodedVideoFrame:
+        @Sendable (
+            _ handle: OpaquePointer?, _ track: UnsafePointer<CChar>?, _ encoding: Int32,
+            _ data: UnsafePointer<UInt8>?, _ length: Int, _ width: UInt32, _ height: UInt32,
+            _ userData: UnsafePointer<UInt8>?, _ userDataLen: UInt32, _ captureTimeUs: Int64?
+        ) -> Void
+
     /// `reactor_step_result_step` — the step's number in the session, from 1.
     var stepResultStep: @Sendable (OpaquePointer?) -> UInt64
 
@@ -448,6 +462,13 @@ extension FFI {
             reactor_step(handle, stateJSON, commandsJSON, completion, userdata)
         },
         clearStepInputs: { handle in reactor_clear_step_inputs(handle) },
+        pushStepEncodedVideoFrame: {
+            handle, track, encoding, data, length, width, height, userData, userDataLen,
+            captureAt in
+            reactor_push_step_encoded_video_frame(
+                handle, track, encoding, data, length, width, height, userData, userDataLen,
+                captureAt == nil ? 0 : 1, captureAt ?? 0)
+        },
         stepResultStep: { result in reactor_step_result_step(result) },
         stepResultElapsed: { result in reactor_step_result_elapsed(result) },
         stepResultError: { result in reactor_step_result_error(result) },

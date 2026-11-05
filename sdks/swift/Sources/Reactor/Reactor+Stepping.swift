@@ -42,10 +42,30 @@ extension Reactor {
     /// }
     /// ```
     ///
+    /// `media` gives the step frames of its own, by input track name, after the
+    /// ones pushed to that track since the previous step: raw frames as
+    /// ``Track/pushFrame(_:width:height:userData:captureTimeUs:)`` and
+    /// ``Track/pushFrame(_:sampleRate:channels:)`` take them, or
+    /// ``EncodedFrame``s, which go as they are and are decoded by the runtime
+    /// before the step runs:
+    ///
+    /// ```swift
+    /// let frames = window.map { EncodedFrame($0, width: 1280, height: 720) }
+    /// let result = try await reactor.step(media: ["webcam": frames.map(StepMediaFrame.encoded)])
+    /// ```
+    ///
+    /// It is the same as pushing them just before the step, so each track must
+    /// be published first. They are pushed only once `state` and `commands` are
+    /// known to be well formed and every frame passes its push's checks, so a
+    /// bad track or frame anywhere in `media` throws its push's error before any
+    /// of it is pushed: the buffer is left as it was, and the step is not sent.
+    ///
     /// - Parameters:
     ///   - state: the model's state fields to set before the commands run, or
     ///     `nil` to leave the state as it is. The model keeps it until changed.
     ///   - commands: commands to run after the state, in order.
+    ///   - media: frames for this step, by input track name, each track's in
+    ///     order. Tracks are pushed in the order of their names.
     ///
     /// - Throws: ``ReactorError``:
     ///   - ``ReactorError/Code/stepRefused`` — the runtime or the model turned
@@ -69,6 +89,9 @@ extension Reactor {
     ///   - ``ReactorError/Code/invalidState`` — not a stepped client, or not a
     ///     ready session.
     ///   - ``ReactorError/Code/badRequest`` — a command with an empty name.
+    ///   - ``ReactorError/Code/notFound`` — `media` names a track the session
+    ///     does not declare.
+    ///   - Any error of the push one of `media`'s frames goes through.
     ///
     ///   A step that ran but that the model reported as failed does not throw:
     ///   it returns a result whose ``StepResult/error`` says why.
@@ -79,7 +102,8 @@ extension Reactor {
     ///   one that could not be sent drops them too, and nothing is resent.
     public func step(
         state: [String: JSONValue]? = nil,
-        commands: [StepCommand] = []
+        commands: [StepCommand] = [],
+        media: [String: [StepMediaFrame]] = [:]
     ) async throws -> StepResult {
         guard generation == .stepped else {
             throw ReactorError(
@@ -94,10 +118,19 @@ extension Reactor {
 
         let stateJSON = try state.map { try encodeJSON(JSONValue.object($0), operation: "step") }
         let commandsJSON = try encodeJSON(commands, operation: "step")
+        // Checked only once the state and commands are known to be well formed, so
+        // a step refused for those leaves the buffer as the caller left it.
+        let pushes = try prepareStepMedia(media)
 
         return try await perform(
             PendingStep(owner: self, ffi: ffi), completion: stepCompletionTrampoline
         ) { handle, completion, userdata in
+            // Pushed here, with the live handle and under the same barrier as the
+            // step that takes them: a close() cannot destroy the handle mid-batch,
+            // and no other step's pushes can land between these and reactor_step.
+            for push in pushes {
+                push(handle)
+            }
             withOptionalCString(stateJSON) { statePointer in
                 commandsJSON.withCString { commandsPointer in
                     self.ffi.step(handle, statePointer, commandsPointer, completion, userdata)
@@ -106,8 +139,30 @@ extension Reactor {
         }
     }
 
+    /// Check `media`'s frames, track by track, as ``step(state:commands:media:)``
+    /// documents, and answer their pushes, which the step runs with the live
+    /// handle right before `reactor_step`. Sorted by name, so that what reaches
+    /// the buffer — and what its limit drops first — does not depend on a
+    /// dictionary's order.
+    ///
+    /// Every frame is checked before the first is pushed: the buffer can only
+    /// be cleared whole, so a frame refused halfway would leave the ones before
+    /// it to ride the next step.
+    func prepareStepMedia(
+        _ media: [String: [StepMediaFrame]]
+    ) throws -> [(OpaquePointer) -> Void] {
+        var pushes: [(OpaquePointer) -> Void] = []
+        for (name, frames) in media.sorted(by: { $0.key < $1.key }) {
+            let track = try track(name)
+            for frame in frames {
+                pushes.append(try track.preparePush(frame))
+            }
+        }
+        return pushes
+    }
+
     /// Drop every frame pushed since the last step, so the next
-    /// ``step(state:commands:)`` carries only what is pushed after this. A
+    /// ``step(state:commands:media:)`` carries only what is pushed after this. A
     /// no-op on a streamed or closed client.
     public func clearStepInputs() {
         guard generation == .stepped else { return }

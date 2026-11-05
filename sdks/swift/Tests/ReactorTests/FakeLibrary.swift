@@ -28,6 +28,10 @@ final class FakeLibrary: @unchecked Sendable {
         case statusReturned
         case downloadEntered
         case downloadReturned
+        case encodedPushEntered
+        case encodedPushReturned
+        case tracksEntered
+        case tracksReturned
         case destroyed
     }
 
@@ -82,12 +86,18 @@ final class FakeLibrary: @unchecked Sendable {
         weak var lastUserdataObject: AnyObject?
         var events: [Event] = []
         var whileReadingStatus: (@Sendable () -> Void)?
+        var whilePushingEncoded: (@Sendable () -> Void)?
+        var whileReadingTracks: (@Sendable () -> Void)?
         var whileStartingDownload: (@Sendable () -> Void)?
         var createOptionsCalls: [CreateOptionsCall] = []
         var stepCalls: [StepCall] = []
         var lastStepCompletion: (fn: reactor_step_completion_fn, userdata: UnsafeMutableRawPointer)?
         var clearStepInputsCalls = 0
         var freedStepResults = 0
+        var pushedEncoded: [PushedEncodedFrame] = []
+        /// Every push, raw or encoded, as `"<kind>:<track>"`, in the order the
+        /// SDK made them.
+        var pushLog: [String] = []
     }
 
     private let state = Locked(State())
@@ -107,6 +117,20 @@ final class FakeLibrary: @unchecked Sendable {
         var captureTimeUs: Int64?
         var bindingMs: Double
         var generation: UInt64
+        /// The `width * height * 4` BGRA bytes the push handed over.
+        var bytes: [UInt8] = []
+    }
+
+    /// What the SDK handed `reactor_push_step_encoded_video_frame`.
+    struct PushedEncodedFrame: Equatable {
+        var track: String?
+        var encoding: Int32
+        var data: [UInt8]
+        var width: UInt32
+        var height: UInt32
+        var userData: [UInt8]?
+        /// `nil` when the push carried no capture time at all.
+        var captureTimeUs: Int64?
     }
 
     /// What the SDK handed `reactor_push_audio_frame`.
@@ -219,6 +243,20 @@ final class FakeLibrary: @unchecked Sendable {
         set { state.withLock { $0.whileReadingStatus = newValue } }
     }
 
+    /// Run inside the next `reactor_push_step_encoded_video_frame`, once, between
+    /// its `encodedPushEntered` and `encodedPushReturned` events.
+    var whilePushingEncoded: (@Sendable () -> Void)? {
+        get { state.withLock { $0.whilePushingEncoded } }
+        set { state.withLock { $0.whilePushingEncoded = newValue } }
+    }
+
+    /// Run inside the next `reactor_tracks`, once, between its `tracksEntered`
+    /// and `tracksReturned` events.
+    var whileReadingTracks: (@Sendable () -> Void)? {
+        get { state.withLock { $0.whileReadingTracks } }
+        set { state.withLock { $0.whileReadingTracks = newValue } }
+    }
+
     /// Run this inside `reactor_download_clip`, before it returns.
     var whileStartingDownload: (@Sendable () -> Void)? {
         get { state.withLock { $0.whileStartingDownload } }
@@ -253,6 +291,8 @@ final class FakeLibrary: @unchecked Sendable {
     var createOptionsCalls: [CreateOptionsCall] { state.withLock { $0.createOptionsCalls } }
     var stepCalls: [StepCall] { state.withLock { $0.stepCalls } }
     var clearStepInputsCalls: Int { state.withLock { $0.clearStepInputsCalls } }
+    var pushedEncoded: [PushedEncodedFrame] { state.withLock { $0.pushedEncoded } }
+    var pushLog: [String] { state.withLock { $0.pushLog } }
     /// How many results `reactor_step_result_free` released.
     var freedStepResults: Int { state.withLock { $0.freedStepResults } }
     /// Whether a step is waiting on a completion the fake has not fired.
@@ -558,7 +598,18 @@ final class FakeLibrary: @unchecked Sendable {
                 // exercised if the fake really allocates.
                 return strdup(sessionID)
             },
-            tracks: { [self] _ in strdup(state.withLock { $0.tracksJSON }) },
+            tracks: { [self] _ in
+                let hook = state.withLock { state -> (@Sendable () -> Void)? in
+                    state.events.append(.tracksEntered)
+                    defer { state.whileReadingTracks = nil }
+                    return state.whileReadingTracks
+                }
+                hook?()
+                return state.withLock { state in
+                    state.events.append(.tracksReturned)
+                    return strdup(state.tracksJSON)
+                }
+            },
             pausedTracks: { [self] _ in strdup(state.withLock { $0.pausedJSON }) },
             publishTrack: { [self] _, name, completion, userdata in
                 state.withLock { $0.publishCalls.append(String(borrowing: name) ?? "") }
@@ -599,7 +650,12 @@ final class FakeLibrary: @unchecked Sendable {
                             userData: tag,
                             captureTimeUs: at,
                             bindingMs: bindingMs,
-                            generation: generation))
+                            generation: generation,
+                            bytes: pixels.map {
+                                Array(UnsafeBufferPointer(start: $0, count: byteCount))
+                            }
+                                ?? []))
+                    $0.pushLog.append("video:\(String(borrowing: track) ?? "")")
                 }
             },
             pushBegin: { _ in 7 },
@@ -615,6 +671,7 @@ final class FakeLibrary: @unchecked Sendable {
                             samplesPerChannel: perChannel,
                             sampleRate: sampleRate,
                             channels: channels))
+                    $0.pushLog.append("audio:\(String(borrowing: track) ?? "")")
                 }
             },
             timeMicros: { 1_234_000 },
@@ -696,6 +753,30 @@ final class FakeLibrary: @unchecked Sendable {
                 }
             },
             clearStepInputs: { [self] _ in state.withLock { $0.clearStepInputsCalls += 1 } },
+            pushStepEncodedVideoFrame: {
+                [self]
+                _, track, encoding, data, length, width, height, userData, userDataLen, at in
+                let hook = state.withLock { state -> (@Sendable () -> Void)? in
+                    state.events.append(.encodedPushEntered)
+                    defer { state.whilePushingEncoded = nil }
+                    return state.whilePushingEncoded
+                }
+                hook?()
+                state.withLock { $0.events.append(.encodedPushReturned) }
+                let bytes = data.map { Array(UnsafeBufferPointer(start: $0, count: length)) }
+                let tag = userData.flatMap { pointer -> [UInt8]? in
+                    guard userDataLen > 0 else { return nil }
+                    return Array(UnsafeBufferPointer(start: pointer, count: Int(userDataLen)))
+                }
+                let name = String(borrowing: track)
+                state.withLock {
+                    $0.pushedEncoded.append(
+                        PushedEncodedFrame(
+                            track: name, encoding: encoding, data: bytes ?? [], width: width,
+                            height: height, userData: tag, captureTimeUs: at))
+                    $0.pushLog.append("encoded:\(name ?? "")")
+                }
+            },
             stepResultStep: { FakeStepResult.from($0)?.step ?? 0 },
             stepResultElapsed: { FakeStepResult.from($0)?.elapsed ?? 0 },
             stepResultError: { FakeStepResult.from($0)?.error.map { UnsafePointer($0) } },
