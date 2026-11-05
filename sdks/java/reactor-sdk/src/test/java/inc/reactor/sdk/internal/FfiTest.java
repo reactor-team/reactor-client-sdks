@@ -1,6 +1,7 @@
 package inc.reactor.sdk.internal;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -57,6 +58,20 @@ final class FfiTest {
             assertTrue(
                     thrown.getMessage().contains("reactor_send_command"),
                     "the message must name the missing symbol: " + thrown.getMessage());
+        }
+    }
+
+    @Test
+    @DisplayName("an optional symbol the library lacks is left unbound rather than refusing the library")
+    void loadsWithoutAnOptionalSymbol() {
+        try (FakeNativeLibrary fake = new FakeNativeLibrary()) {
+            fake.removeSymbol("reactor_push_step_encoded_video_frame");
+
+            Ffi ffi = Ffi.open(fake.lookup());
+
+            assertTrue(Ffi.Symbol.PUSH_STEP_ENCODED_VIDEO_FRAME.optional());
+            assertFalse(ffi.has(Ffi.Symbol.PUSH_STEP_ENCODED_VIDEO_FRAME));
+            assertTrue(ffi.has(Ffi.Symbol.STEP), "every required symbol is still bound");
         }
     }
 

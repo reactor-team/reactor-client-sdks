@@ -1,5 +1,6 @@
 package inc.reactor.sdk.internal;
 
+import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 import static java.lang.foreign.ValueLayout.JAVA_INT;
 
 import java.lang.foreign.Arena;
@@ -141,6 +142,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
         bind("reactor_unpublish_track", Ffi.Symbol.UNPUBLISH_TRACK.descriptor(), "unpublishTrack");
         bind("reactor_push_video_frame", Ffi.Symbol.PUSH_VIDEO_FRAME.descriptor(), "pushVideoFrame");
         bind("reactor_push_video_frame_timed", Ffi.Symbol.PUSH_VIDEO_FRAME_TIMED.descriptor(), "pushVideoFrameTimed");
+        bind("reactor_push_audio_frame", Ffi.Symbol.PUSH_AUDIO_FRAME.descriptor(), "pushAudioFrame");
         bind("reactor_frame_delivered", Ffi.Symbol.FRAME_DELIVERED.descriptor(), "frameDelivered");
         bind("reactor_push_begin", Ffi.Symbol.PUSH_BEGIN.descriptor(), "pushBegin");
         bind("reactor_send_command", Ffi.Symbol.SEND_COMMAND.descriptor(), "sendCommand");
@@ -154,6 +156,10 @@ public final class FakeNativeLibrary implements AutoCloseable {
         bind("reactor_create_with_options", Ffi.Symbol.CREATE_WITH_OPTIONS.descriptor(), "createWithOptions");
         bind("reactor_step", Ffi.Symbol.STEP.descriptor(), "step");
         bind("reactor_clear_step_inputs", Ffi.Symbol.CLEAR_STEP_INPUTS.descriptor(), "clearStepInputs");
+        bind(
+                "reactor_push_step_encoded_video_frame",
+                Ffi.Symbol.PUSH_STEP_ENCODED_VIDEO_FRAME.descriptor(),
+                "pushStepEncodedVideoFrame");
         bind("reactor_step_result_step", Ffi.Symbol.STEP_RESULT_STEP.descriptor(), "stepResultStep");
         bind("reactor_step_result_elapsed", Ffi.Symbol.STEP_RESULT_ELAPSED.descriptor(), "stepResultElapsed");
         bind("reactor_step_result_error", Ffi.Symbol.STEP_RESULT_ERROR.descriptor(), "stepResultError");
@@ -415,6 +421,9 @@ public final class FakeNativeLibrary implements AutoCloseable {
     /** How many frames reached {@code reactor_push_video_frame} or {@code reactor_push_video_frame_timed}. */
     public int videoFramesPushed;
 
+    /** The BGRA bytes of the last video frame pushed, {@code width * height * 4} of them. */
+    public volatile byte @Nullable [] lastVideoBgra;
+
     /** The time the binding reported spending on the last frame it pushed, in milliseconds. */
     public volatile double lastBindingMs = -1;
 
@@ -436,6 +445,17 @@ public final class FakeNativeLibrary implements AutoCloseable {
         return segment;
     }
 
+    private void pushAudioFrame(
+            MemorySegment handle,
+            MemorySegment name,
+            MemorySegment data,
+            int samplesPerChannel,
+            int sampleRate,
+            int channels) {
+        calls.add("pcm:" + readString(name));
+    }
+
+    @SuppressWarnings("restricted") // reinterpret: reading the frame the binding handed over
     private void pushVideoFrame(MemorySegment handle, MemorySegment name, MemorySegment data, int width, int height) {
         if (blockInPushVideo) {
             enteredPush.countDown();
@@ -446,6 +466,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
             }
         }
         videoFramesPushed++;
+        lastVideoBgra = data.reinterpret((long) width * height * 4).toArray(JAVA_BYTE);
     }
 
     private void pushVideoFrameTimed(
@@ -462,6 +483,13 @@ public final class FakeNativeLibrary implements AutoCloseable {
             long generation) {
         lastBindingMs = bindingMs;
         lastGeneration = generation;
+        pushOrder.add(readString(name));
+        calls.add("raw:" + readString(name));
+        Runnable during = duringFirstPush;
+        duringFirstPush = null;
+        if (during != null) {
+            during.run();
+        }
         pushVideoFrame(handle, name, data, width, height);
     }
 
@@ -718,7 +746,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
                 Thread.currentThread().interrupt();
             }
         }
-        MemorySegment segment = arena.allocateFrom("ready");
+        MemorySegment segment = arena.allocateFrom(status);
         staticsOut.add(segment.address());
         return segment;
     }
@@ -741,6 +769,13 @@ public final class FakeNativeLibrary implements AutoCloseable {
 
     /** How many {@code reactor_step} calls arrived. */
     public int stepCalls;
+
+    /** Raw video and audio pushes ({@code "raw:<track>"}, {@code "pcm:<track>"}) and steps ({@code
+     * "step"}), in the order they came. */
+    public final List<String> calls = java.util.Collections.synchronizedList(new ArrayList<>());
+
+    /** Run inside the next raw video push, once, on the pushing thread. */
+    public volatile @Nullable Runnable duringFirstPush;
 
     /** How many times {@code reactor_clear_step_inputs} was called. */
     public int clearStepInputsCalls;
@@ -836,6 +871,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
             MemorySegment completion,
             MemorySegment userdata) {
         stepCalls++;
+        calls.add("step");
         lastStepState = readString(stateJson);
         lastStepCommands = readString(commandsJson);
         lastStepCompletion = completion;
@@ -844,6 +880,49 @@ public final class FakeNativeLibrary implements AutoCloseable {
 
     private void clearStepInputs(MemorySegment handle) {
         clearStepInputsCalls++;
+    }
+
+    /** One {@code reactor_push_step_encoded_video_frame} call, its buffers copied out. */
+    public record EncodedPush(
+            String track,
+            int encoding,
+            byte[] data,
+            int width,
+            int height,
+            byte @Nullable [] userData,
+            boolean hasCaptureTime,
+            long captureTimeUs) {}
+
+    /**
+     * Every frame push that reached the library since the client was opened, in order: an {@link
+     * EncodedPush}, or the track name of a raw video push.
+     */
+    public final List<Object> pushOrder = java.util.Collections.synchronizedList(new ArrayList<>());
+
+    @SuppressWarnings("restricted") // reinterpret: the lengths are the ones the binding passed
+    private void pushStepEncodedVideoFrame(
+            MemorySegment handle,
+            MemorySegment name,
+            int encoding,
+            MemorySegment data,
+            long dataLength,
+            int width,
+            int height,
+            MemorySegment userData,
+            int userDataLength,
+            int hasCaptureTime,
+            long captureTimeUs) {
+        pushOrder.add(new EncodedPush(
+                readString(name),
+                encoding,
+                data.reinterpret(dataLength).toArray(java.lang.foreign.ValueLayout.JAVA_BYTE),
+                width,
+                height,
+                userData.equals(MemorySegment.NULL)
+                        ? null
+                        : userData.reinterpret(userDataLength).toArray(java.lang.foreign.ValueLayout.JAVA_BYTE),
+                hasCaptureTime != 0,
+                captureTimeUs));
     }
 
     /** Whether a step is waiting to be settled. */
