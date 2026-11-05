@@ -23,6 +23,8 @@ export type TrackDirection = 'recvonly' | 'sendonly';
 export type GenerationMode = 'streamed' | 'stepped';
 /** Byte layout of a frame given to `pushVideoFrame`. */
 export type PixelFormat = 'rgba' | 'rgb' | 'bgra';
+/** Codec of an encoded frame given to `pushEncodedVideoFrame`. */
+export type EncodedVideoCodec = 'h264';
 
 export interface ClientOptions {
   modelName: string;
@@ -330,9 +332,48 @@ export declare class ReactorClient {
     metadata?: Uint8Array | null,
     captureTimeUs?: number | null,
   ): void;
+  /** Stepped sessions only. Buffers one encoded frame (an H.264 access
+   *  unit, Annex B) for the next `step()`, its bytes as they are; `width` and
+   *  `height` are the frame it decodes to. Throws synchronously on empty
+   *  data, a zero dimension or an unknown codec. */
+  pushEncodedVideoFrame(
+    name: string,
+    codec: EncodedVideoCodec | null | undefined,
+    data: Uint8Array,
+    width: number,
+    height: number,
+    metadata?: Uint8Array | null,
+    captureTimeUs?: number | null,
+  ): void;
   /** Stepped sessions only. Interleaved PCM, `channels` samples per frame. */
   pushAudioFrame(name: string, samples: Int16Array, sampleRate: number, channels: number): void;
   clearStepInputs(): void;
+  /** Throws what `step(state, commands)` would refuse now, for the session
+   *  or for its state and commands, and takes no frames: `step()` asks it
+   *  before pushing a step's own media. */
+  checkStep(state?: Record<string, unknown> | null, commands?: StepCommand[] | null): void;
+  /** Throws what `pushVideoFrame` would refuse of a frame `byteLength` bytes
+   *  long, and buffers nothing. */
+  checkVideoFrame(
+    name: string,
+    byteLength: number,
+    width: number,
+    height: number,
+    format?: PixelFormat | null,
+  ): void;
+  /** Throws what `pushEncodedVideoFrame` would refuse of a frame
+   *  `byteLength` bytes long, and buffers nothing. */
+  checkEncodedVideoFrame(
+    name: string,
+    codec: EncodedVideoCodec | null | undefined,
+    byteLength: number,
+    width: number,
+    height: number,
+    captureTimeUs?: number | null,
+  ): void;
+  /** Throws what `pushAudioFrame` would refuse of `samples`, and buffers
+   *  nothing. */
+  checkAudioFrame(name: string, samples: Int16Array, channels: number): void;
 
   requestClip(durationSeconds: number): Promise<Clip>;
   requestRecording(): Promise<Clip>;

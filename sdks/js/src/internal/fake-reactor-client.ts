@@ -4,6 +4,7 @@ import type {
   ClientTrackStat,
   Clip as WireClip,
   ConnectOptions,
+  EncodedVideoCodec,
   FileRef,
   PixelFormat,
   ReactorMessage,
@@ -123,6 +124,11 @@ export class FakeReactorClient {
   free(): void {
     this.freeCalls += 1;
   }
+  /** Test hook: what `status()` answers from now on. */
+  setStatus(status: ReactorStatus): void {
+    this._status = status;
+  }
+
   status(): ReactorStatus {
     return this._status;
   }
@@ -300,6 +306,33 @@ export class FakeReactorClient {
     this.pushVideoFrameCalls.push({ name, data, width, height, format, metadata, captureTimeUs });
   }
 
+  pushEncodedVideoFrameCalls: Array<{
+    name: string;
+    codec: EncodedVideoCodec | null | undefined;
+    data: Uint8Array;
+    width: number;
+    height: number;
+    metadata: Uint8Array | null | undefined;
+    captureTimeUs: number | null | undefined;
+  }> = [];
+  // Overridable so a test can simulate the binding refusing a frame — the
+  // real one throws synchronously.
+  pushEncodedVideoFrameError: Error | undefined;
+  pushEncodedVideoFrame(
+    name: string,
+    codec: EncodedVideoCodec | null | undefined,
+    data: Uint8Array,
+    width: number,
+    height: number,
+    metadata?: Uint8Array | null,
+    captureTimeUs?: number | null,
+  ): void {
+    if (this.pushEncodedVideoFrameError) {
+      throw this.pushEncodedVideoFrameError;
+    }
+    this.pushEncodedVideoFrameCalls.push({ name, codec, data, width, height, metadata, captureTimeUs });
+  }
+
   pushAudioFrameCalls: Array<{
     name: string;
     samples: Int16Array;
@@ -313,6 +346,42 @@ export class FakeReactorClient {
   clearStepInputsCalls = 0;
   clearStepInputs(): void {
     this.clearStepInputsCalls += 1;
+  }
+
+  /** Every `check*` call, in order, as `[method, ...args]`. */
+  checkCalls: unknown[][] = [];
+  // Overridable so a test can simulate the binding refusing a step or one of
+  // its frames: the real checks throw synchronously what the step or push
+  // would. Passes everything by default.
+  checkImpl: ((method: string, ...args: unknown[]) => void) | undefined;
+  private check(method: string, args: unknown[]): void {
+    this.checkCalls.push([method, ...args]);
+    this.checkImpl?.(method, ...args);
+  }
+  checkStep(state?: Record<string, unknown> | null, commands?: StepCommand[] | null): void {
+    this.check('checkStep', [state, commands]);
+  }
+  checkVideoFrame(
+    name: string,
+    byteLength: number,
+    width: number,
+    height: number,
+    format?: PixelFormat | null,
+  ): void {
+    this.check('checkVideoFrame', [name, byteLength, width, height, format]);
+  }
+  checkEncodedVideoFrame(
+    name: string,
+    codec: EncodedVideoCodec | null | undefined,
+    byteLength: number,
+    width: number,
+    height: number,
+    captureTimeUs?: number | null,
+  ): void {
+    this.check('checkEncodedVideoFrame', [name, codec, byteLength, width, height, captureTimeUs]);
+  }
+  checkAudioFrame(name: string, samples: Int16Array, channels: number): void {
+    this.check('checkAudioFrame', [name, samples, channels]);
   }
 
   // Overridable so a test can fail a specific publish call, e.g. to

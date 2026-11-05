@@ -1265,15 +1265,34 @@ impl Reactor {
         state: Value,
         commands: Vec<StepCommand>,
     ) -> Result<StepRequest, CoreError> {
+        let mut request = self.build_step(state, commands)?;
+        request.media_input = self.step_inputs.take()?;
+        Ok(StepRequest(request))
+    }
+
+    /// Every check [`Reactor::begin_step`] makes, with nothing taken: `Ok`
+    /// when it would accept this state and these commands now. A binding that
+    /// pushes a step's own frames just before the step asks this first, so a
+    /// step refused for its state or commands, or for the session, leaves the
+    /// buffer as the caller left it.
+    pub fn check_step(&self, state: &Value, commands: &[StepCommand]) -> Result<(), CoreError> {
+        self.build_step(state.clone(), commands.to_vec()).map(drop)
+    }
+
+    /// The request [`Reactor::begin_step`] sends, before it takes the frames:
+    /// refused here for the session or for the state and commands.
+    fn build_step(
+        &self,
+        state: Value,
+        commands: Vec<StepCommand>,
+    ) -> Result<RequestStep, CoreError> {
         if self.options.generation != GenerationMode::Stepped {
             return Err(CoreError::InvalidState(
                 "step() needs a session connected with generation: stepped".into(),
             ));
         }
         self.ensure_ready()?;
-        let mut request = build_request_step(state, commands, Vec::new())?;
-        request.media_input = self.step_inputs.take()?;
-        Ok(StepRequest(request))
+        build_request_step(state, commands, Vec::new())
     }
 
     /// The rest of [`Reactor::step`], for a request [`Reactor::begin_step`]

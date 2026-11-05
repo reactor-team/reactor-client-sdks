@@ -1137,3 +1137,51 @@ async fn begin_step_takes_the_inputs_buffered_when_it_is_called() {
         "the later frame waits for the next step"
     );
 }
+
+/// `check_step` refuses what `begin_step` would, for the session or for the
+/// state and commands, and takes nothing either way: the frames buffered stay
+/// for the step that follows.
+#[tokio::test]
+async fn check_step_refuses_as_begin_step_does_and_takes_nothing() {
+    let peer = Arc::new(DataPeer::new(usize::MAX));
+    let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+    reactor
+        .step_inputs
+        .push("cam", WireTrackKind::Video, raw_frame(1), usize::MAX);
+    let command = |data: Value| vec![StepCommand::new("go", data)];
+
+    reactor
+        .check_step(
+            &serde_json::json!({ "prompt": "a cat" }),
+            &command(Value::Null),
+        )
+        .unwrap();
+    for (state, commands) in [
+        (serde_json::json!(["prompt"]), vec![]),
+        (Value::Null, command(serde_json::json!([1]))),
+    ] {
+        let checked = reactor.check_step(&state, &commands).unwrap_err();
+        let Err(begun) = reactor.begin_step(state, commands) else {
+            panic!("begin_step took a step check_step refused");
+        };
+        assert_eq!(checked.to_string(), begun.to_string());
+    }
+    assert_eq!(
+        reactor.step_inputs.len(),
+        1,
+        "a refused step takes no frames"
+    );
+
+    reactor.state.lock().unwrap().status = ReactorStatus::Connecting;
+    assert!(matches!(
+        reactor.check_step(&Value::Null, &[]),
+        Err(CoreError::InvalidState(_))
+    ));
+
+    let streamed = make_ready_reactor(peer, GenerationMode::Streamed);
+    assert!(matches!(
+        streamed.check_step(&Value::Null, &[]),
+        Err(CoreError::InvalidState(_))
+    ));
+    assert_eq!(reactor.step_inputs.len(), 1);
+}
