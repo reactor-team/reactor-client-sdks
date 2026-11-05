@@ -32,12 +32,12 @@ is not, because Android 15 devices with 16 KB pages will not load one that is.
 
 ```kotlin
 dependencies {
-    implementation("inc.reactor:reactor-sdk-android:1.1.0")
+    implementation("inc.reactor:reactor-sdk-android:1.2.0")
 
     // Optional: microphone and speaker helpers. Left out of the core module on
     // purpose — a library whose audience includes background services must not
     // put a live mic on the wire because a model declared a sendonly track.
-    implementation("inc.reactor:reactor-sdk-android-media:1.1.0")
+    implementation("inc.reactor:reactor-sdk-android-media:1.2.0")
 }
 ```
 

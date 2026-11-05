@@ -11,6 +11,8 @@ request as the bump.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-05
+
 ### Added
 
 - **`ReactorOptions.maxMessageSize`** sets the largest data-channel message the
@@ -27,6 +29,8 @@ request as the bump.
 
 ### Changed
 
+- The WebRTC engine moves from reactor-webrtc 0.24.2 to 0.26.0, on the same
+  libwebrtc (`webrtc-7907-a5ddff60-p13`).
 - The client declares and accepts data-channel messages of up to 256 MiB, up
   from 64 MiB, so a model that raises its own limit
   (`runtime.webrtc.max_message_size` in its `reactor.yaml`) can return steps
