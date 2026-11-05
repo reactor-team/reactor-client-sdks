@@ -9,6 +9,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-11-05
+
 ### Added
 
 - **`Reactor(max_message_size=...)`** sets the largest data-channel message
@@ -25,6 +27,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The WebRTC engine moves from reactor-webrtc 0.24.2 to 0.26.0, on the same
+  libwebrtc (`webrtc-7907-a5ddff60-p13`).
 - The client declares and accepts data-channel messages of up to 256 MiB by
   default, up from 64 MiB. A connection carries the smaller of the two sides'
   limits, so against a runtime that keeps 64 MiB nothing changes. The memory
