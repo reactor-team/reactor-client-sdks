@@ -23,7 +23,10 @@ import org.jspecify.annotations.Nullable;
  * StepResult result = reactor.step(null, List.of(), Map.of("webcam", frames)).join();
  * }</pre>
  *
- * <p>Immutable: the bytes are copied in when it is built, and {@link #data()} hands out a copy.
+ * <p>Like {@link StepInput#video} and {@link StepInput#audio}, it holds the arrays it was given
+ * rather than copies: the push copies them into native memory, so they can be reused once {@code
+ * step} or {@link Track#pushEncodedFrame(EncodedFrame)} has returned. Change them before that and
+ * the frame carries the change.
  */
 public final class EncodedFrame implements StepInput {
 
@@ -35,11 +38,11 @@ public final class EncodedFrame implements StepInput {
     private final @Nullable Long captureTimeUs;
 
     private EncodedFrame(Builder builder) {
-        this.data = builder.data.clone();
+        this.data = builder.data;
         this.width = builder.width;
         this.height = builder.height;
         this.codec = builder.codec;
-        this.userData = builder.userData == null ? null : builder.userData.clone();
+        this.userData = builder.userData;
         this.captureTimeUs = builder.captureTimeUs;
     }
 
@@ -68,13 +71,8 @@ public final class EncodedFrame implements StepInput {
         return new Builder(data, width, height);
     }
 
-    /** @return a copy of the encoded bytes */
+    /** @return the encoded bytes, the array the frame was built with */
     public byte[] data() {
-        return data.clone();
-    }
-
-    /** The bytes themselves, for the push, which copies them into native memory. */
-    byte[] dataUnsafe() {
         return data;
     }
 
@@ -97,14 +95,14 @@ public final class EncodedFrame implements StepInput {
      * The tag the decoded frame carries, as {@link Track#pushFrame(byte[], int, int, byte[], Long)}
      * attaches one.
      *
-     * @return a copy of the tag, or empty when the frame is untagged
+     * @return the tag, the array the frame was built with, or empty when the frame is untagged
      */
     public Optional<byte[]> userData() {
-        return Optional.ofNullable(userData).map(bytes -> bytes.clone());
+        return Optional.ofNullable(userData);
     }
 
-    /** The tag itself, for the push. */
-    byte @Nullable [] userDataUnsafe() {
+    /** The tag, or {@code null}, for the push. */
+    byte @Nullable [] userDataOrNull() {
         return userData;
     }
 

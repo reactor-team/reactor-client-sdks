@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -168,15 +169,15 @@ final class EncodedFramesTest {
     }
 
     @Test
-    @DisplayName("an encoded frame is a value: equal by contents, and copied in and out")
-    void anEncodedFrameIsAValue() {
+    @DisplayName("an encoded frame holds the array it was given, and is equal by contents")
+    void anEncodedFrameHoldsItsArray() {
         byte[] data = IDR.clone();
-        EncodedFrame frame = EncodedFrame.h264(data, 4, 2);
-        data[0] = 42;
+        byte[] tag = {7};
+        EncodedFrame frame = EncodedFrame.builder(data, 4, 2).userData(tag).build();
 
-        assertArrayEquals(IDR, frame.data(), "the frame copied its bytes when it was built");
-        frame.data()[0] = 42;
-        assertArrayEquals(IDR, frame.data(), "data() hands out a copy");
+        assertSame(data, frame.data(), "the frame holds the caller's bytes, as StepInput.video does");
+        assertSame(tag, frame.userData().orElseThrow());
+        frame = EncodedFrame.h264(data, 4, 2);
         assertEquals(EncodedFrame.h264(IDR, 4, 2), frame);
         assertEquals(EncodedFrame.h264(IDR, 4, 2).hashCode(), frame.hashCode());
         assertNotEquals(EncodedFrame.h264(IDR, 2, 4), frame);

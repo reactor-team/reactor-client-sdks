@@ -372,10 +372,10 @@ public final class Track {
         return () -> peer.pushEncodedVideoFrame(
                 name,
                 frame.codec().wireValue(),
-                frame.dataUnsafe(),
+                frame.data(),
                 frame.width(),
                 frame.height(),
-                frame.userDataUnsafe(),
+                frame.userDataOrNull(),
                 frame.captureTimeUsOrNull());
     }
 
