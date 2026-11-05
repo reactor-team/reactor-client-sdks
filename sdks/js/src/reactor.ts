@@ -309,6 +309,12 @@ export class Reactor implements Disposable {
    * is deliberately not applied to `publishTrack`/`uploadFile`/etc., which
    * throw normally.
    *
+   * `controlRequestTimeoutMs` bounds the wait for a reply (default 10000).
+   * A timeout stops waiting; it does not cancel the command on the runtime,
+   * which may still apply it. Do not automatically resend a command whose
+   * effects are unsafe to repeat. A late reply carrying a model message
+   * still reaches the `message` event, without changing the settled call.
+   *
    * `scope` is forwarded to `sendRuntimeScopedCommand()` — see there for
    * what `"runtime"` actually does.
    *

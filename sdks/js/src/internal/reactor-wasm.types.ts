@@ -34,7 +34,11 @@ export interface ClientOptions {
   extraArgs?: Record<string, unknown>;
   heartbeatIntervalMs?: number;
   readyTimeoutMs?: number;
+  /** Wait for command replies and control-channel replies. Default 10000.
+   *  Expiry stops waiting, not runtime execution: a command may still apply.
+   *  Do not automatically resend commands whose effects are unsafe to repeat. */
   controlRequestTimeoutMs?: number;
+  /** Clip/recording request deadline. Default 10000. Does not bound downloads. */
   clipRequestTimeoutMs?: number;
   maxSessionAttempts?: number;
   maxSdpAttempts?: number;
