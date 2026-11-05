@@ -627,13 +627,7 @@ impl ReactorClient {
         state: Option<StepStateInput>,
         commands: Option<StepCommandsInput>,
     ) -> Result<js_sys::Promise, JsValue> {
-        let state: serde_json::Value = match state.map(JsValue::from).filter(|v| !v.is_null()) {
-            Some(state) => serde_wasm_bindgen::from_value(state)
-                .map_err(|e| invalid(&format!("step state: {e}")))?,
-            None => serde_json::Value::Null,
-        };
-        let commands: Vec<StepCommandJson> = from_optional(commands, "step commands")?;
-        let commands = commands.into_iter().map(StepCommand::from).collect();
+        let (state, commands) = step_input(state, commands)?;
         // Synchronous, unlike the send: an async export first runs in a later
         // microtask, which would leave the buffer open to pushes made after
         // this call returned.
@@ -649,6 +643,22 @@ impl ReactorClient {
                 .map_err(|e| error_value(&e.details(Some("step"))))?;
             output_to_js(output)
         }))
+    }
+
+    /// Whether `step(state, commands)` would be refused now, for the session or
+    /// for its state and commands: throws what `step()` would throw, and takes
+    /// no frames. `step()`'s own checks, run before a step's media is pushed,
+    /// so a refused step leaves the buffer as the caller left it.
+    #[wasm_bindgen(js_name = checkStep)]
+    pub fn check_step(
+        &self,
+        state: Option<StepStateInput>,
+        commands: Option<StepCommandsInput>,
+    ) -> Result<(), JsValue> {
+        let (state, commands) = step_input(state, commands)?;
+        self.reactor
+            .check_step(&state, &commands)
+            .map_err(|e| error_value(&e.details(Some("step"))))
     }
 
     /// Buffer a video frame for the next `step()` on the sendonly track `name`.
@@ -672,12 +682,7 @@ impl ReactorClient {
         metadata: Option<Vec<u8>>,
         capture_time_us: Option<f64>,
     ) -> Result<(), JsValue> {
-        self.ensure_pushable("pushVideoFrame", &name, SessionTrackKind::Video)?;
-        let format =
-            PixelFormat::parse(format.and_then(|f| JsValue::from(f).as_string()).as_deref())
-                .map_err(|e| invalid(&format!("pushVideoFrame('{name}'): {e}")))?;
-        check_size(data, width, height, format)
-            .map_err(|e| invalid(&format!("pushVideoFrame('{name}'): {e}")))?;
+        let format = self.video_frame_format(&name, data.len(), width, height, format)?;
         let layout = match format {
             PixelFormat::Rgba => PixelLayout::Rgba,
             PixelFormat::Rgb => PixelLayout::Rgb,
@@ -696,6 +701,22 @@ impl ReactorClient {
             capture_time_us,
         );
         Ok(())
+    }
+
+    /// Whether `pushVideoFrame` would refuse a frame of `byteLength` bytes:
+    /// throws what it would throw, and buffers nothing. The frame's length
+    /// rather than its bytes, so a frame is not copied into wasm memory twice.
+    #[wasm_bindgen(js_name = checkVideoFrame)]
+    pub fn check_video_frame(
+        &self,
+        name: String,
+        byte_length: usize,
+        width: u32,
+        height: u32,
+        format: Option<PixelFormatInput>,
+    ) -> Result<(), JsValue> {
+        self.video_frame_format(&name, byte_length, width, height, format)
+            .map(drop)
     }
 
     /// Buffer an encoded video frame for the next `step()` on the sendonly
@@ -724,14 +745,8 @@ impl ReactorClient {
         metadata: Option<Vec<u8>>,
         capture_time_us: Option<f64>,
     ) -> Result<(), JsValue> {
-        const OPERATION: &str = "pushEncodedVideoFrame";
-        self.ensure_pushable(OPERATION, &name, SessionTrackKind::Video)?;
-        let codec =
-            EncodedCodec::parse(codec.and_then(|c| JsValue::from(c).as_string()).as_deref())
-                .map_err(|e| invalid(&format!("{OPERATION}('{name}'): {e}")))?;
-        check_encoded(data, width, height)
-            .map_err(|e| invalid(&format!("{OPERATION}('{name}'): {e}")))?;
-        let capture_time_us = capture_time(capture_time_us, OPERATION, &name)?;
+        let (codec, capture_time_us) =
+            self.encoded_frame_codec(&name, codec, data.len(), width, height, capture_time_us)?;
         let encoding = match codec {
             EncodedCodec::H264 => FrameEncoding::H264,
         };
@@ -747,6 +762,23 @@ impl ReactorClient {
         Ok(())
     }
 
+    /// Whether `pushEncodedVideoFrame` would refuse a frame of `byteLength`
+    /// bytes: throws what it would throw, and buffers nothing. A length, as
+    /// for `checkVideoFrame`.
+    #[wasm_bindgen(js_name = checkEncodedVideoFrame)]
+    pub fn check_encoded_video_frame(
+        &self,
+        name: String,
+        codec: Option<EncodedVideoCodecInput>,
+        byte_length: usize,
+        width: u32,
+        height: u32,
+        capture_time_us: Option<f64>,
+    ) -> Result<(), JsValue> {
+        self.encoded_frame_codec(&name, codec, byte_length, width, height, capture_time_us)
+            .map(drop)
+    }
+
     /// Buffer a block of audio for the next `step()` on the sendonly track
     /// `name`: interleaved signed 16-bit PCM, `channels` samples per frame,
     /// already at the rate the model's track declares (a step's frame carries
@@ -759,15 +791,28 @@ impl ReactorClient {
         sample_rate: u32,
         channels: u32,
     ) -> Result<(), JsValue> {
-        self.ensure_pushable("pushAudioFrame", &name, SessionTrackKind::Audio)?;
+        self.check_audio_frame(&name, samples, channels)?;
+        self.reactor
+            .push_audio_frame(&name, samples, sample_rate, channels);
+        Ok(())
+    }
+
+    /// Whether `pushAudioFrame` would refuse `samples`: throws what it would
+    /// throw, and buffers nothing.
+    #[wasm_bindgen(js_name = checkAudioFrame)]
+    pub fn check_audio_frame(
+        &self,
+        name: &str,
+        samples: &[i16],
+        channels: u32,
+    ) -> Result<(), JsValue> {
+        self.ensure_pushable("pushAudioFrame", name, SessionTrackKind::Audio)?;
         if channels == 0 || !samples.len().is_multiple_of(channels as usize) {
             return Err(invalid(&format!(
                 "pushAudioFrame('{name}'): {} samples do not divide into {channels} channels",
                 samples.len()
             )));
         }
-        self.reactor
-            .push_audio_frame(&name, samples, sample_rate, channels);
         Ok(())
     }
 
@@ -1009,6 +1054,47 @@ impl ReactorClient {
     /// Refuse a frame push the core would otherwise drop with only a log
     /// line: outside a stepped session, or — once the runtime has declared
     /// its tracks — onto a name that is not a sendonly track of that kind.
+    /// `pushVideoFrame`'s checks, of a frame `byte_length` bytes long: its
+    /// layout, once the track and the size pass.
+    fn video_frame_format(
+        &self,
+        name: &str,
+        byte_length: usize,
+        width: u32,
+        height: u32,
+        format: Option<PixelFormatInput>,
+    ) -> Result<PixelFormat, JsValue> {
+        const OPERATION: &str = "pushVideoFrame";
+        self.ensure_pushable(OPERATION, name, SessionTrackKind::Video)?;
+        let format =
+            PixelFormat::parse(format.and_then(|f| JsValue::from(f).as_string()).as_deref())
+                .map_err(|e| invalid(&format!("{OPERATION}('{name}'): {e}")))?;
+        check_size(byte_length, width, height, format)
+            .map_err(|e| invalid(&format!("{OPERATION}('{name}'): {e}")))?;
+        Ok(format)
+    }
+
+    /// `pushEncodedVideoFrame`'s checks, of a frame `byte_length` bytes long:
+    /// its codec and capture time, once the track and the size pass.
+    fn encoded_frame_codec(
+        &self,
+        name: &str,
+        codec: Option<EncodedVideoCodecInput>,
+        byte_length: usize,
+        width: u32,
+        height: u32,
+        capture_time_us: Option<f64>,
+    ) -> Result<(EncodedCodec, Option<i64>), JsValue> {
+        const OPERATION: &str = "pushEncodedVideoFrame";
+        self.ensure_pushable(OPERATION, name, SessionTrackKind::Video)?;
+        let codec =
+            EncodedCodec::parse(codec.and_then(|c| JsValue::from(c).as_string()).as_deref())
+                .map_err(|e| invalid(&format!("{OPERATION}('{name}'): {e}")))?;
+        check_encoded(byte_length, width, height)
+            .map_err(|e| invalid(&format!("{OPERATION}('{name}'): {e}")))?;
+        Ok((codec, capture_time(capture_time_us, OPERATION, name)?))
+    }
+
     fn ensure_pushable(
         &self,
         operation: &str,
@@ -1253,6 +1339,21 @@ impl From<ClientConnectionStatJson> for ClientConnectionStat {
 }
 
 /// Deserialize an optional JS argument, treating `null`/`undefined` as absent.
+/// `step()`'s `state` and `commands` as the core takes them, or why they
+/// cannot be: what `step` and `checkStep` both read them with.
+fn step_input(
+    state: Option<StepStateInput>,
+    commands: Option<StepCommandsInput>,
+) -> Result<(serde_json::Value, Vec<StepCommand>), JsValue> {
+    let state: serde_json::Value = match state.map(JsValue::from).filter(|v| !v.is_null()) {
+        Some(state) => serde_wasm_bindgen::from_value(state)
+            .map_err(|e| invalid(&format!("step state: {e}")))?,
+        None => serde_json::Value::Null,
+    };
+    let commands: Vec<StepCommandJson> = from_optional(commands, "step commands")?;
+    Ok((state, commands.into_iter().map(StepCommand::from).collect()))
+}
+
 fn from_optional<T: serde::de::DeserializeOwned + Default, V: Into<JsValue>>(
     value: Option<V>,
     what: &str,

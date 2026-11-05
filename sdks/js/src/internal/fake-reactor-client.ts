@@ -348,6 +348,42 @@ export class FakeReactorClient {
     this.clearStepInputsCalls += 1;
   }
 
+  /** Every `check*` call, in order, as `[method, ...args]`. */
+  checkCalls: unknown[][] = [];
+  // Overridable so a test can simulate the binding refusing a step or one of
+  // its frames: the real checks throw synchronously what the step or push
+  // would. Passes everything by default.
+  checkImpl: ((method: string, ...args: unknown[]) => void) | undefined;
+  private check(method: string, args: unknown[]): void {
+    this.checkCalls.push([method, ...args]);
+    this.checkImpl?.(method, ...args);
+  }
+  checkStep(state?: Record<string, unknown> | null, commands?: StepCommand[] | null): void {
+    this.check('checkStep', [state, commands]);
+  }
+  checkVideoFrame(
+    name: string,
+    byteLength: number,
+    width: number,
+    height: number,
+    format?: PixelFormat | null,
+  ): void {
+    this.check('checkVideoFrame', [name, byteLength, width, height, format]);
+  }
+  checkEncodedVideoFrame(
+    name: string,
+    codec: EncodedVideoCodec | null | undefined,
+    byteLength: number,
+    width: number,
+    height: number,
+    captureTimeUs?: number | null,
+  ): void {
+    this.check('checkEncodedVideoFrame', [name, codec, byteLength, width, height, captureTimeUs]);
+  }
+  checkAudioFrame(name: string, samples: Int16Array, channels: number): void {
+    this.check('checkAudioFrame', [name, samples, channels]);
+  }
+
   // Overridable so a test can fail a specific publish call, e.g. to
   // simulate one of two concurrent publishTrack() calls rejecting.
   publishTrackImpl:

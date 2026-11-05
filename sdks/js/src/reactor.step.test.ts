@@ -814,27 +814,94 @@ describe('Reactor.step media', () => {
     expect(client.stepCalls).toEqual([{ state: { prompt: 'a cat' }, commands: [] }]);
   });
 
+  it('has the binding check the state and commands it steps with, FileRefs rewritten, before any push', async () => {
+    const { reactor, client } = await steppedWithInputs();
+    const order: string[] = [];
+    const pushEncoded = client.pushEncodedVideoFrame.bind(client);
+    const ref = new FileRef('up_1', 'cat.png', 'image/png', 3);
+
+    client.checkImpl = (method) => order.push(method);
+    client.pushEncodedVideoFrame = (...args) => {
+      order.push('push');
+      pushEncoded(...args);
+    };
+
+    await reactor.step({
+      state: { image: ref },
+      commands: [{ command: 'go', data: { image: ref } }],
+      media: { camera: [idr] },
+    });
+
+    const [, state, commands] = client.checkCalls[0]!;
+
+    expect(order).toEqual(['checkStep', 'checkEncodedVideoFrame', 'push']);
+    expect({ state, commands }).toEqual(client.stepCalls[0]);
+    expect(state).toEqual({ image: { upload_id: 'up_1', name: 'cat.png', mime_type: 'image/png', size: 3 } });
+  });
+
   it.each([
-    ['a state that is not an object', { state: ['prompt'] }, DecodeError],
-    ['commands that are not an array', { commands: { command: 'x' } }, InvalidStateError],
-    ['a command without a name', { commands: [{ data: {} }] }, InvalidStateError],
-    ['command data that is not an object', { commands: [{ command: 'x', data: [1] }] }, DecodeError],
-  ])('pushes none of its media for %s, nor sends the step', async (_, options, ErrorClass) => {
+    ['a malformed state or command', 'DECODE_FAILED', DecodeError],
+    ['a session that is not ready', 'INVALID_STATE', InvalidStateError],
+  ])('pushes none of its media when the binding refuses the step for %s, nor sends it', async (_, code, ErrorClass) => {
     const { reactor, client } = await steppedWithInputs();
 
-    const error = await reactor
-      .step({ ...(options as object), media: { camera: [idr] } })
-      .catch((e: unknown) => e);
+    client.checkImpl = (method) => {
+      if (method === 'checkStep') {
+        throw bindingError(code, 'refused');
+      }
+    };
+    const error = await reactor.step({ media: { camera: [idr] } }).catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(ErrorClass);
+    expect(client.checkCalls.map(([method]) => method)).toEqual(['checkStep']);
     expect(client.pushEncodedVideoFrameCalls).toEqual([]);
+    expect(client.stepCalls).toEqual([]);
+  });
+
+  it('hands commands it cannot read to the binding as given, for it to refuse', async () => {
+    const { reactor, client } = await steppedWithInputs();
+    const commands = { command: 'x' };
+
+    client.checkImpl = (method) => {
+      if (method === 'checkStep') {
+        throw bindingError('INVALID_STATE', 'step commands: invalid type: map, expected a sequence');
+      }
+    };
+    const error = await reactor
+      .step({ commands: commands as never, media: { camera: [idr] } })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(InvalidStateError);
+    expect(client.checkCalls[0]).toEqual(['checkStep', null, commands]);
+  });
+
+  it.each([
+    ['an encoded frame', 'checkEncodedVideoFrame', { camera: [idr, p, p] }],
+    ['a raw frame', 'checkVideoFrame', { camera: [idr, { data: new Uint8Array(3), width: 1, height: 1 }] }],
+    ['an audio frame', 'checkAudioFrame', { camera: [idr], mic: [{ samples: new Int16Array(3), sampleRate: 16000, channels: 2 }] }],
+  ])('pushes none of its media when the binding refuses %s late in it, nor sends the step', async (_, refused, media) => {
+    const { reactor, client } = await steppedWithInputs();
+    let frames = 0;
+
+    client.checkImpl = (method) => {
+      if (method !== 'checkStep' && ++frames > 1 && method === refused) {
+        throw bindingError('INVALID_STATE', `${refused} refused`);
+      }
+    };
+    const error = await reactor
+      .step({ media: media as unknown as Record<string, never[]> })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(InvalidStateError);
+    expect((error as ReactorError).message).toContain(`${refused} refused`);
+    expect(client.pushEncodedVideoFrameCalls).toEqual([]);
+    expect(client.pushVideoFrameCalls).toEqual([]);
+    expect(client.pushAudioFrameCalls).toEqual([]);
     expect(client.stepCalls).toEqual([]);
   });
 
   it.each([
     ['a later encoded frame', { camera: [idr, { ...p, width: 0 }, p] }, 'decoded frame'],
-    ['a later raw frame of the wrong size', { camera: [idr, { data: new Uint8Array(3), width: 1, height: 1 }] }, 'bytes is not'],
-    ['a later audio frame', { camera: [idr], mic: [{ samples: new Int16Array(3), sampleRate: 16000, channels: 2 }] }, 'channels'],
     ['a later track not published', { camera: [idr], speaker: [p] }, "publishTrack('speaker') first"],
   ])('pushes none of its media when %s is refused, nor sends the step', async (_, media, message) => {
     const { reactor, client } = await steppedWithInputs();
@@ -851,26 +918,22 @@ describe('Reactor.step media', () => {
     expect(client.stepCalls).toEqual([]);
   });
 
-  it.each([
-    ['not declared', 'speaker', 'declares no track'],
-    ['not sendonly', 'main_video', 'recvonly video'],
-    ['not video', 'mic', 'only a sendonly video track'],
-  ])('pushes none of its media when a later track is %s', async (_, name, message) => {
+  it('pushes none of its media when the binding refuses a later frame’s track', async () => {
     const { reactor, client } = await steppedWithInputs();
 
-    client.tracksResult = [
-      { name: 'camera', kind: 'video', direction: 'sendonly' },
-      { name: 'mic', kind: 'audio', direction: 'sendonly' },
-      { name: 'main_video', kind: 'video', direction: 'recvonly' },
-    ];
-    await reactor.publishTrack(name);
+    await reactor.publishTrack('main_video');
+    client.checkImpl = (_method, name) => {
+      if (name === 'main_video') {
+        throw bindingError('INVALID_STATE', "pushEncodedVideoFrame('main_video'): 'main_video' is a recvonly video track");
+      }
+    };
 
     const error = await reactor
-      .step({ media: { camera: [idr, { data: new Uint8Array(4), width: 1, height: 1 }], [name]: [p] } })
+      .step({ media: { camera: [idr, { data: new Uint8Array(4), width: 1, height: 1 }], main_video: [p] } })
       .catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(InvalidStateError);
-    expect((error as ReactorError).message).toContain(message);
+    expect((error as ReactorError).message).toContain('recvonly video');
     expect(client.pushEncodedVideoFrameCalls).toEqual([]);
     expect(client.pushVideoFrameCalls).toEqual([]);
     expect(client.stepCalls).toEqual([]);
@@ -984,16 +1047,6 @@ describe('Reactor.step media', () => {
     await Promise.all([pushing, stepping]);
 
     expect(order).toEqual(['push', 'step']);
-  });
-
-  it('refuses media while the session is not ready, before any of it is pushed', async () => {
-    const { reactor, client } = await steppedWithInputs();
-
-    client.setStatus('waiting');
-
-    await expect(reactor.step({ media: { camera: [idr] } })).rejects.toThrow('needs a ready session');
-    expect(client.pushEncodedVideoFrameCalls).toEqual([]);
-    expect(client.stepCalls).toEqual([]);
   });
 
   it('needs each media track published first', async () => {

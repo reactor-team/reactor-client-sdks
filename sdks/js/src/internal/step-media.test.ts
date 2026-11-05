@@ -1,24 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { DecodeError, InvalidStateError } from '../errors';
-import { checkStepInput, checkStepTrack, holdStepMedia, readStepFrame } from './step-media';
+import { InvalidStateError } from '../errors';
+import { FakeReactorClient } from './fake-reactor-client';
+import type { ReactorClient } from './reactor-wasm.types';
+import { checkStepFrame, holdStepMedia, readStepFrame } from './step-media';
+
+/** The fake, as the binding the code under test takes. */
+const asBinding = (client: FakeReactorClient) => client as unknown as ReactorClient;
 
 const idr = { codec: 'h264', data: new Uint8Array([0, 0, 1, 0x65]), width: 2, height: 2 } as const;
-
-describe('checkStepInput', () => {
-  it('takes no state and no commands, or well-formed ones', () => {
-    expect(() => checkStepInput({})).not.toThrow();
-    expect(() => checkStepInput({ state: { prompt: 'a cat' }, commands: [{ command: 'go', data: {} }] })).not.toThrow();
-  });
-
-  it.each([
-    ['a state that is not an object', { state: ['prompt'] }, DecodeError],
-    ['commands that are not an array', { commands: { command: 'x' } }, InvalidStateError],
-    ['a command without a name', { commands: [{ data: {} }] }, InvalidStateError],
-    ['command data that is not an object', { commands: [{ command: 'x', data: [1] }] }, DecodeError],
-  ])('refuses %s', (_, options, ErrorClass) => {
-    expect(() => checkStepInput(options as never)).toThrow(ErrorClass);
-  });
-});
 
 describe('holdStepMedia', () => {
   it('holds every frame, track by track and in order', () => {
@@ -44,38 +33,37 @@ describe('holdStepMedia', () => {
   });
 });
 
-describe('readStepFrame', () => {
-  it('refuses raw pixels of the wrong size, and audio that does not divide into its channels', async () => {
-    const [video, audio] = holdStepMedia({
-      camera: [{ data: new Uint8Array(3), width: 1, height: 1 }],
-      mic: [{ samples: new Int16Array(3), sampleRate: 16000, channels: 2 }],
+describe('readStepFrame and checkStepFrame', () => {
+  it('asks the binding to check each frame as its push would, by length for pixels and encoded bytes', async () => {
+    const client = new FakeReactorClient({}, null);
+    const samples = new Int16Array(4);
+    const held = holdStepMedia({
+      camera: [{ ...idr, captureTimeUs: 7 }, { data: new Uint8Array(3), width: 1, height: 1, format: 'rgb' }],
+      mic: [{ samples, sampleRate: 16000, channels: 2 }],
     });
 
-    await expect(readStepFrame(video!)).rejects.toThrow('bytes is not');
-    await expect(readStepFrame(audio!)).rejects.toThrow('channels');
-  });
-});
+    for (const frame of held) {
+      checkStepFrame(asBinding(client), await readStepFrame(frame));
+    }
 
-describe('checkStepTrack', () => {
-  const declared = [
-    { name: 'camera', kind: 'video', direction: 'sendonly' },
-    { name: 'mic', kind: 'audio', direction: 'sendonly' },
-    { name: 'main_video', kind: 'video', direction: 'recvonly' },
-  ] as never;
-
-  it('passes any name before the runtime declares its tracks', () => {
-    expect(() =>
-      checkStepTrack([], { track: 'anything', kind: 'encoded', operation: 'pushEncodedFrame', encoded: {} as never }),
-    ).not.toThrow();
+    expect(client.checkCalls).toEqual([
+      ['checkEncodedVideoFrame', 'camera', 'h264', 4, 2, 2, 7],
+      ['checkVideoFrame', 'camera', 3, 1, 1, 'rgb'],
+      ['checkAudioFrame', 'mic', samples, 2],
+    ]);
   });
 
-  it.each([
-    ['not declared', 'speaker', 'declares no track'],
-    ['not sendonly', 'main_video', 'recvonly video'],
-    ['not video', 'mic', 'only a sendonly video track'],
-  ])('refuses an encoded frame for a track that is %s', (_, track, message) => {
-    expect(() =>
-      checkStepTrack(declared, { track, kind: 'encoded', operation: 'pushEncodedFrame', encoded: {} as never }),
-    ).toThrow(message);
+  it('throws what the binding refuses', async () => {
+    const client = new FakeReactorClient({}, null);
+    const [video] = holdStepMedia({ camera: [{ data: new Uint8Array(3), width: 1, height: 1 }] });
+    const refusal = new InvalidStateError("pushVideoFrame('camera'): 3 bytes is not a 1x1 Rgba frame");
+
+    client.checkImpl = () => {
+      throw refusal;
+    };
+
+    const ready = await readStepFrame(video!);
+
+    expect(() => checkStepFrame(asBinding(client), ready)).toThrow(refusal);
   });
 });

@@ -40,11 +40,12 @@ impl PixelFormat {
     }
 }
 
-/// Whether `data` is a whole `width`x`height` frame in `format`, or why it is
-/// not: the core would only drop such a frame with a log line, and the caller
-/// should see the mistake.
+/// Whether `byte_length` bytes are a whole `width`x`height` frame in
+/// `format`, or why they are not: the core would only drop such a frame with
+/// a log line, and the caller should see the mistake. A length rather than
+/// the bytes, so `checkVideoFrame` need not copy a frame into wasm memory.
 pub(crate) fn check_size(
-    data: &[u8],
+    byte_length: usize,
     width: u32,
     height: u32,
     format: PixelFormat,
@@ -56,10 +57,9 @@ pub(crate) fn check_size(
         .checked_mul(height as usize)
         .and_then(|pixels| pixels.checked_mul(format.bytes_per_pixel()))
         .ok_or_else(|| format!("a {width}x{height} frame is too large"))?;
-    if data.len() != expected {
+    if byte_length != expected {
         return Err(format!(
-            "{} bytes is not a {width}x{height} {format:?} frame ({expected} bytes)",
-            data.len()
+            "{byte_length} bytes is not a {width}x{height} {format:?} frame ({expected} bytes)"
         ));
     }
     Ok(())
@@ -81,11 +81,11 @@ impl EncodedCodec {
     }
 }
 
-/// Whether `data` can be an encoded frame that decodes to `width`x`height`,
-/// or why it cannot: the core would only drop it with a log line. Whether it
-/// really decodes is the runtime's to say.
-pub(crate) fn check_encoded(data: &[u8], width: u32, height: u32) -> Result<(), String> {
-    if data.is_empty() {
+/// Whether `byte_length` bytes can be an encoded frame that decodes to
+/// `width`x`height`, or why they cannot: the core would only drop it with a
+/// log line. Whether it really decodes is the runtime's to say.
+pub(crate) fn check_encoded(byte_length: usize, width: u32, height: u32) -> Result<(), String> {
+    if byte_length == 0 {
         return Err("an encoded frame needs data".into());
     }
     if width == 0 || height == 0 {
@@ -102,16 +102,16 @@ mod tests {
 
     #[test]
     fn a_whole_frame_in_each_format_passes() {
-        assert_eq!(check_size(&[0; 8], 2, 1, PixelFormat::Rgba), Ok(()));
-        assert_eq!(check_size(&[0; 3], 1, 1, PixelFormat::Rgb), Ok(()));
-        assert_eq!(check_size(&[0; 4], 1, 1, PixelFormat::Bgra), Ok(()));
+        assert_eq!(check_size(8, 2, 1, PixelFormat::Rgba), Ok(()));
+        assert_eq!(check_size(3, 1, 1, PixelFormat::Rgb), Ok(()));
+        assert_eq!(check_size(4, 1, 1, PixelFormat::Bgra), Ok(()));
     }
 
     #[test]
     fn a_size_that_does_not_match_the_dimensions_is_refused() {
-        assert!(check_size(&[0; 7], 1, 2, PixelFormat::Rgba).is_err());
-        assert!(check_size(&[0; 4], 1, 1, PixelFormat::Rgb).is_err());
-        assert!(check_size(&[], 0, 0, PixelFormat::Rgba).is_err());
+        assert!(check_size(7, 1, 2, PixelFormat::Rgba).is_err());
+        assert!(check_size(4, 1, 1, PixelFormat::Rgb).is_err());
+        assert!(check_size(0, 0, 0, PixelFormat::Rgba).is_err());
     }
 
     #[test]
@@ -130,9 +130,9 @@ mod tests {
 
     #[test]
     fn an_encoded_frame_needs_data_and_a_size() {
-        assert_eq!(check_encoded(&[0, 0, 1, 0x65], 1280, 720), Ok(()));
-        assert!(check_encoded(&[], 2, 2).is_err());
-        assert!(check_encoded(&[1], 0, 2).is_err());
-        assert!(check_encoded(&[1], 2, 0).is_err());
+        assert_eq!(check_encoded(4, 1280, 720), Ok(()));
+        assert!(check_encoded(0, 2, 2).is_err());
+        assert!(check_encoded(1, 0, 2).is_err());
+        assert!(check_encoded(1, 2, 0).is_err());
     }
 }

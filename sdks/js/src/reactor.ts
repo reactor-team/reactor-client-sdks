@@ -8,8 +8,7 @@ import { extractFileRefs, rewriteNestedFileRefs, toPublicFileRef } from './inter
 import { holdFrame, isAudioFrame, toPixels } from './internal/push-frames';
 import { toPublicClip } from './internal/recording';
 import {
-  checkStepInput,
-  checkStepTrack,
+  checkStepFrame,
   holdStepMedia,
   readStepFrame,
   type ReadyStepFrame,
@@ -672,17 +671,16 @@ export class Reactor implements Disposable {
     this.assertNotDisposed();
     try {
       // A step has no uploads map: a FileRef rides inline, in its wire shape.
-      checkStepInput(options);
+      // The rest goes to the binding as given, for it to check.
       const state = rewriteNestedFileRefs(options.state ?? null);
-      const commands = (options.commands ?? []).map((command) =>
-        command.data ? { ...command, data: rewriteNestedFileRefs(command.data) } : command,
-      );
+      const commands = rewriteNestedFileRefs(options.commands ?? []);
 
       // Every push called before this step; it never rejects.
       const previous = this.pendingPushes;
-      // Pushed only once the state and commands are known to be well formed,
-      // so a step refused for those leaves the buffer as the caller left it.
-      const before = options.media !== undefined ? this.pushStepMedia(options.media) : previous;
+      // Pushed only once the binding would take the state and commands, so a
+      // step refused for those leaves the buffer as the caller left it.
+      const before =
+        options.media !== undefined ? this.pushStepMedia(options.media, state, commands) : previous;
       // This step's place in line, taken now, before a later push or step can
       // queue ahead of it: it goes once its media and every push called before
       // it are in. A push called after it waits only until the step has taken
@@ -929,10 +927,15 @@ export class Reactor implements Disposable {
   }
 
   /** Pushes `step()`'s `media`, track by track and in order, each frame as
-   *  `pushFrame()` or `pushEncodedFrame()` would. All or nothing: every frame
-   *  is read and checked before the first is pushed, so a bad track or frame
-   *  anywhere leaves the buffer as it was. */
-  private async pushStepMedia(media: NonNullable<StepOptions['media']>): Promise<void> {
+   *  `pushFrame()` or `pushEncodedFrame()` would. All or nothing: the binding
+   *  checks the step's `state` and `commands`, then every frame, before the
+   *  first is pushed, so a refused step, or a bad track or frame anywhere,
+   *  leaves the buffer as it was. */
+  private async pushStepMedia(
+    media: NonNullable<StepOptions['media']>,
+    state: StepOptions['state'] | null,
+    commands: NonNullable<StepOptions['commands']>,
+  ): Promise<void> {
     const epoch = this.connectionEpoch;
     // Read now, as a single push would.
     const held = holdStepMedia(media);
@@ -940,15 +943,6 @@ export class Reactor implements Disposable {
       const ready: ReadyStepFrame[] = [];
 
       try {
-        const first = held[0];
-
-        if (first && !this.isStepped()) {
-          throw new InvalidStateError(
-            `${first.operation}('${first.track}') needs a session created with generation: "stepped"; ` +
-              'a streamed session sends media from a MediaStreamTrack given to publishTrack().',
-            { operation: first.operation },
-          );
-        }
         for (const frame of held) {
           ready.push(await readStepFrame(frame));
         }
@@ -960,19 +954,15 @@ export class Reactor implements Disposable {
 
       await this.withReaderAccess(async () => {
         const client = await this.getOrCreateClient();
-        const declared = client.tracks();
 
+        // The step's own checks: a streamed session, one not 'ready', or a
+        // malformed state or command, refused before any frame goes in. A
+        // session leaving 'ready' after this still can take the media: then
+        // the frames ride the next step.
+        client.checkStep(state, commands);
         for (const frame of ready) {
           this.checkPushTarget(frame.operation, frame.track, undefined, epoch);
-          checkStepTrack(declared, frame);
-        }
-        // The core refuses a step outside 'ready' and keeps what is buffered for
-        // the next one, so the media must not go in first. A session leaving
-        // 'ready' after this still can: then the frames ride the next step.
-        const status = client.status();
-
-        if (status !== 'ready') {
-          throw new InvalidStateError(`step() needs a ready session; it is ${status}`, { operation: 'step' });
+          checkStepFrame(client, frame);
         }
         // Every frame passed: only now does the first go into the buffer.
         for (const frame of ready) {
