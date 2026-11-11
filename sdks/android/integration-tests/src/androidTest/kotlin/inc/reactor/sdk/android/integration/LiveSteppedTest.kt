@@ -39,7 +39,7 @@ internal class LiveSteppedTest {
         runBlocking {
             val reactor =
                 try {
-                    Live.connected(generation = Generation.STEPPED).also { Live.awaitReady(it) }
+                    Live.connected(generation = Generation.STEPPED)
                 } catch (refused: GenerationModeMismatchException) {
                     // A runtime that ignores the mode streams, and the client fails the connect.
                     assertEquals("GENERATION_MODE_MISMATCH", refused.code)
@@ -51,6 +51,7 @@ internal class LiveSteppedTest {
                     return@runBlocking
                 }
             try {
+                Live.awaitReady(reactor)
                 // Echo from 1.10.0 steps: the pushed webcam frame comes back inverted on main_video.
                 val webcam = reactor.track(Live.VIDEO_IN)
                 webcam.publish()

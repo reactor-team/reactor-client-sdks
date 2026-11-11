@@ -34,8 +34,11 @@ struct SteppedGenerationTests {
     /// outcomes.
     @Test("a stepped connect to echo steps or fails")
     func steppedConnectToEchoStepsOrFails() async throws {
+        // Only a refused connect may pass: a session that dies during the step is a failure.
+        var connected = false
         do {
             try await withConnectedReactor(generation: .stepped) { reactor in
+                connected = true
                 let webcam = try reactor.track("webcam")
                 try await webcam.publish()
                 try webcam.pushFrame(
@@ -51,7 +54,7 @@ struct SteppedGenerationTests {
                 let centre = (32 * 64 + 32) * 3
                 #expect(Array(Array(frame.data)[centre..<centre + 3]) == [245, 235, 225])
             }
-        } catch let error as ReactorError {
+        } catch let error as ReactorError where !connected {
             #expect(error.code == .generationModeMismatch || error.code == .sessionTerminal)
         }
     }
