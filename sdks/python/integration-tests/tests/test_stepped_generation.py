@@ -1,12 +1,13 @@
 """Stepped generation against a real runtime — `generation="stepped"`, `step()`.
 
-Needs a model with stepped generation, which `reactor/echo` is not yet: set
+The generic tests need a model with stepped generation: set
 REACTOR_STEPPED_MODEL_NAME (and, for a local runtime, REACTOR_LOCAL=true with
-REACTOR_API_URL) or every test here is skipped. REACTOR_STEPPED_INPUT_TRACK
-names a sendonly video track to push into; without it the input test skips.
+REACTOR_API_URL) or they are skipped. REACTOR_STEPPED_INPUT_TRACK names a
+sendonly video track to push into; without it the input test skips.
 
-The streamed `reactor/echo` model doubles as the negative case: a runtime that
-does not start a stepped session must fail `connect()`, not stream.
+`reactor/echo` always runs: a stepped connect to it must step or fail, never
+stream. Echo steps from 1.10.0; until that release is deployed everywhere this
+suite runs, an older echo refuses the start, and the test accepts either.
 """
 
 from __future__ import annotations
@@ -44,20 +45,38 @@ def stepped(model_name: str) -> Reactor:
     )
 
 
-async def test_a_runtime_that_streams_fails_a_stepped_connect() -> None:
-    # A runtime before 3.9.0 ignores the mode and streams, so the ready session
-    # does not echo "stepped". A runtime from 3.9.0 refuses the stepped start of
-    # a model that overrides run(), such as reactor/echo, and the session closes
-    # before it is ready. The error then names the reason the platform recorded,
-    # START_REFUSED, with the runtime's account of the refusal. The Android
-    # suite's LiveSteppedTest accepts both errors for the same reason.
+async def test_a_stepped_connect_to_echo_steps_or_fails() -> None:
+    # Echo from 1.10.0 runs the default step loop, so the session is stepped:
+    # a step carries the pushed webcam frame and comes back inverted on
+    # main_video. An older echo drives its own run(); a runtime from 3.9.0
+    # refuses that stepped start, and the error names the reason the platform
+    # recorded, START_REFUSED. A runtime before 3.9.0 streams instead, which
+    # the client reports as a mode mismatch. Either refusal is right; a stepped
+    # connect that silently streams is not, and the swift and android suites
+    # accept the same outcomes.
     client = stepped(MODEL_NAME)
+    connected = False
     try:
-        with pytest.raises((GenerationModeMismatchError, SessionTerminalError)) as exc_info:
+        try:
             await paced_connect(client)
-        if isinstance(exc_info.value, SessionTerminalError):
-            assert "(START_REFUSED)" in str(exc_info.value)
+        except (GenerationModeMismatchError, SessionTerminalError) as refused:
+            if isinstance(refused, SessionTerminalError):
+                assert "(START_REFUSED)" in str(refused)
+            return
+        connected = True
+        assert client.status == ReactorStatus.READY
+
+        webcam = await client.track("webcam").publish()
+        webcam.push_frame(solid_rgb_frame(64, 64, (10, 20, 30)))
+        result = await client.step(state={"effect": "invert"})
+
+        assert result.error is None
+        [frame] = result.track("main_video").frames
+        assert frame.array.shape == (64, 64, 3)
+        assert frame.array[32, 32].tolist() == [245, 235, 225]
     finally:
+        if connected:
+            await client.disconnect()
         client.close()
 
 
