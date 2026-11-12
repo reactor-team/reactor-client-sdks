@@ -93,7 +93,7 @@ rerun rather than debug the harness.
 | 01 | `01_ConnectAndReceiveTests.swift` | `get_status` round-trips with real data (REA-5973); nothing arrives before `webcam` is pushed |
 | 02 | `02_UploadImageTests.swift` | An uploaded `FileRef` travels via `uploads:`, not embedded in the command's JSON; `set_overlay_image` visibly takes over the frame |
 | 03 | `03_PauseAndResumeTests.swift` | Nothing is delivered while paused (after a short transport-level grace window); resuming restarts delivery |
-| 04 | `04_PublishTrackTests.swift` | Pushing before `publish()` is refused; a published, pushed frame reaches `main_video` |
+| 04 | `04_PublishTrackTests.swift` | Pushing before `publish()` is refused; a published, pushed frame reaches `main_video`; a publish does not survive `reconnect()`, and publishing the track again is granted and its frames reach `main_video` again |
 | 05 | `05_MultiConnectionTests.swift` | A session-scoped token cannot adopt a session it did not create — the joiner mints its own token, bound to the creator's session; the joiner observes state the creator set before it connected |
 | 06 | `06_RecordClipTests.swift` | A clip of generated media downloads to a real fragmented-MP4 file |
 | 07 | `07_FrameMetadataTests.swift` | A tag pushed on `webcam` loops back on `main_video`'s `userData` (REA-5972) — `frameID`/`captureTimeUs` are read but not asserted on content, since Python's own suite found `echo`'s values for both unreliable across independent live runs |
@@ -105,7 +105,7 @@ rerun rather than debug the harness.
 - `Fixtures.swift` — `IntegrationConfig` (env, model, key), `SessionPacer`/`pacedConnect`,
   `withConnectedReactor` (create, connect, run, always disconnect and close), `waitUntil`.
 - `MediaFixtures.swift` — `pumpFrames` (push solid-colour frames into a track until cancelled),
-  `solidBGRAFrame`, `sineWaveSamples`, `assertDominantColor`.
+  `solidBGRAFrame`, `sineWaveSamples`, `meanColor`, `assertDominantColor`.
 
 Depends on `ExampleSupport` (the library the examples share) for `FrameCounter`,
 `makeGradientPNG`, and env-reading conveniences — this suite adds only what `ExampleSupport`

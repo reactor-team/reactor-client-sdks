@@ -94,6 +94,24 @@ package enum MediaFixtures {
         }
     }
 
+    /// `frame`'s mean colour per channel, or `nil` if it has no pixels to
+    /// average.
+    package static func meanColor(_ frame: VideoFrame) -> (b: Double, g: Double, r: Double)? {
+        let count = Int(frame.width) * Int(frame.height)
+        guard count > 0 else { return nil }
+
+        var sums = (b: 0.0, g: 0.0, r: 0.0)
+        frame.pixels.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            for i in 0..<count {
+                sums.b += Double(bytes[i * 4])
+                sums.g += Double(bytes[i * 4 + 1])
+                sums.r += Double(bytes[i * 4 + 2])
+            }
+        }
+        return (b: sums.b / Double(count), g: sums.g / Double(count), r: sums.r / Double(count))
+    }
+
     /// Assert `frame`'s mean colour is within `tolerance` per channel of
     /// `expected`.
     ///
@@ -106,24 +124,10 @@ package enum MediaFixtures {
         _ frame: VideoFrame, expected: (b: UInt8, g: UInt8, r: UInt8), tolerance: Double = 30,
         sourceLocation: SourceLocation = #_sourceLocation
     ) {
-        let count = Int(frame.width) * Int(frame.height)
-        guard count > 0 else {
+        guard let mean = meanColor(frame) else {
             Issue.record("frame has no pixels to average", sourceLocation: sourceLocation)
             return
         }
-
-        var sums = (b: 0.0, g: 0.0, r: 0.0)
-        frame.pixels.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            let bytes = raw.bindMemory(to: UInt8.self)
-            for i in 0..<count {
-                sums.b += Double(bytes[i * 4])
-                sums.g += Double(bytes[i * 4 + 1])
-                sums.r += Double(bytes[i * 4 + 2])
-            }
-        }
-        let mean = (
-            b: sums.b / Double(count), g: sums.g / Double(count), r: sums.r / Double(count)
-        )
 
         #expect(
             abs(mean.b - Double(expected.b)) <= tolerance,

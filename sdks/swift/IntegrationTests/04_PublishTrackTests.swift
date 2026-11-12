@@ -7,7 +7,8 @@ import Testing
 /// Scenario 04, scripted: publish a track and push frames into it. Mirrors
 /// `sdks/python/integration-tests/tests/test_tracks_and_frames.py`'s
 /// `test_pushing_before_publish_raises` and
-/// `test_publish_and_push_frame_reaches_main_video`.
+/// `test_publish_and_push_frame_reaches_main_video`. The republish-after-
+/// reconnect test has no Python counterpart yet.
 @Suite("04 - publish track")
 struct PublishTrackTests {
 
@@ -68,7 +69,7 @@ struct PublishTrackTests {
             let before = pumpFrames(into: webcam, color: (0x10, 40, 40))
             defer { before.cancel() }
             try await waitUntil(timeout: .seconds(30)) {
-                frames.value.map { meanBlue($0) <= 0x28 } ?? false
+                frames.value.flatMap(MediaFixtures.meanColor).map { $0.b <= 0x28 } ?? false
             }
             before.cancel()
 
@@ -93,25 +94,10 @@ struct PublishTrackTests {
             let after = pumpFrames(into: webcam, color: (0xF0, 40, 40))
             defer { after.cancel() }
             try await waitUntil(timeout: .seconds(30)) {
-                frames.value.map { meanBlue($0) >= 0xB0 } ?? false
+                frames.value.flatMap(MediaFixtures.meanColor).map { $0.b >= 0xB0 } ?? false
             }
 
             try webcam.unpublish()
         }
     }
-}
-
-/// The mean of a BGRA frame's blue channel — the byte the republish test tags
-/// each connection's frames with.
-private func meanBlue(_ frame: VideoFrame) -> Int {
-    let count = Int(frame.width) * Int(frame.height)
-    guard count > 0 else { return -1 }
-    var sum = 0
-    frame.pixels.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-        let bytes = raw.bindMemory(to: UInt8.self)
-        for i in 0..<count {
-            sum += Int(bytes[i * 4])
-        }
-    }
-    return sum / count
 }
