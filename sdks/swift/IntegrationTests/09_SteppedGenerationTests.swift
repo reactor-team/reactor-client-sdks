@@ -49,7 +49,7 @@ struct SteppedGenerationTests {
 
                 let video = try #require(result.tracks.first { $0.name == "main_video" })
                 let frame = try #require(video.frames.first)
-                #expect(frame.shape == [64, 64, 3])
+                try #require(frame.shape == [64, 64, 3])
                 // RGB (10, 20, 30) inverted, at the frame's centre pixel.
                 let centre = (32 * 64 + 32) * 3
                 #expect(Array(Array(frame.data)[centre..<centre + 3]) == [245, 235, 225])
