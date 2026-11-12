@@ -84,6 +84,68 @@ internal class LiveMediaTest : LiveFixture() {
             }
         }
 
+    /** The mean of a frame's blue channel — the byte [frame] tags — read while it is still valid. */
+    private fun meanBlue(frame: VideoFrame): Int {
+        val pixels = frame.pixels.duplicate()
+        var sum = 0L
+        var count = 0
+        var at = pixels.position()
+        while (at + 3 < pixels.limit()) {
+            sum += pixels.get(at).toInt() and 0xFF
+            count++
+            at += 4
+        }
+        return if (count == 0) -1 else (sum / count).toInt()
+    }
+
+    /**
+     * publish → `reconnect()` → publish again → frames come back from echo.
+     *
+     * A publish does not survive a reconnect ([inc.reactor.sdk.android.Track.publish] says so):
+     * the client drops it, so pushing into the track afterwards is refused, and the session has
+     * to drop its side too, or the second `publish()` is refused as "track already published"
+     * while the client has no sender left. Two blues far apart, one per connection, so a frame
+     * read after the republish can only have come from a frame pushed after it, not from
+     * anything left over from before the reconnect.
+     */
+    @Test
+    fun republishAfterReconnectDeliversFramesAgain() =
+        runBlocking {
+            val outgoing = reactor.track(Live.VIDEO_IN)
+            val incoming = reactor.track(Live.VIDEO_OUT)
+            val lastBlue = AtomicInteger(-1)
+            incoming.onFrame { frame: VideoFrame -> lastBlue.set(meanBlue(frame)) }
+
+            try {
+                outgoing.publish()
+                Live.await("a pushed frame to come back before reconnecting", timeoutMs = 60_000) {
+                    outgoing.pushFrame(frame(0x10), WIDTH, HEIGHT)
+                    lastBlue.get() in 0..0x28
+                }
+
+                reactor.reconnect()
+                Live.awaitReady(reactor)
+
+                assertTrue("a publish must not survive reconnect()", !outgoing.published)
+                assertThrows(InvalidStateException::class.java) {
+                    outgoing.pushFrame(frame(0x10), WIDTH, HEIGHT)
+                }
+
+                outgoing.publish()
+                assertTrue("the republish must leave the track published", outgoing.published)
+
+                // Waits for a frame of the new colour rather than any frame: the first few after
+                // the reconnect can still be the decoder catching up.
+                Live.await("a frame pushed after republishing to come back", timeoutMs = 60_000) {
+                    outgoing.pushFrame(frame(0xF0.toByte()), WIDTH, HEIGHT)
+                    lastBlue.get() >= 0xB0
+                }
+            } finally {
+                incoming.removeHandlers()
+                runCatching { outgoing.unpublish() }
+            }
+        }
+
     /**
      * Pushing before publishing is refused rather than dropped.
      *
