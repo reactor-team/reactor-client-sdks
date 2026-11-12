@@ -255,3 +255,53 @@ TEST_CASE("frame user_data loops back on main_video (REA-5972)") {
 
   webcam.unpublish();
 }
+
+TEST_CASE("a track published again after reconnect() is granted, and its frames come back") {
+  // A publish does not survive a reconnect: the client drops it, and the
+  // session has to drop its side too, or the second publish() is refused as
+  // "track already published" while the client has no sender left. Two blues
+  // far apart, one per connection, so a frame read after the republish can
+  // only have come from a frame pushed after it.
+  integration::ConnectedReactor reactor;
+  auto webcam = reactor->track("webcam");
+  auto main_video = reactor->track("main_video");
+
+  std::mutex mutex;
+  double last_blue = -1.0;
+  // Registered once: a frame handler stays registered across a reconnect.
+  auto subscription = main_video.on_frame([&](const reactor::VideoFrame& frame) {
+    const double blue = integration::mean_rgb(frame)[2];
+    const std::lock_guard<std::mutex> lock(mutex);
+    last_blue = blue;
+  });
+  const auto blue = [&] {
+    const std::lock_guard<std::mutex> lock(mutex);
+    return last_blue;
+  };
+
+  webcam.publish().get();
+  {
+    const auto before = integration::solid_bgra_frame(WIDTH, HEIGHT, 40, 40, 0x10);
+    integration::FramePump pump{webcam, before, WIDTH, HEIGHT};
+    integration::wait_until([&] { return blue() >= 0.0 && blue() <= 0x28; }, 30.0);
+  }  // pump stopped before the reconnect, not left to race it
+
+  reactor->reconnect().get();
+  REQUIRE(reactor->status() == reactor::Status::Ready);
+
+  REQUIRE_FALSE(webcam.published());
+  const auto after = integration::solid_bgra_frame(WIDTH, HEIGHT, 40, 40, 0xF0);
+  REQUIRE_THROWS_AS(webcam.push_frame(reactor::Bytes{after.data(), after.size()}, WIDTH, HEIGHT),
+                    reactor::InvalidStateError);
+
+  webcam.publish().get();
+  REQUIRE(webcam.published());
+
+  // Waits for a frame of the new colour rather than any frame: the first few
+  // after the reconnect can still be the decoder catching up.
+  integration::FramePump pump{webcam, after, WIDTH, HEIGHT};
+  integration::wait_until([&] { return blue() >= 0xB0; }, 30.0);
+  pump.check();
+
+  webcam.unpublish();
+}
