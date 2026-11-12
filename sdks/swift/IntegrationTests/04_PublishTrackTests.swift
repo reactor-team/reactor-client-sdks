@@ -49,4 +49,69 @@ struct PublishTrackTests {
             #expect(!webcam.published)
         }
     }
+
+    /// A publish does not survive a reconnect: the client drops it, and the
+    /// session has to drop its side too, or the second `publish()` is refused as
+    /// "track already published" while the client has no sender left. Two blues
+    /// far apart, one per connection, so a frame read after the republish can
+    /// only have come from a frame pushed after it.
+    @Test("a track published again after reconnect() is granted, and its frames come back")
+    func republishAfterReconnectDeliversFramesAgain() async throws {
+        try await withConnectedReactor { reactor in
+            let webcam = try reactor.track("webcam")
+            let frames = LatestFrameBox()
+            // Registered once: a frame handler stays registered across a reconnect.
+            let subscription = try reactor.track("main_video").onFrame { frames.set($0) }
+            defer { subscription.cancel() }
+
+            try await webcam.publish()
+            let before = pumpFrames(into: webcam, color: (0x10, 40, 40))
+            defer { before.cancel() }
+            try await waitUntil(timeout: .seconds(30)) {
+                frames.value.map { meanBlue($0) <= 0x28 } ?? false
+            }
+            before.cancel()
+
+            try await reactor.reconnect()
+            try await waitUntil(timeout: .seconds(60)) { reactor.status == .ready }
+
+            #expect(!webcam.published, "a publish must not survive reconnect()")
+            do {
+                try webcam.pushFrame(
+                    MediaFixtures.solidBGRAFrame(width: 64, height: 64, color: (0x10, 40, 40)),
+                    width: 64, height: 64)
+                Issue.record("expected pushFrame after reconnect() to throw until republished")
+            } catch let error as ReactorError {
+                #expect(error.code == .invalidState)
+            }
+
+            try await webcam.publish()
+            #expect(webcam.published, "the republish must be granted")
+
+            // Waits for a frame of the new colour rather than any frame: the
+            // first few after the reconnect can still be the decoder catching up.
+            let after = pumpFrames(into: webcam, color: (0xF0, 40, 40))
+            defer { after.cancel() }
+            try await waitUntil(timeout: .seconds(30)) {
+                frames.value.map { meanBlue($0) >= 0xB0 } ?? false
+            }
+
+            try webcam.unpublish()
+        }
+    }
+}
+
+/// The mean of a BGRA frame's blue channel — the byte the republish test tags
+/// each connection's frames with.
+private func meanBlue(_ frame: VideoFrame) -> Int {
+    let count = Int(frame.width) * Int(frame.height)
+    guard count > 0 else { return -1 }
+    var sum = 0
+    frame.pixels.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+        let bytes = raw.bindMemory(to: UInt8.self)
+        for i in 0..<count {
+            sum += Int(bytes[i * 4])
+        }
+    }
+    return sum / count
 }
