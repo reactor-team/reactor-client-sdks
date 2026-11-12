@@ -173,11 +173,16 @@ async def test_republish_after_reconnect_delivers_frames_again(reactor: Reactor)
         main_video.on_frame(lambda frame: after.append(frame))
         # Wait for a frame of the new colour rather than any frame: the first
         # few after the reconnect can still be the decoder catching up.
-        await wait_until(
-            lambda: bool(after) and _close_to(after[-1], after_color),
-            timeout=8.0,
-        )
-        assert_dominant_color(after[-1], after_color)
+        try:
+            await wait_until(
+                lambda: bool(after) and _close_to(after[-1], after_color),
+                timeout=8.0,
+            )
+        except TimeoutError:
+            # Say what did arrive: still red (decoder stuck), black, or nothing.
+            assert after, "no main_video frame arrived after republishing webcam"
+            assert_dominant_color(after[-1], after_color)
+            raise
     finally:
         pump.cancel()
         webcam.unpublish()
