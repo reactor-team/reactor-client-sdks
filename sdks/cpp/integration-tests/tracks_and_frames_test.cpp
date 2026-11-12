@@ -5,7 +5,9 @@
 // every test here publishes `webcam` and pushes into it — there is no way to
 // see output without sending input, unlike a model that generates on its own
 // (`reactor/helios`, what the SDK's own examples use). Mirrors
-// sdks/python/integration-tests/tests/test_tracks_and_frames.py.
+// sdks/python/integration-tests/tests/test_tracks_and_frames.py, except for
+// the republish-after-reconnect case at the end, which has no counterpart
+// there yet.
 
 #include <array>
 #include <atomic>
@@ -261,7 +263,8 @@ TEST_CASE("a track published again after reconnect() is granted, and its frames 
   // session has to drop its side too, or the second publish() is refused as
   // "track already published" while the client has no sender left. Two blues
   // far apart, one per connection, so a frame read after the republish can
-  // only have come from a frame pushed after it.
+  // only have come from a frame pushed after it; the push expected to be
+  // refused in between gets a third blue of its own.
   integration::ConnectedReactor reactor;
   auto webcam = reactor->track("webcam");
   auto main_video = reactor->track("main_video");
@@ -283,25 +286,38 @@ TEST_CASE("a track published again after reconnect() is granted, and its frames 
   {
     const auto before = integration::solid_bgra_frame(WIDTH, HEIGHT, 40, 40, 0x10);
     integration::FramePump pump{webcam, before, WIDTH, HEIGHT};
-    integration::wait_until([&] { return blue() >= 0.0 && blue() <= 0x28; }, 30.0);
+    integration::wait_until(
+        [&] {
+          pump.check();
+          return blue() >= 0.0 && blue() <= 0x28;
+        },
+        30.0);
   }  // pump stopped before the reconnect, not left to race it
 
   reactor->reconnect().get();
   REQUIRE(reactor->status() == reactor::Status::Ready);
 
   REQUIRE_FALSE(webcam.published());
-  const auto after = integration::solid_bgra_frame(WIDTH, HEIGHT, 40, 40, 0xF0);
-  REQUIRE_THROWS_AS(webcam.push_frame(reactor::Bytes{after.data(), after.size()}, WIDTH, HEIGHT),
-                    reactor::InvalidStateError);
+  // A blue of its own, between the other two: should this push reach the model
+  // anyway, it cannot pass for a frame pushed after the republish.
+  const auto rejected = integration::solid_bgra_frame(WIDTH, HEIGHT, 40, 40, 0x70);
+  REQUIRE_THROWS_AS(
+      webcam.push_frame(reactor::Bytes{rejected.data(), rejected.size()}, WIDTH, HEIGHT),
+      reactor::InvalidStateError);
 
   webcam.publish().get();
   REQUIRE(webcam.published());
+  const auto after = integration::solid_bgra_frame(WIDTH, HEIGHT, 40, 40, 0xF0);
 
   // Waits for a frame of the new colour rather than any frame: the first few
   // after the reconnect can still be the decoder catching up.
   integration::FramePump pump{webcam, after, WIDTH, HEIGHT};
-  integration::wait_until([&] { return blue() >= 0xB0; }, 30.0);
-  pump.check();
+  integration::wait_until(
+      [&] {
+        pump.check();
+        return blue() >= 0xB0;
+      },
+      30.0);
 
   webcam.unpublish();
 }
