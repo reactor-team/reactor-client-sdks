@@ -80,7 +80,9 @@ final class LiveMediaTest extends LiveFixture {
         //
         // On the shared client: a reconnect keeps the session, so this costs nothing against the
         // session ceiling, and one that does not complete is what the fixture puts back before the
-        // next test.
+        // next test. A failure anywhere else ends the session instead: the regression this checks
+        // leaves the client READY and UNPUBLISHED while the session still holds the old publish, and
+        // a session kept in that state would fail the next test's publish() the same way.
         Track input = shared.track(Live.VIDEO_IN);
         Track output = shared.track(Live.VIDEO_OUT);
         if (input.isPublished()) {
@@ -89,6 +91,7 @@ final class LiveMediaTest extends LiveFixture {
         AtomicInteger lastBlue = new AtomicInteger(-1);
         var subscription = output.onFrame((VideoFrame frame) -> lastBlue.set(meanBlue(frame)));
 
+        boolean passed = false;
         try {
             input.publish().join();
             pushUntil("a pushed frame to come back before reconnecting", input, solid(0x10), () -> {
@@ -114,9 +117,12 @@ final class LiveMediaTest extends LiveFixture {
             // reconnect can still be the decoder catching up.
             pushUntil(
                     "a frame pushed after republishing to come back", input, solid(0xF0), () -> lastBlue.get() >= 0xB0);
+            passed = true;
         } finally {
             subscription.close();
-            if (input.isPublished()) {
+            if (!passed) {
+                discardTheSession();
+            } else if (input.isPublished()) {
                 input.unpublish();
             }
         }
