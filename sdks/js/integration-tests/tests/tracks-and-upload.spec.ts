@@ -157,7 +157,11 @@ test('republishes a track after reconnect and receives echoed frames', async ({ 
         () =>
           page
             .evaluate(async (name) => {
-              if (!window.__harness.events[name]!.some((e) => e.type === 'trackReceived')) {return null;}
+              const hasVideo = window.__harness.events[name]!.some(
+                (e) => e.type === 'trackReceived' && (e.detail as { name: string }).name === 'main_video',
+              );
+
+              if (!hasVideo) {return null;}
               return window.__harness.samplePixelFor(name, 'main_video');
             }, NAME)
             .then((px) => px !== null && px.r > 150 && px.g < 100 && px.b < 100),

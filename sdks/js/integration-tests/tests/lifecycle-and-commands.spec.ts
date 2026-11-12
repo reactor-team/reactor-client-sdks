@@ -187,8 +187,9 @@ test('sendCommand(get_status) returns correlated data (REA-5973)', async ({ page
 // Real coverage for this belongs at the reactor-core level, where a fake
 // PeerTransport can just emit PeerEvent::ConnectionStateChanged(Disconnected)
 // directly — that's what on_peer_connection_state (reactor.rs, ~line 677)
-// exists to react to. What's left testable from here is reconnect()'s other
-// half: refusing cleanly when there's truly nothing to resume.
+// exists to react to. An explicit reconnect() on a live session is covered in
+// tracks-and-upload.spec.ts; what's left here is refusing cleanly when there's
+// truly nothing to resume.
 test("reconnect() refuses cleanly when there's no session to resume", async ({ page }) => {
   await page.goto('/');
   await page.evaluate(async (name) => {
