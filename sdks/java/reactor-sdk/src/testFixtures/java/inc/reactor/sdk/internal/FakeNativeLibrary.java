@@ -202,6 +202,7 @@ public final class FakeNativeLibrary implements AutoCloseable {
                 "reactor_step_result_frame_capture_time_us",
                 Ffi.Symbol.STEP_RESULT_FRAME_CAPTURE_TIME_US.descriptor(),
                 "stepResultFrameCaptureTimeUs");
+        bind("reactor_step_result_data", Ffi.Symbol.STEP_RESULT_DATA.descriptor(), "stepResultData");
         bind("reactor_step_result_free", Ffi.Symbol.STEP_RESULT_FREE.descriptor(), "stepResultFree");
     }
 
@@ -819,7 +820,13 @@ public final class FakeNativeLibrary implements AutoCloseable {
 
     /** The native side of a result: everything its accessors hand out, allocated once. */
     private record NativeStepResult(
-            long step, List<NativeTrack> tracks, double elapsed, List<NativeFile> files, MemorySegment error) {}
+            long step,
+            List<NativeTrack> tracks,
+            double elapsed,
+            List<NativeFile> files,
+            MemorySegment error,
+            MemorySegment data,
+            long dataLength) {}
 
     /** One file a fake step result names, as a test describes it. */
     public record StepFileSpec(String name, String contentType, long size) {}
@@ -954,7 +961,22 @@ public final class FakeNativeLibrary implements AutoCloseable {
     @SuppressWarnings("restricted") // downcallHandle: calling the client's own completion stub
     public long settleLastStep(
             long index, List<StepTrackSpec> tracks, double elapsed, List<StepFileSpec> files, @Nullable String error) {
-        MemorySegment result = buildResult(index, tracks, elapsed, files, error);
+        return settleLastStep(index, tracks, elapsed, files, error, null);
+    }
+
+    /**
+     * As {@link #settleLastStep(long, List, double, List, String)}, with the data the model returned
+     * for the step: {@code null} for none, an empty array for returned but empty data.
+     */
+    @SuppressWarnings("restricted") // downcallHandle: calling the client's own completion stub
+    public long settleLastStep(
+            long index,
+            List<StepTrackSpec> tracks,
+            double elapsed,
+            List<StepFileSpec> files,
+            @Nullable String error,
+            byte @Nullable [] data) {
+        MemorySegment result = buildResult(index, tracks, elapsed, files, error, data);
         callStepCompletion(1, result, MemorySegment.NULL);
         return result.address();
     }
@@ -994,7 +1016,8 @@ public final class FakeNativeLibrary implements AutoCloseable {
             List<StepTrackSpec> specs,
             double elapsed,
             List<StepFileSpec> fileSpecs,
-            @Nullable String error) {
+            @Nullable String error,
+            byte @Nullable [] stepData) {
         List<NativeTrack> tracks = new ArrayList<>();
         for (StepTrackSpec spec : specs) {
             List<NativeFrame> frames = new ArrayList<>();
@@ -1033,7 +1056,16 @@ public final class FakeNativeLibrary implements AutoCloseable {
                     arena.allocateFrom(file.name()), arena.allocateFrom(file.contentType()), file.size()));
         }
         MemorySegment errorText = error == null ? MemorySegment.NULL : arena.allocateFrom(error);
-        liveResults.put(address.address(), new NativeStepResult(index, tracks, elapsed, files, errorText));
+        // Returned but empty data must still be a non-NULL pointer, as with a frame's tag.
+        MemorySegment dataBytes = stepData == null
+                ? MemorySegment.NULL
+                : stepData.length == 0
+                        ? arena.allocate(1)
+                        : arena.allocateFrom(java.lang.foreign.ValueLayout.JAVA_BYTE, stepData);
+        liveResults.put(
+                address.address(),
+                new NativeStepResult(
+                        index, tracks, elapsed, files, errorText, dataBytes, stepData == null ? 0 : stepData.length));
         return address;
     }
 
@@ -1076,6 +1108,14 @@ public final class FakeNativeLibrary implements AutoCloseable {
     private MemorySegment stepResultError(MemorySegment result) {
         NativeStepResult found = live(result);
         return found == null ? MemorySegment.NULL : found.error();
+    }
+
+    @SuppressWarnings("restricted") // reinterpret: writing the binding's own out-parameter
+    private MemorySegment stepResultData(MemorySegment result, MemorySegment length) {
+        NativeStepResult found = live(result);
+        length.reinterpret(Long.BYTES)
+                .set(java.lang.foreign.ValueLayout.JAVA_LONG, 0, found == null ? 0 : found.dataLength());
+        return found == null ? MemorySegment.NULL : found.data();
     }
 
     private @Nullable NativeFile file(MemorySegment result, int f) {

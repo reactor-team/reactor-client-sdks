@@ -379,6 +379,7 @@ final class SteppedGenerationTest {
         assertEquals(new StepResult(3, List.of(), 0.0, List.of(), java.util.Optional.empty()), result);
         assertEquals(List.of(), result.files());
         assertTrue(result.error().isEmpty());
+        assertNull(result.data());
     }
 
     @Test
@@ -539,6 +540,71 @@ final class SteppedGenerationTest {
         assertEquals("out of memory", result.error().orElseThrow());
         assertEquals(List.of(), result.files());
         assertTrue(fake.stepResultsFreedExactlyOnce());
+    }
+
+    @Test
+    @DisplayName("the data the model returned arrives with the result, and needs no output track")
+    void theStepsDataArrivesWithItsResult() throws Exception {
+        byte[] actions = "{\"actions\":[0.1,0.2]}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        CompletableFuture<StepResult> pending = reactor.step();
+        fake.settleLastStep(6, List.of(), 0.1, List.of(), null, actions);
+
+        StepResult result = pending.get();
+        assertEquals(6, result.step());
+        assertEquals(List.of(), result.tracks());
+        assertArrayEquals(actions, result.data());
+        assertTrue(fake.stepResultsFreedExactlyOnce());
+    }
+
+    @Test
+    @DisplayName("a result without data reads as null, and returned but empty data as an empty array")
+    void noDataAndEmptyDataStayApart() throws Exception {
+        CompletableFuture<StepResult> none = reactor.step();
+        fake.settleLastStep(1, List.of());
+        assertNull(none.get().data());
+
+        CompletableFuture<StepResult> empty = reactor.step();
+        fake.settleLastStep(2, List.of(), 0.0, List.of(), null, new byte[0]);
+        assertArrayEquals(new byte[0], empty.get().data());
+        assertTrue(fake.stepResultsFreedExactlyOnce());
+    }
+
+    @Test
+    @DisplayName("a library without the data accessor still loads, and its results carry no data")
+    void aLibraryWithoutTheDataAccessorReadsNoData() throws Exception {
+        try (FakeNativeLibrary old = new FakeNativeLibrary()) {
+            old.tracksJson = TRACKS;
+            old.removeSymbol("reactor_step_result_data");
+            try (Reactor client = Reactor.open(stepped().build(), arena -> Ffi.open(old.lookup()))) {
+                client.connect();
+                old.settleLastCall(true, "{}", null);
+                old.clearPendingCall();
+
+                CompletableFuture<StepResult> pending = client.step();
+                old.settleLastStep(1, List.of(), 0.0, List.of(), null, new byte[] {1});
+                assertNull(pending.get().data());
+                assertTrue(old.stepResultsFreedExactlyOnce());
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("a result's data compares by its bytes, and is copied in and out")
+    void dataComparesByValueAndIsCopied() {
+        byte[] bytes = {1, 2, 3};
+        StepResult result = new StepResult(1, List.of(), 0.0, List.of(), Optional.empty(), bytes);
+        StepResult same = new StepResult(1, List.of(), 0.0, List.of(), Optional.empty(), new byte[] {1, 2, 3});
+        assertEquals(result, same);
+        assertEquals(result.hashCode(), same.hashCode());
+        assertNotEquals(result, new StepResult(1, List.of(), 0.0, List.of(), Optional.empty(), new byte[] {1, 2}));
+        assertNotEquals(
+                new StepResult(1, List.of(), 0.0, List.of(), Optional.empty(), new byte[0]),
+                new StepResult(1, List.of(), 0.0, List.of(), Optional.empty()),
+                "no data and empty data are different results");
+
+        bytes[0] = 9;
+        result.data()[1] = 9;
+        assertArrayEquals(new byte[] {1, 2, 3}, result.data());
     }
 
     @Test

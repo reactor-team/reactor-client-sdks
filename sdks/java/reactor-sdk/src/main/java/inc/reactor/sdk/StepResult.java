@@ -1,12 +1,15 @@
 package inc.reactor.sdk;
 
+import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 
 /**
  * What one {@link Reactor#step step} produced: its number in the session, per output track the
- * frames it generated, the files the model kept with it, and — when the step ran but the model
- * reported a failure — why.
+ * frames it generated, the files the model kept with it, the data the model returned with it, and —
+ * when the step ran but the model reported a failure — why.
  *
  * <pre>{@code
  * StepResult result = reactor.step(state, List.of()).join();
@@ -30,15 +33,40 @@ import java.util.Optional;
  * @param error why the step failed, when it ran and the model reported a failure; empty when it
  *     worked. A step that did not run has no result: its future fails with {@link
  *     StepRefusedException}, {@link StepNotReadyException} or {@link StepCommandFailedException}
+ * @param data what the model returned for the step besides its media, opaque to the transport: see
+ *     {@link #data()}
  */
 public record StepResult(
-        long step, List<StepTrackOutput> tracks, double elapsed, List<StepFile> files, Optional<String> error) {
+        long step,
+        List<StepTrackOutput> tracks,
+        double elapsed,
+        List<StepFile> files,
+        Optional<String> error,
+        byte @Nullable [] data) {
 
-    /** Copies {@code tracks} and {@code files}, so the record is as immutable as it looks. */
+    /**
+     * Copies {@code tracks}, {@code files} and {@code data}, so the record is as immutable as it
+     * looks.
+     */
     public StepResult {
         tracks = List.copyOf(tracks);
         files = List.copyOf(files);
-        java.util.Objects.requireNonNull(error, "error");
+        Objects.requireNonNull(error, "error");
+        data = data == null ? null : data.clone();
+    }
+
+    /**
+     * A result that carries no data.
+     *
+     * @param step the step's number in the session, counted from 1
+     * @param tracks the output tracks, in the order the runtime sent them
+     * @param elapsed seconds the step took
+     * @param files the extra files the model kept with the step
+     * @param error why the step failed, or empty when it worked
+     */
+    public StepResult(
+            long step, List<StepTrackOutput> tracks, double elapsed, List<StepFile> files, Optional<String> error) {
+        this(step, tracks, elapsed, files, error, null);
     }
 
     /**
@@ -49,7 +77,55 @@ public record StepResult(
      * @param elapsed seconds the step took
      */
     public StepResult(long step, List<StepTrackOutput> tracks, double elapsed) {
-        this(step, tracks, elapsed, List.of(), Optional.empty());
+        this(step, tracks, elapsed, List.of(), Optional.empty(), null);
+    }
+
+    /**
+     * What the model returned for the step besides its media, opaque to the transport: the bytes it
+     * returned as they are, or a dict it returned encoded as JSON. It arrives in the same message as
+     * the step's frames, so a model whose output is data alone needs no output track. Decoding it is
+     * the caller's business.
+     *
+     * <pre>{@code
+     * byte[] actions = result.data();
+     * if (actions != null) {
+     *     apply(objectMapper.readTree(actions)); // the model returned a dict
+     * }
+     * }</pre>
+     *
+     * @return a copy of the bytes, or {@code null} when the model returned none — returned but empty
+     *     data is an empty array
+     */
+    @Override
+    public byte @Nullable [] data() {
+        return data == null ? null : data.clone();
+    }
+
+    /**
+     * Equal to another result with the same step, tracks, elapsed time, files, error and data, the
+     * data compared by its bytes. No data and empty data are different results, as they are on the
+     * wire.
+     */
+    @Override
+    public boolean equals(@Nullable Object other) {
+        return other instanceof StepResult that
+                && step == that.step
+                && tracks.equals(that.tracks)
+                && Double.compare(elapsed, that.elapsed) == 0
+                && files.equals(that.files)
+                && error.equals(that.error)
+                && Arrays.equals(data, that.data);
+    }
+
+    @Override
+    public int hashCode() {
+        return 31 * Objects.hash(step, tracks, elapsed, files, error) + Arrays.hashCode(data);
+    }
+
+    @Override
+    public String toString() {
+        return "StepResult[step=" + step + ", tracks=" + tracks + ", elapsed=" + elapsed + ", files=" + files
+                + ", error=" + error + ", data=" + (data == null ? "null" : data.length + " bytes") + "]";
     }
 
     /**
