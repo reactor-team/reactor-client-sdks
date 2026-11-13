@@ -192,6 +192,11 @@ StepResult read_step_result(const Ffi& lib, const ReactorStepResult* result) {
   if (const char* error = lib.step_result_error(result)) {
     copied.error = std::string{error};
   }
+  std::size_t data_length = 0;
+  const std::uint8_t* data = lib.step_result_data(result, &data_length);
+  if (data != nullptr) {
+    copied.data = std::vector<std::uint8_t>(data, data + data_length);
+  }
   return copied;
 }
 

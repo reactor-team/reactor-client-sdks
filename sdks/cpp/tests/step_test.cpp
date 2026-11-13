@@ -62,6 +62,7 @@ struct FakeResult {
   double elapsed = 0.0;
   std::vector<FakeFile> files{};
   std::optional<std::string> error{};
+  std::optional<std::vector<std::uint8_t>> data{};
 };
 
 /// A stand-in for libreactor_ffi's stepped surface. Answers on its own thread.
@@ -106,6 +107,7 @@ class FakeStepped {
     filled.step_result_frame_metadata = &frame_metadata;
     filled.step_result_frame_capture_time_us = &frame_capture_time;
     filled.step_result_error = &result_error;
+    filled.step_result_data = &result_data;
     filled.step_result_file_count = &file_count;
     filled.step_result_file_name = &file_name;
     filled.step_result_file_content_type = &file_content_type;
@@ -303,6 +305,20 @@ class FakeStepped {
     return error ? error->c_str() : nullptr;
   }
 
+  static const std::uint8_t* result_data(const ReactorStepResult* result, std::size_t* len) {
+    *len = 0;
+    const std::optional<std::vector<std::uint8_t>>* returned =
+        result == nullptr ? nullptr : &as_fake(result)->data;
+    if (returned == nullptr || !returned->has_value()) {
+      return nullptr;
+    }
+    const std::vector<std::uint8_t>& data = returned->value();
+    *len = data.size();
+    // Non-null even when empty: returned, empty data.
+    static const std::uint8_t empty = 0;
+    return data.empty() ? &empty : data.data();
+  }
+
   static const FakeFile* file_at(const ReactorStepResult* result, std::uint32_t file) {
     if (result == nullptr || file >= as_fake(result)->files.size()) {
       return nullptr;
@@ -436,6 +452,7 @@ struct Fixture {
 };
 
 using Metadata = std::optional<std::vector<std::uint8_t>>;
+using StepData = std::optional<std::vector<std::uint8_t>>;
 
 reactor::Options stepped() {
   reactor::Options options;
@@ -765,6 +782,40 @@ TEST_CASE("a step that ran but that the model reported failing resolves, with it
   CHECK(result.files.empty());
   CHECK(result.tracks.empty());
   CHECK(eventually([&] { return fixture.library.results_freed == 1; }));
+}
+
+TEST_CASE("the data a model returned with a step is copied out, with no track needed") {
+  Fixture fixture;
+  fixture.library.result.step = 5;
+  fixture.library.result.data = std::vector<std::uint8_t>{'{', '"', 'a', '"', ':', '1', '}'};
+
+  reactor::StepResult result;
+  {
+    reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, stepped()};
+    client.connect().get();
+    result = client.step().get();
+  }
+  CHECK(fixture.library.results_freed == 1);
+
+  CHECK(result.step == 5);
+  CHECK(result.tracks.empty());
+  CHECK(result.data == StepData{std::vector<std::uint8_t>{'{', '"', 'a', '"', ':', '1', '}'}});
+}
+
+TEST_CASE("returned but empty step data is not the same as none") {
+  Fixture fixture;
+
+  SECTION("none") {
+    reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, stepped()};
+    client.connect().get();
+    CHECK_FALSE(client.step().get().data.has_value());
+  }
+  SECTION("empty") {
+    fixture.library.result.data = std::vector<std::uint8_t>{};
+    reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, stepped()};
+    client.connect().get();
+    CHECK(client.step().get().data == StepData{std::vector<std::uint8_t>{}});
+  }
 }
 
 TEST_CASE("asking a result for a track it has no output on names the ones it has") {
