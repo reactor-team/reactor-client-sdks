@@ -124,20 +124,34 @@ final class FakeStepResult: @unchecked Sendable {
     let files: [CFile]
     /// Null when the step worked, as the header has it.
     let error: UnsafeMutablePointer<CChar>?
+    /// Null when the model returned no data; non-null with a zero count for
+    /// empty data, as the header distinguishes them.
+    let data: UnsafeMutablePointer<UInt8>?
+    let dataCount: Int
 
     init(
         step: UInt64, tracks: [Track], elapsed: Double = 0, files: [File] = [],
-        error: String? = nil
+        error: String? = nil, data: [UInt8]? = nil
     ) {
         self.step = step
         self.tracks = tracks.map(CTrack.init)
         self.elapsed = elapsed
         self.files = files.map(CFile.init)
         self.error = error.map { strdup($0) }
+        if let data {
+            let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: max(data.count, 1))
+            buffer.initialize(from: data, count: data.count)
+            self.data = buffer
+            self.dataCount = data.count
+        } else {
+            self.data = nil
+            self.dataCount = 0
+        }
     }
 
     deinit {
         free(error)
+        data?.deallocate()
     }
 
     func file(_ index: UInt32) -> CFile? {
