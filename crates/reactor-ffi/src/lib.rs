@@ -71,8 +71,9 @@ use self::callbacks::{CallbackGate, HostSender, HostThread, Overflow, Quiescence
 use self::http::ReqwestHttpClient;
 use self::peer::ReactorWebRtcPeerTransport;
 pub use self::step::{
-    reactor_step_result_elapsed, reactor_step_result_error, reactor_step_result_file_content_type,
-    reactor_step_result_file_count, reactor_step_result_file_name, reactor_step_result_file_size,
+    reactor_step_result_data, reactor_step_result_elapsed, reactor_step_result_error,
+    reactor_step_result_file_content_type, reactor_step_result_file_count,
+    reactor_step_result_file_name, reactor_step_result_file_size,
     reactor_step_result_frame_capture_time_us, reactor_step_result_frame_count,
     reactor_step_result_frame_data, reactor_step_result_frame_dtype,
     reactor_step_result_frame_encoding, reactor_step_result_frame_metadata,
@@ -3493,6 +3494,9 @@ mod tests {
             assert_eq!(reactor_step_result_step(null), 0);
             assert_eq!(reactor_step_result_elapsed(null), 0.0);
             assert!(reactor_step_result_error(null).is_null());
+            assert!(reactor_step_result_data(null, &mut len).is_null());
+            assert_eq!(len, 0);
+            len = 7;
             assert_eq!(reactor_step_result_file_count(null), 0);
             assert!(reactor_step_result_file_name(null, 0).is_null());
             assert!(reactor_step_result_file_content_type(null, 0).is_null());

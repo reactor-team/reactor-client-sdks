@@ -369,6 +369,7 @@ mod tests {
                 failure_code: StepFailureCode::Unspecified as i32,
                 code: None,
                 entry: None,
+                data: Some(b"actions".to_vec()),
             }),
         );
         let handled = c.handle_message(&result).unwrap();
@@ -378,6 +379,7 @@ mod tests {
         match pending.receiver.try_recv().unwrap().unwrap() {
             Ok(Some(data_server_message::Payload::StepResult(result))) => {
                 assert_eq!(result.files.len(), 1);
+                assert_eq!(result.data.as_deref(), Some(&b"actions"[..]));
             }
             other => panic!("expected the step result, got {other:?}"),
         }
