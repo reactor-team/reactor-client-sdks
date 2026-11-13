@@ -320,6 +320,7 @@ def _load() -> ctypes.CDLL:
 
     _bind_stepped(lib)
     _bind_encoded_step_frames(lib)
+    _bind_step_result_data(lib)
     return lib
 
 
@@ -386,6 +387,24 @@ def _bind_encoded_step_frames(lib: ctypes.CDLL) -> None:
         ctypes.c_int,  # has_capture_time
         ctypes.c_int64,  # capture_time_us
     ]
+
+
+#: The data a model returns with a step's result, added after stepped
+#: generation and, like it, without an ABI bump. Bound only when present; a
+#: library without it reads every result as carrying no data.
+STEP_DATA_FUNCTIONS = ("reactor_step_result_data",)
+
+
+def has_step_result_data(lib: object) -> bool:
+    """Whether `lib` can hand out the data a model returned with a step."""
+    return all(hasattr(lib, name) for name in STEP_DATA_FUNCTIONS)
+
+
+def _bind_step_result_data(lib: ctypes.CDLL) -> None:
+    if not has_step_result_data(lib):
+        return
+    lib.reactor_step_result_data.restype = ctypes.c_void_p
+    lib.reactor_step_result_data.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
 
 
 def has_stepped(lib: object) -> bool:

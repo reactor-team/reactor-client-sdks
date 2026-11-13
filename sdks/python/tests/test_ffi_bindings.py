@@ -190,6 +190,10 @@ def test_the_library_exports_stepped_generation() -> None:
     assert _ffi.has_stepped(_ffi.get_lib())
 
 
+def test_the_library_exports_step_result_data() -> None:
+    assert _ffi.has_step_result_data(_ffi.get_lib())
+
+
 def test_step_on_a_null_handle_skips_the_completion() -> None:
     calls: list[int] = []
 
@@ -212,6 +216,9 @@ def test_step_result_accessors_accept_a_null_result() -> None:
     assert lib.reactor_step_result_step(None) == 0
     assert lib.reactor_step_result_elapsed(None) == 0.0
     assert lib.reactor_step_result_error(None) is None
+    assert lib.reactor_step_result_data(None, ctypes.byref(length)) is None
+    assert length.value == 0
+    length.value = 7
     assert lib.reactor_step_result_file_count(None) == 0
     assert lib.reactor_step_result_file_name(None, 0) is None
     assert lib.reactor_step_result_file_content_type(None, 0) is None

@@ -293,6 +293,7 @@ for out in result.track("main_video").frames:
 result.track("main_video").rate  # frames per second (audio: samples per second); 0.0 if unreported
 result.elapsed                   # seconds the step's generate() took (or the model reported)
 result.error                     # None, or why the model failed a step that ran
+result.data                      # bytes the model returned with the step (a dict as JSON), or None
 for f in result.files:           # extra files the model kept with the step
     f.name, f.content_type, f.size
 
@@ -345,7 +346,11 @@ is its keyframe, so a step left with the rest of that window raises
 the window, and any raw frames sent alongside it, within one message.
 
 A step that ran but that the model reported as failed returns normally, with
-`result.error` set. `result.files` names the files the model kept with the step;
+`result.error` set. `result.data` is what the model returned for the step
+besides its media: the bytes it returned as they are, or a dict encoded as JSON
+(`json.loads(result.data)`), and `None` when it returned none. It comes in the
+same message as the frames, so a model whose output is data alone needs no
+output track. `result.files` names the files the model kept with the step;
 their bytes are fetched over HTTP from the session's step results
 (`GET /sessions/{id}/steps/{index}`, which lists each with a download URL and
 answers 202 while they are still being stored). A step the runtime refuses raises
