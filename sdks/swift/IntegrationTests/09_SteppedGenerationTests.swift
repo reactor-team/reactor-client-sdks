@@ -6,12 +6,13 @@ import Testing
 /// Scenario 09, scripted: stepped generation against a real runtime. Mirrors
 /// `sdks/python/integration-tests/tests/test_stepped_generation.py`.
 ///
-/// Needs a model with stepped generation, which `reactor/echo` is not yet: set
-/// REACTOR_STEPPED_MODEL_NAME or the stepped tests are skipped.
-/// REACTOR_STEPPED_INPUT_TRACK names a sendonly video track to push into;
-/// without it the input test is skipped. The streamed `reactor/echo` model
-/// doubles as the negative case: a runtime that does not start a stepped
-/// session must fail `connect()`, not stream.
+/// The generic tests need a model with stepped generation: set
+/// REACTOR_STEPPED_MODEL_NAME or they are skipped. REACTOR_STEPPED_INPUT_TRACK
+/// names a sendonly video track to push into; without it the input test is
+/// skipped. `reactor/echo` always runs: a stepped connect to it must step or
+/// fail, never stream. Echo steps from 1.10.0; until that release is deployed
+/// everywhere this suite runs, an older echo refuses the start, and the test
+/// accepts either.
 @Suite("09 - stepped generation")
 struct SteppedGenerationTests {
 
@@ -23,18 +24,37 @@ struct SteppedGenerationTests {
         return raw
     }
 
-    /// A runtime before 3.9.0 ignores the mode and streams, so the ready
-    /// session does not echo "stepped". A runtime from 3.9.0 refuses the
-    /// stepped start of a model that overrides `run()`, such as `reactor/echo`,
-    /// and the session closes before it is ready (REA-7575). The Python and
-    /// Android suites accept both errors for the same reason.
-    @Test("a runtime that streams fails a stepped connect")
-    func streamingRuntimeFailsSteppedConnect() async throws {
+    /// Echo from 1.10.0 runs the default step loop, so the session is stepped:
+    /// a step carries the pushed webcam frame and comes back inverted on
+    /// `main_video`. An older echo drives its own `run()`: a runtime from 3.9.0
+    /// refuses that stepped start and the session closes before it is ready
+    /// (REA-7575), and a runtime before 3.9.0 streams, which the client reports
+    /// as a mode mismatch. Either refusal is right; a stepped connect that
+    /// silently streams is not. The Python and Android suites accept the same
+    /// outcomes.
+    @Test("a stepped connect to echo steps or fails")
+    func steppedConnectToEchoStepsOrFails() async throws {
+        // Only a refused connect may pass: a session that dies during the step is a failure.
+        var connected = false
         do {
-            try await withConnectedReactor(generation: .stepped) { _ in
-                Issue.record("expected a stepped connect to a streamed model to throw")
+            try await withConnectedReactor(generation: .stepped) { reactor in
+                connected = true
+                let webcam = try reactor.track("webcam")
+                try await webcam.publish()
+                try webcam.pushFrame(
+                    MediaFixtures.solidBGRAFrame(width: 64, height: 64, color: (30, 20, 10)),
+                    width: 64, height: 64)
+                let result = try await reactor.step(state: ["effect": "invert"])
+                #expect(result.error == nil)
+
+                let video = try #require(result.tracks.first { $0.name == "main_video" })
+                let frame = try #require(video.frames.first)
+                try #require(frame.shape == [64, 64, 3])
+                // RGB (10, 20, 30) inverted, at the frame's centre pixel.
+                let centre = (32 * 64 + 32) * 3
+                #expect(Array(Array(frame.data)[centre..<centre + 3]) == [245, 235, 225])
             }
-        } catch let error as ReactorError {
+        } catch let error as ReactorError where !connected {
             #expect(error.code == .generationModeMismatch || error.code == .sessionTerminal)
         }
     }

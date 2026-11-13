@@ -21,10 +21,10 @@ import java.nio.ByteBuffer
 /**
  * Scenario 09: stepped generation against a real runtime, as every other binding's suite runs it.
  *
- * `reactor/echo` streams, so it is the negative case: a runtime that does not start a stepped
- * session must fail `connect()` rather than leave a client waiting on steps. A runtime that ignores
- * the mode fails it typed; one that refuses the start ends the session before it is ready. The positive
- * cases need a model with stepped generation — set
+ * `reactor/echo` always runs: a stepped connect to it must step or fail, never stream. Echo steps
+ * from 1.10.0; an older echo drives its own `run()`, and a runtime refuses that stepped start (or, if
+ * it ignores the mode, the client fails it typed). Until 1.10.0 is deployed everywhere this suite runs,
+ * the test accepts either. The generic cases need a model with stepped generation — set
  * REACTOR_STEPPED_MODEL_NAME (and REACTOR_STEPPED_INPUT_TRACK for the push) or they are skipped.
  *
  * Each test pays for its own session, because each is about how a session starts.
@@ -35,18 +35,41 @@ internal class LiveSteppedTest {
     public val timeout: Timeout = Timeout.seconds(240)
 
     @Test
-    fun aStreamingRuntimeFailsASteppedConnectTyped() =
+    fun aSteppedConnectToEchoStepsOrFails() =
         runBlocking {
+            val reactor =
+                try {
+                    Live.connected(generation = Generation.STEPPED)
+                } catch (refused: GenerationModeMismatchException) {
+                    // A runtime that ignores the mode streams, and the client fails the connect.
+                    assertEquals("GENERATION_MODE_MISMATCH", refused.code)
+                    return@runBlocking
+                } catch (refused: SessionTerminalException) {
+                    // An echo before 1.10.0 drives its own run(), the runtime refuses the stepped
+                    // start, and the platform reports the session closed.
+                    assertEquals("SESSION_TERMINAL", refused.code)
+                    return@runBlocking
+                }
             try {
-                val reactor = Live.connected(generation = Generation.STEPPED)
+                Live.awaitReady(reactor)
+                // Echo from 1.10.0 steps: the pushed webcam frame comes back inverted on main_video.
+                val webcam = reactor.track(Live.VIDEO_IN)
+                webcam.publish()
+                webcam.pushFrame(solidBgra(64, 64, ECHO_IN), 64, 64)
+                val result = reactor.step(state = """{"effect": "invert"}""")
+                assertNull(result.error)
+
+                val video = result.tracks.single { it.name == Live.VIDEO_OUT }
+                val frame = video.frames.first()
+                assertTrue(frame.shape.contentEquals(intArrayOf(64, 64, 3)))
+                val centre = (32 * 64 + 32) * 3
+                val bytes = frame.data()
+                bytes.position(centre)
+                val pixel = ByteArray(3).also { bytes.get(it) }
+                assertTrue(pixel.contentEquals(ECHO_OUT))
+            } finally {
+                runCatching { reactor.disconnect() }
                 reactor.close()
-                fail("a stepped connect to ${Live.model}, which streams, must throw")
-            } catch (expected: GenerationModeMismatchException) {
-                assertEquals("GENERATION_MODE_MISMATCH", expected.code)
-            } catch (expected: SessionTerminalException) {
-                // A runtime that checks the mode refuses the start, and the platform reports the
-                // session closed without saying why.
-                assertEquals("SESSION_TERMINAL", expected.code)
             }
         }
 
@@ -106,9 +129,10 @@ internal class LiveSteppedTest {
     private fun solidBgra(
         width: Int,
         height: Int,
+        bgra: ByteArray = BLUE,
     ): ByteBuffer {
         val pixels = ByteBuffer.allocateDirect(width * height * 4)
-        while (pixels.hasRemaining()) pixels.put(BLUE)
+        while (pixels.hasRemaining()) pixels.put(bgra)
         pixels.flip()
         return pixels
     }
@@ -118,5 +142,9 @@ internal class LiveSteppedTest {
         const val OVERSIZED = 4800
 
         val BLUE = byteArrayOf(255.toByte(), 0, 0, 255.toByte())
+
+        /** RGB (10, 20, 30) as BGRA, and what echo's `invert` makes of it, as RGB. */
+        val ECHO_IN = byteArrayOf(30, 20, 10, 255.toByte())
+        val ECHO_OUT = byteArrayOf(245.toByte(), 235.toByte(), 225.toByte())
     }
 }

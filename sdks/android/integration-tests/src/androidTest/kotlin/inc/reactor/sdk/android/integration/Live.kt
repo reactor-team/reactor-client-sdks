@@ -52,8 +52,9 @@ internal object Live {
     val model: String get() = arg("reactorModel") ?: "reactor/echo"
 
     /**
-     * A model with stepped generation, which `reactor/echo` is not. Null skips the stepped
-     * tests, as in every other binding's suite: REACTOR_STEPPED_MODEL_NAME.
+     * A model with stepped generation that takes a `prompt`, which the generic stepped tests send
+     * and `reactor/echo` does not declare. Null skips those tests, as in every other binding's
+     * suite: REACTOR_STEPPED_MODEL_NAME.
      */
     val steppedModel: String? get() = arg("reactorSteppedModel")
 
