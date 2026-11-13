@@ -37,6 +37,7 @@ struct ReactorStepResult {
     uint32_t shape[3] = {2, 2, 3};
     uint8_t data[12] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
     uint8_t tag[3] = {9, 8, 7};
+    uint8_t returned[4] = {'{', '}', ' ', '\n'};
 };
 
 extern "C" {
@@ -371,6 +372,11 @@ uint64_t reactor_step_result_step(const ReactorStepResult* r) { return r == null
 double reactor_step_result_elapsed(const ReactorStepResult* r) { return r == nullptr ? 0.0 : 0.25; }
 
 const char* reactor_step_result_error(const ReactorStepResult*) { return nullptr; }
+
+const uint8_t* reactor_step_result_data(const ReactorStepResult* r, size_t* len) {
+    if (len != nullptr) *len = r == nullptr ? 0 : sizeof(r->returned);
+    return r == nullptr ? nullptr : r->returned;
+}
 
 uint32_t reactor_step_result_file_count(const ReactorStepResult*) { return 0; }
 
