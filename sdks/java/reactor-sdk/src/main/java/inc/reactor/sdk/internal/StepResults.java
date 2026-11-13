@@ -103,7 +103,34 @@ final class StepResults {
         MemorySegment errorText =
                 (MemorySegment) ffi.handle(Ffi.Symbol.STEP_RESULT_ERROR).invokeExact(result);
         Optional<String> error = Optional.ofNullable(NativeStrings.borrow(errorText));
-        return new StepResult(step, tracks, elapsed, files, error);
+        return new StepResult(step, tracks, elapsed, files, error, readData(ffi, result));
+    }
+
+    /**
+     * The data the model returned with the step: {@code null} when it returned none, or when the
+     * library predates the accessor.
+     */
+    @SuppressWarnings("restricted") // reinterpret: bounded by the length the accessor reports
+    private static byte @Nullable [] readData(Ffi ffi, MemorySegment result) throws Throwable {
+        if (!ffi.has(Ffi.Symbol.STEP_RESULT_DATA)) {
+            return null;
+        }
+        try (Arena out = Arena.ofConfined()) {
+            MemorySegment length = out.allocate(ValueLayout.JAVA_LONG);
+            MemorySegment pointer =
+                    (MemorySegment) ffi.handle(Ffi.Symbol.STEP_RESULT_DATA).invokeExact(result, length);
+            long byteCount = length.get(ValueLayout.JAVA_LONG, 0);
+            // NULL is "returned nothing"; non-NULL with length 0 is returned, empty data. The header
+            // keeps the two apart, so this does too.
+            if (pointer.equals(MemorySegment.NULL)) {
+                return null;
+            }
+            if (byteCount < 0 || byteCount > Integer.MAX_VALUE - 8) {
+                throw decodeFailed("the step's data is " + Long.toUnsignedString(byteCount)
+                        + " bytes, past what a Java array can hold");
+            }
+            return byteCount == 0 ? new byte[0] : pointer.reinterpret(byteCount).toArray(ValueLayout.JAVA_BYTE);
+        }
     }
 
     @SuppressWarnings("restricted") // reinterpret: bounded by the lengths the accessors report
