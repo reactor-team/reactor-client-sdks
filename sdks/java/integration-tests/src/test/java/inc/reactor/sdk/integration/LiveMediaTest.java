@@ -5,13 +5,18 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import inc.reactor.sdk.AudioFrame;
+import inc.reactor.sdk.ConnectionStatus;
 import inc.reactor.sdk.PublishState;
 import inc.reactor.sdk.ReactorException;
 import inc.reactor.sdk.Track;
 import inc.reactor.sdk.VideoFrame;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.time.Duration;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -62,6 +67,65 @@ final class LiveMediaTest extends LiveFixture {
         input.unpublish();
         assertEquals(PublishState.UNPUBLISHED, input.publishState());
         subscription.close();
+    }
+
+    @Test
+    @DisplayName("a track published again after reconnect() is granted, and its frames come back")
+    @Timeout(300)
+    void republishAfterReconnectDeliversFramesAgain() throws Exception {
+        // A publish does not survive a reconnect — the client drops it, and the session has to drop
+        // its side too, or the second publish() is refused as "track already published" while the
+        // client has no sender left. Two blues far apart, one per connection, so a frame read after
+        // the republish can only have come from a frame pushed after it.
+        //
+        // On the shared client: a reconnect keeps the session, so this costs nothing against the
+        // session ceiling, and one that does not complete is what the fixture puts back before the
+        // next test. A failure anywhere else ends the session instead: the regression this checks
+        // leaves the client READY and UNPUBLISHED while the session still holds the old publish, and
+        // a session kept in that state would fail the next test's publish() the same way.
+        Track input = shared.track(Live.VIDEO_IN);
+        Track output = shared.track(Live.VIDEO_OUT);
+        if (input.isPublished()) {
+            input.unpublish();
+        }
+        AtomicInteger lastBlue = new AtomicInteger(-1);
+        var subscription = output.onFrame((VideoFrame frame) -> lastBlue.set(meanBlue(frame)));
+
+        boolean passed = false;
+        try {
+            input.publish().join();
+            pushUntil("a pushed frame to come back before reconnecting", input, solid(0x10), () -> {
+                int blue = lastBlue.get();
+                return blue >= 0 && blue <= 0x28;
+            });
+
+            shared.reconnect().orTimeout(90, TimeUnit.SECONDS).join();
+            Live.await(
+                    "the transport to come back",
+                    Duration.ofSeconds(60),
+                    () -> shared.status() == ConnectionStatus.READY);
+
+            assertEquals(PublishState.UNPUBLISHED, input.publishState(), "a publish must not survive reconnect()");
+            ReactorException thrown =
+                    assertThrows(ReactorException.class, () -> input.pushFrame(solid(0x10), WIDTH, HEIGHT));
+            assertEquals("INVALID_STATE", thrown.code());
+
+            input.publish().orTimeout(30, TimeUnit.SECONDS).join();
+            assertEquals(PublishState.PUBLISHED, input.publishState(), "the republish must be granted");
+
+            // Waits for a frame of the new colour rather than any frame: the first few after the
+            // reconnect can still be the decoder catching up.
+            pushUntil(
+                    "a frame pushed after republishing to come back", input, solid(0xF0), () -> lastBlue.get() >= 0xB0);
+            passed = true;
+        } finally {
+            subscription.close();
+            if (!passed) {
+                discardTheSession();
+            } else if (input.isPublished()) {
+                input.unpublish();
+            }
+        }
     }
 
     @Test
@@ -132,6 +196,45 @@ final class LiveMediaTest extends LiveFixture {
 
         output.resume().join();
         Live.await("the resume to be reported", Duration.ofSeconds(30), () -> !output.isPaused());
+    }
+
+    /** Pushes {@code frame} on a loop until {@code condition} holds, or fails after 60 seconds. */
+    private static void pushUntil(String what, Track input, byte[] frame, BooleanSupplier condition)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(60).toNanos();
+        while (System.nanoTime() < deadline) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            input.pushFrame(frame, WIDTH, HEIGHT);
+            Thread.sleep(33);
+        }
+        throw new AssertionError("waited 60s for " + what + " and it never happened");
+    }
+
+    /** A frame of one colour, tagged by its blue byte. */
+    private static byte[] solid(int blue) {
+        byte[] bgra = new byte[WIDTH * HEIGHT * 4];
+        for (int at = 0; at < bgra.length; at += 4) {
+            bgra[at] = (byte) blue;
+            bgra[at + 1] = (byte) 40;
+            bgra[at + 2] = (byte) 40;
+            bgra[at + 3] = (byte) 255;
+        }
+        return bgra;
+    }
+
+    /** The mean of a frame's blue channel — the byte {@link #solid} tags — read inside the handler. */
+    private static int meanBlue(VideoFrame frame) {
+        MemorySegment pixels = frame.pixels();
+        long sum = 0;
+        long count = 0;
+        // Every 16th pixel is plenty for a solid frame, and keeps the delivery thread unblocked.
+        for (long at = 0; at + 3 < pixels.byteSize(); at += 64) {
+            sum += pixels.get(ValueLayout.JAVA_BYTE, at) & 0xFF;
+            count++;
+        }
+        return count == 0 ? -1 : (int) (sum / count);
     }
 
     /** A frame with something in it that moves, so an echo is visibly an echo. */

@@ -65,21 +65,34 @@ abstract class LiveFixture {
         shared = Live.connected(Live.jwt());
     }
 
-    @AfterAll
-    void closeIt() {
-        // Always, not only when it happened. Zero is the number that says the session held, and a
-        // reader who has to notice the absence of a line will not.
-        System.out.println("sessions re-established during this class: " + reopened);
-        if (shared == null) {
+    /**
+     * Ends the shared session for good, so the next test starts on a new one.
+     *
+     * <p>For a test that failed in a way that may have left the session holding state its client no
+     * longer knows about: a client still {@code READY} would otherwise be kept by
+     * {@link #ensureTheSessionSurvived()}, and the next test would fail on this one's leftovers.
+     */
+    protected void discardTheSession() {
+        Reactor gone = shared;
+        shared = null;
+        if (gone == null) {
             return;
         }
         try {
             // Disconnect before close: a creator that goes away without disconnecting orphans the
             // session, and the next run of this suite is the one that pays for it.
-            shared.disconnect().join();
+            gone.disconnect().join();
         } catch (RuntimeException alreadyGone) {
             // Nothing useful to do about it; the close below still releases the handle.
         }
-        shared.close();
+        gone.close();
+    }
+
+    @AfterAll
+    void closeIt() {
+        // Always, not only when it happened. Zero is the number that says the session held, and a
+        // reader who has to notice the absence of a line will not.
+        System.out.println("sessions re-established during this class: " + reopened);
+        discardTheSession();
     }
 }
