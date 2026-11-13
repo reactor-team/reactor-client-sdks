@@ -135,6 +135,87 @@ test('publishTrack() puts a sender behind the slot; pause/resume/unpublish all r
   });
 });
 
+// A publish doesn't survive reconnect(): the client drops its sender, and the
+// runtime has to drop its claim on the track too, or the second
+// publishTrack() is refused as "track already published" while the client
+// has nothing left sending. Two colors, one per connection, so the pixels
+// read after the republish can only come from the track published after
+// reconnect(), not from anything left over from before it.
+test('republishes a track after reconnect and receives echoed frames', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(async (name) => {
+    window.__harness.create(name);
+    const reactor = window.__harness.get(name);
+
+    await reactor.connect(await window.__harness.fetchToken());
+    await reactor.publishTrack('webcam', window.__harness.makeVideoTrack('#ff2222'));
+  }, NAME);
+
+  await test.step('the echo reflects the red track published before reconnect()', async () => {
+    await expect
+      .poll(
+        () =>
+          page
+            .evaluate(async (name) => {
+              const hasVideo = window.__harness.events[name]!.some(
+                (e) => e.type === 'trackReceived' && (e.detail as { name: string }).name === 'main_video',
+              );
+
+              if (!hasVideo) {return null;}
+              return window.__harness.samplePixelFor(name, 'main_video');
+            }, NAME)
+            .then((px) => px !== null && px.r > 150 && px.g < 100 && px.b < 100),
+        { timeout: 20_000 },
+      )
+      .toBe(true);
+  });
+
+  const videoTracksReceived = () =>
+    page.evaluate(
+      (name) =>
+        window.__harness.events[name]!.filter(
+          (e) => e.type === 'trackReceived' && (e.detail as { name: string }).name === 'main_video',
+        ).length,
+      NAME,
+    );
+
+  await test.step('reconnect() brings the same session back to ready', async () => {
+    const before = await page.evaluate((name) => window.__harness.get(name).getSessionId(), NAME);
+    const receivedBefore = await videoTracksReceived();
+
+    await page.evaluate((name) => window.__harness.get(name).reconnect(), NAME);
+    const after = await page.evaluate((name) => {
+      const reactor = window.__harness.get(name);
+
+      return { status: reactor.getStatus(), sessionId: reactor.getSessionId() };
+    }, NAME);
+
+    expect(after).toEqual({ status: 'ready', sessionId: before });
+    // The new peer hands back a fresh main_video; sampling the one from the
+    // replaced peer would never decode another frame.
+    await expect.poll(videoTracksReceived, { timeout: 20_000 }).toBeGreaterThan(receivedBefore);
+  });
+
+  await test.step('publishTrack(webcam) again is granted', async () => {
+    await page.evaluate(
+      (name) => window.__harness.get(name).publishTrack('webcam', window.__harness.makeVideoTrack('#2222ff')),
+      NAME,
+    );
+  });
+
+  await test.step('the echo now reflects the blue track published after reconnect()', async () => {
+    await expect
+      .poll(
+        () =>
+          page
+            .evaluate((name) => window.__harness.samplePixelFor(name, 'main_video'), NAME)
+            .then(({ r, g, b }) => b > 150 && r < 100 && g < 100),
+        { timeout: 20_000 },
+      )
+      .toBe(true);
+  });
+});
+
 test('uploadFile() + a file-taking command actually changes what the model renders', async ({ page }) => {
   await page.goto('/');
   await page.evaluate(async (name) => {
