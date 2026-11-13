@@ -9,6 +9,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `StepResult.data`: a `Uint8Array` of what the model returned for the step
+  besides its media, opaque to the SDK (a dict the model returned arrives
+  encoded as JSON; decoding it is up to the caller). It arrives with the
+  step's frames, so a model whose output is data alone needs no output track.
+  Absent when the model returned none.
+
 ### Fixed
 
 - A model that declares no tracks can be connected to. Its session leaves the

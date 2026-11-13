@@ -197,7 +197,7 @@ await reactor.step();
   `sendCommand()` outside a step still works and changes the state the next step uses. A file
   input goes in the way it does for a command: `uploadFile()` it, then put the `FileRef` in a
   command's `data` or a state value.
-- It resolves with `{ step, tracks: [{ track, kind, rate, frames }], elapsed, files, error? }`,
+- It resolves with `{ step, tracks: [{ track, kind, rate, frames }], elapsed, files, error?, data? }`,
   `step` being the step's number in the session, counted from 1.
   `rate` is the rate a track's frames play at as the runtime reported it — frames per second
   for video, samples per second for audio, `0` when the runtime did not say. `elapsed` is the seconds the step's `generate()` took (or the time the model reported for
@@ -207,6 +207,10 @@ await reactor.step();
   file the model kept with the step; the bytes are served over HTTP from the session's step
   results (`GET /sessions/{id}/steps/{step}`), not carried in the result. `error` is set when
   the step ran and the model reported a failure — such a step resolves, it does not reject.
+  `data` is a `Uint8Array` of what the model returned for the step besides its media, opaque
+  to the SDK: the bytes it returned as they are, or a dict it returned encoded as JSON
+  (`JSON.parse(new TextDecoder().decode(result.data))`). It arrives with the step's frames, so a
+  model whose output is data alone needs no output track; it is absent when the model returned none.
 - `publishTrack(name)` resolves with a handle whose `pushFrame(frame, { metadata?,
   captureTimeUs? })` buffers a frame for the next step (`reactor.pushFrame(name, frame)` does
   the same, for a track published on this connection). The handle stops working once the track
