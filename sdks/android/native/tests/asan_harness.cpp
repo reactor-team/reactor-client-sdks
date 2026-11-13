@@ -95,6 +95,8 @@ jstring Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeTrackName(
                                                                                jlong, jint);
 jstring Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeError(JNIEnv*, jobject,
                                                                            jlong);
+jbyteArray Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeData(JNIEnv*, jobject,
+                                                                             jlong);
 ReactorStepResult* fake_new_step_result(void);
 long fake_step_results_outstanding(void);
 int fake_clear_step_inputs_calls(void);
@@ -645,6 +647,8 @@ void step_accessors_copy_before_the_free() {
       g_env, nullptr, pointer, 0, 0);
   jstring error = Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeError(
       g_env, nullptr, pointer);
+  jbyteArray returned = Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeData(
+      g_env, nullptr, pointer);
   reactor_step_result_free(result);
 
   // Read after the free: a view into the result instead of a copy is a use-after-free here.
@@ -659,6 +663,13 @@ void step_accessors_copy_before_the_free() {
   check(name != nullptr, "a track's name crosses as a Java string");
   check(captured == 424242, "a capture time crosses as itself");
   check(error == nullptr, "a step that worked has a null error, not \"\"");
+  jbyte opening = 0;
+  if (returned != nullptr) g_env->GetByteArrayRegion(returned, 0, 1, &opening);
+  check(returned != nullptr && g_env->GetArrayLength(returned) == 4 && opening == '{',
+        "the data the model returned is copied too");
+  check(Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeData(
+            g_env, nullptr, /*result=*/0) == nullptr,
+        "a null result has no data");
   check(Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeFrameData(
             g_env, nullptr, /*result=*/0, 0, 0) == nullptr,
         "a null result answers null, as the ABI does");
@@ -666,6 +677,7 @@ void step_accessors_copy_before_the_free() {
 
   if (data != nullptr) g_env->DeleteLocalRef(data);
   if (tag != nullptr) g_env->DeleteLocalRef(tag);
+  if (returned != nullptr) g_env->DeleteLocalRef(returned);
   if (shape != nullptr) g_env->DeleteLocalRef(shape);
   if (name != nullptr) g_env->DeleteLocalRef(name);
 }
