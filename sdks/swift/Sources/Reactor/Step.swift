@@ -87,8 +87,8 @@ public struct StepCommand: Sendable, Hashable, Encodable {
 }
 
 /// What one step produced: its index in the session, per output track the
-/// frames it generated, the files the model kept with it, and — when the model
-/// reported the step failed — why.
+/// frames it generated, the data the model returned with it, the files the
+/// model kept with it, and — when the model reported the step failed — why.
 ///
 /// ```swift
 /// let result = try await reactor.step(state: ["prompt": "a red fox"])
@@ -131,6 +131,26 @@ public struct StepResult: Sendable {
     /// returns it rather than throwing. Only a step that never ran throws.
     public let error: String?
 
+    /// What the model returned for the step besides its media, or `nil` when it
+    /// returned nothing. Returned but empty data is empty `Data`, not `nil`.
+    ///
+    /// Opaque bytes, delivered with the step's frames, so a model whose output
+    /// is data alone needs no output track. A model that returns a dict sends
+    /// it encoded as JSON, and one that returns bytes sends them as they are:
+    /// decoding them is up to the caller, who knows which the model sends.
+    ///
+    /// ```swift
+    /// if let data = result.data {
+    ///     let actions = try JSONDecoder().decode([Double].self, from: data)
+    /// }
+    /// ```
+    ///
+    /// It counts toward the size of the step's result, which the runtime caps
+    /// at the session's maximum message size: a step whose result does not fit
+    /// throws ``ReactorError/Code/stepResultTooLarge`` rather than arriving cut
+    /// short.
+    public let data: Data?
+
     /// Assemble a result — for tests and previews; ``Reactor/step(state:commands:media:)``
     /// is where real ones come from.
     public init(
@@ -138,13 +158,15 @@ public struct StepResult: Sendable {
         tracks: [StepTrackOutput],
         elapsed: Duration = .zero,
         files: [StepFile] = [],
-        error: String? = nil
+        error: String? = nil,
+        data: Data? = nil
     ) {
         self.step = step
         self.tracks = tracks
         self.elapsed = elapsed
         self.files = files
         self.error = error
+        self.data = data
     }
 
     /// The output of the track called `name`.

@@ -310,6 +310,11 @@ struct FFI: Sendable {
     /// the result; null when it worked.
     var stepResultError: @Sendable (OpaquePointer?) -> UnsafePointer<CChar>?
 
+    /// `reactor_step_result_data` — `*len` bytes, borrowed; null when the model
+    /// returned none, non-null with length 0 for empty data.
+    var stepResultData:
+        @Sendable (OpaquePointer?, UnsafeMutablePointer<Int>?) -> UnsafePointer<UInt8>?
+
     /// `reactor_step_result_file_count` — the extra files the model kept.
     var stepResultFileCount: @Sendable (OpaquePointer?) -> UInt32
 
@@ -472,6 +477,7 @@ extension FFI {
         stepResultStep: { result in reactor_step_result_step(result) },
         stepResultElapsed: { result in reactor_step_result_elapsed(result) },
         stepResultError: { result in reactor_step_result_error(result) },
+        stepResultData: { result, length in reactor_step_result_data(result, length) },
         stepResultFileCount: { result in reactor_step_result_file_count(result) },
         stepResultFileName: { result, file in reactor_step_result_file_name(result, file) },
         stepResultFileContentType: { result, file in

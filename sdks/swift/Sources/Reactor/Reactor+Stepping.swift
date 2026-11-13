@@ -345,9 +345,14 @@ extension StepResult {
                 size: ffi.stepResultFileSize(result, file))
         }
 
+        var dataLength = 0
+        let data = ffi.stepResultData(result, &dataLength).map {
+            Data(bytes: $0, count: dataLength)
+        }
+
         self.init(
             step: ffi.stepResultStep(result), tracks: tracks, elapsed: elapsed, files: files,
-            error: String(borrowing: ffi.stepResultError(result)))
+            error: String(borrowing: ffi.stepResultError(result)), data: data)
     }
 }
 
