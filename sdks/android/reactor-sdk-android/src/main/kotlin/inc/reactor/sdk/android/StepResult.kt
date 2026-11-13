@@ -5,8 +5,8 @@ import java.nio.ByteOrder
 
 /**
  * What one [step][Reactor.step] produced: its number in the session, per output track the frames
- * it generated, the files the model kept with it, and — when the step ran but the model reported a
- * failure — why.
+ * it generated, the files the model kept with it, the data the model returned with it, and — when
+ * the step ran but the model reported a failure — why.
  *
  * ```kotlin
  * val result = reactor.step(state = """{"prompt": "a red fox"}""")
@@ -28,6 +28,12 @@ import java.nio.ByteOrder
  * @property error why the step failed, when it ran and the model reported a failure; null when it
  *   worked. A step that did not run has no result: [Reactor.step] throws [StepRefusedException],
  *   [StepNotReadyException] or [StepCommandFailedException] instead
+ * @property data what the model returned for the step besides its media, opaque to the transport:
+ *   the bytes it returned as they are, or a dict it returned encoded as JSON. It arrives in the same
+ *   message as the step's frames, so a model whose output is data alone needs no output track.
+ *   Decoding it is the caller's business. Null when the model returned none — returned but empty
+ *   data is an empty array. The array is the result's own, read once from the native library:
+ *   copy it before changing it if the result is shared
  */
 public data class StepResult(
     public val step: Long,
@@ -35,6 +41,7 @@ public data class StepResult(
     public val elapsed: Double = 0.0,
     public val files: List<StepFile> = emptyList(),
     public val error: String? = null,
+    public val data: ByteArray? = null,
 ) {
     /**
      * The output of one track, by name.
@@ -52,6 +59,33 @@ public data class StepResult(
 
     /** The output of one track, by name, or null when the step produced none on it. */
     public fun findTrack(name: String): StepTrackOutput? = tracks.firstOrNull { it.name == name }
+
+    /**
+     * Equal to another result with the same step, tracks, elapsed time, files, error and data, the
+     * data compared by its bytes. No data and empty data are different results, as they are on the
+     * wire.
+     */
+    override fun equals(other: Any?): Boolean =
+        other is StepResult &&
+            step == other.step &&
+            tracks == other.tracks &&
+            elapsed.compareTo(other.elapsed) == 0 &&
+            files == other.files &&
+            error == other.error &&
+            data.contentEquals(other.data)
+
+    override fun hashCode(): Int {
+        var hash = step.hashCode()
+        hash = 31 * hash + tracks.hashCode()
+        hash = 31 * hash + elapsed.hashCode()
+        hash = 31 * hash + files.hashCode()
+        hash = 31 * hash + (error?.hashCode() ?: 0)
+        return 31 * hash + (data?.contentHashCode() ?: 0)
+    }
+
+    override fun toString(): String =
+        "StepResult(step=$step, tracks=$tracks, elapsed=$elapsed, files=$files, error=$error, " +
+            "data=${data?.let { "${it.size} bytes" }})"
 }
 
 /**

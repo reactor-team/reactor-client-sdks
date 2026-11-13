@@ -21,7 +21,7 @@ const ReactorStepResult* result_of(jlong result) {
 jbyteArray to_jbytes(JNIEnv* env, const uint8_t* data, size_t len) {
   if (len > static_cast<size_t>(INT32_MAX)) {
     reactor_jni::fail(env, "java/lang/IllegalStateException",
-                      "a step frame is larger than a Java array can hold");
+                      "a step's bytes are more than a Java array can hold");
     return nullptr;
   }
   jbyteArray array = env->NewByteArray(static_cast<jsize>(len));
@@ -48,6 +48,16 @@ extern "C" JNIEXPORT jdouble JNICALL STEP_RESULTS(nativeElapsed)(JNIEnv*, jobjec
 extern "C" JNIEXPORT jstring JNICALL STEP_RESULTS(nativeError)(JNIEnv* env, jobject,
                                                                jlong result) {
   return to_jstring(env, reactor_step_result_error(result_of(result)));
+}
+
+/// What the model returned with the step, copied once into a byte[], or null when it returned none.
+/// Returned but empty data is an empty array.
+extern "C" JNIEXPORT jbyteArray JNICALL STEP_RESULTS(nativeData)(JNIEnv* env, jobject,
+                                                                 jlong result) {
+  size_t len = 0;
+  const uint8_t* data = reactor_step_result_data(result_of(result), &len);
+  if (data == nullptr) return nullptr;
+  return to_jbytes(env, data, len);
 }
 
 extern "C" JNIEXPORT jint JNICALL STEP_RESULTS(nativeFileCount)(JNIEnv*, jobject, jlong result) {

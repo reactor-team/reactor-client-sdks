@@ -153,6 +153,30 @@ class SteppedGenerationTest {
         // No tag and no capture time are absences, not empty values.
         assertNull(audio.metadata)
         assertNull(audio.captureTimeUs)
+        assertNull(result.data)
+    }
+
+    @Test
+    fun `a result carries the data the model returned, which needs no track`() {
+        val actions = """{"actions":[0.1,0.2]}""".toByteArray()
+        val result = StepResults.read(FakeResult(tracks = 0, data = actions), 1L)
+        assertTrue(result.tracks.isEmpty())
+        val data: ByteArray? = result.data
+        assertArrayEquals(actions, data)
+        // Returned but empty is present and empty, not absent.
+        assertArrayEquals(ByteArray(0), StepResults.read(FakeResult(data = ByteArray(0)), 1L).data)
+    }
+
+    @Test
+    fun `results compare their data by its bytes`() {
+        val first = StepResults.read(FakeResult(data = byteArrayOf(1, 2)), 1L)
+        val second = StepResults.read(FakeResult(data = byteArrayOf(1, 2)), 1L)
+        assertEquals(first, second)
+        assertEquals(first.hashCode(), second.hashCode())
+        assertNotEquals(first, StepResults.read(FakeResult(data = byteArrayOf(1, 3)), 1L))
+        // No data and empty data are different results, as they are on the wire.
+        assertNotEquals(StepResults.read(FakeResult(), 1L), StepResults.read(FakeResult(data = ByteArray(0)), 1L))
+        assertTrue(first.toString().contains("data=2 bytes"))
     }
 
     @Test
@@ -323,13 +347,16 @@ class SteppedGenerationTest {
 
     /**
      * A result with one video track (a 2x2 RGB frame, tagged and timed), one audio track (one
-     * stereo sample pair, untagged) and one kept file. Ignores the pointer it is given.
+     * stereo sample pair, untagged) and one kept file, and no data unless given some. Ignores the
+     * pointer it is given.
      */
     private class FakeResult(
         private val videoData: ByteArray = ByteArray(12) { (it + 1).toByte() },
         private val videoKind: String = "video",
         private val videoTag: ByteArray? = byteArrayOf(9, 8, 7),
         private val videoDtype: String = "uint8",
+        private val tracks: Int = 2,
+        private val data: ByteArray? = null,
     ) : StepResultSource {
         private val audioData = byteArrayOf(2, 1, 4, 3)
 
@@ -338,6 +365,8 @@ class SteppedGenerationTest {
         override fun elapsed(result: Long) = 0.25
 
         override fun error(result: Long): String? = null
+
+        override fun data(result: Long) = data?.copyOf()
 
         override fun fileCount(result: Long) = 1
 
@@ -356,7 +385,7 @@ class SteppedGenerationTest {
             file: Int,
         ) = 64L
 
-        override fun trackCount(result: Long) = 2
+        override fun trackCount(result: Long) = tracks
 
         override fun trackName(
             result: Long,

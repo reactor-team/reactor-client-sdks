@@ -186,6 +186,7 @@ for (frame in result.track("main_video").frames) {
 result.track("main_video").rate        // frames per second (samples per second on audio); 0 if unspecified
 result.elapsed                         // seconds the step's generate() took (or the model reported)
 result.error?.let { why -> Log.w(TAG, "the model failed the step: $why") }
+result.data                            // ByteArray? the model returned with the step, no track needed
 for (file in result.files) {           // named only; fetch the bytes over HTTP
     Log.i(TAG, "${file.name} ${file.contentType} ${file.size}")
 }
