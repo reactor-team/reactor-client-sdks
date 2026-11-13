@@ -12,6 +12,10 @@ struct GenerationHttp {
     /// Whether connection registration and the SDP exchange complete;
     /// otherwise registration parks.
     completes: bool,
+    /// Whether the ready session declares tracks; otherwise its capabilities
+    /// leave the `tracks` key out, as the coordinator does for a model with
+    /// none.
+    tracks: bool,
     requests: std::sync::Mutex<Vec<(Method, String)>>,
 }
 
@@ -20,6 +24,7 @@ impl GenerationHttp {
         Self {
             echo,
             completes: false,
+            tracks: true,
             requests: Default::default(),
         }
     }
@@ -28,6 +33,13 @@ impl GenerationHttp {
         Self {
             completes: true,
             ..Self::new(echo)
+        }
+    }
+
+    fn trackless(echo: Option<&'static str>) -> Self {
+        Self {
+            tracks: false,
+            ..Self::completing(echo)
         }
     }
 
@@ -65,16 +77,21 @@ impl HttpClient for GenerationHttp {
                 .echo
                 .map(|mode| format!(r#""generation": "{mode}","#))
                 .unwrap_or_default();
+            let tracks = if self.tracks {
+                r#", "tracks": [
+                    {"name": "output", "kind": "video", "direction": "recvonly"},
+                    {"name": "input", "kind": "video", "direction": "sendonly"}
+                ]"#
+            } else {
+                ""
+            };
             return json(format!(
                 r#"{{
                     "session_id": "sess_1",
                     "state": "ACTIVE",
                     {echo}
                     "selected_transport": {{"protocol": "webrtc", "version": "1.0"}},
-                    "capabilities": {{"protocol_version": "1.0", "tracks": [
-                        {{"name": "output", "kind": "video", "direction": "recvonly"}},
-                        {{"name": "input", "kind": "video", "direction": "sendonly"}}
-                    ]}}
+                    "capabilities": {{"protocol_version": "1.0"{tracks}}}
                 }}"#
             ));
         }
@@ -177,10 +194,12 @@ async fn a_stepped_connect_proceeds_when_the_runtime_echoes_the_mode() {
 }
 
 /// Opens both channels once the answer is applied, over a data channel
-/// chunked or not.
+/// chunked or not, and records the tracks it prepared and the data it sent.
 struct ChannelsPeer {
     chunked: bool,
     reactor: std::sync::Mutex<Option<std::sync::Weak<Reactor>>>,
+    prepared_tracks: std::sync::Mutex<Option<Vec<TrackCapability>>>,
+    sent_data: std::sync::Mutex<Vec<Vec<u8>>>,
 }
 
 impl ChannelsPeer {
@@ -188,6 +207,8 @@ impl ChannelsPeer {
         Self {
             chunked,
             reactor: std::sync::Mutex::new(None),
+            prepared_tracks: std::sync::Mutex::new(None),
+            sent_data: std::sync::Mutex::new(vec![]),
         }
     }
 }
@@ -197,8 +218,9 @@ impl PeerTransport for ChannelsPeer {
     async fn prepare(
         &self,
         _: &[IceServer],
-        _: &[TrackCapability],
+        tracks: &[TrackCapability],
     ) -> Result<PreparedOffer, CoreError> {
+        *self.prepared_tracks.lock().unwrap() = Some(tracks.to_vec());
         Ok(PreparedOffer {
             sdp_offer: "offer".into(),
             track_mapping: vec![],
@@ -217,7 +239,8 @@ impl PeerTransport for ChannelsPeer {
         }
         Ok(())
     }
-    fn send_data(&self, _: &[u8], _: bool) -> Result<(), CoreError> {
+    fn send_data(&self, payload: &[u8], _: bool) -> Result<(), CoreError> {
+        self.sent_data.lock().unwrap().push(payload.to_vec());
         Ok(())
     }
     fn send_control(&self, _: &[u8]) -> Result<(), CoreError> {
@@ -244,6 +267,14 @@ async fn connect_over(
     };
     let http = Arc::new(GenerationHttp::completing(echo));
     let peer = Arc::new(ChannelsPeer::new(chunked));
+    connect_with(http, peer, generation).await
+}
+
+async fn connect_with(
+    http: Arc<GenerationHttp>,
+    peer: Arc<ChannelsPeer>,
+    generation: GenerationMode,
+) -> (Arc<Reactor>, Result<(), CoreError>) {
     let mut opts = ReactorOptions::new("http://localhost", "test-model");
     opts.generation = generation;
     let reactor = Arc::new(Reactor::new(
@@ -287,6 +318,65 @@ async fn a_stepped_connect_over_a_chunked_data_channel_is_ready() {
     let (reactor, result) = connect_over(GenerationMode::Stepped, true).await;
     result.unwrap();
     assert_eq!(reactor.status(), ReactorStatus::Ready);
+}
+
+/// A model with no tracks is described without the `tracks` key. Its
+/// stepped session still connects, over the data channels alone, and its
+/// steps complete.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stepped_session_without_tracks_connects_and_completes_a_step() {
+    let http = Arc::new(GenerationHttp::trackless(Some("stepped")));
+    let peer = Arc::new(ChannelsPeer::new(true));
+    let (reactor, result) = connect_with(http, peer.clone(), GenerationMode::Stepped).await;
+    result.unwrap();
+    assert_eq!(reactor.status(), ReactorStatus::Ready);
+    assert!(reactor.tracks().is_empty());
+    assert_eq!(
+        peer.prepared_tracks.lock().unwrap().as_deref(),
+        Some(&[][..])
+    );
+
+    let r = reactor.clone();
+    let stepping = tokio::spawn(async move { r.step(Value::Null, vec![]).await });
+    let sent = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let request = peer.sent_data.lock().unwrap().iter().find_map(|raw| {
+                let message = DataClientMessage::decode(raw.as_slice()).unwrap();
+                matches!(
+                    message.payload,
+                    Some(data_client_message::Payload::RequestStep(_))
+                )
+                .then_some(message)
+            });
+            if let Some(request) = request {
+                return request;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("step should send its request");
+
+    feed(
+        &reactor,
+        &sent.request_id,
+        MessageKind::Response,
+        data_server_message::Payload::StepResult(StepResult {
+            step: 1,
+            tracks: vec![],
+            elapsed_seconds: 0.1,
+            files: vec![],
+            error: None,
+            failure_code: StepFailureCode::Unspecified as i32,
+            code: None,
+            entry: None,
+        }),
+    )
+    .await;
+    let output = stepping.await.unwrap().unwrap();
+    assert_eq!(output.step, 1);
+    assert!(output.tracks.is_empty());
+    assert!(output.error.is_none());
 }
 
 /// Streamed sessions send small messages and do not need chunking.
