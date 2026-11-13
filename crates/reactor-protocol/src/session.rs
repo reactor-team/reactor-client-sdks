@@ -106,6 +106,9 @@ pub struct CommandCapability {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Capabilities {
     pub protocol_version: String,
+    /// Empty when the model declares no tracks, which the coordinator sends
+    /// by leaving the key out.
+    #[serde(default)]
     pub tracks: Vec<TrackCapability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commands: Option<Vec<CommandCapability>>,
@@ -263,6 +266,23 @@ mod tests {
 
         let back = serde_json::to_value(&resp).unwrap();
         assert_eq!(back["some_future_field"]["x"], 1);
+    }
+
+    /// A model with no tracks is described without the `tracks` key at all.
+    #[test]
+    fn capabilities_without_tracks_have_none() {
+        let caps: Capabilities = serde_json::from_str(r#"{"protocol_version": "1.0"}"#).unwrap();
+        assert!(caps.tracks.is_empty());
+
+        let resp: SessionResponse = serde_json::from_str(
+            r#"{
+                "session_id": "sess_abc",
+                "state": "ACTIVE",
+                "capabilities": {"protocol_version": "1.0", "commands": []}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(resp.capabilities.unwrap().tracks, []);
     }
 
     #[test]

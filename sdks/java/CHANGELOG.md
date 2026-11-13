@@ -9,6 +9,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A model that declares no tracks can be connected to. Its session leaves the
+  `tracks` key out of its capabilities, which the SDK required, so `connect()`
+  failed to read the session; it now reads as a session with no tracks, and a
+  stepped session connects over its data channels alone. Connecting to a
+  model without tracks needs this release or later (1.4.0 and earlier fail).
+
 ## [1.4.0] - 2026-10-23
 
 ### Added
