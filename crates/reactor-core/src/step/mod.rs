@@ -249,6 +249,12 @@ pub struct StepOutput {
     /// whose session ended before the result came has no output:
     /// [`FrameDecoders::decode_result`] fails instead.
     pub error: Option<String>,
+    /// What the model returned for the step besides its media, opaque to the
+    /// transport: the bytes it returned as they are, or a dict it returned
+    /// encoded as JSON, the same rule as a frame's metadata. It arrives with
+    /// the step's frames, so a model whose output is data alone needs no
+    /// output track. `None` when the model returned none.
+    pub data: Option<Vec<u8>>,
 }
 
 /// A reference to one extra file a model kept with a step. The result carries

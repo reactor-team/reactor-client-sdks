@@ -79,7 +79,10 @@ step's request cannot be sent — `MESSAGE_TOO_LARGE` among the reasons — the
 step rejects and its frames are dropped with it, so the next step starts from
 what is pushed after. `clearStepInputs()` drops whatever is buffered now.
 
-`step()` resolves with `{ step, tracks, elapsed, files, error? }`. Each track
+`step()` resolves with `{ step, tracks, elapsed, files, error?, data? }`.
+`data` is a `Uint8Array` of what the model returned for the step besides its
+media, opaque to the transport (a dict the model returned arrives encoded as
+JSON); a model whose output is data alone needs no output track. Each track
 is `{ track, kind, rate, frames }`, `rate` being the rate its frames play at as
 the runtime reported it (frames per second for video, samples per second for
 audio; 0 when it did not say). `files`

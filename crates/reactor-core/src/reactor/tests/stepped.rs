@@ -331,7 +331,7 @@ async fn a_stepped_connect_over_a_chunked_data_channel_is_ready() {
 
 /// A model with no tracks is described without the `tracks` key. Its
 /// stepped session still connects, over the data channels alone, and its
-/// steps complete.
+/// steps complete with the data the model returned.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stepped_session_without_tracks_connects_and_completes_a_step() {
     let http = Arc::new(GenerationHttp::trackless(Some("stepped")));
@@ -377,6 +377,7 @@ async fn a_stepped_session_without_tracks_connects_and_completes_a_step() {
             failure_code: StepFailureCode::Unspecified as i32,
             code: None,
             entry: None,
+            data: Some(br#"{"actions":[[0.5,-0.25]]}"#.to_vec()),
         }),
     )
     .await;
@@ -384,6 +385,10 @@ async fn a_stepped_session_without_tracks_connects_and_completes_a_step() {
     assert_eq!(output.step, 1);
     assert!(output.tracks.is_empty());
     assert!(output.error.is_none());
+    assert_eq!(
+        output.data.as_deref(),
+        Some(&br#"{"actions":[[0.5,-0.25]]}"#[..])
+    );
 }
 
 /// Streamed sessions send small messages and do not need chunking.
@@ -636,6 +641,7 @@ async fn a_step_sends_one_request_with_state_commands_and_buffered_inputs() {
             failure_code: StepFailureCode::Unspecified as i32,
             code: None,
             entry: None,
+            data: None,
         }),
     )
     .await;
@@ -673,6 +679,7 @@ async fn a_step_resolves_on_its_result_alone_with_its_files() {
             failure_code: StepFailureCode::Unspecified as i32,
             code: None,
             entry: None,
+            data: None,
         }),
     )
     .await;
@@ -717,6 +724,7 @@ async fn a_step_that_ran_and_failed_resolves_with_its_reason() {
             failure_code: StepFailureCode::Failed as i32,
             code: None,
             entry: None,
+            data: None,
         }),
     )
     .await;
@@ -766,6 +774,7 @@ async fn step_failure_codes_map_to_their_own_variants() {
                 failure_code: failure_code as i32,
                 code: None,
                 entry: None,
+                data: None,
             }),
         )
         .await;
@@ -831,6 +840,7 @@ async fn a_step_result_in_an_unknown_encoding_fails_typed() {
             failure_code: StepFailureCode::Unspecified as i32,
             code: None,
             entry: None,
+            data: None,
         }),
     )
     .await;
@@ -1113,6 +1123,7 @@ async fn stepped_pushes_are_buffered_and_ride_the_next_step() {
             failure_code: StepFailureCode::Unspecified as i32,
             code: None,
             entry: None,
+            data: None,
         }),
     )
     .await;

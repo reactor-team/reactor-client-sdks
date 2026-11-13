@@ -24,6 +24,7 @@ pub struct ReactorStepResult {
     pub(crate) elapsed: f64,
     pub(crate) files: Vec<StepFileEntry>,
     pub(crate) error: Option<CString>,
+    pub(crate) data: Option<Vec<u8>>,
 }
 
 /// A reference to an extra file the model kept with the step; the bytes are
@@ -99,6 +100,7 @@ impl From<StepOutput> for ReactorStepResult {
             elapsed: output.elapsed,
             files: output.files.into_iter().map(StepFileEntry::from).collect(),
             error: output.error.map(c_string),
+            data: output.data,
         }
     }
 }
@@ -235,6 +237,26 @@ pub unsafe extern "C" fn reactor_step_result_error(
         .as_ref()
         .and_then(|r| r.error.as_deref())
         .map_or(std::ptr::null(), CStr::as_ptr)
+}
+
+/// What the model returned for the step besides its media, `*len` bytes,
+/// opaque to the transport: the bytes it returned as they are, or a dict it
+/// returned encoded as JSON. Null with `*len` 0 when it returned none, and for
+/// a null result; returned but empty data is non-null with `*len` 0.
+///
+/// # Safety
+///
+/// As [`reactor_step_result_step`]; `len` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_result_data(
+    result: *const ReactorStepResult,
+    len: *mut usize,
+) -> *const u8 {
+    let data = result.as_ref().and_then(|r| r.data.as_ref());
+    if !len.is_null() {
+        *len = data.map_or(0, Vec::len);
+    }
+    data.map_or(std::ptr::null(), |d| d.as_ptr())
 }
 
 /// How many extra files the model kept with the step, in the order the
@@ -542,6 +564,8 @@ mod tests {
     fn a_result_owns_the_decoded_bytes_without_copying_them() {
         let bytes = vec![7u8; 6];
         let address = bytes.as_ptr();
+        let data = b"actions".to_vec();
+        let data_address = data.as_ptr();
         let result = ReactorStepResult::from(StepOutput {
             step: 3,
             tracks: vec![TrackOutput {
@@ -557,8 +581,10 @@ mod tests {
                 size: 4096,
             }],
             error: Some("model said no\0pe".into()),
+            data: Some(data),
         });
         assert_eq!(result.step, 3);
+        assert_eq!(result.data.as_ref().unwrap().as_ptr(), data_address);
         assert_eq!(result.elapsed, 0.75);
         let track = result.track(0).unwrap();
         assert_eq!(track.name.to_str().unwrap(), "main_video");
