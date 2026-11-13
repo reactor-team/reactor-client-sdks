@@ -50,6 +50,9 @@ pub(crate) fn output_to_js(output: StepOutput) -> Result<JsValue, JsValue> {
     if let Some(error) = output.error {
         set(&result, "error", &JsValue::from_str(&error))?;
     }
+    if let Some(data) = output.data {
+        set(&result, "data", &js_sys::Uint8Array::from(data.as_slice()))?;
+    }
     Ok(result.into())
 }
 

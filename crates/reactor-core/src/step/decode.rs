@@ -148,6 +148,7 @@ impl FrameDecoders {
             elapsed: result.elapsed_seconds,
             files: result.files.into_iter().map(StepFile::from).collect(),
             error: result.error,
+            data: result.data,
         })
     }
 }
@@ -225,6 +226,7 @@ mod tests {
             failure_code: StepFailureCode::Unspecified as i32,
             code: None,
             entry: None,
+            data: None,
         };
         let output = FrameDecoders::default().decode_result(result).unwrap();
         assert_eq!(output.step, 3);
@@ -258,6 +260,7 @@ mod tests {
             failure_code: StepFailureCode::Failed as i32,
             code: None,
             entry: None,
+            data: None,
         };
         let output = FrameDecoders::default().decode_result(result).unwrap();
         assert_eq!(output.step, 5);
@@ -315,6 +318,7 @@ mod tests {
             failure_code: failure_code as i32,
             code: None,
             entry: None,
+            data: None,
         };
         let decoders = FrameDecoders::default();
         match decoders.decode_result(result(StepFailureCode::Refused, Some("bad command"))) {
@@ -376,6 +380,7 @@ mod tests {
             failure_code: StepFailureCode::Unspecified as i32,
             code: None,
             entry: None,
+            data: None,
         };
         let output = FrameDecoders::default().decode_result(result).unwrap();
         assert_eq!(output.elapsed, 1.5);
@@ -416,6 +421,7 @@ mod tests {
             failure_code: StepFailureCode::Failed as i32,
             code: None,
             entry: None,
+            data: None,
         }
         .encode_to_vec();
         let decoded = StepResult::decode(bytes.as_slice()).unwrap();
@@ -430,6 +436,46 @@ mod tests {
                 size: 12,
             }]
         );
+    }
+
+    /// The data a model returned for the step (`StepResult.data`, field 9)
+    /// comes back as the bytes it was, with no track needed to carry it, out
+    /// of a real protobuf round trip; a result without it has none, not an
+    /// empty buffer.
+    #[test]
+    fn the_data_a_step_returned_survives_the_wire_encoding() {
+        use prost::Message;
+
+        let decode = |result: StepResult| {
+            let bytes = result.encode_to_vec();
+            FrameDecoders::default()
+                .decode_result(StepResult::decode(bytes.as_slice()).unwrap())
+                .unwrap()
+        };
+        let output = decode(StepResult {
+            step: 4,
+            data: Some(br#"{"actions":[[0.1,0.2]]}"#.to_vec()),
+            ..Default::default()
+        });
+        assert_eq!(output.step, 4);
+        assert!(output.tracks.is_empty());
+        assert_eq!(
+            output.data.as_deref(),
+            Some(&br#"{"actions":[[0.1,0.2]]}"#[..])
+        );
+
+        let empty = decode(StepResult {
+            step: 5,
+            data: Some(vec![]),
+            ..Default::default()
+        });
+        assert_eq!(empty.data.as_deref(), Some(&[][..]));
+
+        let none = decode(StepResult {
+            step: 6,
+            ..Default::default()
+        });
+        assert_eq!(none.data, None);
     }
 
     #[test]
@@ -451,6 +497,7 @@ mod tests {
             failure_code: StepFailureCode::Unspecified as i32,
             code: None,
             entry: None,
+            data: None,
         };
         match FrameDecoders::default().decode_result(result) {
             Err(CoreError::UnsupportedFrameEncoding { track, encoding }) => {
