@@ -169,6 +169,13 @@ struct StepResult {
   /// or whose result could not be delivered.
   std::optional<std::string> error{};
 
+  /// What the model returned for the step besides its media, opaque bytes the
+  /// caller decodes: the bytes it returned as they are, or a dict it returned
+  /// encoded as JSON. It arrives with the step's frames, so a model whose output
+  /// is data alone needs no output track. Empty when it returned none; returned
+  /// but empty data is a present, empty vector.
+  std::optional<std::vector<std::uint8_t>> data{};
+
   /// The output of the track called `name`.
   ///
   /// Throws `NotFoundError` naming the tracks that did produce output: a model can
