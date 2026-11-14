@@ -548,11 +548,17 @@ struct SteppingTests {
         defer { client.close() }
 
         let json = Array(#"{"actions":[0.1,0.2]}"#.utf8)
-        let native = FakeStepResult(step: 5, tracks: [], data: json)
-        let result = try await stepping(fake, result: native) { try await client.step() }
+        weak var native: FakeStepResult?
+        func handedOver() -> FakeStepResult {
+            let result = FakeStepResult(step: 5, tracks: [], data: json)
+            native = result
+            return result
+        }
+        let result = try await stepping(fake, result: handedOver()) { try await client.step() }
 
         // Copied out: the library's result, and the bytes in it, are freed.
         #expect(fake.freedStepResults == 1)
+        #expect(native == nil, "the SDK kept the library's result alive past the step")
         #expect(result.tracks.isEmpty)
         #expect(result.data == Data(json))
     }
