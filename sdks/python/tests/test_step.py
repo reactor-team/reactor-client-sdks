@@ -83,6 +83,8 @@ class FakeStepLib:
         # both behind real C buffers like every other borrowed string.
         self.files: dict[int, list[tuple[Any, Any, int]]] = {}
         self.errors: dict[int, Any] = {}
+        # Per result: (buffer, length) of the data the model returned, or None.
+        self.data: dict[int, tuple[Any, int] | None] = {}
         self.freed: list[int] = []
         self.created_with: dict[str, Any] = {}
         self.step_calls: list[tuple[bytes | None, bytes | None]] = []
@@ -134,6 +136,7 @@ class FakeStepLib:
         files: list[tuple[str, str, int]] = (),  # type: ignore[assignment]
         error: str | None = None,
         rates: list[float] = (),  # type: ignore[assignment]
+        data: bytes | None = None,
     ) -> int:
         ptr = 0x1000 + len(self.results)
         self.results[ptr] = (index, tracks)
@@ -144,6 +147,11 @@ class FakeStepLib:
             for n, c, s in files
         ]
         self.errors[ptr] = None if error is None else ctypes.create_string_buffer(error.encode())
+        self.data[ptr] = (
+            None
+            if data is None
+            else (ctypes.create_string_buffer(data, max(1, len(data))), len(data))
+        )
         return ptr
 
     def _frame(self, ptr, t, f) -> _NativeFrame | None:
@@ -162,6 +170,15 @@ class FakeStepLib:
         # What the c_char_p restype hands back: the borrowed string's bytes.
         buf = self.errors[ptr.value]
         return None if buf is None else buf.value
+
+    def reactor_step_result_data(self, ptr, length):
+        data = self.data[ptr.value]
+        if data is None:
+            length._obj.value = 0
+            return None
+        buf, size = data
+        length._obj.value = size
+        return ctypes.addressof(buf)
 
     def reactor_step_result_file_count(self, ptr):
         return len(self.files[ptr.value])
@@ -412,6 +429,42 @@ class TestStep:
         np.testing.assert_array_equal(audio.array, pcm)
         assert result.files == ()
         assert result.error is None
+        assert result.data is None
+
+    async def test_data_the_model_returned_is_copied_out_without_any_track(
+        self, lib: FakeStepLib
+    ) -> None:
+        reactor = await _stepped(lib)
+        actions = json.dumps({"actions": [[0.1, -0.2], [0.3, 0.4]]}).encode()
+        ptr = lib.add_result(3, [], data=actions)
+        lib.step_answer = lambda done: done(1, ptr, None, None)
+
+        result = await reactor.step()
+
+        assert result.tracks == ()
+        assert result.data == actions
+        assert json.loads(result.data) == {"actions": [[0.1, -0.2], [0.3, 0.4]]}
+        assert lib.freed == [ptr]
+
+    async def test_empty_data_is_empty_bytes_not_none(self, lib: FakeStepLib) -> None:
+        reactor = await _stepped(lib)
+        ptr = lib.add_result(1, [], data=b"")
+        lib.step_answer = lambda done: done(1, ptr, None, None)
+
+        assert (await reactor.step()).data == b""
+
+    async def test_a_library_without_step_data_reads_no_data(
+        self, lib: FakeStepLib, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reactor = await _stepped(lib)
+        ptr = lib.add_result(1, [], data=b"lost")
+        lib.step_answer = lambda done: done(1, ptr, None, None)
+        monkeypatch.delattr(FakeStepLib, "reactor_step_result_data")
+
+        result = await reactor.step()
+
+        assert result.data is None
+        assert lib.freed == [ptr]
 
     async def test_files_are_copied_out_in_order(self, lib: FakeStepLib) -> None:
         reactor = await _stepped(lib)
@@ -605,6 +658,7 @@ class TestStepResult:
         result = StepResult(step=1)
         assert result.files == ()
         assert result.error is None
+        assert result.data is None
 
     def test_a_track_rate_defaults_to_unspecified(self) -> None:
         assert StepTrackOutput("a", TrackKind.AUDIO).rate == 0.0

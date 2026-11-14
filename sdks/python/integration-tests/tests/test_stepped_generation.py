@@ -4,6 +4,8 @@ The generic tests need a model with stepped generation: set
 REACTOR_STEPPED_MODEL_NAME (and, for a local runtime, REACTOR_LOCAL=true with
 REACTOR_API_URL) or they are skipped. REACTOR_STEPPED_INPUT_TRACK names a
 sendonly video track to push into; without it the input test skips.
+REACTOR_STEPPED_DATA_MODEL_NAME names a stepped model that declares no tracks
+and returns a dict as each step's data; without it the data test skips.
 
 `reactor/echo` always runs: a stepped connect to it must step or fail, never
 stream. Echo steps from 1.10.0; until that release is deployed everywhere this
@@ -12,6 +14,7 @@ suite runs, an older echo refuses the start, and the test accepts either.
 
 from __future__ import annotations
 
+import json
 import os
 
 import numpy as np
@@ -29,6 +32,7 @@ from reactor_sdk import (
 
 STEPPED_MODEL = os.environ.get("REACTOR_STEPPED_MODEL_NAME")
 INPUT_TRACK = os.environ.get("REACTOR_STEPPED_INPUT_TRACK")
+DATA_MODEL = os.environ.get("REACTOR_STEPPED_DATA_MODEL_NAME")
 
 needs_stepped_model = pytest.mark.skipif(
     not STEPPED_MODEL, reason="REACTOR_STEPPED_MODEL_NAME not set"
@@ -101,6 +105,25 @@ async def test_steps_resolve_in_order() -> None:
             for frame in track.frames:
                 assert frame.array.shape == frame.shape
                 assert frame.array.dtype == np.dtype(frame.dtype)
+    finally:
+        await client.disconnect()
+        client.close()
+
+
+@pytest.mark.skipif(not DATA_MODEL, reason="REACTOR_STEPPED_DATA_MODEL_NAME not set")
+async def test_a_model_without_tracks_returns_its_data_with_the_step() -> None:
+    assert DATA_MODEL is not None
+    client = stepped(DATA_MODEL)
+    try:
+        await paced_connect(client)
+        assert client.status == ReactorStatus.READY
+
+        result = await client.step(state={"prompt": "reach"})
+
+        assert result.error is None
+        assert result.tracks == ()
+        assert result.data is not None
+        assert isinstance(json.loads(result.data), dict)
     finally:
         await client.disconnect()
         client.close()
