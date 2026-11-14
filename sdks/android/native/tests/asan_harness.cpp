@@ -98,6 +98,7 @@ jstring Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeError(JNIE
 jbyteArray Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeData(JNIEnv*, jobject,
                                                                              jlong);
 ReactorStepResult* fake_new_step_result(void);
+void fake_set_step_result_data_empty(ReactorStepResult* result);
 long fake_step_results_outstanding(void);
 int fake_clear_step_inputs_calls(void);
 const char* fake_last_create_options(void);
@@ -670,6 +671,14 @@ void step_accessors_copy_before_the_free() {
   check(Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeData(
             g_env, nullptr, /*result=*/0) == nullptr,
         "a null result has no data");
+  ReactorStepResult* empty = fake_new_step_result();
+  fake_set_step_result_data_empty(empty);
+  jbyteArray none = Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeData(
+      g_env, nullptr, static_cast<jlong>(reinterpret_cast<intptr_t>(empty)));
+  reactor_step_result_free(empty);
+  check(none != nullptr && g_env->GetArrayLength(none) == 0,
+        "data returned but empty is an empty array, not null");
+  if (none != nullptr) g_env->DeleteLocalRef(none);
   check(Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeFrameData(
             g_env, nullptr, /*result=*/0, 0, 0) == nullptr,
         "a null result answers null, as the ABI does");

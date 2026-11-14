@@ -28,12 +28,6 @@ import java.nio.ByteOrder
  * @property error why the step failed, when it ran and the model reported a failure; null when it
  *   worked. A step that did not run has no result: [Reactor.step] throws [StepRefusedException],
  *   [StepNotReadyException] or [StepCommandFailedException] instead
- * @property data what the model returned for the step besides its media, opaque to the transport:
- *   the bytes it returned as they are, or a dict it returned encoded as JSON. It arrives in the same
- *   message as the step's frames, so a model whose output is data alone needs no output track.
- *   Decoding it is the caller's business. Null when the model returned none — returned but empty
- *   data is an empty array. The array is the result's own, read once from the native library:
- *   copy it before changing it if the result is shared
  */
 public data class StepResult(
     public val step: Long,
@@ -41,8 +35,35 @@ public data class StepResult(
     public val elapsed: Double = 0.0,
     public val files: List<StepFile> = emptyList(),
     public val error: String? = null,
-    public val data: ByteArray? = null,
 ) {
+    // Outside the primary constructor so that adding it kept the constructors and copy() that
+    // code compiled against earlier 1.x releases calls. copy() therefore leaves the data behind.
+    private var returned: ByteArray? = null
+
+    /** A result that carries [data] as well; the array is copied, so the caller keeps its own. */
+    public constructor(
+        step: Long,
+        tracks: List<StepTrackOutput>,
+        elapsed: Double = 0.0,
+        files: List<StepFile> = emptyList(),
+        error: String? = null,
+        data: ByteArray?,
+    ) : this(step, tracks, elapsed, files, error) {
+        returned = data?.copyOf()
+    }
+
+    /**
+     * What the model returned for the step besides its media, opaque to the transport: the bytes it
+     * returned as they are, or a dict it returned encoded as JSON. It arrives in the same message as
+     * the step's frames, so a model whose output is data alone needs no output track. Decoding it is
+     * the caller's business.
+     *
+     * A copy, or null when the model returned none — returned but empty data is an empty array.
+     * [copy] does not carry it: a copied result has none.
+     */
+    public val data: ByteArray?
+        get() = returned?.copyOf()
+
     /**
      * The output of one track, by name.
      *
@@ -72,7 +93,7 @@ public data class StepResult(
             elapsed.compareTo(other.elapsed) == 0 &&
             files == other.files &&
             error == other.error &&
-            data.contentEquals(other.data)
+            returned.contentEquals(other.returned)
 
     override fun hashCode(): Int {
         var hash = step.hashCode()
@@ -80,12 +101,12 @@ public data class StepResult(
         hash = 31 * hash + elapsed.hashCode()
         hash = 31 * hash + files.hashCode()
         hash = 31 * hash + (error?.hashCode() ?: 0)
-        return 31 * hash + (data?.contentHashCode() ?: 0)
+        return 31 * hash + (returned?.contentHashCode() ?: 0)
     }
 
     override fun toString(): String =
         "StepResult(step=$step, tracks=$tracks, elapsed=$elapsed, files=$files, error=$error, " +
-            "data=${data?.let { "${it.size} bytes" }})"
+            "data=${returned?.let { "${it.size} bytes" }})"
 }
 
 /**

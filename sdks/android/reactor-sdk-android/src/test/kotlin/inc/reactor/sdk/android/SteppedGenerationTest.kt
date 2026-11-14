@@ -177,6 +177,11 @@ class SteppedGenerationTest {
         // No data and empty data are different results, as they are on the wire.
         assertNotEquals(StepResults.read(FakeResult(), 1L), StepResults.read(FakeResult(data = ByteArray(0)), 1L))
         assertTrue(first.toString().contains("data=2 bytes"))
+        // The data is a copy, so changing it changes neither the result nor its hash.
+        val hash = first.hashCode()
+        first.data!![0] = 9
+        assertEquals(second, first)
+        assertEquals(hash, first.hashCode())
     }
 
     @Test
