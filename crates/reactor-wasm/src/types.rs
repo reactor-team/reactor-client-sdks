@@ -317,6 +317,11 @@ export interface StepResult {
   /** Set when the step ran and the model reported a failure. Such a step
    *  still resolves; only a refused step rejects. */
   error?: string;
+  /** What the model returned for the step besides its media, opaque to the
+   *  transport: the bytes it returned as they are, or a dict it returned
+   *  encoded as JSON. Arrives with the step's frames, so a model whose output
+   *  is data alone needs no output track. Absent when it returned none. */
+  data?: Uint8Array;
 }
 
 export type StatusListener = (status: ReactorStatus) => void;

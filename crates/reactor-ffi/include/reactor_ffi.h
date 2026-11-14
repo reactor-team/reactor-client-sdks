@@ -831,6 +831,15 @@ double reactor_step_result_elapsed(const ReactorStepResult *result);
 const char *reactor_step_result_error(const ReactorStepResult *result);
 
 /*
+ * What the model returned for the step besides its media, *len bytes, opaque to
+ * the transport: the bytes it returned as they are, or a dict it returned
+ * encoded as JSON.  It arrives with the step's frames, so a model whose output
+ * is data alone needs no output track.  NULL with *len 0 when it returned none;
+ * returned but empty data is non-NULL with *len 0.
+ */
+const uint8_t *reactor_step_result_data(const ReactorStepResult *result, size_t *len);
+
+/*
  * The extra files the model kept with the step, in the order the runtime listed
  * them.  None when it kept none or its result was not saved.  The result names
  * them; it does not carry them: fetch a file's bytes over HTTP from the
