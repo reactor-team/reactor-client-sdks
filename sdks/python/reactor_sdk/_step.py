@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
+from ._ffi import has_step_result_data
 from ._media import _numpy
 from .errors import DecodeError
 from .track import TrackKind
@@ -221,6 +222,12 @@ class StepResult:
     #: when it worked. A step that ran and failed still returns its result — only
     #: a refused one raises.
     error: str | None = None
+    #: What the model returned for the step besides its media, as the runtime
+    #: sent it: the bytes it returned as they are, or a dict it returned encoded
+    #: as JSON (``json.loads(result.data)``). It arrives with the step's frames,
+    #: so a model whose output is data alone needs no output track. None when the
+    #: model returned none; empty bytes when it returned empty data.
+    data: bytes | None = None
 
     def track(self, name: str) -> StepTrackOutput:
         """The output of the track called `name`.
@@ -293,10 +300,17 @@ def _read_step_result(lib: Any, ptr: int) -> StepResult:
     )
     # c_char_p restype: ctypes copies the borrowed string out; nothing to free.
     error = lib.reactor_step_result_error(handle)
+    data = None
+    if has_step_result_data(lib):
+        data_len = ctypes.c_size_t(0)
+        data_ptr = lib.reactor_step_result_data(handle, ctypes.byref(data_len))
+        # Null is no data; non-null with length 0 is data the model left empty.
+        data = ctypes.string_at(data_ptr, data_len.value) if data_ptr else None
     return StepResult(
         step=int(lib.reactor_step_result_step(handle)),
         tracks=tuple(tracks),
         elapsed=float(lib.reactor_step_result_elapsed(handle)),
         files=files,
         error=None if error is None else error.decode(errors="replace"),
+        data=data,
     )
