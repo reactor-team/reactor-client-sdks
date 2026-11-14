@@ -141,7 +141,8 @@ public struct StepResult: Sendable {
     ///
     /// ```swift
     /// if let data = result.data {
-    ///     let actions = try JSONDecoder().decode([Double].self, from: data)
+    ///     let output = try JSONDecoder().decode([String: [Double]].self, from: data)
+    ///     let actions = output["actions", default: []]
     /// }
     /// ```
     ///
