@@ -211,6 +211,15 @@ impl ChannelsPeer {
             sent_data: std::sync::Mutex::new(vec![]),
         }
     }
+
+    fn sent(&self) -> Vec<DataClientMessage> {
+        self.sent_data
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|raw| DataClientMessage::decode(raw.as_slice()).unwrap())
+            .collect()
+    }
 }
 
 #[async_trait::async_trait]
@@ -340,13 +349,11 @@ async fn a_stepped_session_without_tracks_connects_and_completes_a_step() {
     let stepping = tokio::spawn(async move { r.step(Value::Null, vec![]).await });
     let sent = tokio::time::timeout(Duration::from_secs(1), async {
         loop {
-            let request = peer.sent_data.lock().unwrap().iter().find_map(|raw| {
-                let message = DataClientMessage::decode(raw.as_slice()).unwrap();
+            let request = peer.sent().into_iter().find(|message| {
                 matches!(
                     message.payload,
                     Some(data_client_message::Payload::RequestStep(_))
                 )
-                .then_some(message)
             });
             if let Some(request) = request {
                 return request;
