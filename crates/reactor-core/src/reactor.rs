@@ -1211,9 +1211,11 @@ impl Reactor {
     /// result alone: the frames per output track, the time the step took,
     /// references to any extra files the model kept with it
     /// ([`StepOutput::files`]; their bytes are fetched over HTTP from the
-    /// session's step results), and — when the step ran but the model
-    /// reported a failure — why ([`StepOutput::error`]; the call still
-    /// resolves). No event is published for a step.
+    /// session's step results), what the model returned besides its media
+    /// ([`StepOutput::data`]; `None` when it returned none), and — when the
+    /// step ran but the model reported a failure — why
+    /// ([`StepOutput::error`]; the call still resolves). No event is
+    /// published for a step.
     ///
     /// Fails, with nothing sent and the input frames kept for the next step,
     /// when the session is not a ready stepped session or when `state` or a
