@@ -15,7 +15,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   media, as bytes — the bytes it returned as they are, or a dict it returned
   encoded as JSON (`json.loads(result.data)`). It arrives with the step's
   frames, so a model whose output is data alone (an action chunk, a score)
-  needs no output track. `None` when the model returned none.
+  needs no output track. `None` when the model returned none, `b""` when it
+  returned empty data.
 
 ### Fixed
 
