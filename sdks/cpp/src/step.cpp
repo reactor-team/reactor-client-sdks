@@ -192,6 +192,16 @@ StepResult read_step_result(const Ffi& lib, const ReactorStepResult* result) {
   if (const char* error = lib.step_result_error(result)) {
     copied.error = std::string{error};
   }
+  std::size_t data_length = 0;
+  const std::uint8_t* data = lib.step_result_data(result, &data_length);
+  if (data != nullptr) {
+    // An empty payload's pointer may be a dangling sentinel: never form a
+    // range from it.
+    copied.data.emplace();
+    if (data_length != 0) {
+      copied.data->assign(data, data + data_length);
+    }
+  }
   return copied;
 }
 

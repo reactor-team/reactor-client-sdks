@@ -353,6 +353,7 @@ for (const auto& file : result.files) {
   file.name, file.content_type, file.size;  // bytes: GET /sessions/{id}/steps/{step}
 }
 if (result.error) { /* the step ran, and the model reported this failure */ }
+if (result.data) { /* bytes the model returned with the step: JSON for a dict */ }
 
 const auto next = client.step().get();      // no new state or commands
 ```
@@ -364,6 +365,11 @@ step; their bytes are fetched over HTTP
 from the session's step results, `GET /sessions/{id}/steps/{step}`, which
 answers 202 until they are stored. `files` is empty when the model kept none or
 the result was not saved.
+`data` is what the model returned for the step besides its media, opaque bytes
+for the caller to decode: the bytes it returned as they are, or a dict encoded
+as JSON. It arrives in the same message as the frames, so a model whose output
+is data alone needs no output track; it counts toward the step's size limit
+(`StepResultTooLargeError`), and is not kept with the step's saved results.
 Files go *into* a step the way they go into a command: upload first, then put the
 `FileRef` in a command's data or in the state value of an upload-typed field.
 
