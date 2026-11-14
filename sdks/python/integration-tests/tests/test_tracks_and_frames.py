@@ -32,6 +32,15 @@ async def _pump(track, color: tuple[int, int, int], *, seconds: float) -> None:
         await asyncio.sleep(1 / FPS)
 
 
+def _close_to(frame, color: tuple[int, int, int]) -> bool:
+    """`assert_dominant_color` as a predicate, for `wait_until`."""
+    try:
+        assert_dominant_color(frame, color)
+    except AssertionError:
+        return False
+    return True
+
+
 async def test_publish_and_push_frame_reaches_main_video(reactor: Reactor) -> None:
     webcam = await reactor.publish_track("webcam")
     assert webcam.name == "webcam"
@@ -115,6 +124,65 @@ async def test_pause_stops_delivery_and_resume_restarts_it(reactor: Reactor) -> 
         # Transport-level pause, not a local mute — nothing should arrive at
         # all while paused, the same distinction example 03's docstring makes.
         assert during_pause == 0, f"{during_pause} frames arrived while main_video was paused"
+    finally:
+        pump.cancel()
+        webcam.unpublish()
+
+
+async def test_republish_after_reconnect_delivers_frames_again(reactor: Reactor) -> None:
+    """publish → `reconnect()` → publish again → frames come back from echo.
+
+    A publish does not survive a reconnect (`Reactor.reconnect`'s docstring):
+    the client drops it, and the runtime has to drop its side too, or the
+    second `publish()` is refused as "track already published" while the
+    client has no sender left. Two different colours, one per connection, so
+    the pixels read after the republish can only have come from frames pushed
+    after it, not from anything left over from before the reconnect.
+    """
+    webcam = await reactor.publish_track("webcam")
+    main_video = reactor.track("main_video")
+
+    before_color = (200, 40, 40)
+    pump = asyncio.ensure_future(_pump(webcam, before_color, seconds=6.0))
+    try:
+        before: list = []
+
+        def collect_before(frame) -> None:
+            before.append(frame)
+
+        main_video.on_frame(collect_before)
+        await wait_until(lambda: len(before) >= 3, timeout=5.0)
+        assert_dominant_color(before[-1], before_color)
+        main_video.off_frame(collect_before)
+    finally:
+        pump.cancel()
+
+    await reactor.reconnect()
+
+    assert not webcam.published
+    with pytest.raises(InvalidStateError):
+        webcam.push_frame(solid_rgb_frame(WIDTH, HEIGHT, before_color))
+
+    await webcam.publish()
+    assert webcam.published
+
+    after_color = (40, 40, 200)
+    pump = asyncio.ensure_future(_pump(webcam, after_color, seconds=8.0))
+    try:
+        after: list = []
+        main_video.on_frame(lambda frame: after.append(frame))
+        # Wait for a frame of the new colour rather than any frame: the first
+        # few after the reconnect can still be the decoder catching up.
+        try:
+            await wait_until(
+                lambda: bool(after) and _close_to(after[-1], after_color),
+                timeout=8.0,
+            )
+        except TimeoutError:
+            # Say what did arrive: still red (decoder stuck), black, or nothing.
+            assert after, "no main_video frame arrived after republishing webcam"
+            assert_dominant_color(after[-1], after_color)
+            raise
     finally:
         pump.cancel()
         webcam.unpublish()
