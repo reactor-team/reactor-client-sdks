@@ -169,6 +169,7 @@ try (Reactor reactor = Reactor.open(ReactorOptions.builder(apiUrl, "owner/model"
     for (StepFile file : result.files()) {  // named only; fetch bytes over HTTP
         System.out.println(file.name() + " " + file.contentType() + " " + file.size());
     }
+    byte[] data = result.data();           // what the model returned besides its media; null if none
 }
 ```
 
@@ -203,6 +204,14 @@ it kept none or the result was not saved. The result does not carry their
 bytes: fetch them over HTTP from the session's step results,
 `GET /sessions/{id}/steps/{index}`, which lists each file with a download URL
 (202 while they are not stored yet).
+
+`result.data()` (`result.data`, a `ByteArray?`, in Kotlin) is what the model
+returned for the step besides its media, opaque to the transport: the bytes it
+returned as they are, or a dict it returned encoded as JSON, for you to decode.
+It arrives in the same message as the step's frames, so a model whose output is
+data alone needs no output track. It is `null` when the model returned no data
+(or the native library predates it), and an empty array when it returned empty
+data — the two are different results.
 
 To pass a file into a step, upload it first (`uploadFile` / `uploadBytes`) and put
 the reference in a command's arguments or in the value of an upload-typed state
