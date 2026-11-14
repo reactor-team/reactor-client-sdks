@@ -51,6 +51,7 @@ fn sample_output() -> reactor_core::step::StepOutput {
             },
         ],
         error: None,
+        data: Some(b"{\"score\":1}".to_vec()),
     }
 }
 
@@ -76,6 +77,14 @@ fn a_resolved_step_hands_the_host_a_result_it_reads_and_frees() {
         assert_eq!(reactor_step_result_step(result), 4);
         assert_eq!(reactor_step_result_elapsed(result), 0.5);
         assert!(reactor_step_result_error(result).is_null());
+        let mut data_len = 0usize;
+        let data = reactor_step_result_data(result, &mut data_len);
+        assert_eq!(std::slice::from_raw_parts(data, data_len), b"{\"score\":1}");
+        assert_eq!(
+            reactor_step_result_data(result, &mut data_len),
+            data,
+            "the step's data is borrowed, the same pointer every read"
+        );
         assert_eq!(reactor_step_result_file_count(result), 2);
         assert_eq!(text(reactor_step_result_file_name(result, 0)), "depth.npy");
         assert_eq!(
@@ -164,6 +173,35 @@ fn a_step_that_ran_and_failed_hands_over_a_result_with_its_reason() {
         assert_eq!(reactor_step_result_file_count(result), 0);
         reactor_step_result_free(result);
     }
+}
+
+/// A step with no tracks can still hand back data; one that returned none
+/// reads as null, and one that returned empty data as non-null and empty.
+#[test]
+fn a_trackless_steps_data_crosses_the_boundary_and_its_absence_is_null() {
+    let read = |data: Option<Vec<u8>>| {
+        let output = reactor_core::step::StepOutput {
+            tracks: vec![],
+            files: vec![],
+            data,
+            ..sample_output()
+        };
+        let result = Box::into_raw(Box::new(ReactorStepResult::from(output)));
+        unsafe {
+            assert_eq!(reactor_step_result_track_count(result), 0);
+            let mut len = 7usize;
+            let ptr = reactor_step_result_data(result, &mut len);
+            let read = (!ptr.is_null()).then(|| std::slice::from_raw_parts(ptr, len).to_vec());
+            if ptr.is_null() {
+                assert_eq!(len, 0);
+            }
+            reactor_step_result_free(result);
+            read
+        }
+    };
+    assert_eq!(read(Some(b"actions".to_vec())), Some(b"actions".to_vec()));
+    assert_eq!(read(Some(vec![])), Some(vec![]));
+    assert_eq!(read(None), None);
 }
 
 /// After destroy the completion is not called, so nobody would ever free
