@@ -158,6 +158,21 @@ class SteppedTest {
         }
 
     @Test
+    fun `a step returns the data the model returned, as a nullable byte array`() = runBlocking {
+        val actions = """{"actions":[0.1,0.2]}""".toByteArray()
+        val withData = async(Dispatchers.Default) { client.step() }
+        awaitStep()
+        fake.settleLastStep(4, emptyList(), 0.0, emptyList(), null, actions)
+        val data: ByteArray? = withData.await().data
+        assertArrayEquals(actions, data)
+
+        val withoutData = async(Dispatchers.Default) { client.step() }
+        awaitStep()
+        fake.settleLastStep(5, emptyList())
+        assertNull(withoutData.await().data)
+    }
+
+    @Test
     fun `an encoded frame is pushed through the Java track, untouched`() {
         val camera = publishedCamera()
         camera.pushEncodedFrame(byteArrayOf(0, 0, 0, 1, 0x65), 4, 2, captureTimeUs = 9L)

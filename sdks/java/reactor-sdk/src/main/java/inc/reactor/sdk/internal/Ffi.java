@@ -187,7 +187,14 @@ public final class Ffi {
                 FunctionDescriptor.ofVoid(
                         ADDRESS, ADDRESS, JAVA_INT, ADDRESS, SIZE_T, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT,
                         JAVA_LONG),
-                true);
+                true),
+
+        // ── Step result data ────────────────────────────────────────────────
+        //
+        // Optional for the same reason: a library that predates it still loads, and every result
+        // it hands over reads as carrying no data, which is what such a library would decode.
+
+        STEP_RESULT_DATA("reactor_step_result_data", FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS), true);
 
         private final String cName;
         private final FunctionDescriptor descriptor;

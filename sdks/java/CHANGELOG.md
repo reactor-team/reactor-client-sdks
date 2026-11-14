@@ -9,6 +9,27 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Data with a step's result. `StepResult.data()` (`result.data` in Kotlin,
+  a `ByteArray?`) is what the model returned for the step besides its media,
+  opaque to the transport: the bytes it returned as they are, or a dict it
+  returned encoded as JSON. It arrives in the same message as the step's
+  frames, so a model whose output is data alone needs no output track.
+  `null` when the model returned none, or when the native library predates
+  the accessor.
+
+### Changed
+
+- **Breaking (source):** `StepResult` is a record with a sixth component,
+  `data`, so a record pattern that deconstructs it with five components —
+  `case StepResult(var step, var tracks, var elapsed, var files, var error)` —
+  no longer compiles; add a sixth pattern (`var data`) for it. The
+  five-argument constructor is kept, so code that builds a `StepResult` or
+  calls its accessors compiles as before, and code compiled against 1.4.0
+  still links. Because of the record pattern, the release that carries this
+  is a major one (2.0.0).
+
 ### Fixed
 
 - A model that declares no tracks can be connected to. Its session leaves the
