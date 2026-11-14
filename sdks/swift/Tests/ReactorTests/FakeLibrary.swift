@@ -780,6 +780,11 @@ final class FakeLibrary: @unchecked Sendable {
             stepResultStep: { FakeStepResult.from($0)?.step ?? 0 },
             stepResultElapsed: { FakeStepResult.from($0)?.elapsed ?? 0 },
             stepResultError: { FakeStepResult.from($0)?.error.map { UnsafePointer($0) } },
+            stepResultData: { result, length in
+                let found = FakeStepResult.from(result)
+                length?.pointee = found?.dataCount ?? 0
+                return found?.data.map { UnsafePointer($0) }
+            },
             stepResultFileCount: { UInt32(FakeStepResult.from($0)?.files.count ?? 0) },
             stepResultFileName: {
                 FakeStepResult.from($0)?.file($1).map { UnsafePointer($0.name) }

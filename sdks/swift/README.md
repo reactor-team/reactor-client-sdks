@@ -132,6 +132,13 @@ put the `FileRef` in a command's arguments (`StepCommand(_:arguments:)`) or,
 as `JSONValue(fileRef)`, in the state value of a field that takes an upload. See
 [`Examples/09_stepped_generation`](Examples/09_stepped_generation/main.swift).
 
+`result.data` is what the model returned for the step besides its media: `nil`
+when it returned nothing, empty `Data` when it returned empty data. It arrives
+with the step's frames, so a model whose output is data alone needs no output
+track. A dict comes encoded as JSON and bytes come as they are; decoding is up
+to you. It counts toward the result's size, so a step whose data does not fit
+throws `stepResultTooLarge`.
+
 ## Where the manifest lives
 
 `Package.swift` is at the **repository root**, not in this directory. SwiftPM

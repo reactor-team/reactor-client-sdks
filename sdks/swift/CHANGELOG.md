@@ -7,6 +7,16 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `StepResult.data`: what the model returned for the step besides its media,
+  as `Data?`. Opaque bytes that arrive with the step's frames, so a model whose
+  output is data alone (an action chunk, a score) needs no output track: a dict
+  the model returns arrives encoded as JSON, bytes as they are, and `nil` when
+  it returned nothing. It counts toward the step result's size, and a result
+  past the session's maximum message size throws `stepResultTooLarge`. Needs a
+  runtime that sends step data; an older one leaves it `nil`.
+
 ### Fixed
 
 - A model that declares no tracks can be connected to. Its session leaves the
