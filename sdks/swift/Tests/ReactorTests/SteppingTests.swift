@@ -541,6 +541,42 @@ struct SteppingTests {
         #expect(result.error == nil)
     }
 
+    @Test("the data a step returned comes back as its bytes, with no output track needed")
+    func dataIsCopiedOut() async throws {
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+
+        let json = Array(#"{"actions":[0.1,0.2]}"#.utf8)
+        weak var native: FakeStepResult?
+        func handedOver() -> FakeStepResult {
+            let result = FakeStepResult(step: 5, tracks: [], data: json)
+            native = result
+            return result
+        }
+        let result = try await stepping(fake, result: handedOver()) { try await client.step() }
+
+        // Copied out: the library's result, and the bytes in it, are freed.
+        #expect(fake.freedStepResults == 1)
+        #expect(native == nil, "the SDK kept the library's result alive past the step")
+        #expect(result.tracks.isEmpty)
+        #expect(result.data == Data(json))
+    }
+
+    @Test("a step that returned no data has nil, and one that returned empty data has empty Data")
+    func noDataIsNilAndEmptyDataIsEmpty() async throws {
+        let fake = FakeLibrary()
+        let client = try makeClient(fake: fake)
+        defer { client.close() }
+
+        let none = try await stepping(fake, result: sampleResult()) { try await client.step() }
+        #expect(none.data == nil)
+
+        let emptyData = FakeStepResult(step: 2, tracks: [], data: [])
+        let empty = try await stepping(fake, result: emptyData) { try await client.step() }
+        #expect(empty.data == Data())
+    }
+
     @Test("a step that ran but failed returns its result with the model's error, not a throw")
     func ranButFailedResolvesWithError() async throws {
         let fake = FakeLibrary()
