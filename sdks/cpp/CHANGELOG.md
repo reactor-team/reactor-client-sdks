@@ -8,6 +8,15 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Data with a step's result. `StepResult::data`, a
+  `std::optional<std::vector<std::uint8_t>>`, holds what the model returned for
+  the step besides its media: the bytes it returned as they are, or a dict
+  encoded as JSON, for the caller to decode. It arrives with the step's frames,
+  so a model whose output is data alone needs no output track. Empty when the
+  model returned none, or with a runtime that does not send it.
+
 ### Fixed
 
 - A model that declares no tracks can be connected to. Its session leaves the
