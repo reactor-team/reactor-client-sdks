@@ -14,6 +14,8 @@ internal object NativeStepResults : StepResultSource {
 
     private external fun nativeError(result: Long): String?
 
+    private external fun nativeData(result: Long): ByteArray?
+
     private external fun nativeFileCount(result: Long): Int
 
     private external fun nativeFileName(
@@ -95,6 +97,8 @@ internal object NativeStepResults : StepResultSource {
     override fun elapsed(result: Long): Double = nativeElapsed(result)
 
     override fun error(result: Long): String? = nativeError(result)
+
+    override fun data(result: Long): ByteArray? = nativeData(result)
 
     override fun fileCount(result: Long): Int = nativeFileCount(result)
 

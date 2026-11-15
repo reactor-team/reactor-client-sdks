@@ -37,6 +37,9 @@ struct ReactorStepResult {
     uint32_t shape[3] = {2, 2, 3};
     uint8_t data[12] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
     uint8_t tag[3] = {9, 8, 7};
+    uint8_t returned[4] = {'{', '}', ' ', '\n'};
+    /// Answer the data as returned but empty: a non-null pointer with a length of 0.
+    bool returned_empty = false;
 };
 
 extern "C" {
@@ -372,6 +375,11 @@ double reactor_step_result_elapsed(const ReactorStepResult* r) { return r == nul
 
 const char* reactor_step_result_error(const ReactorStepResult*) { return nullptr; }
 
+const uint8_t* reactor_step_result_data(const ReactorStepResult* r, size_t* len) {
+    if (len != nullptr) *len = r == nullptr || r->returned_empty ? 0 : sizeof(r->returned);
+    return r == nullptr ? nullptr : r->returned;
+}
+
 uint32_t reactor_step_result_file_count(const ReactorStepResult*) { return 0; }
 
 const char* reactor_step_result_file_name(const ReactorStepResult*, uint32_t) { return nullptr; }
@@ -462,6 +470,9 @@ ReactorStepResult* fake_new_step_result(void) {
     g_step_results.fetch_add(1);
     return new ReactorStepResult();
 }
+
+/// Make a result answer its data as returned but empty, rather than as its four bytes.
+void fake_set_step_result_data_empty(ReactorStepResult* r) { r->returned_empty = true; }
 
 /// Step results handed out and not yet returned through reactor_step_result_free.
 long fake_step_results_outstanding(void) { return g_step_results.load(); }

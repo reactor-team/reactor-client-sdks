@@ -5,8 +5,8 @@ import java.nio.ByteOrder
 
 /**
  * What one [step][Reactor.step] produced: its number in the session, per output track the frames
- * it generated, the files the model kept with it, and — when the step ran but the model reported a
- * failure — why.
+ * it generated, the files the model kept with it, the data the model returned with it, and — when
+ * the step ran but the model reported a failure — why.
  *
  * ```kotlin
  * val result = reactor.step(state = """{"prompt": "a red fox"}""")
@@ -36,6 +36,34 @@ public data class StepResult(
     public val files: List<StepFile> = emptyList(),
     public val error: String? = null,
 ) {
+    // Outside the primary constructor so that adding it kept the constructors and copy() that
+    // code compiled against earlier 1.x releases calls. copy() therefore leaves the data behind.
+    private var returned: ByteArray? = null
+
+    /** A result that carries [data] as well; the array is copied, so the caller keeps its own. */
+    public constructor(
+        step: Long,
+        tracks: List<StepTrackOutput>,
+        elapsed: Double = 0.0,
+        files: List<StepFile> = emptyList(),
+        error: String? = null,
+        data: ByteArray?,
+    ) : this(step, tracks, elapsed, files, error) {
+        returned = data?.copyOf()
+    }
+
+    /**
+     * What the model returned for the step besides its media, opaque to the transport: the bytes it
+     * returned as they are, or a dict it returned encoded as JSON. It arrives in the same message as
+     * the step's frames, so a model whose output is data alone needs no output track. Decoding it is
+     * the caller's business.
+     *
+     * A copy, or null when the model returned none — returned but empty data is an empty array.
+     * [copy] does not carry it: a copied result has none.
+     */
+    public val data: ByteArray?
+        get() = returned?.copyOf()
+
     /**
      * The output of one track, by name.
      *
@@ -52,6 +80,33 @@ public data class StepResult(
 
     /** The output of one track, by name, or null when the step produced none on it. */
     public fun findTrack(name: String): StepTrackOutput? = tracks.firstOrNull { it.name == name }
+
+    /**
+     * Equal to another result with the same step, tracks, elapsed time, files, error and data, the
+     * data compared by its bytes. No data and empty data are different results, as they are on the
+     * wire.
+     */
+    override fun equals(other: Any?): Boolean =
+        other is StepResult &&
+            step == other.step &&
+            tracks == other.tracks &&
+            elapsed.compareTo(other.elapsed) == 0 &&
+            files == other.files &&
+            error == other.error &&
+            returned.contentEquals(other.returned)
+
+    override fun hashCode(): Int {
+        var hash = step.hashCode()
+        hash = 31 * hash + tracks.hashCode()
+        hash = 31 * hash + elapsed.hashCode()
+        hash = 31 * hash + files.hashCode()
+        hash = 31 * hash + (error?.hashCode() ?: 0)
+        return 31 * hash + (returned?.contentHashCode() ?: 0)
+    }
+
+    override fun toString(): String =
+        "StepResult(step=$step, tracks=$tracks, elapsed=$elapsed, files=$files, error=$error, " +
+            "data=${returned?.let { "${it.size} bytes" }})"
 }
 
 /**

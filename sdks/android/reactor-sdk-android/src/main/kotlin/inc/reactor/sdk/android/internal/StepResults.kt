@@ -20,6 +20,9 @@ internal interface StepResultSource {
 
     fun error(result: Long): String?
 
+    /** What the model returned with the step, copied, or null when it returned none. */
+    fun data(result: Long): ByteArray?
+
     fun fileCount(result: Long): Int
 
     fun fileName(
@@ -139,6 +142,7 @@ internal object StepResults {
             elapsed = source.elapsed(result),
             files = files,
             error = source.error(result),
+            data = source.data(result),
         )
     }
 

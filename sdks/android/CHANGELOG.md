@@ -11,6 +11,14 @@ request as the bump.
 
 ## [Unreleased]
 
+### Added
+
+- Data with a step's result. `StepResult.data` (a `ByteArray?`) is what the
+  model returned for the step besides its media, opaque to the transport: the
+  bytes it returned as they are, or a dict it returned encoded as JSON. It
+  arrives in the same message as the step's frames, so a model whose output is
+  data alone needs no output track. `null` when the model returned none.
+
 ### Fixed
 
 - A model that declares no tracks can be connected to. Its session leaves the
