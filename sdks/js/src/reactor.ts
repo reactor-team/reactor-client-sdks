@@ -626,7 +626,9 @@ export class Reactor implements Disposable {
    * A step that ran but that the model reported as failed still resolves,
    * with `result.error` set. `result.files` lists the files the model kept
    * with the step (name, content type, size); their bytes are served over
-   * HTTP from the session's step results, not carried here.
+   * HTTP from the session's step results, not carried here. `result.data`
+   * holds what the model returned besides its media, as opaque bytes (a dict
+   * arrives encoded as JSON); it is absent when the model returned none.
    *
    * Rejects with a `StepRefusedError` when the runtime or the model turns
    * the step down (the runtime checks a whole request first, so nothing it

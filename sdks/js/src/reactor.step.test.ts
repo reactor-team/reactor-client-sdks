@@ -248,6 +248,30 @@ describe('Reactor.step', () => {
     expect(result.error).toBeUndefined();
   });
 
+  it('hands back the data the model returned with the step, with no output track', async () => {
+    const { reactor, client } = await connected('stepped');
+    const data = new TextEncoder().encode('{"actions":[[0.1,0.2]]}');
+
+    client.stepResult = { step: 5, tracks: [], elapsed: 0.1, files: [], data };
+
+    const result = await reactor.step();
+
+    expectTypeOf(result.data).toEqualTypeOf<Uint8Array | undefined>();
+    expect(result.tracks).toEqual([]);
+    expect(result.data).toBe(data);
+    expect(JSON.parse(new TextDecoder().decode(result.data))).toEqual({ actions: [[0.1, 0.2]] });
+  });
+
+  it('leaves data unset when the model returned none', async () => {
+    const { reactor, client } = await connected('stepped');
+
+    client.stepResult = { step: 6, tracks: [], elapsed: 0.1, files: [] };
+
+    const result = await reactor.step();
+
+    expect(result.data).toBeUndefined();
+  });
+
   it('resolves a step that ran but failed, with its error, rather than rejecting', async () => {
     const { reactor, client } = await connected('stepped');
 
