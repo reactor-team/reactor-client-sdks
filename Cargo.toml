@@ -17,6 +17,14 @@ repository = "https://github.com/reactor-team/reactor-client-sdks"
 reactor-protocol = { path = "crates/reactor-protocol" }
 reactor-core     = { path = "crates/reactor-core" }
 reactor-wasm     = { path = "crates/reactor-wasm" }
+# 0.28: TURN over TLS accepts a Let's Encrypt chain. libwebrtc's built-in roots
+# have no ISRG root, so a chain they refuse goes to a verifier, by default the
+# Mozilla roots. `offer_config` takes that default through `..Default::default()`.
+#
+# 0.27: libwebrtc p14. Closing a video sender while a transformed frame is still
+# on its queue no longer aborts with `pthread_join` (0 vs. 35) on Linux, Android
+# and Windows.
+#
 # 0.24.2: libwebrtc p13 does less work per SCTP packet, and a chunked frame
 # reaches libwebrtc in one trip to the network thread instead of three, so a
 # command leaves sooner. Data-channel callbacks on the network thread and dcsctp
@@ -70,10 +78,10 @@ reactor-wasm     = { path = "crates/reactor-wasm" }
 # instant the engine pushed the frame, and the field is named `capture_time_us`
 # for it (reactor-webrtc #64). 0.10 brought the outbound push that accepts a
 # capture time in the first place (#53); 0.11 is additive.
-reactor-webrtc   = "0.26.0"
+reactor-webrtc   = "0.28.0"
 # The sans-I/O framing reactor-webrtc uses for chunked data channels, for the
 # browser, which never links libwebrtc. Released in lockstep with it.
-reactor-webrtc-dc-chunking = "0.26.0"
+reactor-webrtc-dc-chunking = "0.28.0"
 
 serde       = { version = "1",   features = ["derive"] }
 serde_json  = "1"

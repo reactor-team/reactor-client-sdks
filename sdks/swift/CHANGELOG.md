@@ -19,6 +19,12 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- TURN over TLS (`turns:` servers) works with a Let's Encrypt certificate,
+  which most TURN servers have. libwebrtc checked the server against a list of
+  roots from 2023 with no ISRG root, so the TLS handshake failed, and on a
+  network that allows only TCP 443 the connection failed with it. A chain that
+  list refuses is now checked against the Mozilla roots. From reactor-webrtc
+  0.28.0.
 - A model that declares no tracks can be connected to. Its session leaves the
   `tracks` key out of its capabilities, which the SDK required, so `connect()`
   failed to read the session; it now reads as a session with no tracks, and a
