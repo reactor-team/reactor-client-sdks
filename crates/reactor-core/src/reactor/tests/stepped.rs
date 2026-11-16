@@ -1860,3 +1860,186 @@ async fn check_step_refuses_as_begin_step_does_and_takes_nothing() {
     ));
     assert_eq!(reactor.step_inputs.len(), 1);
 }
+
+/// Report the runtime's version as a ready session's `server_info` does.
+fn report_runtime(reactor: &Reactor, version: &str) {
+    reactor.state.lock().unwrap().session_info = Some(
+        serde_json::from_value(json!({
+            "session_id": "sess_1",
+            "state": "ACTIVE",
+            "server_info": {"server_version": version},
+        }))
+        .unwrap(),
+    );
+}
+
+/// The frames a `PushFrames` carries, as `(track, first byte)` pairs.
+fn pushed(message: &DataClientMessage) -> Vec<(String, u8)> {
+    let Some(data_client_message::Payload::PushFrames(push)) = &message.payload else {
+        panic!("expected a PushFrames, got {:?}", message.payload);
+    };
+    push.tracks
+        .iter()
+        .flat_map(|t| t.frames.iter().map(|f| (t.track.clone(), f.data[0])))
+        .collect()
+}
+
+/// Against a runtime that takes `PushFrames`, a push goes out at once, as a
+/// notification on the data channel, ahead of the command and the step sent
+/// after it, and the step carries no frames of its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_push_goes_out_before_the_command_and_the_step_sent_after_it() {
+    let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+    let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+    report_runtime(&reactor, "3.11.8");
+
+    reactor.push_video_frame("cam", &[7, 7, 7, 255], 1, 1);
+    reactor.push_audio_frame("mic", &[9], 48_000, 1);
+    assert!(reactor.step_inputs.is_empty(), "nothing waits for the step");
+    let sent = peer.sent();
+    assert_eq!(sent.len(), 2);
+    for push in &sent {
+        assert_eq!(push.kind, MessageKind::Notification as i32);
+        assert!(push.request_id.is_empty());
+    }
+    assert_eq!(pushed(&sent[0]), [("cam".to_string(), 7)]);
+    assert_eq!(pushed(&sent[1]), [("mic".to_string(), 9)]);
+
+    let r = reactor.clone();
+    let commanding = tokio::spawn(async move { r.send_command("reset", json!({}), None).await });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while peer.sent().len() < 3 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("the command should be sent");
+    let (_stepping, step) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+    commanding.abort();
+
+    let sent = peer.sent();
+    assert_eq!(sent.len(), 4);
+    assert!(matches!(
+        sent[2].payload,
+        Some(data_client_message::Payload::Command(ref c)) if c.r#type == "reset"
+    ));
+    let Some(data_client_message::Payload::RequestStep(request)) = step.payload else {
+        panic!("expected a RequestStep, got {:?}", step.payload);
+    };
+    assert!(request.media_input.is_empty());
+}
+
+/// A runtime older than `PushFrames`, or one whose version is unknown, takes
+/// input frames only in a step: they are buffered and ride it as its
+/// `media_input`, with nothing sent at push time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pushes_to_an_older_runtime_ride_the_next_step() {
+    for version in [Some("3.11.7"), Some("0.0.0"), None] {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        if let Some(version) = version {
+            report_runtime(&reactor, version);
+        }
+
+        reactor.push_video_frame("cam", &[7, 7, 7, 255], 1, 1);
+        assert!(peer.sent().is_empty(), "{version:?}");
+        assert_eq!(reactor.step_inputs.len(), 1, "{version:?}");
+
+        let (_stepping, step) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+        let Some(data_client_message::Payload::RequestStep(request)) = step.payload else {
+            panic!("expected a RequestStep, got {:?}", step.payload);
+        };
+        let [cam] = request.media_input.try_into().unwrap();
+        assert_eq!(cam.track, "cam", "{version:?}");
+        assert_eq!(cam.frames[0].data[0], 7, "{version:?}");
+    }
+}
+
+/// Frames pushed before the session is ready wait for it, and go out ahead of
+/// the first frame pushed once it is, so the track keeps its order.
+#[test]
+fn frames_pushed_before_the_session_is_ready_go_first() {
+    let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+    let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+    report_runtime(&reactor, "3.11.8");
+    reactor.state.lock().unwrap().status = ReactorStatus::Connecting;
+    reactor.push_video_frame("cam", &[1, 1, 1, 255], 1, 1);
+    reactor.push_video_frame("cam", &[2, 2, 2, 255], 1, 1);
+    assert!(peer.sent().is_empty());
+
+    reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+    reactor.push_video_frame("cam", &[3, 3, 3, 255], 1, 1);
+    let sent = peer.sent();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(
+        pushed(&sent[0]),
+        [("cam".to_string(), 1), ("cam".to_string(), 2)]
+    );
+    assert_eq!(pushed(&sent[1]), [("cam".to_string(), 3)]);
+    assert!(reactor.step_inputs.is_empty());
+}
+
+/// A push larger than the channel takes is dropped, not kept for the step,
+/// and raised as an error event: no caller waits for it.
+#[test]
+fn a_push_over_the_channel_limit_is_dropped_and_raised() {
+    let peer = Arc::new(DataPeer::new(64));
+    let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+    report_runtime(&reactor, "3.11.8");
+    let mut events = reactor.subscribe();
+    reactor.push_step_video_frame("cam", &[0; 300], 10, 10, PixelLayout::Rgb, None, None);
+    assert!(peer.sent().is_empty());
+    assert!(reactor.step_inputs.is_empty());
+    match events.try_recv() {
+        Ok(ReactorEvent::Error(error)) => {
+            assert_eq!(error.details.code, crate::error::codes::MESSAGE_TOO_LARGE);
+            assert_eq!(error.details.operation.as_deref(), Some("push_frames"));
+        }
+        other => panic!("expected an error event, got {other:?}"),
+    }
+}
+
+/// An `input_decode_failed` notification marks its track for a keyframe,
+/// once, and is still raised for a host that encodes its frames itself; a new
+/// connection forgets the mark.
+#[tokio::test]
+async fn input_decode_failed_marks_its_track_for_a_keyframe() {
+    let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+    let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+    let mut events = reactor.subscribe();
+    let decode_failed = |track: Option<&str>| {
+        data_server_message::Payload::Error(crate::protocol::wire::v1::common::Error {
+            code: crate::step::INPUT_DECODE_FAILED.into(),
+            message: "cannot decode".into(),
+            track: track.map(Into::into),
+        })
+    };
+
+    feed(
+        &reactor,
+        "",
+        MessageKind::Notification,
+        decode_failed(Some("cam")),
+    )
+    .await;
+    assert!(reactor.take_input_keyframe_request("cam"));
+    assert!(!reactor.take_input_keyframe_request("cam"), "asked once");
+    assert!(!reactor.take_input_keyframe_request("other"));
+    assert!(matches!(
+        events.try_recv(),
+        Ok(ReactorEvent::Error(ref e)) if e.details.code == crate::step::INPUT_DECODE_FAILED
+    ));
+
+    feed(&reactor, "", MessageKind::Notification, decode_failed(None)).await;
+    assert!(!reactor.take_input_keyframe_request(""));
+
+    feed(
+        &reactor,
+        "",
+        MessageKind::Notification,
+        decode_failed(Some("cam")),
+    )
+    .await;
+    reactor.teardown(true, false).await;
+    assert!(!reactor.take_input_keyframe_request("cam"));
+}

@@ -42,7 +42,7 @@ use crate::protocol::wire::v1::platform::{
     ClientConnectionStat, ClientEnvironment, ClientStats, ClientTrackStat, FileUploaded,
     FrameStage, Ping, RequestClip, RequestRecording, RequestSchema,
 };
-use crate::protocol::wire::v1::step::{FrameEncoding, RequestStep};
+use crate::protocol::wire::v1::step::{Frame, FrameEncoding, RequestStep, TrackFrames};
 use crate::protocol::wire::v1::track::{PauseTrack, PublishTrack, ResumeTrack, UnpublishTrack};
 use crate::recording::{clip_failed_code, clip_from_ready, Clip};
 use crate::runtime::timeout;
@@ -52,8 +52,10 @@ use crate::state::ReactorStatus;
 use crate::stats::{client_connection_stat, ClientStatsReporter, ConnectionStats, StatsSampler};
 use crate::step::{
     build_request_step, encoded_video_frame, may_encode_step_frames, negotiated_encodings,
-    raw_audio_frame, raw_video_frame, step_output, stepped_offer, CodecPreferences, FrameDecoders,
+    push_frames_message, pushed_frame, raw_audio_frame, raw_video_frame,
+    runtime_takes_pushed_frames, step_output, stepped_offer, CodecPreferences, FrameDecoders,
     LocalStepCodecs, PixelLayout, StepCodec, StepCommand, StepInputs, StepOutput,
+    INPUT_DECODE_FAILED,
 };
 use crate::{SharedAuth, SharedHttp, SharedPeer, SharedPlatform};
 
@@ -861,6 +863,8 @@ impl Reactor {
             state.ice_ready = false;
             state.track_mapping.clear();
             state.step_frame_encodings.clear();
+            // The input tracks' streams start over at keyframes too.
+            self.step_inputs.clear_keyframe_requests();
             state.paused_tracks.clear();
             if recoverable {
                 false
@@ -1017,6 +1021,15 @@ impl Reactor {
                     // as a correlated CoreError::CommandRequest — raising it
                     // globally too would double-report the same failure.
                     return;
+                }
+                // The runtime could not decode a track's pushed frames and
+                // drops them up to the next keyframe: the track's next frames
+                // start at one. Still raised below, for a host that encodes
+                // its frames itself.
+                if error.code == INPUT_DECODE_FAILED {
+                    if let Some(track) = &error.track {
+                        self.step_inputs.request_keyframe(track);
+                    }
                 }
                 // No pending request matched this reply's request_id (e.g. it
                 // arrived after a timeout already cancelled the correlation).
@@ -1337,9 +1350,17 @@ impl Reactor {
 
     /// Run one step of a stepped session and return what it produced.
     ///
+    /// Input frames pushed before the step reach the runtime before it. Once
+    /// the session is ready, a runtime that takes them
+    /// ([`crate::step::PUSH_FRAMES_RUNTIME_VERSION`] or later, by the version
+    /// its session reports) gets each pushed frame at once, in a `PushFrames`
+    /// on the same ordered data channel as the commands and steps, and the
+    /// runtime never refuses one. Frames pushed before the session is ready,
+    /// or to an older runtime, are buffered instead and ride the next step.
+    ///
     /// Sends one `RequestStep` on the data channel: `state` (a JSON object of
     /// the model's state fields, or `null`), then `commands` in order, then
-    /// every input frame pushed since the last step, per track in push order.
+    /// every input frame still buffered, per track in push order.
     /// The runtime applies these as separate calls, in that order, then runs
     /// the step; a refusal, part-way or by the model, undoes none of the calls
     /// already applied. Every part may be empty. It answers with the step's
@@ -1492,7 +1513,8 @@ impl Reactor {
         }
     }
 
-    /// Drop every input frame buffered for the next step.
+    /// Drop every input frame buffered for the next step. Frames already sent
+    /// to the runtime are not recalled.
     pub fn clear_step_inputs(&self) {
         self.step_inputs.clear();
     }
@@ -1636,8 +1658,10 @@ impl Reactor {
     /// track.
     ///
     /// Streamed: sent on the track's RTP sender. Stepped: converted to a RAW
-    /// RGB frame and buffered for the next [`Reactor::step`]; a frame whose
-    /// size does not match its dimensions is dropped with a warning.
+    /// RGB frame and sent to the runtime at once, ahead of any later step
+    /// (see [`Reactor::step`] for when it is buffered for the next step
+    /// instead); a frame whose size does not match its dimensions is dropped
+    /// with a warning.
     pub fn push_video_frame(&self, track_name: &str, data: &[u8], width: u32, height: u32) {
         if self.is_stepped() {
             self.buffer_video_frame(
@@ -1658,7 +1682,7 @@ impl Reactor {
 
     /// Push a frame tagged with `user_data`, which reaches the far end as the
     /// frame's metadata when both peers negotiated support for it. Stepped:
-    /// buffered as for [`Reactor::push_video_frame`], with `user_data` as the
+    /// sent as for [`Reactor::push_video_frame`], with `user_data` as the
     /// frame's metadata.
     pub fn push_video_frame_with_metadata(
         &self,
@@ -1690,7 +1714,7 @@ impl Reactor {
     /// timestamp the far end reads as the frame's own rather than the one the
     /// transport would assign on push. Pass the same value for every track of one
     /// capture and they arrive as one moment; `user_data` may be empty.
-    /// Stepped: buffered with the metadata and the capture time.
+    /// Stepped: sent with the metadata and the capture time.
     pub fn push_video_frame_with_metadata_at(
         &self,
         track_name: &str,
@@ -1784,8 +1808,8 @@ impl Reactor {
 
     /// Push interleaved PCM with its capture format, before transport resampling.
     ///
-    /// Stepped: buffered for the next step as a RAW planar `(channels,
-    /// samples)` `int16` frame. The wire frame carries no sample rate, so the
+    /// Stepped: sent as for [`Reactor::push_video_frame`], as a RAW planar
+    /// `(channels, samples)` `int16` frame. The wire frame carries no sample rate, so the
     /// samples must already be at the rate the model's track declares.
     pub fn push_audio_frame(
         &self,
@@ -1799,12 +1823,7 @@ impl Reactor {
                 return;
             }
             match raw_audio_frame(data, num_channels) {
-                Some(frame) => self.step_inputs.push(
-                    track_name,
-                    WireTrackKind::Audio,
-                    frame,
-                    self.peer.max_message_bytes(),
-                ),
+                Some(frame) => self.push_step_input(track_name, WireTrackKind::Audio, frame),
                 None => log::warn!(
                     "dropping audio frame for '{track_name}': {} samples do not divide into {num_channels} channels",
                     data.len()
@@ -1818,6 +1837,72 @@ impl Reactor {
 
     fn is_stepped(&self) -> bool {
         self.options.generation == GenerationMode::Stepped
+    }
+
+    /// Whether a pushed input frame goes to the runtime now, in a
+    /// `PushFrames`: the session is ready, and its runtime, by the version
+    /// the session reported, takes them. Otherwise it waits for the next step.
+    fn sends_pushed_frames(&self) -> bool {
+        if self.status() != ReactorStatus::Ready {
+            return false;
+        }
+        self.state
+            .lock()
+            .unwrap()
+            .session_info
+            .as_ref()
+            .and_then(|info| info.server_info.as_ref())
+            .is_some_and(|server| runtime_takes_pushed_frames(&server.server_version))
+    }
+
+    /// Stepped: hand `frame` to the runtime. Sent at once in a `PushFrames`
+    /// on the data channel, behind the commands and steps sent before it,
+    /// when [`Self::sends_pushed_frames`]; buffered for the next step's
+    /// `media_input` otherwise. Frames still buffered from before go first,
+    /// so a track's frames keep the order they were pushed in.
+    fn push_step_input(&self, track_name: &str, kind: WireTrackKind, frame: Frame) {
+        if !self.sends_pushed_frames() {
+            self.step_inputs
+                .push(track_name, kind, frame, self.peer.max_message_bytes());
+            return;
+        }
+        if !self.step_inputs.is_empty() {
+            match self.step_inputs.take() {
+                Ok(buffered) => self.send_pushed_frames(buffered),
+                Err(error) => log::warn!("dropping buffered step input frames: {error}"),
+            }
+        }
+        self.send_pushed_frames(vec![pushed_frame(track_name, kind, frame)]);
+    }
+
+    /// Send `tracks` in one `PushFrames`. Fire-and-forget: the runtime never
+    /// refuses one, and no caller waits for it, so frames the channel does not
+    /// take (over its message limit, or a channel that failed) are dropped and
+    /// raised as an error event.
+    fn send_pushed_frames(&self, tracks: Vec<TrackFrames>) {
+        let frames: usize = tracks.iter().map(|t| t.frames.len()).sum();
+        let payload = prost::Message::encode_to_vec(&push_frames_message(tracks));
+        let max_bytes = self.peer.max_message_bytes();
+        let sent = if payload.len() > max_bytes {
+            Err(CoreError::MessageTooLarge {
+                size: payload.len(),
+                max: max_bytes,
+            })
+        } else {
+            self.peer.send_data(&payload, true)
+        };
+        if let Err(error) = sent {
+            log::warn!("dropping {frames} pushed step input frames: {error}");
+            self.emit_error(error.details(Some("push_frames")));
+        }
+    }
+
+    /// Whether `track`'s next pushed frames must start at a keyframe, because
+    /// the runtime could not decode its frames (`input_decode_failed`) and
+    /// drops them until one. Asking clears the mark: the caller about to
+    /// encode the track's next frame starts it at a keyframe.
+    pub fn take_input_keyframe_request(&self, track: &str) -> bool {
+        self.step_inputs.take_keyframe_request(track)
     }
 
     /// Whether `track_name` is an input track of a stepped session, whose
@@ -1865,7 +1950,8 @@ impl Reactor {
         takes
     }
 
-    /// Stepped: buffer `pixels` in `layout` for the next [`Reactor::step`],
+    /// Stepped: send `pixels` in `layout` to the runtime as
+    /// [`Reactor::push_video_frame`] does,
     /// converted to its RAW RGB frame in one pass, as the BGRA push methods
     /// do. A host whose frames come as RGBA or RGB passes them here rather
     /// than converting to BGRA for the core to convert again. A frame whose
@@ -1899,11 +1985,14 @@ impl Reactor {
         );
     }
 
-    /// Stepped: buffer an encoded video frame for the next [`Reactor::step`],
-    /// its bytes as they are. `width` and `height` are the frame it decodes
-    /// to; the runtime decodes the track's encoded frames of one step as one
-    /// stream, so they go in decode order and start at a keyframe, and a step
-    /// whose frames do not decode is refused. An empty frame, a zero dimension,
+    /// Stepped: send an encoded video frame to the runtime as
+    /// [`Reactor::push_video_frame`] does, its bytes as they are. `width` and
+    /// `height` are the frame it decodes to; the runtime decodes a track's
+    /// encoded frames as one stream, so they go in decode order and start at
+    /// a keyframe. A pushed frame that does not decode is answered with an
+    /// `input_decode_failed` error naming the track, and the track's next
+    /// frame must be a keyframe ([`Reactor::take_input_keyframe_request`]); a
+    /// step whose buffered frames do not decode is refused. An empty frame, a zero dimension,
     /// a raw `encoding` (push raw pixels with
     /// [`Reactor::push_step_video_frame`]), or a push outside a stepped session
     /// is dropped with a warning.
@@ -1928,12 +2017,7 @@ impl Reactor {
             return;
         }
         match encoded_video_frame(encoding, data, width, height, metadata, capture_time_us) {
-            Some(frame) => self.step_inputs.push(
-                track_name,
-                WireTrackKind::Video,
-                frame,
-                self.peer.max_message_bytes(),
-            ),
+            Some(frame) => self.push_step_input(track_name, WireTrackKind::Video, frame),
             None => log::warn!(
                 "dropping encoded video frame for '{track_name}': {} bytes of {encoding:?} at {width}x{height} is not a frame",
                 data.len()
@@ -1956,12 +2040,7 @@ impl Reactor {
             return;
         }
         match raw_video_frame(data, width, height, layout, metadata, capture_time_us) {
-            Some(frame) => self.step_inputs.push(
-                track_name,
-                WireTrackKind::Video,
-                frame,
-                self.peer.max_message_bytes(),
-            ),
+            Some(frame) => self.push_step_input(track_name, WireTrackKind::Video, frame),
             None => log::warn!(
                 "dropping video frame for '{track_name}': {} bytes is not {width}x{height} {layout:?}",
                 data.len()
