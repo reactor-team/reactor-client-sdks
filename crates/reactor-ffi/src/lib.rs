@@ -1250,6 +1250,11 @@ unsafe fn create_impl(
     let reactor3 = reactor.clone();
     spawn_tracked(&tasks, async move { reactor3.run_ice_flush().await });
 
+    // The disconnect grace waits off the pump too, so the `Connected` that ends
+    // an interruption is never queued behind it.
+    let reactor4 = reactor.clone();
+    spawn_tracked(&tasks, async move { reactor4.run_peer_watch().await });
+
     // Always present, even without event callbacks: completions are delivered here
     // too, so that a tokio worker never waits on the host either.
     let control = HostThread::spawn(

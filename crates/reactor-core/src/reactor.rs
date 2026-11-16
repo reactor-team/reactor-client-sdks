@@ -117,6 +117,20 @@ pub struct ReactorOptions {
     /// runtime while the session is ready. Each batch's bitrates cover the
     /// interval since the previous one. Set to `Duration::ZERO` to disable it.
     pub client_stats_interval: Duration,
+    /// How long a peer connection may sit in `Disconnected` before the
+    /// session is torn down with `DISCONNECTED`.
+    ///
+    /// libwebrtc reports `Disconnected` after a few seconds without packets
+    /// from the other side (a Wi-Fi roam, a saturated uplink, a relay hiccup)
+    /// and goes back to `Connected` on its own when they resume. Within the
+    /// grace the session stays `ready` and nothing is torn down; commands and
+    /// their replies wait in the data channel. `Failed` and `Closed` still
+    /// tear down at once. libwebrtc takes about 5s to report `Disconnected`,
+    /// so the default 15s holds a gap of about 20s: the runtime's
+    /// `ping_timeout`, after which its watchdog ends the session anyway.
+    /// Needs [`Reactor::run_peer_watch`] spawned; `Duration::ZERO` tears down
+    /// on `Disconnected` at once.
+    pub disconnect_grace: Duration,
 }
 
 impl ReactorOptions {
@@ -139,6 +153,7 @@ impl ReactorOptions {
             local: false,
             heartbeat_interval: Duration::from_secs(10),
             client_stats_interval: Duration::from_secs(5),
+            disconnect_grace: Duration::from_secs(15),
         }
     }
 }
@@ -206,6 +221,14 @@ struct State {
     /// defaults unless the last `connect()` overrode them.
     auto_resume_tracks: bool,
     sdp_max_attempts: u32,
+    /// Set while the peer connection is `Disconnected` and inside
+    /// [`ReactorOptions::disconnect_grace`]: an id for this interruption and
+    /// when it began, on the monotonic clock. Cleared when the connection
+    /// comes back, and by every teardown and `connect()`/`reconnect()`.
+    interrupted: Option<(u64, f64)>,
+    /// Source of interruption ids, so the watcher can tell a later
+    /// interruption from the one it was woken for.
+    interruptions: u64,
 }
 
 /// Order-independent equality for the `preset_tracks` fast path: whether `a`
@@ -279,6 +302,10 @@ pub struct Reactor {
     /// burst into one.
     ice_flush_tx: Mutex<mpsc::Sender<()>>,
     ice_flush_rx: Mutex<Option<mpsc::Receiver<()>>>,
+    /// Wake for [`Self::run_peer_watch`], one pending signal at most, on the
+    /// same terms as `ice_flush_tx`.
+    peer_watch_tx: Mutex<mpsc::Sender<()>>,
+    peer_watch_rx: Mutex<Option<mpsc::Receiver<()>>>,
     /// Holds the previous stats sample, so `get_stats` can answer with rates.
     stats: StatsSampler,
     /// The stages the SDK times itself, reported with the client stats.
@@ -341,6 +368,7 @@ impl Reactor {
         );
         // Capacity 0 plus the one sender's own slot: one pending wake.
         let (ice_flush_tx, ice_flush_rx) = mpsc::channel(0);
+        let (peer_watch_tx, peer_watch_rx) = mpsc::channel(0);
         Self {
             coordinator,
             http: deps.http,
@@ -352,6 +380,8 @@ impl Reactor {
             data: DataCorrelator::new(),
             ice_flush_tx: Mutex::new(ice_flush_tx),
             ice_flush_rx: Mutex::new(Some(ice_flush_rx)),
+            peer_watch_tx: Mutex::new(peer_watch_tx),
+            peer_watch_rx: Mutex::new(Some(peer_watch_rx)),
             stats: StatsSampler::new(),
             stage_times: Arc::new(StageTimes::new()),
             step_inputs: StepInputs::new(),
@@ -416,6 +446,7 @@ impl Reactor {
             // so that two concurrent connect() calls cannot both pass the check.
             state.closing = false;
             state.teardown_reason = None;
+            state.interrupted = None;
             state.status = ReactorStatus::Connecting;
             state.heartbeat_epoch = state.heartbeat_epoch.wrapping_add(1);
             state.connect_started_ms = Some(self.platform.now_ms());
@@ -571,6 +602,7 @@ impl Reactor {
             // Reset transport state and bump epoch atomically with the guard check.
             state.closing = false;
             state.teardown_reason = None;
+            state.interrupted = None;
             state.peer_connected = false;
             state.data_open = false;
             state.control_open = false;
@@ -757,6 +789,7 @@ impl Reactor {
             let mut state = self.state.lock().unwrap();
             state.closing = true;
             state.ready_gate = None;
+            state.interrupted = None;
             let terminate = !recoverable && state.created_session;
             (terminate, state.session_id.clone())
         };
@@ -883,30 +916,118 @@ impl Reactor {
             PeerConnectionState::Connected => {
                 let mut state = self.state.lock().unwrap();
                 state.peer_connected = true;
+                if let Some((_, since)) = state.interrupted.take() {
+                    log::info!(
+                        "[reactor] peer connection recovered after {:.1}s in Disconnected",
+                        (self.platform.monotonic_ms() - since) / 1000.0
+                    );
+                }
                 Self::check_ready_locked(&mut state);
             }
+            PeerConnectionState::Disconnected if self.interrupt() => {}
             PeerConnectionState::Failed
             | PeerConnectionState::Disconnected
-            | PeerConnectionState::Closed => {
-                let should_report = {
-                    let state = self.state.lock().unwrap();
-                    !state.closing && state.status != ReactorStatus::Disconnected
-                };
-                if should_report {
-                    self.emit_error(ErrorDetails::new(
-                        codes::DISCONNECTED,
-                        format!("peer connection state: {connection_state:?}"),
-                        true,
-                    ));
-                    // Recorded before teardown() sets `closing`, so a negotiation
-                    // still in flight (see `finish_transport`) can report the real
-                    // reason instead of calling into a transport this is about to
-                    // close out from under it.
-                    self.state.lock().unwrap().teardown_reason = Some(connection_state);
-                    self.teardown(true, true).await;
-                }
-            }
+            | PeerConnectionState::Closed => self.lose_peer(connection_state).await,
             PeerConnectionState::New | PeerConnectionState::Connecting => {}
+        }
+    }
+
+    /// Start the [`ReactorOptions::disconnect_grace`] for a `Disconnected`
+    /// peer connection, if this connection is live and a grace applies.
+    /// Returns whether it did; if not, the caller tears down as before.
+    fn interrupt(&self) -> bool {
+        let grace = self.options.disconnect_grace;
+        if grace.is_zero() {
+            return false;
+        }
+        {
+            let mut state = self.state.lock().unwrap();
+            // Only a ready connection is worth holding: during negotiation the
+            // `Disconnected` is a failed attempt, and `connect()` reports it.
+            if state.closing || state.status != ReactorStatus::Ready {
+                return false;
+            }
+            if state.interrupted.is_some() {
+                return true; // already counting down
+            }
+            state.interruptions = state.interruptions.wrapping_add(1);
+            state.interrupted = Some((state.interruptions, self.platform.monotonic_ms()));
+        }
+        log::warn!(
+            "[reactor] peer connection Disconnected; holding the session up to {:.1}s for it to recover",
+            grace.as_secs_f64()
+        );
+        let _ = self.peer_watch_tx.lock().unwrap().try_send(());
+        true
+    }
+
+    /// Tear the connection down for `connection_state`, reporting
+    /// `DISCONNECTED`, unless a teardown is already under way.
+    async fn lose_peer(&self, connection_state: PeerConnectionState) {
+        let should_report = {
+            let mut state = self.state.lock().unwrap();
+            state.interrupted = None;
+            !state.closing && state.status != ReactorStatus::Disconnected
+        };
+        if should_report {
+            self.emit_error(ErrorDetails::new(
+                codes::DISCONNECTED,
+                format!("peer connection state: {connection_state:?}"),
+                true,
+            ));
+            // Recorded before teardown() sets `closing`, so a negotiation
+            // still in flight (see `finish_transport`) can report the real
+            // reason instead of calling into a transport this is about to
+            // close out from under it.
+            self.state.lock().unwrap().teardown_reason = Some(connection_state);
+            self.teardown(true, true).await;
+        }
+    }
+
+    /// End each `Disconnected` interruption that outlasts
+    /// [`ReactorOptions::disconnect_grace`], for the lifetime of this reactor.
+    ///
+    /// Callers (e.g. the FFI layer) spawn this **once per handle**, next to
+    /// the peer-event pump, as [`Reactor::run_ice_flush`]: the wait must
+    /// never run inside the pump, or the `Connected` that ends an
+    /// interruption would queue behind it. Without this task a
+    /// `Disconnected` connection is torn down only when it reaches `Failed`.
+    pub async fn run_peer_watch(&self) {
+        let Some(mut wake) = self.peer_watch_rx.lock().unwrap().take() else {
+            log::warn!("run_peer_watch spawned twice; ignoring the extra spawn");
+            return;
+        };
+        let grace_ms = self.options.disconnect_grace.as_secs_f64() * 1000.0;
+        while wake.next().await.is_some() {
+            // Each pass waits out the interruption current at that moment;
+            // one that ends and another that starts meanwhile wake it again.
+            // Each pass sleeps once, to the end of the grace of the
+            // interruption current at that moment, then decides by its id, so
+            // a clock that stands still cannot keep it waiting.
+            loop {
+                // Read into a local: a guard in the `while let` scrutinee would
+                // stay locked across the sleep below.
+                let interrupted = self.state.lock().unwrap().interrupted;
+                let Some((id, since)) = interrupted else {
+                    break;
+                };
+                let left_ms = grace_ms - (self.platform.monotonic_ms() - since);
+                if left_ms > 0.0 {
+                    self.platform
+                        .sleep(Duration::from_secs_f64(left_ms / 1000.0))
+                        .await;
+                }
+                let current = self.state.lock().unwrap().interrupted.map(|(c, _)| c);
+                if current == Some(id) {
+                    log::warn!(
+                        "[reactor] peer connection still Disconnected after {:.1}s; closing",
+                        grace_ms / 1000.0
+                    );
+                    self.lose_peer(PeerConnectionState::Disconnected).await;
+                    break;
+                }
+                // Recovered (None): done. A newer interruption: wait out its own.
+            }
         }
     }
 
@@ -2921,6 +3042,146 @@ mod tests {
         assert_eq!(count(&requests[1].1), 3);
         assert_eq!(requests[1].1["is_final"], json!(true));
         flush.abort();
+    }
+
+    // ── Disconnect grace ──────────────────────────────────────────────────────
+
+    /// A ready reactor with `grace`, its peer watch spawned, and its events.
+    fn ready_with_grace(
+        grace: Duration,
+    ) -> (
+        Arc<Reactor>,
+        futures::channel::mpsc::UnboundedReceiver<ReactorEvent>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let mut opts = ReactorOptions::new("http://localhost", "test-model");
+        opts.disconnect_grace = grace;
+        let reactor = make_reactor_opts(opts);
+        reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+        let events = reactor.subscribe();
+        let r = reactor.clone();
+        let watch = tokio::spawn(async move { r.run_peer_watch().await });
+        (reactor, events, watch)
+    }
+
+    async fn peer_state(reactor: &Reactor, state: PeerConnectionState) {
+        reactor
+            .handle_peer_event(PeerEvent::ConnectionStateChanged(state))
+            .await;
+    }
+
+    /// Errors and status changes published so far.
+    fn drain(
+        events: &mut futures::channel::mpsc::UnboundedReceiver<ReactorEvent>,
+    ) -> Vec<ReactorEvent> {
+        let mut out = Vec::new();
+        while let Ok(ev) = events.try_recv() {
+            if matches!(ev, ReactorEvent::Error(_) | ReactorEvent::StatusChanged(_)) {
+                out.push(ev);
+            }
+        }
+        out
+    }
+
+    /// A `Disconnected` that recovers inside the grace leaves the session
+    /// ready, with no error and nothing torn down.
+    #[tokio::test]
+    async fn a_disconnect_that_recovers_inside_the_grace_keeps_the_session() {
+        let (reactor, mut events, watch) = ready_with_grace(Duration::from_millis(100));
+        peer_state(&reactor, PeerConnectionState::Disconnected).await;
+        assert_eq!(reactor.status(), ReactorStatus::Ready);
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        peer_state(&reactor, PeerConnectionState::Connected).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(reactor.status(), ReactorStatus::Ready);
+        assert!(reactor.state.lock().unwrap().interrupted.is_none());
+        assert!(!reactor.state.lock().unwrap().closing);
+        assert!(drain(&mut events).is_empty(), "no error, no status change");
+        watch.abort();
+    }
+
+    /// A `Disconnected` that outlasts the grace tears the session down with
+    /// the same `DISCONNECTED` error as before the grace existed.
+    #[tokio::test]
+    async fn a_disconnect_past_the_grace_tears_down_as_before() {
+        let (reactor, mut events, watch) = ready_with_grace(Duration::from_millis(100));
+        peer_state(&reactor, PeerConnectionState::Disconnected).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            reactor.status(),
+            ReactorStatus::Ready,
+            "still inside the grace"
+        );
+        wait_for_status(&mut events, ReactorStatus::Disconnected).await;
+        let error = reactor.last_error().expect("an error was published");
+        assert_eq!(error.details.code, codes::DISCONNECTED);
+        assert!(
+            error.details.message.contains("Disconnected"),
+            "{}",
+            error.details.message
+        );
+        watch.abort();
+    }
+
+    /// `Failed` is final: it tears down at once, grace or not.
+    #[tokio::test]
+    async fn failed_tears_down_at_once_despite_the_grace() {
+        let (reactor, _events, watch) = ready_with_grace(Duration::from_secs(10));
+        peer_state(&reactor, PeerConnectionState::Failed).await;
+        assert_eq!(reactor.status(), ReactorStatus::Disconnected);
+        watch.abort();
+    }
+
+    /// `Failed` during an interruption ends it at once rather than at the
+    /// end of the grace.
+    #[tokio::test]
+    async fn failed_during_an_interruption_tears_down_at_once() {
+        let (reactor, _events, watch) = ready_with_grace(Duration::from_secs(10));
+        peer_state(&reactor, PeerConnectionState::Disconnected).await;
+        peer_state(&reactor, PeerConnectionState::Failed).await;
+        assert_eq!(reactor.status(), ReactorStatus::Disconnected);
+        assert!(reactor.state.lock().unwrap().interrupted.is_none());
+        watch.abort();
+    }
+
+    /// A zero grace keeps the old behaviour: `Disconnected` tears down at
+    /// once, with no watch needed.
+    #[tokio::test]
+    async fn a_zero_grace_tears_down_on_disconnected_at_once() {
+        let mut opts = ReactorOptions::new("http://localhost", "test-model");
+        opts.disconnect_grace = Duration::ZERO;
+        let reactor = make_reactor_opts(opts);
+        reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+        peer_state(&reactor, PeerConnectionState::Disconnected).await;
+        assert_eq!(reactor.status(), ReactorStatus::Disconnected);
+    }
+
+    /// A second interruption after a recovery gets a full grace of its own,
+    /// not what was left of the first one's.
+    #[tokio::test]
+    async fn a_new_interruption_gets_a_full_grace() {
+        let (reactor, mut events, watch) = ready_with_grace(Duration::from_millis(100));
+        peer_state(&reactor, PeerConnectionState::Disconnected).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        peer_state(&reactor, PeerConnectionState::Connected).await;
+        peer_state(&reactor, PeerConnectionState::Disconnected).await;
+        // 140ms after the first Disconnected, 80ms into the second.
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(reactor.status(), ReactorStatus::Ready);
+        wait_for_status(&mut events, ReactorStatus::Disconnected).await;
+        watch.abort();
+    }
+
+    /// Only a ready connection is held: a `Disconnected` during negotiation
+    /// still fails the connect at once.
+    #[tokio::test]
+    async fn a_disconnect_before_ready_is_not_held() {
+        let mut opts = ReactorOptions::new("http://localhost", "test-model");
+        opts.disconnect_grace = Duration::from_secs(10);
+        let reactor = make_reactor_opts(opts);
+        reactor.state.lock().unwrap().status = ReactorStatus::Waiting;
+        peer_state(&reactor, PeerConnectionState::Disconnected).await;
+        assert_eq!(reactor.status(), ReactorStatus::Disconnected);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

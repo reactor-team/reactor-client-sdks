@@ -356,6 +356,16 @@ impl ReactorClient {
             );
         }
 
+        // Disconnect grace: waits off the pump, so the `Connected` that ends an
+        // interruption is never queued behind it.
+        {
+            let reactor = reactor.clone();
+            spawn_until_shutdown(
+                shutdown.clone(),
+                async move { reactor.run_peer_watch().await },
+            );
+        }
+
         // Dispatch: core events → JS listeners.
         {
             let mut events = reactor.subscribe();
