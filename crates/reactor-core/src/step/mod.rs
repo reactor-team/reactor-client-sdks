@@ -28,6 +28,12 @@
 //! runs. Result frames are decoded through
 //! [`FrameDecoders`], keyed by encoding, so a compressed encoding is a new
 //! registry entry rather than a change to the result type.
+//!
+//! Which encoding a track's step frames take on a connection is negotiated in
+//! the SDP ([`stepped_offer`], [`negotiated_encodings`]): the client prefers
+//! codecs per track ([`CodecPreferences`]) among those it can handle
+//! ([`LocalStepCodecs`]), and the runtime's answer settles one per track, or
+//! raw.
 
 use serde_json::Value;
 
@@ -41,9 +47,14 @@ use crate::protocol::wire::v1::step::{
 
 mod decode;
 mod inputs;
+mod negotiation;
 
 pub use decode::{DecodedFrame, FrameDecoder, FrameDecoders, RawFrameDecoder};
 pub use inputs::StepInputs;
+pub use negotiation::{
+    negotiated_encodings, stepped_offer, CodecPreferences, LocalStepCodecs, StepCodec,
+    ENCODED_STEP_FRAMES,
+};
 
 /// `dtype` of a raw video frame: RGB, one byte per channel.
 pub const VIDEO_DTYPE: &str = "uint8";

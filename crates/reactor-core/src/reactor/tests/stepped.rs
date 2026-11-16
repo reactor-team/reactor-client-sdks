@@ -16,7 +16,11 @@ struct GenerationHttp {
     /// leave the `tracks` key out, as the coordinator does for a model with
     /// none.
     tracks: bool,
+    /// The SDP answer the runtime gives once the exchange completes.
+    answer: String,
     requests: std::sync::Mutex<Vec<(Method, String)>>,
+    /// Every SDP offer the client sent, in order.
+    offers: std::sync::Mutex<Vec<String>>,
 }
 
 impl GenerationHttp {
@@ -25,7 +29,9 @@ impl GenerationHttp {
             echo,
             completes: false,
             tracks: true,
+            answer: "answer".into(),
             requests: Default::default(),
+            offers: Default::default(),
         }
     }
 
@@ -103,8 +109,15 @@ impl HttpClient for GenerationHttp {
         }
         if self.completes && req.url.ends_with("/sdp_params") {
             return match req.method {
-                Method::Get => json(r#"{"sdp_answer": "answer"}"#.to_string()),
-                _ => json(String::new()),
+                Method::Get => json(json!({ "sdp_answer": self.answer }).to_string()),
+                _ => {
+                    let body: Value = serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
+                    self.offers
+                        .lock()
+                        .unwrap()
+                        .push(body["sdp_offer"].as_str().unwrap().to_string());
+                    json(String::new())
+                }
             };
         }
         Err(CoreError::Http(format!(
@@ -200,6 +213,8 @@ struct ChannelsPeer {
     reactor: std::sync::Mutex<Option<std::sync::Weak<Reactor>>>,
     prepared_tracks: std::sync::Mutex<Option<Vec<TrackCapability>>>,
     sent_data: std::sync::Mutex<Vec<Vec<u8>>>,
+    /// The offer `prepare` returns.
+    offer: PreparedOffer,
 }
 
 impl ChannelsPeer {
@@ -209,6 +224,10 @@ impl ChannelsPeer {
             reactor: std::sync::Mutex::new(None),
             prepared_tracks: std::sync::Mutex::new(None),
             sent_data: std::sync::Mutex::new(vec![]),
+            offer: PreparedOffer {
+                sdp_offer: "offer".into(),
+                track_mapping: vec![],
+            },
         }
     }
 
@@ -230,10 +249,7 @@ impl PeerTransport for ChannelsPeer {
         tracks: &[TrackCapability],
     ) -> Result<PreparedOffer, CoreError> {
         *self.prepared_tracks.lock().unwrap() = Some(tracks.to_vec());
-        Ok(PreparedOffer {
-            sdp_offer: "offer".into(),
-            track_mapping: vec![],
-        })
+        Ok(self.offer.clone())
     }
     async fn set_remote_description(&self, _: &str) -> Result<(), CoreError> {
         let reactor = self.reactor.lock().unwrap().clone();
@@ -284,6 +300,16 @@ async fn connect_with(
     peer: Arc<ChannelsPeer>,
     generation: GenerationMode,
 ) -> (Arc<Reactor>, Result<(), CoreError>) {
+    connect_with_codecs(http, peer, generation, LocalStepCodecs::default()).await
+}
+
+/// [`connect_with`], on a side that carries step frames in `local`.
+async fn connect_with_codecs(
+    http: Arc<GenerationHttp>,
+    peer: Arc<ChannelsPeer>,
+    generation: GenerationMode,
+    local: LocalStepCodecs,
+) -> (Arc<Reactor>, Result<(), CoreError>) {
     let mut opts = ReactorOptions::new("http://localhost", "test-model");
     opts.generation = generation;
     let reactor = Arc::new(Reactor::new(
@@ -296,6 +322,7 @@ async fn connect_with(
         opts,
     ));
     *peer.reactor.lock().unwrap() = Some(Arc::downgrade(&reactor));
+    reactor.set_local_step_codecs(local);
     let result = tokio::time::timeout(
         Duration::from_secs(1),
         reactor.connect(ConnectOptions::default()),
@@ -1154,30 +1181,48 @@ fn streamed_pushes_go_to_the_media_transport_as_before() {
     assert!(reactor.step_inputs.is_empty());
 }
 
-/// A stepped session's input tracks get no RTP transceiver; its output
-/// tracks keep theirs. Streamed negotiates every track, as before.
+/// A stepped session's input video tracks get a transceiver, to negotiate
+/// the codec of their step frames, when this side can encode one and
+/// encoding is on; otherwise they get none. Streamed negotiates every track,
+/// as before.
 #[tokio::test]
-async fn a_stepped_connect_negotiates_no_transceiver_for_input_tracks() {
-    let prepared = |generation, echo| async move {
+async fn a_stepped_connect_negotiates_input_tracks_when_it_can_encode_them() {
+    let prepared = |generation, echo, encode: Vec<StepCodec>, encoding: bool| async move {
         let http = Arc::new(GenerationHttp::new(echo));
         let peer = Arc::new(SpyPeer::default());
         let reactor = make_generation_reactor(http.clone(), peer.clone(), generation);
+        reactor.set_local_step_codecs(LocalStepCodecs {
+            encode,
+            decode: vec![],
+        });
+        if !encoding {
+            reactor.set_codec_preference(None, Some(vec![]));
+        }
         connect_until_registration(&reactor, &http).await.abort();
         let tracks = peer.prepared_tracks.lock().unwrap().clone().unwrap();
         tracks.into_iter().map(|t| t.name).collect::<Vec<_>>()
     };
+    let stepped = (GenerationMode::Stepped, Some("stepped"));
     assert_eq!(
-        prepared(GenerationMode::Stepped, Some("stepped")).await,
+        prepared(stepped.0, stepped.1, vec![StepCodec::H264], true).await,
+        ["output", "input"]
+    );
+    assert_eq!(
+        prepared(stepped.0, stepped.1, vec![StepCodec::H264], false).await,
         ["output"]
     );
     assert_eq!(
-        prepared(GenerationMode::Streamed, None).await,
+        prepared(stepped.0, stepped.1, vec![], true).await,
+        ["output"]
+    );
+    assert_eq!(
+        prepared(GenerationMode::Streamed, None, vec![], true).await,
         ["output", "input"]
     );
 }
 
 #[tokio::test]
-async fn a_stepped_preset_connect_negotiates_no_transceiver_for_input_tracks() {
+async fn a_stepped_preset_connect_with_encoding_off_negotiates_no_input_track() {
     let http = Arc::new(GenerationHttp::new(Some("stepped")));
     let peer = Arc::new(SpyPeer::default());
     let mut opts = ReactorOptions::new("http://localhost", "test-model");
@@ -1199,6 +1244,7 @@ async fn a_stepped_preset_connect_negotiates_no_transceiver_for_input_tracks() {
         },
         opts,
     ));
+    reactor.set_codec_preference(None, Some(vec![]));
     connect_until_registration(&reactor, &http).await.abort();
     let names: Vec<_> = peer
         .prepared_tracks
@@ -1210,6 +1256,168 @@ async fn a_stepped_preset_connect_negotiates_no_transceiver_for_input_tracks() {
         .map(|t| t.name)
         .collect();
     assert_eq!(names, ["output"]);
+}
+
+/// What an engine offers for [`GenerationHttp`]'s tracks: a receive-only
+/// output video section and a send-only input one, each listing VP8 then
+/// H.264, and the data channel.
+fn engine_offer() -> PreparedOffer {
+    let section = |mid: &str, direction: &str| {
+        format!(
+            "m=video 9 UDP/TLS/RTP/SAVPF 96 97 100 101\r\na=mid:{mid}\r\na={direction}\r\n\
+a=rtpmap:96 VP8/90000\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\n\
+a=rtpmap:100 H264/90000\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\n"
+        )
+    };
+    PreparedOffer {
+        sdp_offer: format!(
+            "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n{}{}\
+m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\n",
+            section("0", "recvonly"),
+            section("1", "sendonly"),
+        ),
+        track_mapping: vec![
+            TrackMappingEntry {
+                name: "output".into(),
+                kind: SessionTrackKind::Video,
+                direction: TrackDirection::Recvonly,
+                mid: "0".into(),
+            },
+            TrackMappingEntry {
+                name: "input".into(),
+                kind: SessionTrackKind::Video,
+                direction: TrackDirection::Sendonly,
+                mid: "1".into(),
+            },
+        ],
+    }
+}
+
+/// A side that encodes and decodes every step codec.
+fn every_codec() -> LocalStepCodecs {
+    LocalStepCodecs {
+        encode: StepCodec::DEFAULT_ORDER.to_vec(),
+        decode: StepCodec::DEFAULT_ORDER.to_vec(),
+    }
+}
+
+/// A side with no step codec sends the engine's offer as it is, and every
+/// track stays raw, even against a runtime that would encode them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_side_without_step_codecs_sends_the_engine_offer_unchanged() {
+    let peer = Arc::new(ChannelsPeer {
+        offer: engine_offer(),
+        ..ChannelsPeer::new(true)
+    });
+    let http = Arc::new(GenerationHttp::completing(Some("stepped")));
+    let (reactor, result) = connect_with(http.clone(), peer, GenerationMode::Stepped).await;
+    result.unwrap();
+    assert_eq!(http.offers.lock().unwrap()[0], engine_offer().sdp_offer);
+    assert!(reactor
+        .step_frame_encodings()
+        .values()
+        .all(|e| *e == FrameEncoding::Raw));
+}
+
+/// The m-line of the section `mid` names in `sdp`.
+fn m_line(sdp: &str, mid: &str) -> String {
+    let at = sdp.find(&format!("a=mid:{mid}\r\n")).unwrap();
+    let start = sdp[..at].rfind("m=").unwrap();
+    sdp[start..].lines().next().unwrap().to_string()
+}
+
+/// The stepped offer declares encoded step frames with both tracks' sections,
+/// H.264 first; the answer settles each track's encoding, which the core
+/// exposes; and a changed preference reorders the next offer, a reconnect's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stepped_connect_negotiates_each_tracks_step_frame_encoding() {
+    let answer = "v=0\r\no=- 9 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n\
+a=x-reactor-encoded-step-frames\r\n\
+m=video 9 UDP/TLS/RTP/SAVPF 100 101\r\na=mid:0\r\na=sendonly\r\n\
+a=rtpmap:100 H264/90000\r\na=rtpmap:101 rtx/90000\r\n\
+m=video 9 UDP/TLS/RTP/SAVPF 96 97\r\na=mid:1\r\na=recvonly\r\n\
+a=rtpmap:96 VP8/90000\r\na=rtpmap:97 rtx/90000\r\n\
+m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\n";
+    let http = Arc::new(GenerationHttp {
+        answer: answer.into(),
+        ..GenerationHttp::completing(Some("stepped"))
+    });
+    let peer = Arc::new(ChannelsPeer {
+        offer: engine_offer(),
+        ..ChannelsPeer::new(true)
+    });
+    let (reactor, result) =
+        connect_with_codecs(http.clone(), peer, GenerationMode::Stepped, every_codec()).await;
+    result.unwrap();
+
+    let offer = http.offers.lock().unwrap()[0].clone();
+    assert!(offer.contains("t=0 0\r\na=x-reactor-encoded-step-frames\r\nm=video"));
+    assert_eq!(
+        m_line(&offer, "0"),
+        "m=video 9 UDP/TLS/RTP/SAVPF 100 96 97 101"
+    );
+    assert_eq!(
+        m_line(&offer, "1"),
+        "m=video 9 UDP/TLS/RTP/SAVPF 100 96 97 101"
+    );
+
+    assert_eq!(reactor.step_frame_encoding("output"), FrameEncoding::H264);
+    assert_eq!(reactor.step_frame_encoding("input"), FrameEncoding::Vp8);
+    assert_eq!(reactor.step_frame_encoding("unknown"), FrameEncoding::Raw);
+    assert_eq!(reactor.step_frame_encodings().len(), 2);
+
+    // The live connection keeps what it negotiated; the reconnect's offer
+    // carries the new order.
+    reactor.set_codec_preference(Some("input"), Some(vec![StepCodec::Vp8, StepCodec::H264]));
+    let offers_before = http.offers.lock().unwrap().len();
+    assert_eq!(offers_before, 1);
+    tokio::time::timeout(Duration::from_secs(1), reactor.reconnect(None))
+        .await
+        .expect("reconnect() must not hang")
+        .unwrap();
+    let offer = http.offers.lock().unwrap()[1].clone();
+    assert_eq!(
+        m_line(&offer, "0"),
+        "m=video 9 UDP/TLS/RTP/SAVPF 100 96 97 101"
+    );
+    assert_eq!(
+        m_line(&offer, "1"),
+        "m=video 9 UDP/TLS/RTP/SAVPF 96 100 97 101"
+    );
+
+    reactor.disconnect(false).await.unwrap();
+    assert!(reactor.step_frame_encodings().is_empty());
+}
+
+/// A runtime that does not encode step frames answers without the
+/// attribute: every track stays raw.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_answer_without_the_attribute_leaves_every_track_raw() {
+    let peer = Arc::new(ChannelsPeer {
+        offer: engine_offer(),
+        ..ChannelsPeer::new(true)
+    });
+    let http = Arc::new(GenerationHttp::completing(Some("stepped")));
+    let (reactor, result) =
+        connect_with_codecs(http, peer, GenerationMode::Stepped, every_codec()).await;
+    result.unwrap();
+    let encodings = reactor.step_frame_encodings();
+    assert_eq!(encodings.len(), 2);
+    assert!(encodings.values().all(|e| *e == FrameEncoding::Raw));
+}
+
+/// A streamed session sends the engine's offer as it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_streamed_offer_is_sent_unchanged() {
+    let peer = Arc::new(ChannelsPeer {
+        offer: engine_offer(),
+        ..ChannelsPeer::new(true)
+    });
+    let http = Arc::new(GenerationHttp::completing(None));
+    let (reactor, result) = connect_with(http.clone(), peer, GenerationMode::Streamed).await;
+    result.unwrap();
+    assert_eq!(http.offers.lock().unwrap()[0], engine_offer().sdp_offer);
+    assert!(reactor.step_frame_encodings().is_empty());
 }
 
 #[tokio::test]

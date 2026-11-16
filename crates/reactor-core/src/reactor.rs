@@ -32,7 +32,7 @@ use crate::protocol::session::{
     TrackDirection, TrackKind as SessionTrackKind,
 };
 use crate::protocol::upload::{CreateUploadRequest, FileRef};
-use crate::protocol::webrtc::{IceCandidate, TrackMappingEntry};
+use crate::protocol::webrtc::{IceCandidate, IceServer, TrackMappingEntry};
 use crate::protocol::wire::struct_convert::struct_to_value;
 use crate::protocol::wire::v1::control::control_client_message::Payload as ClientPayload;
 use crate::protocol::wire::v1::control::control_server_message::Payload as ServerPayload;
@@ -51,8 +51,9 @@ use crate::stage_times::{sort_stages, StageTimes, SUBMIT};
 use crate::state::ReactorStatus;
 use crate::stats::{client_connection_stat, ClientStatsReporter, ConnectionStats, StatsSampler};
 use crate::step::{
-    build_request_step, encoded_video_frame, raw_audio_frame, raw_video_frame, FrameDecoders,
-    PixelLayout, StepCommand, StepInputs, StepOutput,
+    build_request_step, encoded_video_frame, negotiated_encodings, raw_audio_frame,
+    raw_video_frame, stepped_offer, CodecPreferences, FrameDecoders, LocalStepCodecs, PixelLayout,
+    StepCodec, StepCommand, StepInputs, StepOutput,
 };
 use crate::{SharedAuth, SharedHttp, SharedPeer, SharedPlatform};
 
@@ -185,6 +186,10 @@ struct State {
     ice_final_sent: bool,
     ice_ready: bool,
     paused_tracks: HashSet<String>,
+    /// Stepped mode: the encoding each mapped track's step frames take on
+    /// this connection, as its SDP answer negotiated them. Empty until the
+    /// answer is applied, and cleared with the connection.
+    step_frame_encodings: HashMap<String, FrameEncoding>,
     closing: bool,
     /// The state `on_peer_connection_state` tore the connection down for, when
     /// `closing` was set by that (a real `Failed`/`Disconnected`/`Closed`
@@ -287,6 +292,11 @@ pub struct Reactor {
     step_inputs: StepInputs,
     /// Stepped mode: how a step result's frames are decoded, per encoding.
     frame_decoders: FrameDecoders,
+    /// Stepped mode: the codecs the next offer prefers for step frames.
+    codec_preferences: Mutex<CodecPreferences>,
+    /// Stepped mode: the codecs this side can encode and decode step frames
+    /// in, which filter the preferences. None until the host sets them.
+    local_step_codecs: Mutex<LocalStepCodecs>,
     /// The data-channel stages the SDK times itself, reported likewise.
     message_times: MessageTimes,
 }
@@ -356,6 +366,8 @@ impl Reactor {
             stage_times: Arc::new(StageTimes::new()),
             step_inputs: StepInputs::new(),
             frame_decoders: FrameDecoders::default(),
+            codec_preferences: Mutex::new(CodecPreferences::default()),
+            local_step_codecs: Mutex::new(LocalStepCodecs::default()),
             message_times: MessageTimes::new(),
             state: Mutex::new(State {
                 auto_resume_tracks: options.auto_resume_tracks,
@@ -476,9 +488,7 @@ impl Reactor {
             let (session_result, prepared_result) =
                 futures::future::join(self.coordinator.poll_session_ready(&session_id), async {
                     let ice_servers = signaling.ice_servers().await?;
-                    self.peer
-                        .prepare(&ice_servers, &self.media_tracks(&preset))
-                        .await
+                    self.prepare_offer(&ice_servers, &preset).await
                 })
                 .await;
             let session = session_result?;
@@ -625,25 +635,62 @@ impl Reactor {
     ) -> Result<(), CoreError> {
         let signaling = self.signaling(session_id);
         let ice_servers = signaling.ice_servers().await?;
-        let tracks = self.media_tracks(&self.state.lock().unwrap().tracks);
-        let prepared = self.peer.prepare(&ice_servers, &tracks).await?;
+        let tracks = self.state.lock().unwrap().tracks.clone();
+        let prepared = self.prepare_offer(&ice_servers, &tracks).await?;
         self.finish_transport(session_id, reconnect, adopt_connection_id, prepared)
             .await
     }
 
-    /// The tracks that get an RTP transceiver. All of them when streamed; in a
-    /// stepped session the input (sendonly) tracks have none, because their
-    /// frames ride each `RequestStep` instead — publishing one claims it on
-    /// the runtime, and [`Reactor::push_video_frame`] buffers into it.
-    fn media_tracks(&self, tracks: &[TrackCapability]) -> Vec<TrackCapability> {
-        match self.options.generation {
-            GenerationMode::Streamed => tracks.to_vec(),
-            GenerationMode::Stepped => tracks
-                .iter()
-                .filter(|t| t.direction != TrackDirection::Sendonly)
-                .cloned()
-                .collect(),
+    /// Have the peer build its offer for `tracks`, then, in a stepped
+    /// session, rewrite it into the one this client sends: see
+    /// [`crate::step::stepped_offer`]. The codec preferences and the local
+    /// codecs are read once, here, so a [`Reactor::set_codec_preference`]
+    /// takes effect on the next offer, the next connection's or reconnect's.
+    async fn prepare_offer(
+        &self,
+        ice_servers: &[IceServer],
+        tracks: &[TrackCapability],
+    ) -> Result<PreparedOffer, CoreError> {
+        let preferences = self.codec_preferences.lock().unwrap().clone();
+        let local = self.local_step_codecs.lock().unwrap().clone();
+        let tracks = self.media_tracks(tracks, &preferences, &local);
+        let mut prepared = self.peer.prepare(ice_servers, &tracks).await?;
+        if self.is_stepped() {
+            prepared.sdp_offer = stepped_offer(
+                &prepared.sdp_offer,
+                &prepared.track_mapping,
+                &preferences,
+                &local,
+            );
         }
+        Ok(prepared)
+    }
+
+    /// The tracks that get an RTP transceiver. All of them when streamed. In
+    /// a stepped session an input (sendonly) video track gets one only to
+    /// negotiate its step frames' codec: when encoding is on and this side
+    /// can encode some codec. Its frames ride the data channel, so the
+    /// transceiver stays mute — [`Reactor::push_video_frame`] buffers for the
+    /// next step rather than sending media, and pausing never flips it. An
+    /// input audio track's frames are always raw, so it gets none.
+    fn media_tracks(
+        &self,
+        tracks: &[TrackCapability],
+        preferences: &CodecPreferences,
+        local: &LocalStepCodecs,
+    ) -> Vec<TrackCapability> {
+        if self.options.generation == GenerationMode::Streamed {
+            return tracks.to_vec();
+        }
+        let encoded_inputs = preferences.enabled() && !local.encode.is_empty();
+        tracks
+            .iter()
+            .filter(|t| {
+                t.direction != TrackDirection::Sendonly
+                    || (encoded_inputs && t.kind == SessionTrackKind::Video)
+            })
+            .cloned()
+            .collect()
     }
 
     /// Registers the connection and exchanges the SDP offer/answer for a peer
@@ -712,6 +759,10 @@ impl Reactor {
         }
         if let Err(error) = self.peer.set_remote_description(&answer.sdp_answer).await {
             return Err(self.teardown_error().unwrap_or(error));
+        }
+        if self.is_stepped() {
+            self.state.lock().unwrap().step_frame_encodings =
+                negotiated_encodings(&answer.sdp_answer, &prepared.track_mapping);
         }
 
         match timeout(
@@ -792,6 +843,7 @@ impl Reactor {
             state.ice_final_sent = false;
             state.ice_ready = false;
             state.track_mapping.clear();
+            state.step_frame_encodings.clear();
             state.paused_tracks.clear();
             if recoverable {
                 false
@@ -1199,6 +1251,59 @@ impl Reactor {
     // ------------------------------------------------------------------
     // Stepped generation
     // ------------------------------------------------------------------
+
+    /// Set the codecs a stepped session prefers for its step frames, most
+    /// preferred first: for every track with `track: None`, or for one track,
+    /// in place of the session-wide order. `codecs: None` goes back to the
+    /// default ([`StepCodec::DEFAULT_ORDER`] for the session, the session's
+    /// order for a track). An empty session-wide list turns encoded step
+    /// frames off, and every track carries raw frames.
+    ///
+    /// Callable before `connect()` or during the session. It takes effect on
+    /// the next offer, the next connection's or reconnect's: the live
+    /// connection keeps what it negotiated. Each track's list is filtered by
+    /// what this side can encode (an input track) or decode (an output one),
+    /// as [`Reactor::set_local_step_codecs`] and the engine's offer say. An
+    /// empty list for one track is taken as `None`: a track cannot turn
+    /// encoding off alone.
+    pub fn set_codec_preference(&self, track: Option<&str>, codecs: Option<Vec<StepCodec>>) {
+        let mut preferences = self.codec_preferences.lock().unwrap();
+        match track {
+            None => preferences.set_session(codecs),
+            Some(track) => preferences.set_track(track, codecs),
+        }
+    }
+
+    /// Set the codecs this side can carry step frames in: `encode` for the
+    /// frames it pushes on input tracks, `decode` for the frames step results
+    /// bring on output tracks. The host sets them from the codecs it has;
+    /// they filter [`Reactor::set_codec_preference`]'s lists, and until they
+    /// are set every track stays raw. Read on the next offer, like the
+    /// preferences.
+    pub fn set_local_step_codecs(&self, codecs: LocalStepCodecs) {
+        *self.local_step_codecs.lock().unwrap() = codecs;
+    }
+
+    /// The encoding `track`'s step frames take on this connection, in either
+    /// direction, as its SDP answer negotiated it: the codec of an encoded
+    /// video track, or [`FrameEncoding::Raw`] for an audio track, a track the
+    /// answer gave no step codec, a runtime that does not encode step frames,
+    /// and outside a connected stepped session.
+    pub fn step_frame_encoding(&self, track: &str) -> FrameEncoding {
+        self.state
+            .lock()
+            .unwrap()
+            .step_frame_encodings
+            .get(track)
+            .copied()
+            .unwrap_or(FrameEncoding::Raw)
+    }
+
+    /// The encoding of every track the connection mapped, by track name. See
+    /// [`Reactor::step_frame_encoding`].
+    pub fn step_frame_encodings(&self) -> HashMap<String, FrameEncoding> {
+        self.state.lock().unwrap().step_frame_encodings.clone()
+    }
 
     /// Run one step of a stepped session and return what it produced.
     ///
@@ -1665,8 +1770,8 @@ impl Reactor {
         self.options.generation == GenerationMode::Stepped
     }
 
-    /// Whether `track_name` is an input track of a stepped session, which
-    /// [`Self::media_tracks`] gives no transceiver.
+    /// Whether `track_name` is an input track of a stepped session, whose
+    /// transceiver, when [`Self::media_tracks`] gives it one, stays mute.
     fn is_step_input(&self, track_name: &str) -> bool {
         self.is_stepped()
             && self
@@ -1814,8 +1919,9 @@ impl Reactor {
         }
     }
 
-    /// Stepped: an input track has no transceiver to flip; pausing it stops
-    /// buffering its frames until [`Reactor::resume_track`].
+    /// Stepped: an input track's transceiver, if it has one, stays mute and is
+    /// not flipped; pausing it stops buffering its frames until
+    /// [`Reactor::resume_track`].
     pub async fn pause_track(&self, name: &str) -> Result<(), CoreError> {
         self.ensure_ready()?;
         if !self.is_step_input(name) {
