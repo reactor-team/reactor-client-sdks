@@ -9,6 +9,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-15
+
 ### Added
 
 - Data with a step's result. `StepResult.data()` (`result.data` in Kotlin,

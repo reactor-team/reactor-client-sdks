@@ -7,6 +7,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-11-15
+
 ### Added
 
 - `StepResult.data`: what the model returned for the step besides its media,

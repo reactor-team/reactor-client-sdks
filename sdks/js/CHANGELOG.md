@@ -9,6 +9,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.5.0]
+
 ### Added
 
 - `StepResult.data`: a `Uint8Array` of what the model returned for the step
