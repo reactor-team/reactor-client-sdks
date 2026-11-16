@@ -1,13 +1,17 @@
-//! Decoding the `StepResult` that answers a step, frame by frame through a
-//! registry keyed by encoding.
+//! Decoding the `StepResult` that answers a step, through a registry keyed by
+//! encoding: frame by frame, or, for an encoding whose frames depend on the
+//! ones before them, one stream per output track that spans results.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 
 use super::{StepFile, StepOutput, TrackOutput};
 use crate::error::CoreError;
 use crate::protocol::session::TrackKind;
 use crate::protocol::wire::v1::platform::TrackKind as WireTrackKind;
-use crate::protocol::wire::v1::step::{Frame, FrameEncoding, StepFailureCode, StepResult};
+use crate::protocol::wire::v1::step::{
+    Frame, FrameEncoding, StepFailureCode, StepResult, TrackFrames,
+};
 
 /// One decoded frame: the array `data` holds, described by `dtype` and
 /// `shape` — `(height, width, 3)` `uint8` RGB for video, `(channels, samples)`
@@ -74,17 +78,58 @@ impl FrameDecoder for RawFrameDecoder {
     }
 }
 
-/// Frame decoders, keyed by [`FrameEncoding`]. [`FrameDecoders::default`]
-/// knows [`FrameEncoding::Raw`]; a frame in any other encoding fails the step
-/// with [`CoreError::UnsupportedFrameEncoding`].
+/// Decodes one output track's stream of an encoding whose frames depend on
+/// the ones before them (an inter-coded video codec). One is made per output
+/// track, from its first keyframe on, and is fed every frame of that track in
+/// the order the results arrived, across results.
+///
+/// An `Err` means the decoder lost its state (a corrupt frame, a hardware
+/// decoder reset): it is dropped, the track waits for its next keyframe, and
+/// the next step asks the runtime for one (`request_keyframe`).
+pub trait TrackDecoder: Send {
+    fn decode(&mut self, frame: Frame) -> Result<DecodedFrame, CoreError>;
+}
+
+/// Makes a fresh [`TrackDecoder`] for a track whose stream starts, or starts
+/// again, at a keyframe.
+pub type TrackDecoderFactory = Box<dyn Fn() -> Box<dyn TrackDecoder> + Send + Sync>;
+
+enum Registered {
+    /// Each frame decodes alone.
+    Frame(Box<dyn FrameDecoder>),
+    /// Each track is one stream, decoded by its own decoder.
+    Track(TrackDecoderFactory),
+}
+
+/// The live per-track decoders of one data channel.
+#[derive(Default)]
+struct Streams {
+    /// Each output track's decoder, with the encoding it decodes.
+    live: HashMap<String, (i32, Box<dyn TrackDecoder>)>,
+    /// The tracks whose decoder lost its state, or whose stream did not
+    /// start at a keyframe: their frames fail until a keyframe comes.
+    awaiting_keyframe: HashSet<String>,
+}
+
+/// Frame decoders, keyed by [`FrameEncoding`], and the per-track state of
+/// the encodings that keep one. [`FrameDecoders::default`] knows
+/// [`FrameEncoding::Raw`]; a frame in any other encoding fails the step with
+/// [`CoreError::UnsupportedFrameEncoding`].
+///
+/// The per-track state belongs to one data channel: results are decoded in
+/// the order they arrive on it, and [`FrameDecoders::reset`] drops the state
+/// when it closes, so the next connection's streams start over at their
+/// keyframes.
 pub struct FrameDecoders {
-    decoders: HashMap<i32, Box<dyn FrameDecoder>>,
+    decoders: HashMap<i32, Registered>,
+    streams: Mutex<Streams>,
 }
 
 impl Default for FrameDecoders {
     fn default() -> Self {
         let mut decoders = Self {
             decoders: HashMap::new(),
+            streams: Mutex::default(),
         };
         decoders.register(FrameEncoding::Raw, Box::new(RawFrameDecoder));
         decoders
@@ -92,65 +137,175 @@ impl Default for FrameDecoders {
 }
 
 impl FrameDecoders {
+    /// Decode `encoding` frame by frame with `decoder`.
     pub fn register(&mut self, encoding: FrameEncoding, decoder: Box<dyn FrameDecoder>) {
-        self.decoders.insert(encoding as i32, decoder);
+        self.decoders
+            .insert(encoding as i32, Registered::Frame(decoder));
     }
 
+    /// Decode `encoding` as one stream per output track, with a decoder from
+    /// `factory` that each track keeps across results. A track's stream must
+    /// start at a keyframe (`Frame.keyframe`), on each connection and after
+    /// its decoder lost its state.
+    pub fn register_track_decoder(
+        &mut self,
+        encoding: FrameEncoding,
+        factory: TrackDecoderFactory,
+    ) {
+        self.decoders
+            .insert(encoding as i32, Registered::Track(factory));
+    }
+
+    /// Decode the next frame of `track`. A frame of a per-track encoding
+    /// moves that track's stream on: call it in arrival order.
     pub fn decode_frame(&self, track: &str, frame: Frame) -> Result<DecodedFrame, CoreError> {
-        match self.decoders.get(&frame.encoding) {
-            Some(decoder) => decoder.decode(frame),
-            None => Err(CoreError::UnsupportedFrameEncoding {
-                track: track.to_string(),
-                encoding: frame.encoding,
-            }),
+        self.decode_frame_in(&mut self.streams.lock().unwrap(), track, frame)
+    }
+
+    fn decode_frame_in(
+        &self,
+        streams: &mut Streams,
+        track: &str,
+        frame: Frame,
+    ) -> Result<DecodedFrame, CoreError> {
+        let factory = match self.decoders.get(&frame.encoding) {
+            Some(Registered::Frame(decoder)) => return decoder.decode(frame),
+            Some(Registered::Track(factory)) => factory,
+            None => {
+                return Err(CoreError::UnsupportedFrameEncoding {
+                    track: track.to_string(),
+                    encoding: frame.encoding,
+                })
+            }
+        };
+        let encoding = frame.encoding;
+        let keyframe = frame.keyframe;
+        let continues = matches!(streams.live.get(track), Some((live, _)) if *live == encoding);
+        if !continues {
+            // A new stream, or one in another encoding: it starts here, and
+            // only a keyframe can start it.
+            streams.live.remove(track);
+            if !keyframe {
+                streams.awaiting_keyframe.insert(track.to_string());
+                return Err(CoreError::decode(format!(
+                    "track '{track}' has no decoder state for a frame that is not a keyframe; \
+                     waiting for a keyframe"
+                )));
+            }
+            streams
+                .live
+                .insert(track.to_string(), (encoding, factory()));
+        }
+        let (_, decoder) = streams.live.get_mut(track).expect("inserted above");
+        match decoder.decode(frame) {
+            Ok(decoded) => {
+                if keyframe {
+                    streams.awaiting_keyframe.remove(track);
+                }
+                Ok(decoded)
+            }
+            Err(error) => {
+                streams.live.remove(track);
+                streams.awaiting_keyframe.insert(track.to_string());
+                Err(error)
+            }
         }
     }
 
-    /// Decode a whole [`StepResult`]. A result whose `failure_code` says the
-    /// step did not run, or ran with a result too large to send, is that
-    /// failure, with `error` as its message (see the module docs). Otherwise
-    /// fails on the first frame that cannot be decoded rather than returning a
-    /// partial step.
-    pub fn decode_result(&self, result: StepResult) -> Result<StepOutput, CoreError> {
-        if let Some(failure) = step_failure(&result) {
-            return Err(failure);
-        }
-        let tracks = result
-            .tracks
-            .into_iter()
-            .map(|track| {
-                let kind = match WireTrackKind::try_from(track.kind) {
-                    Ok(WireTrackKind::Video) => TrackKind::Video,
-                    Ok(WireTrackKind::Audio) => TrackKind::Audio,
-                    _ => {
-                        return Err(CoreError::decode(format!(
-                            "step result track '{}' has unknown kind {}",
-                            track.track, track.kind
-                        )))
+    /// Decode a result's tracks, in the order its results arrived (see
+    /// [`FrameDecoders`]). Every frame of every track is fed to its decoder
+    /// even after one fails, so the other streams keep up; the first
+    /// failure is returned rather than a partial step.
+    pub fn decode_tracks(&self, tracks: Vec<TrackFrames>) -> Result<Vec<TrackOutput>, CoreError> {
+        let mut streams = self.streams.lock().unwrap();
+        let mut first_error = None;
+        let mut outputs = Vec::with_capacity(tracks.len());
+        for track in tracks {
+            let kind = match WireTrackKind::try_from(track.kind) {
+                Ok(WireTrackKind::Video) => Some(TrackKind::Video),
+                Ok(WireTrackKind::Audio) => Some(TrackKind::Audio),
+                _ => None,
+            };
+            if kind.is_none() && first_error.is_none() {
+                first_error = Some(CoreError::decode(format!(
+                    "step result track '{}' has unknown kind {}",
+                    track.track, track.kind
+                )));
+            }
+            let mut frames = Vec::with_capacity(track.frames.len());
+            for frame in track.frames {
+                match self.decode_frame_in(&mut streams, &track.track, frame) {
+                    Ok(frame) => frames.push(frame),
+                    Err(error) => {
+                        first_error.get_or_insert(error);
                     }
-                };
-                let frames = track
-                    .frames
-                    .into_iter()
-                    .map(|frame| self.decode_frame(&track.track, frame))
-                    .collect::<Result<_, _>>()?;
-                Ok(TrackOutput {
+                }
+            }
+            if let Some(kind) = kind {
+                outputs.push(TrackOutput {
                     track: track.track,
                     kind,
                     frames,
                     rate: track.rate,
-                })
-            })
-            .collect::<Result<_, CoreError>>()?;
-        Ok(StepOutput {
-            step: result.step,
-            tracks,
-            elapsed: result.elapsed_seconds,
-            files: result.files.into_iter().map(StepFile::from).collect(),
-            error: result.error,
-            data: result.data,
-        })
+                });
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(outputs),
+        }
     }
+
+    /// Decode a whole [`StepResult`], as it arrives (see [`FrameDecoders`]).
+    /// A result whose `failure_code` says the step did not run, or ran with
+    /// a result too large to send, is that failure, with `error` as its
+    /// message (see the module docs). Otherwise fails on the first frame that
+    /// cannot be decoded rather than returning a partial step.
+    pub fn decode_result(&self, mut result: StepResult) -> Result<StepOutput, CoreError> {
+        let tracks = self.decode_tracks(std::mem::take(&mut result.tracks));
+        step_output(result, tracks)
+    }
+
+    /// Whether a track lost its decoder state and waits for a keyframe: the
+    /// next step asks the runtime for one (`request_keyframe`).
+    pub fn needs_keyframe(&self) -> bool {
+        !self.streams.lock().unwrap().awaiting_keyframe.is_empty()
+    }
+
+    /// Drop every track's decoder state, as the data channel it came with
+    /// closes. The registered decoders stay.
+    pub fn reset(&self) {
+        *self.streams.lock().unwrap() = Streams::default();
+    }
+
+    /// The tracks that hold decoder state, sorted.
+    #[cfg(test)]
+    fn live_tracks(&self) -> Vec<String> {
+        let mut tracks: Vec<_> = self.streams.lock().unwrap().live.keys().cloned().collect();
+        tracks.sort();
+        tracks
+    }
+}
+
+/// The [`StepOutput`] of `result`, whose tracks were decoded as `tracks`
+/// (see [`FrameDecoders::decode_tracks`]). A result whose `failure_code`
+/// says the step did not run, or ran with a result too large to send, is
+/// that failure whatever its tracks.
+pub(crate) fn step_output(
+    result: StepResult,
+    tracks: Result<Vec<TrackOutput>, CoreError>,
+) -> Result<StepOutput, CoreError> {
+    if let Some(failure) = step_failure(&result) {
+        return Err(failure);
+    }
+    Ok(StepOutput {
+        step: result.step,
+        tracks: tracks?,
+        elapsed: result.elapsed_seconds,
+        files: result.files.into_iter().map(StepFile::from).collect(),
+        error: result.error,
+        data: result.data,
+    })
 }
 
 /// The failure a `StepResult`'s `failure_code` stands for, or `None` when the
@@ -194,8 +349,10 @@ fn step_failure(result: &StepResult) -> Option<CoreError> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
-    use crate::protocol::wire::v1::step::{StepFileRef, TrackFrames};
+    use crate::protocol::wire::v1::step::StepFileRef;
     use crate::step::raw;
 
     #[test]
@@ -529,6 +686,232 @@ mod tests {
         assert!(FrameDecoders::default()
             .decode_frame("v", raw("complex64", vec![1], vec![0; 3]))
             .is_ok());
+    }
+
+    /// `(decoder id, first byte)` of every frame a [`Counting`] decoded.
+    type DecodeLog = Arc<Mutex<Vec<(u8, u8)>>>;
+
+    /// A stateful stand-in for a video decoder: decoder `id` (counted from 1
+    /// as the factory makes them) logs each frame's first byte, and decodes
+    /// it to `[id, frames it decoded before]`. A frame whose first byte is
+    /// `0xFF` is corrupt: the decoder fails on it.
+    struct Counting {
+        id: u8,
+        decoded: u8,
+        log: DecodeLog,
+    }
+
+    impl TrackDecoder for Counting {
+        fn decode(&mut self, frame: Frame) -> Result<DecodedFrame, CoreError> {
+            if frame.data[0] == 0xFF {
+                return Err(CoreError::decode("corrupt frame"));
+            }
+            self.log.lock().unwrap().push((self.id, frame.data[0]));
+            let decoded = DecodedFrame {
+                encoding: FrameEncoding::H264,
+                dtype: "uint8".into(),
+                shape: vec![1, 2],
+                data: vec![self.id, self.decoded],
+                metadata: frame.metadata,
+                capture_time_us: frame.capture_time_us,
+            };
+            self.decoded += 1;
+            Ok(decoded)
+        }
+    }
+
+    /// Decoders with H.264 registered as [`Counting`], and its log.
+    fn counting_decoders() -> (FrameDecoders, DecodeLog) {
+        let log = Arc::new(Mutex::new(vec![]));
+        let made = Arc::new(Mutex::new(0u8));
+        let mut decoders = FrameDecoders::default();
+        let factory_log = log.clone();
+        decoders.register_track_decoder(
+            FrameEncoding::H264,
+            Box::new(move || {
+                let mut made = made.lock().unwrap();
+                *made += 1;
+                Box::new(Counting {
+                    id: *made,
+                    decoded: 0,
+                    log: factory_log.clone(),
+                })
+            }),
+        );
+        (decoders, log)
+    }
+
+    fn h264(byte: u8, keyframe: bool) -> Frame {
+        Frame {
+            encoding: FrameEncoding::H264 as i32,
+            keyframe,
+            ..raw("uint8", vec![1, 1, 3], vec![byte])
+        }
+    }
+
+    fn video(track: &str, frames: Vec<Frame>) -> TrackFrames {
+        TrackFrames {
+            track: track.into(),
+            kind: WireTrackKind::Video as i32,
+            frames,
+            rate: 0.0,
+        }
+    }
+
+    fn result_with(tracks: Vec<TrackFrames>) -> StepResult {
+        StepResult {
+            step: 1,
+            tracks,
+            ..Default::default()
+        }
+    }
+
+    /// Each output track keeps one decoder across results: the second
+    /// result's frames follow on from the first's, in the decoder that
+    /// started at the first keyframe, and each track has its own.
+    #[test]
+    fn a_tracks_decoder_runs_on_across_results() {
+        let (decoders, log) = counting_decoders();
+        let first = decoders
+            .decode_result(result_with(vec![
+                video("a", vec![h264(1, true), h264(2, false)]),
+                video("b", vec![h264(10, true)]),
+            ]))
+            .unwrap();
+        let second = decoders
+            .decode_result(result_with(vec![video("a", vec![h264(3, false)])]))
+            .unwrap();
+        let third = decoders
+            .decode_result(result_with(vec![
+                video("b", vec![h264(11, false)]),
+                video("a", vec![h264(4, false)]),
+            ]))
+            .unwrap();
+
+        assert_eq!(
+            *log.lock().unwrap(),
+            [(1, 1), (1, 2), (2, 10), (1, 3), (2, 11), (1, 4)]
+        );
+        assert_eq!(first.tracks[0].frames[1].data, [1, 1]);
+        assert_eq!(second.tracks[0].frames[0].data, [1, 2]);
+        assert_eq!(third.tracks[0].track, "b");
+        assert_eq!(third.tracks[0].frames[0].data, [2, 1]);
+        assert_eq!(third.tracks[1].frames[0].data, [1, 3]);
+        assert!(!decoders.needs_keyframe());
+    }
+
+    /// A stream starts at a keyframe: a track with no decoder state fails on
+    /// any other frame, and asks for a keyframe.
+    #[test]
+    fn a_stream_that_does_not_start_at_a_keyframe_waits_for_one() {
+        let (decoders, log) = counting_decoders();
+        let result = decoders.decode_result(result_with(vec![video("a", vec![h264(1, false)])]));
+        assert!(matches!(result, Err(CoreError::Decode(_))), "{result:?}");
+        assert!(decoders.needs_keyframe());
+        assert!(log.lock().unwrap().is_empty());
+
+        decoders
+            .decode_result(result_with(vec![video("a", vec![h264(2, true)])]))
+            .unwrap();
+        assert!(!decoders.needs_keyframe());
+        assert_eq!(*log.lock().unwrap(), [(1, 2)]);
+    }
+
+    /// A decoder that fails lost its state: it is dropped, the track asks
+    /// for a keyframe and fails until one comes, and a fresh decoder starts
+    /// there. The other tracks of the same result keep up meanwhile.
+    #[test]
+    fn a_decode_error_drops_the_tracks_state_until_a_keyframe() {
+        let (decoders, log) = counting_decoders();
+        decoders
+            .decode_result(result_with(vec![
+                video("a", vec![h264(1, true)]),
+                video("b", vec![h264(10, true)]),
+            ]))
+            .unwrap();
+
+        let failed = decoders.decode_result(result_with(vec![
+            video("a", vec![h264(0xFF, false), h264(2, false)]),
+            video("b", vec![h264(11, false)]),
+        ]));
+        assert!(matches!(failed, Err(CoreError::Decode(_))), "{failed:?}");
+        assert!(decoders.needs_keyframe());
+        assert_eq!(decoders.live_tracks(), ["b"]);
+
+        let still = decoders.decode_result(result_with(vec![video("a", vec![h264(3, false)])]));
+        assert!(still.is_err());
+        assert!(decoders.needs_keyframe());
+
+        let recovered = decoders
+            .decode_result(result_with(vec![
+                video("a", vec![h264(4, true)]),
+                video("b", vec![h264(12, false)]),
+            ]))
+            .unwrap();
+        assert!(!decoders.needs_keyframe());
+        assert_eq!(recovered.tracks[0].frames[0].data, [3, 0]);
+        assert_eq!(recovered.tracks[1].frames[0].data, [2, 2]);
+        assert_eq!(
+            *log.lock().unwrap(),
+            [(1, 1), (2, 10), (2, 11), (3, 4), (2, 12)]
+        );
+    }
+
+    /// Resetting, as the data channel closes, drops every track's state and
+    /// any pending keyframe request: the next connection's streams start
+    /// again at their keyframes, with fresh decoders.
+    #[test]
+    fn reset_drops_every_tracks_state() {
+        let (decoders, log) = counting_decoders();
+        decoders
+            .decode_result(result_with(vec![
+                video("a", vec![h264(1, true)]),
+                video("b", vec![h264(10, true)]),
+            ]))
+            .unwrap();
+        let _ = decoders.decode_result(result_with(vec![video("a", vec![h264(0xFF, false)])]));
+        assert_eq!(decoders.live_tracks(), ["b"]);
+        assert!(decoders.needs_keyframe());
+
+        decoders.reset();
+        assert!(decoders.live_tracks().is_empty());
+        assert!(!decoders.needs_keyframe());
+
+        assert!(decoders
+            .decode_result(result_with(vec![video("b", vec![h264(11, false)])]))
+            .is_err());
+        let fresh = decoders
+            .decode_result(result_with(vec![video("b", vec![h264(12, true)])]))
+            .unwrap();
+        assert_eq!(fresh.tracks[0].frames[0].data, [3, 0]);
+        assert_eq!(*log.lock().unwrap(), [(1, 1), (2, 10), (3, 12)]);
+    }
+
+    /// Raw frames keep no state: a raw track never needs a keyframe, and a
+    /// bad raw frame asks for none.
+    #[test]
+    fn raw_tracks_keep_no_state() {
+        let decoders = FrameDecoders::default();
+        let bad = decoders.decode_result(result_with(vec![video(
+            "v",
+            vec![raw("int16", vec![2, 2], vec![0; 6])],
+        )]));
+        assert!(matches!(bad, Err(CoreError::Decode(_))));
+        assert!(!decoders.needs_keyframe());
+        assert!(decoders.live_tracks().is_empty());
+    }
+
+    /// A result that says its step did not run is that failure, whatever
+    /// its tracks; its frames still move the streams on.
+    #[test]
+    fn a_failure_code_wins_over_its_tracks_which_still_decode() {
+        let (decoders, log) = counting_decoders();
+        let result = decoders.decode_result(StepResult {
+            failure_code: StepFailureCode::ResultTooLarge as i32,
+            ..result_with(vec![video("a", vec![h264(1, true)])])
+        });
+        assert!(matches!(result, Err(CoreError::StepResultTooLarge { .. })));
+        assert_eq!(*log.lock().unwrap(), [(1, 1)]);
     }
 
     #[test]

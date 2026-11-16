@@ -29,6 +29,16 @@
 //! [`FrameDecoders`], keyed by encoding, so a compressed encoding is a new
 //! registry entry rather than a change to the result type.
 //!
+//! An encoded output track is one stream for the whole connection: each
+//! result's frames follow on from the previous result's. Its frames are
+//! decoded by a [`TrackDecoder`] the track keeps across results, fed in the
+//! order the results arrive on the data channel (not the order their steps
+//! are awaited in), and dropped when the channel closes, so a new connection
+//! starts every stream over at a keyframe. When a track's decoder loses its
+//! state, the next `RequestStep` sets `request_keyframe`, and the track's
+//! frames fail until a keyframe starts it again. A caller can also ask for
+//! one itself.
+//!
 //! Which encoding a track's step frames take on a connection is negotiated in
 //! the SDP ([`stepped_offer`], [`negotiated_encodings`]): the client prefers
 //! codecs per track ([`CodecPreferences`]) among those it can handle
@@ -49,7 +59,10 @@ mod decode;
 mod inputs;
 mod negotiation;
 
-pub use decode::{DecodedFrame, FrameDecoder, FrameDecoders, RawFrameDecoder};
+pub(crate) use decode::step_output;
+pub use decode::{
+    DecodedFrame, FrameDecoder, FrameDecoders, RawFrameDecoder, TrackDecoder, TrackDecoderFactory,
+};
 pub use inputs::StepInputs;
 pub use negotiation::{
     may_encode_step_frames, negotiated_encodings, stepped_offer, CodecPreferences, LocalStepCodecs,

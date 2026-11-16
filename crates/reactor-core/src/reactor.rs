@@ -52,7 +52,7 @@ use crate::state::ReactorStatus;
 use crate::stats::{client_connection_stat, ClientStatsReporter, ConnectionStats, StatsSampler};
 use crate::step::{
     build_request_step, encoded_video_frame, may_encode_step_frames, negotiated_encodings,
-    raw_audio_frame, raw_video_frame, stepped_offer, CodecPreferences, FrameDecoders,
+    raw_audio_frame, raw_video_frame, step_output, stepped_offer, CodecPreferences, FrameDecoders,
     LocalStepCodecs, PixelLayout, StepCodec, StepCommand, StepInputs, StepOutput,
 };
 use crate::{SharedAuth, SharedHttp, SharedPeer, SharedPlatform};
@@ -263,6 +263,22 @@ fn check_generation(requested: GenerationMode, session: &SessionResponse) -> Res
 /// A step [`Reactor::begin_step`] checked and gave its input frames, for
 /// [`Reactor::send_step`] to send.
 pub struct StepRequest(RequestStep);
+
+impl StepRequest {
+    /// Ask the runtime to start every encoded output track of this
+    /// connection at a keyframe in this step's result. The core asks on its
+    /// own when a track's decoder lost its state; not asking never stops a
+    /// keyframe the runtime sends anyway.
+    pub fn request_keyframe(mut self) -> Self {
+        self.0.request_keyframe = Some(true);
+        self
+    }
+
+    /// Whether this step asks the runtime for keyframes.
+    pub fn requests_keyframe(&self) -> bool {
+        self.0.request_keyframe == Some(true)
+    }
+}
 
 /// The Reactor client core. See the crate docs for the host contract.
 pub struct Reactor {
@@ -850,6 +866,10 @@ impl Reactor {
             state.ice_ready = false;
             state.track_mapping.clear();
             state.step_frame_encodings.clear();
+            // Each output track's decoder state lived with the data channel
+            // that just closed: the next connection's streams start over at
+            // their keyframes.
+            self.frame_decoders.reset();
             state.paused_tracks.clear();
             if recoverable {
                 false
@@ -973,7 +993,13 @@ impl Reactor {
         // send_command(). Taken here, after the host's event queue: the hop
         // from the engine's thread to this loop is not timed.
         let clock = || self.platform.monotonic_ms();
-        let Some(handled) = self.data.handle_message_at(raw, Some(&clock)) else {
+        // A step result is decoded here, in the order results arrive: an
+        // encoded track's stream runs on from one result into the next.
+        let decode_step = |tracks| self.frame_decoders.decode_tracks(tracks);
+        let Some(handled) = self
+            .data
+            .handle_message_at(raw, Some(&clock), Some(&decode_step))
+        else {
             return;
         };
         match handled.payload {
@@ -1004,6 +1030,8 @@ impl Reactor {
             }
             Some(data_server_message::Payload::StepResult(result)) if !handled.correlated => {
                 // Its step() already gave up (timeout) — nobody to hand it to.
+                // Its tracks were decoded all the same, so the streams that
+                // run on into the next result keep up.
                 log::warn!("dropping uncorrelated result of step {}", result.step);
             }
             Some(data_server_message::Payload::StepResult(_)) => {
@@ -1356,6 +1384,12 @@ impl Reactor {
     /// recoverable for the connection, not for the step: retrying it can apply
     /// them twice.
     ///
+    /// Results are decoded in the order they arrive, each encoded output
+    /// track by a decoder it keeps for the connection. When one of those
+    /// decoders lost its state, the step asks the runtime for keyframes
+    /// (`request_keyframe`); a caller asks itself with
+    /// [`Reactor::begin_step`] and [`StepRequest::request_keyframe`].
+    ///
     /// The step is not checked against the model's command schema here: the
     /// core holds no schema to check it against (the runtime validates it,
     /// and refuses it as `step_refused`).
@@ -1380,7 +1414,14 @@ impl Reactor {
     ) -> Result<StepRequest, CoreError> {
         let mut request = self.build_step(state, commands)?;
         request.media_input = self.step_inputs.take()?;
-        Ok(StepRequest(request))
+        let request = StepRequest(request);
+        // A track whose decoder lost its state cannot decode another frame
+        // until a keyframe: ask for one rather than wait for the next.
+        Ok(if self.frame_decoders.needs_keyframe() {
+            request.request_keyframe()
+        } else {
+            request
+        })
     }
 
     /// Every check [`Reactor::begin_step`] makes, with nothing taken: `Ok`
@@ -1416,6 +1457,12 @@ impl Reactor {
         let pending = self
             .data
             .begin(data_client_message::Payload::RequestStep(request.0));
+        // The result's tracks are decoded as it arrives and kept for this
+        // call; dropped with it if it goes away first.
+        let request = ForgetOnDrop {
+            data: &self.data,
+            request_id: pending.request_id.clone(),
+        };
         self.send_pending("step", &pending)?;
 
         let response = match self
@@ -1432,7 +1479,11 @@ impl Reactor {
         };
         match response {
             Some(data_server_message::Payload::StepResult(result)) => {
-                self.frame_decoders.decode_result(result)
+                match self.data.take_step_tracks(&request.request_id) {
+                    Some(tracks) => step_output(result, tracks),
+                    // Not decoded on arrival: its tracks are still in it.
+                    None => self.frame_decoders.decode_result(result),
+                }
             }
             // Every outcome of a step, refusals included, is a StepResult; an
             // Error is not a step reply. Should one arrive anyway, its code

@@ -1038,6 +1038,278 @@ async fn a_disconnect_fails_the_step_in_flight() {
     assert!(error.recoverable());
 }
 
+// ── Stepped generation: per-track result decoding ───────────────────────
+
+/// A stand-in stateful decoder for H.264 output tracks: each frame decodes
+/// to the number of frames its decoder decoded before it, and a frame whose
+/// first byte is `0xFF` is corrupt and fails it.
+struct CountingDecoder(u8);
+
+impl crate::step::TrackDecoder for CountingDecoder {
+    fn decode(&mut self, frame: Frame) -> Result<crate::step::DecodedFrame, CoreError> {
+        if frame.data[0] == 0xFF {
+            return Err(CoreError::decode("corrupt frame"));
+        }
+        self.0 += 1;
+        Ok(crate::step::DecodedFrame {
+            encoding: FrameEncoding::H264,
+            dtype: "uint8".into(),
+            shape: vec![1],
+            data: vec![self.0 - 1],
+            metadata: None,
+            capture_time_us: None,
+        })
+    }
+}
+
+/// [`make_ready_reactor`] in stepped mode, decoding H.264 output tracks
+/// with [`CountingDecoder`].
+fn make_decoding_reactor(peer: Arc<DataPeer>) -> Arc<Reactor> {
+    let mut opts = ReactorOptions::new("http://localhost", "test-model");
+    opts.generation = GenerationMode::Stepped;
+    let mut reactor = Reactor::new(
+        ReactorDeps {
+            http: Arc::new(PendingHttp) as SharedHttp,
+            auth: Arc::new(NoAuth) as SharedAuth,
+            platform: Arc::new(TestPlatform) as SharedPlatform,
+            peer: peer as SharedPeer,
+        },
+        opts,
+    );
+    reactor.frame_decoders.register_track_decoder(
+        FrameEncoding::H264,
+        Box::new(|| Box::new(CountingDecoder(0))),
+    );
+    reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+    Arc::new(reactor)
+}
+
+fn h264_result(step: u64, byte: u8, keyframe: bool) -> data_server_message::Payload {
+    data_server_message::Payload::StepResult(StepResult {
+        step,
+        tracks: vec![TrackFrames {
+            track: "out".into(),
+            kind: WireTrackKind::Video as i32,
+            frames: vec![Frame {
+                encoding: FrameEncoding::H264 as i32,
+                keyframe,
+                data: vec![byte],
+                ..raw_frame(0)
+            }],
+            rate: 0.0,
+        }],
+        ..Default::default()
+    })
+}
+
+fn requests_keyframe(sent: &DataClientMessage) -> Option<bool> {
+    match &sent.payload {
+        Some(data_client_message::Payload::RequestStep(request)) => request.request_keyframe,
+        other => panic!("expected a RequestStep, got {other:?}"),
+    }
+}
+
+/// Results are decoded in the order they arrive, not the order their steps
+/// are awaited in: the second step's result, arriving first with the
+/// keyframe, starts the stream the first step's result then runs on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn step_results_decode_in_arrival_order() {
+    let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+    let reactor = make_decoding_reactor(peer.clone());
+    let (first, first_sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+    let (second, second_sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+
+    feed(
+        &reactor,
+        &second_sent.request_id,
+        MessageKind::Response,
+        h264_result(1, 1, true),
+    )
+    .await;
+    feed(
+        &reactor,
+        &first_sent.request_id,
+        MessageKind::Response,
+        h264_result(2, 2, false),
+    )
+    .await;
+
+    let first = first.await.unwrap().unwrap();
+    let second = second.await.unwrap().unwrap();
+    assert_eq!(second.tracks[0].frames[0].data, [0]);
+    assert_eq!(first.tracks[0].frames[0].data, [1]);
+    assert_eq!(first.tracks[0].frames[0].encoding, FrameEncoding::H264);
+}
+
+/// A result whose step gave up still moves its track's stream on, so the
+/// next result's frames follow from it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_result_no_step_awaits_still_decodes() {
+    let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+    let reactor = make_decoding_reactor(peer.clone());
+    feed(
+        &reactor,
+        "data_99",
+        MessageKind::Response,
+        h264_result(1, 1, true),
+    )
+    .await;
+    let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+    feed(
+        &reactor,
+        &sent.request_id,
+        MessageKind::Response,
+        h264_result(2, 2, false),
+    )
+    .await;
+    assert_eq!(
+        stepping.await.unwrap().unwrap().tracks[0].frames[0].data,
+        [1]
+    );
+}
+
+/// A decode error loses the track's decoder state: that step fails, and
+/// the next one asks the runtime for a keyframe until one arrives. A step
+/// with every decoder in step asks for none, unless its caller does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decode_error_asks_the_next_step_for_a_keyframe() {
+    let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+    let reactor = make_decoding_reactor(peer.clone());
+
+    let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+    assert_eq!(requests_keyframe(&sent), None);
+    feed(
+        &reactor,
+        &sent.request_id,
+        MessageKind::Response,
+        h264_result(1, 1, true),
+    )
+    .await;
+    stepping.await.unwrap().unwrap();
+
+    let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+    assert_eq!(requests_keyframe(&sent), None);
+    feed(
+        &reactor,
+        &sent.request_id,
+        MessageKind::Response,
+        h264_result(2, 0xFF, false),
+    )
+    .await;
+    assert!(matches!(stepping.await.unwrap(), Err(CoreError::Decode(_))));
+
+    let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+    assert_eq!(requests_keyframe(&sent), Some(true));
+    feed(
+        &reactor,
+        &sent.request_id,
+        MessageKind::Response,
+        h264_result(3, 3, true),
+    )
+    .await;
+    assert_eq!(
+        stepping.await.unwrap().unwrap().tracks[0].frames[0].data,
+        [0]
+    );
+
+    let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+    assert_eq!(requests_keyframe(&sent), None, "the keyframe came");
+    feed(
+        &reactor,
+        &sent.request_id,
+        MessageKind::Response,
+        h264_result(4, 4, false),
+    )
+    .await;
+    stepping.await.unwrap().unwrap();
+
+    // A caller asks for one itself.
+    let request = reactor
+        .begin_step(Value::Null, vec![])
+        .unwrap()
+        .request_keyframe();
+    assert!(request.requests_keyframe());
+    let r = reactor.clone();
+    let stepping = tokio::spawn(async move { r.send_step(request).await });
+    let sent = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(last) = peer
+                .sent()
+                .last()
+                .filter(|m| m.request_id != sent.request_id)
+            {
+                return last.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(requests_keyframe(&sent), Some(true));
+    feed(
+        &reactor,
+        &sent.request_id,
+        MessageKind::Response,
+        h264_result(5, 5, false),
+    )
+    .await;
+    stepping.await.unwrap().unwrap();
+}
+
+/// The decoder state lives with the data channel: a disconnect, as a
+/// reconnect starts with, drops it, keyframe request included, so the next
+/// connection's stream must start again at a keyframe.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reconnect_resets_every_tracks_decoder() {
+    let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+    let reactor = make_decoding_reactor(peer.clone());
+    feed(
+        &reactor,
+        "data_98",
+        MessageKind::Response,
+        h264_result(1, 1, true),
+    )
+    .await;
+    // Another track's decoder fails, so a keyframe is due.
+    feed(
+        &reactor,
+        "data_99",
+        MessageKind::Response,
+        data_server_message::Payload::StepResult(StepResult {
+            tracks: vec![TrackFrames {
+                track: "other".into(),
+                kind: WireTrackKind::Video as i32,
+                frames: vec![Frame {
+                    encoding: FrameEncoding::H264 as i32,
+                    ..raw_frame(2)
+                }],
+                rate: 0.0,
+            }],
+            ..Default::default()
+        }),
+    )
+    .await;
+    assert!(reactor.frame_decoders.needs_keyframe());
+
+    reactor.disconnect(true).await.unwrap();
+    assert!(!reactor.frame_decoders.needs_keyframe());
+
+    reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+    let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+    assert_eq!(requests_keyframe(&sent), None);
+    feed(
+        &reactor,
+        &sent.request_id,
+        MessageKind::Response,
+        h264_result(2, 2, false),
+    )
+    .await;
+    assert!(
+        matches!(stepping.await.unwrap(), Err(CoreError::Decode(_))),
+        "the old connection's decoder is gone"
+    );
+}
+
 // ── Stepped generation: input buffering ─────────────────────────────────
 
 /// Encoded frames ride the next step as they were pushed, in push order
