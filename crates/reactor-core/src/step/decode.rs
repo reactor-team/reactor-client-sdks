@@ -91,8 +91,60 @@ pub trait TrackDecoder: Send {
 }
 
 /// Makes a fresh [`TrackDecoder`] for a track whose stream starts, or starts
-/// again, at a keyframe.
-pub type TrackDecoderFactory = Box<dyn Fn() -> Box<dyn TrackDecoder> + Send + Sync>;
+/// again, at a keyframe. An `Err` (no backend could be created) fails the
+/// frame without asking for a keyframe, which would not help.
+pub type TrackDecoderFactory =
+    Box<dyn Fn() -> Result<Box<dyn TrackDecoder>, CoreError> + Send + Sync>;
+
+/// A [`TrackDecoder`] on one of reactor-webrtc's standalone video decoders:
+/// encoded frames in, `(height, width, 3)` `uint8` RGB out.
+#[cfg(feature = "webrtc-codecs")]
+pub struct WebrtcTrackDecoder {
+    encoding: FrameEncoding,
+    decoder: reactor_webrtc::codec::VideoDecoder,
+}
+
+#[cfg(feature = "webrtc-codecs")]
+impl WebrtcTrackDecoder {
+    /// A decoder for `codec` on `codecs`, hardware first.
+    pub fn new(
+        codecs: &reactor_webrtc::codec::VideoCodecs,
+        codec: super::StepCodec,
+    ) -> Result<Self, CoreError> {
+        let decoder = codecs.decoder(codec.video_codec()).map_err(|error| {
+            CoreError::decode(format!("no {} decoder: {error}", codec.sdp_name()))
+        })?;
+        Ok(Self {
+            encoding: codec.frame_encoding(),
+            decoder,
+        })
+    }
+}
+
+#[cfg(feature = "webrtc-codecs")]
+impl TrackDecoder for WebrtcTrackDecoder {
+    fn decode(&mut self, frame: Frame) -> Result<DecodedFrame, CoreError> {
+        let picture = self
+            .decoder
+            .decode(
+                &frame.data,
+                frame.capture_time_us.unwrap_or(0),
+                reactor_webrtc::PixelFormat::Rgb24,
+            )
+            .map_err(|error| CoreError::decode(format!("{:?} frame: {error}", self.encoding)))?
+            .ok_or_else(|| {
+                CoreError::decode(format!("{:?} frame gave no picture", self.encoding))
+            })?;
+        Ok(DecodedFrame {
+            encoding: self.encoding,
+            dtype: super::VIDEO_DTYPE.to_string(),
+            shape: vec![picture.height, picture.width, 3],
+            data: picture.data,
+            metadata: frame.metadata,
+            capture_time_us: frame.capture_time_us,
+        })
+    }
+}
 
 enum Registered {
     /// Each frame decodes alone.
@@ -172,6 +224,25 @@ impl FrameDecoders {
             .insert(encoding as i32, Registered::Track(factory));
     }
 
+    /// Decode every codec in `decode` as one stream per output track, each
+    /// track on a [`WebrtcTrackDecoder`] of its own from `codecs`.
+    #[cfg(feature = "webrtc-codecs")]
+    pub fn register_webrtc(
+        &mut self,
+        codecs: &reactor_webrtc::codec::VideoCodecs,
+        decode: &[super::StepCodec],
+    ) {
+        for &codec in decode {
+            let codecs = codecs.clone();
+            self.register_track_decoder(
+                codec.frame_encoding(),
+                Box::new(move || {
+                    Ok(Box::new(WebrtcTrackDecoder::new(&codecs, codec)?) as Box<dyn TrackDecoder>)
+                }),
+            );
+        }
+    }
+
     /// Decode the next frame of `track`. A frame of a per-track encoding
     /// moves that track's stream on: call it in arrival order.
     pub fn decode_frame(&self, track: &str, frame: Frame) -> Result<DecodedFrame, CoreError> {
@@ -232,9 +303,8 @@ impl FrameDecoders {
                      waiting for a keyframe"
                 )));
             }
-            streams
-                .live
-                .insert(track.to_string(), (encoding, factory()));
+            let decoder = factory()?;
+            streams.live.insert(track.to_string(), (encoding, decoder));
         }
         let (_, decoder) = streams.live.get_mut(track).expect("inserted above");
         match decoder.decode(frame) {
@@ -823,11 +893,11 @@ mod tests {
             Box::new(move || {
                 let mut made = made.lock().unwrap();
                 *made += 1;
-                Box::new(Counting {
+                Ok(Box::new(Counting {
                     id: *made,
                     decoded: 0,
                     log: factory_log.clone(),
-                })
+                }))
             }),
         );
         (decoders, log)

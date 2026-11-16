@@ -77,7 +77,11 @@ async def test_a_stepped_connect_to_echo_steps_or_fails() -> None:
         assert result.error is None
         [frame] = result.track("main_video").frames
         assert frame.array.shape == (64, 64, 3)
-        assert frame.array[32, 32].tolist() == [245, 235, 225]
+        # The frame travels encoded both ways when both ends share a codec
+        # (H.264 by default), so the inverted pixel comes back close, not
+        # exact.
+        center = frame.array[32, 32].astype(int)
+        assert np.abs(center - [245, 235, 225]).max() <= 8, center.tolist()
     finally:
         if connected:
             await client.disconnect()

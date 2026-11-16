@@ -11,7 +11,7 @@ name       = "reactor_ffi"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-reactor-core   = { workspace = true, features = ["tokio-platform"] }
+reactor-core   = { workspace = true, features = ["tokio-platform", "webrtc-codecs"] }
 reactor-webrtc = { workspace = true }
 async-trait    = { workspace = true }
 serde          = { workspace = true }

@@ -57,6 +57,15 @@
 //! codecs per track ([`CodecPreferences`]) among those it can handle
 //! ([`LocalStepCodecs`]), and the runtime's answer settles one per track, or
 //! raw.
+//!
+//! With the `webrtc-codecs` feature the core carries those codecs itself, on
+//! reactor-webrtc's standalone encoders and decoders: the codecs it offers are
+//! the ones they can run here, an output track in a codec is decoded by a
+//! `WebrtcTrackDecoder`, and the raw pixels pushed on an input track in a
+//! codec are encoded by its `InputEncoders` entry before they are sent. A
+//! track's first pushed frame on a connection is a keyframe, and so is the
+//! next one after `input_decode_failed` or after frames encoded for it were
+//! not sent.
 
 use serde_json::Value;
 
@@ -75,10 +84,14 @@ mod inputs;
 mod negotiation;
 
 pub(crate) use decode::step_output;
+#[cfg(feature = "webrtc-codecs")]
+pub use decode::WebrtcTrackDecoder;
 pub use decode::{
     DecodedFrame, FrameDecoder, FrameDecoders, RawFrameDecoder, TrackDecoder, TrackDecoderFactory,
 };
 pub use inputs::{pushed_frame, StepInputs};
+#[cfg(feature = "webrtc-codecs")]
+pub use inputs::{InputEncoders, PushedPicture};
 pub use negotiation::{
     may_encode_step_frames, negotiated_encodings, negotiates_encoded_step_frames, stepped_offer,
     CodecPreferences, LocalStepCodecs, StepCodec, ENCODED_STEP_FRAMES,
