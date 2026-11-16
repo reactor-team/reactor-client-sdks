@@ -528,6 +528,7 @@ fn raw_frame(byte: u8) -> Frame {
         data: vec![byte; 3],
         metadata: None,
         capture_time_us: None,
+        keyframe: false,
     }
 }
 
@@ -804,6 +805,7 @@ async fn an_error_reply_to_a_step_passes_its_code_through() {
         data_server_message::Payload::Error(crate::protocol::wire::v1::common::Error {
             code: "model_crashed".into(),
             message: "no".into(),
+            track: None,
         }),
     )
     .await;

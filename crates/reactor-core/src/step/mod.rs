@@ -107,6 +107,7 @@ pub fn build_request_step(
         state,
         commands,
         media_input,
+        request_keyframe: None,
     })
 }
 
@@ -166,6 +167,7 @@ pub fn raw_video_frame(
         data: rgb,
         metadata: metadata.filter(|m| !m.is_empty()).map(<[u8]>::to_vec),
         capture_time_us,
+        keyframe: false,
     })
 }
 
@@ -196,6 +198,7 @@ pub fn encoded_video_frame(
         data: data.to_vec(),
         metadata: metadata.filter(|m| !m.is_empty()).map(<[u8]>::to_vec),
         capture_time_us,
+        keyframe: false,
     })
 }
 
@@ -224,6 +227,7 @@ pub fn raw_audio_frame(interleaved: &[i16], num_channels: u32) -> Option<Frame> 
         data,
         metadata: None,
         capture_time_us: None,
+        keyframe: false,
     })
 }
 
@@ -303,6 +307,7 @@ fn raw(dtype: &str, shape: Vec<u32>, data: Vec<u8>) -> Frame {
         data,
         metadata: None,
         capture_time_us: None,
+        keyframe: false,
     }
 }
 

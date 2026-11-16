@@ -88,6 +88,7 @@ impl DataCorrelator {
         let command = match &payload {
             data_client_message::Payload::Command(c) => c.r#type.clone(),
             data_client_message::Payload::RequestStep(_) => "request_step".to_string(),
+            data_client_message::Payload::PushFrames(_) => "push_frames".to_string(),
             data_client_message::Payload::Error(_) => "command".to_string(),
         };
         let id = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
@@ -292,6 +293,7 @@ mod tests {
             data_server_message::Payload::Error(Error {
                 code: "BAD_COMMAND".into(),
                 message: "unknown command".into(),
+                track: None,
             }),
         );
         let handled = c.handle_message(&bytes).unwrap();
@@ -336,6 +338,7 @@ mod tests {
             data_server_message::Payload::Error(Error {
                 code: "X".into(),
                 message: "y".into(),
+                track: None,
             }),
         );
         let handled = c.handle_message(&bytes).unwrap();

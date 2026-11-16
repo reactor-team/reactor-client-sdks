@@ -2760,6 +2760,7 @@ mod tests {
             data_server_message::Payload::Error(crate::protocol::wire::v1::common::Error {
                 code: "BAD_COMMAND".into(),
                 message: "rejected".into(),
+                track: None,
             }),
         ));
         let result = tokio::time::timeout(Duration::from_millis(300), call)
@@ -4428,6 +4429,7 @@ mod tests {
             data_server_message::Payload::Error(crate::protocol::wire::v1::common::Error {
                 code: "BAD_COMMAND".into(),
                 message: "unknown command".into(),
+                track: None,
             }),
         );
         reactor.on_data_message(&bytes);
@@ -4468,6 +4470,7 @@ mod tests {
             data_server_message::Payload::Error(crate::protocol::wire::v1::common::Error {
                 code: "BAD_COMMAND".into(),
                 message: "unknown command".into(),
+                track: None,
             }),
         );
         reactor.on_data_message(&bytes);
