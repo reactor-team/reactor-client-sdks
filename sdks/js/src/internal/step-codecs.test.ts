@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DecodeError } from '../errors';
 import {
   FakeVideoDecoder,
@@ -120,6 +120,17 @@ describe('InputEncoders', () => {
     expect(frame?.keyframe).toBe(true);
   });
 
+  it('closes an encoder whose configure() throws', async () => {
+    const encoders = new InputEncoders(api);
+    const configure = vi.spyOn(FakeVideoEncoder.prototype, 'configure').mockImplementationOnce(() => {
+      throw new Error('unsupported size');
+    });
+
+    await expect(encoders.encode('cam', 'h264', pixels(), false)).rejects.toThrow('unsupported size');
+    expect(FakeVideoEncoder.instances.map((encoder) => encoder.state)).toEqual(['closed']);
+    configure.mockRestore();
+  });
+
   it('gives RGB pixels an opaque alpha', async () => {
     const encoders = new InputEncoders(api);
     const rgb: Pixels = { data: new Uint8Array([1, 2, 3]), width: 1, height: 1, format: 'rgb' };
@@ -215,6 +226,28 @@ describe('OutputDecoders', () => {
 
     await expect(decoders.decodeResult(result(encodedFrame(2, false)))).rejects.toThrow('waiting for a keyframe');
     await expect(decoders.decodeResult(result(encodedFrame(3, true)))).resolves.toBeDefined();
+  });
+
+  it('closes a decoder whose configure() throws', async () => {
+    const decoders = new OutputDecoders(api);
+    const configure = vi.spyOn(FakeVideoDecoder.prototype, 'configure').mockImplementationOnce(() => {
+      throw new Error('unsupported codec');
+    });
+
+    await expect(decoders.decodeResult(result(encodedFrame(1, true)))).rejects.toBeInstanceOf(DecodeError);
+    expect(FakeVideoDecoder.instances.map((decoder) => decoder.state)).toEqual(['closed']);
+    configure.mockRestore();
+  });
+
+  it('asks for keyframes once after abandon(), and starts every track again at one', async () => {
+    const decoders = new OutputDecoders(api);
+
+    await decoders.decodeResult(result(encodedFrame(1, true)));
+    decoders.abandon();
+
+    expect(decoders.takeKeyframeRequest()).toBe(true);
+    expect(decoders.takeKeyframeRequest()).toBe(false);
+    await expect(decoders.decodeResult(result(encodedFrame(2, false)))).rejects.toThrow('waiting for a keyframe');
   });
 
   it('keeps feeding the other tracks when one fails', async () => {

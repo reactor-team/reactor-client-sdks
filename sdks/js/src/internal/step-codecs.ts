@@ -9,8 +9,9 @@
  * keyframe, and so is the next one after the runtime could not decode the
  * track's frames or frames encoded for it were not sent (the binding's
  * `takeInputKeyframeRequest`). An output track's decoder is fed in the order
- * results arrive, starts at a keyframe, and is dropped when it fails or when
- * the connection ends: until a keyframe starts it again, every step asks the
+ * results arrive, starts at a keyframe, and is dropped when it fails, when a
+ * step gives up after its request went out (its result never reaches the
+ * decoder) or when the connection ends: until a keyframe starts it again, every step asks the
  * runtime for one (`request_keyframe`).
  */
 import { DecodeError } from '../errors';
@@ -131,7 +132,12 @@ class TrackEncoder {
         this.failure = error instanceof Error ? error : new Error(String(error));
       },
     });
-    this.encoder.configure(encoderConfig(codec, width, height));
+    try {
+      this.encoder.configure(encoderConfig(codec, width, height));
+    } catch (cause) {
+      this.close();
+      throw cause;
+    }
   }
 
   /** Encode `pixels` as the stream's next frame, a keyframe when `keyframe`
@@ -259,7 +265,12 @@ class TrackDecoder {
       },
       error: (error) => this.fail(error),
     });
-    this.decoder.configure(decoderConfig(codec));
+    try {
+      this.decoder.configure(decoderConfig(codec));
+    } catch (cause) {
+      this.close();
+      throw cause;
+    }
   }
 
   /** Hand `chunk` to the decoder now, and resolve with the frame it makes of
@@ -314,13 +325,33 @@ function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => void):
 export class OutputDecoders {
   private readonly decoders = new Map<string, TrackDecoder>();
   private readonly awaitingKeyframe = new Set<string>();
+  /** Set by `abandon()`: the next step asks for keyframes. */
+  private restarted = false;
 
   constructor(private readonly api: WebCodecs = globalThis) {}
 
-  /** Whether a track lost its decoder and waits for a keyframe: the next
-   *  step asks the runtime for one. */
+  /** Whether a track lost its decoder and waits for a keyframe, or the
+   *  decoders were dropped by `abandon()`: the next step asks the runtime
+   *  for one. */
   needsKeyframe(): boolean {
-    return this.awaitingKeyframe.size > 0;
+    return this.restarted || this.awaitingKeyframe.size > 0;
+  }
+
+  /** `needsKeyframe()`, for the step about to ask: the request `abandon()`
+   *  left is taken by it. */
+  takeKeyframeRequest(): boolean {
+    const needed = this.needsKeyframe();
+
+    this.restarted = false;
+    return needed;
+  }
+
+  /** A step gave up after its request went out: its result, if it still
+   *  comes, is never fed here, so every stream lost frames. Drop the
+   *  decoders and have the next step ask for keyframes. */
+  abandon(): void {
+    this.reset();
+    this.restarted = true;
   }
 
   /** `result` with every encoded frame decoded to RGB `(height, width, 3)`
@@ -425,6 +456,7 @@ export class OutputDecoders {
     }
     this.decoders.clear();
     this.awaitingKeyframe.clear();
+    this.restarted = false;
   }
 }
 

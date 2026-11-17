@@ -362,6 +362,23 @@ describe('Reactor.step', () => {
     expect(client.pushVideoFrameCalls).toHaveLength(1);
   });
 
+  it('stops a PublishedTrack when the connection restarts on its own', async () => {
+    const { reactor, client } = await connected('stepped');
+    const pixels = { data: new Uint8Array(4), width: 1, height: 1 };
+    const camera = await reactor.publishTrack('camera');
+
+    await camera.pushFrame(pixels);
+    client.emitConnecting();
+    client.emitReady();
+    await expect(camera.pushFrame(pixels)).rejects.toBeInstanceOf(InvalidStateError);
+    await expect(reactor.pushFrame('camera', pixels)).rejects.toThrow("publishTrack('camera') first");
+
+    const again = await reactor.publishTrack('camera');
+
+    await again.pushFrame(pixels);
+    expect(client.pushVideoFrameCalls).toHaveLength(2);
+  });
+
   it('drops a push whose frame was still being read when disconnect() ran', async () => {
     const { reactor, client } = await steppedWithInputs();
     const read = createDeferred();
@@ -1255,6 +1272,7 @@ describe('Reactor step frames on WebCodecs', () => {
     await reactor.pushFrame('camera', frame);
     client.emitConnecting();
     client.emitReady();
+    await reactor.publishTrack('camera');
     await reactor.pushFrame('camera', frame);
 
     expect(client.pushEncodedVideoFrameCalls.map((call) => call.keyframe)).toEqual([true, false, true]);
@@ -1308,6 +1326,25 @@ describe('Reactor step frames on WebCodecs', () => {
     await expect(reactor.step()).rejects.toBeInstanceOf(DecodeError);
     client.stepResult = encodedResult(2, false);
     await expect(reactor.step()).rejects.toBeInstanceOf(DecodeError);
+    client.stepResult = encodedResult(3, true);
+    await expect(reactor.step()).resolves.toBeDefined();
+    await reactor.step();
+
+    expect(client.stepKeyframeRequests).toEqual([false, false, true, true, false]);
+  });
+
+  it('drops the decoders and asks for keyframes after a step times out', async () => {
+    const { reactor, client } = await h264Session();
+
+    client.stepResult = encodedResult(1, true);
+    await reactor.step();
+    // The timed-out step's result never reaches the decoder, so the next
+    // result's delta frames would reference pictures it never saw.
+    client.stepImpl = () => Promise.reject(bindingError('REQUEST_TIMEOUT', 'step timed out'));
+    await expect(reactor.step()).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
+    client.stepImpl = undefined;
+    client.stepResult = encodedResult(2, false);
+    await expect(reactor.step()).rejects.toThrow('waiting for a keyframe');
     client.stepResult = encodedResult(3, true);
     await expect(reactor.step()).resolves.toBeDefined();
     await reactor.step();

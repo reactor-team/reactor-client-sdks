@@ -734,12 +734,21 @@ export class Reactor implements Disposable {
           try {
             // A track whose decoder lost its state cannot decode another
             // frame until a keyframe: ask for one rather than wait for it.
-            const requestKeyframe = options.requestKeyframe === true || this.outputDecoders.needsKeyframe();
+            const requestKeyframe = this.outputDecoders.takeKeyframeRequest() || options.requestKeyframe === true;
             const decoders = this.outputDecoders;
 
             // Decoded as the result arrives, before anything awaits it, so
-            // results that arrive one after another decode in that order.
-            return client.step(state, commands, requestKeyframe).then((result) => decoders.decodeResult(result));
+            // results that arrive one after another decode in that order. A
+            // step that gives up once its request went out (a timeout, a
+            // result too large) never has its result decoded here, so the
+            // streams lost frames: drop the decoders and ask for keyframes.
+            return client.step(state, commands, requestKeyframe).then(
+              (result) => decoders.decodeResult(result),
+              (cause: unknown) => {
+                decoders.abandon();
+                throw cause;
+              },
+            );
           } finally {
             // The binding has taken the buffer by the time step() returns (or
             // throws), so a push queued behind this goes to the next step.
@@ -1512,6 +1521,10 @@ export class Reactor implements Disposable {
   private handleStatusChanged(client: ReactorClient, status: ReactorStatus): void {
     if (status === 'connecting' || status === 'disconnected') {
       this.resetStepStreams();
+      // A publication does not survive the connection: the old handles go
+      // stale, and each track is published again on the new one.
+      this.connectionEpoch += 1;
+      this.publishedInputs.clear();
     }
     switch (status) {
       case 'connecting':
