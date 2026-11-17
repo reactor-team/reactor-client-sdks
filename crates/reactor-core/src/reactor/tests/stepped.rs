@@ -1182,19 +1182,18 @@ fn streamed_pushes_go_to_the_media_transport_as_before() {
 }
 
 /// A stepped session's input video tracks get a transceiver, to negotiate
-/// the codec of their step frames, when this side can encode one and
-/// encoding is on; otherwise they get none. Streamed negotiates every track,
-/// as before.
+/// the codec of their step frames, when encoding is on and this side handles
+/// a codec for every video track: encodes one for each input and decodes one
+/// for each output. Otherwise the offer falls back to raw frames and they get
+/// none. Streamed negotiates every track, as before.
 #[tokio::test]
 async fn a_stepped_connect_negotiates_input_tracks_when_it_can_encode_them() {
-    let prepared = |generation, echo, encode: Vec<StepCodec>, encoding: bool| async move {
+    let h264 = || vec![StepCodec::H264];
+    let prepared = |generation, echo, encode: Vec<StepCodec>, decode, encoding: bool| async move {
         let http = Arc::new(GenerationHttp::new(echo));
         let peer = Arc::new(SpyPeer::default());
         let reactor = make_generation_reactor(http.clone(), peer.clone(), generation);
-        reactor.set_local_step_codecs(LocalStepCodecs {
-            encode,
-            decode: vec![],
-        });
+        reactor.set_local_step_codecs(LocalStepCodecs { encode, decode });
         if !encoding {
             reactor.set_codec_preference(None, Some(vec![]));
         }
@@ -1204,19 +1203,24 @@ async fn a_stepped_connect_negotiates_input_tracks_when_it_can_encode_them() {
     };
     let stepped = (GenerationMode::Stepped, Some("stepped"));
     assert_eq!(
-        prepared(stepped.0, stepped.1, vec![StepCodec::H264], true).await,
+        prepared(stepped.0, stepped.1, h264(), h264(), true).await,
         ["output", "input"]
     );
     assert_eq!(
-        prepared(stepped.0, stepped.1, vec![StepCodec::H264], false).await,
+        prepared(stepped.0, stepped.1, h264(), h264(), false).await,
         ["output"]
     );
     assert_eq!(
-        prepared(stepped.0, stepped.1, vec![], true).await,
+        prepared(stepped.0, stepped.1, vec![], h264(), true).await,
+        ["output"]
+    );
+    // The output cannot be decoded: the offer falls back to raw frames.
+    assert_eq!(
+        prepared(stepped.0, stepped.1, h264(), vec![], true).await,
         ["output"]
     );
     assert_eq!(
-        prepared(GenerationMode::Streamed, None, vec![], true).await,
+        prepared(GenerationMode::Streamed, None, vec![], vec![], true).await,
         ["output", "input"]
     );
 }

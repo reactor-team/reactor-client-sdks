@@ -7,7 +7,8 @@
 //! attribute in its answer, and each video track then carries the codec its
 //! answered m-section lists first: H.264, VP8, VP9 or AV1, as the
 //! [`FrameEncoding`] of that name. An audio track, a section that negotiated
-//! any other codec, and every track of an answer without the attribute carry
+//! any other codec or one the offer sent did not list, and every track of an
+//! answer without the attribute, or to an offer without it, carry
 //! [`FrameEncoding::Raw`] frames. The sections carry no media: every frame
 //! travels in data-channel messages. The negotiation holds for the
 //! connection, and a new connection negotiates again.
@@ -28,7 +29,7 @@
 
 use std::collections::HashMap;
 
-use crate::protocol::session::{TrackDirection, TrackKind};
+use crate::protocol::session::{TrackCapability, TrackDirection, TrackKind};
 use crate::protocol::webrtc::TrackMappingEntry;
 use crate::protocol::wire::v1::step::FrameEncoding;
 
@@ -385,16 +386,44 @@ pub fn stepped_offer(
     out
 }
 
+/// Whether [`stepped_offer`] can declare encoded step frames for `tracks`, as
+/// far as this side decides it: encoding is on and every video track keeps a
+/// codec this side handles in its direction. Only the engine's offer can
+/// still turn it down, by listing none of a track's codecs.
+pub fn may_encode_step_frames(
+    tracks: &[TrackCapability],
+    preferences: &CodecPreferences,
+    local: &LocalStepCodecs,
+) -> bool {
+    preferences.enabled()
+        && tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Video)
+            .all(|track| {
+                preferences
+                    .for_track(&track.name)
+                    .iter()
+                    .any(|codec| local.for_direction(track.direction).contains(codec))
+            })
+}
+
 /// The encoding each mapped track's step frames take on a connection, by
-/// track name, read from the runtime's answer: a video track takes the codec
-/// its section lists first when the answer repeats [`ENCODED_STEP_FRAMES`],
-/// and every other track is [`FrameEncoding::Raw`].
+/// track name, read from the runtime's answer to the `offer` this side sent:
+/// a video track takes the codec its section lists first when both the offer
+/// and the answer carry [`ENCODED_STEP_FRAMES`] and the offer listed that
+/// codec in the track's section, and every other track is
+/// [`FrameEncoding::Raw`]. The engine applied its own, unrewritten offer, so
+/// an answer that strays from the one sent can still be applied: checking it
+/// here keeps a codec this side cannot handle from being taken.
 pub fn negotiated_encodings(
     answer: &str,
+    offer: &str,
     mapping: &[TrackMappingEntry],
 ) -> HashMap<String, FrameEncoding> {
     let parsed = Sdp::parse(answer);
-    let declared = parsed.has_session_attribute(ENCODED_STEP_FRAMES);
+    let offered = Sdp::parse(offer);
+    let declared = offered.has_session_attribute(ENCODED_STEP_FRAMES)
+        && parsed.has_session_attribute(ENCODED_STEP_FRAMES);
     mapping
         .iter()
         .map(|entry| {
@@ -403,6 +432,11 @@ pub fn negotiated_encodings(
                     .section(&entry.mid)
                     .filter(|section| section.is_video())
                     .and_then(Section::first_codec)
+                    .filter(|codec| {
+                        offered
+                            .section(&entry.mid)
+                            .is_some_and(|section| section.codecs().contains(codec))
+                    })
                     .map_or(FrameEncoding::Raw, StepCodec::frame_encoding)
             } else {
                 FrameEncoding::Raw
@@ -667,9 +701,19 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:3\r\n"
         )
     }
 
+    /// The offer sent with every codec this side handles.
+    fn sent_offer() -> String {
+        stepped_offer(
+            OFFER,
+            &mapping(),
+            &CodecPreferences::default(),
+            &every_codec(),
+        )
+    }
+
     #[test]
     fn each_track_takes_the_codec_its_answered_section_lists_first() {
-        let encodings = negotiated_encodings(&answer(true), &mapping());
+        let encodings = negotiated_encodings(&answer(true), &sent_offer(), &mapping());
         assert_eq!(encodings["camera"], FrameEncoding::Vp9);
         assert_eq!(encodings["main_video"], FrameEncoding::H264);
         assert_eq!(encodings["main_audio"], FrameEncoding::Raw);
@@ -677,9 +721,68 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:3\r\n"
 
     #[test]
     fn an_answer_without_the_attribute_leaves_every_track_raw() {
-        let encodings = negotiated_encodings(&answer(false), &mapping());
+        let encodings = negotiated_encodings(&answer(false), &sent_offer(), &mapping());
         assert_eq!(encodings.len(), 3);
         assert!(encodings.values().all(|e| *e == FrameEncoding::Raw));
+    }
+
+    /// The answer is held to the offer sent: the attribute counts only when
+    /// the offer declared it, and a codec only when the offer listed it.
+    #[test]
+    fn an_answer_straying_from_the_sent_offer_is_raw() {
+        let encodings = negotiated_encodings(&answer(true), OFFER, &mapping());
+        assert!(encodings.values().all(|e| *e == FrameEncoding::Raw));
+
+        // VP9 for the input and H.264 for the output were dropped from the
+        // offer sent: the input may only be AV1, the output only VP8.
+        let mut preferences = CodecPreferences::default();
+        preferences.set_session(Some(vec![StepCodec::Av1]));
+        preferences.set_track("main_video", Some(vec![StepCodec::Vp8]));
+        let offer = stepped_offer(OFFER, &mapping(), &preferences, &every_codec());
+        let encodings = negotiated_encodings(&answer(true), &offer, &mapping());
+        assert_eq!(encodings["camera"], FrameEncoding::Raw);
+        assert_eq!(encodings["main_video"], FrameEncoding::Raw);
+    }
+
+    #[test]
+    fn whether_step_frames_may_be_encoded_is_decided_before_the_offer() {
+        let tracks: Vec<TrackCapability> = mapping()
+            .into_iter()
+            .map(|entry| TrackCapability {
+                name: entry.name,
+                kind: entry.kind,
+                direction: entry.direction,
+            })
+            .collect();
+        let preferences = CodecPreferences::default();
+        assert!(may_encode_step_frames(
+            &tracks,
+            &preferences,
+            &every_codec()
+        ));
+
+        // An output this side cannot decode, an input it cannot encode, a
+        // preference with nothing this side handles, or encoding off.
+        let encode_only = LocalStepCodecs {
+            encode: StepCodec::DEFAULT_ORDER.to_vec(),
+            decode: vec![],
+        };
+        assert!(!may_encode_step_frames(&tracks, &preferences, &encode_only));
+        let decode_only = LocalStepCodecs {
+            encode: vec![],
+            decode: StepCodec::DEFAULT_ORDER.to_vec(),
+        };
+        assert!(!may_encode_step_frames(&tracks, &preferences, &decode_only));
+        let mut vp8_only = CodecPreferences::default();
+        vp8_only.set_track("camera", Some(vec![StepCodec::Vp8]));
+        let h264 = LocalStepCodecs {
+            encode: vec![StepCodec::H264],
+            decode: vec![StepCodec::H264],
+        };
+        assert!(!may_encode_step_frames(&tracks, &vp8_only, &h264));
+        let mut off = CodecPreferences::default();
+        off.set_session(Some(vec![]));
+        assert!(!may_encode_step_frames(&tracks, &off, &every_codec()));
     }
 
     #[test]
@@ -690,7 +793,7 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:3\r\n"
                 "m=video 0 UDP/TLS/RTP/SAVPF 98 99",
             )
             .replace("a=rtpmap:100 H264/90000", "a=rtpmap:100 H265/90000");
-        let encodings = negotiated_encodings(&answer, &mapping());
+        let encodings = negotiated_encodings(&answer, &sent_offer(), &mapping());
         assert_eq!(encodings["camera"], FrameEncoding::Raw);
         assert_eq!(encodings["main_video"], FrameEncoding::Raw);
     }

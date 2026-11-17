@@ -52,8 +52,8 @@ mod negotiation;
 pub use decode::{DecodedFrame, FrameDecoder, FrameDecoders, RawFrameDecoder};
 pub use inputs::StepInputs;
 pub use negotiation::{
-    negotiated_encodings, stepped_offer, CodecPreferences, LocalStepCodecs, StepCodec,
-    ENCODED_STEP_FRAMES,
+    may_encode_step_frames, negotiated_encodings, stepped_offer, CodecPreferences, LocalStepCodecs,
+    StepCodec, ENCODED_STEP_FRAMES,
 };
 
 /// `dtype` of a raw video frame: RGB, one byte per channel.

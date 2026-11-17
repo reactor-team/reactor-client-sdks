@@ -51,9 +51,9 @@ use crate::stage_times::{sort_stages, StageTimes, SUBMIT};
 use crate::state::ReactorStatus;
 use crate::stats::{client_connection_stat, ClientStatsReporter, ConnectionStats, StatsSampler};
 use crate::step::{
-    build_request_step, encoded_video_frame, negotiated_encodings, raw_audio_frame,
-    raw_video_frame, stepped_offer, CodecPreferences, FrameDecoders, LocalStepCodecs, PixelLayout,
-    StepCodec, StepCommand, StepInputs, StepOutput,
+    build_request_step, encoded_video_frame, may_encode_step_frames, negotiated_encodings,
+    raw_audio_frame, raw_video_frame, stepped_offer, CodecPreferences, FrameDecoders,
+    LocalStepCodecs, PixelLayout, StepCodec, StepCommand, StepInputs, StepOutput,
 };
 use crate::{SharedAuth, SharedHttp, SharedPeer, SharedPlatform};
 
@@ -668,11 +668,14 @@ impl Reactor {
 
     /// The tracks that get an RTP transceiver. All of them when streamed. In
     /// a stepped session an input (sendonly) video track gets one only to
-    /// negotiate its step frames' codec: when encoding is on and this side
-    /// can encode some codec. Its frames ride the data channel, so the
-    /// transceiver stays mute — [`Reactor::push_video_frame`] buffers for the
-    /// next step rather than sending media, and pausing never flips it. An
-    /// input audio track's frames are always raw, so it gets none.
+    /// negotiate its step frames' codec: when the offer can declare encoded
+    /// step frames, as far as this side decides it (see
+    /// [`crate::step::may_encode_step_frames`]), so a session that falls back
+    /// to raw frames offers no section for them. Its frames ride the data
+    /// channel, so the transceiver stays mute — [`Reactor::push_video_frame`]
+    /// buffers for the next step rather than sending media, and pausing never
+    /// flips it. An input audio track's frames are always raw, so it gets
+    /// none.
     fn media_tracks(
         &self,
         tracks: &[TrackCapability],
@@ -682,7 +685,7 @@ impl Reactor {
         if self.options.generation == GenerationMode::Streamed {
             return tracks.to_vec();
         }
-        let encoded_inputs = preferences.enabled() && !local.encode.is_empty();
+        let encoded_inputs = may_encode_step_frames(tracks, preferences, local);
         tracks
             .iter()
             .filter(|t| {
@@ -761,8 +764,11 @@ impl Reactor {
             return Err(self.teardown_error().unwrap_or(error));
         }
         if self.is_stepped() {
-            self.state.lock().unwrap().step_frame_encodings =
-                negotiated_encodings(&answer.sdp_answer, &prepared.track_mapping);
+            self.state.lock().unwrap().step_frame_encodings = negotiated_encodings(
+                &answer.sdp_answer,
+                &prepared.sdp_offer,
+                &prepared.track_mapping,
+            );
         }
 
         match timeout(
