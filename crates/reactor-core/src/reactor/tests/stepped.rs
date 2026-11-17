@@ -2373,6 +2373,80 @@ mod webrtc_codecs {
         assert_eq!(keyframes, [true, false], "{codec:?}");
     }
 
+    /// A frame the host encoded takes the track's stream over: the next raw
+    /// frame pushed on it starts the core's own stream again at a keyframe.
+    #[test]
+    fn a_host_encoded_frame_restarts_the_track_at_a_keyframe() {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let probe = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        let codec = round_trip_codecs(&probe)[0];
+        let reactor = encoding_reactor(peer.clone(), codec);
+        push(&reactor, 0);
+        push(&reactor, 1);
+        reactor.push_step_encoded_video_frame(
+            "cam",
+            codec.frame_encoding(),
+            &[0, 0, 0, 1],
+            WIDTH,
+            HEIGHT,
+            None,
+            None,
+        );
+        push(&reactor, 2);
+        push(&reactor, 3);
+        let frames = pushed_frames(&peer, 0);
+        assert_eq!(frames.len(), 5, "{codec:?}");
+        assert_eq!(frames[2].data, [0, 0, 0, 1], "{codec:?}");
+        let keyframes: Vec<bool> = frames.iter().map(|f| f.keyframe).collect();
+        assert_eq!(keyframes, [true, false, false, true, false], "{codec:?}");
+    }
+
+    /// Frames pushed while the connection tears down, again and again, on
+    /// another thread: neither side waits on the other for good. A push holds
+    /// the encoders while it sends, which takes `state`; the teardown must
+    /// not wait for the encoders while it holds `state`.
+    #[test]
+    fn pushes_racing_teardowns_never_deadlock() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let probe = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        let codec = round_trip_codecs(&probe)[0];
+        let reactor = encoding_reactor(peer, codec);
+        let stop = Arc::new(AtomicBool::new(false));
+        let pusher = std::thread::spawn({
+            let reactor = reactor.clone();
+            let stop = stop.clone();
+            move || {
+                let mut n = 0u8;
+                while !stop.load(Ordering::SeqCst) {
+                    push(&reactor, n);
+                    reactor.clear_step_inputs();
+                    n = n.wrapping_add(1);
+                }
+            }
+        });
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn({
+            let reactor = reactor.clone();
+            move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                for _ in 0..200 {
+                    runtime.block_on(reactor.teardown(true, false));
+                    negotiate(&reactor, codec);
+                }
+                done.send(()).unwrap();
+            }
+        });
+        let result = finished.recv_timeout(std::time::Duration::from_secs(60));
+        stop.store(true, Ordering::SeqCst);
+        result.expect("a push and a teardown deadlocked");
+        pusher.join().unwrap();
+    }
+
     /// A track the connection carries raw, or a frame the codec cannot take
     /// (an odd size), goes out raw.
     #[test]

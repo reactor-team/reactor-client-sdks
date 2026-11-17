@@ -328,10 +328,12 @@ impl InputEncoders {
     }
 
     /// Encode `picture` as the next frame of `track`'s stream in `codec`, a
-    /// keyframe when `keyframe`, and hand it to `send` before the next frame
-    /// of any track is encoded, so frames go out in the order they were
-    /// encoded. `Ok(false)` when the encoder dropped the frame: nothing is
-    /// sent, and the next frame still follows on from the last one sent.
+    /// keyframe when `keyframe` says so, and hand it to `send` before the next
+    /// frame of any track is encoded, so frames go out in the order they were
+    /// encoded. `keyframe` is asked with no other frame encoding, so a mark
+    /// set under [`Self::hold`] is seen by the next frame encoded after it.
+    /// `Ok(false)` when the encoder dropped the frame: nothing is sent, and
+    /// the next frame still follows on from the last one sent.
     ///
     /// On an error nothing is sent, and the track's next frame is a keyframe.
     pub fn encode(
@@ -339,7 +341,7 @@ impl InputEncoders {
         track: &str,
         codec: super::StepCodec,
         picture: &PushedPicture<'_>,
-        keyframe: bool,
+        keyframe: impl FnOnce() -> bool,
         send: impl FnOnce(Frame),
     ) -> Result<bool, reactor_webrtc::codec::CodecError> {
         use reactor_webrtc::codec::{CodecError, VideoEncoderConfig};
@@ -384,13 +386,21 @@ impl InputEncoders {
                 })
             }
         };
-        if keyframe {
+        if keyframe() {
             entry.encoder.request_key_frame();
         }
         let timestamp_us = capture_time_us.unwrap_or(entry.frames * UNTIMED_FRAME_US);
-        let encoded = entry
+        let encoded = match entry
             .encoder
-            .encode(&pixels, width, height, format, timestamp_us)?;
+            .encode(&pixels, width, height, format, timestamp_us)
+        {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                // The next frame starts a fresh stream at a keyframe.
+                tracks.remove(track);
+                return Err(error);
+            }
+        };
         entry.frames += 1;
         let Some(encoded) = encoded else {
             return Ok(false);
@@ -407,10 +417,29 @@ impl InputEncoders {
         Ok(true)
     }
 
-    /// Drop every track's encoder, as the data channel closes: each track's
-    /// first frame on the next connection is a keyframe.
-    pub fn reset(&self) {
-        self.tracks.lock().unwrap().clear();
+    /// Drop every track's encoder, as the data channel closes, and run `then`
+    /// before any frame is encoded again: each track's first frame on the
+    /// next connection is a keyframe. Never call it holding a lock `send`
+    /// takes.
+    pub fn reset<R>(&self, then: impl FnOnce() -> R) -> R {
+        let mut tracks = self.tracks.lock().unwrap();
+        tracks.clear();
+        then()
+    }
+
+    /// Run `f` with no frame encoding, for dropping encoded frames not sent
+    /// yet and marking their tracks for a keyframe as one step: no frame is
+    /// encoded in between, on the references just dropped. Never call it
+    /// holding a lock `send` takes, nor from inside `send`.
+    pub fn hold<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _tracks = self.tracks.lock().unwrap();
+        f()
+    }
+
+    /// Drop `track`'s encoder, as frames encoded elsewhere go out on it: its
+    /// next frame encoded here starts a fresh stream at a keyframe.
+    pub fn restart(&self, track: &str) {
+        self.tracks.lock().unwrap().remove(track);
     }
 
     /// The tracks that have an encoder, sorted.
@@ -790,7 +819,13 @@ mod encoder_tests {
     ) -> Frame {
         let mut sent = None;
         assert!(encoders
-            .encode(track, codec, picture, keyframe, |frame| sent = Some(frame))
+            .encode(
+                track,
+                codec,
+                picture,
+                || keyframe,
+                |frame| sent = Some(frame)
+            )
             .unwrap());
         sent.expect("an encoded frame is handed on")
     }
@@ -821,7 +856,7 @@ mod encoder_tests {
             assert_eq!(keyframes, [true, false, true, true, false], "{codec:?}");
             assert_eq!(encoders.live_tracks(), ["a", "b"]);
 
-            encoders.reset();
+            encoders.reset(|| ());
             assert!(encoders.live_tracks().is_empty());
             let frame = encode(
                 &encoders,
@@ -886,7 +921,7 @@ mod encoder_tests {
                 height: 3,
                 ..picture(&odd, PixelLayout::Rgb)
             },
-            false,
+            || false,
             |_| panic!("nothing is sent"),
         );
         assert!(refused.is_err());
@@ -901,5 +936,73 @@ mod encoder_tests {
             )
             .keyframe
         );
+    }
+
+    /// A frame a live encoder fails on drops the track's encoder: its next
+    /// frame starts a fresh stream at a keyframe.
+    #[test]
+    fn a_frame_a_live_encoder_fails_on_restarts_the_track_at_a_keyframe() {
+        let codecs = VideoCodecs::new().unwrap();
+        let codec = round_trip_codecs(&codecs)[0];
+        let encoders = InputEncoders::new(codecs);
+        let rgb = vec![0u8; 64 * 48 * 3];
+        encode(
+            &encoders,
+            "a",
+            codec,
+            &picture(&rgb, PixelLayout::Rgb),
+            false,
+        );
+        encode(
+            &encoders,
+            "a",
+            codec,
+            &picture(&rgb, PixelLayout::Rgb),
+            false,
+        );
+        let short = vec![0u8; 16];
+        let failed = encoders.encode(
+            "a",
+            codec,
+            &picture(&short, PixelLayout::Rgb),
+            || false,
+            |_| panic!("nothing is sent"),
+        );
+        assert!(failed.is_err());
+        assert!(encoders.live_tracks().is_empty());
+        let frame = encode(
+            &encoders,
+            "a",
+            codec,
+            &picture(&rgb, PixelLayout::Rgb),
+            false,
+        );
+        assert!(frame.keyframe, "{codec:?}");
+    }
+
+    /// A track restarted for frames encoded elsewhere starts its next frame
+    /// here at a keyframe.
+    #[test]
+    fn a_restarted_track_starts_at_a_keyframe() {
+        let codecs = VideoCodecs::new().unwrap();
+        let codec = round_trip_codecs(&codecs)[0];
+        let encoders = InputEncoders::new(codecs);
+        let rgb = vec![0u8; 64 * 48 * 3];
+        encode(
+            &encoders,
+            "a",
+            codec,
+            &picture(&rgb, PixelLayout::Rgb),
+            false,
+        );
+        encoders.restart("a");
+        let frame = encode(
+            &encoders,
+            "a",
+            codec,
+            &picture(&rgb, PixelLayout::Rgb),
+            false,
+        );
+        assert!(frame.keyframe, "{codec:?}");
     }
 }
