@@ -269,8 +269,8 @@ except AuthError:
 
 A model that supports it can generate one step at a time instead of streaming.
 Ask for it when creating the client, then call `step()`: the runtime applies the
-state (each key as the model's `set_<key>` command), then the commands, then every
-input frame pushed since the previous step, generates, and the call returns what
+state (each key as the model's `set_<key>` command), then the commands, then any
+input frames the step carries, generates, and the call returns what
 the model produced on each output track. These are applied one by one, in that
 order; a failure part-way does not undo the ones before it.
 
@@ -281,7 +281,7 @@ reactor = Reactor("owner/model", api_key=key, generation="stepped")
 await reactor.connect()          # GenerationModeMismatchError if the runtime cannot
 
 camera = await reactor.track("camera").publish()
-camera.push_frame(frame)         # buffered for the next step, not sent
+camera.push_frame(frame)         # reaches the runtime before the next step
 
 result = await reactor.step(
     state={"prompt": "a red fox"},
@@ -300,8 +300,12 @@ for f in result.files:           # extra files the model kept with the step
 await reactor.step()             # no arguments: a step on the model's current state
 ```
 
-`Track.push_frame` keeps its signature: in a stepped session it buffers the frame
-for the next step instead of sending it. The buffer holds at most one data-channel
+`Track.push_frame` keeps its signature: in a stepped session the frame goes to
+the runtime over the data channel instead of RTP. Once the session is ready,
+against a runtime that takes pushed frames, each push is sent at once, ahead of
+any step after it, and one the channel cannot take is dropped and raised as an
+error event. A frame pushed before the session is ready, or to an older runtime,
+is buffered instead and sent with the next push or step. The buffer holds at most one data-channel
 message's worth of frame bytes, so pushing faster than steps run drops the oldest
 frames, across tracks; once the session's tracks are known, a push to a track the
 session does not take as input is dropped with a warning. A step refused before it
@@ -335,8 +339,10 @@ result = await reactor.step()
 
 `width` and `height` are the frame each one decodes to. `media` takes raw RGB
 arrays too, and its frames go after the ones pushed to the same track since the
-previous step. A step whose frames do not decode, or that does not start at a
-keyframe, raises `StepRefusedError`, naming the frame in `entry`. A runtime that
+previous step. A frame already sent to the runtime that does not decode raises an
+`input_decode_failed` error event naming the track, whose next frame must then be
+a keyframe. A step whose buffered frames do not decode, or that does not start at
+a keyframe, raises `StepRefusedError`, naming the frame in `entry`. A runtime that
 predates encoded frames refuses them the same way.
 
 A step carries at most one data-channel message's worth of frames, and pushing
@@ -368,7 +374,7 @@ ended before its result came raises `StepSessionEndedError` (whether it ran is
 unknown); a request too large to send raises `MessageTooLargeError` (nothing was
 sent). A stepped `connect()` raises `DataChannelChunkingRequiredError` when the
 data channel did not negotiate chunking, which stepped sessions need. `clear_step_inputs()` drops
-the frames buffered so far. `step_timeout=` bounds a step (default 300 s).
+the frames buffered so far; frames already sent to the runtime are not recalled. `step_timeout=` bounds a step (default 300 s).
 `numpy` is needed to read `.array`; `.data`, `.dtype` and `.shape` are there
 without it. See [`examples/09_stepped_generation.py`](examples/09_stepped_generation.py).
 

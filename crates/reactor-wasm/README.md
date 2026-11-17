@@ -63,21 +63,28 @@ arrays (`Uint8Array` video, `Int16Array` audio) and serde has no word for one.
 
 A client created with `generation: "stepped"` sends no input media over RTP.
 `publishTrack(name)` only claims an input track (a `MediaStreamTrack` passed
-there is ignored, with a console warning), `pushVideoFrame` / `pushAudioFrame`
-buffer frames in the core, and the next `step()` carries them inside its one
-`RequestStep`. Both of `step()`'s arguments are optional: an empty step runs on
-the model's current state. Video arrives as RGBA, RGB or BGRA, and the core
-converts it to the RGB a step sends in one pass. `pushEncodedVideoFrame` buffers
-an H.264 access unit (Annex B) as it is, with the size it decodes to; the runtime
-decodes a track's encoded frames of one step, in push order and starting at a
-keyframe, before the step runs.
+there is ignored, with a console warning), and `pushVideoFrame` /
+`pushAudioFrame` hand frames to the core. Once the session is ready, against a
+runtime that takes pushed frames, each push is sent at once in a `PushFrames`
+message on the data channel, ahead of any step after it; one the channel cannot
+take is dropped and raised as an error event. Frames pushed before the session
+is ready, or to an older runtime, are buffered in the core and sent ahead of the
+next push once it can go, or inside the next `step()`'s `RequestStep`. Both of
+`step()`'s arguments are optional: an empty step runs on the model's current
+state. Video arrives as RGBA, RGB or BGRA, and the core converts it to the RGB a
+step sends in one pass. `pushEncodedVideoFrame` pushes an H.264 access unit
+(Annex B) as it is, with the size it decodes to; the runtime decodes a track's
+encoded frames as one stream, in push order and starting at a keyframe, as they
+arrive. A pushed frame that does not decode raises an `input_decode_failed`
+error event naming the track, whose next frame must then be a keyframe.
 
 The buffer holds at most one data-channel message's worth of frames: pushing
 faster than steps run drops the oldest frames, across tracks, and the next step
-logs how many. Pushed frames belong to the step that takes them: when that
+logs how many. Buffered frames belong to the step that takes them: when that
 step's request cannot be sent — `MESSAGE_TOO_LARGE` among the reasons — the
 step rejects and its frames are dropped with it, so the next step starts from
-what is pushed after. `clearStepInputs()` drops whatever is buffered now.
+what is pushed after. `clearStepInputs()` drops whatever is buffered now;
+frames already sent to the runtime are not recalled.
 
 `step()` resolves with `{ step, tracks, elapsed, files, error?, data? }`.
 `data` is a `Uint8Array` of what the model returned for the step besides its

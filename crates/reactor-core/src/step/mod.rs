@@ -35,8 +35,8 @@
 //! ([`encoded_video_frame`]), which the runtime decodes as they arrive. When
 //! a track's pushed frames stop decoding, the runtime says so with an
 //! `input_decode_failed` notification naming the track and drops its frames
-//! up to the next keyframe; the track is then marked
-//! ([`StepInputs::take_keyframe_request`]) so its next frames start at one.
+//! up to the next keyframe. It is raised as an error event whose `track`
+//! names the track, so the host encoding it starts its next frame at one.
 //! Result frames are decoded through
 //! [`FrameDecoders`], keyed by encoding, so a compressed encoding is a new
 //! registry entry rather than a change to the result type.

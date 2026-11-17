@@ -1352,7 +1352,7 @@ public final class ClientPeer implements Runnable {
     }
 
     /**
-     * Buffers one encoded video frame for the next step, its bytes as they are.
+     * Pushes one encoded video frame to a stepped session, its bytes as they are.
      *
      * <p>Stepped sessions only, which {@link inc.reactor.sdk.Track} checks before calling this.
      *
@@ -1672,8 +1672,9 @@ public final class ClientPeer implements Runnable {
     }
 
     /**
-     * Drops every input frame buffered for the next step. A no-op on a streamed client, and on one
-     * with no native client yet, which has buffered nothing.
+     * Drops every input frame still buffered for the next step; frames already sent to the runtime
+     * are not recalled. A no-op on a streamed client, and on one with no native client yet, which
+     * has buffered nothing.
      */
     public void clearStepInputs() {
         if (options.generation() != Generation.STEPPED) {

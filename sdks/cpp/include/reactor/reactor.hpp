@@ -415,18 +415,21 @@ class Reactor {
   /// Run one step of a stepped session and resolve with what it produced.
   ///
   /// Before the model generates, the runtime applies `state` (each key as the
-  /// model's `set_<key>` command), then `commands` in order, then every input
-  /// frame pushed since the previous step — `Track::push_frame` does not send in
-  /// a stepped session, it buffers for the next step. These are individual
-  /// calls, not a transaction: one that fails does not undo the ones before it.
+  /// model's `set_<key>` command), then `commands` in order, then any input
+  /// frames the step carries. These are individual calls, not a transaction: one
+  /// that fails does not undo the ones before it.
   ///
-  /// The buffer holds at most one data-channel message's worth of frame bytes:
-  /// pushing faster than steps run drops the oldest frames, across tracks. Once
-  /// the session's tracks are known, a frame pushed to a track the session does
-  /// not take as input is dropped with a warning. The frames buffered when a step
-  /// goes out belong to it whatever its outcome: one that could not be sent,
-  /// `MessageTooLargeError` included, drops them too, and nothing is resent. A
-  /// step refused before it goes out keeps them for the next step.
+  /// In a stepped session `Track::push_frame` sends no RTP. Once the session is
+  /// ready, against a runtime that takes pushed frames, each push is sent to the
+  /// runtime at once, ahead of any step after it; one the data channel cannot
+  /// take is dropped and raised as an error event. A frame pushed before the
+  /// session is ready, or to an older runtime, is buffered instead and sent with
+  /// the next push or step. The buffer holds at most one data-channel message's worth of frame
+  /// bytes: pushing faster than steps run drops the oldest frames, across tracks. Once the
+  /// session's tracks are known, a frame pushed to a track the session does not take as input is
+  /// dropped with a warning. The frames buffered when a step goes out belong to it whatever its
+  /// outcome: one that could not be sent, `MessageTooLargeError` included, drops them too, and
+  /// nothing is resent. A step refused before it goes out keeps them for the next step.
   ///
   /// ```cpp
   /// auto camera = client.track("camera");
@@ -503,8 +506,9 @@ class Reactor {
   // NOLINTNEXTLINE(performance-unnecessary-value-param)
   std::future<StepResult> step(Json state, std::vector<StepCommand> commands, StepMedia media);
 
-  /// Drop every frame buffered for the next step, so that step runs without
-  /// them. A no-op before a session exists and on a streamed client.
+  /// Drop every frame still buffered for the next step, so that step runs
+  /// without them. Frames already sent to the runtime are not recalled. A no-op
+  /// before a session exists and on a streamed client.
   void clear_step_inputs();
 
  private:

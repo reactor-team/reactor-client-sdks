@@ -132,7 +132,7 @@ of `Reactor.fetchJwt`.
 A model that supports it can generate one step at a time instead of streaming.
 Ask for it when creating the client, then call `step()`: the runtime applies the
 state (each key as the model's `set_<key>` command), then the commands, then
-every input frame pushed since the previous step, generates, and the step
+any input frames the step carries, generates, and the step
 completes with what the model produced on each output track. The runtime checks
 the whole request before it applies any of it, so a refused step changed nothing
 (`StepRefusedException.entry()` names the part at fault); a step whose call
@@ -151,7 +151,7 @@ try (Reactor reactor = Reactor.open(ReactorOptions.builder(apiUrl, "owner/model"
 
     Track camera = reactor.track("camera");
     camera.publish().join();
-    camera.pushFrame(bgra, width, height); // buffered for the next step, not sent
+    camera.pushFrame(bgra, width, height); // reaches the runtime before the next step
 
     StepResult result = reactor.step(
                     JsonValue.object().put("prompt", "a red fox").build(),
@@ -181,9 +181,13 @@ val result = client.step(
 val bare = client.step()                    // no state, no commands
 ```
 
-`Track.pushFrame` keeps its signature: in a stepped session it buffers the frame
-for the next step instead of sending it, converted to `(height, width, 3)` RGB.
-Audio comes back as `(channels, samples)` `int16`, so `frame.data().asShortBuffer()`
+`Track.pushFrame` keeps its signature: in a stepped session the frame goes to
+the runtime over the data channel instead of RTP, converted to `(height, width, 3)`
+RGB. Once the session is ready, against a runtime that takes pushed frames, each
+push is sent at once, ahead of any step after it, and one the channel cannot take
+is dropped and raised as an error event. A frame pushed before the session is
+ready, or to an older runtime, is buffered instead and sent with the next push or
+step. Audio comes back as `(channels, samples)` `int16`, so `frame.data().asShortBuffer()`
 reads the samples. A frame handler on a stepped session's track is refused,
 because nothing streams there — the output is in the result.
 
@@ -191,7 +195,8 @@ A step refused before it goes out (outside a connected stepped session, or with
 malformed arguments) keeps the buffered frames for the next step. Past that they
 belong to the step whatever its outcome: one that could not be sent,
 `MessageTooLargeException` included, drops them too, and nothing is resent.
-`clearStepInputs()` drops what is buffered now. The buffer holds at most one data-channel message's
+`clearStepInputs()` drops what is buffered now; frames already sent to the
+runtime are not recalled. The buffer holds at most one data-channel message's
 worth of frame bytes, so pushing faster than steps run drops the oldest frames,
 across tracks. Once the session's tracks are known, a push to a track the
 session does not take as input is dropped with a warning.
@@ -251,8 +256,10 @@ go all or nothing: none is pushed until the state is known to be well formed, th
 session is ready and every frame has been checked, so a step refused for any of
 those, a bad track or frame anywhere in its media included, leaves the buffer
 untouched. A session that leaves ready once the media is in has the step refused
-and keeps the frames for the next one, as pushed frames are. A step whose frames do not decode, or that
-does not start at a keyframe, fails with `StepRefusedException`, naming the frame
+and keeps the frames for the next one, as buffered frames are. A frame already
+sent to the runtime that does not decode raises an `input_decode_failed` error
+event naming the track, whose next frame must then be a keyframe. A step whose
+buffered frames do not decode, or that does not start at a keyframe, fails with `StepRefusedException`, naming the frame
 in `entry()`; a runtime that predates encoded frames refuses them the same way.
 Needs a `libreactor_ffi` that exports `reactor_push_step_encoded_video_frame`;
 an older one still loads, and `pushEncodedFrame` says to rebuild it.

@@ -326,8 +326,9 @@ export declare class ReactorClient {
    *  `step_not_ready`, `step_command_failed`, `step_session_ended`,
    *  `step_result_too_large`, `MESSAGE_TOO_LARGE`, ...). */
   step(state?: Record<string, unknown> | null, commands?: StepCommand[] | null): Promise<StepResult>;
-  /** Stepped sessions only. Buffers the frame for the next `step()`; throws
-   *  synchronously on a frame that does not match its dimensions. */
+  /** Stepped sessions only. Sends the frame to the runtime at once, or
+   *  buffers it for the next `step()`; throws synchronously on a frame that
+   *  does not match its dimensions. */
   pushVideoFrame(
     name: string,
     data: Uint8Array,
@@ -337,8 +338,8 @@ export declare class ReactorClient {
     metadata?: Uint8Array | null,
     captureTimeUs?: number | null,
   ): void;
-  /** Stepped sessions only. Buffers one encoded frame (an H.264 access
-   *  unit, Annex B) for the next `step()`, its bytes as they are; `width` and
+  /** Stepped sessions only. Pushes one encoded frame (an H.264 access
+   *  unit, Annex B) as `pushVideoFrame` does, its bytes as they are; `width` and
    *  `height` are the frame it decodes to. Throws synchronously on empty
    *  data, a zero dimension or an unknown codec. */
   pushEncodedVideoFrame(

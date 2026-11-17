@@ -167,7 +167,7 @@ const reactor = new Reactor({ modelName: "my-stepped-model", generation: "steppe
 await reactor.connect();
 
 // Input frames never travel over RTP in a stepped session: claim the input
-// track, push frames through it, and the next step carries them.
+// track and push frames through it; they reach the runtime ahead of the next step.
 const camera = await reactor.publishTrack("camera");
 await camera.pushFrame(canvasCtx.getImageData(0, 0, 640, 360));
 
@@ -188,8 +188,8 @@ try {
 await reactor.step();
 ```
 
-- `step({ state, commands })` sends `state`, `commands` and every frame pushed since the
-  previous step in one request. The runtime applies them in order — each `state` key as the
+- `step({ state, commands })` sends `state`, `commands` and any frames still buffered in one
+  request. The runtime applies them in order — each `state` key as the
   model's `set_<key>` command, then `commands`, then the frames — and then generates. The
   runtime checks the whole request before it applies any of it, so a refused step changes
   nothing; past that check they are separate calls, and a handler that fails does not undo
@@ -212,15 +212,19 @@ await reactor.step();
   (`JSON.parse(new TextDecoder().decode(result.data))`). It arrives with the step's frames, so a
   model whose output is data alone needs no output track; it is absent when the model returned none.
 - `publishTrack(name)` resolves with a handle whose `pushFrame(frame, { metadata?,
-  captureTimeUs? })` buffers a frame for the next step (`reactor.pushFrame(name, frame)` does
+  captureTimeUs? })` hands a frame to the runtime (`reactor.pushFrame(name, frame)` does
   the same, for a track published on this connection). The handle stops working once the track
   is unpublished or its connection ends; publish again for a new one. It takes a `VideoFrame`, an `ImageData`, `{ data, width, height, format? }` raw
   `"rgba"`/`"rgb"`/`"bgra"` pixels, or `{ samples, sampleRate, channels? }` interleaved
   `Int16Array` PCM for an audio track. Pushes keep their order, and `step()` waits for every
   push called before it. A refused push rejects, so await it, or `.catch()` it in a frame loop.
-  At most one message's worth of frames waits for the next step:
-  pushing faster than steps run drops the oldest frames, across tracks. `clearStepInputs()`
-  drops whatever is waiting.
+  Once the session is ready, against a runtime that takes pushed frames, each push is sent at
+  once over the data channel, ahead of any step after it, and one the channel cannot take is
+  dropped and raised as an error event. A frame pushed before the session is ready, or to an
+  older runtime, is buffered instead and sent with the next push or step. At most one
+  message's worth of frames waits in that buffer: pushing faster than steps run drops the
+  oldest frames, across tracks. `clearStepInputs()` drops whatever is waiting; frames already
+  sent to the runtime are not recalled.
 - The `MediaStreamTrack` argument of `publishTrack()` is optional in a stepped session and
   ignored there, with a console warning: no RTP is sent, frames go through `pushFrame()`. In
   a streamed session it is still required, and `publishTrack(name)` without one rejects with
@@ -233,7 +237,7 @@ await reactor.step();
   `command_code` the code its handler raised), `StepSessionEndedError`
   (`step_session_ended`: the session ended before the step's result came back),
   `StepResultTooLargeError` (`step_result_too_large`), `UnsupportedFrameEncodingError`, and
-  `MessageTooLargeError` when the request is too large to send. The frames pushed for a step
+  `MessageTooLargeError` when the request is too large to send. The frames buffered for a step
   belong to it: when its request cannot be sent, the step rejects and its frames are dropped
   with it, not kept for the next step.
 - A step's result travels in one data-channel message, whose limit is the smaller of the
@@ -285,8 +289,10 @@ await reactor.step();
   `step()` waits for it to take the buffer, so its frames go to the next step, not this one.
 - `pushEncodedFrame()` rejects with an `InvalidStateError` outside a stepped session, on an
   audio or recvonly track, a track not published on this connection, empty data or a zero
-  dimension. A step whose frames do not decode, or do not start at a keyframe, rejects with a
-  `StepRefusedError` naming the frame in `entry`; a runtime that predates encoded frames
+  dimension. A frame already sent to the runtime that does not decode raises an
+  `input_decode_failed` error event naming the track, whose next frame must then be a
+  keyframe. A step whose buffered frames do not decode, or do not start at a keyframe, rejects
+  with a `StepRefusedError` naming the frame in `entry`; a runtime that predates encoded frames
   refuses them the same way.
 
 ## Recording and clips

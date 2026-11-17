@@ -283,11 +283,12 @@ struct FFI: Sendable {
             _ userdata: UnsafeMutableRawPointer?
         ) -> Void
 
-    /// `reactor_clear_step_inputs` — drop every frame buffered for the next step.
+    /// `reactor_clear_step_inputs` — drop every frame still buffered for the next
+    /// step; frames already sent to the runtime are not recalled.
     var clearStepInputs: @Sendable (OpaquePointer?) -> Void
 
-    /// `reactor_push_step_encoded_video_frame` — buffer one encoded video frame
-    /// for the next step, its bytes as they are.
+    /// `reactor_push_step_encoded_video_frame` — push one encoded video frame,
+    /// its bytes as they are, to the runtime or the next step's buffer.
     ///
     /// `encoding` is a `REACTOR_FRAME_ENCODING_*` value, and `width` and
     /// `height` the frame it decodes to. A null tag with length 0 leaves the

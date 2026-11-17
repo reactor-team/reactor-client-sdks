@@ -11,9 +11,10 @@ public enum Generation: String, Sendable, Hashable, CaseIterable {
     /// before the choice existed, and the default.
     case streamed
 
-    /// One ``Reactor/step(state:commands:media:)`` at a time. Input tracks buffer
-    /// what is pushed into them for the next step, and each step answers with
-    /// the frames the model produced rather than streaming them.
+    /// One ``Reactor/step(state:commands:media:)`` at a time. Input tracks send
+    /// what is pushed into them to the runtime over the data channel, ahead of
+    /// the next step, and each step answers with the frames the model produced
+    /// rather than streaming them.
     case stepped
 }
 
@@ -325,9 +326,9 @@ public struct StepFrame: Sendable, Hashable {
 /// `width` and `height` are the frame it decodes to. Push it with
 /// ``Track/pushEncodedFrame(_:)``, or give it to
 /// ``Reactor/step(state:commands:media:)`` as ``StepMediaFrame/encoded(_:)``.
-/// The runtime decodes a track's encoded frames of one step as one stream,
-/// before the step runs, and the model reads RGB frames as if they had been
-/// pushed raw. So give them in decode order, starting at a keyframe — the
+/// The runtime decodes a track's encoded frames as one stream, as they arrive,
+/// and the model reads RGB frames as if they had been pushed raw. So give them
+/// in decode order, starting at a keyframe — the
 /// access units from the last IDR frame to the frame the step is about:
 ///
 /// ```swift
@@ -335,8 +336,10 @@ public struct StepFrame: Sendable, Hashable {
 /// let result = try await reactor.step(media: ["webcam": frames.map(StepMediaFrame.encoded)])
 /// ```
 ///
-/// A step whose frames do not decode, or that does not start at a keyframe, is
-/// refused with ``ReactorError/Code/stepRefused``.
+/// A frame already sent to the runtime that does not decode raises an
+/// `input_decode_failed` error event naming the track, whose next frame must
+/// then be a keyframe. A step whose buffered frames do not decode, or that does
+/// not start at a keyframe, is refused with ``ReactorError/Code/stepRefused``.
 public struct EncodedFrame: Sendable, Hashable {
 
     /// The codecs an encoded step frame can carry.

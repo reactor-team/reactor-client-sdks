@@ -55,7 +55,6 @@ use crate::step::{
     push_frames_message, pushed_frame, raw_audio_frame, raw_video_frame,
     runtime_takes_pushed_frames, step_output, stepped_offer, CodecPreferences, FrameDecoders,
     LocalStepCodecs, PixelLayout, StepCodec, StepCommand, StepInputs, StepOutput,
-    INPUT_DECODE_FAILED,
 };
 use crate::{SharedAuth, SharedHttp, SharedPeer, SharedPlatform};
 
@@ -290,8 +289,12 @@ pub struct Reactor {
     stats: StatsSampler,
     /// The stages the SDK times itself, reported with the client stats.
     stage_times: Arc<StageTimes>,
-    /// Stepped mode: input frames pushed since the last step, per track.
+    /// Stepped mode: input frames pushed and not sent yet, per track.
     step_inputs: StepInputs,
+    /// Stepped mode: held across one push's buffering or sending, so a drain
+    /// of the buffered frames and a push from another thread cannot interleave
+    /// and reorder a track's frames.
+    push_lock: Mutex<()>,
     /// Stepped mode: how a step result's frames are decoded, per encoding.
     frame_decoders: FrameDecoders,
     /// Held while a pause or resume is sent and recorded in
@@ -371,6 +374,7 @@ impl Reactor {
             stats: StatsSampler::new(),
             stage_times: Arc::new(StageTimes::new()),
             step_inputs: StepInputs::new(),
+            push_lock: Mutex::new(()),
             frame_decoders: FrameDecoders::default(),
             track_control: Mutex::new(()),
             codec_preferences: Mutex::new(CodecPreferences::default()),
@@ -863,8 +867,6 @@ impl Reactor {
             state.ice_ready = false;
             state.track_mapping.clear();
             state.step_frame_encodings.clear();
-            // The input tracks' streams start over at keyframes too.
-            self.step_inputs.clear_keyframe_requests();
             state.paused_tracks.clear();
             if recoverable {
                 false
@@ -1022,20 +1024,15 @@ impl Reactor {
                     // globally too would double-report the same failure.
                     return;
                 }
-                // The runtime could not decode a track's pushed frames and
-                // drops them up to the next keyframe: the track's next frames
-                // start at one. Still raised below, for a host that encodes
-                // its frames itself.
-                if error.code == INPUT_DECODE_FAILED {
-                    if let Some(track) = &error.track {
-                        self.step_inputs.request_keyframe(track);
-                    }
-                }
                 // No pending request matched this reply's request_id (e.g. it
                 // arrived after a timeout already cancelled the correlation).
                 // There is no awaiting caller left to deliver it to, so this
-                // is the only signal callers get that it failed.
-                self.emit_error(ErrorDetails::new(error.code, error.message, true));
+                // is the only signal callers get that it failed. Its track,
+                // when it names one, goes with it: an `input_decode_failed`
+                // says which input track's next frame must be a keyframe.
+                let mut details = ErrorDetails::new(error.code, error.message, true);
+                details.track = error.track;
+                self.emit_error(details);
             }
             Some(data_server_message::Payload::StepResult(result)) if !handled.correlated => {
                 // Its step() already gave up (timeout) — nobody to hand it to.
@@ -1859,8 +1856,14 @@ impl Reactor {
     /// on the data channel, behind the commands and steps sent before it,
     /// when [`Self::sends_pushed_frames`]; buffered for the next step's
     /// `media_input` otherwise. Frames still buffered from before go first,
-    /// so a track's frames keep the order they were pushed in.
+    /// so a track's frames keep the order they were pushed in: one push at a
+    /// time, so another thread's push cannot go out between them.
+    ///
+    /// Buffered frames the buffer cannot hand over (an encoded track whose
+    /// keyframe its limit evicted) are dropped and raised as an error event,
+    /// as a refused step would have reported them.
     fn push_step_input(&self, track_name: &str, kind: WireTrackKind, frame: Frame) {
+        let _serialized = self.push_lock.lock().unwrap();
         if !self.sends_pushed_frames() {
             self.step_inputs
                 .push(track_name, kind, frame, self.peer.max_message_bytes());
@@ -1869,7 +1872,10 @@ impl Reactor {
         if !self.step_inputs.is_empty() {
             match self.step_inputs.take() {
                 Ok(buffered) => self.send_pushed_frames(buffered),
-                Err(error) => log::warn!("dropping buffered step input frames: {error}"),
+                Err(error) => {
+                    log::warn!("dropping buffered step input frames: {error}");
+                    self.emit_error(error.details(Some("push_frames")));
+                }
             }
         }
         self.send_pushed_frames(vec![pushed_frame(track_name, kind, frame)]);
@@ -1895,14 +1901,6 @@ impl Reactor {
             log::warn!("dropping {frames} pushed step input frames: {error}");
             self.emit_error(error.details(Some("push_frames")));
         }
-    }
-
-    /// Whether `track`'s next pushed frames must start at a keyframe, because
-    /// the runtime could not decode its frames (`input_decode_failed`) and
-    /// drops them until one. Asking clears the mark: the caller about to
-    /// encode the track's next frame starts it at a keyframe.
-    pub fn take_input_keyframe_request(&self, track: &str) -> bool {
-        self.step_inputs.take_keyframe_request(track)
     }
 
     /// Whether `track_name` is an input track of a stepped session, whose
@@ -1990,8 +1988,8 @@ impl Reactor {
     /// `height` are the frame it decodes to; the runtime decodes a track's
     /// encoded frames as one stream, so they go in decode order and start at
     /// a keyframe. A pushed frame that does not decode is answered with an
-    /// `input_decode_failed` error naming the track, and the track's next
-    /// frame must be a keyframe ([`Reactor::take_input_keyframe_request`]); a
+    /// `input_decode_failed` error event whose `track` names the track, and
+    /// the track's next frame must be a keyframe; a
     /// step whose buffered frames do not decode is refused. An empty frame, a zero dimension,
     /// a raw `encoding` (push raw pixels with
     /// [`Reactor::push_step_video_frame`]), or a push outside a stepped session

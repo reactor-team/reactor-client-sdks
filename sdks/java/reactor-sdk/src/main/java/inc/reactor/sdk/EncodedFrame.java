@@ -12,7 +12,7 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>{@link #width()} and {@link #height()} are the frame it decodes to. Pass it in a step's media,
  * or push it with {@link Track#pushEncodedFrame(EncodedFrame)}. The runtime decodes a track's
- * encoded frames of one step as one stream, before the step runs, and the model reads the RGB
+ * encoded frames as one stream, as they arrive, and the model reads the RGB
  * frames as if they had been pushed raw. So give them in decode order, starting at a keyframe — the
  * access units from the last keyframe to the frame the step is about:
  *

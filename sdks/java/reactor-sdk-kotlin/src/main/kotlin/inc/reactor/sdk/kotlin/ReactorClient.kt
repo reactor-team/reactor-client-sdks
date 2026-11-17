@@ -186,12 +186,13 @@ public class ReactorClient(
      * Runs one step of a stepped session and returns what it produced.
      *
      * The runtime applies, in order: [state] (each key as the model's `set_<key>` command), then
-     * [commands], then every input frame pushed since the previous step — in a stepped session
-     * [ReactorTrack.pushFrame] buffers for the next step instead of sending — and then generates.
-     * The runtime checks the whole request before it applies any of it, so a step it refuses
-     * changed nothing; past that check these are separate calls, so a call whose handler fails
-     * leaves the calls before it applied. Both parameters are optional; `step()` with neither runs
-     * on the model's current state.
+     * [commands], then any input frames the step carries, and then generates. In a stepped session
+     * [ReactorTrack.pushFrame] sends a frame to the runtime at once, ahead of the next step, once
+     * the session is ready and the runtime takes pushed frames, and buffers it for the next step
+     * otherwise. The runtime checks the whole request before it applies any of it, so a step it
+     * refuses changed nothing; past that check these are separate calls, so a call whose handler
+     * fails leaves the calls before it applied. Both parameters are optional; `step()` with neither
+     * runs on the model's current state.
      *
      * A step the model reported as failed still returns, with [StepResult.error] saying why; only a
      * refused step throws. [StepResult.files] names the files the model kept with the step.
@@ -259,8 +260,8 @@ public class ReactorClient(
     ): StepResult = java.step(state, commands).await()
 
     /**
-     * Drops every input frame buffered for the next step, so that step carries only what is pushed
-     * after this. A no-op on a streamed client.
+     * Drops every input frame still buffered for the next step. Frames already sent to the runtime
+     * are not recalled. A no-op on a streamed client.
      */
     public fun clearStepInputs(): Unit = java.clearStepInputs()
 

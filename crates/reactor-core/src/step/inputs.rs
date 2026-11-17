@@ -1,8 +1,7 @@
 //! The input frames pushed between two steps that could not be sent yet, held
-//! to one message's worth, and the input tracks whose next frames must start
-//! at a keyframe.
+//! to one message's worth.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use crate::error::CoreError;
@@ -29,9 +28,6 @@ use crate::protocol::wire::v1::step::{Frame, FrameEncoding, TrackFrames};
 #[derive(Default)]
 pub struct StepInputs {
     buffer: Mutex<Buffered>,
-    /// Input tracks whose pushed frames the runtime could not decode: their
-    /// next frames start at a keyframe.
-    keyframe_requests: Mutex<HashSet<String>>,
 }
 
 /// One track's entry for a frame sent on its own, in a `PushFrames`.
@@ -200,27 +196,6 @@ impl StepInputs {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-
-    /// Mark `track` for a keyframe: the runtime could not decode its pushed
-    /// frames and drops them up to the next keyframe.
-    pub fn request_keyframe(&self, track: &str) {
-        self.keyframe_requests
-            .lock()
-            .unwrap()
-            .insert(track.to_string());
-    }
-
-    /// Whether `track`'s next frames must start at a keyframe, clearing the
-    /// mark: the one about to encode them asks, and starts at one.
-    pub fn take_keyframe_request(&self, track: &str) -> bool {
-        self.keyframe_requests.lock().unwrap().remove(track)
-    }
-
-    /// Forget every keyframe mark, for a new connection, whose first frames
-    /// of each track start at a keyframe anyway.
-    pub fn clear_keyframe_requests(&self) {
-        self.keyframe_requests.lock().unwrap().clear();
     }
 }
 
@@ -439,20 +414,6 @@ mod tests {
             buffer.cut_encoded.len(),
             buffer.tracks.len()
         );
-    }
-
-    #[test]
-    fn a_keyframe_request_is_taken_once_per_track() {
-        let inputs = StepInputs::new();
-        inputs.request_keyframe("cam");
-        inputs.request_keyframe("cam");
-        inputs.request_keyframe("depth");
-        assert!(inputs.take_keyframe_request("cam"));
-        assert!(!inputs.take_keyframe_request("cam"));
-        assert!(!inputs.take_keyframe_request("other"));
-
-        inputs.clear_keyframe_requests();
-        assert!(!inputs.take_keyframe_request("depth"));
     }
 
     #[test]

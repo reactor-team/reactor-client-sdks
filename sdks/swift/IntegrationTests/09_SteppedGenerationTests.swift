@@ -92,15 +92,17 @@ struct SteppedGenerationTests {
             let result = try await reactor.step(state: ["prompt": "repaint it"])
             #expect(result.step >= 1)
 
-            // Proof the push rode the step whatever the model makes of it: a
-            // frame over the 64 MiB a chunked data channel carries can only fail
-            // a step it went into. A push dropped on the way would let it through.
+            // A frame over the 64 MiB a chunked data channel carries. A runtime
+            // that takes pushed frames gets each one as it is pushed, so this
+            // one is dropped at the push, raised as an error event, and the step
+            // goes through. An older runtime takes them only with the next step,
+            // which this frame then fails.
             try source.pushFrame(
                 MediaFixtures.solidBGRAFrame(width: 5000, height: 5000, color: (0, 0, 255)),
                 width: 5000, height: 5000)
             do {
-                _ = try await reactor.step()
-                Issue.record("expected a step carrying an oversized frame to throw")
+                let after = try await reactor.step()
+                #expect(after.step > result.step)
             } catch let error as ReactorError {
                 #expect(error.code == .messageTooLarge)
             }

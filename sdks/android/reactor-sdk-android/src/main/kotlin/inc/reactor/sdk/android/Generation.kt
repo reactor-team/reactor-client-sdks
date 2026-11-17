@@ -17,7 +17,7 @@ public enum class Generation(
 
     /**
      * One [step][Reactor.step] at a time. Each step applies the model's state, a list of commands
-     * and every input frame pushed since the previous step, in that order, then generates and
+     * and any input frames it carries, in that order, then generates and
      * answers with what the model produced on each output track — arrays, not a video stream.
      *
      * A runtime without stepped generation ignores the request rather than refusing it, so

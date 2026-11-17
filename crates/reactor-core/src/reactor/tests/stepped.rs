@@ -1999,11 +1999,11 @@ fn a_push_over_the_channel_limit_is_dropped_and_raised() {
     }
 }
 
-/// An `input_decode_failed` notification marks its track for a keyframe,
-/// once, and is still raised for a host that encodes its frames itself; a new
-/// connection forgets the mark.
+/// An `input_decode_failed` notification is raised as an error event naming
+/// its track, so the host encoding that track knows which one must start
+/// over at a keyframe.
 #[tokio::test]
-async fn input_decode_failed_marks_its_track_for_a_keyframe() {
+async fn input_decode_failed_is_raised_with_its_track() {
     let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
     let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
     let mut events = reactor.subscribe();
@@ -2022,24 +2022,70 @@ async fn input_decode_failed_marks_its_track_for_a_keyframe() {
         decode_failed(Some("cam")),
     )
     .await;
-    assert!(reactor.take_input_keyframe_request("cam"));
-    assert!(!reactor.take_input_keyframe_request("cam"), "asked once");
-    assert!(!reactor.take_input_keyframe_request("other"));
-    assert!(matches!(
-        events.try_recv(),
-        Ok(ReactorEvent::Error(ref e)) if e.details.code == crate::step::INPUT_DECODE_FAILED
-    ));
+    match events.try_recv() {
+        Ok(ReactorEvent::Error(error)) => {
+            assert_eq!(error.details.code, crate::step::INPUT_DECODE_FAILED);
+            assert_eq!(error.details.track.as_deref(), Some("cam"));
+            let json = serde_json::to_value(&error).unwrap();
+            assert_eq!(json["track"], "cam");
+        }
+        other => panic!("expected an error event, got {other:?}"),
+    }
 
     feed(&reactor, "", MessageKind::Notification, decode_failed(None)).await;
-    assert!(!reactor.take_input_keyframe_request(""));
+    match events.try_recv() {
+        Ok(ReactorEvent::Error(error)) => {
+            assert_eq!(error.details.track, None);
+            let json = serde_json::to_value(&error).unwrap();
+            assert!(json.get("track").is_none());
+        }
+        other => panic!("expected an error event, got {other:?}"),
+    }
+}
 
-    feed(
-        &reactor,
-        "",
-        MessageKind::Notification,
-        decode_failed(Some("cam")),
-    )
-    .await;
-    reactor.teardown(true, false).await;
-    assert!(!reactor.take_input_keyframe_request("cam"));
+/// A buffered encoded track whose keyframe the buffer's limit evicted cannot
+/// be sent: drained by the next push once the session is ready, it is dropped
+/// and raised as an error event rather than only logged.
+#[test]
+fn a_buffered_window_that_cannot_be_sent_is_raised() {
+    let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+    let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+    report_runtime(&reactor, "3.11.8");
+    reactor.state.lock().unwrap().status = ReactorStatus::Connecting;
+    let mut events = reactor.subscribe();
+    // Over half a message each: the second evicts the first, its keyframe.
+    let half = crate::protocol::DEFAULT_MAX_MESSAGE_BYTES / 2 + 1;
+    reactor.push_step_encoded_video_frame(
+        "cam",
+        FrameEncoding::H264,
+        &vec![1; half],
+        2,
+        2,
+        None,
+        None,
+    );
+    reactor.push_step_encoded_video_frame(
+        "cam",
+        FrameEncoding::H264,
+        &vec![2; half],
+        2,
+        2,
+        None,
+        None,
+    );
+    while events.try_recv().is_ok() {}
+
+    reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+    reactor.push_video_frame("mic", &[3, 3, 3, 255], 1, 1);
+    match events.try_recv() {
+        Ok(ReactorEvent::Error(error)) => {
+            assert_eq!(error.details.code, crate::error::codes::STEP_REFUSED);
+            assert_eq!(error.details.operation.as_deref(), Some("push_frames"));
+        }
+        other => panic!("expected an error event, got {other:?}"),
+    }
+    assert!(reactor.step_inputs.is_empty());
+    let sent = peer.sent();
+    assert_eq!(sent.len(), 1, "only the new push goes out");
+    assert_eq!(pushed(&sent[0]), [("mic".to_string(), 3)]);
 }

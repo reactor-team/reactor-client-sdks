@@ -687,9 +687,10 @@ public class Reactor(
      * Run one step of a stepped session and answer with what it produced.
      *
      * The runtime applies, in order: [state] (each key as the model's `set_<key>` command), then
-     * [commands], then every input frame pushed since the previous step — in a stepped session
-     * [Track.pushFrame] does not send, it buffers for the next step — and then generates. The
-     * runtime checks the whole request before it applies any of it, so a step it refuses changed
+     * [commands], then any input frames the step carries, and then generates. In a stepped session
+     * [Track.pushFrame] sends a frame to the runtime at once, ahead of the next step, once the
+     * session is ready and the runtime takes pushed frames, and buffers it for the next step
+     * otherwise. The runtime checks the whole request before it applies any of it, so a step it refuses changed
      * nothing; past that check these are separate calls, so a call whose handler fails leaves the
      * calls before it applied. Every part is optional; `step()` with nothing runs on the model's
      * current state. Commands sent with [sendCommand] outside a step still work in a stepped
@@ -703,7 +704,7 @@ public class Reactor(
      * reactor.connect("owner/model")
      * val camera = reactor.track("camera")
      * camera.publish()
-     * camera.pushFrame(bgra, width, height) // buffered, not sent
+     * camera.pushFrame(bgra, width, height) // reaches the runtime before the step
      * val result =
      *     reactor.step(
      *         state = """{"prompt": "a red fox"}""",
@@ -758,8 +759,9 @@ public class Reactor(
     }
 
     /**
-     * Drop every input frame buffered for the next step, so that step carries only what is pushed
-     * after this. A no-op on a streamed client, and before [connect], when nothing is buffered.
+     * Drop every input frame still buffered for the next step. Frames already sent to the runtime
+     * are not recalled. A no-op on a streamed client, and before [connect], when nothing is
+     * buffered.
      */
     public fun clearStepInputs() {
         if (options.generation != Generation.STEPPED) return

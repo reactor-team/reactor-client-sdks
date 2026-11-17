@@ -603,9 +603,9 @@ impl ReactorClient {
     ///   `set_<key>` command before `commands`; `null`/`undefined` for none.
     /// * `commands` — `[{ command, data? }]`, run in order after the state.
     ///
-    /// Every frame pushed since the previous step rides this one, and belongs
-    /// to it: when the request cannot be sent the step fails and its frames
-    /// are dropped, not kept for the next step. Rejects with the core's code:
+    /// Every frame still buffered rides this one, and belongs to it: when the
+    /// request cannot be sent the step fails and its frames are dropped, not
+    /// kept for the next step. Rejects with the core's code:
     /// `step_refused` (the runtime checks a whole request first, so a refused
     /// step changed nothing; `entry` names the part at fault),
     /// `step_not_ready` (the session cannot take a step yet; the step did not
@@ -661,7 +661,9 @@ impl ReactorClient {
             .map_err(|e| error_value(&e.details(Some("step"))))
     }
 
-    /// Buffer a video frame for the next `step()` on the sendonly track `name`.
+    /// Push a video frame on the sendonly track `name`: sent to the runtime at
+    /// once in a ready session whose runtime takes pushed frames, buffered for
+    /// the next `step()` otherwise.
     ///
     /// * `data` — `width * height` pixels in `format`: `"rgba"` (the default,
     ///   what `ImageData` holds), `"rgb"` or `"bgra"`. Sent as RGB.
@@ -719,8 +721,8 @@ impl ReactorClient {
             .map(drop)
     }
 
-    /// Buffer an encoded video frame for the next `step()` on the sendonly
-    /// video track `name`, its bytes as they are.
+    /// Push an encoded video frame on the sendonly video track `name`, its
+    /// bytes as they are, as `pushVideoFrame` pushes a frame.
     ///
     /// * `codec` — `"h264"` (the default): `data` is one H.264 access unit,
     ///   Annex B.
@@ -728,9 +730,11 @@ impl ReactorClient {
     /// * `metadata`, `captureTimeUs` — as for `pushVideoFrame`, carried with
     ///   the decoded frame.
     ///
-    /// The runtime decodes a track's encoded frames of one step as one
-    /// stream before the step runs, so push them in decode order, starting at
-    /// a keyframe; a step whose frames do not decode is refused
+    /// The runtime decodes a track's encoded frames as one stream, as they
+    /// arrive, so push them in decode order, starting at a keyframe. A pushed
+    /// frame that does not decode raises an `input_decode_failed` error event
+    /// whose `track` names the track, whose next frame must then be a
+    /// keyframe; a step whose buffered frames do not decode is refused
     /// (`step_refused`). Encoded and raw pushes to one track keep their push
     /// order. Stepped sessions only; throws on empty data or a zero dimension.
     #[wasm_bindgen(js_name = pushEncodedVideoFrame)]
@@ -779,8 +783,8 @@ impl ReactorClient {
             .map(drop)
     }
 
-    /// Buffer a block of audio for the next `step()` on the sendonly track
-    /// `name`: interleaved signed 16-bit PCM, `channels` samples per frame,
+    /// Push a block of audio, as `pushVideoFrame` pushes a frame, on the
+    /// sendonly track `name`: interleaved signed 16-bit PCM, `channels` samples per frame,
     /// already at the rate the model's track declares (a step's frame carries
     /// no sample rate). Stepped sessions only, as `pushVideoFrame`.
     #[wasm_bindgen(js_name = pushAudioFrame)]
@@ -816,7 +820,8 @@ impl ReactorClient {
         Ok(())
     }
 
-    /// Drop every frame buffered for the next step.
+    /// Drop every frame still buffered for the next step. Frames already sent
+    /// to the runtime are not recalled.
     #[wasm_bindgen(js_name = clearStepInputs)]
     pub fn clear_step_inputs(&self) {
         self.reactor.clear_step_inputs();

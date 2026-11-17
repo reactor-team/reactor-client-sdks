@@ -323,7 +323,7 @@ parse failure.
 
 A model that supports it can generate one step at a time instead of streaming.
 Ask for it when creating the client, then call `step()`: it applies the state,
-the commands and every input frame pushed since the previous step, runs the model
+the commands and any input frames the step carries, runs the model
 once, and resolves with what the model produced on each output track. The runtime
 applies those as individual calls, in that order, before generating — not as a
 transaction. Both arguments are optional: `client.step()` runs the model on its
@@ -339,7 +339,7 @@ client.connect().get();          // GenerationModeMismatchError if the runtime c
 
 auto camera = client.track("camera");
 camera.publish().get();
-camera.push_frame(reactor::Bytes{bgra.data(), bgra.size()}, width, height);  // buffered, not sent
+camera.push_frame(reactor::Bytes{bgra.data(), bgra.size()}, width, height);  // reaches the runtime before the next step
 
 const auto result = client.step({{"prompt", "a red fox"}},
                                 {{"advance", {{"frames", 4}}}}).get();
@@ -373,14 +373,19 @@ is data alone needs no output track; it counts toward the step's size limit
 Files go *into* a step the way they go into a command: upload first, then put the
 `FileRef` in a command's data or in the state value of an upload-typed field.
 
-`Track::push_frame` keeps its signature: in a stepped session it buffers the frame
-for the next step instead of sending it, and still needs `publish()` first. The
-buffer holds at most one data-channel message's worth of frame bytes, so pushing
-faster than steps run drops the oldest frames, across tracks; once the session's
-tracks are known, a frame pushed to a track the session does not take as input is
-dropped with a warning. The frames buffered when a step goes out belong to that
-step whatever its outcome — one that could not be sent drops them too — and
-`clear_step_inputs()` drops what is buffered now. Audio comes back as
+`Track::push_frame` keeps its signature: in a stepped session the frame goes to
+the runtime over the data channel instead of RTP, and still needs `publish()`
+first. Once the session is ready, against a runtime that takes pushed frames,
+each push is sent at once, ahead of any step after it, and one the channel cannot
+take is dropped and raised as an error event. A frame pushed before the session
+is ready, or to an older runtime, is buffered instead and sent with the next push
+or step. The buffer holds at most one data-channel message's worth of frame
+bytes, so pushing faster than steps run drops the oldest frames, across tracks;
+once the session's tracks are known, a frame pushed to a track the session does
+not take as input is dropped with a warning. The frames buffered when a step goes
+out belong to that step whatever its outcome — one that could not be sent drops
+them too — and `clear_step_inputs()` drops what is buffered now; frames already
+sent to the runtime are not recalled. Audio comes back as
 `(channels, samples)` `int16`, and each output track's `rate` is what the runtime
 reported: frames per second for video, samples per second for audio, 0 when it
 did not say. A step the runtime refuses throws
@@ -431,9 +436,11 @@ the state, the commands and every frame of `media` are well formed. The bytes ar
 borrowed until `step()` or
 `push_encoded_frame()` returns. Encoded frames need a stepped client, a published
 sendonly video track, data, and a non-zero size (`InvalidStateError` /
-`BadRequestError` otherwise). A step whose frames do not decode, or that does not
-start at a keyframe, throws `StepRefusedError`, naming the frame in `entry()`; a
-runtime that predates encoded frames refuses them the same way.
+`BadRequestError` otherwise). A frame already sent to the runtime that does not
+decode raises an `input_decode_failed` error event naming the track, whose next
+frame must then be a keyframe. A step whose buffered frames do not decode, or
+that does not start at a keyframe, throws `StepRefusedError`, naming the frame in
+`entry()`; a runtime that predates encoded frames refuses them the same way.
 
 A step carries at most one data-channel message's worth of frames, and pushing
 past that drops the oldest ones, whatever their track. For an encoded track that
