@@ -1256,6 +1256,54 @@ async fn a_decode_error_asks_the_next_step_for_a_keyframe() {
     stepping.await.unwrap().unwrap();
 }
 
+/// A decoder that loses its state after `begin_step` returns, before the
+/// binding sends the step, still makes that step ask for a keyframe.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decode_error_before_the_send_asks_that_step_for_a_keyframe() {
+    let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+    let reactor = make_decoding_reactor(peer.clone());
+    feed(
+        &reactor,
+        "data_98",
+        MessageKind::Response,
+        h264_result(1, 1, true),
+    )
+    .await;
+
+    let request = reactor.begin_step(Value::Null, vec![]).unwrap();
+    assert!(!request.requests_keyframe());
+    feed(
+        &reactor,
+        "data_99",
+        MessageKind::Response,
+        h264_result(2, 0xFF, false),
+    )
+    .await;
+    assert!(reactor.frame_decoders.needs_keyframe());
+
+    let r = reactor.clone();
+    let stepping = tokio::spawn(async move { r.send_step(request).await });
+    let sent = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(last) = peer.sent().last() {
+                return last.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(requests_keyframe(&sent), Some(true));
+    feed(
+        &reactor,
+        &sent.request_id,
+        MessageKind::Response,
+        h264_result(3, 3, true),
+    )
+    .await;
+    stepping.await.unwrap().unwrap();
+}
+
 /// The decoder state lives with the data channel: a disconnect, as a
 /// reconnect starts with, drops it, keyframe request included, so the next
 /// connection's stream must start again at a keyframe.
@@ -1294,6 +1342,18 @@ async fn a_reconnect_resets_every_tracks_decoder() {
     reactor.disconnect(true).await.unwrap();
     assert!(!reactor.frame_decoders.needs_keyframe());
 
+    // A keyframe of the closed connection, still queued, starts no stream
+    // the next connection could run on from.
+    feed(
+        &reactor,
+        "data_100",
+        MessageKind::Response,
+        h264_result(2, 2, true),
+    )
+    .await;
+    assert!(!reactor.frame_decoders.needs_keyframe());
+
+    reactor.handle_peer_event(PeerEvent::DataChannelOpen).await;
     reactor.state.lock().unwrap().status = ReactorStatus::Ready;
     let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
     assert_eq!(requests_keyframe(&sent), None);

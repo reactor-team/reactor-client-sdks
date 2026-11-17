@@ -109,6 +109,9 @@ struct Streams {
     /// The tracks whose decoder lost its state, or whose stream did not
     /// start at a keyframe: their frames fail until a keyframe comes.
     awaiting_keyframe: HashSet<String>,
+    /// Set when the data channel closes, until the next one opens: a result
+    /// of the closed connection still queued then starts no stream.
+    closed: bool,
 }
 
 /// Frame decoders, keyed by [`FrameEncoding`], and the per-track state of
@@ -159,12 +162,23 @@ impl FrameDecoders {
     /// Decode the next frame of `track`. A frame of a per-track encoding
     /// moves that track's stream on: call it in arrival order.
     pub fn decode_frame(&self, track: &str, frame: Frame) -> Result<DecodedFrame, CoreError> {
-        self.decode_frame_in(&mut self.streams.lock().unwrap(), track, frame)
+        let mut retired = Vec::new();
+        let decoded = {
+            let mut streams = self.streams.lock().unwrap();
+            self.decode_frame_in(&mut streams, &mut retired, track, frame)
+        };
+        // Dropped once the lock is released: a decoder's teardown may wait
+        // on threads or callbacks that come back here.
+        drop(retired);
+        decoded
     }
 
+    /// Decode `frame` with `streams` locked. A decoder it drops goes into
+    /// `retired`, for the caller to drop once the lock is released.
     fn decode_frame_in(
         &self,
         streams: &mut Streams,
+        retired: &mut Vec<Box<dyn TrackDecoder>>,
         track: &str,
         frame: Frame,
     ) -> Result<DecodedFrame, CoreError> {
@@ -178,13 +192,20 @@ impl FrameDecoders {
                 })
             }
         };
+        if streams.closed {
+            // A result of a connection that closed, still queued: the next
+            // connection's streams must not run on from it.
+            return Err(CoreError::decode(format!(
+                "track '{track}' frame arrived after its data channel closed"
+            )));
+        }
         let encoding = frame.encoding;
         let keyframe = frame.keyframe;
         let continues = matches!(streams.live.get(track), Some((live, _)) if *live == encoding);
         if !continues {
             // A new stream, or one in another encoding: it starts here, and
             // only a keyframe can start it.
-            streams.live.remove(track);
+            retired.extend(streams.live.remove(track).map(|(_, decoder)| decoder));
             if !keyframe {
                 streams.awaiting_keyframe.insert(track.to_string());
                 return Err(CoreError::decode(format!(
@@ -205,7 +226,7 @@ impl FrameDecoders {
                 Ok(decoded)
             }
             Err(error) => {
-                streams.live.remove(track);
+                retired.extend(streams.live.remove(track).map(|(_, decoder)| decoder));
                 streams.awaiting_keyframe.insert(track.to_string());
                 Err(error)
             }
@@ -217,7 +238,22 @@ impl FrameDecoders {
     /// even after one fails, so the other streams keep up; the first
     /// failure is returned rather than a partial step.
     pub fn decode_tracks(&self, tracks: Vec<TrackFrames>) -> Result<Vec<TrackOutput>, CoreError> {
-        let mut streams = self.streams.lock().unwrap();
+        let mut retired = Vec::new();
+        let decoded = {
+            let mut streams = self.streams.lock().unwrap();
+            self.decode_tracks_in(&mut streams, &mut retired, tracks)
+        };
+        // Dropped once the lock is released (see `decode_frame`).
+        drop(retired);
+        decoded
+    }
+
+    fn decode_tracks_in(
+        &self,
+        streams: &mut Streams,
+        retired: &mut Vec<Box<dyn TrackDecoder>>,
+        tracks: Vec<TrackFrames>,
+    ) -> Result<Vec<TrackOutput>, CoreError> {
         let mut first_error = None;
         let mut outputs = Vec::with_capacity(tracks.len());
         for track in tracks {
@@ -234,7 +270,7 @@ impl FrameDecoders {
             }
             let mut frames = Vec::with_capacity(track.frames.len());
             for frame in track.frames {
-                match self.decode_frame_in(&mut streams, &track.track, frame) {
+                match self.decode_frame_in(streams, retired, &track.track, frame) {
                     Ok(frame) => frames.push(frame),
                     Err(error) => {
                         first_error.get_or_insert(error);
@@ -273,9 +309,24 @@ impl FrameDecoders {
     }
 
     /// Drop every track's decoder state, as the data channel it came with
-    /// closes. The registered decoders stay.
+    /// closes. The registered decoders stay. Until [`FrameDecoders::open`],
+    /// a frame of a per-track encoding starts no stream: it can only be a
+    /// result of the closed connection, still queued.
     pub fn reset(&self) {
-        *self.streams.lock().unwrap() = Streams::default();
+        let closed = std::mem::replace(
+            &mut *self.streams.lock().unwrap(),
+            Streams {
+                closed: true,
+                ..Streams::default()
+            },
+        );
+        // Dropped once the lock is released (see `decode_frame`).
+        drop(closed);
+    }
+
+    /// The next data channel opened: its results start their streams.
+    pub fn open(&self) {
+        self.streams.lock().unwrap().closed = false;
     }
 
     /// The tracks that hold decoder state, sorted.
@@ -859,7 +910,7 @@ mod tests {
 
     /// Resetting, as the data channel closes, drops every track's state and
     /// any pending keyframe request: the next connection's streams start
-    /// again at their keyframes, with fresh decoders.
+    /// again at their keyframes, with fresh decoders, once it opens.
     #[test]
     fn reset_drops_every_tracks_state() {
         let (decoders, log) = counting_decoders();
@@ -876,6 +927,14 @@ mod tests {
         decoders.reset();
         assert!(decoders.live_tracks().is_empty());
         assert!(!decoders.needs_keyframe());
+
+        // A result of the closed connection, still queued, starts no stream.
+        assert!(decoders
+            .decode_result(result_with(vec![video("b", vec![h264(13, true)])]))
+            .is_err());
+        assert!(decoders.live_tracks().is_empty());
+        assert!(!decoders.needs_keyframe());
+        decoders.open();
 
         assert!(decoders
             .decode_result(result_with(vec![video("b", vec![h264(11, false)])]))

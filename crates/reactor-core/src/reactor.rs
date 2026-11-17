@@ -855,6 +855,12 @@ impl Reactor {
             }
         }
 
+        // Each output track's decoder state lived with the data channel that
+        // just closed: the next connection's streams start over at their
+        // keyframes. Reset outside the state lock, so no decoder is dropped
+        // under it.
+        self.frame_decoders.reset();
+
         let session_cleared = {
             let mut state = self.state.lock().unwrap();
             state.peer_connected = false;
@@ -866,10 +872,6 @@ impl Reactor {
             state.ice_ready = false;
             state.track_mapping.clear();
             state.step_frame_encodings.clear();
-            // Each output track's decoder state lived with the data channel
-            // that just closed: the next connection's streams start over at
-            // their keyframes.
-            self.frame_decoders.reset();
             state.paused_tracks.clear();
             if recoverable {
                 false
@@ -903,6 +905,10 @@ impl Reactor {
                 self.on_peer_connection_state(connection_state).await;
             }
             PeerEvent::DataChannelOpen => {
+                // Results from here on are this channel's: they start its
+                // streams. One of the closed channel's, queued before this
+                // event, was refused (see `FrameDecoders::reset`).
+                self.frame_decoders.open();
                 let mut state = self.state.lock().unwrap();
                 state.data_open = true;
                 Self::check_ready_locked(&mut state);
@@ -1452,6 +1458,13 @@ impl Reactor {
     /// The rest of [`Reactor::step`], for a request [`Reactor::begin_step`]
     /// returned.
     pub async fn send_step(&self, request: StepRequest) -> Result<StepOutput, CoreError> {
+        // A decoder may have lost its state since `begin_step`: asked again
+        // here, so the first step sent after that asks for the keyframe.
+        let request = if self.frame_decoders.needs_keyframe() {
+            request.request_keyframe()
+        } else {
+            request
+        };
         // The frames belong to this attempt: a send that fails takes them with
         // it. What the channel accepts, it delivers; the SDK resends nothing.
         let pending = self
