@@ -11,6 +11,7 @@ import {
 } from './errors';
 import { FileRef } from './file-ref';
 import { FakeReactorClient } from './internal/fake-reactor-client';
+import { FakeVideoEncoder, fakeWebCodecs } from './internal/fake-web-codecs';
 import type { StepResult } from './internal/reactor-wasm.types';
 import type { ReactorEventMap } from './types';
 
@@ -658,7 +659,7 @@ describe('Reactor.pushEncodedFrame', () => {
     });
 
     expect(client.pushEncodedVideoFrameCalls).toEqual([
-      { name: 'camera', codec: 'h264', data: idr, width: 1280, height: 720, metadata, captureTimeUs: 9 },
+      { name: 'camera', codec: 'h264', data: idr, width: 1280, height: 720, metadata, captureTimeUs: 9, keyframe: false },
     ]);
     expect(client.pushEncodedVideoFrameCalls[0]?.data).toBe(idr);
     expect(client.pushVideoFrameCalls).toEqual([]);
@@ -685,6 +686,8 @@ describe('Reactor.pushEncodedFrame', () => {
 
     expect(copyTo).toHaveBeenCalledOnce();
     expect(client.pushEncodedVideoFrameCalls[0]?.data).toEqual(idr);
+    // A chunk says whether it is a keyframe.
+    expect(client.pushEncodedVideoFrameCalls[0]?.keyframe).toBe(true);
   });
 
   it('feeds the stepped track through the handle’s pushEncodedFrame()', async () => {
@@ -704,7 +707,7 @@ describe('Reactor.pushEncodedFrame', () => {
     ['empty data', { codec: 'h264', data: new Uint8Array(0), width: 2, height: 2 }, 'needs data'],
     ['a zero width', { codec: 'h264', data: new Uint8Array([1]), width: 0, height: 2 }, 'decoded frame'],
     ['a zero height', { codec: 'h264', data: new Uint8Array([1]), width: 2, height: 0 }, 'decoded frame'],
-    ['another codec', { codec: 'vp9', data: new Uint8Array([1]), width: 2, height: 2 }, 'unknown codec'],
+    ['another codec', { codec: 'h265', data: new Uint8Array([1]), width: 2, height: 2 }, 'unknown codec'],
     ['no data', { codec: 'h264', width: 2, height: 2 }, 'data must be'],
   ])('refuses %s before touching the binding', async (_, frame, message) => {
     const { reactor, client } = await steppedWithInputs();
@@ -967,7 +970,7 @@ describe('Reactor.step media', () => {
     const { reactor, client } = await steppedWithInputs();
 
     await reactor.pushEncodedFrame('camera', idr);
-    await expect(reactor.step({ media: { camera: [p, { ...p, codec: 'vp9' as 'h264' }] } })).rejects.toThrow(
+    await expect(reactor.step({ media: { camera: [p, { ...p, codec: 'h265' as 'h264' }] } })).rejects.toThrow(
       'unknown codec',
     );
 
@@ -1028,7 +1031,7 @@ describe('Reactor.step media', () => {
   it('lets later pushes through once a step’s media is refused', async () => {
     const { reactor, client } = await steppedWithInputs();
 
-    const refused = reactor.step({ media: { camera: [{ ...p, codec: 'vp9' as 'h264' }] } });
+    const refused = reactor.step({ media: { camera: [{ ...p, codec: 'h265' as 'h264' }] } });
     const after = reactor.pushEncodedFrame('camera', idr);
 
     await expect(refused).rejects.toThrow('unknown codec');
@@ -1094,5 +1097,246 @@ describe('Reactor.step media', () => {
 
     expect(error).toBeInstanceOf(InvalidStateError);
     expect(client.stepCalls).toEqual([]);
+  });
+});
+
+describe('Reactor step frames on WebCodecs', () => {
+  beforeEach(() => {
+    const api = fakeWebCodecs();
+
+    for (const [name, value] of Object.entries(api)) {
+      vi.stubGlobal(name, value);
+    }
+    return () => vi.unstubAllGlobals();
+  });
+
+  const frame = { data: new Uint8Array(2 * 2 * 4), width: 2, height: 2 };
+
+  /** A stepped session whose `camera` input and `main_video` output carry
+   *  H.264 step frames. */
+  async function h264Session() {
+    const connection = await steppedWithInputs();
+
+    connection.client.stepFrameEncodingsResult = { camera: 'h264', main_video: 'h264', mic: 'raw' };
+    return connection;
+  }
+
+  function encodedResult(byte: number, keyframe: boolean): StepResult {
+    return {
+      step: 1,
+      tracks: [
+        {
+          track: 'main_video',
+          kind: 'video',
+          rate: 30,
+          frames: [{ encoding: 'h264', dtype: 'uint8', shape: [1, 1, 3], data: new Uint8Array([byte]), keyframe }],
+        },
+      ],
+      elapsed: 0,
+      files: [],
+    };
+  }
+
+  it('offers the codecs this browser encodes and decodes when a stepped session connects', async () => {
+    const { client } = await connected('stepped');
+
+    expect(client.setLocalStepCodecsCalls).toEqual([
+      { encode: ['h264', 'vp9', 'av1', 'vp8'], decode: ['h264', 'vp9', 'av1', 'vp8'] },
+    ]);
+    const streamed = await connected('streamed');
+
+    expect(streamed.client.setLocalStepCodecsCalls).toEqual([]);
+  });
+
+  it('offers them again on reconnect', async () => {
+    const { reactor, client } = await connected('stepped');
+
+    await reactor.reconnect();
+    expect(client.setLocalStepCodecsCalls).toHaveLength(2);
+  });
+
+  it('replays the codec preferences set before connect, and passes later ones on', async () => {
+    const reactor = new Reactor({ modelName: 'test-model', generation: 'stepped' });
+
+    reactor.setCodecPreference(['vp9', 'h264']);
+    reactor.setCodecPreference(['av1'], { track: 'main_video' });
+    await reactor.connect();
+    const client = FakeReactorClient.instances.at(-1);
+
+    expect(client?.setCodecPreferenceCalls).toEqual([
+      { codecs: ['vp9', 'h264'], track: null },
+      { codecs: ['av1'], track: 'main_video' },
+    ]);
+    reactor.setCodecPreference([]);
+    reactor.setCodecPreference(null, { track: 'main_video' });
+    expect(client?.setCodecPreferenceCalls.slice(2)).toEqual([
+      { codecs: [], track: null },
+      { codecs: null, track: 'main_video' },
+    ]);
+  });
+
+  it('refuses a name that is not a codec', () => {
+    const reactor = new Reactor({ modelName: 'test-model', generation: 'stepped' });
+
+    expect(() => reactor.setCodecPreference(['h265' as 'h264'])).toThrow(InvalidStateError);
+    expect(() => reactor.setCodecPreference('h264' as unknown as ['h264'])).toThrow(InvalidStateError);
+  });
+
+  it('reports what the connection negotiated per track', async () => {
+    const reactor = new Reactor({ modelName: 'test-model', generation: 'stepped' });
+
+    expect(reactor.getStepFrameEncodings()).toEqual({});
+    const session = await h264Session();
+
+    expect(session.reactor.getStepFrameEncodings()).toEqual({ camera: 'h264', main_video: 'h264', mic: 'raw' });
+  });
+
+  it('encodes the frames pushed on a track in a codec, starting at a keyframe', async () => {
+    const { reactor, client } = await h264Session();
+
+    await reactor.pushFrame('camera', frame, { metadata: new Uint8Array([7]), captureTimeUs: 3 });
+    await reactor.pushFrame('camera', frame);
+
+    expect(client.pushVideoFrameCalls).toEqual([]);
+    expect(client.pushEncodedVideoFrameCalls).toEqual([
+      {
+        name: 'camera',
+        codec: 'h264',
+        data: new Uint8Array([1, 1]),
+        width: 2,
+        height: 2,
+        metadata: new Uint8Array([7]),
+        captureTimeUs: 3,
+        keyframe: true,
+      },
+      {
+        name: 'camera',
+        codec: 'h264',
+        data: new Uint8Array([0, 2]),
+        width: 2,
+        height: 2,
+        metadata: null,
+        captureTimeUs: null,
+        keyframe: false,
+      },
+    ]);
+    // The binding's own checks ran before the frame was encoded.
+    expect(client.checkCalls.filter(([method]) => method === 'checkVideoFrame')).toHaveLength(2);
+  });
+
+  it('sends a raw track’s frames raw', async () => {
+    const { reactor, client } = await h264Session();
+
+    client.stepFrameEncodingsResult = { camera: 'raw' };
+    await reactor.pushFrame('camera', frame);
+
+    expect(client.pushVideoFrameCalls).toHaveLength(1);
+    expect(client.pushEncodedVideoFrameCalls).toEqual([]);
+  });
+
+  it('makes a keyframe when the runtime could not decode the track’s frames', async () => {
+    const { reactor, client } = await h264Session();
+
+    await reactor.pushFrame('camera', frame);
+    await reactor.pushFrame('camera', frame);
+    // What the binding marks on `input_decode_failed` for the track.
+    client.inputKeyframeRequests.add('camera');
+    await reactor.pushFrame('camera', frame);
+    await reactor.pushFrame('camera', frame);
+
+    expect(client.pushEncodedVideoFrameCalls.map((call) => call.keyframe)).toEqual([true, false, true, false]);
+    expect(client.inputKeyframeRequests.size).toBe(0);
+  });
+
+  it('starts every input track again at a keyframe on a new connection', async () => {
+    const { reactor, client } = await h264Session();
+
+    await reactor.pushFrame('camera', frame);
+    await reactor.pushFrame('camera', frame);
+    client.emitConnecting();
+    client.emitReady();
+    await reactor.pushFrame('camera', frame);
+
+    expect(client.pushEncodedVideoFrameCalls.map((call) => call.keyframe)).toEqual([true, false, true]);
+  });
+
+  it('sends a frame raw when its encoder fails, and starts the track again at a keyframe', async () => {
+    const { reactor, client } = await h264Session();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await reactor.pushFrame('camera', frame);
+    FakeVideoEncoder.failNext = true;
+    await reactor.pushFrame('camera', frame);
+    await reactor.pushFrame('camera', frame);
+
+    expect(client.pushVideoFrameCalls).toHaveLength(1);
+    expect(client.pushEncodedVideoFrameCalls.map((call) => call.keyframe)).toEqual([true, true]);
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it('encodes a step’s own raw media like a push', async () => {
+    const { reactor, client } = await h264Session();
+
+    await reactor.step({ media: { camera: [frame, frame] } });
+
+    expect(client.pushEncodedVideoFrameCalls.map((call) => call.keyframe)).toEqual([true, false]);
+    expect(client.pushVideoFrameCalls).toEqual([]);
+  });
+
+  it('decodes an encoded result to RGB', async () => {
+    const { reactor, client } = await h264Session();
+
+    client.stepResult = encodedResult(40, true);
+    const result = await reactor.step();
+
+    expect(result.tracks[0]?.frames[0]).toMatchObject({
+      encoding: 'h264',
+      dtype: 'uint8',
+      shape: [1, 1, 3],
+      data: new Uint8Array([40, 2, 3]),
+    });
+    expect(client.stepKeyframeRequests).toEqual([false]);
+  });
+
+  it('asks for keyframes after a decoder fails, until one restarts the track', async () => {
+    const { reactor, client } = await h264Session();
+
+    client.stepResult = encodedResult(1, true);
+    await reactor.step();
+    client.stepResult = encodedResult(0xff, false);
+    await expect(reactor.step()).rejects.toBeInstanceOf(DecodeError);
+    client.stepResult = encodedResult(2, false);
+    await expect(reactor.step()).rejects.toBeInstanceOf(DecodeError);
+    client.stepResult = encodedResult(3, true);
+    await expect(reactor.step()).resolves.toBeDefined();
+    await reactor.step();
+
+    expect(client.stepKeyframeRequests).toEqual([false, false, true, true, false]);
+  });
+
+  it('asks for keyframes when the caller does', async () => {
+    const { reactor, client } = await h264Session();
+
+    await reactor.step({ requestKeyframe: true });
+    await reactor.step({ requestKeyframe: false });
+
+    expect(client.stepKeyframeRequests).toEqual([true, false]);
+  });
+
+  it('starts every output track again at a keyframe on a new connection', async () => {
+    const { reactor, client } = await h264Session();
+
+    client.stepResult = encodedResult(1, true);
+    await reactor.step();
+    client.emitConnecting();
+    client.emitReady();
+    client.stepResult = encodedResult(2, false);
+
+    await expect(reactor.step()).rejects.toThrow('waiting for a keyframe');
+    expect(client.stepKeyframeRequests).toEqual([false, false]);
+    client.stepResult = encodedResult(3, true);
+    await reactor.step();
+    expect(client.stepKeyframeRequests.at(-1)).toBe(true);
   });
 });

@@ -246,13 +246,45 @@ await reactor.step();
   `maxMessageSize` only for a model whose steps need it: a message is held whole in the tab's
   memory while it arrives.
 
-### Encoded video in a step
+### Encoded step frames
 
-A step can carry video already encoded as H.264, its bytes as they are: much smaller than raw
-RGB. The runtime decodes a track's encoded frames before the step runs, so the model reads RGB
-frames exactly as if they had been pushed raw. Give the frames of one step in decode order,
-starting at a keyframe. A WebCodecs `VideoEncoder`'s chunks go in as they are; configure it for
-Annex B, as its default `avc` format is length-prefixed:
+Video step frames travel encoded both ways when the browser and the runtime share a codec, so a
+720p frame costs tens of KB rather than 2.7 MB. The SDK does it with WebCodecs: the frames you
+push on an input track are encoded before they are sent, and the frames of an output track are
+decoded before `step()` resolves. Your code still pushes and receives RGB; a result frame's
+`encoding` names the codec it travelled in.
+
+```ts
+reactor.setCodecPreference(["vp9", "h264"]);               // VP9 when both ends have it
+reactor.setCodecPreference([]);                            // raw frames
+reactor.setCodecPreference(["av1"], { track: "main_video" });
+await reactor.connect();
+reactor.getStepFrameEncodings(); // { main_video: "av1", camera: "vp9" }
+
+const result = await reactor.step({ requestKeyframe: true });
+```
+
+- The codecs are `"h264"`, `"vp9"`, `"av1"` and `"vp8"`; H.264 comes first by default. Each
+  track's list is filtered by what this browser can encode (input tracks) or decode (output
+  tracks), as `VideoEncoder.isConfigSupported` and `VideoDecoder.isConfigSupported` report,
+  and the runtime picks per track from what is left. A track they share no codec for, an audio
+  track, and every track of a runtime without encoded step frames stay raw.
+- `setCodecPreference()` can be called before `connect()` or during a session. It takes effect
+  on the next connection or reconnect; the live connection keeps what it negotiated.
+- Each track is one stream for the whole connection. A track's first frame on a connection is
+  a keyframe, and so is the next one after the runtime could not decode the track's pushed
+  frames. When an output track's decoder loses its state, that step rejects with a
+  `DecodeError` and the next steps ask the runtime for keyframes until one restarts the track;
+  `requestKeyframe: true` asks for them on any step.
+
+### Encoded video you encode yourself
+
+A step can also carry video you encoded yourself, its bytes as they are: one H.264 access unit
+(Annex B), one VP8 or VP9 frame, or one AV1 temporal unit. The runtime decodes a track's
+encoded frames as one stream, so the model reads RGB frames exactly as if they had been pushed
+raw. Give the frames in decode order, starting at a keyframe. A WebCodecs `VideoEncoder`'s
+chunks go in as they are; configure it for Annex B, as its default `avc` format is
+length-prefixed:
 
 ```ts
 import type { EncodedFrame } from "@reactor-team/js-sdk";
@@ -275,10 +307,11 @@ for (const frame of gop) await camera.pushEncodedFrame(frame);
 await reactor.step();
 ```
 
-- An `EncodedFrame` is `{ codec: "h264", data, width, height, metadata?, captureTimeUs? }`:
-  `data` one access unit as a `Uint8Array`, an `ArrayBuffer` or an `EncodedVideoChunk` (its
-  bytes are copied out when pushed), `width` and `height` the frame it decodes to. `codec` is
-  what tells it from a raw frame in `media`.
+- An `EncodedFrame` is `{ codec, data, width, height, metadata?, captureTimeUs?, keyframe? }`:
+  `codec` one of `"h264"`, `"vp8"`, `"vp9"` or `"av1"`, `data` one frame as a `Uint8Array`, an
+  `ArrayBuffer` or an `EncodedVideoChunk` (its bytes are copied out when pushed), `width` and
+  `height` the frame it decodes to, and `keyframe` whether a decoder can start from it (read
+  from a chunk's `type` when not given). `codec` is what tells it from a raw frame in `media`.
 - `media` maps input track names to frames: `EncodedFrame`s, or anything `pushFrame()` takes.
   They go after the frames pushed to the same track since the previous step, and only once
   `state` and `commands` are known to be well formed and the session is ready, so a step

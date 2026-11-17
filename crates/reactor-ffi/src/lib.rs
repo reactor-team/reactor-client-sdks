@@ -2499,6 +2499,7 @@ pub unsafe extern "C" fn reactor_push_step_encoded_video_frame(
         height,
         tag,
         (has_capture_time != 0).then_some(capture_time_us),
+        false,
     );
 }
 

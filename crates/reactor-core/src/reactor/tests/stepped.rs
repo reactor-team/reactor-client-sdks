@@ -1094,6 +1094,7 @@ impl crate::step::TrackDecoder for CountingDecoder {
             data: vec![self.0 - 1],
             metadata: None,
             capture_time_us: None,
+            keyframe: false,
         })
     }
 }
@@ -1168,6 +1169,46 @@ async fn step_results_decode_in_arrival_order() {
     assert_eq!(second.tracks[0].frames[0].data, [0]);
     assert_eq!(first.tracks[0].frames[0].data, [1]);
     assert_eq!(first.tracks[0].frames[0].encoding, FrameEncoding::H264);
+}
+
+/// A host that decodes step frames itself gets each encoded frame as it
+/// arrived, keyframe mark included, and no stream state is kept here: a
+/// frame that is not a keyframe passes even with none before it, and the
+/// next step asks for no keyframe on its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passed_through_frames_come_up_encoded_with_their_keyframe_mark() {
+    let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+    let mut opts = ReactorOptions::new("http://localhost", "test-model");
+    opts.generation = GenerationMode::Stepped;
+    opts.pass_encoded_step_frames = true;
+    let reactor = Reactor::new(
+        ReactorDeps {
+            http: Arc::new(PendingHttp) as SharedHttp,
+            auth: Arc::new(NoAuth) as SharedAuth,
+            platform: Arc::new(TestPlatform) as SharedPlatform,
+            peer: peer.clone() as SharedPeer,
+        },
+        opts,
+    );
+    reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+    let reactor = Arc::new(reactor);
+
+    for (step, keyframe) in [(1, false), (2, true)] {
+        let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+        assert_eq!(requests_keyframe(&sent), None);
+        feed(
+            &reactor,
+            &sent.request_id,
+            MessageKind::Response,
+            h264_result(step, 0x65, keyframe),
+        )
+        .await;
+        let output = stepping.await.unwrap().unwrap();
+        let frame = &output.tracks[0].frames[0];
+        assert_eq!(frame.encoding, FrameEncoding::H264);
+        assert_eq!(frame.data, [0x65]);
+        assert_eq!(frame.keyframe, keyframe);
+    }
 }
 
 /// A result whose step gave up still moves its track's stream on, so the
@@ -1409,12 +1450,22 @@ async fn encoded_stepped_pushes_ride_the_next_step_as_they_are() {
         2,
         Some(b"k"),
         Some(7),
+        true,
     );
-    reactor.push_step_encoded_video_frame("cam", FrameEncoding::H264, &p_frame, 4, 2, None, None);
+    reactor.push_step_encoded_video_frame(
+        "cam",
+        FrameEncoding::H264,
+        &p_frame,
+        4,
+        2,
+        None,
+        None,
+        false,
+    );
     reactor.push_video_frame("cam", &[1, 2, 3, 255], 1, 1);
     // Not a frame: dropped, not buffered.
-    reactor.push_step_encoded_video_frame("cam", FrameEncoding::H264, &[], 4, 2, None, None);
-    reactor.push_step_encoded_video_frame("cam", FrameEncoding::Raw, &idr, 4, 2, None, None);
+    reactor.push_step_encoded_video_frame("cam", FrameEncoding::H264, &[], 4, 2, None, None, true);
+    reactor.push_step_encoded_video_frame("cam", FrameEncoding::Raw, &idr, 4, 2, None, None, true);
     assert_eq!(reactor.step_inputs.len(), 3);
 
     let (_stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
@@ -1435,7 +1486,9 @@ async fn encoded_stepped_pushes_ride_the_next_step_as_they_are() {
     assert_eq!(cam.frames[0].shape, [2, 4, 3]);
     assert_eq!(cam.frames[0].metadata.as_deref(), Some(&b"k"[..]));
     assert_eq!(cam.frames[0].capture_time_us, Some(7));
+    assert!(cam.frames[0].keyframe);
     assert_eq!(cam.frames[1].data, p_frame);
+    assert!(!cam.frames[1].keyframe);
     assert_eq!(cam.frames[2].data, [3, 2, 1]);
     assert_eq!(
         cam.frames.iter().map(|f| f.keyframe).collect::<Vec<_>>(),
@@ -1443,7 +1496,16 @@ async fn encoded_stepped_pushes_ride_the_next_step_as_they_are() {
     );
 
     let streamed = make_ready_reactor(peer.clone(), GenerationMode::Streamed);
-    streamed.push_step_encoded_video_frame("cam", FrameEncoding::H264, &idr, 4, 2, None, None);
+    streamed.push_step_encoded_video_frame(
+        "cam",
+        FrameEncoding::H264,
+        &idr,
+        4,
+        2,
+        None,
+        None,
+        true,
+    );
     assert!(streamed.step_inputs.is_empty());
 }
 

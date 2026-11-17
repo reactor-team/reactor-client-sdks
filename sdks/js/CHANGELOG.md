@@ -11,11 +11,36 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Encoded step frames on WebCodecs. A stepped session's video frames travel
+  encoded both ways when the browser and the runtime share a codec (H.264
+  first by default, then VP9, AV1 and VP8, as `VideoEncoder` /
+  `VideoDecoder.isConfigSupported` report them): pushed frames are encoded
+  before they are sent, and result frames are decoded before `step()`
+  resolves, so callers still push and receive RGB. Each track is one stream
+  for the connection: its first frame on a connection is a keyframe, and so
+  is the next one after the runtime could not decode its pushed frames. A
+  result whose decoder lost its state rejects with `DecodeError`, and the
+  next steps ask the runtime for keyframes until one arrives.
+- `setCodecPreference(codecs, { track? })` chooses the codecs, or with `[]`
+  turns encoding off; it applies on the next connection or reconnect.
+  `getStepFrameEncodings()` says what the connection negotiated per track.
+- `step({ requestKeyframe: true })` asks the runtime to start every encoded
+  output track at a keyframe.
+- `EncodedFrame` takes `"vp8"`, `"vp9"` and `"av1"` besides `"h264"`, and a
+  `keyframe` mark (read from an `EncodedVideoChunk`'s `type` when not given).
+
 - `StepResult.data`: a `Uint8Array` of what the model returned for the step
   besides its media, opaque to the SDK (a dict the model returned arrives
   encoded as JSON; decoding it is up to the caller). It arrives with the
   step's frames, so a model whose output is data alone needs no output track.
   Absent when the model returned none.
+
+### Changed
+
+- `pushFrame()` and `pushEncodedFrame()` send a frame to the runtime at once
+  once the session is ready, on the same ordered channel as the commands and
+  steps, rather than holding it for the next `step()`; a runtime older than
+  3.11.8 still gets them with the step.
 
 ### Fixed
 

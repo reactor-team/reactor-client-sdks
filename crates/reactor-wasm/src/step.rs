@@ -114,6 +114,12 @@ fn frame_to_js(frame: DecodedFrame) -> Result<JsValue, JsValue> {
     if let Some(us) = frame.capture_time_us {
         set(&object, "captureTimeUs", &JsValue::from_f64(us as f64))?;
     }
+    if !matches!(
+        frame.encoding,
+        FrameEncoding::Raw | FrameEncoding::Unspecified
+    ) {
+        set(&object, "keyframe", &JsValue::from_bool(frame.keyframe))?;
+    }
     Ok(object.into())
 }
 
