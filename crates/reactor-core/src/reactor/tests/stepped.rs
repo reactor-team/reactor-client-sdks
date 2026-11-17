@@ -1060,6 +1060,10 @@ async fn encoded_stepped_pushes_ride_the_next_step_as_they_are() {
     assert_eq!(cam.frames[0].capture_time_us, Some(7));
     assert_eq!(cam.frames[1].data, p_frame);
     assert_eq!(cam.frames[2].data, [3, 2, 1]);
+    assert_eq!(
+        cam.frames.iter().map(|f| f.keyframe).collect::<Vec<_>>(),
+        [true, false, false]
+    );
 
     let streamed = make_ready_reactor(peer.clone(), GenerationMode::Streamed);
     streamed.push_step_encoded_video_frame("cam", FrameEncoding::H264, &idr, 4, 2, None, None);

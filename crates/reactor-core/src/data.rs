@@ -78,17 +78,39 @@ pub struct ReplyArrival {
     pub resolved_ms: f64,
 }
 
+/// Serialize a fire-and-forget data-channel message, such as `PushFrames`:
+/// `kind: Notification` with an empty `request_id`, so nothing is registered
+/// for a reply that never comes.
+pub fn encode_notification(payload: data_client_message::Payload) -> Vec<u8> {
+    DataClientMessage {
+        request_id: String::new(),
+        kind: MessageKind::Notification as i32,
+        payload: Some(payload),
+    }
+    .encode_to_vec()
+}
+
 impl DataCorrelator {
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Build a request and register it for correlation.
+    ///
+    /// Only for a payload that is answered: `PushFrames` gets no reply, so it
+    /// goes out through [`encode_notification`] instead, or it would be held
+    /// here until teardown.
     pub fn begin(&self, payload: data_client_message::Payload) -> PendingData {
         let command = match &payload {
             data_client_message::Payload::Command(c) => c.r#type.clone(),
             data_client_message::Payload::RequestStep(_) => "request_step".to_string(),
-            data_client_message::Payload::PushFrames(_) => "push_frames".to_string(),
+            data_client_message::Payload::PushFrames(_) => {
+                debug_assert!(
+                    false,
+                    "PushFrames is a notification: use encode_notification"
+                );
+                "push_frames".to_string()
+            }
             data_client_message::Payload::Error(_) => "command".to_string(),
         };
         let id = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
@@ -386,6 +408,21 @@ mod tests {
             }
             other => panic!("expected the step result, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn pushed_frames_go_out_as_a_notification_with_nothing_pending() {
+        let c = DataCorrelator::new();
+        let bytes =
+            encode_notification(data_client_message::Payload::PushFrames(Default::default()));
+        let message = DataClientMessage::decode(&bytes[..]).unwrap();
+        assert!(message.request_id.is_empty());
+        assert_eq!(message.kind, MessageKind::Notification as i32);
+        assert!(matches!(
+            message.payload,
+            Some(data_client_message::Payload::PushFrames(_))
+        ));
+        assert!(c.pending.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -172,8 +172,9 @@ pub fn raw_video_frame(
 }
 
 /// An encoded video frame: `data` as it is, under `encoding`, with the shape
-/// it decodes to, RGB `uint8` `(height, width, 3)`. The runtime decodes it
-/// before the step runs. `None` for an empty frame, a zero dimension, or an
+/// it decodes to, RGB `uint8` `(height, width, 3)`, marked a keyframe when its
+/// bitstream says the decoder can start there. The runtime decodes it before
+/// the step runs. `None` for an empty frame, a zero dimension, or an
 /// encoding that is not a compressed one (a raw frame goes through
 /// [`raw_video_frame`]).
 pub fn encoded_video_frame(
@@ -198,8 +199,50 @@ pub fn encoded_video_frame(
         data: data.to_vec(),
         metadata: metadata.filter(|m| !m.is_empty()).map(<[u8]>::to_vec),
         capture_time_us,
-        keyframe: false,
+        keyframe: is_keyframe(encoding, data),
     })
+}
+
+/// Whether the decoder can start the stream at `data`, read from its
+/// bitstream: an H.264 access unit (Annex B) holding an IDR slice, or a VP8 or
+/// VP9 key frame. `false` for anything else, including an encoding whose
+/// frames it does not read.
+fn is_keyframe(encoding: FrameEncoding, data: &[u8]) -> bool {
+    match encoding {
+        FrameEncoding::H264 => h264_nal_types(data).any(|nal_type| nal_type == 5),
+        // The frame tag's first bit is 0 for a key frame, which carries the
+        // start code 9d 01 2a after the tag.
+        FrameEncoding::Vp8 => {
+            data.len() >= 6 && data[0] & 1 == 0 && data[3..6] == [0x9d, 0x01, 0x2a]
+        }
+        FrameEncoding::Vp9 => vp9_is_keyframe(data),
+        _ => false,
+    }
+}
+
+/// The `nal_unit_type` of each NAL unit in an Annex B access unit.
+fn h264_nal_types(data: &[u8]) -> impl Iterator<Item = u8> + '_ {
+    data.windows(4)
+        .filter(|w| w[..3] == [0, 0, 1])
+        .map(|w| w[3] & 0x1f)
+}
+
+/// Whether a VP9 frame's uncompressed header says `KEY_FRAME`: past the frame
+/// marker and profile, a frame that is not a repeat of a shown one with a
+/// `frame_type` of 0.
+fn vp9_is_keyframe(data: &[u8]) -> bool {
+    let Some(&first) = data.first() else {
+        return false;
+    };
+    let bit = |n: u32| (first >> (7 - n)) & 1;
+    if bit(0) != 1 || bit(1) != 0 {
+        return false;
+    }
+    let profile = (bit(3) << 1) | bit(2);
+    // Profile 3 has a reserved bit before `show_existing_frame`.
+    let at = if profile == 3 { 5 } else { 4 };
+    // `show_existing_frame`, then `frame_type`.
+    bit(at) == 0 && bit(at + 1) == 0
 }
 
 /// A raw audio frame from the interleaved PCM the push API takes: `int16`
@@ -409,6 +452,7 @@ mod tests {
         assert_eq!(frame.data, access_unit);
         assert_eq!(frame.metadata.as_deref(), Some(&b"tag"[..]));
         assert_eq!(frame.capture_time_us, Some(42));
+        assert!(frame.keyframe);
 
         let untagged =
             encoded_video_frame(FrameEncoding::H264, &access_unit, 2, 2, Some(b""), None).unwrap();
@@ -421,6 +465,34 @@ mod tests {
                 "{not_compressed:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_encoded_frame_is_a_keyframe_when_its_bitstream_says_so() {
+        let keyframe = |encoding, data: &[u8]| {
+            encoded_video_frame(encoding, data, 2, 2, None, None)
+                .unwrap()
+                .keyframe
+        };
+        // H.264: an access unit with an IDR slice, after SPS and PPS, with
+        // 4- and 3-byte start codes; a P slice alone is a delta frame.
+        let idr = [
+            0, 0, 0, 1, 0x67, 0x42, 0, 0, 1, 0x68, 0xce, 0, 0, 1, 0x65, 0x88,
+        ];
+        assert!(keyframe(FrameEncoding::H264, &idr));
+        assert!(!keyframe(FrameEncoding::H264, &[0, 0, 0, 1, 0x41, 0x9a]));
+        assert!(!keyframe(FrameEncoding::H264, &[0x65, 0x88]));
+        // VP8: the frame tag's first bit, and the key frame's start code.
+        let vp8_key = [0x10, 0x02, 0x00, 0x9d, 0x01, 0x2a, 0x02, 0x00];
+        assert!(keyframe(FrameEncoding::Vp8, &vp8_key));
+        assert!(!keyframe(FrameEncoding::Vp8, &[0x11, 0x02, 0x00, 0x00]));
+        // VP9: frame marker 10, profile 0, a shown frame of type KEY_FRAME
+        // (0) or NON_KEY_FRAME (1); profile 3 has a reserved bit first.
+        assert!(keyframe(FrameEncoding::Vp9, &[0b1000_0010]));
+        assert!(!keyframe(FrameEncoding::Vp9, &[0b1000_0110]));
+        assert!(!keyframe(FrameEncoding::Vp9, &[0b1000_1000]));
+        assert!(keyframe(FrameEncoding::Vp9, &[0b1011_0000]));
+        assert!(!keyframe(FrameEncoding::Vp9, &[0b1011_0010]));
     }
 
     #[test]
