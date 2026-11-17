@@ -771,6 +771,15 @@ public class Reactor(
         return requireHandle("step").step(state, commandsJson, CodecPreferences.stepOptionsJson(requestKeyframe))
     }
 
+    // The previous signature, kept in the bytecode so a caller compiled against it still links:
+    // adding `requestKeyframe` changed the JVM signature of `step` and of its defaults stub.
+    // Hidden, so it takes no part in overload resolution and `step()` still means the one above.
+    @Deprecated("Kept for binary compatibility", level = DeprecationLevel.HIDDEN)
+    public suspend fun step(
+        state: String? = null,
+        commands: List<StepCommand> = emptyList(),
+    ): StepResult = step(state, commands, requestKeyframe = false)
+
     /**
      * Choose the codecs a stepped session carries its video step frames in, most preferred first.
      *

@@ -815,8 +815,14 @@ class Reactor:
         self._handle = handle
         # Now closable, so the atexit hook must know about it.
         _LIVE_CLIENTS.add(self)
-        for track, codecs in self._codec_preferences.items():
-            self._send_codec_preference(track, codecs)
+        try:
+            for track, codecs in self._codec_preferences.items():
+                self._send_codec_preference(track, codecs)
+        except BaseException:
+            # Left installed, the handle would make the next connect() skip this
+            # replay and connect without the preference that was asked for.
+            self._destroy_handle()
+            raise
 
     def _create_handle_with_options(
         self, lib: Any, jwt_bytes: bytes | None, cbs: ReactorCallbacks
