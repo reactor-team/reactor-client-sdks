@@ -2172,6 +2172,7 @@ fn a_buffered_window_that_cannot_be_sent_is_raised() {
         2,
         None,
         None,
+        true,
     );
     reactor.push_step_encoded_video_frame(
         "cam",
@@ -2181,6 +2182,7 @@ fn a_buffered_window_that_cannot_be_sent_is_raised() {
         2,
         None,
         None,
+        false,
     );
     while events.try_recv().is_ok() {}
 
@@ -2453,6 +2455,7 @@ mod webrtc_codecs {
             HEIGHT,
             None,
             None,
+            false,
         );
         push(&reactor, 2);
         push(&reactor, 3);
