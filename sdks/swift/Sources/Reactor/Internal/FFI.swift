@@ -283,6 +283,34 @@ struct FFI: Sendable {
             _ userdata: UnsafeMutableRawPointer?
         ) -> Void
 
+    /// `reactor_step_with_options` — ``step`` with a JSON object of options;
+    /// `{"request_keyframe": true}` asks the runtime to start every encoded
+    /// output track of the step's result at a keyframe. Its completion is
+    /// ``step``'s.
+    var stepWithOptions:
+        @Sendable (
+            _ handle: OpaquePointer?, _ stateJSON: UnsafePointer<CChar>?,
+            _ commandsJSON: UnsafePointer<CChar>?, _ optionsJSON: UnsafePointer<CChar>?,
+            _ completion: reactor_step_completion_fn?, _ userdata: UnsafeMutableRawPointer?
+        ) -> Void
+
+    /// `reactor_set_codec_preference` — the codecs a stepped session prefers for
+    /// its step frames, as a JSON array, for every track (a null track) or one.
+    /// A null array goes back to the default.
+    ///
+    /// Synchronous. Null on success; on failure, a heap JSON error object the
+    /// caller frees.
+    var setCodecPreference:
+        @Sendable (
+            _ handle: OpaquePointer?, _ track: UnsafePointer<CChar>?,
+            _ codecsJSON: UnsafePointer<CChar>?
+        ) -> UnsafeMutablePointer<CChar>?
+
+    /// `reactor_step_frame_encodings` — a JSON object of track name to the
+    /// encoding its step frames take on this connection; `"{}"` outside a
+    /// connected stepped session. Heap-allocated; the caller frees it.
+    var stepFrameEncodings: @Sendable (OpaquePointer?) -> UnsafeMutablePointer<CChar>?
+
     /// `reactor_clear_step_inputs` — drop every frame still buffered for the next
     /// step; frames already sent to the runtime are not recalled.
     var clearStepInputs: @Sendable (OpaquePointer?) -> Void
@@ -467,6 +495,14 @@ extension FFI {
         step: { handle, stateJSON, commandsJSON, completion, userdata in
             reactor_step(handle, stateJSON, commandsJSON, completion, userdata)
         },
+        stepWithOptions: { handle, stateJSON, commandsJSON, optionsJSON, completion, userdata in
+            reactor_step_with_options(
+                handle, stateJSON, commandsJSON, optionsJSON, completion, userdata)
+        },
+        setCodecPreference: { handle, track, codecsJSON in
+            reactor_set_codec_preference(handle, track, codecsJSON)
+        },
+        stepFrameEncodings: { handle in reactor_step_frame_encodings(handle) },
         clearStepInputs: { handle in reactor_clear_step_inputs(handle) },
         pushStepEncodedVideoFrame: {
             handle, track, encoding, data, length, width, height, userData, userDataLen,

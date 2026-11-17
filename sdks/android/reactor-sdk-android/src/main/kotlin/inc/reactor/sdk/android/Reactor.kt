@@ -1,6 +1,7 @@
 package inc.reactor.sdk.android
 
 import inc.reactor.sdk.android.internal.Authentication
+import inc.reactor.sdk.android.internal.CodecPreferences
 import inc.reactor.sdk.android.internal.Completions
 import inc.reactor.sdk.android.internal.ErrorPayloads
 import inc.reactor.sdk.android.internal.NativeClient
@@ -144,6 +145,9 @@ public class Reactor(
      * the token says. Under [handleLock] only.
      */
     private var handleModel: String? = null
+
+    /** What [setCodecPreference] was told, replayed onto every handle [connect] creates. */
+    private val codecPreferences = CodecPreferences()
 
     /**
      * The listener the bridge holds.
@@ -583,6 +587,9 @@ public class Reactor(
                             created.close()
                             throw IllegalStateException("This Reactor is closed")
                         }
+                        // Before the connect, which is when the native client reads them: a new
+                        // handle knows nothing of what setCodecPreference was told.
+                        codecPreferences.replay(created::setCodecPreference)
                     }
             client.connect(sessionId)
         }
@@ -732,6 +739,11 @@ public class Reactor(
      * @param state the model's state fields as a raw JSON object, in the form [sendCommand] takes
      *   its arguments, or null to change none
      * @param commands what to run after the state, in order
+     * @param requestKeyframe true asks the runtime to start every encoded output track of this
+     *   step's result at a keyframe — for a caller that drops what it decoded so far. False (the
+     *   default) stops no keyframe the runtime sends anyway, and the SDK already asks on its own
+     *   when one of its decoders loses its state. Frames still arrive as RGB either way; see
+     *   [setCodecPreference].
      * @return the step's result, copied onto the heap once and safe to keep
      * @throws StepRefusedException when the runtime turns the step down; nothing it carried was
      *   applied, and [ReactorException.entry] names the part at fault when one is
@@ -752,11 +764,68 @@ public class Reactor(
     public suspend fun step(
         state: String? = null,
         commands: List<StepCommand> = emptyList(),
+        requestKeyframe: Boolean = false,
     ): StepResult {
         requireStepped("step")
         val commandsJson = commands.joinToString(separator = ",", prefix = "[", postfix = "]") { it.toWire() }
-        return requireHandle("step").step(state, commandsJson)
+        return requireHandle("step").step(state, commandsJson, CodecPreferences.stepOptionsJson(requestKeyframe))
     }
+
+    /**
+     * Choose the codecs a stepped session carries its video step frames in, most preferred first.
+     *
+     * ```kotlin
+     * reactor.setCodecPreference(listOf(StepCodec.VP9, StepCodec.H264)) // VP9 when both ends have it
+     * reactor.setCodecPreference(emptyList())                            // encoding off: raw frames
+     * reactor.setCodecPreference(listOf(StepCodec.AV1), track = "main_video")
+     * reactor.setCodecPreference(null)                                   // back to the default
+     * ```
+     *
+     * - **null** goes back to the default order: H.264, VP9, AV1, VP8.
+     * - **An empty list** for the whole session ([track] null) turns encoding **off**: every track's
+     *   step frames travel raw. For one track, an empty list goes back to the session's order,
+     *   since one track cannot turn encoding off alone.
+     * - With [track], the list applies to that track only, in place of the session's.
+     *
+     * Each list is filtered by what this device can encode (input tracks) or decode (output
+     * tracks), and the runtime picks per track from what is left; a track they share no codec for
+     * stays raw. [stepFrameEncodings] says what each track got.
+     *
+     * **The encoding is between this client and the runtime.** Whatever the codec, [step] still
+     * answers with RGB frames and [Track.pushFrame] still takes BGRA pixels.
+     *
+     * Callable before [connect] or during a session. It takes effect on the **next connection** —
+     * the connect, a [reconnect], or a new connect — and the live connection keeps what it
+     * negotiated. The choice is kept by this client and applies to every connection it makes
+     * afterwards, including one that needs a new native client. A streamed session ignores it.
+     *
+     * @param codecs the codecs, most preferred first; null for the default, empty for none
+     * @param track the one track this applies to, or null for every track
+     * @throws IllegalArgumentException for a blank [track] or a codec named twice; nothing changed
+     * @throws ReactorException when the native layer refuses the preference; nothing changed
+     */
+    public fun setCodecPreference(
+        codecs: List<StepCodec>?,
+        track: String? = null,
+    ) {
+        requireOpen(CodecPreferences.OPERATION)
+        // The handle is read inside the store's monitor, the one connect() replays under, so a
+        // choice racing a connect is either replayed onto its new handle or sent to it here.
+        codecPreferences.set(track, codecs) { name, json -> handle?.setCodecPreference(name, json) }
+    }
+
+    /**
+     * How each track's step frames travel on this connection, by track name: `"h264"`, `"vp8"`,
+     * `"vp9"` or `"av1"` for an encoded video track, `"raw"` for the rest.
+     *
+     * Empty before [connect] and outside a connected stepped session. Fixed for a connection: a
+     * [setCodecPreference] made during it shows here only after the next connection.
+     *
+     * @throws DecodeFailedException when the native layer answers something that is not an object
+     *   of strings
+     */
+    public val stepFrameEncodings: Map<String, String>
+        get() = CodecPreferences.parseEncodings(handle?.stepFrameEncodings)
 
     /**
      * Drop every input frame still buffered for the next step. Frames already sent to the runtime

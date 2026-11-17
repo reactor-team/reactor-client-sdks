@@ -93,6 +93,8 @@ final class FakeLibrary: @unchecked Sendable {
         var stepCalls: [StepCall] = []
         var lastStepCompletion: (fn: reactor_step_completion_fn, userdata: UnsafeMutableRawPointer)?
         var clearStepInputsCalls = 0
+        var codecPreferenceCalls: [CodecPreferenceCall] = []
+        var stepFrameEncodingsJSON = "{}"
         var freedStepResults = 0
         var pushedEncoded: [PushedEncodedFrame] = []
         /// Every push, raw or encoded, as `"<kind>:<track>"`, in the order the
@@ -184,10 +186,20 @@ final class FakeLibrary: @unchecked Sendable {
         }
     }
 
-    /// What the SDK handed `reactor_step`.
+    /// What the SDK handed `reactor_step`, or `reactor_step_with_options`.
     struct StepCall {
         var stateJSON: String?
         var commandsJSON: String?
+        /// Whether the step went through `reactor_step_with_options`.
+        var withOptions = false
+        /// The options it was handed there; `nil` for a plain `reactor_step`.
+        var optionsJSON: String?
+    }
+
+    /// What the SDK handed `reactor_set_codec_preference`.
+    struct CodecPreferenceCall: Equatable {
+        var track: String?
+        var codecsJSON: String?
     }
 
     /// What the SDK handed `reactor_fetch_jwt`.
@@ -205,6 +217,10 @@ final class FakeLibrary: @unchecked Sendable {
     /// A JSON error object `reactor_unpublish_track` should answer with, or nil
     /// for success.
     var unpublishFailure: String?
+
+    /// A JSON error object `reactor_set_codec_preference` should answer with,
+    /// or nil for success.
+    var codecPreferenceFailure: String?
 
     /// Which ABI version the fake library claims to speak.
     var abiVersion: UInt32 = ABI.compiledAgainst
@@ -291,6 +307,14 @@ final class FakeLibrary: @unchecked Sendable {
     var createOptionsCalls: [CreateOptionsCall] { state.withLock { $0.createOptionsCalls } }
     var stepCalls: [StepCall] { state.withLock { $0.stepCalls } }
     var clearStepInputsCalls: Int { state.withLock { $0.clearStepInputsCalls } }
+    var codecPreferenceCalls: [CodecPreferenceCall] {
+        state.withLock { $0.codecPreferenceCalls }
+    }
+
+    /// What `reactor_step_frame_encodings` answers.
+    func setStepFrameEncodings(_ json: String) {
+        state.withLock { $0.stepFrameEncodingsJSON = json }
+    }
     var pushedEncoded: [PushedEncodedFrame] { state.withLock { $0.pushedEncoded } }
     var pushLog: [String] { state.withLock { $0.pushLog } }
     /// How many results `reactor_step_result_free` released.
@@ -739,18 +763,35 @@ final class FakeLibrary: @unchecked Sendable {
                 state.withLock { $0.events.append(.downloadReturned) }
             },
             step: { [self] _, stateJSON, commandsJSON, completion, userdata in
+                recordStep(
+                    StepCall(
+                        stateJSON: String(borrowing: stateJSON),
+                        commandsJSON: String(borrowing: commandsJSON)),
+                    completion, userdata)
+            },
+            stepWithOptions: {
+                [self] _, stateJSON, commandsJSON, optionsJSON, completion, userdata in
+                recordStep(
+                    StepCall(
+                        stateJSON: String(borrowing: stateJSON),
+                        commandsJSON: String(borrowing: commandsJSON),
+                        withOptions: true,
+                        optionsJSON: String(borrowing: optionsJSON)),
+                    completion, userdata)
+            },
+            setCodecPreference: { [self] _, track, codecsJSON in
                 state.withLock {
-                    $0.stepCalls.append(
-                        StepCall(
-                            stateJSON: String(borrowing: stateJSON),
-                            commandsJSON: String(borrowing: commandsJSON)))
+                    $0.codecPreferenceCalls.append(
+                        CodecPreferenceCall(
+                            track: String(borrowing: track),
+                            codecsJSON: String(borrowing: codecsJSON)))
                 }
-                guard let completion, let userdata else { return }
-                let object = Unmanaged<AnyObject>.fromOpaque(userdata).takeUnretainedValue()
-                state.withLock {
-                    $0.lastStepCompletion = (completion, userdata)
-                    $0.lastUserdataObject = object
-                }
+                guard let failure = codecPreferenceFailure else { return nil }
+                // Heap-allocated on failure, for the SDK to free.
+                return strdup(failure)
+            },
+            stepFrameEncodings: { [self] _ in
+                strdup(state.withLock { $0.stepFrameEncodingsJSON })
             },
             clearStepInputs: { [self] _ in state.withLock { $0.clearStepInputsCalls += 1 } },
             pushStepEncodedVideoFrame: {
@@ -835,6 +876,19 @@ final class FakeLibrary: @unchecked Sendable {
                 Unmanaged<FakeStepResult>.fromOpaque(UnsafeRawPointer(result)).release()
             }
         )
+    }
+
+    private func recordStep(
+        _ call: StepCall, _ completion: reactor_step_completion_fn?,
+        _ userdata: UnsafeMutableRawPointer?
+    ) {
+        state.withLock { $0.stepCalls.append(call) }
+        guard let completion, let userdata else { return }
+        let object = Unmanaged<AnyObject>.fromOpaque(userdata).takeUnretainedValue()
+        state.withLock {
+            $0.lastStepCompletion = (completion, userdata)
+            $0.lastUserdataObject = object
+        }
     }
 
     private func record(_ completion: reactor_completion_fn?, _ userdata: UnsafeMutableRawPointer?)

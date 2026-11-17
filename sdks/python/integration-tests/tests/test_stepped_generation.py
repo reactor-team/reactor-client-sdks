@@ -88,6 +88,61 @@ async def test_a_stepped_connect_to_echo_steps_or_fails() -> None:
         client.close()
 
 
+@pytest.mark.parametrize(
+    ("codecs", "expected"),
+    [(["h264"], "h264"), ([], "raw")],
+    ids=["h264", "encoding-off"],
+)
+async def test_a_stepped_session_carries_frames_in_the_codec_it_chose(
+    codecs: list[str], expected: str
+) -> None:
+    # The same echo round trip as above, with the step frames' codec chosen:
+    # H.264 both ways, or encoding turned off so every frame travels raw. The
+    # client still pushes and receives RGB arrays either way. An echo or a
+    # runtime that does not step is accepted as above.
+    client = stepped(MODEL_NAME)
+    client.set_codec_preference(codecs)
+    connected = False
+    try:
+        try:
+            await paced_connect(client)
+        except (GenerationModeMismatchError, SessionTerminalError) as refused:
+            if isinstance(refused, SessionTerminalError):
+                assert "(START_REFUSED)" in str(refused)
+            return
+        connected = True
+
+        webcam = await client.track("webcam").publish()
+        encodings = client.step_frame_encodings
+        assert encodings.get("main_video") == expected, encodings
+        # A track the connection negotiated no step codec for may be left out:
+        # it is raw.
+        assert encodings.get("webcam", "raw") == expected, encodings
+        if expected == "raw":
+            assert set(encodings.values()) <= {"raw"}, encodings
+
+        webcam.push_frame(solid_rgb_frame(64, 64, (10, 20, 30)))
+        result = await client.step(state={"effect": "invert"})
+        assert result.error is None
+        [frame] = result.track("main_video").frames
+        assert frame.array.shape == (64, 64, 3)
+        center = frame.array[32, 32].astype(int)
+        tolerance = 0 if expected == "raw" else 8
+        assert np.abs(center - [245, 235, 225]).max() <= tolerance, center.tolist()
+
+        # A step that asks for keyframes decodes like any other.
+        webcam.push_frame(solid_rgb_frame(64, 64, (10, 20, 30)))
+        again = await client.step(request_keyframe=True)
+        assert again.step == result.step + 1
+        [frame] = again.track("main_video").frames
+        center = frame.array[32, 32].astype(int)
+        assert np.abs(center - [245, 235, 225]).max() <= tolerance, center.tolist()
+    finally:
+        if connected:
+            await client.disconnect()
+        client.close()
+
+
 @needs_stepped_model
 async def test_steps_resolve_in_order() -> None:
     client = stepped(STEPPED_MODEL)

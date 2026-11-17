@@ -4,8 +4,9 @@
 // Three cases:
 //
 //   * **Yours, must free.** `reactor_session_id`, `reactor_tracks`,
-//     `reactor_paused_tracks`, and the error object a *failed*
-//     `reactor_unpublish_track` returns. These are `OwnedString`.
+//     `reactor_paused_tracks`, `reactor_step_frame_encodings`, and the error
+//     object a *failed* `reactor_unpublish_track` or
+//     `reactor_set_codec_preference` returns. These are `OwnedString`.
 //   * **Static, never free.** `reactor_status` returns a pointer to a literal.
 //     That is `StaticString`, a type with no way to free anything.
 //   * **Borrowed, never free.** Every string handed *to* a callback. The FFI

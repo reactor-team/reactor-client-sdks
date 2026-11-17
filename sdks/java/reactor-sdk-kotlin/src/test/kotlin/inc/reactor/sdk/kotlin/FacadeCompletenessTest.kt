@@ -88,6 +88,7 @@ class FacadeCompletenessTest {
                 "step/1",
                 "step/2",
                 "step/3",
+                "step/4",
                 "uploadBytes/3",
                 "uploadFile/1",
             ),

@@ -581,7 +581,17 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   Generation generation() const noexcept { return generation_; }
 
   void begin_step(std::unique_ptr<PendingStep> op, const Json& state,
-                  const std::vector<StepCommand>& commands, const StepMedia& media);
+                  const std::vector<StepCommand>& commands, const StepMedia& media,
+                  const StepOptions& options);
+
+  /// Check `codecs`, send them to the handle if there is one, and keep them for
+  /// every handle created after. Throws `BadRequestError` for an unknown name and
+  /// the library's typed error when it refuses; either way nothing is kept.
+  void set_codec_preference(std::optional<std::vector<std::string>> codecs,
+                            std::optional<std::string> track);
+
+  /// `reactor_step_frame_encodings`, parsed. Empty without a handle.
+  std::map<std::string, std::string> step_frame_encodings() const;
   /// Push a step's own frames, track by track, as `Reactor::step` documents: all
   /// of them, or — when any one is refused — none.
   void push_step_media(const StepMedia& media);
@@ -707,6 +717,9 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
       // module too, by name.
       handle_ = create_handle_with_options(callbacks);
       context_ = context.release();
+      // The handle is where a connection reads the codec preference from, and
+      // this one is new: tell it what the caller chose before it connects.
+      replay_codec_preferences();
       return;
     }
 
@@ -725,7 +738,17 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
       throw ReactorError{"libreactor_ffi could not create a client (allocation failed)"};
     }
     context_ = context.release();
+    // A streamed session ignores it, but the handle is the same kind of thing.
+    replay_codec_preferences();
   }
+
+  /// Send every kept codec preference to `handle_`. Called with `mutex_` held,
+  /// right after a handle is created; throws the library's typed error.
+  void replay_codec_preferences() const;
+
+  /// `reactor_set_codec_preference` on `handle`, its error thrown typed.
+  static void send_codec_preference(ReactorHandle* handle, const std::optional<std::string>& track,
+                                    const std::optional<std::vector<std::string>>& codecs);
 
  public:
   /// Watch a token exchange, so teardown can settle it.
@@ -967,6 +990,12 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   /// Held from a step's first push to `reactor_step` taking the buffer, so steps
   /// from two threads cannot interleave their media.
   std::mutex step_mutex_;
+
+  /// What `set_codec_preference` was told, by track (nullopt: every track), the
+  /// codecs nullopt for "the default". Kept because the native handle is created
+  /// at connect — and again after a token changes — and each new one starts with
+  /// no preference: `ensure_handle` replays these onto it. Guarded by `mutex_`.
+  std::map<std::optional<std::string>, std::optional<std::vector<std::string>>> codec_preferences_;
 
   /// At most one of these: whichever constructor was used.
   std::optional<std::string> api_key_;

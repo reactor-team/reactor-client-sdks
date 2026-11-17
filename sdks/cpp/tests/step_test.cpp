@@ -14,6 +14,7 @@
 #include <functional>
 #include <future>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -92,6 +93,9 @@ class FakeStepped {
     filled.status = &status;
     filled.free_string = &free_string;
     filled.step = &step;
+    filled.step_with_options = &step_with_options;
+    filled.set_codec_preference = &set_codec_preference;
+    filled.step_frame_encodings = &step_frame_encodings;
     filled.clear_step_inputs = &clear_step_inputs;
     filled.step_result_step = &result_step;
     filled.step_result_elapsed = &result_elapsed;
@@ -126,6 +130,24 @@ class FakeStepped {
   std::optional<std::string> state_json;
   std::optional<std::string> commands_json;
   int clears = 0;
+  /// Steps that went through reactor_step_with_options, and the options they had.
+  int steps_with_options = 0;
+  std::optional<std::string> step_options_json;
+  /// One reactor_set_codec_preference call: the track and the codecs, each
+  /// nullopt for NULL.
+  struct CodecCall {
+    std::optional<std::string> track;
+    std::optional<std::string> codecs_json;
+    bool operator==(const CodecCall& other) const {
+      return track == other.track && codecs_json == other.codecs_json;
+    }
+  };
+  std::vector<CodecCall> codec_calls;
+  /// Non-empty: reactor_set_codec_preference refuses with this error object.
+  std::string codec_error;
+  /// What reactor_step_frame_encodings answers.
+  std::string encodings_json = "{}";
+  int encodings_reads = 0;
   std::atomic<int> results_freed{0};
   std::atomic<int> strings_freed{0};
 
@@ -285,6 +307,33 @@ class FakeStepped {
         completion(1, reinterpret_cast<ReactorStepResult*>(result), nullptr, userdata);
       }
     });
+  }
+
+  static void step_with_options(ReactorHandle* handle, const char* state_json,
+                                const char* commands_json, const char* options_json,
+                                reactor_step_completion_fn completion, void* userdata) {
+    auto& self = current();
+    ++self.steps_with_options;
+    self.step_options_json =
+        options_json == nullptr ? std::nullopt : std::optional<std::string>{options_json};
+    step(handle, state_json, commands_json, completion, userdata);
+  }
+
+  static char* set_codec_preference(ReactorHandle* handle, const char* track,
+                                    const char* codecs_json) {
+    REQUIRE(handle == FakeStepped::handle());
+    auto& self = current();
+    self.codec_calls.push_back(
+        CodecCall{track == nullptr ? std::nullopt : std::optional<std::string>{track},
+                  codecs_json == nullptr ? std::nullopt : std::optional<std::string>{codecs_json}});
+    return self.codec_error.empty() ? nullptr : heap_copy(self.codec_error.c_str());
+  }
+
+  static char* step_frame_encodings(ReactorHandle* handle) {
+    REQUIRE(handle == FakeStepped::handle());
+    auto& self = current();
+    ++self.encodings_reads;
+    return heap_copy(self.encodings_json.c_str());
   }
 
   static void clear_step_inputs(ReactorHandle* /*handle*/) { ++current().clears; }
@@ -986,4 +1035,132 @@ TEST_CASE("clear_step_inputs reaches the library only for a stepped session") {
     client.clear_step_inputs();
     CHECK(fixture.library.clears == 0);
   }
+}
+
+// ── Step frame codecs ────────────────────────────────────────────────────────
+
+using CodecCall = FakeStepped::CodecCall;
+
+TEST_CASE("codec preferences set before connect are replayed onto the handle it creates") {
+  Fixture fixture;
+  reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, stepped()};
+
+  client.set_codec_preference({"VP9", "h264"});
+  client.set_codec_preference({"av1"}, "main_video");
+  client.set_codec_preference(std::nullopt, "webcam");
+  // No handle yet: kept, nothing sent.
+  CHECK(fixture.library.codec_calls.empty());
+
+  client.connect().get();
+
+  // The session-wide choice first, then the tracks', names lowercased.
+  CHECK(fixture.library.codec_calls == std::vector<CodecCall>{{std::nullopt, R"(["vp9","h264"])"},
+                                                              {"main_video", R"(["av1"])"},
+                                                              {"webcam", std::nullopt}});
+}
+
+TEST_CASE("a later choice for the same track replaces the earlier one before connect") {
+  Fixture fixture;
+  reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, stepped()};
+
+  client.set_codec_preference({"h264"});
+  client.set_codec_preference({});  // encoding off
+  client.connect().get();
+
+  CHECK(fixture.library.codec_calls == std::vector<CodecCall>{{std::nullopt, "[]"}});
+}
+
+TEST_CASE("a codec preference set during a session is sent at once") {
+  Fixture fixture;
+  reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, stepped()};
+  client.connect().get();
+  REQUIRE(fixture.library.codec_calls.empty());
+
+  SECTION("a list") {
+    client.set_codec_preference({"h264"}, "webcam");
+    CHECK(fixture.library.codec_calls == std::vector<CodecCall>{{"webcam", R"(["h264"])"}});
+  }
+  SECTION("encoding off") {
+    client.set_codec_preference({});
+    CHECK(fixture.library.codec_calls == std::vector<CodecCall>{{std::nullopt, "[]"}});
+  }
+  SECTION("back to the default") {
+    client.set_codec_preference(std::nullopt);
+    CHECK(fixture.library.codec_calls == std::vector<CodecCall>{{std::nullopt, std::nullopt}});
+  }
+}
+
+TEST_CASE("an unknown codec name is refused before the library is asked, and nothing is kept") {
+  Fixture fixture;
+  reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, stepped()};
+
+  SECTION("before connect") {
+    CHECK_THROWS_AS(client.set_codec_preference({"h264", "h265"}), reactor::BadRequestError);
+    client.connect().get();
+    CHECK(fixture.library.codec_calls.empty());
+  }
+  SECTION("during a session") {
+    client.connect().get();
+    try {
+      client.set_codec_preference({"mjpeg"});
+      FAIL("an unknown codec must be refused");
+    } catch (const reactor::BadRequestError& error) {
+      CHECK(std::string{error.what()}.find("\"mjpeg\"") != std::string::npos);
+    }
+    CHECK(fixture.library.codec_calls.empty());
+  }
+}
+
+TEST_CASE("a codec preference the library refuses throws its typed error, freed once") {
+  Fixture fixture;
+  fixture.library.codec_error =
+      R"({"code":"DECODE_FAILED","message":"bad codecs","operation":"set_codec_preference"})";
+  reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, stepped()};
+  client.connect().get();
+  const int freed_before = fixture.library.strings_freed;
+
+  CHECK_THROWS_AS(client.set_codec_preference({"h264"}), reactor::DecodeError);
+  CHECK(fixture.library.strings_freed == freed_before + 1);
+  CHECK(fixture.library.codec_calls.size() == 1);
+}
+
+TEST_CASE("request_keyframe routes a step through reactor_step_with_options") {
+  Fixture fixture;
+  reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, stepped()};
+  client.connect().get();
+
+  SECTION("asked for") {
+    reactor::StepOptions options;
+    options.request_keyframe = true;
+    CHECK(client.step({{"effect", "invert"}}, {}, {}, options).get().step == 1);
+    CHECK(fixture.library.steps_with_options == 1);
+    CHECK(reactor::Json::parse(fixture.library.step_options_json.value_or("null")) ==
+          reactor::Json{{"request_keyframe", true}});
+    CHECK(reactor::Json::parse(fixture.library.state_json.value_or("null")) ==
+          reactor::Json{{"effect", "invert"}});
+  }
+  SECTION("not asked for: the plain step, as before") {
+    CHECK(client.step(nullptr, {}, {}, reactor::StepOptions{}).get().step == 1);
+    CHECK(client.step().get().step == 1);
+    CHECK(fixture.library.steps_with_options == 0);
+    CHECK(fixture.library.steps == 2);
+  }
+}
+
+TEST_CASE("step_frame_encodings reads what the connection negotiated") {
+  Fixture fixture;
+  fixture.library.encodings_json = R"({"main_video":"h264","webcam":"h264","main_audio":"raw"})";
+  reactor::Reactor client{"owner/model", reactor::Jwt{"token"}, stepped()};
+
+  // No handle: empty, and the library is not asked.
+  CHECK(client.step_frame_encodings().empty());
+  CHECK(fixture.library.encodings_reads == 0);
+
+  client.connect().get();
+  const int freed_before = fixture.library.strings_freed;
+  CHECK(client.step_frame_encodings() == std::map<std::string, std::string>{{"main_video", "h264"},
+                                                                            {"webcam", "h264"},
+                                                                            {"main_audio", "raw"}});
+  CHECK(fixture.library.encodings_reads == 1);
+  CHECK(fixture.library.strings_freed == freed_before + 1);
 }

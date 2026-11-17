@@ -9,6 +9,9 @@
 
 #include "reactor/step.hpp"
 
+#include <algorithm>
+#include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -18,6 +21,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -365,7 +369,8 @@ void ClientImpl::push_step_media(const StepMedia& media) {
 }
 
 void ClientImpl::begin_step(std::unique_ptr<PendingStep> op, const Json& state,
-                            const std::vector<StepCommand>& commands, const StepMedia& media) {
+                            const std::vector<StepCommand>& commands, const StepMedia& media,
+                            const StepOptions& options) {
   try {
     if (generation_ != Generation::Stepped) {
       throw InvalidStateError{
@@ -378,6 +383,10 @@ void ClientImpl::begin_step(std::unique_ptr<PendingStep> op, const Json& state,
     }
     const std::string commands_json = wire_commands(commands).dump();
     const std::string state_json = state.is_null() ? std::string{} : state.dump();
+    // Only a step that asks for something goes through reactor_step_with_options,
+    // so a plain step is exactly the call it always was.
+    const std::string options_json =
+        options.request_keyframe ? Json{{"request_keyframe", true}}.dump() : std::string{};
 
     ReactorHandle* handle = require_ready_session("run a step");
     // Until reactor_step has taken the buffer: later pushes are the next step's.
@@ -387,8 +396,13 @@ void ClientImpl::begin_step(std::unique_ptr<PendingStep> op, const Json& state,
     push_step_media(media);
     PendingStep* step = op.get();
     track_pending(std::move(op));
-    ffi().step(handle, state_json.empty() ? nullptr : state_json.c_str(), commands_json.c_str(),
-               &step_completion_trampoline, step);
+    const char* state_arg = state_json.empty() ? nullptr : state_json.c_str();
+    if (options_json.empty()) {
+      ffi().step(handle, state_arg, commands_json.c_str(), &step_completion_trampoline, step);
+    } else {
+      ffi().step_with_options(handle, state_arg, commands_json.c_str(), options_json.c_str(),
+                              &step_completion_trampoline, step);
+    }
   } catch (...) {
     if (op) {
       op->fail(std::current_exception());
@@ -410,6 +424,85 @@ void ClientImpl::clear_step_inputs() {
   }
 }
 
+namespace {
+
+/// The codecs step frames can travel in, in the library's default order.
+constexpr std::array<std::string_view, 4> STEP_CODECS{"h264", "vp9", "av1", "vp8"};
+
+/// `codecs` lowercased, or a thrown `BadRequestError` naming the first that is
+/// not a step codec — before the library is asked, so nothing changes.
+std::vector<std::string> checked_codecs(const std::vector<std::string>& codecs) {
+  std::vector<std::string> names;
+  names.reserve(codecs.size());
+  for (const auto& codec : codecs) {
+    std::string name = codec;
+    std::transform(name.begin(), name.end(), name.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (std::find(STEP_CODECS.begin(), STEP_CODECS.end(), name) == STEP_CODECS.end()) {
+      throw BadRequestError{"unknown step codec \"" + codec +
+                            "\": expected one of h264, vp9, av1, vp8"};
+    }
+    names.push_back(std::move(name));
+  }
+  return names;
+}
+
+}  // namespace
+
+void ClientImpl::send_codec_preference(ReactorHandle* handle,
+                                       const std::optional<std::string>& track,
+                                       const std::optional<std::vector<std::string>>& codecs) {
+  const std::string codecs_json = codecs ? Json(*codecs).dump() : std::string{};
+  const OwnedString error{ffi().set_codec_preference(handle, track ? track->c_str() : nullptr,
+                                                     codecs ? codecs_json.c_str() : nullptr)};
+  if (error.has_value()) {
+    throw_error_payload(error.view(), "set_codec_preference");
+  }
+}
+
+void ClientImpl::replay_codec_preferences() const {
+  for (const auto& [track, codecs] : codec_preferences_) {
+    send_codec_preference(handle_, track, codecs);
+  }
+}
+
+void ClientImpl::set_codec_preference(std::optional<std::vector<std::string>> codecs,
+                                      std::optional<std::string> track) {
+  if (codecs) {
+    codecs = checked_codecs(*codecs);
+  }
+  // Under the lock, so a handle being created replays either this choice or the
+  // one before it, never half of one.
+  const std::lock_guard<std::mutex> lock(mutex_);
+  if (handle_ != nullptr) {
+    // Sent first and kept second: a choice the library refuses is not replayed.
+    send_codec_preference(handle_, track, codecs);
+  }
+  codec_preferences_[std::move(track)] = std::move(codecs);
+}
+
+std::map<std::string, std::string> ClientImpl::step_frame_encodings() const {
+  OwnedString json;
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (handle_ == nullptr) {
+      return {};
+    }
+    json = OwnedString{ffi().step_frame_encodings(handle_)};
+  }
+  std::map<std::string, std::string> encodings;
+  const Json parsed = Json::parse(json.view(), nullptr, /*allow_exceptions=*/false);
+  if (!parsed.is_object()) {
+    return encodings;
+  }
+  for (const auto& [name, encoding] : parsed.items()) {
+    if (encoding.is_string()) {
+      encodings.emplace(name, encoding.get<std::string>());
+    }
+  }
+  return encodings;
+}
+
 }  // namespace detail
 
 Generation Reactor::generation() const noexcept { return impl_->generation(); }
@@ -420,7 +513,7 @@ std::future<StepResult> Reactor::step(Json state, std::vector<StepCommand> comma
   auto op = std::make_unique<detail::PendingStep>();
   op->operation = "step";
   auto future = op->promise.get_future();
-  impl_->begin_step(std::move(op), state, commands, {});
+  impl_->begin_step(std::move(op), state, commands, {}, {});
   return future;
 }
 
@@ -431,10 +524,32 @@ std::future<StepResult> Reactor::step(Json state, std::vector<StepCommand> comma
   auto op = std::make_unique<detail::PendingStep>();
   op->operation = "step";
   auto future = op->promise.get_future();
-  impl_->begin_step(std::move(op), state, commands, media);
+  impl_->begin_step(std::move(op), state, commands, media, {});
   return future;
 }
+
+std::future<StepResult> Reactor::step(Json state, std::vector<StepCommand> commands,
+                                      StepMedia media, StepOptions options) {
+  auto op = std::make_unique<detail::PendingStep>();
+  op->operation = "step";
+  auto future = op->promise.get_future();
+  impl_->begin_step(std::move(op), state, commands, media, options);
+  return future;
+}
+
+void Reactor::set_codec_preference(std::vector<std::string> codecs,
+                                   std::optional<std::string> track) {
+  impl_->set_codec_preference(std::move(codecs), std::move(track));
+}
+
+void Reactor::set_codec_preference(std::nullopt_t /*reset*/, std::optional<std::string> track) {
+  impl_->set_codec_preference(std::nullopt, std::move(track));
+}
 // NOLINTEND(performance-unnecessary-value-param)
+
+std::map<std::string, std::string> Reactor::step_frame_encodings() const {
+  return impl_->step_frame_encodings();
+}
 
 void Reactor::clear_step_inputs() { impl_->clear_step_inputs(); }
 

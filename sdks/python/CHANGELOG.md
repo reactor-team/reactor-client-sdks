@@ -17,6 +17,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
   frames, so a model whose output is data alone (an action chunk, a score)
   needs no output track. `None` when the model returned none, `b""` when it
   returned empty data.
+- **Encoded step frames**: a stepped session carries its video frames encoded
+  both ways, H.264 first by default, and `step()` results stay RGB arrays.
+  `Reactor.set_codec_preference(codecs, track=None)` chooses the codecs
+  (`"h264"`, `"vp9"`, `"av1"`, `"vp8"`), most preferred first, for the session
+  or one track; `[]` turns encoding off, `None` restores the default. It takes
+  effect on the next connection. `Reactor.step_frame_encodings` says what each
+  track negotiated, and `step(request_keyframe=True)` asks the runtime to
+  start each encoded output track of that step's result at a keyframe.
 
 ### Fixed
 

@@ -18,6 +18,26 @@ versioning follows [Semantic Versioning](https://semver.org/).
   frames, so a model whose output is data alone needs no output track.
   `null` when the model returned none, or when the native library predates
   the accessor.
+- Encoded step frames. A stepped session's video step frames now travel
+  between the client and the runtime encoded (H.264 by default, then VP9,
+  AV1, VP8), and the native library encodes and decodes them, so frames are
+  still pushed as BGRA or RGB and step results still carry decoded RGB.
+  `Reactor.setCodecPreference(List<StepCodec>)` and
+  `setCodecPreference(List<StepCodec>, String track)` (Kotlin:
+  `setCodecPreference(codecs, track = null)`) choose the codecs, most
+  preferred first: `null` goes back to the default, and an empty list for the
+  whole session turns encoding off, so every frame travels raw. Callable
+  before `connect()` or during a session; it takes effect on the next
+  connection or reconnect. `Reactor.stepFrameEncodings()` (Kotlin:
+  `stepFrameEncodings`) reports what each track negotiated on this
+  connection: `"h264"`, `"vp9"`, `"av1"`, `"vp8"` or `"raw"`.
+- `Reactor.step(state, commands, media, StepOptions)` and the Kotlin
+  `step(..., requestKeyframe = true)` ask the runtime to start every encoded
+  output track of the step's result at a keyframe.
+- A native library that predates these still loads and steps:
+  `setCodecPreference` and a step asking for a keyframe fail with
+  `InvalidStateException` naming the rebuild, and `stepFrameEncodings()` is
+  empty.
 
 ### Changed
 

@@ -11,11 +11,32 @@ public enum Generation: String, Sendable, Hashable, CaseIterable {
     /// before the choice existed, and the default.
     case streamed
 
-    /// One ``Reactor/step(state:commands:media:)`` at a time. Input tracks send
+    /// One ``Reactor/step(state:commands:media:requestKeyframe:)`` at a time. Input tracks send
     /// what is pushed into them to the runtime over the data channel, ahead of
     /// the next step, and each step answers with the frames the model produced
     /// rather than streaming them.
     case stepped
+}
+
+/// A codec a stepped session's video step frames can travel in between this
+/// client and the runtime. See ``Reactor/setCodecPreference(_:track:)``.
+///
+/// The cases are listed in the default order of preference. Whatever the
+/// codec, the frames a step takes and returns stay RGB: the library encodes and
+/// decodes them on this side.
+public enum StepCodec: String, Sendable, Hashable, CaseIterable {
+
+    /// H.264. The default first choice.
+    case h264
+
+    /// VP9.
+    case vp9
+
+    /// AV1.
+    case av1
+
+    /// VP8.
+    case vp8
 }
 
 /// One command of a step, run after the step's state, in order.
@@ -128,7 +149,7 @@ public struct StepResult: Sendable {
     /// Why the step failed, when it ran and the model reported a failure;
     /// `nil` when it worked.
     ///
-    /// A failed step is still a result — ``Reactor/step(state:commands:media:)``
+    /// A failed step is still a result — ``Reactor/step(state:commands:media:requestKeyframe:)``
     /// returns it rather than throwing. Only a step that never ran throws.
     public let error: String?
 
@@ -153,7 +174,7 @@ public struct StepResult: Sendable {
     /// short.
     public let data: Data?
 
-    /// Assemble a result — for tests and previews; ``Reactor/step(state:commands:media:)``
+    /// Assemble a result — for tests and previews; ``Reactor/step(state:commands:media:requestKeyframe:)``
     /// is where real ones come from.
     public init(
         step: UInt64,
@@ -259,8 +280,9 @@ public struct StepFrame: Sendable, Hashable {
     /// The array's dimensions, outermost first.
     public let shape: [Int]
 
-    /// How the frame travelled on the wire — `"raw"` today. Informational:
-    /// ``data`` is decoded either way.
+    /// How the frame travelled on the wire: `"raw"`, or a ``StepCodec``'s name
+    /// for a video frame the session encoded. Informational: ``data`` is
+    /// decoded either way.
     public let encoding: String
 
     /// What the sender attached to the frame, or `nil` when it attached nothing.
@@ -325,7 +347,7 @@ public struct StepFrame: Sendable, Hashable {
 ///
 /// `width` and `height` are the frame it decodes to. Push it with
 /// ``Track/pushEncodedFrame(_:)``, or give it to
-/// ``Reactor/step(state:commands:media:)`` as ``StepMediaFrame/encoded(_:)``.
+/// ``Reactor/step(state:commands:media:requestKeyframe:)`` as ``StepMediaFrame/encoded(_:)``.
 /// The runtime decodes a track's encoded frames as one stream, as they arrive,
 /// and the model reads RGB frames as if they had been pushed raw. So give them
 /// in decode order, starting at a keyframe — the
@@ -388,7 +410,7 @@ public struct EncodedFrame: Sendable, Hashable {
 }
 
 /// One frame a step carries for an input track, in
-/// ``Reactor/step(state:commands:media:)``'s `media`.
+/// ``Reactor/step(state:commands:media:requestKeyframe:)``'s `media`.
 ///
 /// Each case is what the matching push takes, and is pushed exactly as that
 /// push would push it, just before the step goes out.

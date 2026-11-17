@@ -2042,12 +2042,44 @@ pub unsafe extern "C" fn reactor_step(
     completion: Option<StepCompletionFn>,
     userdata: *mut c_void,
 ) {
+    reactor_step_with_options(
+        handle,
+        state_json,
+        commands_json,
+        std::ptr::null(),
+        completion,
+        userdata,
+    );
+}
+
+/// [`reactor_step`] with `options_json`, a JSON object whose only key so far
+/// is an optional boolean `"request_keyframe"`. `true` asks the runtime to
+/// start every encoded output track of this connection at a keyframe in this
+/// step's result (`StepRequest::request_keyframe`); `false` or absent stops
+/// no keyframe the runtime sends anyway, and the core still asks on its own
+/// when a track's decoder lost its state. A malformed `options_json` fails the
+/// step with `DECODE_FAILED`, like a malformed state.
+///
+/// # Safety
+///
+/// As [`reactor_step`]; `options_json` may be null, otherwise a NUL-terminated
+/// C string.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_with_options(
+    handle: *mut ReactorHandle,
+    state_json: *const c_char,
+    commands_json: *const c_char,
+    options_json: *const c_char,
+    completion: Option<StepCompletionFn>,
+    userdata: *mut c_void,
+) {
     if handle.is_null() {
         return;
     }
     let handle = &*handle;
     let state_json = opt_string(state_json);
     let commands_json = opt_string(commands_json);
+    let options_json = opt_string(options_json);
     let reactor = handle.reactor.clone();
     let completion = StepCompletion {
         f: completion,
@@ -2060,7 +2092,13 @@ pub unsafe extern "C" fn reactor_step(
     // takes to get to this one.
     let begun = step::parse_state(state_json.as_deref()).and_then(|state| {
         let commands = step::parse_commands(commands_json.as_deref())?;
-        reactor.begin_step(state, commands)
+        let request_keyframe = step::parse_step_options(options_json.as_deref())?;
+        let request = reactor.begin_step(state, commands)?;
+        Ok(if request_keyframe {
+            request.request_keyframe()
+        } else {
+            request
+        })
     });
     spawn_tracked(&handle.tasks, async move {
         let result = match begun {
@@ -2104,6 +2142,68 @@ pub unsafe extern "C" fn reactor_unpublish_track(
         Ok(_) => std::ptr::null_mut(),
         Err(e) => error_details_ptr(&e, "unpublish_track"),
     }
+}
+
+/// Set the codecs a stepped session prefers for its step frames, most preferred
+/// first: for every track with a null `track`, or for one track. See
+/// [`Reactor::set_codec_preference`].
+///
+/// `codecs_json` is a JSON array of codec names (`"h264"`, `"vp8"`, `"vp9"`,
+/// `"av1"`, in any case), or null to go back to the default (H.264 first). An
+/// empty array with a null `track` turns encoded step frames off, so every
+/// track carries raw frames; an empty array for one track goes back to the
+/// session's order. It takes effect on the next connection or reconnect.
+///
+/// Null on success. On failure (a malformed `codecs_json`: `DECODE_FAILED`),
+/// a heap JSON error object, as [`reactor_unpublish_track`]'s, that the caller
+/// frees with [`reactor_free_string`]; nothing changed.
+///
+/// # Safety
+///
+/// `handle` must be null (reports `INVALID_STATE`) or a live handle. `track`
+/// and `codecs_json` may be null, otherwise NUL-terminated C strings.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_set_codec_preference(
+    handle: *mut ReactorHandle,
+    track: *const c_char,
+    codecs_json: *const c_char,
+) -> *mut c_char {
+    if handle.is_null() {
+        return error_details_ptr(
+            &CoreError::InvalidState("no active handle".to_string()),
+            "set_codec_preference",
+        );
+    }
+    let track = opt_string(track);
+    let codecs_json = opt_string(codecs_json);
+    match step::parse_codecs(codecs_json.as_deref()) {
+        Ok(codecs) => {
+            (*handle)
+                .reactor
+                .set_codec_preference(track.as_deref(), codecs);
+            std::ptr::null_mut()
+        }
+        Err(e) => error_details_ptr(&e, "set_codec_preference"),
+    }
+}
+
+/// The encoding each mapped track's step frames take on this connection, as a
+/// JSON object of track name to `"raw"`, `"h264"`, `"vp8"`, `"vp9"` or
+/// `"av1"`. See [`Reactor::step_frame_encodings`]. `"{}"` outside a connected
+/// session. Heap-allocated; free with [`reactor_free_string`].
+///
+/// # Safety
+///
+/// `handle` must be null (returns null) or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn reactor_step_frame_encodings(handle: *mut ReactorHandle) -> *mut c_char {
+    if handle.is_null() {
+        return std::ptr::null_mut();
+    }
+    let json = step::encodings_json(&(*handle).reactor.step_frame_encodings());
+    CString::new(json)
+        .map(|cs| cs.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 /// Serialise a `CoreError` into the JSON payload every completion reports.
@@ -2219,7 +2319,8 @@ pub unsafe extern "C" fn reactor_paused_tracks(handle: *mut ReactorHandle) -> *m
 }
 
 /// Release a string returned by [`reactor_session_id`], [`reactor_tracks`],
-/// [`reactor_paused_tracks`], [`reactor_unpublish_track`], or stored in
+/// [`reactor_paused_tracks`], [`reactor_unpublish_track`],
+/// [`reactor_set_codec_preference`], [`reactor_step_frame_encodings`], or stored in
 /// [`reactor_create_with_options`]'s `error_out`.
 ///
 /// # Safety

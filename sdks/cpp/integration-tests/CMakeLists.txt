@@ -29,6 +29,7 @@ add_executable(
   concurrency_and_races_test.cpp
   refusals_and_edge_cases_test.cpp
   audio_test.cpp
+  stepped_generation_test.cpp
 )
 
 target_link_libraries(

@@ -145,6 +145,17 @@ public final class ClientPeer implements Runnable {
     private final Object handleLock = new Object();
 
     /**
+     * What {@link #setCodecPreference} was told, by track ({@code null}: every track), each a list
+     * of codec names or {@code null} for the default.
+     *
+     * <p>Kept because the native client reads its preferences from the handle, and the handle does
+     * not exist until the first connect — and is replaced when a token is re-minted. Each new one
+     * is given all of these before anything connects through it. Guarded by {@link #handleLock}.
+     */
+    private final java.util.Map<@Nullable String, @Nullable List<String>> codecPreferences =
+            new java.util.LinkedHashMap<>();
+
+    /**
      * The mints this peer has queued, so only one is ever in flight.
      *
      * <p>Two connects wanting different scopes would otherwise both mint and then race to rebuild
@@ -338,7 +349,17 @@ public final class ClientPeer implements Runnable {
         try {
             synchronized (handleLock) {
                 if (handle.equals(MemorySegment.NULL)) {
-                    handle = createHandle(jwt);
+                    MemorySegment created = createHandle(jwt);
+                    try {
+                        replayCodecPreferences(created);
+                    } catch (RuntimeException refused) {
+                        // Nothing has connected through it yet, so nothing can be relying on it:
+                        // destroyed here rather than kept without the preferences it was meant to
+                        // carry, which the next connect would then never replay.
+                        destroyOffVirtualThread(created);
+                        throw refused;
+                    }
+                    handle = created;
                 }
                 return handle;
             }
@@ -1616,7 +1637,29 @@ public final class ClientPeer implements Runnable {
      * @return the step's result, copied onto the heap
      */
     public CompletableFuture<StepResult> step(@Nullable String stateJson, String commandsJson) {
+        return step(stateJson, commandsJson, null);
+    }
+
+    /**
+     * Runs one step with options: through {@code reactor_step_with_options} when there are any,
+     * through {@code reactor_step} otherwise, so a library without the former still steps.
+     *
+     * @param stateJson a JSON object of the model's state fields, or {@code null} for none
+     * @param commandsJson a JSON array of {@code {command, data}} objects
+     * @param optionsJson the step's options object, or {@code null} for none
+     * @return the step's result, copied onto the heap
+     */
+    public CompletableFuture<StepResult> step(
+            @Nullable String stateJson, String commandsJson, @Nullable String optionsJson) {
         CompletableFuture<StepResult> result = new CompletableFuture<>();
+        if (optionsJson != null) {
+            try {
+                requireStepOptions();
+            } catch (ReactorException missing) {
+                result.completeExceptionally(missing);
+                return result;
+            }
+        }
         if (options.generation() != Generation.STEPPED) {
             result.completeExceptionally(ReactorException.of(
                     ErrorCode.INVALID_STATE.code(),
@@ -1651,7 +1694,14 @@ public final class ClientPeer implements Runnable {
                 }
                 MemorySegment state = stateJson == null ? MemorySegment.NULL : call.allocateFrom(stateJson);
                 MemorySegment commands = call.allocateFrom(commandsJson);
-                ffi.handle(Ffi.Symbol.STEP).invokeExact(client, state, commands, ticket.callback(), ticket.userdata());
+                if (optionsJson == null) {
+                    ffi.handle(Ffi.Symbol.STEP)
+                            .invokeExact(client, state, commands, ticket.callback(), ticket.userdata());
+                } else {
+                    MemorySegment stepOptions = call.allocateFrom(optionsJson);
+                    ffi.handle(Ffi.Symbol.STEP_WITH_OPTIONS)
+                            .invokeExact(client, state, commands, stepOptions, ticket.callback(), ticket.userdata());
+                }
             } finally {
                 releaseHandle();
             }
@@ -1669,6 +1719,122 @@ public final class ClientPeer implements Runnable {
                             null));
         }
         return result;
+    }
+
+    /**
+     * Refuses when the loaded library cannot take a step's options, so a caller can find out before
+     * it pushes a step's media.
+     *
+     * @throws ReactorException when the library predates {@code reactor_step_with_options}
+     */
+    public void requireStepOptions() {
+        requireSymbol(Ffi.Symbol.STEP_WITH_OPTIONS, "step");
+    }
+
+    private void requireSymbol(Ffi.Symbol symbol, String operation) {
+        if (!ffi.has(symbol)) {
+            throw ReactorException.of(
+                    ErrorCode.INVALID_STATE.code(),
+                    "the loaded libreactor_ffi predates step frame codecs (it exports no " + symbol.cName()
+                            + "). Rebuild it with: cargo build -p reactor-ffi --release",
+                    null,
+                    operation,
+                    null);
+        }
+    }
+
+    /**
+     * Sets the codecs a stepped session prefers for its step frames, now on the handle if there is
+     * one, and on every handle created after this.
+     *
+     * @param track the track it applies to, or {@code null} for every track
+     * @param codecs codec names, most preferred first, or {@code null} for the default
+     * @throws ReactorException the library's own refusal, typed by its code; nothing is kept then
+     */
+    public void setCodecPreference(@Nullable String track, @Nullable List<String> codecs) {
+        requireSymbol(Ffi.Symbol.SET_CODEC_PREFERENCE, "set_codec_preference");
+        @Nullable List<String> copy = codecs == null ? null : List.copyOf(codecs);
+        acquireHandle("set_codec_preference");
+        try {
+            synchronized (handleLock) {
+                // Under the lock that creates handles, so a connect creating one at the same time
+                // either replays this or is already the handle this sends to — never neither.
+                if (!handle.equals(MemorySegment.NULL)) {
+                    sendCodecPreference(handle, track, copy);
+                }
+                codecPreferences.put(track, copy);
+            }
+        } finally {
+            releaseHandle();
+        }
+    }
+
+    /** Gives a new handle every preference this peer was told, before anything connects. */
+    private void replayCodecPreferences(MemorySegment target) {
+        // Under handleLock, from ensureHandle. A library without the symbol has nothing stored:
+        // setCodecPreference refuses before it stores anything.
+        for (java.util.Map.Entry<@Nullable String, @Nullable List<String>> preference : codecPreferences.entrySet()) {
+            sendCodecPreference(target, preference.getKey(), preference.getValue());
+        }
+    }
+
+    /** One {@code reactor_set_codec_preference}, under a lease the caller holds. */
+    private void sendCodecPreference(MemorySegment target, @Nullable String track, @Nullable List<String> codecs) {
+        String errorJson;
+        try (Arena call = Arena.ofConfined()) {
+            MemorySegment trackArg = track == null ? MemorySegment.NULL : call.allocateFrom(track);
+            MemorySegment codecsArg = codecs == null
+                    ? MemorySegment.NULL
+                    : call.allocateFrom(
+                            JsonValue.array(codecs.stream().map(JsonValue::of).toList())
+                                    .toJsonString());
+            MemorySegment returned = (MemorySegment)
+                    ffi.handle(Ffi.Symbol.SET_CODEC_PREFERENCE).invokeExact(target, trackArg, codecsArg);
+            errorJson = NativeStrings.takeOwned(returned, ffi.handle(Ffi.Symbol.FREE_STRING));
+        } catch (Throwable t) {
+            throw new IllegalStateException("reactor_set_codec_preference could not be called", t);
+        }
+        if (errorJson != null) {
+            throw ErrorPayloads.parse(errorJson, "set_codec_preference");
+        }
+    }
+
+    /**
+     * The encoding each track's step frames take on this connection.
+     *
+     * @return track name to {@code "raw"}, {@code "h264"}, {@code "vp8"}, {@code "vp9"} or {@code
+     *     "av1"}; empty outside a connected stepped session and with a library too old to say
+     */
+    public java.util.Map<String, String> stepFrameEncodings() {
+        requireOpen("stepFrameEncodings");
+        if (!ffi.has(Ffi.Symbol.STEP_FRAME_ENCODINGS)) {
+            return java.util.Map.of();
+        }
+        String json = readOwnedString(Ffi.Symbol.STEP_FRAME_ENCODINGS, "reactor_step_frame_encodings");
+        if (json == null) {
+            return java.util.Map.of();
+        }
+        Object parsed;
+        try {
+            parsed = Json.parse(json);
+        } catch (RuntimeException malformed) {
+            throw ReactorException.of(
+                    ErrorCode.DECODE_FAILED.code(),
+                    "the step frame encodings could not be read: " + malformed.getMessage(),
+                    null,
+                    "stepFrameEncodings",
+                    null);
+        }
+        if (!(parsed instanceof java.util.Map<?, ?> entries)) {
+            return java.util.Map.of();
+        }
+        java.util.Map<String, String> encodings = new java.util.LinkedHashMap<>();
+        entries.forEach((name, encoding) -> {
+            if (name instanceof String track && encoding instanceof String value) {
+                encodings.put(track, value);
+            }
+        });
+        return java.util.Collections.unmodifiableMap(encodings);
     }
 
     /**

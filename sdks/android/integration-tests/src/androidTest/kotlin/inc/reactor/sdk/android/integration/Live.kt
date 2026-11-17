@@ -113,7 +113,8 @@ internal object Live {
     private var lastCreatedAt = 0L
 
     /**
-     * Opens a client and connects it, one session at a time.
+     * Opens a client and connects it, one session at a time. [beforeConnect] configures the client
+     * first, for what has to be chosen before the connection is negotiated.
      *
      * The dispatcher is [kotlinx.coroutines.Dispatchers.Unconfined] rather than the production
      * default: `Dispatchers.Main.immediate` needs a looper the instrumentation thread does not
@@ -123,6 +124,7 @@ internal object Live {
         sessionId: String? = null,
         model: String = this.model,
         generation: Generation = Generation.STREAMED,
+        beforeConnect: (Reactor) -> Unit = {},
     ): Reactor =
         connecting.withLock {
             pace()
@@ -132,6 +134,7 @@ internal object Live {
                     dispatcher = kotlinx.coroutines.Dispatchers.Unconfined,
                 )
             try {
+                beforeConnect(reactor)
                 withTimeout(90_000) { reactor.connect(model, sessionId) }
                 reactor
             } catch (failed: Throwable) {

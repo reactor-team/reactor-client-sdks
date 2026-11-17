@@ -92,6 +92,13 @@ class FakeStepLib:
         self.cleared = 0
         self.create_error: bytes | None = None
         self.free_strings: list[int] = []
+        # (track, codecs_json) per reactor_set_codec_preference, and what it and
+        # reactor_step_frame_encodings answer, behind real C buffers.
+        self.codec_calls: list[tuple[bytes | None, bytes | None]] = []
+        self.codec_error: bytes | None = None
+        self.encodings: bytes = b"{}"
+        self.step_options: list[bytes | None] = []
+        self._strings: list[Any] = []
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -127,6 +134,26 @@ class FakeStepLib:
 
     def reactor_clear_step_inputs(self, handle):
         self.cleared += 1
+
+    # -- step codecs -------------------------------------------------------
+
+    def _heap_string(self, value: bytes) -> int:
+        buf = ctypes.create_string_buffer(value)
+        self._strings.append(buf)
+        return ctypes.addressof(buf)
+
+    def reactor_set_codec_preference(self, handle, track, codecs_json):
+        self.codec_calls.append((track, codecs_json))
+        return self._heap_string(self.codec_error) if self.codec_error is not None else None
+
+    def reactor_step_frame_encodings(self, handle):
+        return self._heap_string(self.encodings)
+
+    def reactor_step_with_options(
+        self, handle, state_json, commands_json, options_json, completion, userdata
+    ):
+        self.step_options.append(options_json)
+        self.reactor_step(handle, state_json, commands_json, completion, userdata)
 
     def add_result(
         self,
@@ -619,6 +646,88 @@ class TestStep:
             await reactor.step(state=["prompt"], media={"webcam": []})  # type: ignore[arg-type]
 
         assert seen == []
+
+
+class TestStepCodecs:
+    async def test_preferences_set_before_connect_reach_the_new_handle(
+        self, lib: FakeStepLib
+    ) -> None:
+        reactor = Reactor("owner/model", jwt="t", generation="stepped")
+        reactor.set_codec_preference(["VP9", "h264"])
+        reactor.set_codec_preference(["av1"], track="main_video")
+        assert lib.codec_calls == []
+        await reactor.connect()
+        assert lib.codec_calls == [
+            (None, b'["vp9", "h264"]'),
+            (b"main_video", b'["av1"]'),
+        ]
+
+    async def test_a_preference_set_on_a_live_handle_goes_now_and_on_the_next_one(
+        self, lib: FakeStepLib
+    ) -> None:
+        reactor = await _stepped(lib)
+        reactor.set_codec_preference([])
+        assert lib.codec_calls == [(None, b"[]")]
+        reactor.set_codec_preference(None)
+        assert lib.codec_calls[-1] == (None, None)
+
+        lib.codec_calls.clear()
+        reactor._destroy_handle()
+        await reactor.connect()
+        assert lib.codec_calls == [(None, None)]
+
+    @pytest.mark.parametrize(
+        ("codecs", "error"),
+        [("h264", TypeError), (["h265"], ValueError), ([264], ValueError), (b"vp8", TypeError)],
+    )
+    async def test_malformed_codecs_are_refused_before_the_library(
+        self, lib: FakeStepLib, codecs: Any, error: type
+    ) -> None:
+        reactor = await _stepped(lib)
+        with pytest.raises(error):
+            reactor.set_codec_preference(codecs)
+        assert lib.codec_calls == []
+        assert reactor._codec_preferences == {}
+
+    async def test_a_refusal_from_the_library_raises_and_is_not_kept(
+        self, lib: FakeStepLib
+    ) -> None:
+        reactor = await _stepped(lib)
+        lib.codec_error = json.dumps(
+            {"code": "DECODE_FAILED", "message": "bad codecs", "recoverable": False}
+        ).encode()
+        with pytest.raises(DecodeError, match="bad codecs"):
+            reactor.set_codec_preference(["h264"])
+        assert reactor._codec_preferences == {}
+        assert len(lib.free_strings) == 1
+
+    async def test_encodings_are_read_by_track(self, lib: FakeStepLib) -> None:
+        reactor = await _stepped(lib)
+        lib.encodings = b'{"main_video":"h264","webcam":"raw"}'
+        assert reactor.step_frame_encodings == {"main_video": "h264", "webcam": "raw"}
+
+    def test_encodings_without_a_handle_are_empty(self) -> None:
+        assert Reactor("m", generation="stepped").step_frame_encodings == {}
+
+    async def test_a_step_asks_for_keyframes_only_when_told_to(self, lib: FakeStepLib) -> None:
+        reactor = await _stepped(lib)
+        lib.step_answer = lambda done: done(1, lib.add_result(1, []), None, None)
+        await reactor.step()
+        assert lib.step_options == []
+        await reactor.step(state={"prompt": "fox"}, request_keyframe=True)
+        assert [json.loads(o) for o in lib.step_options] == [{"request_keyframe": True}]
+        assert json.loads(lib.step_calls[-1][0]) == {"prompt": "fox"}
+
+    async def test_a_library_without_step_codecs_says_so(
+        self, lib: FakeStepLib, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reactor = await _stepped(lib)
+        monkeypatch.delattr(FakeStepLib, "reactor_step_with_options")
+        with pytest.raises(RuntimeError, match="predates step codecs"):
+            await reactor.step(request_keyframe=True)
+        with pytest.raises(RuntimeError, match="predates step codecs"):
+            reactor.set_codec_preference(["h264"])
+        assert reactor.step_frame_encodings == {}
 
 
 # ── commands and results ───────────────────────────────────────────────────

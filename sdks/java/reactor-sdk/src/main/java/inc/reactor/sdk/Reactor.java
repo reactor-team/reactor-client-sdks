@@ -413,6 +413,49 @@ public final class Reactor implements AutoCloseable {
             @Nullable JsonValue state,
             java.util.@Nullable List<StepCommand> commands,
             java.util.@Nullable Map<String, ? extends java.util.List<? extends StepInput>> media) {
+        return step(state, commands, media, StepOptions.defaults());
+    }
+
+    /**
+     * Runs one step with options of its own.
+     *
+     * <p>{@link StepOptions#requestKeyframe()} asks the runtime to start every encoded output track
+     * of this step's result at a keyframe, for a caller that drops what it decoded so far; the
+     * result is still delivered as decoded RGB, as from any step. The client already asks on its
+     * own when one of its decoders loses its state, and the default never stops a keyframe the
+     * runtime sends anyway.
+     *
+     * <pre>{@code
+     * StepResult result = reactor.step(null, List.of(), null, StepOptions.defaults().withRequestKeyframe(true))
+     *         .join();
+     * }</pre>
+     *
+     * <p>Every outcome is as for {@link #step(JsonValue, java.util.List, java.util.Map)}. A step
+     * that asks for a keyframe on a native library that predates step frame codecs fails with
+     * {@link InvalidStateException}, before any of its media is pushed.
+     *
+     * @param state the model's state fields as a JSON object, or {@code null} to change none
+     * @param commands what to run after the state, in order; empty or {@code null} for none
+     * @param media input frames by track name, or {@code null} for none
+     * @param options how the step runs; {@link StepOptions#defaults()} for as any other step
+     * @return the step's result, copied onto the heap once and safe to keep
+     */
+    public CompletableFuture<StepResult> step(
+            @Nullable JsonValue state,
+            java.util.@Nullable List<StepCommand> commands,
+            java.util.@Nullable Map<String, ? extends java.util.List<? extends StepInput>> media,
+            StepOptions options) {
+        java.util.Objects.requireNonNull(options, "options");
+        String optionsJson = options.toWire();
+        if (optionsJson != null) {
+            // Before the media goes in, so a library that cannot take the options leaves the
+            // buffer as the caller left it.
+            try {
+                peer.requireStepOptions();
+            } catch (RuntimeException missing) {
+                return CompletableFuture.failedFuture(missing);
+            }
+        }
         if (commands == null) {
             commands = java.util.List.of();
         }
@@ -449,7 +492,7 @@ public final class Reactor implements AutoCloseable {
                     return CompletableFuture.failedFuture(refused);
                 }
             }
-            return peer.step(stateJson, commandsJson);
+            return peer.step(stateJson, commandsJson, optionsJson);
         }
     }
 
@@ -521,6 +564,82 @@ public final class Reactor implements AutoCloseable {
      */
     public void clearStepInputs() {
         peer.clearStepInputs();
+    }
+
+    /**
+     * Chooses the codecs a stepped session carries its video step frames in, for every track.
+     *
+     * @param codecs most preferred first; {@code null} for the default; empty to turn encoding off
+     * @throws ReactorException as {@link #setCodecPreference(java.util.List, String)} describes
+     * @see #setCodecPreference(java.util.List, String)
+     */
+    public void setCodecPreference(java.util.@Nullable List<StepCodec> codecs) {
+        setCodecPreference(codecs, null);
+    }
+
+    /**
+     * Chooses the codecs a stepped session carries its video step frames in.
+     *
+     * <p>{@code codecs} names them most preferred first. {@code null} goes back to the default:
+     * H.264, VP9, AV1, VP8. An empty list for the whole session ({@code track} {@code null}) turns
+     * encoding off, so every frame travels raw:
+     *
+     * <pre>{@code
+     * reactor.setCodecPreference(List.of(StepCodec.VP9, StepCodec.H264)); // VP9 when both ends have it
+     * reactor.setCodecPreference(List.of());                               // raw frames
+     * reactor.setCodecPreference(List.of(StepCodec.AV1), "main_video");
+     * }</pre>
+     *
+     * <p>With a {@code track}, the list applies to that track only, in place of the session's; an
+     * empty one there goes back to the session's, since one track cannot turn encoding off alone.
+     * Each list is filtered by what this machine can encode (input tracks) or decode (output
+     * tracks), and the runtime picks per track from what is left; a track they share no codec for
+     * stays raw.
+     *
+     * <p>Whatever the codec, {@link Track#pushFrame} still takes BGRA or RGB and {@link #step}
+     * results still carry decoded {@code (height, width, 3)} RGB frames: the encoding is between
+     * this client and the runtime.
+     *
+     * <p>Callable before {@link #connect()} or during a session. It takes effect on the next
+     * connection or reconnect; the live connection keeps what it negotiated, which {@link
+     * #stepFrameEncodings()} reports. A streamed session ignores it.
+     *
+     * @param codecs most preferred first; {@code null} for the default; empty to turn encoding off
+     *     (or, with a {@code track}, to go back to the session's order)
+     * @param track the track it applies to, or {@code null} for every track
+     * @throws IllegalArgumentException when {@code codecs} holds a {@code null} or {@code track} is
+     *     empty; nothing is changed
+     * @throws ReactorException the native library's refusal, typed by its code ({@link
+     *     InvalidStateException} too when the library predates step frame codecs, or the client is
+     *     closed); nothing is changed
+     */
+    public void setCodecPreference(java.util.@Nullable List<StepCodec> codecs, @Nullable String track) {
+        if (track != null && track.isEmpty()) {
+            throw new IllegalArgumentException("a codec preference's track must be a non-empty name, or null");
+        }
+        java.util.List<String> names = null;
+        if (codecs != null) {
+            names = new java.util.ArrayList<>(codecs.size());
+            for (StepCodec codec : codecs) {
+                if (codec == null) {
+                    throw new IllegalArgumentException("a codec preference holds a null codec: " + codecs);
+                }
+                names.add(codec.wireName());
+            }
+        }
+        peer.setCodecPreference(track, names);
+    }
+
+    /**
+     * How each track's step frames travel on this connection, by track name: {@code "h264"},
+     * {@code "vp9"}, {@code "av1"} or {@code "vp8"} for an encoded video track, {@code "raw"} for the
+     * rest. Either way the frames reach this client as RGB.
+     *
+     * @return the encodings; empty outside a connected stepped session, and with a native library
+     *     too old to say
+     */
+    public java.util.Map<String, String> stepFrameEncodings() {
+        return peer.stepFrameEncodings();
     }
 
     /**

@@ -506,6 +506,69 @@ class Reactor {
   // NOLINTNEXTLINE(performance-unnecessary-value-param)
   std::future<StepResult> step(Json state, std::vector<StepCommand> commands, StepMedia media);
 
+  /// Run one step with `options`, otherwise as the overload above (pass `{}`
+  /// for no media). `StepOptions::request_keyframe` asks the runtime to start
+  /// each encoded output track of this step's result at a keyframe:
+  ///
+  /// ```cpp
+  /// reactor::StepOptions options;
+  /// options.request_keyframe = true;
+  /// const auto result = client.step(nullptr, {}, {}, options).get();
+  /// ```
+  ///
+  /// The decoded frames reach the caller as RGB whatever the options say.
+  // By value: see the overloads above.
+  // NOLINTNEXTLINE(performance-unnecessary-value-param)
+  std::future<StepResult> step(Json state, std::vector<StepCommand> commands, StepMedia media,
+                               StepOptions options);
+
+  /// Choose the codecs a stepped session carries its video step frames in.
+  ///
+  /// `codecs` names them most preferred first, from "h264", "vp9", "av1" and
+  /// "vp8", in any case. Pass `std::nullopt` to go back to the default (H.264,
+  /// VP9, AV1, VP8). An empty list for the whole session turns encoding off, so
+  /// every step frame travels raw:
+  ///
+  /// ```cpp
+  /// client.set_codec_preference({"vp9", "h264"});        // VP9 when both ends have it
+  /// client.set_codec_preference({});                     // raw frames
+  /// client.set_codec_preference({"av1"}, "main_video");  // this track only
+  /// client.set_codec_preference(std::nullopt);           // the default again
+  /// ```
+  ///
+  /// With `track`, the list applies to that track only, in place of the
+  /// session's; an empty one there goes back to the session's, since one track
+  /// cannot turn encoding off alone. Each list is filtered by what this machine
+  /// can encode (input tracks) or decode (output tracks), and the runtime picks
+  /// per track from what is left; a track they share no codec for stays raw.
+  ///
+  /// Whatever the codec, `step()` results still arrive as decoded RGB frames
+  /// and `Track::push_frame` takes what it always took: the encoding is between
+  /// this client and the runtime. Callable before `connect()` or during a
+  /// session; it takes effect on the **next** connection or `reconnect()`, and
+  /// the live connection keeps what it negotiated (see `step_frame_encodings()`).
+  /// The choice is kept by the client and survives reconnects. A streamed
+  /// session ignores it.
+  ///
+  /// Throws `BadRequestError` for a codec name not among the four above (and
+  /// changes nothing), or the library's typed error when it refuses the list.
+  // By value: see send_command's own comment on exported symbols.
+  // NOLINTNEXTLINE(performance-unnecessary-value-param)
+  void set_codec_preference(std::vector<std::string> codecs,
+                            std::optional<std::string> track = std::nullopt);
+
+  /// Go back to the default codec order: for the whole session, or for `track`
+  /// alone (which then follows the session's order). See the overload above.
+  // NOLINTNEXTLINE(performance-unnecessary-value-param)
+  void set_codec_preference(std::nullopt_t reset, std::optional<std::string> track = std::nullopt);
+
+  /// How each track's step frames travel on this connection, by track name:
+  /// "h264", "vp8", "vp9" or "av1" for an encoded video track, "raw" for the
+  /// rest. Empty outside a connected stepped session. What was negotiated when
+  /// the connection came up — a `set_codec_preference` since then shows on the
+  /// next connection.
+  std::map<std::string, std::string> step_frame_encodings() const;
+
   /// Drop every frame still buffered for the next step, so that step runs
   /// without them. Frames already sent to the runtime are not recalled. A no-op
   /// before a session exists and on a streamed client.

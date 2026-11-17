@@ -7,13 +7,14 @@
 //! bytes are moved in from the core's [`DecodedFrame`] and never copied again:
 //! reading `data` twice returns the same pointer.
 
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 
 use reactor_core::error::CoreError;
 use reactor_core::protocol::session::TrackKind;
 use reactor_core::protocol::wire::v1::step::FrameEncoding;
-use reactor_core::step::{DecodedFrame, StepCommand, StepFile, StepOutput, TrackOutput};
+use reactor_core::step::{DecodedFrame, StepCodec, StepCommand, StepFile, StepOutput, TrackOutput};
 use serde_json::Value;
 
 /// One step's output, owned by the host between the completion and
@@ -196,6 +197,81 @@ pub(crate) fn parse_commands(commands_json: Option<&str>) -> Result<Vec<StepComm
             Ok(StepCommand::new(command, data))
         })
         .collect()
+}
+
+/// `options_json` of `reactor_step_with_options`: an object whose only key is
+/// an optional boolean `"request_keyframe"`, absent meaning `{}`. Returns
+/// whether the step asks for keyframes.
+pub(crate) fn parse_step_options(options_json: Option<&str>) -> Result<bool, CoreError> {
+    let Some(raw) = options_json else {
+        return Ok(false);
+    };
+    let value: Value = serde_json::from_str(raw)
+        .map_err(|e| CoreError::decode(format!("options_json is not valid JSON: {e}")))?;
+    let Value::Object(mut fields) = value else {
+        return Err(CoreError::decode("options_json must be a JSON object"));
+    };
+    let request_keyframe = match fields.remove("request_keyframe") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(flag)) => flag,
+        Some(other) => {
+            return Err(CoreError::decode(format!(
+                "options_json \"request_keyframe\" must be a boolean, got {other}"
+            )))
+        }
+    };
+    if let Some(key) = fields.keys().next() {
+        return Err(CoreError::decode(format!(
+            "options_json has an unknown key \"{key}\" (expected \"request_keyframe\")"
+        )));
+    }
+    Ok(request_keyframe)
+}
+
+/// `codecs_json` of `reactor_set_codec_preference`: a JSON array of codec
+/// names (`"h264"`, `"vp8"`, `"vp9"`, `"av1"`, in any case), most preferred
+/// first, or absent (`None`) to go back to the default.
+pub(crate) fn parse_codecs(codecs_json: Option<&str>) -> Result<Option<Vec<StepCodec>>, CoreError> {
+    let Some(raw) = codecs_json else {
+        return Ok(None);
+    };
+    let value: Value = serde_json::from_str(raw)
+        .map_err(|e| CoreError::decode(format!("codecs_json is not valid JSON: {e}")))?;
+    let Value::Array(entries) = value else {
+        return Err(CoreError::decode(
+            "codecs_json must be a JSON array of codec names",
+        ));
+    };
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(i, entry)| match entry {
+            Value::String(name) => StepCodec::from_sdp_name(&name).ok_or_else(|| {
+                CoreError::decode(format!(
+                    "codecs_json[{i}] \"{name}\" is not a step codec (h264, vp8, vp9 or av1)"
+                ))
+            }),
+            other => Err(CoreError::decode(format!(
+                "codecs_json[{i}] must be a codec name, got {other}"
+            ))),
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+/// The encoding each mapped track's step frames take on the connection, as a
+/// JSON object of track name to `"raw"`, `"h264"`, `"vp8"`, `"vp9"` or `"av1"`.
+pub(crate) fn encodings_json(encodings: &HashMap<String, FrameEncoding>) -> String {
+    let sorted: BTreeMap<&str, &str> = encodings
+        .iter()
+        .map(|(track, encoding)| {
+            (
+                track.as_str(),
+                encoding_str(*encoding).to_str().unwrap_or("unspecified"),
+            )
+        })
+        .collect();
+    serde_json::to_string(&sorted).unwrap_or_else(|_| "{}".to_string())
 }
 
 // ── Accessors of a step result ──────────────────────────────────────────────
@@ -659,5 +735,63 @@ mod tests {
         }
         let error = parse_state(Some("{")).unwrap_err();
         assert_eq!(error.code(), reactor_core::error::codes::DECODE_FAILED);
+    }
+
+    #[test]
+    fn step_options_ask_for_a_keyframe_only_when_told_to() {
+        assert!(!parse_step_options(None).unwrap());
+        assert!(!parse_step_options(Some("{}")).unwrap());
+        assert!(!parse_step_options(Some(r#"{"request_keyframe":null}"#)).unwrap());
+        assert!(!parse_step_options(Some(r#"{"request_keyframe":false}"#)).unwrap());
+        assert!(parse_step_options(Some(r#"{"request_keyframe":true}"#)).unwrap());
+        for (raw, needle) in [
+            ("nope", "not valid JSON"),
+            ("[]", "must be a JSON object"),
+            (r#"{"request_keyframe":1}"#, "must be a boolean"),
+            (r#"{"keyframe":true}"#, "unknown key \"keyframe\""),
+        ] {
+            let error = parse_step_options(Some(raw)).unwrap_err();
+            assert_eq!(error.code(), reactor_core::error::codes::DECODE_FAILED);
+            assert!(error.to_string().contains(needle), "{raw}: {error}");
+        }
+    }
+
+    #[test]
+    fn codecs_parse_in_order_in_any_case_and_absent_means_the_default() {
+        assert_eq!(parse_codecs(None).unwrap(), None);
+        assert_eq!(parse_codecs(Some("[]")).unwrap(), Some(vec![]));
+        assert_eq!(
+            parse_codecs(Some(r#"["vp9","H264","Av1","vp8"]"#)).unwrap(),
+            Some(vec![
+                StepCodec::Vp9,
+                StepCodec::H264,
+                StepCodec::Av1,
+                StepCodec::Vp8
+            ])
+        );
+        for (raw, needle) in [
+            ("h264", "not valid JSON"),
+            (r#"{"h264":1}"#, "must be a JSON array"),
+            (r#"["h265"]"#, "\"h265\" is not a step codec"),
+            ("[1]", "codecs_json[0] must be a codec name"),
+        ] {
+            let error = parse_codecs(Some(raw)).unwrap_err();
+            assert_eq!(error.code(), reactor_core::error::codes::DECODE_FAILED);
+            assert!(error.to_string().contains(needle), "{raw}: {error}");
+        }
+    }
+
+    #[test]
+    fn encodings_are_a_sorted_object_of_lowercase_names() {
+        let encodings = HashMap::from([
+            ("main_video".to_string(), FrameEncoding::H264),
+            ("audio".to_string(), FrameEncoding::Raw),
+            ("webcam".to_string(), FrameEncoding::Av1),
+        ]);
+        assert_eq!(
+            encodings_json(&encodings),
+            r#"{"audio":"raw","main_video":"h264","webcam":"av1"}"#
+        );
+        assert_eq!(encodings_json(&HashMap::new()), "{}");
     }
 }

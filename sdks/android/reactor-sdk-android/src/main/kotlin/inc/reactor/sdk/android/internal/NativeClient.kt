@@ -41,14 +41,28 @@ internal object NativeClient {
 
     private external fun nativeInitSteps(completions: Class<*>)
 
+    /**
+     * `reactor_step` when [optionsJson] is null, `reactor_step_with_options` when it is not — so a
+     * plain step keeps calling the original entry point.
+     */
     private external fun nativeStep(
         context: Long,
         stateJson: String?,
         commandsJson: String,
+        optionsJson: String?,
         ticket: Long,
     )
 
     private external fun nativeClearStepInputs(context: Long)
+
+    /** Synchronous: the error payload on failure, null on success. */
+    private external fun nativeSetCodecPreference(
+        context: Long,
+        track: String?,
+        codecsJson: String?,
+    ): String?
+
+    private external fun nativeStepFrameEncodings(context: Long): String?
 
     private external fun nativeDestroy(context: Long): Int
 
@@ -389,15 +403,29 @@ internal object NativeClient {
         suspend fun step(
             stateJson: String?,
             commandsJson: String,
+            optionsJson: String? = null,
         ): StepResult =
             Completions.awaitResult("step", read = { result -> StepResults.read(NativeStepResults, result) }, owner = this) { ticket ->
-                withOpenHandle { nativeStep(context, stateJson, commandsJson, ticket) }
+                withOpenHandle { nativeStep(context, stateJson, commandsJson, optionsJson, ticket) }
             }
 
         /** Drop every input frame buffered for the next step. A no-op outside a stepped session. */
         fun clearStepInputs() {
             withOpenHandle { nativeClearStepInputs(context) }
         }
+
+        /**
+         * Set the step frames' codec preference, which the ABI answers synchronously with an error
+         * payload, as it does an unpublish. A non-null return is the failure.
+         */
+        fun setCodecPreference(
+            track: String?,
+            codecsJson: String?,
+        ): String? = withOpenHandle { nativeSetCodecPreference(context, track, codecsJson) }
+
+        /** The encoding each track's step frames take on this connection, as a JSON object. */
+        val stepFrameEncodings: String?
+            get() = withOpenHandle { nativeStepFrameEncodings(context) }
 
         /**
          * Upload a file the native side opens later, from its own task.

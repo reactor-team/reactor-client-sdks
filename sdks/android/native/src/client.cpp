@@ -648,20 +648,28 @@ Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitSteps(JNIEnv* env, 
 }
 
 /**
- * Run one step. `state_json` may be null; `commands_json` is a JSON array Kotlin built.
+ * Run one step. `state_json` may be null; `commands_json` is a JSON array Kotlin built;
+ * `options_json` is null for a plain step, which goes through reactor_step as it always has, and
+ * otherwise goes through reactor_step_with_options.
  *
  * Its completion is step_trampoline, not completion_trampoline: a step answers with a native
  * result to read and free, not with JSON.
  */
 extern "C" JNIEXPORT void JNICALL Java_inc_reactor_sdk_android_internal_NativeClient_nativeStep(
     JNIEnv* env, jobject, jlong context_ptr, jstring state_json, jstring commands_json,
-    jlong ticket) {
+    jstring options_json, jlong ticket) {
   auto* context = reinterpret_cast<Context*>(context_ptr);
   if (context == nullptr) return;
   JavaString state(env, state_json);
   JavaString commands(env, commands_json);
-  reactor_step(context->handle, state.get(), commands.get(), step_trampoline,
-               reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
+  void* userdata = reinterpret_cast<void*>(static_cast<intptr_t>(ticket));
+  if (options_json == nullptr) {
+    reactor_step(context->handle, state.get(), commands.get(), step_trampoline, userdata);
+    return;
+  }
+  JavaString options(env, options_json);
+  reactor_step_with_options(context->handle, state.get(), commands.get(), options.get(),
+                            step_trampoline, userdata);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -670,6 +678,33 @@ Java_inc_reactor_sdk_android_internal_NativeClient_nativeClearStepInputs(JNIEnv*
   auto* context = reinterpret_cast<Context*>(context_ptr);
   if (context == nullptr) return;
   reactor_clear_step_inputs(context->handle);
+}
+
+/**
+ * Set the codecs the step frames prefer, for every track (null `track`) or one. Synchronous, and
+ * answered like unpublish: NULL on success, an owned error object to copy and free on failure.
+ * Both arguments are nullable and must reach the ABI as NULL — a null `codecs_json` means "the
+ * default", which the string "null" would not.
+ */
+extern "C" JNIEXPORT jstring JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeSetCodecPreference(JNIEnv* env, jobject,
+                                                                            jlong context_ptr,
+                                                                            jstring track,
+                                                                            jstring codecs_json) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return nullptr;
+  JavaString name(env, track);
+  JavaString codecs(env, codecs_json);
+  return owned_to_jstring(env,
+                          reactor_set_codec_preference(context->handle, name.get(), codecs.get()));
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeStepFrameEncodings(JNIEnv* env, jobject,
+                                                                            jlong context_ptr) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return nullptr;
+  return owned_to_jstring(env, reactor_step_frame_encodings(context->handle));
 }
 
 // ── Uploads ──────────────────────────────────────────────────────────────────
