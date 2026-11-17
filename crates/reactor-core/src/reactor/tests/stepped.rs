@@ -2550,6 +2550,8 @@ mod webrtc_codecs {
 
             reactor.teardown(true, false).await;
             negotiate(&reactor, codec);
+            // The new connection's data channel opens, as the peer reports it.
+            reactor.frame_decoders.open();
             // The runtime's encoder runs on, as if it had not seen the new
             // connection: its next frame is no keyframe, and fails here.
             assert!(peer.track_controls().is_empty(), "{codec:?}");
