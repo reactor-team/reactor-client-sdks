@@ -216,6 +216,23 @@ impl<'a> Section<'a> {
         })
     }
 
+    /// The payload types a RED payload type `pt` carries redundancy for
+    /// (`a=fmtp:<pt> 96/96`): empty for any other payload type, or a RED one
+    /// without that list.
+    fn red_payload_types(&self, pt: &str) -> Vec<&'a str> {
+        if self.codec_name(pt).as_deref() != Some("RED") {
+            return Vec::new();
+        }
+        self.lines
+            .iter()
+            .find_map(|line| {
+                let rest = line.strip_prefix("a=fmtp:")?;
+                let (line_pt, params) = rest.split_once(' ')?;
+                (line_pt == pt).then(|| params.trim().split('/').map(str::trim).collect())
+            })
+            .unwrap_or_default()
+    }
+
     /// The step codecs the section lists.
     fn codecs(&self) -> Vec<StepCodec> {
         self.payload_types()
@@ -236,7 +253,9 @@ impl<'a> Section<'a> {
 
     /// This section with `preference`'s codecs first, in its order, and the
     /// other step codecs dropped with their retransmission payload types and
-    /// attributes. Unchanged when it lists none of `preference`, which
+    /// attributes, and with every RED payload type that carries redundancy
+    /// for one of them (an `a=fmtp` list naming a payload type the m-line no
+    /// longer has is invalid). Unchanged when it lists none of `preference`, which
     /// [`stepped_offer`] never asks: removing every codec would leave a
     /// section the answerer cannot accept.
     fn prefer(&self, preference: &[StepCodec]) -> Vec<String> {
@@ -257,6 +276,16 @@ impl<'a> Section<'a> {
             .copied()
             .filter(|pt| codec_of(pt).is_some() && !preferred.contains(pt))
             .collect();
+        let dropped_red: Vec<&str> = pts
+            .iter()
+            .copied()
+            .filter(|pt| {
+                self.red_payload_types(pt)
+                    .iter()
+                    .any(|carried| dropped.contains(carried))
+            })
+            .collect();
+        dropped.extend(dropped_red);
         let dropped_rtx: Vec<&str> = pts
             .iter()
             .copied()
@@ -601,6 +630,44 @@ a=mid:3\r\n";
         }
         // The output track's own preference wins over the session's.
         assert_eq!(m_line(&next, "1"), "m=video 9 UDP/TLS/RTP/SAVPF 96 97");
+    }
+
+    /// A RED payload type that carries redundancy for a dropped codec goes
+    /// with it, and with its RTX; one that carries only kept codecs stays.
+    #[test]
+    fn a_red_payload_type_for_a_dropped_codec_is_dropped_with_it() {
+        let offer = OFFER
+            .replace(
+                "a=rtpmap:104 red/90000\r\n",
+                "a=rtpmap:104 red/90000\r\n\
+a=fmtp:104 96/96\r\n\
+a=rtpmap:105 rtx/90000\r\n\
+a=fmtp:105 apt=104\r\n\
+a=rtpmap:106 red/90000\r\n\
+a=fmtp:106 100/100\r\n",
+            )
+            .replace(
+                "UDP/TLS/RTP/SAVPF 96 97 98 99 100 101 102 103 104\r\n",
+                "UDP/TLS/RTP/SAVPF 96 97 98 99 100 101 102 103 104 105 106\r\n",
+            );
+        let mut preferences = CodecPreferences::default();
+        preferences.set_session(Some(vec![StepCodec::H264]));
+        let next = stepped_offer(&offer, &mapping(), &preferences, &every_codec());
+
+        assert_eq!(
+            m_line(&next, "0"),
+            "m=video 9 UDP/TLS/RTP/SAVPF 100 101 106"
+        );
+        let input = &next[next.find("a=mid:0").unwrap()..next.find("a=mid:1").unwrap()];
+        for gone in [
+            "a=rtpmap:104 ",
+            "a=fmtp:104 ",
+            "a=rtpmap:105 ",
+            "a=fmtp:105 ",
+        ] {
+            assert!(!input.contains(gone), "{gone} should be dropped");
+        }
+        assert!(input.contains("a=fmtp:106 100/100"));
     }
 
     /// The output section lists no AV1: the runtime could answer it with a
