@@ -48,8 +48,8 @@ rather than `any`:
 | Configuration | `setJwt(jwt)` |
 | Messaging | `sendCommand(command, data?, uploads?)`, `requestSchema()` |
 | Tracks | `publishTrack(name, track?)`, `unpublishTrack(name)`, `pauseTrack(name)`, `resumeTrack(name)`, `tracks()`, `trackMapping()`, `pausedTracks()` |
-| Stepped generation | `step(state?, commands?, requestKeyframe?)`, `pushVideoFrame(name, data, width, height, format?, metadata?, captureTimeUs?)`, `pushEncodedVideoFrame(name, codec, data, width, height, metadata?, captureTimeUs?, keyframe?)`, `pushAudioFrame(name, samples, sampleRate, channels)`, `clearStepInputs()`, `takeInputKeyframeRequest(name)` |
-| Step frame codecs | `setCodecPreference(codecs?, track?)`, `setLocalStepCodecs(encode, decode)`, `stepFrameEncodings()` |
+| Stepped generation | `step(state?, commands?)`, `pushVideoFrame(name, data, width, height, format?, metadata?, captureTimeUs?)`, `pushEncodedVideoFrame(name, codec, data, width, height, metadata?, captureTimeUs?, keyframe?)`, `pushAudioFrame(name, samples, sampleRate, channels)`, `clearStepInputs()`, `takeInputKeyframeRequest(name)` |
+| Step frame codecs | `setCodecPreference(codecs?, track?)`, `setLocalStepCodecs(encode, decode)`, `stepFrameEncodings()`, `restartTrackStream(name)` |
 | Recording | `requestClip(seconds)`, `requestRecording()` |
 | Uploads | `uploadFile(file, name?)` |
 | Introspection | `status()`, `sessionId()`, `sessionInfo()`, `capabilities()`, `lastError()` |
@@ -89,8 +89,8 @@ with `pushEncodedVideoFrame`, starting at a keyframe again when
 `takeInputKeyframeRequest` says the runtime could not decode them. An output
 track's encoded frames come up in the result still encoded — `data` the
 bitstream, `shape` the size it decodes to, `keyframe` the runtime's mark — for
-the SDK to decode, and `step(..., requestKeyframe)` asks for keyframes when one
-of its decoders lost its state.
+the SDK to decode, and `restartTrackStream(name)` has the runtime start a track
+again at a keyframe when the SDK's decoder for it lost its stream.
 
 The buffer holds at most one data-channel message's worth of frames: pushing
 faster than steps run drops the oldest frames, across tracks, and the next step

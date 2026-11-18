@@ -197,19 +197,23 @@ describe('OutputDecoders', () => {
 
     await expect(decoders.decodeResult(result(encodedFrame(1, false)))).rejects.toBeInstanceOf(DecodeError);
     expect(decoders.needsKeyframe()).toBe(true);
+    expect(decoders.takeLostTracks()).toEqual(['out']);
 
     await decoders.decodeResult(result(encodedFrame(2, true)));
     expect(decoders.needsKeyframe()).toBe(false);
+    expect(decoders.takeLostTracks()).toEqual([]);
   });
 
-  it('drops a decoder that fails, and asks for a keyframe until one restarts the track', async () => {
+  it('drops a decoder that fails, reports its track lost once, and waits for a keyframe', async () => {
     const decoders = new OutputDecoders(api);
 
     await decoders.decodeResult(result(encodedFrame(1, true)));
     await expect(decoders.decodeResult(result(encodedFrame(0xff, false)))).rejects.toThrow(DecodeError);
     expect(decoders.needsKeyframe()).toBe(true);
-    // An inter frame cannot restart it.
+    expect(decoders.takeLostTracks()).toEqual(['out']);
+    // An inter frame cannot restart it, and it is the same loss.
     await expect(decoders.decodeResult(result(encodedFrame(3, false)))).rejects.toThrow('waiting for a keyframe');
+    expect(decoders.takeLostTracks()).toEqual([]);
 
     const restarted = await decoders.decodeResult(result(encodedFrame(4, true)));
 
@@ -239,15 +243,25 @@ describe('OutputDecoders', () => {
     configure.mockRestore();
   });
 
-  it('asks for keyframes once after abandon(), and starts every track again at one', async () => {
+  it('reports every decoded track lost once after abandon(), and starts each again at a keyframe', async () => {
     const decoders = new OutputDecoders(api);
 
     await decoders.decodeResult(result(encodedFrame(1, true)));
     decoders.abandon();
 
-    expect(decoders.takeKeyframeRequest()).toBe(true);
-    expect(decoders.takeKeyframeRequest()).toBe(false);
+    expect(decoders.takeLostTracks()).toEqual(['out']);
     await expect(decoders.decodeResult(result(encodedFrame(2, false)))).rejects.toThrow('waiting for a keyframe');
+    expect(decoders.takeLostTracks()).toEqual([]);
+    await expect(decoders.decodeResult(result(encodedFrame(3, true)))).resolves.toBeDefined();
+  });
+
+  it('reports a track lost again when the keyframe that restarts it fails', async () => {
+    const decoders = new OutputDecoders(api);
+
+    await expect(decoders.decodeResult(result(encodedFrame(1, false)))).rejects.toThrow('waiting for a keyframe');
+    expect(decoders.takeLostTracks()).toEqual(['out']);
+    await expect(decoders.decodeResult(result(encodedFrame(0xff, true)))).rejects.toThrow(DecodeError);
+    expect(decoders.takeLostTracks()).toEqual(['out']);
   });
 
   it('keeps feeding the other tracks when one fails', async () => {

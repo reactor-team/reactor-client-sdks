@@ -19,13 +19,12 @@ versioning follows [Semantic Versioning](https://semver.org/).
   resolves, so callers still push and receive RGB. Each track is one stream
   for the connection: its first frame on a connection is a keyframe, and so
   is the next one after the runtime could not decode its pushed frames. A
-  result whose decoder lost its state rejects with `DecodeError`, and the
-  next steps ask the runtime for keyframes until one arrives.
+  result whose decoder lost its stream rejects with `DecodeError`, and the
+  SDK pauses and resumes that track so the runtime starts it again at a
+  keyframe.
 - `setCodecPreference(codecs, { track? })` chooses the codecs, or with `[]`
   turns encoding off; it applies on the next connection or reconnect.
   `getStepFrameEncodings()` says what the connection negotiated per track.
-- `step({ requestKeyframe: true })` asks the runtime to start every encoded
-  output track at a keyframe.
 - `EncodedFrame` takes `"vp8"`, `"vp9"` and `"av1"` besides `"h264"`, and a
   `keyframe` mark (read from an `EncodedVideoChunk`'s `type` when not given).
 

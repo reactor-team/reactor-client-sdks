@@ -552,6 +552,17 @@ impl ReactorClient {
             .map_err(|e| error_value(&e.details(Some("resumeTrack"))))
     }
 
+    /// Restart output track `name`'s encoded step frames: the runtime starts
+    /// its next frames at a keyframe. For the SDK, when the decoder it feeds
+    /// for the track lost its stream. The track stays paused or resumed as
+    /// the caller left it.
+    #[wasm_bindgen(js_name = restartTrackStream)]
+    pub fn restart_track_stream(&self, name: String) -> Result<(), JsValue> {
+        self.reactor
+            .restart_track_stream(&name)
+            .map_err(|e| error_value(&e.details(Some("restartTrackStream"))))
+    }
+
     /// Bound what one sender may spend, in bits per second. `undefined` or a
     /// negative value leaves a bound at the browser default.
     ///
@@ -624,17 +635,14 @@ impl ReactorClient {
     /// frame pushed once it has returned goes to the next step. A step refused
     /// by those checks throws rather than rejecting.
     ///
-    /// `requestKeyframe: true` asks the runtime to start every encoded output
-    /// track of this connection at a keyframe in this step's result: what the
-    /// SDK sends when one of its decoders lost its state. Absent or `false`
-    /// stops no keyframe the runtime sends anyway. An encoded output frame
-    /// comes up still encoded (`keyframe` marks one), for the SDK to decode.
+    /// An encoded output frame comes up still encoded (`keyframe` marks one),
+    /// for the SDK to decode; `restartTrackStream()` restarts a track whose
+    /// decoder lost its stream.
     #[wasm_bindgen(unchecked_return_type = "Promise<StepResult>")]
     pub fn step(
         &self,
         state: Option<StepStateInput>,
         commands: Option<StepCommandsInput>,
-        request_keyframe: Option<bool>,
     ) -> Result<js_sys::Promise, JsValue> {
         let (state, commands) = step_input(state, commands)?;
         // Synchronous, unlike the send: an async export first runs in a later
@@ -644,11 +652,6 @@ impl ReactorClient {
             .reactor
             .begin_step(state, commands)
             .map_err(|e| error_value(&e.details(Some("step"))))?;
-        let request = if request_keyframe == Some(true) {
-            request.request_keyframe()
-        } else {
-            request
-        };
         let reactor = Rc::clone(&self.reactor);
         Ok(wasm_bindgen_futures::future_to_promise(async move {
             let output = reactor

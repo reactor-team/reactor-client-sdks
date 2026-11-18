@@ -90,8 +90,8 @@ impl FrameDecoder for RawFrameDecoder {
 ///
 /// Registered per frame, so the core keeps no per-track state for the
 /// encoding: the host feeds a decoder per track in the order results arrive,
-/// drops it when the data channel closes, and asks for keyframes itself
-/// (`request_keyframe`) when one loses its state.
+/// drops it when the data channel closes, and restarts a track whose decoder
+/// lost its stream itself (`Reactor::restart_track_stream`).
 pub struct PassThroughFrameDecoder;
 
 impl FrameDecoder for PassThroughFrameDecoder {
@@ -127,7 +127,7 @@ pub trait TrackDecoder: Send {
 
 /// Makes a fresh [`TrackDecoder`] for a track whose stream starts, or starts
 /// again, at a keyframe. An `Err` (no backend could be created) fails the
-/// frame without asking for a keyframe, which would not help.
+/// frame without restarting the track's stream, which would not help.
 pub type TrackDecoderFactory =
     Box<dyn Fn() -> Result<Box<dyn TrackDecoder>, CoreError> + Send + Sync>;
 

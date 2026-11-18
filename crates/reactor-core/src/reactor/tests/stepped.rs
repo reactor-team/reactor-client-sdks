@@ -1174,7 +1174,7 @@ async fn step_results_decode_in_arrival_order() {
 /// A host that decodes step frames itself gets each encoded frame as it
 /// arrived, keyframe mark included, and no stream state is kept here: a
 /// frame that is not a keyframe passes even with none before it, and the
-/// next step asks for no keyframe on its own.
+/// core restarts no track on its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn passed_through_frames_come_up_encoded_with_their_keyframe_mark() {
     let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
@@ -1195,7 +1195,6 @@ async fn passed_through_frames_come_up_encoded_with_their_keyframe_mark() {
 
     for (step, keyframe) in [(1, false), (2, true)] {
         let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
-        assert_eq!(requests_keyframe(&sent), None);
         feed(
             &reactor,
             &sent.request_id,
@@ -1209,6 +1208,10 @@ async fn passed_through_frames_come_up_encoded_with_their_keyframe_mark() {
         assert_eq!(frame.data, [0x65]);
         assert_eq!(frame.keyframe, keyframe);
     }
+    assert!(
+        peer.track_controls().is_empty(),
+        "the host restarts its own streams"
+    );
 }
 
 /// A result whose step gave up still moves its track's stream on, so the
@@ -1337,6 +1340,26 @@ async fn a_restart_that_failed_to_send_is_retried_on_the_next_result() {
         peer.track_controls(),
         ["pause:out", "pause:out", "resume:out"]
     );
+}
+
+/// A host that decodes its own tracks restarts one with a pause and a
+/// resume of that track alone, and a paused track stays paused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restart_track_stream_pauses_and_resumes_that_track() {
+    let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+    let reactor = make_decoding_reactor(peer.clone());
+    reactor.restart_track_stream("out").unwrap();
+    assert_eq!(peer.track_controls(), ["pause:out", "resume:out"]);
+
+    reactor
+        .state
+        .lock()
+        .unwrap()
+        .paused_tracks
+        .insert("other".into());
+    reactor.restart_track_stream("other").unwrap();
+    assert_eq!(peer.track_controls()[2..], ["resume:other", "pause:other"]);
+    assert!(reactor.paused_tracks().contains("other"));
 }
 
 /// A track the caller paused stays paused: the core resumes it to restart

@@ -58,11 +58,6 @@ export interface StepOptions {
    *  each track must be published first. A bad track or frame anywhere fails
    *  the step before any of them is pushed, leaving the buffer as it was. */
   media?: Record<string, ReadonlyArray<PushFrame | EncodedFrame>>;
-  /** Ask the runtime to start every encoded output track of this connection
-   *  at a keyframe in this step's result. The SDK asks on its own when one of
-   *  its decoders lost its state; leaving this out or `false` stops no
-   *  keyframe the runtime sends anyway. */
-  requestKeyframe?: boolean;
 }
 
 /** Options of `Reactor.setCodecPreference()`. */

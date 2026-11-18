@@ -11,8 +11,10 @@
  * `takeInputKeyframeRequest`). An output track's decoder is fed in the order
  * results arrive, starts at a keyframe, and is dropped when it fails, when a
  * step gives up after its request went out (its result never reaches the
- * decoder) or when the connection ends: until a keyframe starts it again, every step asks the
- * runtime for one (`request_keyframe`).
+ * decoder) or when the connection ends. A track that lost its stream is
+ * restarted once, with the binding's `restartTrackStream` (a pause and a
+ * resume of that track), and its frames fail until the keyframe the runtime
+ * then sends.
  */
 import { DecodeError } from '../errors';
 import { toPixels, type Pixels } from './push-frames';
@@ -319,39 +321,50 @@ function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => void):
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-/** The output tracks' decoders of one connection, and the tracks waiting for
- *  a keyframe. `reset()` drops both: the next connection's streams start
- *  over at keyframes anyway. */
+/** The output tracks' decoders of one connection, the tracks waiting for a
+ *  keyframe, and the tracks that lost their stream and are not restarted
+ *  yet. `reset()` drops all three: the next connection's streams start over
+ *  at keyframes anyway. */
 export class OutputDecoders {
   private readonly decoders = new Map<string, TrackDecoder>();
   private readonly awaitingKeyframe = new Set<string>();
-  /** Set by `abandon()`: the next step asks for keyframes. */
-  private restarted = false;
+  private lost: string[] = [];
 
   constructor(private readonly api: WebCodecs = globalThis) {}
 
-  /** Whether a track lost its decoder and waits for a keyframe, or the
-   *  decoders were dropped by `abandon()`: the next step asks the runtime
-   *  for one. */
+  /** Whether a track lost its decoder and waits for a keyframe. */
   needsKeyframe(): boolean {
-    return this.restarted || this.awaitingKeyframe.size > 0;
+    return this.awaitingKeyframe.size > 0;
   }
 
-  /** `needsKeyframe()`, for the step about to ask: the request `abandon()`
-   *  left is taken by it. */
-  takeKeyframeRequest(): boolean {
-    const needed = this.needsKeyframe();
+  /** The tracks that lost their stream since the last call, each once per
+   *  loss however many frames it then discards: the caller restarts each
+   *  one's stream. */
+  takeLostTracks(): string[] {
+    const lost = this.lost;
 
-    this.restarted = false;
-    return needed;
+    this.lost = [];
+    return lost;
   }
 
   /** A step gave up after its request went out: its result, if it still
    *  comes, is never fed here, so every stream lost frames. Drop the
-   *  decoders and have the next step ask for keyframes. */
+   *  decoders, and report each of their tracks lost. */
   abandon(): void {
-    this.reset();
-    this.restarted = true;
+    for (const [track, decoder] of this.decoders) {
+      decoder.close();
+      this.lose(track, false);
+    }
+    this.decoders.clear();
+  }
+
+  /** Make `track` wait for a keyframe, and report it lost when it was not
+   *  waiting already, or when `again` says this is a new loss. */
+  private lose(track: string, again: boolean): void {
+    if (!this.awaitingKeyframe.has(track) || again) {
+      this.lost.push(track);
+    }
+    this.awaitingKeyframe.add(track);
   }
 
   /** `result` with every encoded frame decoded to RGB `(height, width, 3)`
@@ -411,7 +424,7 @@ export class OutputDecoders {
     if (!decoder) {
       // A new stream: only a keyframe can start it.
       if (!frame.keyframe) {
-        this.awaitingKeyframe.add(track);
+        this.lose(track, false);
         return Promise.reject(
           new DecodeError(
             `step(): track '${track}' has no decoder state for a ${codec} frame that is not a keyframe; waiting for a keyframe`,
@@ -441,7 +454,9 @@ export class OutputDecoders {
         return { ...frame, ...(await rgbOf(picture)) };
       },
       (cause: unknown) => {
-        this.awaitingKeyframe.add(track);
+        // A keyframe that fails to decode is a loss of its own: the restart
+        // that brought it is spent.
+        this.lose(track, frame.keyframe === true);
         if (this.decoders.get(track) === live) {
           this.decoders.delete(track);
         }
@@ -456,7 +471,7 @@ export class OutputDecoders {
     }
     this.decoders.clear();
     this.awaitingKeyframe.clear();
-    this.restarted = false;
+    this.lost = [];
   }
 }
 

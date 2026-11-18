@@ -689,9 +689,9 @@ export class Reactor implements Disposable {
    * track are encoded, and an output track's frames are decoded, so a result
    * still holds RGB frames whose `encoding` names the codec they travelled
    * in. Each track is one stream for the connection. When one of its
-   * decoders lost its state, the step rejects with a `DecodeError` and the
-   * next one asks the runtime for keyframes; `requestKeyframe: true` asks
-   * for them on any step.
+   * decoders lost its stream, the step rejects with a `DecodeError`, the SDK
+   * pauses and resumes that track so the runtime starts it again at a
+   * keyframe, and the track's frames fail until that keyframe arrives.
    *
    * ```ts
    * const camera = await reactor.publishTrack('camera');
@@ -732,20 +732,20 @@ export class Reactor implements Disposable {
           const client = await this.getOrCreateClient();
 
           try {
-            // A track whose decoder lost its state cannot decode another
-            // frame until a keyframe: ask for one rather than wait for it.
-            const requestKeyframe = this.outputDecoders.takeKeyframeRequest() || options.requestKeyframe === true;
             const decoders = this.outputDecoders;
 
             // Decoded as the result arrives, before anything awaits it, so
             // results that arrive one after another decode in that order. A
             // step that gives up once its request went out (a timeout, a
             // result too large) never has its result decoded here, so the
-            // streams lost frames: drop the decoders and ask for keyframes.
-            return client.step(state, commands, requestKeyframe).then(
-              (result) => decoders.decodeResult(result),
+            // streams lost frames: drop the decoders. Either way, each track
+            // whose stream was lost is restarted.
+            return client.step(state, commands).then(
+              (result) =>
+                decoders.decodeResult(result).finally(() => this.restartLostTracks(client, decoders)),
               (cause: unknown) => {
                 decoders.abandon();
+                this.restartLostTracks(client, decoders);
                 throw cause;
               },
             );
@@ -1024,6 +1024,20 @@ export class Reactor implements Disposable {
   /** Gives the binding the codecs this browser can carry step frames in,
    *  probed once, so the next offer can negotiate them. A streamed session
    *  carries no step frames. */
+  /** Restart each output track whose decoder lost its stream: a pause and
+   *  a resume of that track, so the runtime starts it again at a keyframe. A
+   *  restart that cannot be sent is left to the next connection, whose
+   *  streams start at keyframes anyway. */
+  private restartLostTracks(client: ReactorClient, decoders: OutputDecoders): void {
+    for (const track of decoders.takeLostTracks()) {
+      try {
+        client.restartTrackStream(track);
+      } catch (cause) {
+        console.warn(`step(): could not restart track '${track}':`, cause);
+      }
+    }
+  }
+
   private async offerStepCodecs(client: ReactorClient): Promise<void> {
     if (!this.isStepped()) {
       return;

@@ -266,18 +266,14 @@ export class FakeReactorClient {
     state: Record<string, unknown> | null | undefined;
     commands: StepCommand[] | null | undefined;
   }> = [];
-  /** Each step's `requestKeyframe`, in call order. */
-  stepKeyframeRequests: Array<boolean | null | undefined> = [];
   stepResult: StepResult = { step: 1, tracks: [], elapsed: 0, files: [] };
   // Overridable so a test can hold a step open or fail it.
   stepImpl: (() => Promise<StepResult>) | undefined;
   step(
     state?: Record<string, unknown> | null,
     commands?: StepCommand[] | null,
-    requestKeyframe?: boolean | null,
   ): Promise<StepResult> {
     this.stepCalls.push({ state, commands });
-    this.stepKeyframeRequests.push(requestKeyframe);
     if (this.stepImpl) {
       return this.stepImpl();
     }
@@ -359,6 +355,12 @@ export class FakeReactorClient {
   }
 
   stepFrameEncodingsResult: Record<string, StepFrameEncoding> = {};
+  /** Each `restartTrackStream` call's track, in call order. */
+  restartTrackStreamCalls: string[] = [];
+  restartTrackStream(name: string): void {
+    this.restartTrackStreamCalls.push(name);
+  }
+
   stepFrameEncodings(): Record<string, StepFrameEncoding> {
     return this.stepFrameEncodingsResult;
   }

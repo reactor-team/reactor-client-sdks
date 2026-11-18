@@ -147,8 +147,8 @@ pub struct ReactorOptions {
     /// [`StepCodec::DEFAULT_ORDER`], rather than decoding them here. For a
     /// host that decodes the tracks' streams with codecs of its own; it then
     /// feeds a decoder per track in the order step results arrive, drops it
-    /// when the connection ends, and asks for keyframes itself
-    /// ([`StepRequest::request_keyframe`]) when one loses its state.
+    /// when the connection ends, and restarts a track whose decoder lost its
+    /// stream itself ([`Reactor::restart_track_stream`]).
     pub pass_encoded_step_frames: bool,
 }
 
@@ -2360,38 +2360,51 @@ impl Reactor {
     }
 
     /// Restart the stream of each output track whose decoder lost it since
-    /// the last call: pause and resume the track on the control channel, and
-    /// the runtime starts its next encoded frames at a keyframe. Each loss is
-    /// restarted once (see [`FrameDecoders::take_lost_tracks`]).
+    /// the last call (see [`FrameDecoders::take_lost_tracks`] and
+    /// [`Reactor::restart_track_stream`]). Each loss is restarted once; a
+    /// restart that did not all go out is reported lost again, for the next
+    /// result to retry from the start.
+    fn restart_lost_tracks(&self) {
+        for name in self.frame_decoders.take_lost_tracks() {
+            if let Err(error) = self.restart_track_stream(&name) {
+                log::warn!("restarting the stream of track '{name}' failed: {error}");
+                self.frame_decoders.restore_lost_track(&name);
+            }
+        }
+    }
+
+    /// Restart output track `name`'s encoded step frames on this connection:
+    /// pause and resume it on the control channel, and the runtime starts its
+    /// next frames at a keyframe. For a host that decodes the tracks itself
+    /// ([`ReactorOptions::pass_encoded_step_frames`]) when one of its
+    /// decoders lost a stream; the core does this on its own for the tracks
+    /// it decodes.
     ///
     /// The track keeps the state its caller gave it: a track the caller
     /// paused is resumed and paused again, and neither the transceiver nor
     /// [`Reactor::paused_tracks`] changes. A [`Reactor::pause_track`] or
     /// [`Reactor::resume_track`] waits for the restart, so its own message
-    /// comes last. A restart that did not all go out is reported lost again,
-    /// for the next result to retry from the start.
-    fn restart_lost_tracks(&self) {
+    /// comes last. On an error the runtime may hold the track paused until a
+    /// restart goes out whole.
+    pub fn restart_track_stream(&self, name: &str) -> Result<(), CoreError> {
         let _track_control = self.track_control.lock().unwrap();
-        for name in self.frame_decoders.take_lost_tracks() {
-            let paused = self.state.lock().unwrap().paused_tracks.contains(&name);
-            let pause = ClientPayload::PauseTrack(PauseTrack { name: name.clone() });
-            let resume = ClientPayload::ResumeTrack(ResumeTrack { name: name.clone() });
-            let order = if paused {
-                [resume, pause]
-            } else {
-                [pause, resume]
-            };
-            for payload in order {
-                if let Err(error) = self
-                    .peer
-                    .send_control(&ControlCorrelator::notification(payload))
-                {
-                    log::warn!("restarting the stream of track '{name}' failed: {error}");
-                    self.frame_decoders.restore_lost_track(&name);
-                    break;
-                }
-            }
+        let paused = self.state.lock().unwrap().paused_tracks.contains(name);
+        let pause = ClientPayload::PauseTrack(PauseTrack {
+            name: name.to_string(),
+        });
+        let resume = ClientPayload::ResumeTrack(ResumeTrack {
+            name: name.to_string(),
+        });
+        let order = if paused {
+            [resume, pause]
+        } else {
+            [pause, resume]
+        };
+        for payload in order {
+            self.peer
+                .send_control(&ControlCorrelator::notification(payload))?;
         }
+        Ok(())
     }
 
     pub fn paused_tracks(&self) -> HashSet<String> {

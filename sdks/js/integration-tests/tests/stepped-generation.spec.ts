@@ -40,12 +40,12 @@ async function connectStepped(page: Page, codecs: Array<'h264'> | null): Promise
   );
 }
 
-/** Push one solid 64x64 RGB frame on the webcam, run a step (inverting it,
- *  or asking for keyframes), and return the step's number, what the output
- *  frame travelled in, its shape and its centre pixel. */
-async function invertOnce(page: Page, requestKeyframe = false) {
+/** Push one solid 64x64 RGB frame on the webcam, run a step that inverts
+ *  it, and return the step's number, what the output frame travelled in, its
+ *  shape and its centre pixel. */
+async function invertOnce(page: Page) {
   return page.evaluate(
-    async ({ name, requestKeyframe }) => {
+    async ({ name }) => {
       const reactor = window.__harness.get(name);
       const data = new Uint8Array(64 * 64 * 3);
 
@@ -53,7 +53,7 @@ async function invertOnce(page: Page, requestKeyframe = false) {
         data.set([10, 20, 30], i);
       }
       await reactor.pushFrame('webcam', { data, width: 64, height: 64, format: 'rgb' });
-      const result = await reactor.step({ state: { effect: 'invert' }, requestKeyframe });
+      const result = await reactor.step({ state: { effect: 'invert' } });
 
       if (result.error) {
         throw new Error(`step failed: ${result.error}`);
@@ -73,7 +73,7 @@ async function invertOnce(page: Page, requestKeyframe = false) {
         centre: Array.from(frame.data.slice(centre, centre + 3)),
       };
     },
-    { name: NAME, requestKeyframe },
+    { name: NAME },
   );
 }
 
@@ -114,8 +114,8 @@ for (const [label, codecs, expected] of [
       return result;
     });
 
-    await test.step('a step that asks for keyframes decodes like any other', async () => {
-      const again = await invertOnce(page, true);
+    await test.step('the next step continues the same stream', async () => {
+      const again = await invertOnce(page);
 
       expect(again.step).toBe(first.step + 1);
       expectInverted(again.centre, tolerance);

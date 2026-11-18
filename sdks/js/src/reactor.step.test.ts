@@ -1314,26 +1314,28 @@ describe('Reactor step frames on WebCodecs', () => {
       shape: [1, 1, 3],
       data: new Uint8Array([40, 2, 3]),
     });
-    expect(client.stepKeyframeRequests).toEqual([false]);
+    expect(client.restartTrackStreamCalls).toEqual([]);
   });
 
-  it('asks for keyframes after a decoder fails, until one restarts the track', async () => {
+  it('restarts a track once after its decoder fails, and decodes again from the keyframe', async () => {
     const { reactor, client } = await h264Session();
 
     client.stepResult = encodedResult(1, true);
     await reactor.step();
     client.stepResult = encodedResult(0xff, false);
     await expect(reactor.step()).rejects.toBeInstanceOf(DecodeError);
+    expect(client.restartTrackStreamCalls).toEqual(['main_video']);
+    // A result encoded before the restart: it fails, and restarts nothing more.
     client.stepResult = encodedResult(2, false);
     await expect(reactor.step()).rejects.toBeInstanceOf(DecodeError);
     client.stepResult = encodedResult(3, true);
     await expect(reactor.step()).resolves.toBeDefined();
     await reactor.step();
 
-    expect(client.stepKeyframeRequests).toEqual([false, false, true, true, false]);
+    expect(client.restartTrackStreamCalls).toEqual(['main_video']);
   });
 
-  it('drops the decoders and asks for keyframes after a step times out', async () => {
+  it('drops the decoders and restarts their tracks after a step times out', async () => {
     const { reactor, client } = await h264Session();
 
     client.stepResult = encodedResult(1, true);
@@ -1342,6 +1344,7 @@ describe('Reactor step frames on WebCodecs', () => {
     // result's delta frames would reference pictures it never saw.
     client.stepImpl = () => Promise.reject(bindingError('REQUEST_TIMEOUT', 'step timed out'));
     await expect(reactor.step()).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
+    expect(client.restartTrackStreamCalls).toEqual(['main_video']);
     client.stepImpl = undefined;
     client.stepResult = encodedResult(2, false);
     await expect(reactor.step()).rejects.toThrow('waiting for a keyframe');
@@ -1349,16 +1352,7 @@ describe('Reactor step frames on WebCodecs', () => {
     await expect(reactor.step()).resolves.toBeDefined();
     await reactor.step();
 
-    expect(client.stepKeyframeRequests).toEqual([false, false, true, true, false]);
-  });
-
-  it('asks for keyframes when the caller does', async () => {
-    const { reactor, client } = await h264Session();
-
-    await reactor.step({ requestKeyframe: true });
-    await reactor.step({ requestKeyframe: false });
-
-    expect(client.stepKeyframeRequests).toEqual([true, false]);
+    expect(client.restartTrackStreamCalls).toEqual(['main_video']);
   });
 
   it('starts every output track again at a keyframe on a new connection', async () => {
@@ -1371,9 +1365,9 @@ describe('Reactor step frames on WebCodecs', () => {
     client.stepResult = encodedResult(2, false);
 
     await expect(reactor.step()).rejects.toThrow('waiting for a keyframe');
-    expect(client.stepKeyframeRequests).toEqual([false, false]);
+    expect(client.restartTrackStreamCalls).toEqual(['main_video']);
     client.stepResult = encodedResult(3, true);
     await reactor.step();
-    expect(client.stepKeyframeRequests.at(-1)).toBe(true);
+    expect(client.restartTrackStreamCalls).toEqual(['main_video']);
   });
 });

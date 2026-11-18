@@ -260,8 +260,6 @@ reactor.setCodecPreference([]);                            // raw frames
 reactor.setCodecPreference(["av1"], { track: "main_video" });
 await reactor.connect();
 reactor.getStepFrameEncodings(); // { main_video: "av1", camera: "vp9" }
-
-const result = await reactor.step({ requestKeyframe: true });
 ```
 
 - The codecs are `"h264"`, `"vp9"`, `"av1"` and `"vp8"`; H.264 comes first by default. Each
@@ -273,9 +271,9 @@ const result = await reactor.step({ requestKeyframe: true });
   on the next connection or reconnect; the live connection keeps what it negotiated.
 - Each track is one stream for the whole connection. A track's first frame on a connection is
   a keyframe, and so is the next one after the runtime could not decode the track's pushed
-  frames. When an output track's decoder loses its state, that step rejects with a
-  `DecodeError` and the next steps ask the runtime for keyframes until one restarts the track;
-  `requestKeyframe: true` asks for them on any step.
+  frames. When an output track's decoder loses its stream, that step rejects with a
+  `DecodeError`, and the SDK pauses and resumes that track so the runtime starts it again at a
+  keyframe; its frames fail until that keyframe arrives.
 
 ### Encoded video you encode yourself
 

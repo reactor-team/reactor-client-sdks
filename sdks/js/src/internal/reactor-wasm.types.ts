@@ -336,7 +336,6 @@ export declare class ReactorClient {
   step(
     state?: Record<string, unknown> | null,
     commands?: StepCommand[] | null,
-    requestKeyframe?: boolean | null,
   ): Promise<StepResult>;
   /** Stepped sessions only. Sends the frame to the runtime at once, or
    *  buffers it for the next `step()`; throws synchronously on a frame that
@@ -377,6 +376,10 @@ export declare class ReactorClient {
   setLocalStepCodecs(encode: EncodedVideoCodec[], decode: EncodedVideoCodec[]): void;
   /** How each mapped track's step frames travel on this connection. */
   stepFrameEncodings(): Record<string, StepFrameEncoding>;
+  /** Restart output track `name`'s encoded step frames: the runtime starts
+   *  its next frames at a keyframe. The track stays paused or resumed as the
+   *  caller left it. */
+  restartTrackStream(name: string): void;
   /** Stepped sessions only. Interleaved PCM, `channels` samples per frame. */
   pushAudioFrame(name: string, samples: Int16Array, sampleRate: number, channels: number): void;
   clearStepInputs(): void;
