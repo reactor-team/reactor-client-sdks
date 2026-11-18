@@ -27,8 +27,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
   effect on the next connection or reconnect. `Reactor.stepFrameEncodings`
   reports what the live connection negotiated per track (`"raw"`, `"h264"`,
   `"vp8"`, `"vp9"` or `"av1"`), empty outside a connected stepped session.
-- `step(..., requestKeyframe: true)` asks the runtime to start every encoded
-  output track of that step's result at a keyframe.
+- An output track whose stream the client can no longer decode is paused and
+  resumed, and the runtime starts it again at a keyframe.
 
 ### Fixed
 

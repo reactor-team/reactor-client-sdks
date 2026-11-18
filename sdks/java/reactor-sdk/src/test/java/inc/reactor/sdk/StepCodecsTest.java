@@ -1,8 +1,6 @@
 package inc.reactor.sdk;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -12,8 +10,6 @@ import inc.reactor.sdk.internal.Ffi;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -141,7 +137,6 @@ final class StepCodecsTest {
         try (FakeNativeLibrary older = new FakeNativeLibrary()) {
             older.removeSymbol("reactor_set_codec_preference");
             older.removeSymbol("reactor_step_frame_encodings");
-            older.removeSymbol("reactor_step_with_options");
             try (Reactor client = Reactor.open(
                     ReactorOptions.builder("https://api.example.test", "owner/model")
                             .dispatcher(Runnable::run)
@@ -157,16 +152,8 @@ final class StepCodecsTest {
 
                 assertEquals(Map.of(), client.stepFrameEncodings());
 
-                CompletableFuture<StepResult> keyframe = client.step(
-                        null, List.of(), null, StepOptions.defaults().withRequestKeyframe(true));
-                InvalidStateException cause = assertInstanceOf(
-                        InvalidStateException.class,
-                        assertThrows(ExecutionException.class, keyframe::get).getCause());
-                assertTrue(cause.getMessage().contains("reactor_step_with_options"), cause.getMessage());
-                assertEquals(0, older.stepCalls, "a refused step reaches nothing");
-
                 client.step();
-                assertEquals(1, older.stepCalls, "a step without options still runs");
+                assertEquals(1, older.stepCalls, "a step still runs");
             }
         }
     }
@@ -187,44 +174,5 @@ final class StepCodecsTest {
     @DisplayName("outside a connected session the encodings are empty")
     void encodingsBeforeConnectAreEmpty() {
         assertEquals(Map.of(), reactor.stepFrameEncodings());
-    }
-
-    // ── requestKeyframe ─────────────────────────────────────────────────────
-
-    @Test
-    @DisplayName("a step asking for keyframes goes through the options call, and resolves as any step")
-    void aKeyframeStepUsesTheOptionsCall() throws Exception {
-        connect();
-
-        CompletableFuture<StepResult> pending = reactor.step(
-                JsonValue.object().put("effect", "invert").build(),
-                List.of(),
-                null,
-                StepOptions.defaults().withRequestKeyframe(true));
-
-        assertEquals(1, fake.stepWithOptionsCalls);
-        assertEquals(0, fake.stepCalls);
-        assertEquals(JsonValue.parse("{\"request_keyframe\":true}"), JsonValue.parse(fake.lastStepOptions));
-        assertEquals(JsonValue.parse("{\"effect\":\"invert\"}"), JsonValue.parse(fake.lastStepState));
-
-        fake.settleLastStep(4, List.of());
-        assertEquals(4, pending.get().step());
-        assertTrue(fake.stepResultsFreedExactlyOnce());
-    }
-
-    @Test
-    @DisplayName("a step without options, or with the defaults, keeps the plain step call")
-    void aDefaultStepKeepsThePlainCall() {
-        connect();
-
-        reactor.step();
-        fake.settleLastStep(1, List.of());
-        reactor.step(null, List.of(), null, StepOptions.defaults());
-        fake.settleLastStep(2, List.of());
-
-        assertEquals(2, fake.stepCalls);
-        assertEquals(0, fake.stepWithOptionsCalls);
-        assertNull(fake.lastStepOptions);
-        assertTrue(!StepOptions.defaults().requestKeyframe());
     }
 }

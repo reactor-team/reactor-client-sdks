@@ -199,35 +199,6 @@ pub(crate) fn parse_commands(commands_json: Option<&str>) -> Result<Vec<StepComm
         .collect()
 }
 
-/// `options_json` of `reactor_step_with_options`: an object whose only key is
-/// an optional boolean `"request_keyframe"`, absent meaning `{}`. Returns
-/// whether the step asks for keyframes.
-pub(crate) fn parse_step_options(options_json: Option<&str>) -> Result<bool, CoreError> {
-    let Some(raw) = options_json else {
-        return Ok(false);
-    };
-    let value: Value = serde_json::from_str(raw)
-        .map_err(|e| CoreError::decode(format!("options_json is not valid JSON: {e}")))?;
-    let Value::Object(mut fields) = value else {
-        return Err(CoreError::decode("options_json must be a JSON object"));
-    };
-    let request_keyframe = match fields.remove("request_keyframe") {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(flag)) => flag,
-        Some(other) => {
-            return Err(CoreError::decode(format!(
-                "options_json \"request_keyframe\" must be a boolean, got {other}"
-            )))
-        }
-    };
-    if let Some(key) = fields.keys().next() {
-        return Err(CoreError::decode(format!(
-            "options_json has an unknown key \"{key}\" (expected \"request_keyframe\")"
-        )));
-    }
-    Ok(request_keyframe)
-}
-
 /// `codecs_json` of `reactor_set_codec_preference`: a JSON array of codec
 /// names (`"h264"`, `"vp8"`, `"vp9"`, `"av1"`, in any case), most preferred
 /// first, or absent (`None`) to go back to the default.
@@ -735,25 +706,6 @@ mod tests {
         }
         let error = parse_state(Some("{")).unwrap_err();
         assert_eq!(error.code(), reactor_core::error::codes::DECODE_FAILED);
-    }
-
-    #[test]
-    fn step_options_ask_for_a_keyframe_only_when_told_to() {
-        assert!(!parse_step_options(None).unwrap());
-        assert!(!parse_step_options(Some("{}")).unwrap());
-        assert!(!parse_step_options(Some(r#"{"request_keyframe":null}"#)).unwrap());
-        assert!(!parse_step_options(Some(r#"{"request_keyframe":false}"#)).unwrap());
-        assert!(parse_step_options(Some(r#"{"request_keyframe":true}"#)).unwrap());
-        for (raw, needle) in [
-            ("nope", "not valid JSON"),
-            ("[]", "must be a JSON object"),
-            (r#"{"request_keyframe":1}"#, "must be a boolean"),
-            (r#"{"keyframe":true}"#, "unknown key \"keyframe\""),
-        ] {
-            let error = parse_step_options(Some(raw)).unwrap_err();
-            assert_eq!(error.code(), reactor_core::error::codes::DECODE_FAILED);
-            assert!(error.to_string().contains(needle), "{raw}: {error}");
-        }
     }
 
     #[test]

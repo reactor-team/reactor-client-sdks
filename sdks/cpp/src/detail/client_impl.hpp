@@ -581,8 +581,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
   Generation generation() const noexcept { return generation_; }
 
   void begin_step(std::unique_ptr<PendingStep> op, const Json& state,
-                  const std::vector<StepCommand>& commands, const StepMedia& media,
-                  const StepOptions& options);
+                  const std::vector<StepCommand>& commands, const StepMedia& media);
 
   /// Check `codecs`, send them to the handle if there is one, and keep them for
   /// every handle created after. Throws `BadRequestError` for an unknown name and

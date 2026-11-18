@@ -1281,8 +1281,6 @@ class Reactor:
         state: Mapping[str, Any] | None = None,
         commands: Sequence[StepCommand | Mapping[str, Any]] | None = None,
         media: Mapping[str, Sequence[Any]] | None = None,
-        *,
-        request_keyframe: bool = False,
     ) -> StepResult:
         """Run one step of a stepped session and return what it produced.
 
@@ -1325,11 +1323,6 @@ class Reactor:
         It is the same as pushing them just before the step, so each track must be
         published first.
 
-        ``request_keyframe=True`` asks the runtime to start each encoded output
-        track of this step's result at a keyframe, for a caller that drops what it
-        decoded so far. The client already asks when one of its decoders loses
-        its state, and the default never stops a keyframe the runtime sends anyway.
-
         A step that ran but that the model reported as failed returns its result
         with `StepResult.error` set. Raises `StepRefusedError` when the runtime
         refuses the step (it checks the whole request first, so nothing it carried
@@ -1368,13 +1361,6 @@ class Reactor:
         handle = self._handle
         lib = get_lib()
         lock = self._step_lock
-        if request_keyframe and not has_step_codecs(lib):
-            raise RuntimeError(
-                "the loaded libreactor_ffi predates step codecs (it exports no "
-                "reactor_step_with_options), so a step cannot ask for keyframes. "
-                "Rebuild it with `cargo build -p reactor-ffi --release`."
-            )
-        options_json = json.dumps({"request_keyframe": True}).encode() if request_keyframe else None
 
         def decode(ptr: int | None) -> StepResult:
             if not ptr:
@@ -1388,12 +1374,7 @@ class Reactor:
         def dispatch(fn: Any) -> None:
             nonlocal locked
             try:
-                if options_json is None:
-                    lib.reactor_step(ctypes.c_void_p(handle), state_json, commands_json, fn, None)
-                else:
-                    lib.reactor_step_with_options(
-                        ctypes.c_void_p(handle), state_json, commands_json, options_json, fn, None
-                    )
+                lib.reactor_step(ctypes.c_void_p(handle), state_json, commands_json, fn, None)
             finally:
                 # The native step has taken the buffer: later pushes are the next
                 # step's.

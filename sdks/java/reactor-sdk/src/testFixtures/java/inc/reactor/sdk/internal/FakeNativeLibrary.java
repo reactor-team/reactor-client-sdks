@@ -206,7 +206,6 @@ public final class FakeNativeLibrary implements AutoCloseable {
         bind("reactor_step_result_free", Ffi.Symbol.STEP_RESULT_FREE.descriptor(), "stepResultFree");
         bind("reactor_set_codec_preference", Ffi.Symbol.SET_CODEC_PREFERENCE.descriptor(), "setCodecPreference");
         bind("reactor_step_frame_encodings", Ffi.Symbol.STEP_FRAME_ENCODINGS.descriptor(), "stepFrameEncodings");
-        bind("reactor_step_with_options", Ffi.Symbol.STEP_WITH_OPTIONS.descriptor(), "stepWithOptions");
     }
 
     // ── Step frame codecs ───────────────────────────────────────────────────
@@ -224,12 +223,6 @@ public final class FakeNativeLibrary implements AutoCloseable {
 
     /** What {@code reactor_step_frame_encodings} answers. */
     public String stepFrameEncodingsJson = "{}";
-
-    /** The options JSON of the last {@code reactor_step_with_options}. */
-    public @Nullable String lastStepOptions;
-
-    /** How many {@code reactor_step_with_options} calls arrived. */
-    public int stepWithOptionsCalls;
 
     /** The address of the last handle either create call returned, 0 before any. */
     public long lastCreatedHandle() {
@@ -253,22 +246,6 @@ public final class FakeNativeLibrary implements AutoCloseable {
         MemorySegment segment = arena.allocateFrom(stepFrameEncodingsJson);
         ownedOut.add(segment.address());
         return segment;
-    }
-
-    private void stepWithOptions(
-            MemorySegment handle,
-            MemorySegment stateJson,
-            MemorySegment commandsJson,
-            MemorySegment optionsJson,
-            MemorySegment completion,
-            MemorySegment userdata) {
-        stepWithOptionsCalls++;
-        lastStepOptions = readString(optionsJson);
-        calls.add("step_with_options");
-        lastStepState = readString(stateJson);
-        lastStepCommands = readString(commandsJson);
-        lastStepCompletion = completion;
-        lastStepUserdata = userdata;
     }
 
     /** Makes this library report an ABI version other than the one the binding expects. */

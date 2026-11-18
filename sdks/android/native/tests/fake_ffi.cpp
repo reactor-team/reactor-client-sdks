@@ -359,26 +359,12 @@ ReactorHandle* reactor_create_with_options(const char*, const char*, const char*
     return &g_handle;
 }
 
-/// Which entry point the last step went through, and the options it carried.
-static std::string g_last_step_entry;
-static std::string g_last_step_options;
-
 void reactor_step(ReactorHandle*, const char* state_json, const char* commands_json,
                   reactor_step_completion_fn completion, void* userdata) {
-    g_last_step_entry = "reactor_step";
-    g_last_step_options = "<none>";
     g_last_step_state = state_json == nullptr ? "<null>" : state_json;
     g_last_step_commands = commands_json == nullptr ? "<null>" : commands_json;
     g_step_completion = completion;
     g_step_userdata = userdata;
-}
-
-void reactor_step_with_options(ReactorHandle* handle, const char* state_json,
-                               const char* commands_json, const char* options_json,
-                               reactor_step_completion_fn completion, void* userdata) {
-    reactor_step(handle, state_json, commands_json, completion, userdata);
-    g_last_step_entry = "reactor_step_with_options";
-    g_last_step_options = options_json == nullptr ? "<null>" : options_json;
 }
 
 static int g_codec_preference_fails = 0;
@@ -519,9 +505,7 @@ const char* fake_last_step_state(void) { return g_last_step_state.c_str(); }
 
 const char* fake_last_step_commands(void) { return g_last_step_commands.c_str(); }
 
-const char* fake_last_step_entry(void) { return g_last_step_entry.c_str(); }
 
-const char* fake_last_step_options(void) { return g_last_step_options.c_str(); }
 
 void fake_set_codec_preference_fails(int fails) { g_codec_preference_fails = fails; }
 

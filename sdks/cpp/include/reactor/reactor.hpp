@@ -506,22 +506,6 @@ class Reactor {
   // NOLINTNEXTLINE(performance-unnecessary-value-param)
   std::future<StepResult> step(Json state, std::vector<StepCommand> commands, StepMedia media);
 
-  /// Run one step with `options`, otherwise as the overload above (pass `{}`
-  /// for no media). `StepOptions::request_keyframe` asks the runtime to start
-  /// each encoded output track of this step's result at a keyframe:
-  ///
-  /// ```cpp
-  /// reactor::StepOptions options;
-  /// options.request_keyframe = true;
-  /// const auto result = client.step(nullptr, {}, {}, options).get();
-  /// ```
-  ///
-  /// The decoded frames reach the caller as RGB whatever the options say.
-  // By value: see the overloads above.
-  // NOLINTNEXTLINE(performance-unnecessary-value-param)
-  std::future<StepResult> step(Json state, std::vector<StepCommand> commands, StepMedia media,
-                               StepOptions options);
-
   /// Choose the codecs a stepped session carries its video step frames in.
   ///
   /// `codecs` names them most preferred first, from "h264", "vp9", "av1" and

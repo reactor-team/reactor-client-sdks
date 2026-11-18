@@ -11,7 +11,7 @@ public enum Generation: String, Sendable, Hashable, CaseIterable {
     /// before the choice existed, and the default.
     case streamed
 
-    /// One ``Reactor/step(state:commands:media:requestKeyframe:)`` at a time. Input tracks send
+    /// One ``Reactor/step(state:commands:media:)`` at a time. Input tracks send
     /// what is pushed into them to the runtime over the data channel, ahead of
     /// the next step, and each step answers with the frames the model produced
     /// rather than streaming them.
@@ -149,7 +149,7 @@ public struct StepResult: Sendable {
     /// Why the step failed, when it ran and the model reported a failure;
     /// `nil` when it worked.
     ///
-    /// A failed step is still a result — ``Reactor/step(state:commands:media:requestKeyframe:)``
+    /// A failed step is still a result — ``Reactor/step(state:commands:media:)``
     /// returns it rather than throwing. Only a step that never ran throws.
     public let error: String?
 
@@ -174,7 +174,7 @@ public struct StepResult: Sendable {
     /// short.
     public let data: Data?
 
-    /// Assemble a result — for tests and previews; ``Reactor/step(state:commands:media:requestKeyframe:)``
+    /// Assemble a result — for tests and previews; ``Reactor/step(state:commands:media:)``
     /// is where real ones come from.
     public init(
         step: UInt64,
@@ -347,7 +347,7 @@ public struct StepFrame: Sendable, Hashable {
 ///
 /// `width` and `height` are the frame it decodes to. Push it with
 /// ``Track/pushEncodedFrame(_:)``, or give it to
-/// ``Reactor/step(state:commands:media:requestKeyframe:)`` as ``StepMediaFrame/encoded(_:)``.
+/// ``Reactor/step(state:commands:media:)`` as ``StepMediaFrame/encoded(_:)``.
 /// The runtime decodes a track's encoded frames as one stream, as they arrive,
 /// and the model reads RGB frames as if they had been pushed raw. So give them
 /// in decode order, starting at a keyframe — the
@@ -410,7 +410,7 @@ public struct EncodedFrame: Sendable, Hashable {
 }
 
 /// One frame a step carries for an input track, in
-/// ``Reactor/step(state:commands:media:requestKeyframe:)``'s `media`.
+/// ``Reactor/step(state:commands:media:)``'s `media`.
 ///
 /// Each case is what the matching push takes, and is pushed exactly as that
 /// push would push it, just before the step goes out.

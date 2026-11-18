@@ -510,7 +510,7 @@ extension Track {
     /// and the runtime takes pushed frames (one the channel cannot take is
     /// dropped and raised as an error event). A frame pushed before then, or to
     /// an older runtime, is buffered and sent with the next push or
-    /// ``Reactor/step(state:commands:media:requestKeyframe:)`` — per track, in push order.
+    /// ``Reactor/step(state:commands:media:)`` — per track, in push order.
     /// Publish the track first, as for a streamed session.
     ///
     /// The buffer holds at most one data-channel message's worth of frame
@@ -581,7 +581,7 @@ extension Track {
     ///
     /// **Stepped sessions.** On a client created with `generation: .stepped`
     /// each push goes as one planar `(channels, samples)` `int16` frame, sent or
-    /// buffered for the next ``Reactor/step(state:commands:media:requestKeyframe:)`` as a video
+    /// buffered for the next ``Reactor/step(state:commands:media:)`` as a video
     /// frame is. A step frame carries no sample rate, so push at the rate the
     /// model's track declares. The buffer is the one video frames share, with
     /// the same limit.
@@ -599,7 +599,7 @@ extension Track {
     ///
     /// Stepped sessions only: like ``pushFrame(_:width:height:userData:captureTimeUs:)``
     /// there, this sends the frame to the runtime at once, or buffers it for the
-    /// next ``Reactor/step(state:commands:media:requestKeyframe:)``. `frame.data`
+    /// next ``Reactor/step(state:commands:media:)``. `frame.data`
     /// is one H.264 access unit, and `frame.width` and `frame.height` the frame
     /// it decodes to:
     ///

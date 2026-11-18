@@ -648,28 +648,20 @@ Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitSteps(JNIEnv* env, 
 }
 
 /**
- * Run one step. `state_json` may be null; `commands_json` is a JSON array Kotlin built;
- * `options_json` is null for a plain step, which goes through reactor_step as it always has, and
- * otherwise goes through reactor_step_with_options.
+ * Run one step. `state_json` may be null; `commands_json` is a JSON array Kotlin built.
  *
  * Its completion is step_trampoline, not completion_trampoline: a step answers with a native
  * result to read and free, not with JSON.
  */
 extern "C" JNIEXPORT void JNICALL Java_inc_reactor_sdk_android_internal_NativeClient_nativeStep(
     JNIEnv* env, jobject, jlong context_ptr, jstring state_json, jstring commands_json,
-    jstring options_json, jlong ticket) {
+    jlong ticket) {
   auto* context = reinterpret_cast<Context*>(context_ptr);
   if (context == nullptr) return;
   JavaString state(env, state_json);
   JavaString commands(env, commands_json);
-  void* userdata = reinterpret_cast<void*>(static_cast<intptr_t>(ticket));
-  if (options_json == nullptr) {
-    reactor_step(context->handle, state.get(), commands.get(), step_trampoline, userdata);
-    return;
-  }
-  JavaString options(env, options_json);
-  reactor_step_with_options(context->handle, state.get(), commands.get(), options.get(),
-                            step_trampoline, userdata);
+  reactor_step(context->handle, state.get(), commands.get(), step_trampoline,
+               reinterpret_cast<void*>(static_cast<intptr_t>(ticket)));
 }
 
 extern "C" JNIEXPORT void JNICALL

@@ -73,12 +73,6 @@ internal class CodecPreferences {
             codecs?.joinToString(separator = ",", prefix = "[", postfix = "]") { Json.quote(it.wire) }
 
         /**
-         * The options `reactor_step_with_options` takes for a step, or null for none — in which
-         * case the step goes through plain `reactor_step`.
-         */
-        fun stepOptionsJson(requestKeyframe: Boolean): String? = if (requestKeyframe) """{"request_keyframe":true}""" else null
-
-        /**
          * Read `reactor_step_frame_encodings`'s answer: track name to `raw`, `h264`, `vp8`, `vp9`
          * or `av1`. Null (no handle) is no tracks; anything that is not an object of strings is a
          * decode failure rather than a guess.

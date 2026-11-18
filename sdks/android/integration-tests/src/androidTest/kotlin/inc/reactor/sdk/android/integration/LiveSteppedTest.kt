@@ -115,9 +115,9 @@ internal class LiveSteppedTest {
             assertNull(result.error)
             assertEchoed(result, tolerance)
 
-            // A step that asks for keyframes decodes like any other.
+            // The next step's frames continue the same stream.
             webcam.pushFrame(solidBgra(64, 64, ECHO_IN), 64, 64)
-            val again = reactor.step(requestKeyframe = true)
+            val again = reactor.step()
             assertEquals(result.step + 1, again.step)
             assertEchoed(again, tolerance)
         } finally {

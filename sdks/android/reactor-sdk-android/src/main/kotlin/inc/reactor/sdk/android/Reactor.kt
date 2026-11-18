@@ -739,11 +739,6 @@ public class Reactor(
      * @param state the model's state fields as a raw JSON object, in the form [sendCommand] takes
      *   its arguments, or null to change none
      * @param commands what to run after the state, in order
-     * @param requestKeyframe true asks the runtime to start every encoded output track of this
-     *   step's result at a keyframe — for a caller that drops what it decoded so far. False (the
-     *   default) stops no keyframe the runtime sends anyway, and the SDK already asks on its own
-     *   when one of its decoders loses its state. Frames still arrive as RGB either way; see
-     *   [setCodecPreference].
      * @return the step's result, copied onto the heap once and safe to keep
      * @throws StepRefusedException when the runtime turns the step down; nothing it carried was
      *   applied, and [ReactorException.entry] names the part at fault when one is
@@ -764,21 +759,11 @@ public class Reactor(
     public suspend fun step(
         state: String? = null,
         commands: List<StepCommand> = emptyList(),
-        requestKeyframe: Boolean = false,
     ): StepResult {
         requireStepped("step")
         val commandsJson = commands.joinToString(separator = ",", prefix = "[", postfix = "]") { it.toWire() }
-        return requireHandle("step").step(state, commandsJson, CodecPreferences.stepOptionsJson(requestKeyframe))
+        return requireHandle("step").step(state, commandsJson)
     }
-
-    // The previous signature, kept in the bytecode so a caller compiled against it still links:
-    // adding `requestKeyframe` changed the JVM signature of `step` and of its defaults stub.
-    // Hidden, so it takes no part in overload resolution and `step()` still means the one above.
-    @Deprecated("Kept for binary compatibility", level = DeprecationLevel.HIDDEN)
-    public suspend fun step(
-        state: String? = null,
-        commands: List<StepCommand> = emptyList(),
-    ): StepResult = step(state, commands, requestKeyframe = false)
 
     /**
      * Choose the codecs a stepped session carries its video step frames in, most preferred first.

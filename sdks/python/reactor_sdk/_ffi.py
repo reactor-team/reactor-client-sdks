@@ -408,19 +408,17 @@ def _bind_step_result_data(lib: ctypes.CDLL) -> None:
     lib.reactor_step_result_data.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
 
 
-#: The codec switch of a stepped session's step frames, and the keyframe a
-#: step can ask for, added after stepped generation and, like it, without an
-#: ABI bump. Bound only when present; `has_step_codecs()` is what a caller asks
-#: before using one.
+#: The codec switch of a stepped session's step frames, added after stepped
+#: generation and, like it, without an ABI bump. Bound only when present;
+#: `has_step_codecs()` is what a caller asks before using one.
 STEP_CODEC_FUNCTIONS = (
     "reactor_set_codec_preference",
     "reactor_step_frame_encodings",
-    "reactor_step_with_options",
 )
 
 
 def has_step_codecs(lib: object) -> bool:
-    """Whether `lib` can set step codecs and ask a step for keyframes."""
+    """Whether `lib` can set step codecs."""
     return all(hasattr(lib, name) for name in STEP_CODEC_FUNCTIONS)
 
 
@@ -437,15 +435,6 @@ def _bind_step_codecs(lib: ctypes.CDLL) -> None:
     ]
     lib.reactor_step_frame_encodings.restype = ctypes.c_void_p
     lib.reactor_step_frame_encodings.argtypes = [ctypes.c_void_p]
-    lib.reactor_step_with_options.restype = None
-    lib.reactor_step_with_options.argtypes = [
-        ctypes.c_void_p,  # handle
-        ctypes.c_char_p,  # state_json (nullable)
-        ctypes.c_char_p,  # commands_json (nullable)
-        ctypes.c_char_p,  # options_json (nullable)
-        ctypes.c_void_p,  # completion (STEP_COMPLETION_FN)
-        ctypes.c_void_p,  # userdata
-    ]
 
 
 def has_stepped(lib: object) -> bool:

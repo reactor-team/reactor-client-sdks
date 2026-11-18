@@ -805,24 +805,6 @@ void reactor_step(
 );
 
 /*
- * reactor_step() with options_json, a JSON object whose only key so far is an
- * optional boolean "request_keyframe" (nullable: no options).  true asks the
- * runtime to start every encoded output track of this connection at a keyframe
- * in this step's result; false or absent stops no keyframe the runtime sends
- * anyway, and the library still asks on its own when a track's decoder lost
- * its state.  A malformed options_json fails the step with DECODE_FAILED, like
- * a malformed state_json.  Everything else is as reactor_step().
- */
-void reactor_step_with_options(
-    ReactorHandle             *handle,
-    const char                *state_json,     /* nullable */
-    const char                *commands_json,  /* nullable */
-    const char                *options_json,   /* nullable */
-    reactor_step_completion_fn completion,
-    void                      *userdata
-);
-
-/*
  * Set the codecs a stepped session prefers for its step frames, most preferred
  * first: for every track with a NULL track, or for one track in place of the
  * session-wide order.

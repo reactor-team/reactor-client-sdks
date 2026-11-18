@@ -161,12 +161,10 @@ void run_codec_round_trip(const std::vector<std::string>& codecs, const std::str
   const auto result = client.step({{"effect", "invert"}}).get();
   check_inverted(result, tolerance);
 
-  // A step that asks for keyframes decodes like any other.
+  // The next step's frames continue the same stream.
   webcam.push_frame(reactor::Bytes{pixels.data(), pixels.size()}, reactor::PixelFormat::Rgb, SIZE,
                     SIZE);
-  reactor::StepOptions options;
-  options.request_keyframe = true;
-  const auto again = client.step(nullptr, {}, {}, options).get();
+  const auto again = client.step().get();
   CHECK(again.step == result.step + 1);
   check_inverted(again, tolerance);
 }

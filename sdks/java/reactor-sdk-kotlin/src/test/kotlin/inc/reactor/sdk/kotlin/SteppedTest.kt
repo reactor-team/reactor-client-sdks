@@ -246,27 +246,6 @@ class SteppedTest {
     }
 
     @Test
-    fun `requestKeyframe goes through the options call, and the default keeps the plain one`() =
-        runBlocking {
-            val asking = async(Dispatchers.Default) { client.step(requestKeyframe = true) }
-            awaitStep()
-            assertEquals(1, fake.stepWithOptionsCalls)
-            assertEquals(
-                JsonValue.parse("{\"request_keyframe\":true}"),
-                JsonValue.parse(fake.lastStepOptions!!),
-            )
-            fake.settleLastStep(1, listOf())
-            assertEquals(1L, asking.await().step())
-
-            val plain = async(Dispatchers.Default) { client.step() }
-            awaitStep()
-            fake.settleLastStep(2, listOf())
-            plain.await()
-            assertEquals(1, fake.stepCalls)
-            assertEquals(1, fake.stepWithOptionsCalls)
-        }
-
-    @Test
     fun `codec preferences and the negotiated encodings forward to the client`() {
         client.setCodecPreference(listOf(StepCodec.VP9), track = "camera_in")
         client.setCodecPreference(null)

@@ -100,9 +100,9 @@ struct SteppedGenerationTests {
             #expect(result.error == nil)
             try expectInverted(result, tolerance: tolerance)
 
-            // A step that asks for keyframes decodes like any other.
+            // The next step's frames continue the same stream.
             try webcam.pushFrame(pixels, width: 64, height: 64)
-            let again = try await reactor.step(requestKeyframe: true)
+            let again = try await reactor.step()
             #expect(again.step == result.step + 1)
             try expectInverted(again, tolerance: tolerance)
         } catch {

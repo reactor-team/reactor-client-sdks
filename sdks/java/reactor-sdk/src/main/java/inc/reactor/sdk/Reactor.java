@@ -413,49 +413,6 @@ public final class Reactor implements AutoCloseable {
             @Nullable JsonValue state,
             java.util.@Nullable List<StepCommand> commands,
             java.util.@Nullable Map<String, ? extends java.util.List<? extends StepInput>> media) {
-        return step(state, commands, media, StepOptions.defaults());
-    }
-
-    /**
-     * Runs one step with options of its own.
-     *
-     * <p>{@link StepOptions#requestKeyframe()} asks the runtime to start every encoded output track
-     * of this step's result at a keyframe, for a caller that drops what it decoded so far; the
-     * result is still delivered as decoded RGB, as from any step. The client already asks on its
-     * own when one of its decoders loses its state, and the default never stops a keyframe the
-     * runtime sends anyway.
-     *
-     * <pre>{@code
-     * StepResult result = reactor.step(null, List.of(), null, StepOptions.defaults().withRequestKeyframe(true))
-     *         .join();
-     * }</pre>
-     *
-     * <p>Every outcome is as for {@link #step(JsonValue, java.util.List, java.util.Map)}. A step
-     * that asks for a keyframe on a native library that predates step frame codecs fails with
-     * {@link InvalidStateException}, before any of its media is pushed.
-     *
-     * @param state the model's state fields as a JSON object, or {@code null} to change none
-     * @param commands what to run after the state, in order; empty or {@code null} for none
-     * @param media input frames by track name, or {@code null} for none
-     * @param options how the step runs; {@link StepOptions#defaults()} for as any other step
-     * @return the step's result, copied onto the heap once and safe to keep
-     */
-    public CompletableFuture<StepResult> step(
-            @Nullable JsonValue state,
-            java.util.@Nullable List<StepCommand> commands,
-            java.util.@Nullable Map<String, ? extends java.util.List<? extends StepInput>> media,
-            StepOptions options) {
-        java.util.Objects.requireNonNull(options, "options");
-        String optionsJson = options.toWire();
-        if (optionsJson != null) {
-            // Before the media goes in, so a library that cannot take the options leaves the
-            // buffer as the caller left it.
-            try {
-                peer.requireStepOptions();
-            } catch (RuntimeException missing) {
-                return CompletableFuture.failedFuture(missing);
-            }
-        }
         if (commands == null) {
             commands = java.util.List.of();
         }
@@ -492,7 +449,7 @@ public final class Reactor implements AutoCloseable {
                     return CompletableFuture.failedFuture(refused);
                 }
             }
-            return peer.step(stateJson, commandsJson, optionsJson);
+            return peer.step(stateJson, commandsJson);
         }
     }
 

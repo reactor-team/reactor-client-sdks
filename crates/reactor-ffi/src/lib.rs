@@ -2042,44 +2042,12 @@ pub unsafe extern "C" fn reactor_step(
     completion: Option<StepCompletionFn>,
     userdata: *mut c_void,
 ) {
-    reactor_step_with_options(
-        handle,
-        state_json,
-        commands_json,
-        std::ptr::null(),
-        completion,
-        userdata,
-    );
-}
-
-/// [`reactor_step`] with `options_json`, a JSON object whose only key so far
-/// is an optional boolean `"request_keyframe"`. `true` asks the runtime to
-/// start every encoded output track of this connection at a keyframe in this
-/// step's result (`StepRequest::request_keyframe`); `false` or absent stops
-/// no keyframe the runtime sends anyway, and the core still asks on its own
-/// when a track's decoder lost its state. A malformed `options_json` fails the
-/// step with `DECODE_FAILED`, like a malformed state.
-///
-/// # Safety
-///
-/// As [`reactor_step`]; `options_json` may be null, otherwise a NUL-terminated
-/// C string.
-#[no_mangle]
-pub unsafe extern "C" fn reactor_step_with_options(
-    handle: *mut ReactorHandle,
-    state_json: *const c_char,
-    commands_json: *const c_char,
-    options_json: *const c_char,
-    completion: Option<StepCompletionFn>,
-    userdata: *mut c_void,
-) {
     if handle.is_null() {
         return;
     }
     let handle = &*handle;
     let state_json = opt_string(state_json);
     let commands_json = opt_string(commands_json);
-    let options_json = opt_string(options_json);
     let reactor = handle.reactor.clone();
     let completion = StepCompletion {
         f: completion,
@@ -2092,13 +2060,7 @@ pub unsafe extern "C" fn reactor_step_with_options(
     // takes to get to this one.
     let begun = step::parse_state(state_json.as_deref()).and_then(|state| {
         let commands = step::parse_commands(commands_json.as_deref())?;
-        let request_keyframe = step::parse_step_options(options_json.as_deref())?;
-        let request = reactor.begin_step(state, commands)?;
-        Ok(if request_keyframe {
-            request.request_keyframe()
-        } else {
-            request
-        })
+        reactor.begin_step(state, commands)
     });
     spawn_tracked(&handle.tasks, async move {
         let result = match begun {

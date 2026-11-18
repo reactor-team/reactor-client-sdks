@@ -56,7 +56,7 @@ one new:
 | `recording_test.cpp` | `test_recording.py` | `request_clip`/`request_recording`, `Clip::download` |
 | `concurrency_and_races_test.cpp` | `test_concurrency_and_races.py` | concurrent commands, abandoned futures, teardown while a call is in flight |
 | `refusals_and_edge_cases_test.cpp` | *(none — new)* | the "Refuse; do not fail quietly" table and a few state-invariant races, probed directly against the real backend rather than the unit suite's fake FFI |
-| `stepped_generation_test.cpp` | `test_stepped_generation.py` | a stepped echo round trip, the step frames' codec (`set_codec_preference`, `step_frame_encodings`) and `StepOptions::request_keyframe`; a runtime or echo that does not step is accepted as a refusal |
+| `stepped_generation_test.cpp` | `test_stepped_generation.py` | a stepped echo round trip, the step frames' codec (`set_codec_preference`, `step_frame_encodings`) and a second step on the same stream; a runtime or echo that does not step is accepted as a refusal |
 | `audio_test.cpp` | *(none — new; a gap in the Python/JS suites too)* | `Track::push_frame`/`on_frame` — the data plane, not `reactor::sdk_audio`'s device I/O, which this suite's build disables entirely (see below) |
 
 ### Audio

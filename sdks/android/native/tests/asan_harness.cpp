@@ -80,14 +80,12 @@ jlong Java_inc_reactor_sdk_android_internal_NativeClient_nativeCreateWithOptions
     JNIEnv*, jobject, jstring, jstring, jstring, jstring, jobject, jobjectArray);
 void Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitSteps(JNIEnv*, jobject, jclass);
 void Java_inc_reactor_sdk_android_internal_NativeClient_nativeStep(JNIEnv*, jobject, jlong, jstring,
-                                                                  jstring, jstring, jlong);
+                                                                  jstring, jlong);
 jstring Java_inc_reactor_sdk_android_internal_NativeClient_nativeSetCodecPreference(JNIEnv*, jobject,
                                                                                    jlong, jstring,
                                                                                    jstring);
 jstring Java_inc_reactor_sdk_android_internal_NativeClient_nativeStepFrameEncodings(JNIEnv*,
                                                                                    jobject, jlong);
-const char* fake_last_step_entry(void);
-const char* fake_last_step_options(void);
 void fake_set_codec_preference_fails(int fails);
 int fake_codec_preference_calls(void);
 const char* fake_last_codec_track(void);
@@ -598,7 +596,7 @@ void step_results_are_freed_exactly_once() {
   // Success: a result arrives, is read, and is freed when the settle returns.
   const jint before = g_env->GetStaticIntField(completions, count_id);
   Java_inc_reactor_sdk_android_internal_NativeClient_nativeStep(g_env, nullptr, context, nullptr,
-                                                                commands, nullptr, /*ticket=*/5151);
+                                                                commands, /*ticket=*/5151);
   check(std::strcmp(fake_last_step_state(), "<null>") == 0,
         "a null state reaches reactor_step as NULL, not as \"null\"");
   check(std::strstr(fake_last_step_commands(), "advance") != nullptr,
@@ -615,7 +613,7 @@ void step_results_are_freed_exactly_once() {
 
   // Failure: no result, an error, nothing to free.
   Java_inc_reactor_sdk_android_internal_NativeClient_nativeStep(g_env, nullptr, context, nullptr,
-                                                                commands, nullptr, /*ticket=*/5152);
+                                                                commands, /*ticket=*/5152);
   fake_complete_last_step_on_foreign_thread(0, "{\"code\":\"step_refused\",\"entry\":\"commands[0]\"}");
   auto failure = static_cast<jstring>(g_env->GetStaticObjectField(completions, error_id));
   const char* why = failure == nullptr ? nullptr : g_env->GetStringUTFChars(failure, nullptr);
@@ -628,37 +626,13 @@ void step_results_are_freed_exactly_once() {
   // A settle that throws: the exception is contained and the result is still freed.
   g_env->SetStaticBooleanField(completions, throw_id, JNI_TRUE);
   Java_inc_reactor_sdk_android_internal_NativeClient_nativeStep(g_env, nullptr, context, nullptr,
-                                                                commands, nullptr, /*ticket=*/5153);
+                                                                commands, /*ticket=*/5153);
   fake_complete_last_step_on_foreign_thread(1, nullptr);
   check(fake_step_results_outstanding() == 0, "a settle that throws still frees the result");
 
   const int cleared = fake_clear_step_inputs_calls();
   Java_inc_reactor_sdk_android_internal_NativeClient_nativeClearStepInputs(g_env, nullptr, context);
   check(fake_clear_step_inputs_calls() == cleared + 1, "clearStepInputs reaches the ABI");
-
-  // A plain step keeps calling reactor_step; one with options goes through
-  // reactor_step_with_options, its options verbatim, and settles and frees like any other.
-  g_env->SetStaticBooleanField(completions, throw_id, JNI_FALSE);
-  Java_inc_reactor_sdk_android_internal_NativeClient_nativeStep(g_env, nullptr, context, nullptr,
-                                                                commands, nullptr, /*ticket=*/5154);
-  check(std::strcmp(fake_last_step_entry(), "reactor_step") == 0,
-        "a step without options goes through reactor_step");
-  fake_complete_last_step_on_foreign_thread(1, nullptr);
-
-  jstring options = g_env->NewStringUTF("{\"request_keyframe\":true}");
-  Java_inc_reactor_sdk_android_internal_NativeClient_nativeStep(g_env, nullptr, context, nullptr,
-                                                                commands, options, /*ticket=*/5155);
-  check(std::strcmp(fake_last_step_entry(), "reactor_step_with_options") == 0,
-        "a step with options goes through reactor_step_with_options");
-  check(std::strcmp(fake_last_step_options(), "{\"request_keyframe\":true}") == 0,
-        "and its options reach the ABI verbatim");
-  check(std::strcmp(fake_last_step_state(), "<null>") == 0,
-        "with a null state still NULL, not \"null\"");
-  fake_complete_last_step_on_foreign_thread(1, nullptr);
-  check(g_env->GetStaticLongField(completions, ticket_id) == 5155,
-        "a step with options settles with its own ticket");
-  check(fake_step_results_outstanding() == 0, "and its result is freed once too");
-  g_env->DeleteLocalRef(options);
 
   g_env->DeleteLocalRef(commands);
   fake_set_destroy_result(0);

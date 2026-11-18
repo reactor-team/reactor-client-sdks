@@ -83,7 +83,6 @@ namespace reactor::detail {
   X(push_audio_frame, reactor_push_audio_frame)                                       \
   /* Stepped generation. The result accessors borrow from the result; see step.cpp */ \
   X(step, reactor_step)                                                               \
-  X(step_with_options, reactor_step_with_options)                                     \
   X(set_codec_preference, reactor_set_codec_preference)                               \
   X(step_frame_encodings, reactor_step_frame_encodings)                               \
   X(clear_step_inputs, reactor_clear_step_inputs)                                     \

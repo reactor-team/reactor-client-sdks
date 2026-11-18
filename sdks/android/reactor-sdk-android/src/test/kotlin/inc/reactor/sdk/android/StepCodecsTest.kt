@@ -2,7 +2,6 @@ package inc.reactor.sdk.android
 
 import inc.reactor.sdk.android.internal.CodecPreferences
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
@@ -10,8 +9,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Step frame codecs, off-device: what is sent to the native side and when, what it answers, and
- * how a step asks for keyframes. What crosses the JNI boundary — the nullables, and the owned
+ * Step frame codecs, off-device: what is sent to the native side and when, and what it answers.
+ * What crosses the JNI boundary — the nullables, and the owned
  * strings freed once — is under AddressSanitizer in `asan_harness.cpp`.
  */
 class StepCodecsTest {
@@ -105,12 +104,6 @@ class StepCodecsTest {
     }
 
     @Test
-    fun `a keyframe request is the only thing that sends step options`() {
-        assertNull(CodecPreferences.stepOptionsJson(false))
-        assertEquals("""{"request_keyframe":true}""", CodecPreferences.stepOptionsJson(true))
-    }
-
-    @Test
     fun `the negotiated encodings are read by track`() {
         assertEquals(
             mapOf("main_video" to "h264", "webcam" to "h264", "main_audio" to "raw"),
@@ -132,12 +125,5 @@ class StepCodecsTest {
         assertThrows(IllegalArgumentException::class.java) { reactor.setCodecPreference(listOf(StepCodec.VP8, StepCodec.VP8)) }
         reactor.close()
         assertThrows(InvalidStateException::class.java) { reactor.setCodecPreference(null) }
-    }
-
-    @Test
-    fun `a keyframe request on a streamed client is refused like any step`() {
-        val reactor = Reactor(ReactorOptions(jwt = "t"), Dispatchers.Unconfined)
-        assertThrows(InvalidStateException::class.java) { runBlocking { reactor.step(requestKeyframe = true) } }
-        reactor.close()
     }
 }

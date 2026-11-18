@@ -19,17 +19,6 @@ struct StepCodecTests {
             ffi: fake.table)
     }
 
-    /// Start a step, wait for it to reach the library, and answer it.
-    private func stepping(
-        _ fake: FakeLibrary,
-        _ work: @escaping @Sendable () async throws -> StepResult
-    ) async throws -> StepResult {
-        let task = Task { try await work() }
-        #expect(await waitUntil { fake.hasPendingStep }, "the step never reached the library")
-        fake.completeLastStep(ok: true, result: FakeStepResult(step: 1, tracks: []))
-        return try await task.value
-    }
-
     // MARK: - setCodecPreference
 
     @Test("the default order is H.264, VP9, AV1, VP8, spelled as the library takes them")
@@ -145,55 +134,5 @@ struct StepCodecTests {
         fake.setStepFrameEncodings(#"{"main_video":"h264"}"#)
         client.close()
         #expect(client.stepFrameEncodings.isEmpty)
-    }
-
-    // MARK: - requestKeyframe
-
-    @Test("a plain step goes through reactor_step, with no options")
-    func plainStepUsesStep() async throws {
-        let fake = FakeLibrary()
-        let client = try makeClient(fake: fake)
-        defer { client.close() }
-
-        _ = try await stepping(fake) { try await client.step(state: ["effect": "invert"]) }
-
-        let call = try #require(fake.stepCalls.first)
-        #expect(!call.withOptions)
-        #expect(call.optionsJSON == nil)
-        #expect(call.stateJSON == #"{"effect":"invert"}"#)
-    }
-
-    @Test("a step that asks for keyframes goes through reactor_step_with_options")
-    func keyframeStepUsesOptions() async throws {
-        let fake = FakeLibrary()
-        let client = try makeClient(fake: fake)
-        defer { client.close() }
-
-        let result = try await stepping(fake) {
-            try await client.step(state: ["effect": "invert"], requestKeyframe: true)
-        }
-        #expect(result.step == 1)
-
-        let call = try #require(fake.stepCalls.first)
-        #expect(call.withOptions)
-        #expect(call.stateJSON == #"{"effect":"invert"}"#)
-        #expect(call.commandsJSON == "[]")
-        let options = try #require(
-            JSONSerialization.jsonObject(with: Data((call.optionsJSON ?? "").utf8))
-                as? [String: Any])
-        #expect(options.count == 1)
-        #expect(options["request_keyframe"] as? Bool == true)
-    }
-
-    @Test("a keyframe step on a streamed client is refused as any step is")
-    func keyframeStepNeedsStepped() async throws {
-        let fake = FakeLibrary()
-        let client = try makeClient(fake: fake, generation: .streamed)
-        defer { client.close() }
-
-        await #expect {
-            _ = try await client.step(requestKeyframe: true)
-        } throws: { ($0 as? ReactorError)?.code == .invalidState }
-        #expect(fake.stepCalls.isEmpty)
     }
 }

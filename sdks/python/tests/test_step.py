@@ -97,7 +97,6 @@ class FakeStepLib:
         self.codec_calls: list[tuple[bytes | None, bytes | None]] = []
         self.codec_error: bytes | None = None
         self.encodings: bytes = b"{}"
-        self.step_options: list[bytes | None] = []
         self._strings: list[Any] = []
 
     # -- lifecycle ---------------------------------------------------------
@@ -148,12 +147,6 @@ class FakeStepLib:
 
     def reactor_step_frame_encodings(self, handle):
         return self._heap_string(self.encodings)
-
-    def reactor_step_with_options(
-        self, handle, state_json, commands_json, options_json, completion, userdata
-    ):
-        self.step_options.append(options_json)
-        self.reactor_step(handle, state_json, commands_json, completion, userdata)
 
     def add_result(
         self,
@@ -709,22 +702,11 @@ class TestStepCodecs:
     def test_encodings_without_a_handle_are_empty(self) -> None:
         assert Reactor("m", generation="stepped").step_frame_encodings == {}
 
-    async def test_a_step_asks_for_keyframes_only_when_told_to(self, lib: FakeStepLib) -> None:
-        reactor = await _stepped(lib)
-        lib.step_answer = lambda done: done(1, lib.add_result(1, []), None, None)
-        await reactor.step()
-        assert lib.step_options == []
-        await reactor.step(state={"prompt": "fox"}, request_keyframe=True)
-        assert [json.loads(o) for o in lib.step_options] == [{"request_keyframe": True}]
-        assert json.loads(lib.step_calls[-1][0]) == {"prompt": "fox"}
-
     async def test_a_library_without_step_codecs_says_so(
         self, lib: FakeStepLib, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         reactor = await _stepped(lib)
-        monkeypatch.delattr(FakeStepLib, "reactor_step_with_options")
-        with pytest.raises(RuntimeError, match="predates step codecs"):
-            await reactor.step(request_keyframe=True)
+        monkeypatch.delattr(FakeStepLib, "reactor_step_frame_encodings")
         with pytest.raises(RuntimeError, match="predates step codecs"):
             reactor.set_codec_preference(["h264"])
         assert reactor.step_frame_encodings == {}

@@ -283,17 +283,6 @@ struct FFI: Sendable {
             _ userdata: UnsafeMutableRawPointer?
         ) -> Void
 
-    /// `reactor_step_with_options` — ``step`` with a JSON object of options;
-    /// `{"request_keyframe": true}` asks the runtime to start every encoded
-    /// output track of the step's result at a keyframe. Its completion is
-    /// ``step``'s.
-    var stepWithOptions:
-        @Sendable (
-            _ handle: OpaquePointer?, _ stateJSON: UnsafePointer<CChar>?,
-            _ commandsJSON: UnsafePointer<CChar>?, _ optionsJSON: UnsafePointer<CChar>?,
-            _ completion: reactor_step_completion_fn?, _ userdata: UnsafeMutableRawPointer?
-        ) -> Void
-
     /// `reactor_set_codec_preference` — the codecs a stepped session prefers for
     /// its step frames, as a JSON array, for every track (a null track) or one.
     /// A null array goes back to the default.
@@ -494,10 +483,6 @@ extension FFI {
         },
         step: { handle, stateJSON, commandsJSON, completion, userdata in
             reactor_step(handle, stateJSON, commandsJSON, completion, userdata)
-        },
-        stepWithOptions: { handle, stateJSON, commandsJSON, optionsJSON, completion, userdata in
-            reactor_step_with_options(
-                handle, stateJSON, commandsJSON, optionsJSON, completion, userdata)
         },
         setCodecPreference: { handle, track, codecsJSON in
             reactor_set_codec_preference(handle, track, codecsJSON)

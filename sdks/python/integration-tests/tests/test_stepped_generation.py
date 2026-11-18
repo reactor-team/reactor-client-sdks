@@ -130,9 +130,9 @@ async def test_a_stepped_session_carries_frames_in_the_codec_it_chose(
         tolerance = 0 if expected == "raw" else 8
         assert np.abs(center - [245, 235, 225]).max() <= tolerance, center.tolist()
 
-        # A step that asks for keyframes decodes like any other.
+        # The next step's frames continue the same stream.
         webcam.push_frame(solid_rgb_frame(64, 64, (10, 20, 30)))
-        again = await client.step(request_keyframe=True)
+        again = await client.step()
         assert again.step == result.step + 1
         [frame] = again.track("main_video").frames
         center = frame.array[32, 32].astype(int)

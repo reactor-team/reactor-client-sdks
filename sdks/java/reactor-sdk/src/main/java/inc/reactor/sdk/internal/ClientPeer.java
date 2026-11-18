@@ -1637,29 +1637,7 @@ public final class ClientPeer implements Runnable {
      * @return the step's result, copied onto the heap
      */
     public CompletableFuture<StepResult> step(@Nullable String stateJson, String commandsJson) {
-        return step(stateJson, commandsJson, null);
-    }
-
-    /**
-     * Runs one step with options: through {@code reactor_step_with_options} when there are any,
-     * through {@code reactor_step} otherwise, so a library without the former still steps.
-     *
-     * @param stateJson a JSON object of the model's state fields, or {@code null} for none
-     * @param commandsJson a JSON array of {@code {command, data}} objects
-     * @param optionsJson the step's options object, or {@code null} for none
-     * @return the step's result, copied onto the heap
-     */
-    public CompletableFuture<StepResult> step(
-            @Nullable String stateJson, String commandsJson, @Nullable String optionsJson) {
         CompletableFuture<StepResult> result = new CompletableFuture<>();
-        if (optionsJson != null) {
-            try {
-                requireStepOptions();
-            } catch (ReactorException missing) {
-                result.completeExceptionally(missing);
-                return result;
-            }
-        }
         if (options.generation() != Generation.STEPPED) {
             result.completeExceptionally(ReactorException.of(
                     ErrorCode.INVALID_STATE.code(),
@@ -1694,14 +1672,7 @@ public final class ClientPeer implements Runnable {
                 }
                 MemorySegment state = stateJson == null ? MemorySegment.NULL : call.allocateFrom(stateJson);
                 MemorySegment commands = call.allocateFrom(commandsJson);
-                if (optionsJson == null) {
-                    ffi.handle(Ffi.Symbol.STEP)
-                            .invokeExact(client, state, commands, ticket.callback(), ticket.userdata());
-                } else {
-                    MemorySegment stepOptions = call.allocateFrom(optionsJson);
-                    ffi.handle(Ffi.Symbol.STEP_WITH_OPTIONS)
-                            .invokeExact(client, state, commands, stepOptions, ticket.callback(), ticket.userdata());
-                }
+                ffi.handle(Ffi.Symbol.STEP).invokeExact(client, state, commands, ticket.callback(), ticket.userdata());
             } finally {
                 releaseHandle();
             }
@@ -1719,16 +1690,6 @@ public final class ClientPeer implements Runnable {
                             null));
         }
         return result;
-    }
-
-    /**
-     * Refuses when the loaded library cannot take a step's options, so a caller can find out before
-     * it pushes a step's media.
-     *
-     * @throws ReactorException when the library predates {@code reactor_step_with_options}
-     */
-    public void requireStepOptions() {
-        requireSymbol(Ffi.Symbol.STEP_WITH_OPTIONS, "step");
     }
 
     private void requireSymbol(Ffi.Symbol symbol, String operation) {

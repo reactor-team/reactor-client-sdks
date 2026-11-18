@@ -13,7 +13,6 @@ import inc.reactor.sdk.Reactor;
 import inc.reactor.sdk.SessionTerminalException;
 import inc.reactor.sdk.StepCodec;
 import inc.reactor.sdk.StepFrame;
-import inc.reactor.sdk.StepOptions;
 import inc.reactor.sdk.StepResult;
 import inc.reactor.sdk.Track;
 import java.util.List;
@@ -87,12 +86,9 @@ final class LiveStepCodecsTest {
             assertNull(result.error().orElse(null));
             assertCentreIsInverted(result, tolerance);
 
-            // A step that asks for keyframes decodes like any other.
+            // The next step's frames continue the same stream.
             webcam.pushFrame(solidRgb(10, 20, 30), PixelFormat.RGB, SIZE, SIZE);
-            StepResult again = client.step(
-                            null, List.of(), null, StepOptions.defaults().withRequestKeyframe(true))
-                    .orTimeout(60, TimeUnit.SECONDS)
-                    .join();
+            StepResult again = client.step().orTimeout(60, TimeUnit.SECONDS).join();
             assertEquals(result.step() + 1, again.step());
             assertCentreIsInverted(again, tolerance);
         } finally {

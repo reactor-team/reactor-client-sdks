@@ -186,14 +186,10 @@ final class FakeLibrary: @unchecked Sendable {
         }
     }
 
-    /// What the SDK handed `reactor_step`, or `reactor_step_with_options`.
+    /// What the SDK handed `reactor_step`.
     struct StepCall {
         var stateJSON: String?
         var commandsJSON: String?
-        /// Whether the step went through `reactor_step_with_options`.
-        var withOptions = false
-        /// The options it was handed there; `nil` for a plain `reactor_step`.
-        var optionsJSON: String?
     }
 
     /// What the SDK handed `reactor_set_codec_preference`.
@@ -767,16 +763,6 @@ final class FakeLibrary: @unchecked Sendable {
                     StepCall(
                         stateJSON: String(borrowing: stateJSON),
                         commandsJSON: String(borrowing: commandsJSON)),
-                    completion, userdata)
-            },
-            stepWithOptions: {
-                [self] _, stateJSON, commandsJSON, optionsJSON, completion, userdata in
-                recordStep(
-                    StepCall(
-                        stateJSON: String(borrowing: stateJSON),
-                        commandsJSON: String(borrowing: commandsJSON),
-                        withOptions: true,
-                        optionsJSON: String(borrowing: optionsJSON)),
                     completion, userdata)
             },
             setCodecPreference: { [self] _, track, codecsJSON in

@@ -369,8 +369,7 @@ void ClientImpl::push_step_media(const StepMedia& media) {
 }
 
 void ClientImpl::begin_step(std::unique_ptr<PendingStep> op, const Json& state,
-                            const std::vector<StepCommand>& commands, const StepMedia& media,
-                            const StepOptions& options) {
+                            const std::vector<StepCommand>& commands, const StepMedia& media) {
   try {
     if (generation_ != Generation::Stepped) {
       throw InvalidStateError{
@@ -383,10 +382,6 @@ void ClientImpl::begin_step(std::unique_ptr<PendingStep> op, const Json& state,
     }
     const std::string commands_json = wire_commands(commands).dump();
     const std::string state_json = state.is_null() ? std::string{} : state.dump();
-    // Only a step that asks for something goes through reactor_step_with_options,
-    // so a plain step is exactly the call it always was.
-    const std::string options_json =
-        options.request_keyframe ? Json{{"request_keyframe", true}}.dump() : std::string{};
 
     ReactorHandle* handle = require_ready_session("run a step");
     // Until reactor_step has taken the buffer: later pushes are the next step's.
@@ -397,12 +392,7 @@ void ClientImpl::begin_step(std::unique_ptr<PendingStep> op, const Json& state,
     PendingStep* step = op.get();
     track_pending(std::move(op));
     const char* state_arg = state_json.empty() ? nullptr : state_json.c_str();
-    if (options_json.empty()) {
-      ffi().step(handle, state_arg, commands_json.c_str(), &step_completion_trampoline, step);
-    } else {
-      ffi().step_with_options(handle, state_arg, commands_json.c_str(), options_json.c_str(),
-                              &step_completion_trampoline, step);
-    }
+    ffi().step(handle, state_arg, commands_json.c_str(), &step_completion_trampoline, step);
   } catch (...) {
     if (op) {
       op->fail(std::current_exception());
@@ -513,7 +503,7 @@ std::future<StepResult> Reactor::step(Json state, std::vector<StepCommand> comma
   auto op = std::make_unique<detail::PendingStep>();
   op->operation = "step";
   auto future = op->promise.get_future();
-  impl_->begin_step(std::move(op), state, commands, {}, {});
+  impl_->begin_step(std::move(op), state, commands, {});
   return future;
 }
 
@@ -524,16 +514,7 @@ std::future<StepResult> Reactor::step(Json state, std::vector<StepCommand> comma
   auto op = std::make_unique<detail::PendingStep>();
   op->operation = "step";
   auto future = op->promise.get_future();
-  impl_->begin_step(std::move(op), state, commands, media, {});
-  return future;
-}
-
-std::future<StepResult> Reactor::step(Json state, std::vector<StepCommand> commands,
-                                      StepMedia media, StepOptions options) {
-  auto op = std::make_unique<detail::PendingStep>();
-  op->operation = "step";
-  auto future = op->promise.get_future();
-  impl_->begin_step(std::move(op), state, commands, media, options);
+  impl_->begin_step(std::move(op), state, commands, media);
   return future;
 }
 

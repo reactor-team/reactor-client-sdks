@@ -14,7 +14,6 @@ import inc.reactor.sdk.Stats
 import inc.reactor.sdk.StepCodec
 import inc.reactor.sdk.StepCommand
 import inc.reactor.sdk.StepInput
-import inc.reactor.sdk.StepOptions
 import inc.reactor.sdk.StepResult
 import java.nio.file.Path
 import kotlinx.coroutines.future.await
@@ -226,21 +225,13 @@ public class ReactorClient(
      * val result = client.step(media = mapOf("webcam" to frames))
      * ```
      *
-     * [requestKeyframe] asks the runtime to start every encoded output track of this step's result
-     * at a keyframe, for a caller that drops what it decoded so far; the result still arrives as
-     * decoded RGB. The client already asks on its own when one of its decoders loses its state, and
-     * the default never stops a keyframe the runtime sends anyway.
-     *
      * Cancelling the await does not recall the step: once sent, the runtime runs it and its input
      * frames are spent.
      *
      * @param state the model's state fields as a JSON object, or null to change none
      * @param commands what to run after the state, in order
      * @param media input frames by track name
-     * @param requestKeyframe whether to ask for keyframes on every encoded output track
      * @return the step's result, copied onto the heap
-     * @throws inc.reactor.sdk.InvalidStateException outside a connected stepped session, and when
-     *   [requestKeyframe] is asked of a native library that predates step frame codecs
      * @throws inc.reactor.sdk.StepRefusedException when the runtime or the model turns the step
      *   down; nothing it carried was applied, and its `entry()` names the part at fault
      * @throws inc.reactor.sdk.StepNotReadyException when the session cannot take a step yet; the
@@ -254,24 +245,6 @@ public class ReactorClient(
      * @throws inc.reactor.sdk.MessageTooLargeException when the request does not; nothing was sent,
      *   and the step's buffered input frames are dropped with it
      */
-    public suspend fun step(
-        state: JsonValue? = null,
-        commands: List<StepCommand> = emptyList(),
-        media: Map<String, List<StepInput>> = emptyMap(),
-        requestKeyframe: Boolean = false,
-    ): StepResult =
-        java
-            .step(
-                state,
-                commands,
-                media,
-                StepOptions.defaults().withRequestKeyframe(requestKeyframe),
-            )
-            .await()
-
-    // The 1.4.0 signature, kept in the bytecode for the same reason as the one below: adding
-    // `requestKeyframe` changed the JVM signature of `step` and of its defaults stub.
-    @Deprecated("Kept for binary compatibility", level = DeprecationLevel.HIDDEN)
     public suspend fun step(
         state: JsonValue? = null,
         commands: List<StepCommand> = emptyList(),

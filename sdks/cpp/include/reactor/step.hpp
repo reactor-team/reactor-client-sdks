@@ -89,17 +89,6 @@ using StepMediaFrame = std::variant<RawVideoFrame, EncodedFrame, RawAudioFrame>;
 /// go: see `Reactor::step(state, commands, media)`.
 using StepMedia = std::map<std::string, std::vector<StepMediaFrame>>;
 
-/// How one step runs, beyond its state, commands and media: see
-/// `Reactor::step(state, commands, media, options)`.
-struct StepOptions {
-  /// Ask the runtime to start every encoded output track of this step's result
-  /// at a keyframe, for a caller that drops what it decoded so far. The client
-  /// already asks on its own when one of its decoders loses its state, and
-  /// leaving this false never stops a keyframe the runtime sends anyway. No
-  /// effect on a track whose step frames travel raw.
-  bool request_keyframe = false;
-};
-
 /// One frame a step produced on an output track.
 ///
 /// Owned: the bytes are copied out of the native result once, when the step

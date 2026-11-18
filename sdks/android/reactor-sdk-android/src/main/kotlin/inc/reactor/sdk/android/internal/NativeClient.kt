@@ -41,15 +41,10 @@ internal object NativeClient {
 
     private external fun nativeInitSteps(completions: Class<*>)
 
-    /**
-     * `reactor_step` when [optionsJson] is null, `reactor_step_with_options` when it is not — so a
-     * plain step keeps calling the original entry point.
-     */
     private external fun nativeStep(
         context: Long,
         stateJson: String?,
         commandsJson: String,
-        optionsJson: String?,
         ticket: Long,
     )
 
@@ -403,10 +398,9 @@ internal object NativeClient {
         suspend fun step(
             stateJson: String?,
             commandsJson: String,
-            optionsJson: String? = null,
         ): StepResult =
             Completions.awaitResult("step", read = { result -> StepResults.read(NativeStepResults, result) }, owner = this) { ticket ->
-                withOpenHandle { nativeStep(context, stateJson, commandsJson, optionsJson, ticket) }
+                withOpenHandle { nativeStep(context, stateJson, commandsJson, ticket) }
             }
 
         /** Drop every input frame buffered for the next step. A no-op outside a stepped session. */

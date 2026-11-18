@@ -31,13 +31,11 @@ versioning follows [Semantic Versioning](https://semver.org/).
   connection or reconnect. `Reactor.stepFrameEncodings()` (Kotlin:
   `stepFrameEncodings`) reports what each track negotiated on this
   connection: `"h264"`, `"vp9"`, `"av1"`, `"vp8"` or `"raw"`.
-- `Reactor.step(state, commands, media, StepOptions)` and the Kotlin
-  `step(..., requestKeyframe = true)` ask the runtime to start every encoded
-  output track of the step's result at a keyframe.
+- An output track whose stream the client can no longer decode is paused and
+  resumed, and the runtime starts it again at a keyframe.
 - A native library that predates these still loads and steps:
-  `setCodecPreference` and a step asking for a keyframe fail with
-  `InvalidStateException` naming the rebuild, and `stepFrameEncodings()` is
-  empty.
+  `setCodecPreference` fails with `InvalidStateException` naming the
+  rebuild, and `stepFrameEncodings()` is empty.
 
 ### Changed
 

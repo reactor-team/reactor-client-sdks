@@ -29,10 +29,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
   connection or `reconnect()`. `client.step_frame_encodings()` maps each track
   to how its step frames travel on this connection (`"raw"`, `"h264"`,
   `"vp8"`, `"vp9"` or `"av1"`), and `StepFrame::encoding` says the same per
-  frame. `client.step(state, commands, media, reactor::StepOptions{true})`
-  asks the runtime to start each encoded output track of that step's result
-  at a keyframe (`StepOptions::request_keyframe`). Needs a `libreactor_ffi`
-  with `reactor_set_codec_preference`.
+  frame. An output track whose stream the client can no longer decode is
+  paused and resumed, and the runtime starts it again at a keyframe. Needs a
+  `libreactor_ffi` with `reactor_set_codec_preference`.
 
 ### Fixed
 

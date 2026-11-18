@@ -32,8 +32,8 @@ request as the bump.
   - `Reactor.stepFrameEncodings` maps each track to the encoding its step
     frames take on this connection (`"raw"`, `"h264"`, `"vp8"`, `"vp9"`,
     `"av1"`).
-  - `step(requestKeyframe = true)` asks the runtime to start every encoded
-    output track of that step's result at a keyframe.
+  - An output track whose stream the client can no longer decode is paused
+    and resumed, and the runtime starts it again at a keyframe.
 
 ### Fixed
 

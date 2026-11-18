@@ -73,11 +73,6 @@ extension Reactor {
     ///   - commands: commands to run after the state, in order.
     ///   - media: frames for this step, by input track name, each track's in
     ///     order. Tracks are pushed in the order of their names.
-    ///   - requestKeyframe: ask the runtime to start every encoded output track
-    ///     of this step's result at a keyframe — for a caller that drops what
-    ///     it decoded so far. The client already asks on its own when one of
-    ///     its decoders loses its state, and `false` never stops a keyframe the
-    ///     runtime sends anyway. No effect on a track that travels raw.
     ///
     /// - Throws: ``ReactorError``:
     ///   - ``ReactorError/Code/stepRefused`` — the runtime or the model turned
@@ -115,8 +110,7 @@ extension Reactor {
     public func step(
         state: [String: JSONValue]? = nil,
         commands: [StepCommand] = [],
-        media: [String: [StepMediaFrame]] = [:],
-        requestKeyframe: Bool = false
+        media: [String: [StepMediaFrame]] = [:]
     ) async throws -> StepResult {
         guard generation == .stepped else {
             throw ReactorError(
@@ -146,25 +140,11 @@ extension Reactor {
             }
             withOptionalCString(stateJSON) { statePointer in
                 commandsJSON.withCString { commandsPointer in
-                    // Only a step that asks for something goes through the
-                    // options entry; every other step is the plain one it was.
-                    guard requestKeyframe else {
-                        self.ffi.step(handle, statePointer, commandsPointer, completion, userdata)
-                        return
-                    }
-                    Reactor.requestKeyframeOptions.withCString { optionsPointer in
-                        self.ffi.stepWithOptions(
-                            handle, statePointer, commandsPointer, optionsPointer, completion,
-                            userdata)
-                    }
+                    self.ffi.step(handle, statePointer, commandsPointer, completion, userdata)
                 }
             }
         }
     }
-
-    /// What `reactor_step_with_options` is handed for a step that asks for
-    /// keyframes.
-    static let requestKeyframeOptions = #"{"request_keyframe":true}"#
 
     // MARK: - Step frame codecs
 
@@ -185,7 +165,7 @@ extension Reactor {
     ///
     /// Whatever the codec, ``Track/pushFrame(_:width:height:userData:captureTimeUs:)``
     /// takes the same raw pixels as before and the video frames
-    /// ``step(state:commands:media:requestKeyframe:)`` returns are still RGB:
+    /// ``step(state:commands:media:)`` returns are still RGB:
     /// the encoding is between this client and the runtime, and this library
     /// encodes and decodes it.
     ///
@@ -254,7 +234,7 @@ extension Reactor {
         return object
     }
 
-    /// Check `media`'s frames, track by track, as ``step(state:commands:media:requestKeyframe:)``
+    /// Check `media`'s frames, track by track, as ``step(state:commands:media:)``
     /// documents, and answer their pushes, which the step runs with the live
     /// handle right before `reactor_step`. Sorted by name, so that what reaches
     /// the buffer — and what its limit drops first — does not depend on a
@@ -277,7 +257,7 @@ extension Reactor {
     }
 
     /// Drop every frame still buffered for the next
-    /// ``step(state:commands:media:requestKeyframe:)``. Frames already sent to the runtime are
+    /// ``step(state:commands:media:)``. Frames already sent to the runtime are
     /// not recalled. A no-op on a streamed or closed client.
     public func clearStepInputs() {
         guard generation == .stepped else { return }
