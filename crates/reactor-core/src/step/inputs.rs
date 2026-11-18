@@ -80,10 +80,12 @@ impl Buffered {
         self.order.push_back(index);
     }
 
-    /// Push out the oldest frames until the buffer fits `max_bytes`. The
-    /// newest frame stays even alone over budget: the step it rides on then
-    /// fails as too large, which names the problem.
-    fn trim(&mut self, max_bytes: usize) {
+    /// Push out the oldest frames until the buffer fits `max_bytes`, and
+    /// return the tracks that lost an encoded frame. The newest frame stays
+    /// even alone over budget: the step it rides on then fails as too large,
+    /// which names the problem.
+    fn trim(&mut self, max_bytes: usize) -> Vec<String> {
+        let mut evicted_encoded: Vec<String> = Vec::new();
         while self.bytes > max_bytes && self.order.len() > 1 {
             let Some(index) = self.order.pop_front() else {
                 break;
@@ -91,8 +93,14 @@ impl Buffered {
             let frame = self.tracks[index].frames.remove(0);
             self.bytes -= frame_bytes(&frame);
             self.dropped += 1;
-            if is_encoded(&frame) && !self.cut_encoded.contains(&self.tracks[index].track) {
-                self.cut_encoded.push(self.tracks[index].track.clone());
+            if is_encoded(&frame) {
+                let track = &self.tracks[index].track;
+                if !self.cut_encoded.contains(track) {
+                    self.cut_encoded.push(track.clone());
+                }
+                if !evicted_encoded.contains(track) {
+                    evicted_encoded.push(track.clone());
+                }
             }
             // A track left with no frames goes too, so pushes to ever new track
             // names cannot grow the buffer either. Its cut goes with it: none of
@@ -107,6 +115,7 @@ impl Buffered {
                 }
             }
         }
+        evicted_encoded
     }
 }
 
@@ -143,11 +152,17 @@ impl StepInputs {
     }
 
     /// Buffer `frame` for the next step, keeping the frames within what a
-    /// message of `max_bytes` can carry.
+    /// message of `max_bytes` can carry. A track whose encoded frames the
+    /// budget pushes out starts its next frames at a keyframe, whether or not
+    /// any of its frames are left: the frames after the gap reference ones
+    /// that will never be sent.
     pub fn push(&self, track: &str, kind: WireTrackKind, frame: Frame, max_bytes: usize) {
-        let mut buffer = self.buffer.lock().unwrap();
-        buffer.add(track, kind as i32, frame);
-        buffer.trim(max_bytes.saturating_sub(REQUEST_STEP_ENVELOPE_BYTES));
+        let evicted = {
+            let mut buffer = self.buffer.lock().unwrap();
+            buffer.add(track, kind as i32, frame);
+            buffer.trim(max_bytes.saturating_sub(REQUEST_STEP_ENVELOPE_BYTES))
+        };
+        self.request_keyframes(&evicted);
     }
 
     /// Everything buffered, leaving the buffer empty.
@@ -327,23 +342,28 @@ impl InputEncoders {
         }
     }
 
-    /// Encode `picture` as the next frame of `track`'s stream in `codec`, a
-    /// keyframe when `keyframe` says so, and hand it to `send` before the next
-    /// frame of any track is encoded, so frames go out in the order they were
-    /// encoded. `keyframe` is asked with no other frame encoding, so a mark
-    /// set under [`Self::hold`] is seen by the next frame encoded after it.
-    /// `Ok(false)` when the encoder dropped the frame: nothing is sent, and
-    /// the next frame still follows on from the last one sent.
+    /// Encode `picture` as the next frame of `track`'s stream in the codec
+    /// `codec` names, a keyframe when `keyframe` says so, and hand it to
+    /// `send` before the next frame of any track is encoded, so frames go out
+    /// in the order they were encoded. `codec` and `keyframe` are asked with
+    /// no other frame encoding, so a codec a teardown cleared under
+    /// [`Self::reset`], or a mark set under [`Self::hold`], is seen by the
+    /// next frame encoded after it.
+    ///
+    /// `Ok(None)` when `codec` names none (the connection negotiated none, or
+    /// is gone): nothing is encoded, for the caller to send the frame raw.
+    /// `Ok(Some(false))` when the encoder dropped the frame: nothing is sent,
+    /// and the next frame still follows on from the last one sent.
     ///
     /// On an error nothing is sent, and the track's next frame is a keyframe.
     pub fn encode(
         &self,
         track: &str,
-        codec: super::StepCodec,
+        codec: impl FnOnce() -> Option<super::StepCodec>,
         picture: &PushedPicture<'_>,
         keyframe: impl FnOnce() -> bool,
         send: impl FnOnce(Frame),
-    ) -> Result<bool, reactor_webrtc::codec::CodecError> {
+    ) -> Result<Option<bool>, reactor_webrtc::codec::CodecError> {
         use reactor_webrtc::codec::{CodecError, VideoEncoderConfig};
         use reactor_webrtc::PixelFormat;
 
@@ -371,6 +391,9 @@ impl InputEncoders {
         };
 
         let mut tracks = self.tracks.lock().unwrap();
+        let Some(codec) = codec() else {
+            return Ok(None);
+        };
         let entry = match tracks.get_mut(track) {
             Some(entry) if entry.codec == codec => entry,
             _ => {
@@ -403,7 +426,7 @@ impl InputEncoders {
         };
         entry.frames += 1;
         let Some(encoded) = encoded else {
-            return Ok(false);
+            return Ok(Some(false));
         };
         send(Frame {
             encoding: codec.frame_encoding() as i32,
@@ -414,7 +437,7 @@ impl InputEncoders {
             capture_time_us,
             keyframe: encoded.key_frame,
         });
-        Ok(true)
+        Ok(Some(true))
     }
 
     /// Drop every track's encoder, as the data channel closes, and run `then`
@@ -436,10 +459,15 @@ impl InputEncoders {
         f()
     }
 
-    /// Drop `track`'s encoder, as frames encoded elsewhere go out on it: its
-    /// next frame encoded here starts a fresh stream at a keyframe.
-    pub fn restart(&self, track: &str) {
-        self.tracks.lock().unwrap().remove(track);
+    /// Drop `track`'s encoder, as a frame encoded elsewhere goes out on it,
+    /// and run `send`, which sends that frame, before any frame is encoded
+    /// again: its next frame encoded here starts a fresh stream at a
+    /// keyframe, behind the frame sent. Never call it holding a lock `send`
+    /// takes, nor from inside `send`.
+    pub fn restart<R>(&self, track: &str, send: impl FnOnce() -> R) -> R {
+        let mut tracks = self.tracks.lock().unwrap();
+        tracks.remove(track);
+        send()
     }
 
     /// The tracks that have an encoder, sorted.
@@ -583,6 +611,10 @@ mod tests {
         for byte in 1..=3 {
             inputs.push("cam", WireTrackKind::Video, encoded(byte), max);
         }
+        assert!(
+            inputs.take_keyframe_request("cam"),
+            "asked for as the keyframe goes"
+        );
 
         match inputs.take() {
             Err(CoreError::StepRefused { message, entry }) => {
@@ -634,6 +666,10 @@ mod tests {
             );
         }
         assert!(inputs.buffer.lock().unwrap().cut_encoded.is_empty());
+        // Its encoder is asked for a keyframe all the same: the frames it
+        // encodes next would reference ones that will never be sent.
+        assert!(inputs.take_keyframe_request("cam"));
+        assert!(!inputs.take_keyframe_request("other"));
         // A fresh window on cam, from its own keyframe, is sent as it is.
         inputs.push("cam", WireTrackKind::Video, encoded(1), max);
         let taken = inputs.take().unwrap();
@@ -818,15 +854,18 @@ mod encoder_tests {
         keyframe: bool,
     ) -> Frame {
         let mut sent = None;
-        assert!(encoders
-            .encode(
-                track,
-                codec,
-                picture,
-                || keyframe,
-                |frame| sent = Some(frame)
-            )
-            .unwrap());
+        assert_eq!(
+            encoders
+                .encode(
+                    track,
+                    || Some(codec),
+                    picture,
+                    || keyframe,
+                    |frame| sent = Some(frame)
+                )
+                .unwrap(),
+            Some(true)
+        );
         sent.expect("an encoded frame is handed on")
     }
 
@@ -915,7 +954,7 @@ mod encoder_tests {
         let odd = vec![0u8; 3 * 3 * 3];
         let refused = encoders.encode(
             "a",
-            codec,
+            || Some(codec),
             &PushedPicture {
                 width: 3,
                 height: 3,
@@ -963,7 +1002,7 @@ mod encoder_tests {
         let short = vec![0u8; 16];
         let failed = encoders.encode(
             "a",
-            codec,
+            || Some(codec),
             &picture(&short, PixelLayout::Rgb),
             || false,
             |_| panic!("nothing is sent"),
@@ -978,6 +1017,23 @@ mod encoder_tests {
             false,
         );
         assert!(frame.keyframe, "{codec:?}");
+    }
+
+    /// With no codec named, nothing is encoded nor sent, and no encoder made:
+    /// the caller sends the frame raw.
+    #[test]
+    fn a_track_with_no_codec_named_encodes_nothing() {
+        let encoders = InputEncoders::new(VideoCodecs::new().unwrap());
+        let rgb = vec![0u8; 64 * 48 * 3];
+        let encoded = encoders.encode(
+            "a",
+            || None,
+            &picture(&rgb, PixelLayout::Rgb),
+            || panic!("no keyframe is asked for"),
+            |_| panic!("nothing is sent"),
+        );
+        assert_eq!(encoded.unwrap(), None);
+        assert!(encoders.live_tracks().is_empty());
     }
 
     /// A track restarted for frames encoded elsewhere starts its next frame
@@ -995,7 +1051,9 @@ mod encoder_tests {
             &picture(&rgb, PixelLayout::Rgb),
             false,
         );
-        encoders.restart("a");
+        let mut sent = false;
+        encoders.restart("a", || sent = true);
+        assert!(sent);
         let frame = encode(
             &encoders,
             "a",

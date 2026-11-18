@@ -2127,12 +2127,15 @@ impl Reactor {
         match encoded_video_frame(encoding, data, width, height, metadata, capture_time_us) {
             Some(frame) => {
                 // The track's stream is now the host's: a raw frame pushed on
-                // it later starts the core's own stream again at a keyframe.
+                // it later starts the core's own stream again at a keyframe,
+                // and none encoded here goes out between the restart and this
+                // frame.
+                let push = || self.push_step_input(track_name, WireTrackKind::Video, frame);
                 #[cfg(feature = "webrtc-codecs")]
                 if let Some(encoders) = &self.input_encoders {
-                    encoders.restart(track_name);
+                    return encoders.restart(track_name, push);
                 }
-                self.push_step_input(track_name, WireTrackKind::Video, frame)
+                push()
             }
             None => log::warn!(
                 "dropping encoded video frame for '{track_name}': {} bytes of {encoding:?} at {width}x{height} is not a frame",
@@ -2193,23 +2196,22 @@ impl Reactor {
         let Some(encoders) = &self.input_encoders else {
             return false;
         };
-        let Some(codec) = StepCodec::from_frame_encoding(self.step_frame_encoding(track_name))
-        else {
-            return false;
-        };
+        // Read with the encoders held: a teardown that clears the codec waits
+        // for this frame, whose encoded copy it then drops, or this frame sees
+        // no codec and goes raw, rather than encode for a connection gone.
         let encoded = encoders.encode(
             track_name,
-            codec,
+            || StepCodec::from_frame_encoding(self.step_frame_encoding(track_name)),
             picture,
             || self.step_inputs.take_keyframe_request(track_name),
             |frame| self.push_step_input(track_name, WireTrackKind::Video, frame),
         );
         match encoded {
-            Ok(_) => true,
+            Ok(Some(_)) => true,
+            Ok(None) => false,
             Err(error) => {
                 log::warn!(
-                    "sending a video frame for '{track_name}' raw: {} encoding failed: {error}",
-                    codec.sdp_name()
+                    "sending a video frame for '{track_name}' raw: encoding failed: {error}"
                 );
                 false
             }
