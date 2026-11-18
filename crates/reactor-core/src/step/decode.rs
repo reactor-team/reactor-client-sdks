@@ -85,7 +85,7 @@ impl FrameDecoder for RawFrameDecoder {
 ///
 /// An `Err` means the decoder lost its state (a corrupt frame, a hardware
 /// decoder reset): it is dropped, the track waits for its next keyframe, and
-/// the next step asks the runtime for one (`request_keyframe`).
+/// the core restarts the track's stream (see [`FrameDecoders::take_lost_tracks`]).
 pub trait TrackDecoder: Send {
     fn decode(&mut self, frame: Frame) -> Result<DecodedFrame, CoreError>;
 }
@@ -109,9 +109,22 @@ struct Streams {
     /// The tracks whose decoder lost its state, or whose stream did not
     /// start at a keyframe: their frames fail until a keyframe comes.
     awaiting_keyframe: HashSet<String>,
+    /// The tracks that lost their stream since the last
+    /// [`FrameDecoders::take_lost_tracks`], each once per loss.
+    lost: Vec<String>,
     /// Set when the data channel closes, until the next one opens: a result
     /// of the closed connection still queued then starts no stream.
     closed: bool,
+}
+
+impl Streams {
+    /// Make `track` wait for a keyframe, and report it lost when it was not
+    /// waiting already, or when `again` says this is a new loss.
+    fn lose(&mut self, track: &str, again: bool) {
+        if self.awaiting_keyframe.insert(track.to_string()) || again {
+            self.lost.push(track.to_string());
+        }
+    }
 }
 
 /// Frame decoders, keyed by [`FrameEncoding`], and the per-track state of
@@ -207,7 +220,7 @@ impl FrameDecoders {
             // only a keyframe can start it.
             retired.extend(streams.live.remove(track).map(|(_, decoder)| decoder));
             if !keyframe {
-                streams.awaiting_keyframe.insert(track.to_string());
+                streams.lose(track, false);
                 return Err(CoreError::decode(format!(
                     "track '{track}' has no decoder state for a frame that is not a keyframe; \
                      waiting for a keyframe"
@@ -227,7 +240,9 @@ impl FrameDecoders {
             }
             Err(error) => {
                 retired.extend(streams.live.remove(track).map(|(_, decoder)| decoder));
-                streams.awaiting_keyframe.insert(track.to_string());
+                // A keyframe that fails to decode is a loss of its own: the
+                // restart that brought it is spent.
+                streams.lose(track, keyframe);
                 Err(error)
             }
         }
@@ -302,9 +317,17 @@ impl FrameDecoders {
         step_output(result, tracks)
     }
 
-    /// Whether a track lost its decoder state and waits for a keyframe: the
-    /// next step asks the runtime for one (`request_keyframe`).
-    pub fn needs_keyframe(&self) -> bool {
+    /// Take the tracks whose stream was lost since the last call: a decoder
+    /// that failed, or a stream that did not start at a keyframe. Each loss
+    /// is reported once, however many frames the track then discards while it
+    /// waits for its keyframe, so the caller restarts each stream once.
+    pub fn take_lost_tracks(&self) -> Vec<String> {
+        std::mem::take(&mut self.streams.lock().unwrap().lost)
+    }
+
+    /// Whether any track waits for a keyframe.
+    #[cfg(test)]
+    pub(crate) fn awaiting_keyframe(&self) -> bool {
         !self.streams.lock().unwrap().awaiting_keyframe.is_empty()
     }
 
@@ -848,29 +871,31 @@ mod tests {
         assert_eq!(third.tracks[0].track, "b");
         assert_eq!(third.tracks[0].frames[0].data, [2, 1]);
         assert_eq!(third.tracks[1].frames[0].data, [1, 3]);
-        assert!(!decoders.needs_keyframe());
+        assert!(!decoders.awaiting_keyframe());
     }
 
     /// A stream starts at a keyframe: a track with no decoder state fails on
-    /// any other frame, and asks for a keyframe.
+    /// any other frame, and is reported lost once.
     #[test]
     fn a_stream_that_does_not_start_at_a_keyframe_waits_for_one() {
         let (decoders, log) = counting_decoders();
         let result = decoders.decode_result(result_with(vec![video("a", vec![h264(1, false)])]));
         assert!(matches!(result, Err(CoreError::Decode(_))), "{result:?}");
-        assert!(decoders.needs_keyframe());
+        assert!(decoders.awaiting_keyframe());
+        assert_eq!(decoders.take_lost_tracks(), ["a"]);
         assert!(log.lock().unwrap().is_empty());
 
         decoders
             .decode_result(result_with(vec![video("a", vec![h264(2, true)])]))
             .unwrap();
-        assert!(!decoders.needs_keyframe());
+        assert!(!decoders.awaiting_keyframe());
         assert_eq!(*log.lock().unwrap(), [(1, 2)]);
     }
 
-    /// A decoder that fails lost its state: it is dropped, the track asks
-    /// for a keyframe and fails until one comes, and a fresh decoder starts
-    /// there. The other tracks of the same result keep up meanwhile.
+    /// A decoder that fails lost its state: it is dropped, the track is
+    /// reported lost once and fails until a keyframe comes, and a fresh
+    /// decoder starts there. The other tracks of the same result keep up
+    /// meanwhile.
     #[test]
     fn a_decode_error_drops_the_tracks_state_until_a_keyframe() {
         let (decoders, log) = counting_decoders();
@@ -886,12 +911,18 @@ mod tests {
             video("b", vec![h264(11, false)]),
         ]));
         assert!(matches!(failed, Err(CoreError::Decode(_))), "{failed:?}");
-        assert!(decoders.needs_keyframe());
+        assert!(decoders.awaiting_keyframe());
         assert_eq!(decoders.live_tracks(), ["b"]);
+        assert_eq!(
+            decoders.take_lost_tracks(),
+            ["a"],
+            "once for two failed frames"
+        );
 
         let still = decoders.decode_result(result_with(vec![video("a", vec![h264(3, false)])]));
         assert!(still.is_err());
-        assert!(decoders.needs_keyframe());
+        assert!(decoders.awaiting_keyframe());
+        assert!(decoders.take_lost_tracks().is_empty(), "the same loss");
 
         let recovered = decoders
             .decode_result(result_with(vec![
@@ -899,7 +930,8 @@ mod tests {
                 video("b", vec![h264(12, false)]),
             ]))
             .unwrap();
-        assert!(!decoders.needs_keyframe());
+        assert!(!decoders.awaiting_keyframe());
+        assert!(decoders.take_lost_tracks().is_empty());
         assert_eq!(recovered.tracks[0].frames[0].data, [3, 0]);
         assert_eq!(recovered.tracks[1].frames[0].data, [2, 2]);
         assert_eq!(
@@ -909,7 +941,7 @@ mod tests {
     }
 
     /// Resetting, as the data channel closes, drops every track's state and
-    /// any pending keyframe request: the next connection's streams start
+    /// any loss not yet taken: the next connection's streams start
     /// again at their keyframes, with fresh decoders, once it opens.
     #[test]
     fn reset_drops_every_tracks_state() {
@@ -922,18 +954,19 @@ mod tests {
             .unwrap();
         let _ = decoders.decode_result(result_with(vec![video("a", vec![h264(0xFF, false)])]));
         assert_eq!(decoders.live_tracks(), ["b"]);
-        assert!(decoders.needs_keyframe());
+        assert!(decoders.awaiting_keyframe());
 
         decoders.reset();
         assert!(decoders.live_tracks().is_empty());
-        assert!(!decoders.needs_keyframe());
+        assert!(!decoders.awaiting_keyframe());
+        assert!(decoders.take_lost_tracks().is_empty());
 
         // A result of the closed connection, still queued, starts no stream.
         assert!(decoders
             .decode_result(result_with(vec![video("b", vec![h264(13, true)])]))
             .is_err());
         assert!(decoders.live_tracks().is_empty());
-        assert!(!decoders.needs_keyframe());
+        assert!(!decoders.awaiting_keyframe());
         decoders.open();
 
         assert!(decoders
@@ -947,7 +980,7 @@ mod tests {
     }
 
     /// Raw frames keep no state: a raw track never needs a keyframe, and a
-    /// bad raw frame asks for none.
+    /// bad raw frame loses no stream.
     #[test]
     fn raw_tracks_keep_no_state() {
         let decoders = FrameDecoders::default();
@@ -956,8 +989,23 @@ mod tests {
             vec![raw("int16", vec![2, 2], vec![0; 6])],
         )]));
         assert!(matches!(bad, Err(CoreError::Decode(_))));
-        assert!(!decoders.needs_keyframe());
+        assert!(!decoders.awaiting_keyframe());
+        assert!(decoders.take_lost_tracks().is_empty());
         assert!(decoders.live_tracks().is_empty());
+    }
+
+    /// A keyframe that fails to decode is a new loss: the restart that
+    /// brought it is spent, so the track is reported again.
+    #[test]
+    fn a_keyframe_that_fails_is_reported_lost_again() {
+        let (decoders, _) = counting_decoders();
+        let _ = decoders.decode_result(result_with(vec![video("a", vec![h264(1, false)])]));
+        assert_eq!(decoders.take_lost_tracks(), ["a"]);
+
+        let failed = decoders.decode_result(result_with(vec![video("a", vec![h264(0xFF, true)])]));
+        assert!(failed.is_err());
+        assert_eq!(decoders.take_lost_tracks(), ["a"]);
+        assert!(decoders.awaiting_keyframe());
     }
 
     /// A result that says its step did not run is that failure, whatever

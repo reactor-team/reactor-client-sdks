@@ -35,9 +35,10 @@
 //! order the results arrive on the data channel (not the order their steps
 //! are awaited in), and dropped when the channel closes, so a new connection
 //! starts every stream over at a keyframe. When a track's decoder loses its
-//! state, the next `RequestStep` sets `request_keyframe`, and the track's
-//! frames fail until a keyframe starts it again. A caller can also ask for
-//! one itself.
+//! state, or its stream does not start at a keyframe (`Frame.keyframe`), the
+//! track's frames fail until a keyframe starts it again, and the core asks
+//! for one by pausing and resuming that track on the control channel: the
+//! runtime starts a resumed track's next frames at a keyframe.
 //!
 //! Which encoding a track's step frames take on a connection is negotiated in
 //! the SDP ([`stepped_offer`], [`negotiated_encodings`]): the client prefers

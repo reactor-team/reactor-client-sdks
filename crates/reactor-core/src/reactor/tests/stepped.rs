@@ -465,6 +465,7 @@ use crate::protocol::wire::v1::step::{
 /// Records every data-channel send and advertises `max` as its limit.
 struct DataPeer {
     sent_data: Mutex<Vec<Vec<u8>>>,
+    sent_control: Mutex<Vec<Vec<u8>>>,
     max: usize,
     /// Tracks pushed to as media (the streamed path), in push order.
     pushed: Mutex<Vec<String>>,
@@ -474,9 +475,31 @@ impl DataPeer {
     fn new(max: usize) -> Self {
         Self {
             sent_data: Mutex::new(vec![]),
+            sent_control: Mutex::new(vec![]),
             max,
             pushed: Mutex::new(vec![]),
         }
+    }
+
+    /// The control payloads sent, as `pause:<track>` and `resume:<track>`.
+    fn track_controls(&self) -> Vec<String> {
+        use crate::protocol::wire::v1::control::control_client_message::Payload;
+        use crate::protocol::wire::v1::control::ControlClientMessage;
+        self.sent_control
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|raw| {
+                match ControlClientMessage::decode(raw.as_slice())
+                    .unwrap()
+                    .payload
+                {
+                    Some(Payload::PauseTrack(t)) => Some(format!("pause:{}", t.name)),
+                    Some(Payload::ResumeTrack(t)) => Some(format!("resume:{}", t.name)),
+                    _ => None,
+                }
+            })
+            .collect()
     }
 
     fn sent(&self) -> Vec<DataClientMessage> {
@@ -508,7 +531,8 @@ impl PeerTransport for DataPeer {
         self.sent_data.lock().unwrap().push(payload.to_vec());
         Ok(())
     }
-    fn send_control(&self, _: &[u8]) -> Result<(), CoreError> {
+    fn send_control(&self, payload: &[u8]) -> Result<(), CoreError> {
+        self.sent_control.lock().unwrap().push(payload.to_vec());
         Ok(())
     }
     /// Refused, as the real peers refuse a track they have no transceiver
@@ -1102,13 +1126,6 @@ fn h264_result(step: u64, byte: u8, keyframe: bool) -> data_server_message::Payl
     })
 }
 
-fn requests_keyframe(sent: &DataClientMessage) -> Option<bool> {
-    match &sent.payload {
-        Some(data_client_message::Payload::RequestStep(request)) => request.request_keyframe,
-        other => panic!("expected a RequestStep, got {other:?}"),
-    }
-}
-
 /// Results are decoded in the order they arrive, not the order their steps
 /// are awaited in: the second step's result, arriving first with the
 /// keyframe, starts the stream the first step's result then runs on.
@@ -1168,16 +1185,16 @@ async fn a_result_no_step_awaits_still_decodes() {
     );
 }
 
-/// A decode error loses the track's decoder state: that step fails, and
-/// the next one asks the runtime for a keyframe until one arrives. A step
-/// with every decoder in step asks for none, unless its caller does.
+/// A decode error loses the track's stream: that step fails, and the core
+/// pauses and resumes that one track, once, so the runtime starts its next
+/// frames at a keyframe. Frames before the keyframe fail without another
+/// restart; the keyframe and the frames after it decode.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_decode_error_asks_the_next_step_for_a_keyframe() {
+async fn a_decode_error_restarts_the_track_with_one_pause_and_resume() {
     let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
     let reactor = make_decoding_reactor(peer.clone());
 
     let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
-    assert_eq!(requests_keyframe(&sent), None);
     feed(
         &reactor,
         &sent.request_id,
@@ -1186,9 +1203,9 @@ async fn a_decode_error_asks_the_next_step_for_a_keyframe() {
     )
     .await;
     stepping.await.unwrap().unwrap();
+    assert!(peer.track_controls().is_empty());
 
     let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
-    assert_eq!(requests_keyframe(&sent), None);
     feed(
         &reactor,
         &sent.request_id,
@@ -1197,55 +1214,35 @@ async fn a_decode_error_asks_the_next_step_for_a_keyframe() {
     )
     .await;
     assert!(matches!(stepping.await.unwrap(), Err(CoreError::Decode(_))));
+    assert_eq!(peer.track_controls(), ["pause:out", "resume:out"]);
 
+    // A result already in flight, encoded before the resume.
     let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
-    assert_eq!(requests_keyframe(&sent), Some(true));
     feed(
         &reactor,
         &sent.request_id,
         MessageKind::Response,
-        h264_result(3, 3, true),
+        h264_result(3, 3, false),
+    )
+    .await;
+    assert!(matches!(stepping.await.unwrap(), Err(CoreError::Decode(_))));
+    assert_eq!(peer.track_controls().len(), 2, "one restart per loss");
+
+    let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+    feed(
+        &reactor,
+        &sent.request_id,
+        MessageKind::Response,
+        h264_result(4, 4, true),
     )
     .await;
     assert_eq!(
         stepping.await.unwrap().unwrap().tracks[0].frames[0].data,
         [0]
     );
+    assert!(!reactor.frame_decoders.awaiting_keyframe());
 
     let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
-    assert_eq!(requests_keyframe(&sent), None, "the keyframe came");
-    feed(
-        &reactor,
-        &sent.request_id,
-        MessageKind::Response,
-        h264_result(4, 4, false),
-    )
-    .await;
-    stepping.await.unwrap().unwrap();
-
-    // A caller asks for one itself.
-    let request = reactor
-        .begin_step(Value::Null, vec![])
-        .unwrap()
-        .request_keyframe();
-    assert!(request.requests_keyframe());
-    let r = reactor.clone();
-    let stepping = tokio::spawn(async move { r.send_step(request).await });
-    let sent = tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            if let Some(last) = peer
-                .sent()
-                .last()
-                .filter(|m| m.request_id != sent.request_id)
-            {
-                return last.clone();
-            }
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(requests_keyframe(&sent), Some(true));
     feed(
         &reactor,
         &sent.request_id,
@@ -1254,58 +1251,36 @@ async fn a_decode_error_asks_the_next_step_for_a_keyframe() {
     )
     .await;
     stepping.await.unwrap().unwrap();
+    assert_eq!(peer.track_controls().len(), 2);
 }
 
-/// A decoder that loses its state after `begin_step` returns, before the
-/// binding sends the step, still makes that step ask for a keyframe.
+/// A track the caller paused stays paused: the core resumes it to restart
+/// its stream and pauses it again, and its paused state is unchanged.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_decode_error_before_the_send_asks_that_step_for_a_keyframe() {
+async fn restarting_a_paused_track_leaves_it_paused() {
     let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
     let reactor = make_decoding_reactor(peer.clone());
-    feed(
-        &reactor,
-        "data_98",
-        MessageKind::Response,
-        h264_result(1, 1, true),
-    )
-    .await;
+    reactor
+        .state
+        .lock()
+        .unwrap()
+        .paused_tracks
+        .insert("out".into());
 
-    let request = reactor.begin_step(Value::Null, vec![]).unwrap();
-    assert!(!request.requests_keyframe());
     feed(
         &reactor,
         "data_99",
         MessageKind::Response,
-        h264_result(2, 0xFF, false),
+        h264_result(1, 1, false),
     )
     .await;
-    assert!(reactor.frame_decoders.needs_keyframe());
 
-    let r = reactor.clone();
-    let stepping = tokio::spawn(async move { r.send_step(request).await });
-    let sent = tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            if let Some(last) = peer.sent().last() {
-                return last.clone();
-            }
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(requests_keyframe(&sent), Some(true));
-    feed(
-        &reactor,
-        &sent.request_id,
-        MessageKind::Response,
-        h264_result(3, 3, true),
-    )
-    .await;
-    stepping.await.unwrap().unwrap();
+    assert_eq!(peer.track_controls(), ["resume:out", "pause:out"]);
+    assert!(reactor.paused_tracks().contains("out"));
 }
 
 /// The decoder state lives with the data channel: a disconnect, as a
-/// reconnect starts with, drops it, keyframe request included, so the next
+/// reconnect starts with, drops it, so the next
 /// connection's stream must start again at a keyframe.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reconnect_resets_every_tracks_decoder() {
@@ -1318,7 +1293,7 @@ async fn a_reconnect_resets_every_tracks_decoder() {
         h264_result(1, 1, true),
     )
     .await;
-    // Another track's decoder fails, so a keyframe is due.
+    // Another track's stream is lost, so it waits for a keyframe.
     feed(
         &reactor,
         "data_99",
@@ -1337,10 +1312,10 @@ async fn a_reconnect_resets_every_tracks_decoder() {
         }),
     )
     .await;
-    assert!(reactor.frame_decoders.needs_keyframe());
+    assert!(reactor.frame_decoders.awaiting_keyframe());
 
     reactor.disconnect(true).await.unwrap();
-    assert!(!reactor.frame_decoders.needs_keyframe());
+    assert!(!reactor.frame_decoders.awaiting_keyframe());
 
     // A keyframe of the closed connection, still queued, starts no stream
     // the next connection could run on from.
@@ -1351,12 +1326,11 @@ async fn a_reconnect_resets_every_tracks_decoder() {
         h264_result(2, 2, true),
     )
     .await;
-    assert!(!reactor.frame_decoders.needs_keyframe());
+    assert!(!reactor.frame_decoders.awaiting_keyframe());
 
     reactor.handle_peer_event(PeerEvent::DataChannelOpen).await;
     reactor.state.lock().unwrap().status = ReactorStatus::Ready;
     let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
-    assert_eq!(requests_keyframe(&sent), None);
     feed(
         &reactor,
         &sent.request_id,
