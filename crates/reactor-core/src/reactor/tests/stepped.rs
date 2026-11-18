@@ -469,6 +469,9 @@ struct DataPeer {
     max: usize,
     /// Tracks pushed to as media (the streamed path), in push order.
     pushed: Mutex<Vec<String>>,
+    /// Control sends refused, by their index among every control send.
+    failing_control: Mutex<Vec<usize>>,
+    control_sends: std::sync::atomic::AtomicUsize,
 }
 
 impl DataPeer {
@@ -478,6 +481,8 @@ impl DataPeer {
             sent_control: Mutex::new(vec![]),
             max,
             pushed: Mutex::new(vec![]),
+            failing_control: Mutex::new(vec![]),
+            control_sends: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -532,6 +537,12 @@ impl PeerTransport for DataPeer {
         Ok(())
     }
     fn send_control(&self, payload: &[u8]) -> Result<(), CoreError> {
+        let index = self
+            .control_sends
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.failing_control.lock().unwrap().contains(&index) {
+            return Err(CoreError::Peer("control channel refused".into()));
+        }
         self.sent_control.lock().unwrap().push(payload.to_vec());
         Ok(())
     }
@@ -1252,6 +1263,38 @@ async fn a_decode_error_restarts_the_track_with_one_pause_and_resume() {
     .await;
     stepping.await.unwrap().unwrap();
     assert_eq!(peer.track_controls().len(), 2);
+}
+
+/// A restart that does not all go out is retried, from its pause, on the
+/// next result: the track does not stay paused, nor wait for a keyframe the
+/// runtime was never asked for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restart_that_failed_to_send_is_retried_on_the_next_result() {
+    let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+    // The first restart's resume is refused.
+    peer.failing_control.lock().unwrap().push(1);
+    let reactor = make_decoding_reactor(peer.clone());
+
+    feed(
+        &reactor,
+        "data_98",
+        MessageKind::Response,
+        h264_result(1, 1, false),
+    )
+    .await;
+    assert_eq!(peer.track_controls(), ["pause:out"]);
+
+    feed(
+        &reactor,
+        "data_99",
+        MessageKind::Response,
+        h264_result(2, 2, false),
+    )
+    .await;
+    assert_eq!(
+        peer.track_controls(),
+        ["pause:out", "pause:out", "resume:out"]
+    );
 }
 
 /// A track the caller paused stays paused: the core resumes it to restart

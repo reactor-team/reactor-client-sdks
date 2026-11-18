@@ -292,6 +292,10 @@ pub struct Reactor {
     step_inputs: StepInputs,
     /// Stepped mode: how a step result's frames are decoded, per encoding.
     frame_decoders: FrameDecoders,
+    /// Held while a pause or resume is sent and recorded in
+    /// `paused_tracks`, and while a lost stream is restarted, so a restart
+    /// reads the state the caller's last message gave the runtime.
+    track_control: Mutex<()>,
     /// Stepped mode: the codecs the next offer prefers for step frames.
     codec_preferences: Mutex<CodecPreferences>,
     /// Stepped mode: the codecs this side can encode and decode step frames
@@ -366,6 +370,7 @@ impl Reactor {
             stage_times: Arc::new(StageTimes::new()),
             step_inputs: StepInputs::new(),
             frame_decoders: FrameDecoders::default(),
+            track_control: Mutex::new(()),
             codec_preferences: Mutex::new(CodecPreferences::default()),
             local_step_codecs: Mutex::new(LocalStepCodecs::default()),
             message_times: MessageTimes::new(),
@@ -1975,6 +1980,8 @@ impl Reactor {
         let payload = ControlCorrelator::notification(ClientPayload::PauseTrack(PauseTrack {
             name: name.to_string(),
         }));
+        // Sent and recorded as one, against a stream restart in between.
+        let _track_control = self.track_control.lock().unwrap();
         self.peer.send_control(&payload)?;
         self.state
             .lock()
@@ -1992,6 +1999,8 @@ impl Reactor {
         let payload = ControlCorrelator::notification(ClientPayload::ResumeTrack(ResumeTrack {
             name: name.to_string(),
         }));
+        // Sent and recorded as one, against a stream restart in between.
+        let _track_control = self.track_control.lock().unwrap();
         self.peer.send_control(&payload)?;
         self.state.lock().unwrap().paused_tracks.remove(name);
         Ok(())
@@ -2081,8 +2090,12 @@ impl Reactor {
     ///
     /// The track keeps the state its caller gave it: a track the caller
     /// paused is resumed and paused again, and neither the transceiver nor
-    /// [`Reactor::paused_tracks`] changes.
+    /// [`Reactor::paused_tracks`] changes. A [`Reactor::pause_track`] or
+    /// [`Reactor::resume_track`] waits for the restart, so its own message
+    /// comes last. A restart that did not all go out is reported lost again,
+    /// for the next result to retry from the start.
     fn restart_lost_tracks(&self) {
+        let _track_control = self.track_control.lock().unwrap();
         for name in self.frame_decoders.take_lost_tracks() {
             let paused = self.state.lock().unwrap().paused_tracks.contains(&name);
             let pause = ClientPayload::PauseTrack(PauseTrack { name: name.clone() });
@@ -2098,6 +2111,7 @@ impl Reactor {
                     .send_control(&ControlCorrelator::notification(payload))
                 {
                     log::warn!("restarting the stream of track '{name}' failed: {error}");
+                    self.frame_decoders.restore_lost_track(&name);
                     break;
                 }
             }

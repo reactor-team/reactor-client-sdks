@@ -196,13 +196,19 @@ impl FrameDecoders {
         frame: Frame,
     ) -> Result<DecodedFrame, CoreError> {
         let factory = match self.decoders.get(&frame.encoding) {
-            Some(Registered::Frame(decoder)) => return decoder.decode(frame),
             Some(Registered::Track(factory)) => factory,
-            None => {
+            registered => {
+                // The track left its stateful stream, if it had one: a later
+                // frame of that encoding starts a new stream, at a keyframe,
+                // rather than run on across the frames in between.
+                retired.extend(streams.live.remove(track).map(|(_, decoder)| decoder));
+                if let Some(Registered::Frame(decoder)) = registered {
+                    return decoder.decode(frame);
+                }
                 return Err(CoreError::UnsupportedFrameEncoding {
                     track: track.to_string(),
                     encoding: frame.encoding,
-                })
+                });
             }
         };
         if streams.closed {
@@ -323,6 +329,18 @@ impl FrameDecoders {
     /// waits for its keyframe, so the caller restarts each stream once.
     pub fn take_lost_tracks(&self) -> Vec<String> {
         std::mem::take(&mut self.streams.lock().unwrap().lost)
+    }
+
+    /// Report `track` lost again: its restart, taken with
+    /// [`FrameDecoders::take_lost_tracks`], did not go out, so the next call
+    /// takes it once more. Ignored when the track no longer waits for a
+    /// keyframe (one came, or the connection's state was reset) or is
+    /// already reported.
+    pub fn restore_lost_track(&self, track: &str) {
+        let mut streams = self.streams.lock().unwrap();
+        if streams.awaiting_keyframe.contains(track) && !streams.lost.iter().any(|t| t == track) {
+            streams.lost.push(track.to_string());
+        }
     }
 
     /// Whether any track waits for a keyframe.
@@ -938,6 +956,51 @@ mod tests {
             *log.lock().unwrap(),
             [(1, 1), (2, 10), (2, 11), (3, 4), (2, 12)]
         );
+    }
+
+    /// A frame in another encoding, one decoded frame by frame or none at
+    /// all, ends the track's stream: the next frame of the old encoding does
+    /// not run on across it, and waits for a keyframe.
+    #[test]
+    fn a_frame_in_another_encoding_ends_the_tracks_stream() {
+        let (decoders, log) = counting_decoders();
+        decoders
+            .decode_result(result_with(vec![video("a", vec![h264(1, true)])]))
+            .unwrap();
+        let unsupported = Frame {
+            encoding: FrameEncoding::Vp8 as i32,
+            ..h264(2, false)
+        };
+        let result = decoders.decode_result(result_with(vec![video("a", vec![unsupported])]));
+        assert!(
+            matches!(result, Err(CoreError::UnsupportedFrameEncoding { .. })),
+            "{result:?}"
+        );
+        assert!(decoders.live_tracks().is_empty());
+
+        let result = decoders.decode_result(result_with(vec![video("a", vec![h264(3, false)])]));
+        assert!(matches!(result, Err(CoreError::Decode(_))), "{result:?}");
+        assert_eq!(decoders.take_lost_tracks(), ["a"]);
+        assert_eq!(*log.lock().unwrap(), [(1, 1)]);
+    }
+
+    /// A loss whose restart did not go out is reported again, once; not
+    /// once a keyframe came or the state was reset.
+    #[test]
+    fn a_restored_loss_is_taken_again_while_the_track_waits() {
+        let (decoders, _) = counting_decoders();
+        let _ = decoders.decode_result(result_with(vec![video("a", vec![h264(1, false)])]));
+        assert_eq!(decoders.take_lost_tracks(), ["a"]);
+
+        decoders.restore_lost_track("a");
+        decoders.restore_lost_track("a");
+        assert_eq!(decoders.take_lost_tracks(), ["a"]);
+
+        decoders
+            .decode_result(result_with(vec![video("a", vec![h264(2, true)])]))
+            .unwrap();
+        decoders.restore_lost_track("a");
+        assert!(decoders.take_lost_tracks().is_empty());
     }
 
     /// Resetting, as the data channel closes, drops every track's state and
