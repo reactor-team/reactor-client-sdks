@@ -15,29 +15,48 @@ test.afterEach(async ({ page }) => {
 });
 
 /** Connect a stepped session that prefers `codecs`, and publish its webcam.
- *  `false` when the runtime does not step echo, which the test accepts. */
-async function connectStepped(page: Page, codecs: Array<'h264'> | null): Promise<boolean> {
-  return page.evaluate(
-    async ({ name, codecs }) => {
-      window.__harness.create(name, { generation: 'stepped' });
-      const reactor = window.__harness.get(name);
+ *  `false` when the runtime does not step echo, which the test accepts. Each
+ *  half is its own step, so a hang names the one it is in. */
+async function connectStepped(page: Page, codecs: Array<'h264' | 'vp8'> | null): Promise<boolean> {
+  const stepped = await test.step('connect a stepped session', () =>
+    page.evaluate(
+      async ({ name, codecs }) => {
+        window.__harness.create(name, { generation: 'stepped' });
+        const reactor = window.__harness.get(name);
 
-      reactor.setCodecPreference(codecs);
-      try {
-        await reactor.connect(await window.__harness.fetchToken());
-      } catch (cause) {
-        const error = cause as Error & { code?: string };
+        reactor.setCodecPreference(codecs);
+        try {
+          await reactor.connect(await window.__harness.fetchToken());
+        } catch (cause) {
+          const error = cause as Error & { code?: string };
 
-        if (error.code === 'GENERATION_MODE_MISMATCH' || error.message.includes('(START_REFUSED)')) {
-          return false;
+          if (error.code === 'GENERATION_MODE_MISMATCH' || error.message.includes('(START_REFUSED)')) {
+            return false;
+          }
+          throw cause;
         }
-        throw cause;
-      }
-      await reactor.publishTrack('webcam');
-      return true;
-    },
-    { name: NAME, codecs },
+        return true;
+      },
+      { name: NAME, codecs },
+    ),
   );
+
+  if (stepped) {
+    await test.step('publish the webcam', () =>
+      page.evaluate((name) => window.__harness.get(name).publishTrack('webcam'), NAME),
+    );
+  }
+  return stepped;
+}
+
+/** Whether the connection carries every track raw although it asked for a
+ *  codec: the runtime predates encoded step frames, or this browser cannot
+ *  encode and decode that codec. Accepted, as an echo that does not step is,
+ *  until a runtime with them is deployed. */
+async function offersNoEncodedStepFrames(page: Page): Promise<boolean> {
+  const encodings = await page.evaluate((name) => window.__harness.get(name).getStepFrameEncodings(), NAME);
+
+  return Object.values(encodings).every((encoding) => encoding === 'raw');
 }
 
 /** Push one solid 64x64 RGB frame on the webcam, run a step that inverts
@@ -85,6 +104,8 @@ function expectInverted(centre: number[], tolerance: number): void {
 
 for (const [label, codecs, expected] of [
   ['h264', ['h264'], 'h264'],
+  // Linux Chromium, the one CI runs, has no H.264 encoder.
+  ['vp8', ['vp8'], 'vp8'],
   ['encoding off', [], 'raw'],
 ] as const) {
   test(`a stepped session carries its frames in the codec it chose: ${label}`, async ({ page }) => {
@@ -92,6 +113,7 @@ for (const [label, codecs, expected] of [
     if (!(await connectStepped(page, [...codecs]))) {
       return;
     }
+    test.skip(expected !== 'raw' && (await offersNoEncodedStepFrames(page)), 'the connection negotiated no encoded step frames');
     // The frames travel encoded both ways when both ends share a codec, so
     // the inverted pixel comes back close rather than exact.
     const tolerance = expected === 'raw' ? 0 : 8;
@@ -125,9 +147,10 @@ for (const [label, codecs, expected] of [
 
 test('a reconnect starts both streams again at keyframes', async ({ page }) => {
   await page.goto('/');
-  if (!(await connectStepped(page, ['h264']))) {
+  if (!(await connectStepped(page, ['vp8']))) {
     return;
   }
+  test.skip(await offersNoEncodedStepFrames(page), 'the connection negotiated no encoded step frames');
   const before = await invertOnce(page);
 
   expectInverted(before.centre, 8);
@@ -138,6 +161,6 @@ test('a reconnect starts both streams again at keyframes', async ({ page }) => {
   // new connection's first frames each way are keyframes, so both decode.
   const after = await invertOnce(page);
 
-  expect(after.encoding).toBe('h264');
+  expect(after.encoding).toBe('vp8');
   expectInverted(after.centre, 8);
 });
