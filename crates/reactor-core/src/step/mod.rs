@@ -107,7 +107,6 @@ pub fn build_request_step(
         state,
         commands,
         media_input,
-        request_keyframe: None,
     })
 }
 
