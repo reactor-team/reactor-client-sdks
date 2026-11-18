@@ -456,6 +456,15 @@ pub fn may_encode_step_frames(
             })
 }
 
+/// Whether a connection negotiated encoded step frames: the `offer` this side
+/// sent and the runtime's `answer` both carry [`ENCODED_STEP_FRAMES`]. Only
+/// then does the runtime take `PushFrames`; otherwise input frames ride the
+/// next step's `media_input`.
+pub fn negotiates_encoded_step_frames(answer: &str, offer: &str) -> bool {
+    Sdp::parse(offer).has_session_attribute(ENCODED_STEP_FRAMES)
+        && Sdp::parse(answer).has_session_attribute(ENCODED_STEP_FRAMES)
+}
+
 /// The encoding each mapped track's step frames take on a connection, by
 /// track name, read from the runtime's answer to the `offer` this side sent:
 /// a video track takes the codec its section lists first when both the offer
@@ -471,8 +480,7 @@ pub fn negotiated_encodings(
 ) -> HashMap<String, FrameEncoding> {
     let parsed = Sdp::parse(answer);
     let offered = Sdp::parse(offer);
-    let declared = offered.has_session_attribute(ENCODED_STEP_FRAMES)
-        && parsed.has_session_attribute(ENCODED_STEP_FRAMES);
+    let declared = negotiates_encoded_step_frames(answer, offer);
     mapping
         .iter()
         .map(|entry| {

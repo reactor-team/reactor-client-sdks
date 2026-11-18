@@ -52,9 +52,9 @@ use crate::state::ReactorStatus;
 use crate::stats::{client_connection_stat, ClientStatsReporter, ConnectionStats, StatsSampler};
 use crate::step::{
     build_request_step, encoded_video_frame, may_encode_step_frames, negotiated_encodings,
-    push_frames_message, pushed_frame, raw_audio_frame, raw_video_frame,
-    runtime_takes_pushed_frames, step_output, stepped_offer, CodecPreferences, FrameDecoders,
-    LocalStepCodecs, PixelLayout, StepCodec, StepCommand, StepInputs, StepOutput,
+    negotiates_encoded_step_frames, push_frames_message, pushed_frame, raw_audio_frame,
+    raw_video_frame, runtime_takes_pushed_frames, step_output, stepped_offer, CodecPreferences,
+    FrameDecoders, LocalStepCodecs, PixelLayout, StepCodec, StepCommand, StepInputs, StepOutput,
 };
 use crate::{SharedAuth, SharedHttp, SharedPeer, SharedPlatform};
 
@@ -191,6 +191,10 @@ struct State {
     /// this connection, as its SDP answer negotiated them. Empty until the
     /// answer is applied, and cleared with the connection.
     step_frame_encodings: HashMap<String, FrameEncoding>,
+    /// Stepped mode: whether this connection's offer and answer both carry
+    /// `a=x-reactor-encoded-step-frames`, without which the runtime need not
+    /// take `PushFrames`. Cleared with the connection.
+    encoded_step_frames: bool,
     closing: bool,
     /// The state `on_peer_connection_state` tore the connection down for, when
     /// `closing` was set by that (a real `Failed`/`Disconnected`/`Closed`
@@ -261,9 +265,11 @@ fn check_generation(requested: GenerationMode, session: &SessionResponse) -> Res
     }
 }
 
-/// A step [`Reactor::begin_step`] checked and gave its input frames, for
-/// [`Reactor::send_step`] to send.
-pub struct StepRequest(RequestStep);
+/// A step [`Reactor::begin_step`] checked, gave its input frames and wrote
+/// to the data channel (or failed to), for [`Reactor::send_step`] to await.
+/// Always hand it to `send_step`: that is what forgets the request once its
+/// caller goes away.
+pub struct StepRequest(Result<PendingData, CoreError>);
 
 /// The Reactor client core. See the crate docs for the host contract.
 pub struct Reactor {
@@ -775,11 +781,14 @@ impl Reactor {
             return Err(self.teardown_error().unwrap_or(error));
         }
         if self.is_stepped() {
-            self.state.lock().unwrap().step_frame_encodings = negotiated_encodings(
+            let mut state = self.state.lock().unwrap();
+            state.step_frame_encodings = negotiated_encodings(
                 &answer.sdp_answer,
                 &prepared.sdp_offer,
                 &prepared.track_mapping,
             );
+            state.encoded_step_frames =
+                negotiates_encoded_step_frames(&answer.sdp_answer, &prepared.sdp_offer);
         }
 
         match timeout(
@@ -867,6 +876,7 @@ impl Reactor {
             state.ice_ready = false;
             state.track_mapping.clear();
             state.step_frame_encodings.clear();
+            state.encoded_step_frames = false;
             state.paused_tracks.clear();
             if recoverable {
                 false
@@ -1418,17 +1428,29 @@ impl Reactor {
 
     /// The synchronous half of [`Reactor::step`]: every check that refuses the
     /// step with nothing sent, then the input frames buffered so far, taken as
-    /// of this call. A binding that runs the step on another thread calls this
-    /// on the caller's first, so a frame pushed once it returns goes to the
-    /// next step instead of racing into this one.
+    /// of this call, and the request written to the data channel. A binding
+    /// that runs the step on another thread calls this on the caller's first,
+    /// so a frame pushed once it returns goes to the next step instead of
+    /// racing into this one: a push waits while the frames are taken and the
+    /// step written, so a `PushFrames` cannot go out ahead of a step that
+    /// already began. A failed write is returned by [`Reactor::send_step`],
+    /// as the step's outcome.
     pub fn begin_step(
         &self,
         state: Value,
         commands: Vec<StepCommand>,
     ) -> Result<StepRequest, CoreError> {
         let mut request = self.build_step(state, commands)?;
+        let _serialized = self.push_lock.lock().unwrap();
         request.media_input = self.step_inputs.take()?;
-        Ok(StepRequest(request))
+        // The frames belong to this attempt: a send that fails takes them with
+        // it. What the channel accepts, it delivers; the SDK resends nothing.
+        let pending = self
+            .data
+            .begin(data_client_message::Payload::RequestStep(request));
+        Ok(StepRequest(
+            self.send_pending("step", &pending).map(|()| pending),
+        ))
     }
 
     /// Every check [`Reactor::begin_step`] makes, with nothing taken: `Ok`
@@ -1459,18 +1481,13 @@ impl Reactor {
     /// The rest of [`Reactor::step`], for a request [`Reactor::begin_step`]
     /// returned.
     pub async fn send_step(&self, request: StepRequest) -> Result<StepOutput, CoreError> {
-        // The frames belong to this attempt: a send that fails takes them with
-        // it. What the channel accepts, it delivers; the SDK resends nothing.
-        let pending = self
-            .data
-            .begin(data_client_message::Payload::RequestStep(request.0));
+        let pending = request.0?;
         // The result's tracks are decoded as it arrives and kept for this
         // call; dropped with it if it goes away first.
         let request = ForgetOnDrop {
             data: &self.data,
             request_id: pending.request_id.clone(),
         };
-        self.send_pending("step", &pending)?;
 
         let response = match self
             .await_data_response("step", pending, self.options.step_timeout)
@@ -1837,19 +1854,21 @@ impl Reactor {
     }
 
     /// Whether a pushed input frame goes to the runtime now, in a
-    /// `PushFrames`: the session is ready, and its runtime, by the version
-    /// the session reported, takes them. Otherwise it waits for the next step.
+    /// `PushFrames`: the session is ready, the connection negotiated encoded
+    /// step frames (the wire's condition for `PushFrames`), and its runtime,
+    /// by the version the session reported, takes them. Otherwise it waits
+    /// for the next step.
     fn sends_pushed_frames(&self) -> bool {
         if self.status() != ReactorStatus::Ready {
             return false;
         }
-        self.state
-            .lock()
-            .unwrap()
-            .session_info
-            .as_ref()
-            .and_then(|info| info.server_info.as_ref())
-            .is_some_and(|server| runtime_takes_pushed_frames(&server.server_version))
+        let state = self.state.lock().unwrap();
+        state.encoded_step_frames
+            && state
+                .session_info
+                .as_ref()
+                .and_then(|info| info.server_info.as_ref())
+                .is_some_and(|server| runtime_takes_pushed_frames(&server.server_version))
     }
 
     /// Stepped: hand `frame` to the runtime. Sent at once in a `PushFrames`

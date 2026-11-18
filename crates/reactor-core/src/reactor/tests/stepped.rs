@@ -1798,19 +1798,47 @@ async fn begin_step_takes_the_inputs_buffered_when_it_is_called() {
         .step_inputs
         .push("cam", WireTrackKind::Video, raw_frame(2), usize::MAX);
 
-    let firsts = |request: &StepRequest| {
-        request.0.media_input[0]
-            .frames
-            .iter()
-            .map(|f| f.data[0])
-            .collect::<Vec<_>>()
+    let sent = peer.sent();
+    let Some(data_client_message::Payload::RequestStep(step)) = &sent[0].payload else {
+        panic!("expected the step written, got {:?}", sent[0].payload);
     };
-    assert_eq!(firsts(&request), [1]);
+    let firsts: Vec<u8> = step.media_input[0]
+        .frames
+        .iter()
+        .map(|f| f.data[0])
+        .collect();
+    assert_eq!(firsts, [1]);
     assert_eq!(
         reactor.step_inputs.len(),
         1,
         "the later frame waits for the next step"
     );
+    drop(reactor.send_step(request));
+}
+
+/// Against a runtime that takes `PushFrames`, the step is on the channel
+/// once `begin_step` returns, while the binding has yet to send it on its
+/// worker: a frame pushed then goes out behind it, for the next step.
+#[tokio::test]
+async fn a_push_after_begin_step_goes_out_behind_the_step() {
+    let peer = Arc::new(DataPeer::new(usize::MAX));
+    let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+    report_runtime(&reactor, "3.11.8");
+
+    let request = reactor.begin_step(Value::Null, vec![]).unwrap();
+    reactor.push_video_frame("cam", &[7, 7, 7, 255], 1, 1);
+
+    let sent = peer.sent();
+    assert_eq!(sent.len(), 2);
+    assert!(matches!(
+        sent[0].payload,
+        Some(data_client_message::Payload::RequestStep(_))
+    ));
+    assert!(matches!(
+        sent[1].payload,
+        Some(data_client_message::Payload::PushFrames(_))
+    ));
+    drop(reactor.send_step(request));
 }
 
 /// `check_step` refuses what `begin_step` would, for the session or for the
@@ -1861,8 +1889,10 @@ async fn check_step_refuses_as_begin_step_does_and_takes_nothing() {
     assert_eq!(reactor.step_inputs.len(), 1);
 }
 
-/// Report the runtime's version as a ready session's `server_info` does.
+/// Report the runtime's version as a ready session's `server_info` does, on
+/// a connection whose answer repeated `a=x-reactor-encoded-step-frames`.
 fn report_runtime(reactor: &Reactor, version: &str) {
+    reactor.state.lock().unwrap().encoded_step_frames = true;
     reactor.state.lock().unwrap().session_info = Some(
         serde_json::from_value(json!({
             "session_id": "sess_1",
@@ -1882,6 +1912,22 @@ fn pushed(message: &DataClientMessage) -> Vec<(String, u8)> {
         .iter()
         .flat_map(|t| t.frames.iter().map(|f| (t.track.clone(), f.data[0])))
         .collect()
+}
+
+/// A runtime recent enough for `PushFrames` on a connection that did not
+/// negotiate encoded step frames (encoding turned off, or an answer without
+/// the attribute) need not take them: the frame waits for the next step.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_push_waits_for_the_step_without_encoded_step_frames_negotiated() {
+    let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+    let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+    report_runtime(&reactor, "3.11.8");
+    reactor.state.lock().unwrap().encoded_step_frames = false;
+
+    reactor.push_video_frame("cam", &[7, 7, 7, 255], 1, 1);
+
+    assert!(peer.sent().is_empty());
+    assert_eq!(reactor.step_inputs.len(), 1);
 }
 
 /// Against a runtime that takes `PushFrames`, a push goes out at once, as a

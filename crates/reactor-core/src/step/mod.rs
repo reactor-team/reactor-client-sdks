@@ -80,8 +80,8 @@ pub use decode::{
 };
 pub use inputs::{pushed_frame, StepInputs};
 pub use negotiation::{
-    may_encode_step_frames, negotiated_encodings, stepped_offer, CodecPreferences, LocalStepCodecs,
-    StepCodec, ENCODED_STEP_FRAMES,
+    may_encode_step_frames, negotiated_encodings, negotiates_encoded_step_frames, stepped_offer,
+    CodecPreferences, LocalStepCodecs, StepCodec, ENCODED_STEP_FRAMES,
 };
 
 /// `dtype` of a raw video frame: RGB, one byte per channel.
