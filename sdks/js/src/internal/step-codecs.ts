@@ -17,6 +17,7 @@
  * then sends.
  */
 import { DecodeError } from '../errors';
+import { BT601_LIMITED, rgbToI420, yuvToRgb } from './bt601';
 import { toPixels, type Pixels } from './push-frames';
 import type { EncodedVideoCodec, StepFrame, StepResult } from './reactor-wasm.types';
 
@@ -146,10 +147,15 @@ class TrackEncoder {
    *  or when it is the stream's first, and hand back what the encoder made
    *  of it: every frame is flushed out before the next goes in. */
   async encode(pixels: Pixels, keyframe: boolean): Promise<EncodedInput[]> {
-    const frame = new this.api.VideoFrame(rgbaOrBgra(pixels), {
-      format: pixels.format === 'bgra' ? 'BGRA' : 'RGBA',
-      codedWidth: pixels.width,
-      codedHeight: pixels.height,
+    // Converted here, not by the engine, so the runtime reads the colours
+    // back as they were: see `bt601.ts`.
+    const i420 = rgbToI420(pixels);
+    const frame = new this.api.VideoFrame(i420.data, {
+      format: 'I420',
+      codedWidth: i420.codedWidth,
+      codedHeight: i420.codedHeight,
+      visibleRect: { x: 0, y: 0, width: i420.width, height: i420.height },
+      colorSpace: BT601_LIMITED,
       timestamp: this.timestampUs,
     });
 
@@ -172,22 +178,6 @@ class TrackEncoder {
       this.encoder.close();
     }
   }
-}
-
-/** Raw pixels in a layout a `VideoFrame` takes: RGB gets an opaque alpha. */
-function rgbaOrBgra(pixels: Pixels): Uint8Array {
-  if (pixels.format !== 'rgb') {
-    return pixels.data;
-  }
-  const rgba = new Uint8Array(pixels.width * pixels.height * 4);
-
-  for (let i = 0, j = 0; i < pixels.data.length; i += 3, j += 4) {
-    rgba[j] = pixels.data[i] as number;
-    rgba[j + 1] = pixels.data[i + 1] as number;
-    rgba[j + 2] = pixels.data[i + 2] as number;
-    rgba[j + 3] = 255;
-  }
-  return rgba;
 }
 
 /** The input tracks' encoders of one connection. `reset()` drops them all,
@@ -491,11 +481,18 @@ function toDecodeError(cause: unknown): DecodeError {
 }
 
 /** A decoded picture as a step frame's array: RGB `uint8` `(height, width,
- *  3)`. Closes `picture`. */
+ *  3)`. A 4:2:0 picture, what decoders hand back, is converted here as the
+ *  runtime encoded it (see `bt601.ts`); any other layout the engine converts.
+ *  Closes `picture`. */
 async function rgbOf(picture: VideoFrame): Promise<Pick<StepFrame, 'dtype' | 'shape' | 'data'>> {
   let pixels: Pixels;
 
   try {
+    const yuv = await yuvOf(picture);
+
+    if (yuv !== undefined) {
+      return yuv;
+    }
     pixels = await toPixels(picture);
   } finally {
     picture.close();
@@ -510,4 +507,21 @@ async function rgbOf(picture: VideoFrame): Promise<Pick<StepFrame, 'dtype' | 'sh
     rgb[j + 2] = pixels.data[i + b] as number;
   }
   return { dtype: 'uint8', shape: [height, width, 3], data: rgb };
+}
+
+/** `picture` as RGB when it is 4:2:0 (`I420`, `I420A` or `NV12`), the
+ *  conversion done here; `undefined` for any other layout. */
+async function yuvOf(picture: VideoFrame): Promise<Pick<StepFrame, 'dtype' | 'shape' | 'data'> | undefined> {
+  const format = picture.format === 'I420A' ? 'I420' : picture.format;
+
+  if (format !== 'I420' && format !== 'NV12') {
+    return undefined;
+  }
+  const width = picture.visibleRect?.width ?? picture.codedWidth;
+  const height = picture.visibleRect?.height ?? picture.codedHeight;
+  const data = new Uint8Array(picture.allocationSize());
+  // The visible rectangle, each plane where copyTo() says it put it.
+  const planes = await picture.copyTo(data);
+
+  return { dtype: 'uint8', shape: [height, width, 3], data: yuvToRgb(data, { format, width, height, planes }) };
 }
