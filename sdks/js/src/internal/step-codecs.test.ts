@@ -255,6 +255,38 @@ describe('OutputDecoders', () => {
     await expect(decoders.decodeResult(result(encodedFrame(3, true)))).resolves.toBeDefined();
   });
 
+  it('fails the frames another step still waits on when abandon() drops their decoder', async () => {
+    const decoders = new OutputDecoders(api);
+
+    await decoders.decodeResult(result(encodedFrame(1, true)));
+    // Handed to the decoder, its picture not back yet.
+    const waiting = decoders.decodeResult(result(encodedFrame(2, false)));
+
+    decoders.abandon();
+
+    await expect(waiting).rejects.toThrow('gave up');
+  });
+
+  it('fails the frames still in a decoder on reset(), rather than leave them to time out', async () => {
+    const decoders = new OutputDecoders(api);
+
+    await decoders.decodeResult(result(encodedFrame(1, true)));
+    const waiting = decoders.decodeResult(result(encodedFrame(2, false)));
+
+    decoders.reset();
+
+    await expect(waiting).rejects.toThrow('connection closed');
+  });
+
+  it('leaves out a frame the decoder shows no picture of, and matches each picture to its own frame', async () => {
+    const decoders = new OutputDecoders(api);
+
+    const decoded = await decoders.decodeResult(result(encodedFrame(1, true), encodedFrame(0xfe, false), encodedFrame(3, false)));
+
+    expect(decoded.tracks[0]?.frames.map((frame) => frame.data[0])).toEqual([1, 3]);
+    expect(FakeVideoFrame.open).toBe(0);
+  });
+
   it('reports a track lost again when the keyframe that restarts it fails', async () => {
     const decoders = new OutputDecoders(api);
 

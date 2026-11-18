@@ -12,6 +12,7 @@ import {
 import { FileRef } from './file-ref';
 import { FakeReactorClient } from './internal/fake-reactor-client';
 import { FakeVideoEncoder, fakeWebCodecs } from './internal/fake-web-codecs';
+import { InputEncoders } from './internal/step-codecs';
 import type { StepResult } from './internal/reactor-wasm.types';
 import type { ReactorEventMap } from './types';
 
@@ -1276,6 +1277,22 @@ describe('Reactor step frames on WebCodecs', () => {
     await reactor.pushFrame('camera', frame);
 
     expect(client.pushEncodedVideoFrameCalls.map((call) => call.keyframe)).toEqual([true, false, true]);
+  });
+
+  it('refuses a frame whose connection ended while it was encoded, encoded or raw', async () => {
+    const { reactor, client } = await h264Session();
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- applied to its own instance below
+    const encode = InputEncoders.prototype.encode;
+    const reconnecting = vi.spyOn(InputEncoders.prototype, 'encode').mockImplementation(function (this: InputEncoders, ...args) {
+      // A reconnect starts while the frame is in the encoder.
+      client.emitConnecting();
+      return encode.apply(this, args);
+    });
+
+    await expect(reactor.pushFrame('camera', frame)).rejects.toThrow('ended while');
+    expect(client.pushEncodedVideoFrameCalls).toEqual([]);
+    expect(client.pushVideoFrameCalls).toEqual([]);
+    reconnecting.mockRestore();
   });
 
   it('sends a frame raw when its encoder fails, and starts the track again at a keyframe', async () => {

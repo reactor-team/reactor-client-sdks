@@ -848,7 +848,9 @@ export class Reactor implements Disposable {
         const client = await this.getOrCreateClient();
 
         if (pixels) {
-          await this.pushPixels(client, trackName, pixels, options.metadata ?? null, options.captureTimeUs ?? null);
+          await this.pushPixels(client, trackName, pixels, options.metadata ?? null, options.captureTimeUs ?? null, () =>
+            this.checkPushTarget('pushFrame', trackName, publication, epoch),
+          );
         } else if (isAudioFrame(frame)) {
           client.pushAudioFrame(trackName, frame.samples, frame.sampleRate, frame.channels ?? 1);
         }
@@ -989,13 +991,17 @@ export class Reactor implements Disposable {
    *  step frames and this browser can encode; raw otherwise, and when the
    *  encoder fails (its next frame is then a keyframe). Checked by the
    *  binding before anything is encoded, so a bad frame is refused either
-   *  way. */
+   *  way. `stillTarget` throws when the push's connection or publication is
+   *  gone: asked again once the encode is awaited, since a reconnect can
+   *  start meanwhile, and neither the encoded frame nor its raw fallback may
+   *  then reach the next session. */
   private async pushPixels(
     client: ReactorClient,
     track: string,
     pixels: Pixels,
     metadata: Uint8Array | null,
     captureTimeUs: number | null,
+    stillTarget: () => void,
   ): Promise<void> {
     const { data, width, height, format } = pixels;
     const encoding = this.inputEncoders.available ? client.stepFrameEncodings()[track] : undefined;
@@ -1006,16 +1012,19 @@ export class Reactor implements Disposable {
       // frames encoded for it were not sent; the encoder starts each stream
       // at one on its own.
       const keyframe = client.takeInputKeyframeRequest(track);
+      let encoded: Awaited<ReturnType<InputEncoders['encode']>> | undefined;
 
       try {
-        const encoded = await this.inputEncoders.encode(track, encoding, pixels, keyframe);
-
+        encoded = await this.inputEncoders.encode(track, encoding, pixels, keyframe);
+      } catch (cause) {
+        console.warn(`[Reactor] pushFrame('${track}'): ${encoding} encoding failed, sending the frame raw:`, cause);
+      }
+      stillTarget();
+      if (encoded !== undefined) {
         for (const frame of encoded) {
           client.pushEncodedVideoFrame(track, encoding, frame.data, width, height, metadata, captureTimeUs, frame.keyframe);
         }
         return;
-      } catch (cause) {
-        console.warn(`[Reactor] pushFrame('${track}'): ${encoding} encoding failed, sending the frame raw:`, cause);
       }
     }
     client.pushVideoFrame(track, data, width, height, format, metadata, captureTimeUs);
@@ -1100,7 +1109,9 @@ export class Reactor implements Disposable {
               frame.encoded.keyframe,
             );
           } else if (frame.kind === 'video') {
-            await this.pushPixels(client, frame.track, frame.pixels, null, null);
+            await this.pushPixels(client, frame.track, frame.pixels, null, null, () =>
+              this.checkPushTarget(frame.operation, frame.track, undefined, epoch),
+            );
           } else {
             const { samples, sampleRate, channels } = frame.audio;
 

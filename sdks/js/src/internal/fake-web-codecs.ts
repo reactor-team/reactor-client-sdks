@@ -178,6 +178,10 @@ export class FakeVideoDecoder {
         this.callbacks.error(new Error('corrupt frame'));
         return;
       }
+      if (red === 0xfe) {
+        // A frame that is not shown: decoded, no picture.
+        return;
+      }
       this.callbacks.output(
         new FakeVideoFrame(new Uint8Array([red, 2, 3, 255]), { format: 'RGBA', codedWidth: 1, codedHeight: 1, timestamp: chunk.timestamp }),
       );

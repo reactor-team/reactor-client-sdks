@@ -236,25 +236,22 @@ export class InputEncoders {
 /** One output track's decoder, from a keyframe on. */
 class TrackDecoder {
   private readonly decoder: VideoDecoder;
-  /** Resolvers of the frames handed in and not yet handed back, oldest
-   *  first: a decoder hands frames back in the order it took them. */
-  private readonly pending: Array<{ resolve: (frame: VideoFrame) => void; reject: (cause: unknown) => void }> = [];
+  private readonly Chunk: NonNullable<WebCodecs['EncodedVideoChunk']>;
+  /** Resolvers of the frames handed in and not yet handed back, by the
+   *  timestamp each chunk was given, in the order they were handed in. */
+  private readonly pending = new Map<number, { resolve: (frame: VideoFrame | undefined) => void; reject: (cause: unknown) => void }>();
+  /** The next chunk's timestamp: a count, so each output names the one chunk
+   *  it was made of, whatever capture time the frame carried. */
+  private nextTimestamp = 0;
   failed = false;
 
   constructor(
-    api: Required<Pick<WebCodecs, 'VideoDecoder'>>,
+    api: Required<Pick<WebCodecs, 'VideoDecoder' | 'EncodedVideoChunk'>>,
     readonly codec: EncodedVideoCodec,
   ) {
+    this.Chunk = api.EncodedVideoChunk;
     this.decoder = new api.VideoDecoder({
-      output: (frame) => {
-        const next = this.pending.shift();
-
-        if (next) {
-          next.resolve(frame);
-        } else {
-          frame.close();
-        }
-      },
+      output: (frame) => this.deliver(frame),
       error: (error) => this.fail(error),
     });
     try {
@@ -265,16 +262,41 @@ class TrackDecoder {
     }
   }
 
-  /** Hand `chunk` to the decoder now, and resolve with the frame it makes of
-   *  it. Called synchronously for every frame of a result, so the decoder
-   *  takes them in the order results arrive. */
-  decode(chunk: EncodedVideoChunk): Promise<VideoFrame> {
-    const decoded = new Promise<VideoFrame>((resolve, reject) => {
-      this.pending.push({ resolve, reject });
+  /** Hand `frame` to the chunk it was made of, by its timestamp. A step's
+   *  stream is decoded in order, with no frame reordered, so a chunk handed
+   *  in before that one with no picture yet made none (a frame that is not
+   *  shown): it resolves with none rather than wait for the timeout, and no
+   *  picture is ever matched to a chunk it was not made of. */
+  private deliver(frame: VideoFrame): void {
+    const entry = this.pending.get(frame.timestamp);
+
+    if (!entry) {
+      frame.close();
+      return;
+    }
+    for (const [timestamp, earlier] of this.pending) {
+      if (timestamp === frame.timestamp) {
+        break;
+      }
+      this.pending.delete(timestamp);
+      earlier.resolve(undefined);
+    }
+    this.pending.delete(frame.timestamp);
+    entry.resolve(frame);
+  }
+
+  /** Hand a chunk of `data` to the decoder now, and resolve with the frame it
+   *  makes of it, or `undefined` for one it shows none of. Called
+   *  synchronously for every frame of a result, so the decoder takes them in
+   *  the order results arrive. */
+  decode(type: 'key' | 'delta', data: StepFrame['data']): Promise<VideoFrame | undefined> {
+    const timestamp = this.nextTimestamp++;
+    const decoded = new Promise<VideoFrame | undefined>((resolve, reject) => {
+      this.pending.set(timestamp, { resolve, reject });
     });
 
     try {
-      this.decoder.decode(chunk);
+      this.decoder.decode(new this.Chunk({ type, timestamp, data }));
     } catch (cause) {
       this.fail(cause);
     }
@@ -283,10 +305,14 @@ class TrackDecoder {
     });
   }
 
-  /** The decoder lost its state: every frame still in it fails. */
+  /** The decoder lost its state, or is given up: every frame still in it
+   *  fails, so no step waits on it. */
   fail(cause: unknown): void {
     this.failed = true;
-    for (const next of this.pending.splice(0)) {
+    const pending = [...this.pending.values()];
+
+    this.pending.clear();
+    for (const next of pending) {
       next.reject(cause);
     }
     this.close();
@@ -342,7 +368,9 @@ export class OutputDecoders {
    *  decoders, and report each of their tracks lost. */
   abandon(): void {
     for (const [track, decoder] of this.decoders) {
-      decoder.close();
+      // Another step may still wait on frames in it: they fail now rather
+      // than time out.
+      decoder.fail(new DecodeError(`step(): track '${track}' lost its stream: a step gave up mid-stream`, { operation: 'step' }));
       this.lose(track, false);
     }
     this.decoders.clear();
@@ -392,9 +420,10 @@ export class OutputDecoders {
     });
   }
 
-  /** Decode one frame of `track`; a raw one passes as it is. Synchronous up
-   *  to the decoder taking the frame. */
-  private decodeFrame(track: string, frame: StepFrame): Promise<StepFrame> {
+  /** Decode one frame of `track`; a raw one passes as it is, and one its
+   *  decoder shows no picture of is `undefined`. Synchronous up to the
+   *  decoder taking the frame. */
+  private decodeFrame(track: string, frame: StepFrame): Promise<StepFrame | undefined> {
     if (!isEncoded(frame)) {
       return Promise.resolve(frame);
     }
@@ -407,7 +436,7 @@ export class OutputDecoders {
     let decoder = this.decoders.get(track);
 
     if (decoder && (decoder.failed || decoder.codec !== codec)) {
-      decoder.close();
+      decoder.fail(new DecodeError(`step(): track '${track}' changed codec to ${codec}`, { operation: 'step' }));
       this.decoders.delete(track);
       decoder = undefined;
     }
@@ -423,25 +452,20 @@ export class OutputDecoders {
         );
       }
       try {
-        decoder = new TrackDecoder({ VideoDecoder: Decoder }, codec);
+        decoder = new TrackDecoder({ VideoDecoder: Decoder, EncodedVideoChunk: Chunk }, codec);
       } catch (cause) {
         return Promise.reject(toDecodeError(cause));
       }
       this.decoders.set(track, decoder);
     }
     const live = decoder;
-    const chunk = new Chunk({
-      type: frame.keyframe ? 'key' : 'delta',
-      timestamp: frame.captureTimeUs ?? 0,
-      data: frame.data,
-    });
 
-    return live.decode(chunk).then(
+    return live.decode(frame.keyframe ? 'key' : 'delta', frame.data).then(
       async (picture) => {
         if (frame.keyframe) {
           this.awaitingKeyframe.delete(track);
         }
-        return { ...frame, ...(await rgbOf(picture)) };
+        return picture === undefined ? undefined : { ...frame, ...(await rgbOf(picture)) };
       },
       (cause: unknown) => {
         // A keyframe that fails to decode is a loss of its own: the restart
@@ -456,8 +480,8 @@ export class OutputDecoders {
   }
 
   reset(): void {
-    for (const decoder of this.decoders.values()) {
-      decoder.close();
+    for (const [track, decoder] of this.decoders) {
+      decoder.fail(new DecodeError(`step(): track '${track}' lost its stream: its connection closed`, { operation: 'step' }));
     }
     this.decoders.clear();
     this.awaitingKeyframe.clear();
