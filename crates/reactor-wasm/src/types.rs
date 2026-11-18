@@ -258,8 +258,8 @@ export interface StepCommand {
 /** One frame a step produced. Hand-built by the binding rather than
  *  serialized, so camelCase, unlike the wire payloads above. */
 export interface StepFrame {
-  /** How the frame travelled; "raw" is the only one decoded today. */
-  encoding: "raw" | "unspecified";
+  /** How the frame travelled: raw, or in the codec it names. */
+  encoding: "raw" | "unspecified" | "h264" | "vp8" | "vp9" | "av1";
   /** Element type, in NumPy notation: "uint8" (video), "int16" (audio). */
   dtype: string;
   /** (height, width, 3) RGB for video, (channels, samples) planar PCM for
