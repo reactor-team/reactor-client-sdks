@@ -793,9 +793,10 @@ public class Reactor(
      * negotiated. The choice is kept by this client and applies to every connection it makes
      * afterwards, including one that needs a new native client. A streamed session ignores it.
      *
-     * @param codecs the codecs, most preferred first; null for the default, empty for none
+     * @param codecs the codecs, most preferred first; null for the default, empty for none. A codec
+     *   named more than once counts where it first appears.
      * @param track the one track this applies to, or null for every track
-     * @throws IllegalArgumentException for a blank [track] or a codec named twice; nothing changed
+     * @throws IllegalArgumentException for a blank [track]; nothing changed
      * @throws ReactorException when the native layer refuses the preference; nothing changed
      */
     public fun setCodecPreference(

@@ -76,13 +76,16 @@ class StepCodecsTest {
         assertThrows(IllegalArgumentException::class.java) {
             preferences.set(" ", listOf(StepCodec.H264), sink::send)
         }
-        val twice =
-            assertThrows(IllegalArgumentException::class.java) {
-                preferences.set(null, listOf(StepCodec.H264, StepCodec.VP8, StepCodec.H264), sink::send)
-            }
-        assertTrue(twice.message!!.contains("H264"))
         assertTrue(sink.calls.isEmpty())
         assertTrue(preferences.snapshot().isEmpty())
+    }
+
+    @Test
+    fun `a codec named twice is passed through, for the native side to keep its first place`() {
+        val preferences = CodecPreferences()
+        val sink = Sink()
+        preferences.set(null, listOf(StepCodec.H264, StepCodec.VP8, StepCodec.H264), sink::send)
+        assertEquals(listOf<Pair<String?, String?>>(null to """["h264","vp8","h264"]"""), sink.calls)
     }
 
     @Test
@@ -122,7 +125,7 @@ class StepCodecsTest {
         reactor.setCodecPreference(emptyList())
         reactor.setCodecPreference(null, track = "main_video")
         assertEquals(emptyMap<String, String>(), reactor.stepFrameEncodings)
-        assertThrows(IllegalArgumentException::class.java) { reactor.setCodecPreference(listOf(StepCodec.VP8, StepCodec.VP8)) }
+        reactor.setCodecPreference(listOf(StepCodec.VP8, StepCodec.VP8))
         reactor.close()
         assertThrows(InvalidStateException::class.java) { reactor.setCodecPreference(null) }
     }

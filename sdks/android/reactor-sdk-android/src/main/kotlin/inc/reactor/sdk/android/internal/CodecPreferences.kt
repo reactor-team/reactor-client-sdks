@@ -24,7 +24,10 @@ internal class CodecPreferences {
     /**
      * Validate, send through [send] (which answers the native error payload, or null), then store.
      *
-     * @throws IllegalArgumentException for a blank track name or a codec named twice
+     * A codec named more than once counts where it first appears, as the native side and every
+     * other SDK read it.
+     *
+     * @throws IllegalArgumentException for a blank track name
      * @throws inc.reactor.sdk.android.ReactorException the native side's refusal, typed
      */
     @Synchronized
@@ -35,18 +38,6 @@ internal class CodecPreferences {
     ) {
         require(track == null || track.isNotBlank()) {
             "A codec preference's track is a track name, or null for every track — not a blank string"
-        }
-        if (codecs != null) {
-            val repeated =
-                codecs
-                    .groupingBy { it }
-                    .eachCount()
-                    .filterValues { it > 1 }
-                    .keys
-            require(repeated.isEmpty()) {
-                "Each codec is named once, most preferred first; named more than once: " +
-                    repeated.joinToString(", ")
-            }
         }
         val json = toJson(codecs)
         send(track, json)?.let { throw ErrorPayloads.toException(it, OPERATION) }
