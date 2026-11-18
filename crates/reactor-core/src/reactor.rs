@@ -2120,7 +2120,9 @@ impl Reactor {
     /// [`Reactor::push_video_frame`] does, its bytes as they are. `width` and
     /// `height` are the frame it decodes to; the runtime decodes a track's
     /// encoded frames as one stream, so they go in decode order and start at
-    /// a keyframe, which `keyframe` marks (`Frame.keyframe`). A pushed frame
+    /// a keyframe. `Frame.keyframe` is set when `keyframe` says so or the
+    /// bitstream marks one (an H.264 IDR, a VP8 or VP9 key frame), so `false`
+    /// adds nothing rather than unmark it. A pushed frame
     /// that does not decode is answered with an `input_decode_failed` error
     /// event whose `track` names the track, and the track's next frame must be
     /// a keyframe ([`Reactor::take_input_keyframe_request`]); a
@@ -2155,6 +2157,10 @@ impl Reactor {
                 // it later starts the core's own stream again at a keyframe,
                 // and none encoded here goes out between the restart and this
                 // frame.
+                // A keyframe by the caller's mark or by its bitstream: a host
+                // that cannot tell (the native FFI marks none) still sends an
+                // IDR as the keyframe it is.
+                let keyframe = keyframe || frame.keyframe;
                 let push = || {
                     self.push_step_input(track_name, WireTrackKind::Video, Frame { keyframe, ..frame })
                 };

@@ -1454,6 +1454,48 @@ async fn a_reconnect_resets_every_tracks_decoder() {
 
 // ── Stepped generation: input buffering ─────────────────────────────────
 
+/// A push not marked a keyframe, as the native FFI's always is, keeps the
+/// mark its bitstream gives: an IDR still goes out as a keyframe, a P frame
+/// as none, and a caller's mark is not taken away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_encoded_push_keeps_the_keyframe_its_bitstream_marks() {
+    use crate::protocol::wire::v1::step::FrameEncoding;
+
+    let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+    let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+    let idr = [0, 0, 0, 1, 0x65, 1, 2];
+    let p_frame = [0, 0, 0, 1, 0x41, 3];
+    for (data, keyframe) in [
+        (&idr[..], false),
+        (&p_frame[..], false),
+        (&p_frame[..], true),
+    ] {
+        reactor.push_step_encoded_video_frame(
+            "cam",
+            FrameEncoding::H264,
+            data,
+            4,
+            2,
+            None,
+            None,
+            keyframe,
+        );
+    }
+
+    let (_stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+    let Some(data_client_message::Payload::RequestStep(request)) = sent.payload else {
+        panic!("expected a RequestStep");
+    };
+    assert_eq!(
+        request.media_input[0]
+            .frames
+            .iter()
+            .map(|f| f.keyframe)
+            .collect::<Vec<_>>(),
+        [true, false, true]
+    );
+}
+
 /// Encoded frames ride the next step as they were pushed, in push order
 /// beside the raw ones, under their own encoding; outside a stepped session
 /// they are dropped.
