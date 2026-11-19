@@ -79,13 +79,13 @@ let package = Package(
     // question and is genuinely unsupported — see rust-toolchain.toml.) The
     // platform table in sdks/swift/README.md is the full story.
     //
-    // tvOS 17, one above iOS's twin, because of ReactorMedia: `Camera` is built
-    // on AVCaptureSession and AVCaptureDevice, which tvOS gained in 17 (for
-    // Continuity Camera). At 16 that target does not compile; at 17 it does,
-    // unchanged. Nothing else asks for it — `Reactor` compiles at 16, and
-    // WebRTC's build defaults its mobile targets to 14.0 (`ios_deployment_target`
-    // in its .gn, which a tvOS build shares) — and tvOS 17 runs on every Apple TV
-    // that tvOS 16 does, so the extra version costs no hardware.
+    // tvOS 17, one above iOS's twin, because of libwebrtc: its audio device
+    // uses AVAudioSession and voice-processing APIs that tvOS gained in 17, so
+    // reactor-webrtc builds its tvOS archive for 17.0 and nothing linked against
+    // it can go lower. tvOS 17 runs on every Apple TV that tvOS 16 does, so the
+    // extra version costs no hardware. (The Swift sources alone compile at 16:
+    // `Camera` and `Microphone`, whose capture classes arrived in 17, are
+    // unavailable on tvOS.)
     //
     // The XCFramework's tvOS slice is opt-in (scripts/build-swift-xcframework.sh)
     // until a published libwebrtc covers it, so a released archive may carry no
