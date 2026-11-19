@@ -350,14 +350,18 @@ class Track:
         tracks still share the synthetic capture device.
 
         **Stepped sessions.** In a client created with ``generation="stepped"`` this
-        sends nothing: the frame is buffered, with its tag and capture time, and the
-        next :meth:`Reactor.step` carries every frame pushed since the one before —
-        per track, in push order. Video goes as an ``(height, width, 3)`` ``uint8``
-        RGB frame, audio as one planar ``(channels, samples)`` ``int16`` frame per
-        push; a step frame has no sample rate, so push audio at the rate the model's
-        track declares. Publish the track first, as for a streamed session. The
-        buffer holds at most one message's worth of frame bytes: pushing faster
-        than steps run drops the oldest frames, across tracks. Once the session's
+        sends no RTP: the frame, with its tag and capture time, goes to the runtime
+        over the data channel — at once, ahead of any step after it, once the
+        session is ready and the runtime takes pushed frames (one the channel cannot
+        take is dropped and raised as an error event). A frame pushed before then,
+        or to an older runtime, is buffered and sent with the next push or
+        :meth:`Reactor.step` — per track, in push order. Video goes as an
+        ``(height, width, 3)`` ``uint8`` RGB frame, audio as one planar
+        ``(channels, samples)`` ``int16`` frame per push; a step frame has no sample
+        rate, so push audio at the rate the model's track declares. Publish the
+        track first, as for a streamed session. The buffer holds at most one
+        message's worth of frame bytes: pushing faster than steps run drops the
+        oldest frames, across tracks. Once the session's
         tracks are known, a push to a track the session does not take as input is
         dropped with a warning.
 
@@ -463,20 +467,23 @@ class Track:
         user_data: bytes | None = None,
         capture_time_us: int | None = None,
     ) -> None:
-        """Buffer one encoded video frame, its bytes as they are, for the next step.
+        """Push one encoded video frame, its bytes as they are, to the runtime.
 
-        Stepped sessions only: like :meth:`push_frame` there, this sends nothing,
-        and the next :meth:`Reactor.step` carries the frame. ``data`` is one H.264
-        access unit, and ``width`` and ``height`` the frame it decodes to::
+        Stepped sessions only: like :meth:`push_frame` there, this sends the frame
+        to the runtime at once, or buffers it for the next :meth:`Reactor.step`.
+        ``data`` is one H.264 access unit, and ``width`` and ``height`` the frame
+        it decodes to::
 
             for packet in window:  # PyAV packets, keyframe first
                 camera.push_encoded_frame(bytes(packet), width=1280, height=720)
             result = await reactor.step()
 
-        The runtime decodes a track's encoded frames of one step as one stream,
-        before the step runs, and the model reads RGB frames as if they had been
-        pushed raw. So push them in decode order, starting at a keyframe; a step
-        whose frames do not decode is refused. Encoded and raw pushes to one track
+        The runtime decodes a track's encoded frames as one stream, as they
+        arrive, and the model reads RGB frames as if they had been pushed raw. So
+        push them in decode order, starting at a keyframe. A pushed frame that
+        does not decode raises an ``input_decode_failed`` error event naming the
+        track, whose next frame must then be a keyframe; a step whose buffered
+        frames do not decode is refused. Encoded and raw pushes to one track
         keep their push order. ``user_data`` and ``capture_time_us`` tag and stamp
         the decoded frame, as for :meth:`push_frame`.
         """
@@ -499,7 +506,7 @@ class Track:
         user_data: bytes | None = None,
         capture_time_us: int | None = None,
     ) -> Callable[[], None]:
-        """Check one frame for :meth:`push_encoded_frame`; return the push that buffers it."""
+        """Check one frame for :meth:`push_encoded_frame`; return the push that sends it."""
         self._require_direction(TrackDirection.SENDONLY, "push_encoded_frame()")
         self._require_published("push_encoded_frame()")
         if self._kind is not TrackKind.VIDEO:

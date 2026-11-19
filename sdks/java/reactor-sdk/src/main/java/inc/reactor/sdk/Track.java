@@ -172,10 +172,12 @@ public final class Track {
     /**
      * Pushes one BGRA video frame.
      *
-     * <p><b>In a stepped session this sends nothing.</b> The frame is buffered, with its tag and
-     * capture time, and the next {@link Reactor#step} carries the frames pushed since the one
-     * before — per track, in push order, converted to an {@code (height, width, 3)} {@code uint8}
-     * RGB array. The buffer holds at most one data-channel message's worth of frame bytes: pushing
+     * <p><b>In a stepped session this sends no RTP.</b> The frame, with its tag and capture time,
+     * goes to the runtime over the data channel, converted to an {@code (height, width, 3)} {@code
+     * uint8} RGB array — at once, ahead of any step after it, once the session is ready and the
+     * runtime takes pushed frames (one the channel cannot take is dropped and raised as an error
+     * event). A frame pushed before then, or to an older runtime, is buffered and sent with the next
+     * push or {@link Reactor#step} — per track, in push order. The buffer holds at most one data-channel message's worth of frame bytes: pushing
      * faster than steps run drops the oldest frames, across tracks. Publish the track first, as for
      * a streamed session.
      *
@@ -275,9 +277,9 @@ public final class Track {
     /**
      * Pushes interleaved 16-bit PCM.
      *
-     * <p><b>In a stepped session this sends nothing.</b> The samples are buffered for the next
-     * {@link Reactor#step} as one planar {@code (channels, samples)} {@code int16} frame per push. A
-     * step frame carries no sample rate, so push at the rate the model's track declares.
+     * <p><b>In a stepped session this sends no RTP.</b> Each push goes as one planar {@code
+     * (channels, samples)} {@code int16} frame, sent to the runtime or buffered for the next {@link
+     * Reactor#step} as a video frame is. A step frame carries no sample rate, so push at the rate the model's track declares.
      *
      * @param pcm the samples, across every channel
      * @param sampleRate samples per second
@@ -313,7 +315,7 @@ public final class Track {
     }
 
     /**
-     * Buffers one H.264 access unit, its bytes as they are, for the next step.
+     * Pushes one H.264 access unit, its bytes as they are, to a stepped session.
      *
      * @param data one access unit, Annex B
      * @param width the width of the frame it decodes to, in pixels
@@ -326,10 +328,10 @@ public final class Track {
     }
 
     /**
-     * Buffers one encoded video frame, its bytes as they are, for the next step.
+     * Pushes one encoded video frame, its bytes as they are, to a stepped session.
      *
-     * <p>Stepped sessions only: like {@link #pushFrame(byte[], int, int)} there, this sends
-     * nothing, and the next {@link Reactor#step} carries the frame.
+     * <p>Stepped sessions only: like {@link #pushFrame(byte[], int, int)} there, this sends the
+     * frame to the runtime at once, or buffers it for the next {@link Reactor#step}.
      *
      * <pre>{@code
      * for (byte[] accessUnit : window) {             // keyframe first
@@ -338,10 +340,11 @@ public final class Track {
      * StepResult result = reactor.step().join();
      * }</pre>
      *
-     * <p>The runtime decodes a track's encoded frames of one step as one stream, before the step
-     * runs, and the model reads RGB frames as if they had been pushed raw. So push them in decode
-     * order, starting at a keyframe; a step whose frames do not decode fails with {@link
-     * StepRefusedException}. Encoded and raw pushes to one track keep their push order, and share
+     * <p>The runtime decodes a track's encoded frames as one stream, as they arrive, and the model
+     * reads RGB frames as if they had been pushed raw. So push them in decode order, starting at a
+     * keyframe. A pushed frame that does not decode raises an {@code input_decode_failed} error
+     * event naming the track, whose next frame must then be a keyframe; a step whose buffered
+     * frames do not decode fails with {@link StepRefusedException}. Encoded and raw pushes to one track keep their push order, and share
      * the buffer's byte budget.
      *
      * @param frame the frame, with the size it decodes to and, optionally, a tag and capture time

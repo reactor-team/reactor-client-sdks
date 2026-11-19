@@ -309,11 +309,12 @@ class Track {
   /// discarded on format change or disconnect. Local audio tracks share a device.
   void push_frame(Samples pcm, std::uint32_t sample_rate = 48'000, std::uint32_t channels = 1);
 
-  /// Buffer one encoded video frame for the next step, its bytes as they are.
+  /// Push one encoded video frame to the runtime, its bytes as they are.
   ///
-  /// Stepped sessions only: like `push_frame` there, this sends nothing, and the
-  /// next `Reactor::step()` carries the frame. `data` is one H.264 access unit,
-  /// and `width` and `height` the frame it decodes to:
+  /// Stepped sessions only: like `push_frame` there, this sends the frame to the
+  /// runtime at once, or buffers it for the next `Reactor::step()` (see there).
+  /// `data` is one H.264 access unit, and `width` and `height` the frame it
+  /// decodes to:
   ///
   /// ```cpp
   /// for (const auto& packet : window) {   // keyframe first, in decode order
@@ -322,10 +323,12 @@ class Track {
   /// const auto result = client.step().get();
   /// ```
   ///
-  /// The runtime decodes a track's encoded frames of one step as one stream,
-  /// before the step runs, and the model reads RGB frames as if they had been
-  /// pushed raw. So push them in decode order, starting at a keyframe; a step
-  /// whose frames do not decode fails with `StepRefusedError`. Encoded and raw
+  /// The runtime decodes a track's encoded frames as one stream, as they arrive,
+  /// and the model reads RGB frames as if they had been pushed raw. So push them
+  /// in decode order, starting at a keyframe. A pushed frame that does not decode
+  /// raises an `input_decode_failed` error event naming the track, whose next
+  /// frame must then be a keyframe; a step whose buffered frames do not decode
+  /// fails with `StepRefusedError`. Encoded and raw
   /// pushes to one track keep their push order. `options` tags and stamps the
   /// decoded frame, as for `push_frame`. The bytes are copied before this returns.
   ///
@@ -359,8 +362,8 @@ class Track {
 ///
 /// Push it with `Track::push_encoded_frame`, or pass it in a step's media
 /// (`Reactor::step(state, commands, media)`). The runtime decodes a track's
-/// encoded frames of one step as one stream, before the step runs, so give them
-/// in decode order, starting at a keyframe:
+/// encoded frames as one stream, as they arrive, so give them in decode order,
+/// starting at a keyframe:
 ///
 ///     reactor::StepMedia media;
 ///     for (const auto& packet : window) {

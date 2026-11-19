@@ -125,9 +125,12 @@ public class Track internal constructor(
     /**
      * Push one BGRA video frame.
      *
-     * **In a stepped session this sends nothing.** The frame is buffered, with its tag, and the
-     * next [Reactor.step] carries the frames pushed since the one before — per track, in push
-     * order, converted to an `(height, width, 3)` `uint8` RGB array. The buffer holds at most one
+     * **In a stepped session this sends no RTP.** The frame, with its tag, goes to the runtime over
+     * the data channel, converted to an `(height, width, 3)` `uint8` RGB array — at once, ahead of
+     * any step after it, once the session is ready and the runtime takes pushed frames (one the
+     * channel cannot take is dropped and raised as an error event). A frame pushed before then, or
+     * to an older runtime, is buffered and sent with the next push or [Reactor.step] — per track,
+     * in push order. The buffer holds at most one
      * data-channel message's worth of frame bytes: pushing faster than steps run drops the oldest
      * frames, across tracks. Publish the track first, as for a streamed session.
      *
@@ -179,8 +182,9 @@ public class Track internal constructor(
     /**
      * Push interleaved signed 16-bit PCM.
      *
-     * **In a stepped session this sends nothing.** The samples are buffered for the next
-     * [Reactor.step] as one planar `(channels, samples)` `int16` frame per push. A step frame
+     * **In a stepped session this sends no RTP.** Each push goes as one planar `(channels,
+     * samples)` `int16` frame, sent to the runtime or buffered for the next [Reactor.step] as a
+     * video frame is. A step frame
      * carries no sample rate, so push at the rate the model's track declares.
      *
      * @param pcm a **direct** [java.nio.ByteBuffer] with exactly `samplesPerChannel * channels * 2`

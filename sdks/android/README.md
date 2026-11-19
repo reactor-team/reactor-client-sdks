@@ -154,8 +154,8 @@ into nothing. Each of those throws here, naming the fix.
 
 A model that supports it can generate one step at a time instead of streaming.
 Ask for it in the options, then call `step()`: the runtime applies the state
-(each key as the model's `set_<key>` command), then the commands, then every
-input frame pushed since the previous step, generates, and the step returns what
+(each key as the model's `set_<key>` command), then the commands, then any
+input frames the step carries, generates, and the step returns what
 the model produced on each output track. The runtime checks the whole request
 before it applies any of it, so a refused step changed nothing
 (`StepRefusedException.entry` names the part at fault); a step whose call failed
@@ -170,7 +170,7 @@ reactor.connect("owner/model")         // GenerationModeMismatchException if the
 
 val camera = reactor.track("camera")
 camera.publish()
-camera.pushFrame(bgra, width, height)  // buffered for the next step, not sent
+camera.pushFrame(bgra, width, height)  // reaches the runtime before the next step
 
 val result =
     reactor.step(
@@ -195,9 +195,13 @@ for (file in result.files) {           // named only; fetch the bytes over HTTP
 `state` and a command's `data` are JSON objects as strings, the form
 `sendCommand` takes its arguments in.
 
-`Track.pushFrame` keeps its signature: in a stepped session it buffers the frame
-for the next step instead of sending it, converted to `(height, width, 3)` RGB.
-Audio comes back as `(channels, samples)` `int16`, so
+`Track.pushFrame` keeps its signature: in a stepped session the frame goes to
+the runtime over the data channel instead of RTP, converted to `(height, width, 3)`
+RGB. Once the session is ready, against a runtime that takes pushed frames, each
+push is sent at once, ahead of any step after it, and one the channel cannot take
+is dropped and raised as an error event. A frame pushed before the session is
+ready, or to an older runtime, is buffered instead and sent with the next push or
+step. Audio comes back as `(channels, samples)` `int16`, so
 `frame.data().asShortBuffer()` reads the samples. A frame handler on a stepped
 session's track is refused, because nothing streams there — the output is in the
 result.
@@ -206,9 +210,10 @@ A step refused before it goes out (outside a connected stepped session, or with
 malformed arguments) keeps the buffered frames for the next step. Past that they
 belong to the step whatever its outcome: one that could not be sent,
 `MessageTooLargeException` included, drops them too, and nothing is resent.
-`clearStepInputs()` drops what is buffered now. The buffer holds at most one
-data-channel message's worth of frame bytes, so pushing faster than steps run
-drops the oldest frames, across tracks. Once the session's tracks are known, a
+`clearStepInputs()` drops what is buffered now; frames already sent to the
+runtime are not recalled. The buffer holds at most one data-channel message's
+worth of frame bytes, so pushing faster than steps run drops the oldest frames,
+across tracks. Once the session's tracks are known, a
 push to a track the session does not take as input is dropped with a warning.
 `ReactorOptions.stepTimeoutSeconds` bounds how long a step may take; the default
 is 300. A message's limit is the smaller of `ReactorOptions.maxMessageSize`

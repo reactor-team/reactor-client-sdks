@@ -30,8 +30,8 @@ does. `reactor.tracks` and its `.withKind`/`.withDirection` filters are for
 
 A model that supports it can generate one step at a time instead of streaming.
 Ask for it when creating the client, then call `step(state:commands:)`: the
-runtime applies the state, then the commands, then every input frame pushed
-since the previous step — each as its own call, not as one unit — generates,
+runtime applies the state, then the commands, then any input frames the step
+carries — each as its own call, not as one unit — generates,
 and returns what the model produced on each output track. Both arguments are
 optional: `step()` runs on the model's current state, which commands sent with
 `sendCommand` between steps can change.
@@ -44,7 +44,7 @@ try await reactor.connect()          // generationModeMismatch if the runtime ca
 
 let camera = try reactor.track("camera")
 try await camera.publish()
-try camera.pushFrame(pixels, width: 640, height: 360)   // buffered for the next step, not sent
+try camera.pushFrame(pixels, width: 640, height: 360)   // reaches the runtime before the next step
 
 let result = try await reactor.step(
     state: ["prompt": "a red fox"],
@@ -63,11 +63,15 @@ for file in result.files {
 let next = try await reactor.step()       // nothing new: run on the current state
 ```
 
-`Track.pushFrame` keeps its signatures: in a stepped session it buffers the frame
-for the next step instead of sending it. The buffer holds at most one
-data-channel message's worth of frame bytes, so pushing faster than steps run
-drops the oldest frames, across tracks; once the session's tracks are known, a
-push to a track the session does not take as input is dropped with a warning.
+`Track.pushFrame` keeps its signatures: in a stepped session the frame goes to
+the runtime over the data channel instead of RTP. Once the session is ready,
+against a runtime that takes pushed frames, each push is sent at once, ahead of
+any step after it, and one the channel cannot take is dropped and raised as an
+error event. A frame pushed before the session is ready, or to an older runtime,
+is buffered instead and sent with the next push or step. The buffer holds at
+most one data-channel message's worth of frame bytes, so pushing faster than
+steps run drops the oldest frames, across tracks; once the session's tracks are
+known, a push to a track the session does not take as input is dropped with a warning.
 Audio comes back as planar `(channels, samples)` `int16`. Each output track
 carries `rate`, the rate its frames play at as the runtime reported it — frames
 per second for video, samples per second for audio, `0` when unspecified. The
@@ -102,8 +106,10 @@ every frame are well formed, right before the step takes them, so another step's
 frames cannot land in between. RGB frames, pushed or in a step, are converted to
 BGRA, opaque: `camera.pushFrame(rgb, format: .rgb, width:, height:)`. `pushEncodedFrame` needs a stepped
 client and a published sendonly video track, and refuses an empty frame or a
-zero size. A step whose frames do not decode, or that does not start at a
-keyframe, throws `ReactorError.stepRefused`, naming the frame in `entry`. A
+zero size. A frame already sent to the runtime that does not decode raises an
+`input_decode_failed` error event naming the track, whose next frame must then be
+a keyframe. A step whose buffered frames do not decode, or that does not start at
+a keyframe, throws `ReactorError.stepRefused`, naming the frame in `entry`. A
 runtime that predates encoded frames refuses them the same way.
 
 A step that ran but that the model reported as failed returns normally, with
@@ -115,10 +121,10 @@ run, and the error's `entry` and `commandCode` name the call and its code); one 
 `stepSessionEnded` (whether it ran is unknown); one whose output
 does not fit in a message throws `stepResultTooLarge`; a request too large to
 send throws `messageTooLarge`. A step refused before it goes out (`invalidState`,
-`badRequest`) keeps its pushed frames for the next step; past that they belong to
+`badRequest`) keeps its buffered frames for the next step; past that they belong to
 the step whatever its outcome, so one that could not be sent drops them too, and
 nothing is resent. `clearStepInputs()` drops what is
-buffered now. `stepTimeout:` bounds a step (default 300 s). A message's limit is
+buffered now; frames already sent to the runtime are not recalled. `stepTimeout:` bounds a step (default 300 s). A message's limit is
 the smaller of `maxMessageSize:` (default 256 MiB) and the runtime's, which is
 64 MiB unless the model raises it in its `reactor.yaml`
 (`runtime.webrtc.max_message_size`).

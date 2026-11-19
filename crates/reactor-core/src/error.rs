@@ -157,6 +157,11 @@ pub struct ErrorDetails {
     /// For a step whose call failed, the code the handler failed with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command_code: Option<String>,
+    /// The track the failure is about, when the runtime named one: for
+    /// `input_decode_failed`, the input track whose next frame must be a
+    /// keyframe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track: Option<String>,
 }
 
 impl ErrorDetails {
@@ -172,6 +177,7 @@ impl ErrorDetails {
             retry_after_ms: None,
             entry: None,
             command_code: None,
+            track: None,
         }
     }
 }
@@ -447,6 +453,7 @@ impl CoreError {
                 CoreError::StepCommandFailed { command_code, .. } => command_code.clone(),
                 _ => None,
             },
+            track: None,
         }
     }
 }

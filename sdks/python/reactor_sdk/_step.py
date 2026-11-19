@@ -1,9 +1,10 @@
 """Stepped generation: the commands a step takes and the result it answers with.
 
 A session created with ``generation="stepped"`` does not stream. Each
-:meth:`Reactor.step` sends the model's state, a list of commands and every input
-frame pushed since the previous step, and resolves with what the model produced
-on each output track — a :class:`StepResult`.
+:meth:`Reactor.step` sends the model's state, a list of commands and any input
+frames still buffered (pushed frames otherwise reach the runtime at once), and
+resolves with what the model produced on each output track — a
+:class:`StepResult`.
 
 The result is copied out of the native library once, when the step completes,
 and the native result is freed straight away: nothing here borrows from it.
@@ -77,7 +78,7 @@ class EncodedFrame:
     ``width`` and ``height`` are the frame it decodes to. Pass it in
     :meth:`Reactor.step`'s ``media``, or push it with
     :meth:`Track.push_encoded_frame`. The runtime decodes a track's encoded
-    frames of one step as one stream, before the step runs, and the model reads
+    frames as one stream, before the step that uses them runs, and the model reads
     the RGB frames as if they had been pushed raw. So give them in decode order,
     starting at a keyframe — with PyAV, the packets from the last keyframe to the
     frame the step is about::

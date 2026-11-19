@@ -8,10 +8,12 @@ extension Reactor {
     /// Run one step of a stepped session and return what it produced.
     ///
     /// The runtime applies `state` (each key as the model's `set_<key>`
-    /// command), then `commands` in order, then every input frame pushed since
-    /// the previous step — ``Track/pushFrame(_:width:height:userData:captureTimeUs:)``
-    /// does not send in a stepped session, it buffers for the next step — and
-    /// then generates. The runtime checks the whole request before it applies
+    /// command), then `commands` in order, then any input frames the step
+    /// carries, and then generates. In a stepped session
+    /// ``Track/pushFrame(_:width:height:userData:captureTimeUs:)`` sends a frame
+    /// to the runtime at once, ahead of the next step, once the session is ready
+    /// and the runtime takes pushed frames, and buffers it for the next step
+    /// otherwise. The runtime checks the whole request before it applies
     /// any of it, so a refused step changes nothing. Past that check each part
     /// is its own call into the model: a handler that fails stops the step, and
     /// the calls before it stay applied.
@@ -32,7 +34,7 @@ extension Reactor {
     ///
     /// let camera = try reactor.track("camera")
     /// try await camera.publish()
-    /// try camera.pushFrame(pixels, width: 640, height: 360)   // buffered, not sent
+    /// try camera.pushFrame(pixels, width: 640, height: 360)   // reaches the runtime before the step
     ///
     /// let result = try await reactor.step(
     ///     state: ["prompt": "a red fox"],
@@ -97,8 +99,8 @@ extension Reactor {
     ///   it returns a result whose ``StepResult/error`` says why.
     ///
     ///   A step refused before it goes out (``ReactorError/Code/invalidState``,
-    ///   ``ReactorError/Code/badRequest``) keeps the frames pushed for it for
-    ///   the next step. Past that they belong to the step whatever its outcome:
+    ///   ``ReactorError/Code/badRequest``) keeps the buffered frames for the
+    ///   next step. Past that they belong to the step whatever its outcome:
     ///   one that could not be sent drops them too, and nothing is resent.
     public func step(
         state: [String: JSONValue]? = nil,
@@ -161,9 +163,9 @@ extension Reactor {
         return pushes
     }
 
-    /// Drop every frame pushed since the last step, so the next
-    /// ``step(state:commands:media:)`` carries only what is pushed after this. A
-    /// no-op on a streamed or closed client.
+    /// Drop every frame still buffered for the next
+    /// ``step(state:commands:media:)``. Frames already sent to the runtime are
+    /// not recalled. A no-op on a streamed or closed client.
     public func clearStepInputs() {
         guard generation == .stepped else { return }
         withHandle(else: ()) { handle in ffi.clearStepInputs(handle) }

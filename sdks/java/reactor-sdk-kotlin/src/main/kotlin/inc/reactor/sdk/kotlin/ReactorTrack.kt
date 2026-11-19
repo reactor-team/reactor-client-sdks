@@ -125,11 +125,13 @@ public class ReactorTrack(
         java.pushFrame(pcm, sampleRate, channels)
 
     /**
-     * Buffers one encoded video frame, its bytes as they are, for the next step.
+     * Pushes one encoded video frame, its bytes as they are, to a stepped session.
      *
-     * Stepped sessions only: this sends nothing, and the next [ReactorClient.step] carries the
-     * frame. The runtime decodes a track's encoded frames of one step as one stream, before the
-     * step runs, so push them in decode order, starting at a keyframe:
+     * Stepped sessions only: this sends the frame to the runtime at once, or buffers it for the
+     * next [ReactorClient.step], as [pushFrame] does there. The runtime decodes a track's encoded
+     * frames as one stream, as they arrive, so push them in decode order, starting at a keyframe; a
+     * pushed frame that does not decode raises an `input_decode_failed` error event naming the
+     * track, whose next frame must then be a keyframe:
      * ```kotlin
      * window.forEach { accessUnit -> camera.pushEncodedFrame(accessUnit, 1280, 720) }
      * val result = client.step()
@@ -162,7 +164,7 @@ public class ReactorTrack(
         )
 
     /**
-     * Buffers one encoded video frame for the next step. See the other overload.
+     * Pushes one encoded video frame to a stepped session. See the other overload.
      *
      * @param frame the frame
      */

@@ -1,9 +1,17 @@
-//! Stepped generation: building a `RequestStep`, buffering its input frames,
+//! Stepped generation: building a `RequestStep`, sending its input frames,
 //! and decoding the `StepResult` that answers it (`reactor_wire.v1`).
 //!
-//! A stepped session runs one step per request. The client sends one
-//! `RequestStep` on the data channel — state, then commands, then the input
-//! frames buffered per track since the previous step (`media_input`) — and
+//! A stepped session runs one step per request. Input frames go to the
+//! runtime as they are pushed, each in a `PushFrames` notification on the data
+//! channel, the same ordered channel as the commands and the steps: a frame
+//! pushed before a step is written to its track before that step runs. The
+//! runtime never refuses a push. A runtime older than
+//! [`PUSH_FRAMES_RUNTIME_VERSION`] does not take `PushFrames`: against it, and
+//! until the session is ready, frames are buffered per track instead and ride
+//! the next step as its `media_input`.
+//!
+//! The client sends one `RequestStep` on the data channel — state, then
+//! commands, then any input frames still buffered (`media_input`) — and
 //! gets exactly one reply with the same `request_id`: a `StepResult`, whatever
 //! the outcome. Its `failure_code` says which outcome it was, and its `error`
 //! says why in words:
@@ -24,8 +32,12 @@
 //! in a streamed session.
 //!
 //! Input frames travel as [`FrameEncoding::Raw`] or, for video, encoded
-//! ([`encoded_video_frame`]), which the runtime decodes before the step
-//! runs. Result frames are decoded through
+//! ([`encoded_video_frame`]), which the runtime decodes as they arrive. When
+//! a track's pushed frames stop decoding, the runtime says so with an
+//! `input_decode_failed` notification naming the track and drops its frames
+//! up to the next keyframe. It is raised as an error event whose `track`
+//! names the track, so the host encoding it starts its next frame at one.
+//! Result frames are decoded through
 //! [`FrameDecoders`], keyed by encoding, so a compressed encoding is a new
 //! registry entry rather than a change to the result type.
 //!
@@ -51,9 +63,11 @@ use serde_json::Value;
 use crate::error::CoreError;
 use crate::protocol::session::TrackKind;
 use crate::protocol::wire::struct_convert::value_to_struct;
+use crate::protocol::wire::v1::common::MessageKind;
+use crate::protocol::wire::v1::data::{data_client_message, DataClientMessage};
 use crate::protocol::wire::v1::model::Command;
 use crate::protocol::wire::v1::step::{
-    Frame, FrameEncoding, RequestStep, StepFileRef, TrackFrames,
+    Frame, FrameEncoding, PushFrames, RequestStep, StepFileRef, TrackFrames,
 };
 
 mod decode;
@@ -64,10 +78,10 @@ pub(crate) use decode::step_output;
 pub use decode::{
     DecodedFrame, FrameDecoder, FrameDecoders, RawFrameDecoder, TrackDecoder, TrackDecoderFactory,
 };
-pub use inputs::StepInputs;
+pub use inputs::{pushed_frame, StepInputs};
 pub use negotiation::{
-    may_encode_step_frames, negotiated_encodings, stepped_offer, CodecPreferences, LocalStepCodecs,
-    StepCodec, ENCODED_STEP_FRAMES,
+    may_encode_step_frames, negotiated_encodings, negotiates_encoded_step_frames, stepped_offer,
+    CodecPreferences, LocalStepCodecs, StepCodec, ENCODED_STEP_FRAMES,
 };
 
 /// `dtype` of a raw video frame: RGB, one byte per channel.
@@ -133,6 +147,44 @@ pub fn build_request_step(
         commands,
         media_input,
     })
+}
+
+/// The first runtime version that takes `PushFrames`, as the session's
+/// `server_info.server_version` reports it: `(major, minor, patch)`.
+pub const PUSH_FRAMES_RUNTIME_VERSION: (u64, u64, u64) = (3, 11, 8);
+
+/// The `Error` code of a notification that a track's pushed frames stopped
+/// decoding; its `track` names the track.
+pub const INPUT_DECODE_FAILED: &str = "input_decode_failed";
+
+/// Whether a runtime reporting `server_version` takes `PushFrames`: at least
+/// [`PUSH_FRAMES_RUNTIME_VERSION`], read from the version's leading numbers
+/// (`"3.11.8"`, `"3.12.0rc1"`). A version that does not read as one is taken
+/// as an older runtime, which still takes the frames in `media_input`.
+pub fn runtime_takes_pushed_frames(server_version: &str) -> bool {
+    let mut parts = server_version.trim().splitn(3, '.').map(|part| {
+        let digits = part.len() - part.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        part[..digits].parse::<u64>().ok()
+    });
+    let mut next = || parts.next().flatten();
+    match (next(), next(), next()) {
+        (Some(major), Some(minor), Some(patch)) => {
+            (major, minor, patch) >= PUSH_FRAMES_RUNTIME_VERSION
+        }
+        _ => false,
+    }
+}
+
+/// The `PushFrames` notification that sends `tracks` to the runtime now, apart
+/// from any step. A notification: the runtime answers none.
+pub fn push_frames_message(tracks: Vec<TrackFrames>) -> DataClientMessage {
+    DataClientMessage {
+        request_id: String::new(),
+        kind: MessageKind::Notification as i32,
+        payload: Some(data_client_message::Payload::PushFrames(PushFrames {
+            tracks,
+        })),
+    }
 }
 
 /// The byte layout of pushed video pixels. The push API takes BGRA; a host
@@ -424,6 +476,43 @@ mod tests {
         assert!(
             build_request_step(Value::Null, vec![StepCommand::new("x", json!([1]))], vec![])
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn runtimes_from_the_push_frames_release_take_pushed_frames() {
+        for version in [
+            "3.11.8",
+            "3.12.0",
+            "4.0.0",
+            "3.11.10",
+            "3.12.0rc1",
+            " 3.11.8 ",
+        ] {
+            assert!(runtime_takes_pushed_frames(version), "{version}");
+        }
+        for version in [
+            "3.11.7", "3.9.20", "2.99.99", "0.0.0", "", "3.11", "dev", "x.y.z",
+        ] {
+            assert!(!runtime_takes_pushed_frames(version), "{version}");
+        }
+    }
+
+    #[test]
+    fn a_push_is_a_notification_carrying_its_tracks() {
+        let tracks = vec![pushed_frame(
+            "cam",
+            WireTrackKind::Video,
+            raw("uint8", vec![1, 1, 3], vec![1, 2, 3]),
+        )];
+        let message = push_frames_message(tracks.clone());
+        assert_eq!(message.kind, MessageKind::Notification as i32);
+        assert!(message.request_id.is_empty());
+        assert_eq!(
+            message.payload,
+            Some(data_client_message::Payload::PushFrames(PushFrames {
+                tracks
+            }))
         );
     }
 

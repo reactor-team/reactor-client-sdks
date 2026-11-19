@@ -190,6 +190,9 @@ typedef struct ReactorCallbacks {
  *                    "media_input[<i>]"), present only when one is
  *     "command_code": for step_command_failed, the code the failing handler
  *                    raised (its CommandError code, or internal_error)
+ *     "track":       the track a runtime error event names, present only when
+ *                    it names one: for input_decode_failed, the input track
+ *                    whose next pushed frame must be a keyframe
  *   }
  *
  * "code" is one of INVALID_STATE, DISCONNECTED, NETWORK_ERROR, REQUEST_TIMEOUT,
@@ -698,17 +701,22 @@ void reactor_upload_bytes(
 /*
  * A stepped session (reactor_create_with_options with "generation": "stepped")
  * generates one step per request instead of streaming.  The runtime applies a
- * step's state, then its commands, then every input frame pushed since the
- * previous step, as separate calls in that order, then runs the step and
- * answers with what the model produced on each output track.  Any part may be
- * empty.  The runtime checks the whole request before it applies any of it, so
- * a refused step changed nothing; a step whose call failed keeps the calls
- * before that one applied.
+ * step's state, then its commands, then any input frames it carries, as
+ * separate calls in that order, then runs the step and answers with what the
+ * model produced on each output track.  Any part may be empty.  The runtime
+ * checks the whole request before it applies any of it, so a refused step
+ * changed nothing; a step whose call failed keeps the calls before that one
+ * applied.
  *
  * Input frames use the push functions below, unchanged: in a stepped session
- * reactor_push_video_frame* and reactor_push_audio_frame do not reach the
- * network, they buffer the frame for the next step (video as (H, W, 3) uint8
- * RGB, audio as planar (channels, samples) int16).  Input tracks get no RTP
+ * reactor_push_video_frame* and reactor_push_audio_frame send no RTP (video
+ * goes as (H, W, 3) uint8 RGB, audio as planar (channels, samples) int16).
+ * Once the session is ready, against a runtime that takes pushed frames, each
+ * push is sent to the runtime at once on the data channel, ahead of any step
+ * after it, and the runtime never refuses one; a push the channel does not
+ * take is dropped and raised as an error event.  Frames pushed before the
+ * session is ready, or to an older runtime, are buffered instead: sent ahead of
+ * the next push once it can go, or with the next step.  Input tracks get no RTP
  * sender in a stepped session; a step's output frames arrive in its result.
  *
  * The buffer holds at most one data-channel message's worth of frame bytes, as
@@ -797,8 +805,9 @@ void reactor_step(
 );
 
 /*
- * Drop every input frame buffered for the next step.  A no-op outside a stepped
- * session.
+ * Drop every input frame buffered for the next step.  Frames already sent to
+ * the runtime (see "Stepped generation") are not recalled.  A no-op outside a
+ * stepped session.
  */
 void reactor_clear_step_inputs(ReactorHandle *handle);
 
@@ -1047,9 +1056,9 @@ void reactor_free_string(char *s);
  * No-op if handle is NULL, track_name is NULL, data is NULL, or the named
  * track has no attached video source.
  *
- * In a stepped session this and the two variants below buffer the frame for the
- * next reactor_step() instead of sending it, with its metadata and capture time;
- * see "Stepped generation".
+ * In a stepped session this and the two variants below hand the frame, with
+ * its metadata and capture time, to the runtime over the data channel instead,
+ * or buffer it for the next reactor_step(); see "Stepped generation".
  */
 void reactor_push_video_frame(
     ReactorHandle *handle,
@@ -1160,11 +1169,14 @@ void reactor_push_video_frame_timed(
 #define REACTOR_FRAME_ENCODING_H264 2
 
 /*
- * Stepped: buffer one encoded video frame for the next step, its `data_len`
- * bytes as they are.  `encoding` is a REACTOR_FRAME_ENCODING_* value; `width`
- * and `height` are the frame it decodes to.  A track's encoded frames of one
- * step are decoded as one stream, so push them in decode order, starting at a
- * keyframe; the runtime refuses a step whose frames do not decode.  Tagged with
+ * Stepped: push one encoded video frame as reactor_push_video_frame() does,
+ * its `data_len` bytes as they are.  `encoding` is a REACTOR_FRAME_ENCODING_*
+ * value; `width` and `height` are the frame it decodes to.  A track's encoded
+ * frames are decoded as one stream, so push them in decode order, starting at
+ * a keyframe.  A pushed frame that does not decode raises an
+ * input_decode_failed error event whose "track" names the track, whose next
+ * frame must then be a keyframe; a step whose buffered frames do not decode is
+ * refused.  Tagged with
  * `user_data` when `user_data_len` is not 0, and stamped with `capture_time_us`
  * (as reactor_push_video_frame_with_metadata_at()) when `has_capture_time` is
  * not 0.  An unknown encoding, an empty frame, or a push outside a stepped
@@ -1200,8 +1212,8 @@ void reactor_push_step_encoded_video_frame(
  * change discards any buffered partial block; disconnect discards all tails.
  * The synthetic audio device is still shared by all local audio tracks.
  *
- * In a stepped session the samples are buffered for the next reactor_step()
- * instead, as one planar int16 frame per push.  The step frame carries no sample
+ * In a stepped session the samples are pushed as reactor_push_video_frame()
+ * pushes a frame, as one planar int16 frame per push.  The step frame carries no sample
  * rate, so push at the rate the model's track declares.
  */
 void reactor_push_audio_frame(

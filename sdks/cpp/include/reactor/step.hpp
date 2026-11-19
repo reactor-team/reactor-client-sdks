@@ -12,9 +12,8 @@
 //     }
 //
 // A stepped session does not stream. Each `Reactor::step` applies the model's
-// state, a list of commands and every input frame pushed since the previous step,
-// runs the model once, and resolves with what it produced on each output track
-// and the files it kept.
+// state, a list of commands and any input frames it carries, runs the model once, and resolves with
+// what it produced on each output track and the files it kept.
 #pragma once
 
 #include <cstddef>

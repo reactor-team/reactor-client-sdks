@@ -41,9 +41,8 @@ export type {
   TrackMappingEntry,
 };
 
-/** What `Reactor.step()` sends: `state`, then `commands`, then every frame
- *  pushed since the previous step, applied in that order before the model
- *  generates. Every part is optional. A file goes in as a `FileRef` from
+/** What `Reactor.step()` sends: `state`, then `commands`, then any frames
+ *  still buffered, applied in that order before the model generates. Every part is optional. A file goes in as a `FileRef` from
  *  `uploadFile()`, in a command's `data` or a state value. */
 export interface StepOptions {
   /** Values for the model's state fields, keyed by field name. Each key runs
@@ -63,9 +62,9 @@ export interface StepOptions {
  * An encoded video frame for a step: one H.264 access unit (Annex B), its
  * bytes sent as they are. `width` and `height` are the frame it decodes to.
  *
- * The runtime decodes a track's encoded frames of one step as one stream,
- * before the step runs, and the model reads the RGB frames as if they had
- * been pushed raw. So give them in decode order, starting at a keyframe.
+ * The runtime decodes a track's encoded frames as one stream, as they
+ * arrive, and the model reads the RGB frames as if they had been pushed raw.
+ * So give them in decode order, starting at a keyframe.
  *
  * `data` may be a WebCodecs `EncodedVideoChunk` as a `VideoEncoder` hands it
  * over; configure the encoder with `avc: { format: 'annexb' }`, as its
@@ -114,14 +113,15 @@ export type PushFrame = PushVideoFrame | PushAudioFrame;
 /** What `Reactor.publishTrack()` resolves with: the published input track. */
 export interface PublishedTrack {
   readonly name: string;
-  /** Buffers one input frame on this track for the next `step()` of a
-   *  stepped session — `reactor.pushFrame(name, frame, options)`. Rejects
+  /** Pushes one input frame on this track to a stepped session, sent at once
+   *  or buffered for the next `step()` — `reactor.pushFrame(name, frame,
+   *  options)`. Rejects
    *  with an `InvalidStateError` in a streamed session, whose media comes
    *  from the `MediaStreamTrack` given to `publishTrack()`, and once the
    *  track is unpublished or its connection ends: publish again for a new
    *  handle. */
   pushFrame(frame: PushFrame, options?: PushFrameOptions): Promise<void>;
-  /** Buffers one encoded video frame on this track for the next `step()` —
+  /** Pushes one encoded video frame on this track, as `pushFrame()` does —
    *  `reactor.pushEncodedFrame(name, frame)`. Rejects as `pushFrame()` does. */
   pushEncodedFrame(frame: EncodedFrame): Promise<void>;
 }

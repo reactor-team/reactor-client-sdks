@@ -1194,11 +1194,12 @@ class Reactor:
         """Run one step of a stepped session and return what it produced.
 
         The runtime applies `state` (each key as the model's ``set_<key>``
-        command), then `commands` in order, then every input frame pushed since the
-        previous step, and then generates — :meth:`Track.push_frame` does not send
-        in a stepped session, it buffers for the next step. These are individual
-        calls, applied in that order; a failure part-way does not undo the ones
-        before it::
+        command), then `commands` in order, then any input frames the step carries,
+        and then generates — in a stepped session :meth:`Track.push_frame` sends a
+        frame to the runtime at once, ahead of the next step, once the session is
+        ready and the runtime takes pushed frames, and buffers it for the next step
+        otherwise. These are individual calls, applied in that order; a failure
+        part-way does not undo the ones before it::
 
             reactor = Reactor("owner/model", api_key=key, generation="stepped")
             await reactor.connect()
@@ -1246,8 +1247,8 @@ class Reactor:
 
         A step refused before it goes out (``InvalidStateError``, malformed
         arguments, including any track or frame of `media`) pushes none of its
-        `media` and keeps the frames pushed since the previous step for the next
-        one. Past that they belong to this step whatever its outcome: a step that
+        `media` and keeps the buffered frames for the next one. Past that they
+        belong to this step whatever its outcome: a step that
         fails, or could not be sent at all, drops them too, and nothing is resent. The buffer
         holds at most one message's worth of frame bytes, so pushing faster than
         steps run drops the oldest frames, across tracks.
@@ -1334,10 +1335,13 @@ class Reactor:
             push()
 
     def clear_step_inputs(self) -> None:
-        """Drop every frame pushed since the last step.
+        """Drop every frame still buffered for the next step.
 
-        The next :meth:`step` then carries only frames pushed after this call. A
-        no-op before the client has a handle, with nothing buffered yet.
+        Frames already sent to the runtime are not recalled: against a runtime
+        that takes pushed frames, a push to a ready session is sent at once, and
+        only frames pushed before the session was ready, or to an older runtime,
+        wait in the buffer. A no-op before the client has a handle, with nothing
+        buffered yet.
 
         Raises:
             InvalidStateError: outside a stepped session, as :meth:`step` does.

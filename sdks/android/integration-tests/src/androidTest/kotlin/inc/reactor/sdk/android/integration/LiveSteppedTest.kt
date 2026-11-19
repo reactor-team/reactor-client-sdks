@@ -10,7 +10,6 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
 import org.junit.Assume.assumeNotNull
 import org.junit.Rule
 import org.junit.Test
@@ -98,13 +97,14 @@ internal class LiveSteppedTest {
             val result = reactor.step(state = """{"prompt": "repaint it"}""")
             assertTrue(result.step >= 1)
 
-            // Proof the push rode the step whatever the model makes of it: a frame over the 64 MiB a
-            // chunked data channel carries can only fail a step it went into. A push dropped on
-            // the way would let it through.
+            // A frame over the 64 MiB a chunked data channel carries. A runtime that takes pushed
+            // frames gets each one as it is pushed, so this one is dropped at the push, raised as
+            // an error event, and the step goes through. An older runtime takes them only with
+            // the next step, which this frame then fails.
             source.pushFrame(solidBgra(OVERSIZED, OVERSIZED), OVERSIZED, OVERSIZED)
             try {
-                reactor.step()
-                fail("a step carrying an oversized frame must throw")
+                val after = reactor.step()
+                assertTrue(after.step > result.step)
             } catch (expected: MessageTooLargeException) {
                 assertEquals("MESSAGE_TOO_LARGE", expected.code)
             }

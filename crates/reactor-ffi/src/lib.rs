@@ -2002,8 +2002,8 @@ impl StepCompletion {
     }
 }
 
-/// Run one step of a stepped session: `state`, then `commands`, then every
-/// input frame pushed since the last step. See [`Reactor::step`].
+/// Run one step of a stepped session: `state`, then `commands`, then any
+/// input frames still buffered. See [`Reactor::step`].
 ///
 /// `state_json` may be null (no state); otherwise a JSON object of the model's
 /// state fields, or `null`. `commands_json` may be null (no commands);
@@ -2377,12 +2377,14 @@ pub unsafe extern "C" fn reactor_push_video_frame_timed(
     );
 }
 
-/// Stepped: buffer one encoded video frame for the next step, its `data_len`
-/// bytes as they are. `encoding` is the wire's `FrameEncoding` value
-/// (`REACTOR_FRAME_ENCODING_H264`); `width` and `height` are the frame it
-/// decodes to. A track's encoded frames of one step are decoded as one stream,
-/// so push them in decode order, starting at a keyframe; the runtime refuses a
-/// step whose frames do not decode. Tagged with `user_data` when
+/// Stepped: push one encoded video frame as `reactor_push_video_frame` does,
+/// its `data_len` bytes as they are. `encoding` is the wire's `FrameEncoding`
+/// value (`REACTOR_FRAME_ENCODING_H264`); `width` and `height` are the frame it
+/// decodes to. A track's encoded frames are decoded as one stream, so push them
+/// in decode order, starting at a keyframe. A pushed frame that does not decode
+/// raises an `input_decode_failed` error event whose `"track"` names the track,
+/// whose next frame must then be a keyframe; a step whose buffered frames do
+/// not decode is refused. Tagged with `user_data` when
 /// `user_data_len` is not 0, and stamped with `capture_time_us` when
 /// `has_capture_time` is not 0. An unknown or raw `encoding`, an empty frame,
 /// or a push outside a stepped session is dropped with a warning.
@@ -2545,8 +2547,9 @@ pub unsafe extern "C" fn reactor_push_audio_frame(
         .push_audio_frame(&name, slice, sample_rate, num_channels);
 }
 
-/// Drop every input frame buffered for the next step. A no-op outside a
-/// stepped session, and on a null handle.
+/// Drop every input frame buffered for the next step. Frames already sent to
+/// the runtime are not recalled. A no-op outside a stepped session, and on a
+/// null handle.
 ///
 /// # Safety
 ///

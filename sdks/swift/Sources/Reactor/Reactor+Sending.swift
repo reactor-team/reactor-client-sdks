@@ -268,14 +268,14 @@ extension Reactor {
         }
     }
 
-    /// Buffer one encoded video frame for the next step.
+    /// Push one encoded video frame to a stepped session.
     func push(track name: String, encoded frame: EncodedFrame) throws {
         try withLiveHandle(
             track: name, method: "pushEncodedFrame", try preparePush(track: name, encoded: frame))
     }
 
-    /// Check one encoded video frame for the next step, and answer the push
-    /// that buffers it.
+    /// Check one encoded video frame for a stepped session, and answer the push
+    /// that sends it.
     func preparePush(
         track name: String, encoded frame: EncodedFrame
     ) throws -> (OpaquePointer) -> Void {
@@ -504,11 +504,14 @@ extension Track {
     ///     capturing one moment arrive stamped microseconds apart.
     ///
     /// **Stepped sessions.** On a client created with `generation: .stepped`
-    /// this sends nothing: the frame is buffered, with its tag and capture time,
-    /// as an `(height, width, 3)` `uint8` RGB frame, and the next
-    /// ``Reactor/step(state:commands:media:)`` carries every frame pushed since the one
-    /// before — per track, in push order. Publish the track first, as for a
-    /// streamed session.
+    /// this sends no RTP: the frame, with its tag and capture time, goes to the
+    /// runtime over the data channel as an `(height, width, 3)` `uint8` RGB
+    /// frame — at once, ahead of any step after it, once the session is ready
+    /// and the runtime takes pushed frames (one the channel cannot take is
+    /// dropped and raised as an error event). A frame pushed before then, or to
+    /// an older runtime, is buffered and sent with the next push or
+    /// ``Reactor/step(state:commands:media:)`` — per track, in push order.
+    /// Publish the track first, as for a streamed session.
     ///
     /// The buffer holds at most one data-channel message's worth of frame
     /// bytes, as a step can never send more: pushing faster than steps run
@@ -577,10 +580,11 @@ extension Track {
     /// Unsupported rates or channel counts throw a `badRequest` error.
     ///
     /// **Stepped sessions.** On a client created with `generation: .stepped`
-    /// each push is buffered as one planar `(channels, samples)` `int16` frame
-    /// for the next ``Reactor/step(state:commands:media:)`` instead of being sent. A
-    /// step frame carries no sample rate, so push at the rate the model's track
-    /// declares. The buffer is the one video frames share, with the same limit.
+    /// each push goes as one planar `(channels, samples)` `int16` frame, sent or
+    /// buffered for the next ``Reactor/step(state:commands:media:)`` as a video
+    /// frame is. A step frame carries no sample rate, so push at the rate the
+    /// model's track declares. The buffer is the one video frames share, with
+    /// the same limit.
     public func pushFrame(
         _ samples: [Int16],
         sampleRate: UInt32 = 48000,
@@ -591,11 +595,11 @@ extension Track {
             track: name, samples: samples, sampleRate: sampleRate, channels: channels)
     }
 
-    /// Buffer one encoded video frame, its bytes as they are, for the next step.
+    /// Push one encoded video frame, its bytes as they are, to the runtime.
     ///
     /// Stepped sessions only: like ``pushFrame(_:width:height:userData:captureTimeUs:)``
-    /// there, this sends nothing, and the next
-    /// ``Reactor/step(state:commands:media:)`` carries the frame. `frame.data`
+    /// there, this sends the frame to the runtime at once, or buffers it for the
+    /// next ``Reactor/step(state:commands:media:)``. `frame.data`
     /// is one H.264 access unit, and `frame.width` and `frame.height` the frame
     /// it decodes to:
     ///
@@ -606,10 +610,12 @@ extension Track {
     /// let result = try await reactor.step()
     /// ```
     ///
-    /// The runtime decodes a track's encoded frames of one step as one stream,
-    /// before the step runs, and the model reads RGB frames as if they had been
-    /// pushed raw. So push them in decode order, starting at a keyframe; a step
-    /// whose frames do not decode is refused with
+    /// The runtime decodes a track's encoded frames as one stream, as they
+    /// arrive, and the model reads RGB frames as if they had been pushed raw. So
+    /// push them in decode order, starting at a keyframe. A pushed frame that
+    /// does not decode raises an `input_decode_failed` error event naming the
+    /// track, whose next frame must then be a keyframe; a step whose buffered
+    /// frames do not decode is refused with
     /// ``ReactorError/Code/stepRefused``. Encoded and raw pushes to one track
     /// keep their push order, and share the raw pushes' buffer and its limit.
     ///
@@ -623,7 +629,7 @@ extension Track {
         try client.push(track: name, encoded: frame)
     }
 
-    /// Buffer one encoded video frame for the next step, from its parts.
+    /// Push one encoded video frame to the runtime, from its parts.
     ///
     /// The same as ``pushEncodedFrame(_:)`` with an ``EncodedFrame`` made of
     /// these arguments.
@@ -642,7 +648,7 @@ extension Track {
     }
 
     /// Check one of a step's ``StepMediaFrame``s as its own push would, and
-    /// answer the push that buffers it. Nothing reaches the library until the
+    /// answer the push that sends it. Nothing reaches the library until the
     /// answer is called.
     func preparePush(_ frame: StepMediaFrame) throws -> (OpaquePointer) -> Void {
         guard let client else { return { _ in } }

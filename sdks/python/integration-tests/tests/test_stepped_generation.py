@@ -140,12 +140,18 @@ async def test_pushed_frames_ride_the_next_step() -> None:
         result = await client.step(state={"prompt": "repaint it"})
         assert result.step >= 1
 
-        # Proof the push rode the step whatever the model makes of it: a frame
-        # over the 64 MiB a chunked data channel carries can only fail a step
-        # it went into. A push dropped on the way would let this step through.
+        # A frame over the 64 MiB a chunked data channel carries. A runtime
+        # that takes pushed frames gets each one as it is pushed, so this one
+        # is dropped at the push, raised as an error event, and the step goes
+        # through. An older runtime takes them only with the next step, which
+        # this frame then fails.
         source.push_frame(solid_rgb_frame(5000, 5000, (255, 0, 0)))
-        with pytest.raises(MessageTooLargeError):
-            await client.step()
+        try:
+            after = await client.step()
+        except MessageTooLargeError:
+            pass
+        else:
+            assert after.step > result.step
     finally:
         await client.disconnect()
         client.close()

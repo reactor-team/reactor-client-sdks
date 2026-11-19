@@ -642,7 +642,7 @@ export class Reactor implements Disposable {
    * message, `MessageTooLargeError` when the request itself is too large
    * (nothing was sent), `InvalidStateError` outside a ready stepped
    * session, or whatever else failed the step (`DisconnectedError`,
-   * `RequestTimeoutError`, ...). The frames pushed for a step belong to it:
+   * `RequestTimeoutError`, ...). The frames buffered for a step belong to it:
    * when its request cannot be sent, they are dropped with it rather than
    * kept for the next step.
    *
@@ -656,9 +656,9 @@ export class Reactor implements Disposable {
    * before any of it is pushed or sent, leaving the buffer as it was. A
    * session that leaves 'ready' once the media is in has the step refused and
    * keeps the frames for the next one, as pushed frames are.
-   * A track's encoded frames of one step go in decode order, starting at a
-   * keyframe; a step whose frames do not decode rejects with a
-   * `StepRefusedError`.
+   * A track's encoded frames go in decode order, starting at a keyframe; a
+   * step whose buffered frames do not decode rejects with a
+   * `StepRefusedError` (see `pushEncodedFrame()` for frames already sent).
    *
    * ```ts
    * const camera = await reactor.publishTrack('camera');
@@ -720,11 +720,15 @@ export class Reactor implements Disposable {
   }
 
   /**
-   * Buffers one input frame for the next `step()` on the sendonly track
-   * `trackName`. Nothing is sent until that step, which carries every frame
-   * pushed since the one before it, per track in push order. The
-   * `PublishedTrack` that `publishTrack()` resolves with does the same
-   * through `track.pushFrame(frame)`.
+   * Pushes one input frame on the sendonly track `trackName` of a stepped
+   * session. Once the session is ready, against a runtime that takes pushed
+   * frames, the frame is sent to the runtime at once over the data channel,
+   * ahead of any `step()` after it; one the channel cannot take is dropped
+   * and raised as an error event. A frame pushed before the session is ready,
+   * or to an older runtime, is buffered and sent with the next push or
+   * `step()`, per track in push order. The `PublishedTrack` that
+   * `publishTrack()` resolves with does the same through
+   * `track.pushFrame(frame)`.
    *
    * Video: a `VideoFrame` (cloned when called, so the caller may close it as
    * soon as this returns; it stays the caller's), an
@@ -737,7 +741,7 @@ export class Reactor implements Disposable {
    *
    * Pushes keep their call order, and a `step()` waits for every push called
    * before it. A refused push rejects: await it, or `.catch()` it in a frame
-   * loop, or every bad frame is an unhandled rejection. What waits for
+   * loop, or every bad frame is an unhandled rejection. What is buffered for
    * the next step is at most one message's worth of frames: pushing faster
    * than steps run drops the oldest frames, across tracks. Rejects with
    * an `InvalidStateError` outside a stepped session, for a track not
@@ -813,17 +817,19 @@ export class Reactor implements Disposable {
   }
 
   /**
-   * Buffers one encoded video frame for the next `step()` on the sendonly
-   * video track `trackName`, its bytes as they are: one H.264 access unit
-   * (Annex B), with the `width` and `height` it decodes to. The
-   * `PublishedTrack` that `publishTrack()` resolves with does the same
+   * Pushes one encoded video frame, sent or buffered as `pushFrame()` does,
+   * on the sendonly video track `trackName`, its bytes as they are: one
+   * H.264 access unit (Annex B), with the `width` and `height` it decodes to.
+   * The `PublishedTrack` that `publishTrack()` resolves with does the same
    * through `track.pushEncodedFrame(frame)`.
    *
-   * The runtime decodes a track's encoded frames of one step as one stream,
-   * before the step runs, and the model reads the RGB frames as if they had
-   * been pushed raw. So push them in decode order, starting at a keyframe; a
-   * step whose frames do not decode rejects with a `StepRefusedError`, as
-   * does a runtime that predates encoded frames. Encoded and raw pushes keep
+   * The runtime decodes a track's encoded frames as one stream, as they
+   * arrive, and the model reads the RGB frames as if they had been pushed
+   * raw. So push them in decode order, starting at a keyframe. A pushed frame
+   * that does not decode raises an `input_decode_failed` error event naming
+   * the track, whose next frame must then be a keyframe; a step whose
+   * buffered frames do not decode rejects with a `StepRefusedError`, as does
+   * a runtime that predates encoded frames. Encoded and raw pushes keep
    * their call order, and a `step()` waits for every push called before it.
    *
    * ```ts
@@ -995,8 +1001,9 @@ export class Reactor implements Disposable {
     await push;
   }
 
-  /** Drops every frame buffered for the next step, pushes called before it
-   *  included: it waits its turn behind them, as a `step()` does. */
+  /** Drops every frame still buffered for the next step, pushes called before
+   *  it included: it waits its turn behind them, as a `step()` does. Frames
+   *  already sent to the runtime are not recalled. */
   async clearStepInputs(): Promise<void> {
     this.assertNotDisposed();
     const clear = this.pendingPushes.then(() =>

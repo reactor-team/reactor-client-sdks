@@ -314,9 +314,10 @@ public final class Reactor implements AutoCloseable {
      * Runs one step of a stepped session and answers with what it produced.
      *
      * <p>The runtime applies, in order: {@code state} (each key as the model's {@code set_<key>}
-     * command), then {@code commands}, then every input frame pushed since the previous step — in
-     * a stepped session {@link Track#pushFrame(byte[], int, int)} does not send, it buffers for the
-     * next step — and then generates. The runtime checks the whole request before it applies any of
+     * command), then {@code commands}, then any input frames the step carries, and then generates.
+     * In a stepped session {@link Track#pushFrame(byte[], int, int)} sends a frame to the runtime
+     * at once, ahead of the next step, once the session is ready and the runtime takes pushed
+     * frames, and buffers it for the next step otherwise. The runtime checks the whole request before it applies any of
      * it, so a step it refuses changed nothing; past that check these are separate calls, so a call
      * whose handler fails leaves the calls before it applied. Every part is optional; {@link #step()} with nothing
      * runs on the model's current state. Commands sent with {@link #sendCommand} outside a step
@@ -334,7 +335,7 @@ public final class Reactor implements AutoCloseable {
      * reactor.connect().join();
      * Track camera = reactor.track("camera");
      * camera.publish().join();
-     * camera.pushFrame(bgra, width, height);          // buffered, not sent
+     * camera.pushFrame(bgra, width, height);          // reaches the runtime before the step
      * StepResult result = reactor.step(
      *                 JsonValue.object().put("prompt", "a red fox").build(),
      *                 List.of(StepCommand.of("advance", JsonValue.object().put("frames", 4).build())))
@@ -513,8 +514,8 @@ public final class Reactor implements AutoCloseable {
     }
 
     /**
-     * Drops every input frame buffered for the next step, so that step carries only what is pushed
-     * after this. A no-op on a streamed client.
+     * Drops every input frame still buffered for the next step. Frames already sent to the runtime
+     * are not recalled. A no-op on a streamed client.
      *
      * @throws ReactorException ({@code INVALID_STATE}) when the client is closed
      */

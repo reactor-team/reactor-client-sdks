@@ -1,4 +1,5 @@
-//! The input frames pushed between two steps, held to one message's worth.
+//! The input frames pushed between two steps that could not be sent yet, held
+//! to one message's worth.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -7,7 +8,13 @@ use crate::error::CoreError;
 use crate::protocol::wire::v1::platform::TrackKind as WireTrackKind;
 use crate::protocol::wire::v1::step::{Frame, FrameEncoding, TrackFrames};
 
-/// Input frames pushed since the last step, per track.
+/// Input frames pushed since the last step and not sent yet, per track.
+///
+/// A pushed frame goes to the runtime at once, in a `PushFrames`, when the
+/// session is ready and its runtime takes them. Only frames that cannot go
+/// yet are buffered here: pushed before the session is ready, or to a runtime
+/// that takes input frames only inside a step. They are sent before the next
+/// pushed frame, or with the next step as its `media_input`.
 ///
 /// Tracks keep the order of their first buffered push, and frames the order
 /// they were pushed in. [`StepInputs::take`] empties the buffer for a step.
@@ -21,6 +28,17 @@ use crate::protocol::wire::v1::step::{Frame, FrameEncoding, TrackFrames};
 #[derive(Default)]
 pub struct StepInputs {
     buffer: Mutex<Buffered>,
+}
+
+/// One track's entry for a frame sent on its own, in a `PushFrames`.
+pub fn pushed_frame(track: &str, kind: WireTrackKind, frame: Frame) -> TrackFrames {
+    TrackFrames {
+        track: track.to_string(),
+        kind: kind as i32,
+        frames: vec![frame],
+        // A pushed frame carries no rate of its own to declare.
+        rate: 0.0,
+    }
 }
 
 #[derive(Default)]
@@ -396,6 +414,16 @@ mod tests {
             buffer.cut_encoded.len(),
             buffer.tracks.len()
         );
+    }
+
+    #[test]
+    fn a_pushed_frame_is_one_track_entry_without_a_rate() {
+        let frame = raw("uint8", vec![1], vec![1]);
+        let track = pushed_frame("cam", WireTrackKind::Video, frame.clone());
+        assert_eq!(track.track, "cam");
+        assert_eq!(track.kind, WireTrackKind::Video as i32);
+        assert_eq!(track.frames, [frame]);
+        assert_eq!(track.rate, 0.0);
     }
 
     #[test]
