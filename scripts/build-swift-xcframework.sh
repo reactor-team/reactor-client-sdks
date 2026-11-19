@@ -245,15 +245,17 @@ tvos_requested() {
 # Checked before anything is built, so a mistyped path costs nothing.
 tvos_lib_dir() {
     local mode="$1" dir="${REACTOR_WEBRTC_TVOS_LIB_DIR:-}"
-    if [ -z "$dir" ] && [ -n "${REACTOR_WEBRTC_LIB_DIR:-}" ]; then
-        if [ "$mode" != only ]; then
-            echo "REACTOR_WEBRTC_LIB_DIR is set, and reactor-webrtc-sys would link it into" >&2
-            echo "every slice of this build, macOS and iOS included. Give the tvOS slice its" >&2
-            echo "libwebrtc as REACTOR_WEBRTC_TVOS_LIB_DIR instead, or build it alone with" >&2
-            echo "\`build-swift-xcframework.sh tvos-only\`." >&2
-            exit 1
-        fi
-        dir="$REACTOR_WEBRTC_LIB_DIR"
+    # Refused in the full build even beside REACTOR_WEBRTC_TVOS_LIB_DIR: that one
+    # replaces it for the tvOS slice only, and the other slices would still see it.
+    if [ "$mode" != only ] && [ -n "${REACTOR_WEBRTC_LIB_DIR:-}" ]; then
+        echo "REACTOR_WEBRTC_LIB_DIR is set, and reactor-webrtc-sys would link it into" >&2
+        echo "the macOS and iOS slices of this build. Unset it and give the tvOS slice" >&2
+        echo "its libwebrtc as REACTOR_WEBRTC_TVOS_LIB_DIR, or build that slice alone" >&2
+        echo "with \`build-swift-xcframework.sh tvos-only\`." >&2
+        exit 1
+    fi
+    if [ -z "$dir" ]; then
+        dir="${REACTOR_WEBRTC_LIB_DIR:-}"
     fi
     if [ -n "$dir" ] && [ ! -f "$dir/lib/libwebrtc.a" ] && [ ! -f "$dir/libwebrtc.a" ]; then
         echo "No libwebrtc.a in $dir (nor in $dir/lib) for the tvOS slice." >&2
