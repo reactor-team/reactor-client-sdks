@@ -367,6 +367,26 @@ void reactor_step(ReactorHandle*, const char* state_json, const char* commands_j
     g_step_userdata = userdata;
 }
 
+static int g_codec_preference_fails = 0;
+static int g_codec_preference_calls = 0;
+static std::string g_last_codec_track;
+static std::string g_last_codecs;
+
+/// Records both nullables as the binding passed them, and fails on request with an owned error
+/// object — the same contract as reactor_unpublish_track, counted so a leak fails the harness.
+char* reactor_set_codec_preference(ReactorHandle*, const char* track, const char* codecs_json) {
+    g_codec_preference_calls++;
+    g_last_codec_track = track == nullptr ? "<null>" : track;
+    g_last_codecs = codecs_json == nullptr ? "<null>" : codecs_json;
+    if (!g_codec_preference_fails) return nullptr;
+    return owned("{\"code\":\"DECODE_FAILED\",\"message\":\"unknown codec\"}");
+}
+
+char* reactor_step_frame_encodings(ReactorHandle* handle) {
+    if (handle == nullptr) return nullptr;
+    return owned("{\"main_video\":\"h264\",\"webcam\":\"raw\"}");
+}
+
 void reactor_clear_step_inputs(ReactorHandle*) { g_clear_step_inputs.fetch_add(1); }
 
 uint64_t reactor_step_result_step(const ReactorStepResult* r) { return r == nullptr ? 0 : 7; }
@@ -484,6 +504,16 @@ const char* fake_last_create_options(void) { return g_last_create_options.c_str(
 const char* fake_last_step_state(void) { return g_last_step_state.c_str(); }
 
 const char* fake_last_step_commands(void) { return g_last_step_commands.c_str(); }
+
+
+
+void fake_set_codec_preference_fails(int fails) { g_codec_preference_fails = fails; }
+
+int fake_codec_preference_calls(void) { return g_codec_preference_calls; }
+
+const char* fake_last_codec_track(void) { return g_last_codec_track.c_str(); }
+
+const char* fake_last_codecs(void) { return g_last_codecs.c_str(); }
 
 /// Complete the last step from a thread the JVM has never seen: with a fresh result when ok, or
 /// with no result and error_json when not.

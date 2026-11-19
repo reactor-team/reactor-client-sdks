@@ -16,6 +16,19 @@ versioning follows [Semantic Versioning](https://semver.org/).
   it returned nothing. It counts toward the step result's size, and a result
   past the session's maximum message size throws `stepResultTooLarge`. Needs a
   runtime that sends step data; an older one leaves it `nil`.
+- Encoded step frames. A stepped session can carry its video step frames
+  encoded (H.264, VP9, AV1 or VP8) between the client and the runtime; this
+  library encodes and decodes them, so pushes still take raw pixels and step
+  results still hold RGB frames. `Reactor.setCodecPreference(_:track:)` takes
+  a `[StepCodec]?`, most preferred first: `nil` goes back to the default
+  (H.264, VP9, AV1, VP8), an empty list for the whole session turns encoding
+  off (every frame raw), and an empty list for one `track` goes back to the
+  session's list. Callable before `connect()` or during a session; it takes
+  effect on the next connection or reconnect. `Reactor.stepFrameEncodings`
+  reports what the live connection negotiated per track (`"raw"`, `"h264"`,
+  `"vp8"`, `"vp9"` or `"av1"`), empty outside a connected stepped session.
+- An output track whose stream the client can no longer decode is paused and
+  resumed, and the runtime starts it again at a keyframe.
 
 ### Fixed
 

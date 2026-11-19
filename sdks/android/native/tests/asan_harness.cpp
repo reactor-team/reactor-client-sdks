@@ -81,6 +81,15 @@ jlong Java_inc_reactor_sdk_android_internal_NativeClient_nativeCreateWithOptions
 void Java_inc_reactor_sdk_android_internal_NativeClient_nativeInitSteps(JNIEnv*, jobject, jclass);
 void Java_inc_reactor_sdk_android_internal_NativeClient_nativeStep(JNIEnv*, jobject, jlong, jstring,
                                                                   jstring, jlong);
+jstring Java_inc_reactor_sdk_android_internal_NativeClient_nativeSetCodecPreference(JNIEnv*, jobject,
+                                                                                   jlong, jstring,
+                                                                                   jstring);
+jstring Java_inc_reactor_sdk_android_internal_NativeClient_nativeStepFrameEncodings(JNIEnv*,
+                                                                                   jobject, jlong);
+void fake_set_codec_preference_fails(int fails);
+int fake_codec_preference_calls(void);
+const char* fake_last_codec_track(void);
+const char* fake_last_codecs(void);
 void Java_inc_reactor_sdk_android_internal_NativeClient_nativeClearStepInputs(JNIEnv*, jobject,
                                                                              jlong);
 jbyteArray Java_inc_reactor_sdk_android_internal_NativeStepResults_nativeFrameData(JNIEnv*, jobject,
@@ -631,6 +640,72 @@ void step_results_are_freed_exactly_once() {
   g_env->DeleteGlobalRef(completions);
 }
 
+/// The codec preference crosses with both nullables intact, and its error and the encodings are
+/// owned strings, freed exactly once.
+void codec_preference_and_encodings_cross_and_free() {
+  jlong context = create();
+  const long strings_before = fake_owned_strings_outstanding();
+
+  jstring track = g_env->NewStringUTF("main_video");
+  jstring codecs = g_env->NewStringUTF("[\"vp9\",\"h264\"]");
+  fake_set_codec_preference_fails(0);
+  const int calls = fake_codec_preference_calls();
+  jstring ok = Java_inc_reactor_sdk_android_internal_NativeClient_nativeSetCodecPreference(
+      g_env, nullptr, context, track, codecs);
+  check(ok == nullptr, "an accepted codec preference returns no error");
+  check(fake_codec_preference_calls() == calls + 1, "and reaches reactor_set_codec_preference");
+  check(std::strcmp(fake_last_codec_track(), "main_video") == 0 &&
+            std::strcmp(fake_last_codecs(), "[\"vp9\",\"h264\"]") == 0,
+        "with its track and codecs verbatim");
+
+  // Null track and null codecs mean "every track" and "the default": NULL, not "null" or "".
+  jstring reset = Java_inc_reactor_sdk_android_internal_NativeClient_nativeSetCodecPreference(
+      g_env, nullptr, context, nullptr, nullptr);
+  check(reset == nullptr && std::strcmp(fake_last_codec_track(), "<null>") == 0 &&
+            std::strcmp(fake_last_codecs(), "<null>") == 0,
+        "a null track and null codecs reach the ABI as NULL");
+
+  fake_set_codec_preference_fails(1);
+  for (int i = 0; i < 100; ++i) {
+    jstring err = Java_inc_reactor_sdk_android_internal_NativeClient_nativeSetCodecPreference(
+        g_env, nullptr, context, nullptr, codecs);
+    if (i == 0) {
+      const char* chars = err == nullptr ? nullptr : g_env->GetStringUTFChars(err, nullptr);
+      check(chars != nullptr && std::strstr(chars, "DECODE_FAILED") != nullptr,
+            "a refused codec preference returns the error object");
+      if (chars != nullptr) g_env->ReleaseStringUTFChars(err, chars);
+    }
+    if (err != nullptr) g_env->DeleteLocalRef(err);
+  }
+  fake_set_codec_preference_fails(0);
+
+  for (int i = 0; i < 100; ++i) {
+    jstring encodings = Java_inc_reactor_sdk_android_internal_NativeClient_nativeStepFrameEncodings(
+        g_env, nullptr, context);
+    if (i == 0) {
+      const char* chars =
+          encodings == nullptr ? nullptr : g_env->GetStringUTFChars(encodings, nullptr);
+      check(chars != nullptr && std::strstr(chars, "\"main_video\":\"h264\"") != nullptr,
+            "the step frame encodings cross as their JSON object");
+      if (chars != nullptr) g_env->ReleaseStringUTFChars(encodings, chars);
+    }
+    if (encodings != nullptr) g_env->DeleteLocalRef(encodings);
+  }
+  check(fake_owned_strings_outstanding() == strings_before,
+        "every codec error and encodings string was returned through reactor_free_string");
+
+  check(Java_inc_reactor_sdk_android_internal_NativeClient_nativeSetCodecPreference(
+            g_env, nullptr, /*context=*/0, nullptr, codecs) == nullptr &&
+            Java_inc_reactor_sdk_android_internal_NativeClient_nativeStepFrameEncodings(
+                g_env, nullptr, /*context=*/0) == nullptr,
+        "a null context answers null without reaching the ABI");
+
+  g_env->DeleteLocalRef(track);
+  g_env->DeleteLocalRef(codecs);
+  fake_set_destroy_result(0);
+  Java_inc_reactor_sdk_android_internal_NativeClient_nativeDestroy(g_env, nullptr, context);
+}
+
 /// The accessors copy what they answer: every array outlives the result it was read from.
 void step_accessors_copy_before_the_free() {
   ReactorStepResult* result = fake_new_step_result();
@@ -853,6 +928,7 @@ int main() {
   a_stepped_client_is_created_with_options();
   step_results_are_freed_exactly_once();
   step_accessors_copy_before_the_free();
+  codec_preference_and_encodings_cross_and_free();
   destroy_minus_one_keeps_the_references_alive();
   strings_round_trip_outside_the_bmp();
 

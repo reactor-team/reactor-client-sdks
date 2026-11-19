@@ -6,10 +6,13 @@ import inc.reactor.sdk.android.GenerationModeMismatchException
 import inc.reactor.sdk.android.MessageTooLargeException
 import inc.reactor.sdk.android.Reactor
 import inc.reactor.sdk.android.SessionTerminalException
+import inc.reactor.sdk.android.StepCodec
+import inc.reactor.sdk.android.StepResult
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeFalse
 import org.junit.Assume.assumeNotNull
 import org.junit.Rule
 import org.junit.Test
@@ -58,19 +61,95 @@ internal class LiveSteppedTest {
                 val result = reactor.step(state = """{"effect": "invert"}""")
                 assertNull(result.error)
 
-                val video = result.tracks.single { it.name == Live.VIDEO_OUT }
-                val frame = video.frames.first()
-                assertTrue(frame.shape.contentEquals(intArrayOf(64, 64, 3)))
-                val centre = (32 * 64 + 32) * 3
-                val bytes = frame.data()
-                bytes.position(centre)
-                val pixel = ByteArray(3).also { bytes.get(it) }
-                assertTrue(pixel.contentEquals(ECHO_OUT))
+                // The frame travels encoded both ways when both ends share a codec (H.264 by
+                // default), so the inverted pixel comes back close, not exact.
+                assertEchoed(result, tolerance = ENCODED_TOLERANCE)
             } finally {
                 runCatching { reactor.disconnect() }
                 reactor.close()
             }
         }
+
+    @Test
+    fun aSteppedSessionCarriesFramesInVp8() = carriesFramesInTheCodecItChose(listOf(StepCodec.VP8), "vp8")
+
+    @Test
+    fun aSteppedSessionWithEncodingOffCarriesRawFrames() = carriesFramesInTheCodecItChose(emptyList(), "raw")
+
+    /**
+     * The echo round trip with the step frames' codec chosen before connect: VP8 both ways (libvpx
+     * is in every build on either end, unlike H.264), or encoding off so every frame travels raw. The client pushes BGRA and receives RGB either way.
+     * An echo or a runtime that does not step is accepted, as in [aSteppedConnectToEchoStepsOrFails].
+     */
+    private fun carriesFramesInTheCodecItChose(
+        codecs: List<StepCodec>,
+        expected: String,
+    ) = runBlocking {
+        val reactor =
+            try {
+                Live.connected(generation = Generation.STEPPED) { it.setCodecPreference(codecs) }
+            } catch (refused: GenerationModeMismatchException) {
+                assertEquals("GENERATION_MODE_MISMATCH", refused.code)
+                return@runBlocking
+            } catch (refused: SessionTerminalException) {
+                assertEquals("SESSION_TERMINAL", refused.code)
+                return@runBlocking
+            }
+        try {
+            Live.awaitReady(reactor)
+            val webcam = reactor.track(Live.VIDEO_IN)
+            webcam.publish()
+
+            val encodings = reactor.stepFrameEncodings
+            // A runtime from before encoded step frames answers without them, so every track
+            // travels raw. Accepted, as an echo that does not step is, until a runtime with them
+            // is deployed.
+            assumeFalse(
+                "the runtime offers no encoded step frames: $encodings",
+                expected != "raw" && encodings.values.all { it == "raw" },
+            )
+            assertEquals(encodings.toString(), expected, encodings[Live.VIDEO_OUT])
+            if (expected == "raw") {
+                // With encoding off a raw input track may not be listed at all; whatever is, is raw.
+                assertEquals(encodings.toString(), "raw", encodings[Live.VIDEO_IN] ?: "raw")
+                assertTrue(encodings.toString(), encodings.values.all { it == "raw" })
+            } else {
+                assertEquals(encodings.toString(), expected, encodings[Live.VIDEO_IN])
+            }
+            val tolerance = if (expected == "raw") 0 else ENCODED_TOLERANCE
+
+            webcam.pushFrame(solidBgra(64, 64, ECHO_IN), 64, 64)
+            val result = reactor.step(state = """{"effect": "invert"}""")
+            assertNull(result.error)
+            assertEchoed(result, tolerance)
+
+            // The next step's frames continue the same stream.
+            webcam.pushFrame(solidBgra(64, 64, ECHO_IN), 64, 64)
+            val again = reactor.step()
+            assertEquals(result.step + 1, again.step)
+            assertEchoed(again, tolerance)
+        } finally {
+            runCatching { reactor.disconnect() }
+            reactor.close()
+        }
+    }
+
+    /** One 64x64 frame on main_video whose centre is echo's inverse of [ECHO_IN], within [tolerance]. */
+    private fun assertEchoed(
+        result: StepResult,
+        tolerance: Int,
+    ) {
+        val frame = result.track(Live.VIDEO_OUT).frames.single()
+        assertTrue(frame.shape.contentEquals(intArrayOf(64, 64, 3)))
+        val bytes = frame.data()
+        bytes.position((32 * 64 + 32) * 3)
+        val pixel = ByteArray(3).also { bytes.get(it) }
+        val worst = pixel.indices.maxOf { kotlin.math.abs((pixel[it].toInt() and 0xFF) - (ECHO_OUT[it].toInt() and 0xFF)) }
+        assertTrue(
+            "centre ${pixel.map { it.toInt() and 0xFF }} is $worst off ${ECHO_OUT.map { it.toInt() and 0xFF }}",
+            worst <= tolerance,
+        )
+    }
 
     @Test
     fun stepsResolveInOrder() =
@@ -140,6 +219,9 @@ internal class LiveSteppedTest {
     private companion object {
         /** 4800 x 4800 RGB is 69 MB: past what one chunked data-channel message carries. */
         const val OVERSIZED = 4800
+
+        /** How far per channel a pixel may drift through a lossy codec and back. */
+        const val ENCODED_TOLERANCE = 8
 
         val BLUE = byteArrayOf(255.toByte(), 0, 0, 255.toByte())
 

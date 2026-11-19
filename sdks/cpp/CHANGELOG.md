@@ -16,6 +16,22 @@ versioning follows [Semantic Versioning](https://semver.org/).
   encoded as JSON, for the caller to decode. It arrives with the step's frames,
   so a model whose output is data alone needs no output track. Empty when the
   model returned none, or with a runtime that does not send it.
+- Encoded step frames. A stepped session now carries its video step frames
+  encoded between the client and the runtime, H.264 first by default (then
+  VP9, AV1, VP8), where it carried them raw. Step results still arrive as
+  decoded RGB frames, and `push_frame` takes what it always took.
+  `client.set_codec_preference({"vp9", "h264"})` chooses the codecs, most
+  preferred first, for every track or, with a track name, for one;
+  `set_codec_preference({})` turns encoding off, so every frame travels raw,
+  and `set_codec_preference(std::nullopt)` goes back to the default. An
+  unknown name throws `BadRequestError`. It is callable before `connect()` or
+  during a session, is kept across reconnects, and takes effect on the next
+  connection or `reconnect()`. `client.step_frame_encodings()` maps each track
+  to how its step frames travel on this connection (`"raw"`, `"h264"`,
+  `"vp8"`, `"vp9"` or `"av1"`), and `StepFrame::encoding` says the same per
+  frame. An output track whose stream the client can no longer decode is
+  paused and resumed, and the runtime starts it again at a keyframe. Needs a
+  `libreactor_ffi` with `reactor_set_codec_preference`.
 
 ### Fixed
 

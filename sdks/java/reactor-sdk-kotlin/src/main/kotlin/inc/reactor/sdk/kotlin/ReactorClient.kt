@@ -11,6 +11,7 @@ import inc.reactor.sdk.JsonValue
 import inc.reactor.sdk.Reactor
 import inc.reactor.sdk.ReactorOptions
 import inc.reactor.sdk.Stats
+import inc.reactor.sdk.StepCodec
 import inc.reactor.sdk.StepCommand
 import inc.reactor.sdk.StepInput
 import inc.reactor.sdk.StepResult
@@ -264,6 +265,44 @@ public class ReactorClient(
      * are not recalled. A no-op on a streamed client.
      */
     public fun clearStepInputs(): Unit = java.clearStepInputs()
+
+    /**
+     * Chooses the codecs a stepped session carries its video step frames in, most preferred first.
+     *
+     * Null goes back to the default (H.264, VP9, AV1, VP8). An empty list for the whole session
+     * turns encoding off, so every frame travels raw; with a [track], the list applies to that
+     * track only, and an empty one there goes back to the session's order. The list is an order,
+     * not a limit: the codecs it leaves out follow it, so a runtime without the preferred ones
+     * takes another. Of those, the ones this machine can encode (input tracks) or decode (output
+     * tracks) are offered, and the runtime takes per track the first it shares; a track they share
+     * no codec for stays raw.
+     *
+     * ```kotlin
+     * client.setCodecPreference(listOf(StepCodec.VP9, StepCodec.H264))
+     * client.setCodecPreference(emptyList())                 // raw frames
+     * client.setCodecPreference(listOf(StepCodec.AV1), track = "main_video")
+     * ```
+     *
+     * Whatever the codec, pushed frames and step results stay RGB: the encoding is between this
+     * client and the runtime. Callable before [connect] or during a session; it takes effect on the
+     * next connection or reconnect, and the live connection keeps what it negotiated (see
+     * [stepFrameEncodings]).
+     *
+     * @param codecs most preferred first; null for the default; empty to turn encoding off
+     * @param track the track it applies to, or null for every track
+     * @throws IllegalArgumentException when [track] is empty
+     * @throws inc.reactor.sdk.ReactorException the native library's refusal, typed by its code
+     */
+    public fun setCodecPreference(codecs: List<StepCodec>?, track: String? = null): Unit =
+        java.setCodecPreference(codecs, track)
+
+    /**
+     * How each track's step frames travel on this connection, by track name: `"h264"`, `"vp9"`,
+     * `"av1"` or `"vp8"` for an encoded video track, `"raw"` for the rest. Empty outside a
+     * connected stepped session, and with a native library too old to say.
+     */
+    public val stepFrameEncodings: Map<String, String>
+        get() = java.stepFrameEncodings()
 
     // ── Recording ───────────────────────────────────────────────────────────
 

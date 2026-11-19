@@ -31,7 +31,14 @@ val integrationTest =
             exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
             events("passed", "failed", "skipped")
         }
-        listOf("INTEGRATION_TESTS_REACTOR_API_KEY", "INTEGRATION_TESTS_REACTOR_MODEL", "REACTOR_API_URL", "CI")
+        listOf(
+                "INTEGRATION_TESTS_REACTOR_API_KEY",
+                "INTEGRATION_TESTS_REACTOR_MODEL",
+                "REACTOR_API_URL",
+                "REACTOR_LOCAL",
+                "REACTOR_MODEL_NAME",
+                "CI",
+            )
                 .forEach { name -> System.getenv(name)?.let { environment(name, it) } }
     }
 

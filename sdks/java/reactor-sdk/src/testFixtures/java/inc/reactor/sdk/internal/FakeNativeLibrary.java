@@ -204,6 +204,48 @@ public final class FakeNativeLibrary implements AutoCloseable {
                 "stepResultFrameCaptureTimeUs");
         bind("reactor_step_result_data", Ffi.Symbol.STEP_RESULT_DATA.descriptor(), "stepResultData");
         bind("reactor_step_result_free", Ffi.Symbol.STEP_RESULT_FREE.descriptor(), "stepResultFree");
+        bind("reactor_set_codec_preference", Ffi.Symbol.SET_CODEC_PREFERENCE.descriptor(), "setCodecPreference");
+        bind("reactor_step_frame_encodings", Ffi.Symbol.STEP_FRAME_ENCODINGS.descriptor(), "stepFrameEncodings");
+    }
+
+    // ── Step frame codecs ───────────────────────────────────────────────────
+
+    /** One {@code reactor_set_codec_preference} call, as it arrived. */
+    public record CodecPreferenceCall(
+            long handle, @Nullable String track, @Nullable String codecsJson) {}
+
+    /** Every {@code reactor_set_codec_preference} call, oldest first. */
+    public final List<CodecPreferenceCall> codecPreferenceCalls =
+            java.util.Collections.synchronizedList(new ArrayList<>());
+
+    /** The error the next {@code reactor_set_codec_preference} answers with, or null for success. */
+    public @Nullable String codecPreferenceError;
+
+    /** What {@code reactor_step_frame_encodings} answers. */
+    public String stepFrameEncodingsJson = "{}";
+
+    /** The address of the last handle either create call returned, 0 before any. */
+    public long lastCreatedHandle() {
+        return lastCreated;
+    }
+
+    private long lastCreated;
+
+    private MemorySegment setCodecPreference(MemorySegment handle, MemorySegment track, MemorySegment codecsJson) {
+        codecPreferenceCalls.add(new CodecPreferenceCall(handle.address(), readString(track), readString(codecsJson)));
+        String error = codecPreferenceError;
+        if (error == null) {
+            return MemorySegment.NULL;
+        }
+        MemorySegment segment = arena.allocateFrom(error);
+        ownedOut.add(segment.address());
+        return segment;
+    }
+
+    private MemorySegment stepFrameEncodings(MemorySegment handle) {
+        MemorySegment segment = arena.allocateFrom(stepFrameEncodingsJson);
+        ownedOut.add(segment.address());
+        return segment;
     }
 
     /** Makes this library report an ABI version other than the one the binding expects. */
@@ -270,7 +312,9 @@ public final class FakeNativeLibrary implements AutoCloseable {
         this.callbacks = callbacksStruct.reinterpret(Ffi.Callbacks.LAYOUT.byteSize());
         // Any non-null address will do: nothing here dereferences it, and the binding only ever
         // passes it straight back.
-        return arena.allocate(8);
+        MemorySegment created = arena.allocate(8);
+        lastCreated = created.address();
+        return created;
     }
 
     private int destroy(MemorySegment handle) {
@@ -868,7 +912,9 @@ public final class FakeNativeLibrary implements AutoCloseable {
         this.callbacks = callbacksStruct.equals(MemorySegment.NULL)
                 ? null
                 : callbacksStruct.reinterpret(Ffi.Callbacks.LAYOUT.byteSize());
-        return arena.allocate(8);
+        MemorySegment created = arena.allocate(8);
+        lastCreated = created.address();
+        return created;
     }
 
     private void step(

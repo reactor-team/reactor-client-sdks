@@ -22,7 +22,34 @@ import org.junit.jupiter.api.Assumptions;
 final class Live {
 
     static final String API_URL = System.getenv().getOrDefault("REACTOR_API_URL", "https://api.reactor.inc");
-    static final String MODEL = System.getenv().getOrDefault("INTEGRATION_TESTS_REACTOR_MODEL", "reactor/echo");
+    static final String MODEL = firstSet("INTEGRATION_TESTS_REACTOR_MODEL", "REACTOR_MODEL_NAME", "reactor/echo");
+
+    /**
+     * Whether to talk to a local runtime, which takes no key: {@code REACTOR_LOCAL=true}, with
+     * {@code REACTOR_API_URL} pointing at it. Only the suites that build their clients through
+     * {@link #options()} honour it.
+     */
+    static final boolean LOCAL =
+            "true".equalsIgnoreCase(System.getenv("REACTOR_LOCAL")) || "1".equals(System.getenv("REACTOR_LOCAL"));
+
+    private static String firstSet(String name, String fallback, String otherwise) {
+        String value = System.getenv(name);
+        if (value == null || value.isBlank()) {
+            value = System.getenv(fallback);
+        }
+        return value == null || value.isBlank() ? otherwise : value;
+    }
+
+    /**
+     * Options for {@link #MODEL}: local mode with no credentials when {@link #LOCAL}, the key
+     * otherwise (or a skipped test without one).
+     *
+     * @return a builder the caller finishes
+     */
+    static ReactorOptions.Builder options() {
+        ReactorOptions.Builder builder = ReactorOptions.builder(API_URL, MODEL);
+        return LOCAL ? builder.local(true) : builder.apiKey(apiKey());
+    }
 
     /** The tracks echo declares, named here so a test reads as what it is checking. */
     static final String VIDEO_IN = "webcam";

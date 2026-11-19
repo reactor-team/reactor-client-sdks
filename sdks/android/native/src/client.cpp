@@ -672,6 +672,33 @@ Java_inc_reactor_sdk_android_internal_NativeClient_nativeClearStepInputs(JNIEnv*
   reactor_clear_step_inputs(context->handle);
 }
 
+/**
+ * Set the codecs the step frames prefer, for every track (null `track`) or one. Synchronous, and
+ * answered like unpublish: NULL on success, an owned error object to copy and free on failure.
+ * Both arguments are nullable and must reach the ABI as NULL — a null `codecs_json` means "the
+ * default", which the string "null" would not.
+ */
+extern "C" JNIEXPORT jstring JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeSetCodecPreference(JNIEnv* env, jobject,
+                                                                            jlong context_ptr,
+                                                                            jstring track,
+                                                                            jstring codecs_json) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return nullptr;
+  JavaString name(env, track);
+  JavaString codecs(env, codecs_json);
+  return owned_to_jstring(env,
+                          reactor_set_codec_preference(context->handle, name.get(), codecs.get()));
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_inc_reactor_sdk_android_internal_NativeClient_nativeStepFrameEncodings(JNIEnv* env, jobject,
+                                                                            jlong context_ptr) {
+  auto* context = reinterpret_cast<Context*>(context_ptr);
+  if (context == nullptr) return nullptr;
+  return owned_to_jstring(env, reactor_step_frame_encodings(context->handle));
+}
+
 // ── Uploads ──────────────────────────────────────────────────────────────────
 
 extern "C" JNIEXPORT void JNICALL

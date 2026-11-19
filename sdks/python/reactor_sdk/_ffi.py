@@ -321,6 +321,7 @@ def _load() -> ctypes.CDLL:
     _bind_stepped(lib)
     _bind_encoded_step_frames(lib)
     _bind_step_result_data(lib)
+    _bind_step_codecs(lib)
     return lib
 
 
@@ -405,6 +406,35 @@ def _bind_step_result_data(lib: ctypes.CDLL) -> None:
         return
     lib.reactor_step_result_data.restype = ctypes.c_void_p
     lib.reactor_step_result_data.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
+
+
+#: The codec switch of a stepped session's step frames, added after stepped
+#: generation and, like it, without an ABI bump. Bound only when present;
+#: `has_step_codecs()` is what a caller asks before using one.
+STEP_CODEC_FUNCTIONS = (
+    "reactor_set_codec_preference",
+    "reactor_step_frame_encodings",
+)
+
+
+def has_step_codecs(lib: object) -> bool:
+    """Whether `lib` can set step codecs."""
+    return all(hasattr(lib, name) for name in STEP_CODEC_FUNCTIONS)
+
+
+def _bind_step_codecs(lib: ctypes.CDLL) -> None:
+    if not has_step_codecs(lib):
+        return
+    # Both return heap strings to free with reactor_free_string, hence
+    # c_void_p rather than c_char_p, as reactor_unpublish_track.
+    lib.reactor_set_codec_preference.restype = ctypes.c_void_p
+    lib.reactor_set_codec_preference.argtypes = [
+        ctypes.c_void_p,  # handle
+        ctypes.c_char_p,  # track (nullable: every track)
+        ctypes.c_char_p,  # codecs_json (nullable: the default)
+    ]
+    lib.reactor_step_frame_encodings.restype = ctypes.c_void_p
+    lib.reactor_step_frame_encodings.argtypes = [ctypes.c_void_p]
 
 
 def has_stepped(lib: object) -> bool:

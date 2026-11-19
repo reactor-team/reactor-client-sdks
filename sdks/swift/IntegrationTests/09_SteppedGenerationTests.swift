@@ -47,16 +47,93 @@ struct SteppedGenerationTests {
                 let result = try await reactor.step(state: ["effect": "invert"])
                 #expect(result.error == nil)
 
-                let video = try #require(result.tracks.first { $0.name == "main_video" })
-                let frame = try #require(video.frames.first)
-                try #require(frame.shape == [64, 64, 3])
-                // RGB (10, 20, 30) inverted, at the frame's centre pixel.
-                let centre = (32 * 64 + 32) * 3
-                #expect(Array(Array(frame.data)[centre..<centre + 3]) == [245, 235, 225])
+                // The frame travels encoded both ways when both ends share a
+                // codec (H.264 by default), so the inverted pixel comes back
+                // close, not exact.
+                try expectInverted(result, tolerance: 8)
             }
         } catch let error as ReactorError where !connected {
             #expect(error.code == .generationModeMismatch || error.code == .sessionTerminal)
         }
+    }
+
+    /// The same echo round trip as above, with the step frames' codec chosen:
+    /// VP8 both ways (libvpx is in every build on either end, unlike H.264), or
+    /// encoding turned off so every frame travels raw. The
+    /// client still pushes BGRA and receives RGB either way. An echo or a
+    /// runtime that does not step is accepted as above.
+    @Test(
+        "a stepped session carries frames in the codec it chose",
+        arguments: ["vp8", "encoding-off"])
+    func steppedSessionCarriesFramesInTheCodecItChose(variant: String) async throws {
+        let codecs: [StepCodec] = variant == "vp8" ? [.vp8] : []
+        let expected = variant == "vp8" ? "vp8" : "raw"
+        let tolerance = expected == "raw" ? 0 : 8
+
+        let reactor = try await IntegrationConfig.makeReactor(generation: .stepped)
+        // Before connecting: it applies to the next connection.
+        try reactor.setCodecPreference(codecs)
+        var connected = false
+        do {
+            do {
+                try await pacedConnect(reactor)
+            } catch let error as ReactorError {
+                #expect(error.code == .generationModeMismatch || error.code == .sessionTerminal)
+                reactor.close()
+                return
+            }
+            connected = true
+
+            let webcam = try reactor.track("webcam")
+            try await webcam.publish()
+            let encodings = reactor.stepFrameEncodings
+            if expected != "raw" && encodings.values.allSatisfy({ $0 == "raw" }) {
+                // A runtime from before encoded step frames answers without
+                // them, so every track travels raw. Accepted, as an echo that
+                // does not step is, until a runtime with them is deployed.
+                try? await reactor.disconnect()
+                reactor.close()
+                return
+            }
+            #expect(encodings["main_video"] == expected, "\(encodings)")
+            // A track the session carries raw may be left out of the map.
+            #expect((encodings["webcam"] ?? "raw") == expected, "\(encodings)")
+            if expected == "raw" {
+                #expect(encodings.values.allSatisfy { $0 == "raw" }, "\(encodings)")
+            }
+
+            // RGB (10, 20, 30), as BGRA.
+            let pixels = MediaFixtures.solidBGRAFrame(width: 64, height: 64, color: (30, 20, 10))
+            try webcam.pushFrame(pixels, width: 64, height: 64)
+            let result = try await reactor.step(state: ["effect": "invert"])
+            #expect(result.error == nil)
+            try expectInverted(result, tolerance: tolerance)
+
+            // The next step's frames continue the same stream.
+            try webcam.pushFrame(pixels, width: 64, height: 64)
+            let again = try await reactor.step()
+            #expect(again.step == result.step + 1)
+            try expectInverted(again, tolerance: tolerance)
+        } catch {
+            if connected { try? await reactor.disconnect() }
+            reactor.close()
+            throw error
+        }
+        try? await reactor.disconnect()
+        reactor.close()
+    }
+
+    /// `main_video` carries one 64x64 frame whose centre is RGB (10, 20, 30)
+    /// inverted, to within `tolerance` per channel.
+    private func expectInverted(_ result: StepResult, tolerance: Int) throws {
+        let video = try #require(result.tracks.first { $0.name == "main_video" })
+        try #require(video.frames.count == 1)
+        let frame = video.frames[0]
+        try #require(frame.shape == [64, 64, 3])
+        let centre = (32 * 64 + 32) * 3
+        let pixel = Array(frame.data)[centre..<centre + 3].map(Int.init)
+        let distance = zip(pixel, [245, 235, 225]).map { abs($0 - $1) }.max() ?? .max
+        #expect(distance <= tolerance, "centre pixel \(pixel)")
     }
 
     @Test("steps resolve in order", .enabled(if: steppedModel != nil))

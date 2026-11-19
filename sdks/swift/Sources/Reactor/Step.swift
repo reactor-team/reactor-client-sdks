@@ -18,6 +18,27 @@ public enum Generation: String, Sendable, Hashable, CaseIterable {
     case stepped
 }
 
+/// A codec a stepped session's video step frames can travel in between this
+/// client and the runtime. See ``Reactor/setCodecPreference(_:track:)``.
+///
+/// The cases are listed in the default order of preference. Whatever the
+/// codec, the frames a step takes and returns stay RGB: the library encodes and
+/// decodes them on this side.
+public enum StepCodec: String, Sendable, Hashable, CaseIterable {
+
+    /// H.264. The default first choice.
+    case h264
+
+    /// VP9.
+    case vp9
+
+    /// AV1.
+    case av1
+
+    /// VP8.
+    case vp8
+}
+
 /// One command of a step, run after the step's state, in order.
 ///
 /// ```swift
@@ -259,8 +280,9 @@ public struct StepFrame: Sendable, Hashable {
     /// The array's dimensions, outermost first.
     public let shape: [Int]
 
-    /// How the frame travelled on the wire — `"raw"` today. Informational:
-    /// ``data`` is decoded either way.
+    /// How the frame travelled on the wire: `"raw"`, or a ``StepCodec``'s name
+    /// for a video frame the session encoded. Informational: ``data`` is
+    /// decoded either way.
     public let encoding: String
 
     /// What the sender attached to the frame, or `nil` when it attached nothing.

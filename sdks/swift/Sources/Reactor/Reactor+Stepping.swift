@@ -62,6 +62,11 @@ extension Reactor {
     /// bad track or frame anywhere in `media` throws its push's error before any
     /// of it is pushed: the buffer is left as it was, and the step is not sent.
     ///
+    /// Video step frames may travel encoded between this client and the
+    /// runtime — see ``setCodecPreference(_:track:)`` and
+    /// ``stepFrameEncodings`` — but the result's video frames are RGB either
+    /// way, decoded here.
+    ///
     /// - Parameters:
     ///   - state: the model's state fields to set before the commands run, or
     ///     `nil` to leave the state as it is. The model keeps it until changed.
@@ -139,6 +144,96 @@ extension Reactor {
                 }
             }
         }
+    }
+
+    // MARK: - Step frame codecs
+
+    /// Choose the codecs this client's stepped sessions carry their video step
+    /// frames in, most preferred first.
+    ///
+    /// ```swift
+    /// try reactor.setCodecPreference([.vp9, .h264])            // VP9 when both ends have it
+    /// try reactor.setCodecPreference([])                       // encoding off: raw frames
+    /// try reactor.setCodecPreference([.av1], track: "main_video")
+    /// try reactor.setCodecPreference(nil)                      // back to the default
+    /// ```
+    ///
+    /// Without a preference a session prefers H.264, then VP9, AV1 and VP8. The
+    /// list is an order, not a limit: the codecs it leaves out follow it, so a
+    /// runtime without the preferred ones takes another. Of those, the ones
+    /// this machine can encode (input tracks) or decode (output tracks) are
+    /// offered, and the runtime takes per track the first it shares; a track
+    /// they share no codec for stays raw.
+    ///
+    /// Whatever the codec, ``Track/pushFrame(_:width:height:userData:captureTimeUs:)``
+    /// takes the same raw pixels as before and the video frames
+    /// ``step(state:commands:media:)`` returns are still RGB:
+    /// the encoding is between this client and the runtime, and this library
+    /// encodes and decodes it.
+    ///
+    /// Callable before ``connect(sessionID:connectionID:)`` or during a session.
+    /// It takes effect on the **next connection** — the next connect or
+    /// ``reconnect()`` — and the live connection keeps what it negotiated,
+    /// which ``stepFrameEncodings`` reports. A streamed session ignores it.
+    ///
+    /// - Parameters:
+    ///   - codecs: the codecs, most preferred first. `nil` goes back to the
+    ///     default. An **empty** list for the whole session turns encoding off,
+    ///     so every track carries raw frames; an empty list for one `track` goes
+    ///     back to the session's list, since one track cannot turn encoding off
+    ///     alone.
+    ///   - track: the track the list applies to, in place of the session's, or
+    ///     `nil` for every track.
+    ///
+    /// - Throws: ``ReactorError`` with ``ReactorError/Code/invalidState`` on a
+    ///   closed client, or the library's own error when it refuses the
+    ///   preference. Nothing changes on a throw.
+    public func setCodecPreference(_ codecs: [StepCodec]?, track: String? = nil) throws {
+        let codecsJSON = codecs.map { codecs in
+            "[" + codecs.map { "\"\($0.rawValue)\"" }.joined(separator: ",") + "]"
+        }
+        // The library keeps the preference on the handle, which lives from
+        // creation to close(), and reads it at every connect and reconnect:
+        // nothing has to be kept here and handed over again.
+        var failure: String?
+        let reached = withHandle(else: false) { handle in
+            withOptionalCString(track) { trackPointer in
+                withOptionalCString(codecsJSON) { codecsPointer in
+                    // Heap-allocated on a refusal only, and ours to free.
+                    let answer = ffi.setCodecPreference(handle, trackPointer, codecsPointer)
+                    failure = String(takingOwnership: answer, freeing: ffi.freeString)
+                }
+            }
+            return true
+        }
+        guard reached else {
+            throw ReactorError(
+                .invalidState,
+                "the client is closed, so setCodecPreference cannot run. Create a new Reactor.",
+                operation: "set_codec_preference")
+        }
+        if let failure {
+            throw ReactorError.decode(payload: failure)
+        }
+    }
+
+    /// How each track's step frames travel on this connection, by track name:
+    /// `"h264"`, `"vp8"`, `"vp9"` or `"av1"` for a video track the session
+    /// encodes, `"raw"` for the rest.
+    ///
+    /// What the live connection negotiated from ``setCodecPreference(_:track:)``
+    /// and the runtime's own codecs. Empty outside a connected stepped session,
+    /// and on a closed client. Either way, the frames a step returns are
+    /// decoded RGB.
+    public var stepFrameEncodings: [String: String] {
+        let json = withHandle(else: nil) { handle in
+            String(takingOwnership: ffi.stepFrameEncodings(handle), freeing: ffi.freeString)
+        }
+        guard let json,
+            let object = try? JSONSerialization.jsonObject(with: Data(json.utf8))
+                as? [String: String]
+        else { return [:] }
+        return object
     }
 
     /// Check `media`'s frames, track by track, as ``step(state:commands:media:)``

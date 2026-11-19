@@ -18,6 +18,22 @@ request as the bump.
   bytes it returned as they are, or a dict it returned encoded as JSON. It
   arrives in the same message as the step's frames, so a model whose output is
   data alone needs no output track. `null` when the model returned none.
+- Encoded step frames. A stepped session's video step frames now travel
+  between the client and the runtime encoded (H.264 first by default, then
+  VP9, AV1, VP8) when both ends share a codec, instead of as raw pixels.
+  `step()` still returns RGB frames and `Track.pushFrame` still takes BGRA:
+  the native core encodes and decodes. A lossy codec means a returned pixel
+  can differ slightly from what a raw frame would carry.
+  - `Reactor.setCodecPreference(codecs: List<StepCodec>?, track: String? =
+    null)` chooses the codecs, most preferred first, for every track or for
+    one. `null` goes back to the default; an empty list for every track turns
+    encoding off (all frames raw). Callable before `connect()` or during a
+    session; it takes effect on the next connection or reconnect.
+  - `Reactor.stepFrameEncodings` maps each track to the encoding its step
+    frames take on this connection (`"raw"`, `"h264"`, `"vp8"`, `"vp9"`,
+    `"av1"`).
+  - An output track whose stream the client can no longer decode is paused
+    and resumed, and the runtime starts it again at a keyframe.
 
 ### Fixed
 

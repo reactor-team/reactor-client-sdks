@@ -30,6 +30,7 @@ from ._ffi import (
     ReactorCallbacks,
     get_lib,
     has_encoded_step_frames,
+    has_step_codecs,
     has_stepped,
 )
 
@@ -69,6 +70,10 @@ LOCAL_API_URL = "http://localhost:8080"
 MIN_MAX_MESSAGE_SIZE = 256 * 1024
 #: The highest `max_message_size`: 1 GiB.
 MAX_MAX_MESSAGE_SIZE = 1024 * 1024 * 1024
+
+#: The codecs a stepped session's video step frames can travel in, in the
+#: default order of preference. See `Reactor.set_codec_preference`.
+STEP_CODECS = ("h264", "vp9", "av1", "vp8")
 
 
 class ReactorStatus(str, Enum):
@@ -343,6 +348,10 @@ class Reactor:
         # steps from two threads cannot interleave their media. Never across an
         # await: both happen in one synchronous stretch.
         self._step_lock = threading.Lock()
+        # What set_codec_preference() was told, by track (None: every track):
+        # replayed onto each new native handle, which is where a connection reads
+        # it from.
+        self._codec_preferences: dict[str | None, list[str] | None] = {}
 
         # A token the caller handed us is theirs: never replaced. One we minted from an
         # API key is ours, and `_minted_for` records the scope it was minted with, so a
@@ -806,6 +815,14 @@ class Reactor:
         self._handle = handle
         # Now closable, so the atexit hook must know about it.
         _LIVE_CLIENTS.add(self)
+        try:
+            for track, codecs in self._codec_preferences.items():
+                self._send_codec_preference(track, codecs)
+        except BaseException:
+            # Left installed, the handle would make the next connect() skip this
+            # replay and connect without the preference that was asked for.
+            self._destroy_handle()
+            raise
 
     def _create_handle_with_options(
         self, lib: Any, jwt_bytes: bytes | None, cbs: ReactorCallbacks
@@ -1184,6 +1201,82 @@ class Reactor:
     def generation(self) -> Generation:
         """How this client's sessions generate: ``"streamed"`` or ``"stepped"``."""
         return self._generation
+
+    def set_codec_preference(
+        self, codecs: Sequence[str] | None, *, track: str | None = None
+    ) -> None:
+        """Choose the codecs a stepped session carries its video step frames in.
+
+        `codecs` names them most preferred first, from ``"h264"``, ``"vp9"``,
+        ``"av1"`` and ``"vp8"`` (in any case). ``None`` goes back to the default,
+        H.264 first. An empty list for the whole session turns encoding off, so
+        every frame travels raw::
+
+            reactor.set_codec_preference(["vp9", "h264"])  # VP9 when both ends have it
+            reactor.set_codec_preference([])               # raw frames
+            reactor.set_codec_preference(["av1"], track="main_video")
+
+        With `track`, the list applies to that track only, in place of the
+        session's; an empty one there goes back to the session's, since one track
+        cannot turn encoding off alone. The list is an order, not a limit: the codecs it
+        leaves out follow it, so a runtime without the preferred ones takes another. Of
+        those, the ones this machine can encode (input tracks) or decode (output tracks)
+        are offered, and the runtime takes per track the first it shares; a track they
+        share no codec for stays raw.
+
+        Whatever the codec, :meth:`step` results and the frames
+        :meth:`Track.push_frame` takes stay RGB arrays: the encoding is between
+        this client and the runtime. Callable before :meth:`connect` or during a
+        session; it takes effect on the next connection or reconnect, and the live
+        connection keeps what it negotiated (see :attr:`step_frame_encodings`).
+        A streamed session ignores it.
+        """
+        if track is not None and not isinstance(track, str):
+            raise TypeError(f"track must be a str or None, got {type(track).__name__}")
+        names: list[str] | None = None
+        if codecs is not None:
+            if isinstance(codecs, (str, bytes)) or not isinstance(codecs, Sequence):
+                raise TypeError(f"codecs must be a sequence of codec names or None, got {codecs!r}")
+            names = []
+            for codec in codecs:
+                name = codec.lower() if isinstance(codec, str) else codec
+                if name not in STEP_CODECS:
+                    raise ValueError(
+                        f"unknown step codec {codec!r}: expected one of {', '.join(STEP_CODECS)}"
+                    )
+                names.append(name)
+        if self._handle is not None:
+            self._send_codec_preference(track, names)
+        self._codec_preferences[track] = names
+
+    def _send_codec_preference(self, track: str | None, codecs: list[str] | None) -> None:
+        lib = get_lib()
+        if not has_step_codecs(lib):
+            raise RuntimeError(
+                "the loaded libreactor_ffi predates step codecs (it exports no "
+                "reactor_set_codec_preference). Rebuild it with "
+                "`cargo build -p reactor-ffi --release`."
+            )
+        track_bytes = track.encode() if track is not None else None
+        codecs_json = json.dumps(codecs).encode() if codecs is not None else None
+        raw = self._read_string(
+            lambda lib, handle: lib.reactor_set_codec_preference(handle, track_bytes, codecs_json)
+        )
+        if raw is not None:
+            raise error_from_payload(raw)
+
+    @property
+    def step_frame_encodings(self) -> dict[str, str]:
+        """How each track's step frames travel on this connection, by track name.
+
+        ``"h264"``, ``"vp8"``, ``"vp9"`` or ``"av1"`` for an encoded video track,
+        ``"raw"`` for the rest. Empty outside a connected stepped session, and with
+        a library too old to say.
+        """
+        if self._handle is None or not has_step_codecs(get_lib()):
+            return {}
+        raw = self._read_string(lambda lib, handle: lib.reactor_step_frame_encodings(handle))
+        return json.loads(raw) if raw else {}
 
     async def step(
         self,

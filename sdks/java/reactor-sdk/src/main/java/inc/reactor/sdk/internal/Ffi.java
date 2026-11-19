@@ -194,7 +194,17 @@ public final class Ffi {
         // Optional for the same reason: a library that predates it still loads, and every result
         // it hands over reads as carrying no data, which is what such a library would decode.
 
-        STEP_RESULT_DATA("reactor_step_result_data", FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS), true);
+        STEP_RESULT_DATA("reactor_step_result_data", FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS), true),
+
+        // ── Step frame codecs ───────────────────────────────────────────────
+        //
+        // Optional for the same reason. A library that predates them still encodes nothing and
+        // still steps; Reactor.setCodecPreference says so at the call, naming the rebuild, and
+        // stepFrameEncodings reads as empty.
+
+        SET_CODEC_PREFERENCE(
+                "reactor_set_codec_preference", FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, ADDRESS), true),
+        STEP_FRAME_ENCODINGS("reactor_step_frame_encodings", FunctionDescriptor.of(ADDRESS, ADDRESS), true);
 
         private final String cName;
         private final FunctionDescriptor descriptor;

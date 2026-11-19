@@ -24,6 +24,8 @@ mise run test:swift:integration-tests             # macOS
 ```
 
 `REACTOR_LOCAL=1` runs against a coordinator on `localhost:8080` instead, and needs no API key.
+`REACTOR_MODEL_NAME` names the echo model when it is served under another name than
+`reactor/echo` (a local runtime's `echo`, say), as in the Python suite.
 
 ### iOS Simulator
 
@@ -98,7 +100,7 @@ rerun rather than debug the harness.
 | 06 | `06_RecordClipTests.swift` | A clip of generated media downloads to a real fragmented-MP4 file |
 | 07 | `07_FrameMetadataTests.swift` | A tag pushed on `webcam` loops back on `main_video`'s `userData` (REA-5972) — `frameID`/`captureTimeUs` are read but not asserted on content, since Python's own suite found `echo`'s values for both unreliable across independent live runs |
 | 08 | `08_ConnectionStatsTests.swift` | `stats()` on a live session: the first call has no measured bitrates, a later one has both, plus RTT, a succeeded nominated pair and inbound/outbound video streams; a disconnected client throws `invalidState` rather than reporting zeroes |
-| 09 | `09_SteppedGenerationTests.swift` | A stepped connect to `reactor/echo` steps (echo 1.10.0 and later: a pushed webcam frame comes back inverted on `main_video`) or throws `generationModeMismatch` / `sessionTerminal` (older echo); steps resolve in order; a pushed frame rides the next step, proved by an oversized one failing it with `messageTooLarge`. The generic tests are skipped without `REACTOR_STEPPED_MODEL_NAME` (and `REACTOR_STEPPED_INPUT_TRACK` for the push) |
+| 09 | `09_SteppedGenerationTests.swift` | A stepped connect to `reactor/echo` steps (echo 1.10.0 and later: a pushed webcam frame comes back inverted on `main_video`) or throws `generationModeMismatch` / `sessionTerminal` (older echo), and does so with its step frames in H.264 or with encoding off, as `stepFrameEncodings` reports, including a second step on the same stream; steps resolve in order; a pushed frame rides the next step, proved by an oversized one failing it with `messageTooLarge`. The generic tests are skipped without `REACTOR_STEPPED_MODEL_NAME` (and `REACTOR_STEPPED_INPUT_TRACK` for the push) |
 
 ## Fixtures
 

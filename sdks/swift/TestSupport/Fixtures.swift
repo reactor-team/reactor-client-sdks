@@ -44,7 +44,9 @@ package enum IntegrationConfig {
     /// examples by hand never shares a budget with CI.
     private static let apiKeyEnv = "INTEGRATION_TESTS_REACTOR_API_KEY"
 
-    /// `reactor/echo` — the model every other SDK's integration suite runs
+    /// `REACTOR_MODEL_NAME` when set — as the Python suite reads it, for a
+    /// local runtime that serves echo under another name — and otherwise
+    /// `reactor/echo`: the model every other SDK's integration suite runs
     /// against (`sdks/python/integration-tests/conftest.py`'s own default), and
     /// what this suite uses too, deliberately **not** the `reactor/helios` /
     /// `xmax/x2` pair REA-5586's hand-run examples used.
@@ -60,7 +62,7 @@ package enum IntegrationConfig {
     /// helios, **nothing arrives on `main_video` until something has been
     /// pushed into `webcam`** (`echo_model.py`'s `run()` skips a tick with
     /// nothing to read).
-    package static let defaultModel = "reactor/echo"
+    package static let defaultModel = value("REACTOR_MODEL_NAME") ?? "reactor/echo"
 
     /// The API key this suite runs with, or a clear failure naming the fix —
     /// never a crash, so one test's missing key fails that test rather than the

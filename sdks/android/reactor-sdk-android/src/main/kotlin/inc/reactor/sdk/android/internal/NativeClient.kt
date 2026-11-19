@@ -50,6 +50,15 @@ internal object NativeClient {
 
     private external fun nativeClearStepInputs(context: Long)
 
+    /** Synchronous: the error payload on failure, null on success. */
+    private external fun nativeSetCodecPreference(
+        context: Long,
+        track: String?,
+        codecsJson: String?,
+    ): String?
+
+    private external fun nativeStepFrameEncodings(context: Long): String?
+
     private external fun nativeDestroy(context: Long): Int
 
     private external fun nativeStatus(context: Long): String?
@@ -398,6 +407,19 @@ internal object NativeClient {
         fun clearStepInputs() {
             withOpenHandle { nativeClearStepInputs(context) }
         }
+
+        /**
+         * Set the step frames' codec preference, which the ABI answers synchronously with an error
+         * payload, as it does an unpublish. A non-null return is the failure.
+         */
+        fun setCodecPreference(
+            track: String?,
+            codecsJson: String?,
+        ): String? = withOpenHandle { nativeSetCodecPreference(context, track, codecsJson) }
+
+        /** The encoding each track's step frames take on this connection, as a JSON object. */
+        val stepFrameEncodings: String?
+            get() = withOpenHandle { nativeStepFrameEncodings(context) }
 
         /**
          * Upload a file the native side opens later, from its own task.

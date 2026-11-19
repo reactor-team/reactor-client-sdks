@@ -5,6 +5,7 @@ import inc.reactor.sdk.FakeClients
 import inc.reactor.sdk.Generation
 import inc.reactor.sdk.InvalidStateException
 import inc.reactor.sdk.JsonValue
+import inc.reactor.sdk.StepCodec
 import inc.reactor.sdk.StepCommand
 import inc.reactor.sdk.StepFile
 import inc.reactor.sdk.StepInput
@@ -242,6 +243,26 @@ class SteppedTest {
         camera.java.publish()
         fake.settleLastCall(true, "{}", null)
         return camera
+    }
+
+    @Test
+    fun `codec preferences and the negotiated encodings forward to the client`() {
+        client.setCodecPreference(listOf(StepCodec.VP9), track = "camera_in")
+        client.setCodecPreference(null)
+        assertEquals(
+            listOf(
+                FakeNativeLibrary.CodecPreferenceCall(
+                    fake.lastCreatedHandle(),
+                    "camera_in",
+                    "[\"vp9\"]",
+                ),
+                FakeNativeLibrary.CodecPreferenceCall(fake.lastCreatedHandle(), null, null),
+            ),
+            fake.codecPreferenceCalls,
+        )
+
+        fake.stepFrameEncodingsJson = "{\"main_video\":\"vp9\"}"
+        assertEquals(mapOf("main_video" to "vp9"), client.stepFrameEncodings)
     }
 
     private fun awaitStep() {

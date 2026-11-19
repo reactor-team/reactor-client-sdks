@@ -95,8 +95,10 @@ using StepMedia = std::map<std::string, std::vector<StepMediaFrame>>;
 /// completes, and the native result is freed straight away. Keep it as long as
 /// you like.
 struct StepFrame {
-  /// How the frame travelled on the wire — "raw" today. `data` is already
-  /// decoded whatever this says.
+  /// How the frame travelled on the wire: "raw", or a video codec ("h264",
+  /// "vp8", "vp9", "av1") when the session negotiated one for the track — see
+  /// `Reactor::set_codec_preference`. `data` is already decoded whatever this
+  /// says.
   std::string encoding{};
 
   /// Element type in NumPy notation: "uint8" for video, "int16" for audio.

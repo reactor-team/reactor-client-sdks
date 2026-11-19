@@ -805,6 +805,45 @@ void reactor_step(
 );
 
 /*
+ * Set the codecs a stepped session prefers for its step frames, most preferred
+ * first: for every track with a NULL track, or for one track in place of the
+ * session-wide order.
+ *
+ * codecs_json is a JSON array of codec names ("h264", "vp8", "vp9", "av1", in
+ * any case), or NULL to go back to the default (H.264, VP9, AV1, VP8).  An
+ * empty array with a NULL track turns encoded step frames off: every track
+ * carries raw frames.  An empty array for one track goes back to the session's
+ * order.  The list is an order, not a limit: the codecs it leaves out follow
+ * it, so a runtime without the preferred ones takes another. Of those, the ones
+ * this library can encode (input tracks) or decode (output tracks) are offered,
+ * and the runtime takes per track the first it shares; a track they share no
+ * codec for stays raw.  Whatever the encoding, step results reach the
+ * host as decoded RGB frames.
+ *
+ * Callable before reactor_connect() or during the session; it takes effect on
+ * the next connection or reconnect, and the live connection keeps what it
+ * negotiated.
+ *
+ * NULL on success.  On failure (DECODE_FAILED: codecs_json malformed or naming
+ * an unknown codec; INVALID_STATE: NULL handle) a heap JSON error object, as
+ * reactor_unpublish_track()'s, to free with reactor_free_string(); nothing
+ * changed.
+ */
+char *reactor_set_codec_preference(
+    ReactorHandle *handle,
+    const char    *track,        /* nullable */
+    const char    *codecs_json   /* nullable */
+);
+
+/*
+ * The encoding each mapped track's step frames take on this connection, as a
+ * JSON object of track name to "raw", "h264", "vp8", "vp9" or "av1".  "{}"
+ * outside a connected stepped session.  Heap-allocated; free with
+ * reactor_free_string().  NULL only if handle is NULL.
+ */
+char *reactor_step_frame_encodings(ReactorHandle *handle);
+
+/*
  * Drop every input frame buffered for the next step.  Frames already sent to
  * the runtime (see "Stepped generation") are not recalled.  A no-op outside a
  * stepped session.
@@ -1042,7 +1081,8 @@ char *reactor_paused_tracks(ReactorHandle *handle);
 
 /*
  * Free a string returned by reactor_session_id(), reactor_tracks(),
- * reactor_paused_tracks() or reactor_unpublish_track(), or stored in
+ * reactor_paused_tracks(), reactor_unpublish_track(),
+ * reactor_set_codec_preference() or reactor_step_frame_encodings(), or stored in
  * reactor_create_with_options()'s error_out.
  */
 void reactor_free_string(char *s);
