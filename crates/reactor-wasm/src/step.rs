@@ -90,6 +90,9 @@ fn frame_to_js(frame: DecodedFrame) -> Result<JsValue, JsValue> {
     let encoding = match frame.encoding {
         FrameEncoding::Raw => "raw",
         FrameEncoding::H264 => "h264",
+        FrameEncoding::Vp8 => "vp8",
+        FrameEncoding::Vp9 => "vp9",
+        FrameEncoding::Av1 => "av1",
         FrameEncoding::Unspecified => "unspecified",
     };
     set(&object, "encoding", &JsValue::from_str(encoding))?;

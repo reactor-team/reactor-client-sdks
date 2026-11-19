@@ -72,6 +72,9 @@ fn encoding_str(encoding: FrameEncoding) -> &'static CStr {
     match encoding {
         FrameEncoding::Raw => c"raw",
         FrameEncoding::H264 => c"h264",
+        FrameEncoding::Vp8 => c"vp8",
+        FrameEncoding::Vp9 => c"vp9",
+        FrameEncoding::Av1 => c"av1",
         FrameEncoding::Unspecified => c"unspecified",
     }
 }

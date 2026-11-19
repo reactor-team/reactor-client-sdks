@@ -173,6 +173,7 @@ mod tests {
             control_server_message::Payload::Error(Error {
                 code: "PUBLISHER_SLOT_TAKEN".into(),
                 message: "taken".into(),
+                track: None,
             }),
         );
         c.handle_message(&bytes);
@@ -257,6 +258,7 @@ mod tests {
             control_server_message::Payload::Error(Error {
                 code: "X".into(),
                 message: "y".into(),
+                track: None,
             }),
         );
         // Unknown request_id: still decodes and returns the payload, just
