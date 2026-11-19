@@ -262,11 +262,13 @@ await reactor.connect();
 reactor.getStepFrameEncodings(); // { main_video: "av1", camera: "vp9" }
 ```
 
-- The codecs are `"h264"`, `"vp9"`, `"av1"` and `"vp8"`; H.264 comes first by default. Each
-  track's list is filtered by what this browser can encode (input tracks) or decode (output
-  tracks), as `VideoEncoder.isConfigSupported` and `VideoDecoder.isConfigSupported` report,
-  and the runtime picks per track from what is left. A track they share no codec for, an audio
-  track, and every track of a runtime without encoded step frames stay raw.
+- The codecs are `"h264"`, `"vp9"`, `"av1"` and `"vp8"`; H.264 comes first by default. A list
+  is an order, not a limit: the codecs it leaves out follow it, so a runtime without the
+  preferred ones takes another. Of those, the ones this browser can encode (input tracks) or
+  decode (output tracks), as `VideoEncoder.isConfigSupported` and
+  `VideoDecoder.isConfigSupported` report, are offered, and the runtime takes per track the
+  first it shares. A track they share no codec for, an audio track, and every track of a
+  runtime without encoded step frames stay raw.
 - `setCodecPreference()` can be called before `connect()` or during a session. It takes effect
   on the next connection or reconnect; the live connection keeps what it negotiated.
 - Each track is one stream for the whole connection. A track's first frame on a connection is

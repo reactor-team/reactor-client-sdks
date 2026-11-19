@@ -103,8 +103,8 @@ function expectInverted(centre: number[], tolerance: number): void {
 }
 
 for (const [label, codecs, expected] of [
-  ['h264', ['h264'], 'h264'],
-  // Linux Chromium, the one CI runs, has no H.264 encoder.
+  // VP8, which every browser and the runtime have, unlike H.264: Linux
+  // Chromium, the one CI runs, has no H.264 encoder.
   ['vp8', ['vp8'], 'vp8'],
   ['encoding off', [], 'raw'],
 ] as const) {

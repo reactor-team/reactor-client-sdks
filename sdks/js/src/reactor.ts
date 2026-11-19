@@ -1139,10 +1139,12 @@ export class Reactor implements Disposable {
    *
    * With `track`, the list applies to that track only, in place of the
    * session's; an empty one there goes back to the session's, since one
-   * track cannot turn encoding off alone. Each list is filtered by what this
-   * browser's WebCodecs can encode (input tracks) or decode (output tracks),
-   * and the runtime picks per track from what is left. A track they share
-   * no codec for stays raw.
+   * track cannot turn encoding off alone. The list is an order, not a
+   * limit: the codecs it leaves out follow it, so a runtime without the
+   * preferred ones takes another. Of those, the ones this browser's
+   * WebCodecs can encode (input tracks) or decode (output tracks) are
+   * offered, and the runtime takes per track the first it shares; a track
+   * they share no codec for stays raw.
    *
    * Whatever the codec, `step()` results and the frames `pushFrame()` takes
    * stay RGB: the encoding is between this client and the runtime. Callable
