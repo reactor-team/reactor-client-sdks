@@ -78,9 +78,22 @@ let package = Package(
     // decided here in favour of Intel. (The Intel *simulator* is a different
     // question and is genuinely unsupported — see rust-toolchain.toml.) The
     // platform table in sdks/swift/README.md is the full story.
+    //
+    // tvOS 17, one above iOS's twin, because of ReactorMedia: `Camera` is built
+    // on AVCaptureSession and AVCaptureDevice, which tvOS gained in 17 (for
+    // Continuity Camera). At 16 that target does not compile; at 17 it does,
+    // unchanged. Nothing else asks for it — `Reactor` compiles at 16, and
+    // WebRTC's build defaults its mobile targets to 14.0 (`ios_deployment_target`
+    // in its .gn, which a tvOS build shares) — and tvOS 17 runs on every Apple TV
+    // that tvOS 16 does, so the extra version costs no hardware.
+    //
+    // The XCFramework's tvOS slice is opt-in (scripts/build-swift-xcframework.sh)
+    // until a published libwebrtc covers it, so a released archive may carry no
+    // tvOS slice; this line is what lets SwiftPM resolve the package for tvOS.
     platforms: [
         .macOS(.v13),
         .iOS(.v16),
+        .tvOS(.v17),
     ],
     products: [
         .library(name: "Reactor", targets: ["Reactor"]),
@@ -138,7 +151,12 @@ let package = Package(
             //
             // scripts/build-swift-xcframework.sh links an iOS cdylib against
             // exactly this list, so a framework going missing is a failed build
-            // here rather than a failed build in someone's app.
+            // here rather than a failed build in someone's app — and a tvOS one
+            // too when it builds the tvOS slice.
+            //
+            // tvOS takes the iOS list: libwebrtc is built for it as an iOS
+            // variant (gn's `target_os="ios"`, `target_platform="tvos"`), so it
+            // is the same Objective-C SDK, network monitor and UIKit glue.
             linkerSettings: [
                 .linkedLibrary("c++"),
                 .linkedFramework("AVFoundation"),
@@ -151,8 +169,8 @@ let package = Package(
                 .linkedFramework("Foundation"),
                 .linkedFramework("Metal"),
                 .linkedFramework("VideoToolbox"),
-                .linkedFramework("Network", .when(platforms: [.iOS])),
-                .linkedFramework("UIKit", .when(platforms: [.iOS])),
+                .linkedFramework("Network", .when(platforms: [.iOS, .tvOS])),
+                .linkedFramework("UIKit", .when(platforms: [.iOS, .tvOS])),
                 .linkedFramework("AppKit", .when(platforms: [.macOS])),
                 .linkedFramework("CoreImage", .when(platforms: [.macOS])),
                 .linkedFramework("IOKit", .when(platforms: [.macOS])),
