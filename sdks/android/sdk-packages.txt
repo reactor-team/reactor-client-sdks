@@ -7,7 +7,7 @@
 # installs from it and then verifies the result against it.
 #
 # Format is the `android sdk install` spec: either a versioned path (`build-tools/36.1.0`) or,
-# for a package whose path carries no version, `name@version` (`platform-tools@37.0.1`). One per
+# for a package whose path carries no version, `name@version` (`platform-tools@37.0.3`). One per
 # line, `#` comments ignored. Every version here is from the stable channel.
 #
 # A spec with no version at all installs "whatever is newest today", which is the drift this file
@@ -19,7 +19,7 @@ platforms/android-36
 build-tools/36.1.0
 
 # adb and friends. Needed from A02 onward, where the first instrumented test runs on a device.
-platform-tools@37.0.1
+platform-tools@37.0.3
 
 # The CMake AGP invokes for externalNativeBuild. A second CMake next to the one mise pins for the
 # C++ SDK, deliberately: AGP drives its own toolchain through the SDK's copy, and pointing it at
