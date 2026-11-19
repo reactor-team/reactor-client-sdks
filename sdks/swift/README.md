@@ -301,6 +301,14 @@ consumer's answer the default.
 | macOS | arm64 + x86_64 (one lipo'd slice) | 13.0 — libwebrtc's x86_64 build requires it, and one slice cannot claim two minimums |
 | iOS device | arm64 | 16.0 |
 | iOS simulator | arm64 | 16.0 |
+| tvOS device (opt-in) | arm64 | 17.0 — `Camera`'s AVFoundation capture classes start there; the same Apple TVs run 16 and 17 |
+
+**The tvOS slice is opt-in.** No published libwebrtc covers tvOS yet, so
+`build:xcframework` leaves it out unless `REACTOR_XCFRAMEWORK_TVOS=1`, and
+`mise run build:xcframework:tvos-only` builds it alone. Either way its libwebrtc
+comes from `REACTOR_WEBRTC_TVOS_LIB_DIR`, a local `webrtc-build` output, and
+the build refuses an archive with no libwebrtc in it. There is no tvOS
+simulator slice.
 
 **The Intel-Mac simulator is not supported.** `reactor-webrtc-sys` maps
 `x86_64-apple-ios` to the *arm64* simulator archive, so such a build would link
