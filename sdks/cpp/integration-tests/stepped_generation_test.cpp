@@ -121,8 +121,8 @@ void check_inverted(const reactor::StepResult& result, int tolerance) {
 }
 
 /// The same echo round trip with the step frames' codec chosen: VP8 both
-/// ways (libvpx is in every build on either end, unlike H.264), or encoding turned off so every frame travels raw. The client pushes
-/// and receives RGB either way.
+/// ways (libvpx is in every build on either end, unlike H.264), or encoding turned off so every
+/// frame travels raw. The client pushes and receives RGB either way.
 void run_codec_round_trip(const std::vector<std::string>& codecs, const std::string& expected) {
   reactor::Reactor client = stepped_reactor();
   client.set_codec_preference(codecs);
