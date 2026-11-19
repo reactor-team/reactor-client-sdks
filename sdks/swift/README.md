@@ -2,7 +2,8 @@
 
 A Swift client for [Reactor](https://reactor.inc), for macOS and iOS, built on
 `libreactor_ffi` — the same Rust core the [Python SDK](../python) and the
-[C++ SDK](../cpp) bind.
+[C++ SDK](../cpp) bind. tvOS is experimental and unreleased; see
+[tvOS](#tvos-experimental-unreleased).
 
 ## Quickstart
 
@@ -331,7 +332,7 @@ dylib against exactly the list in the manifest, so a framework going missing
 fails there rather than in someone's app.
 
 **`-ObjC` is not on that list, because it cannot be — and a consumer needs it
-anyway.** Add it to your app's own "Other Linker Flags" in Xcode, or it
+anyway**, on iOS and tvOS alike. Add it to your app's own "Other Linker Flags" in Xcode, or it
 crashes on launch with `+[UIDevice maxSupportedH264Profile]: unrecognized
 selector`. libwebrtc ships an Objective-C++ category the linker silently
 drops from a static archive unless something forces every object file in
@@ -341,6 +342,90 @@ set that on a consumer's behalf: `unsafeFlags` there would make the whole
 package unusable as anyone's dependency. Found on the integration-tests
 suite's own iOS Simulator run, not in code review — the crash is on load,
 before anything this SDK does runs at all.
+
+## tvOS (experimental, unreleased)
+
+tvOS is a port in progress, not a supported platform. The Swift sources compile
+for it, but the XCFramework has no tvOS slice — there is no tvOS build of
+libwebrtc yet — so an app cannot link this package for an Apple TV today, and
+nothing here has run on one.
+
+What tvOS is for is receiving: connect, send commands, show a video track, play
+an audio track.
+
+| | On tvOS |
+|---|---|
+| `Reactor`: the client, `Track`, commands, uploads, recordings, stepped generation | available |
+| `ReactorVideoView`, `VideoFrame.cgImage` | available — SwiftUI and Core Graphics only |
+| `Speaker` | available, and puts the audio session into `.playback` as on iOS |
+| `CaptureGate` | available |
+| `Camera`, `Microphone` | **unavailable**, at compile time |
+
+An Apple TV has no camera, and no microphone an app can record from, so
+`Camera` and `Microphone` are marked `@available(tvOS, unavailable)`: naming
+either in a tvOS build is an error that says why, rather than a `notFound`
+thrown on every TV at run time. tvOS 17 can borrow an iPhone's camera and
+microphone through Continuity Camera; none of this has been tried with one, and
+lifting the attribute later is source-compatible. Pushing frames the app makes
+itself, with `Track.pushFrame`, is available. A tvOS app needs no camera or
+microphone usage description.
+
+A receive-only app is a client, a connection, the model's first commands and a
+view:
+
+```swift
+import Reactor
+import ReactorMedia
+import SwiftUI
+
+@MainActor
+final class Session: ObservableObject {
+    @Published var video: Track?
+    private var reactor: Reactor?
+
+    func start(jwt: String) async throws {
+        let reactor = try Reactor(model: "reactor/helios", jwt: jwt)
+        self.reactor = reactor
+        try await reactor.connect()
+        try await reactor.sendCommand("set_prompt", ["prompt": "a forest at dawn"])
+        try await reactor.sendCommand("start")
+        video = try reactor.track("main_video")
+    }
+}
+
+struct PlayerView: View {
+    @StateObject private var session = Session()
+    let jwt: String
+
+    var body: some View {
+        Group {
+            if let track = session.video {
+                ReactorVideoView(track: track)
+            } else {
+                ProgressView()
+            }
+        }
+        .task { try? await session.start(jwt: jwt) }
+    }
+}
+```
+
+The token comes from your own backend: an API key does not belong on a device,
+and a TV has nobody to type one in. `Reactor.fetchJWT(apiKey:options:)` is the
+same exchange, for trying it out. The app needs `-ObjC` in its linker flags, as on
+iOS — see [the frameworks a static library cannot
+carry](#the-frameworks-a-static-library-cannot-carry). For audio, give a
+`Speaker` the frames of the model's recvonly audio track through `onFrame`, as
+on any other platform.
+
+`swift build` on a Mac never compiles a tvOS branch, so check them against the
+AppleTVOS SDK. Like `build:swift:ios`, this compiles the library targets and
+links nothing, so it needs no tvOS `libreactor_ffi`:
+
+```bash
+REACTOR_SWIFT_DEV=1 swift build --triple arm64-apple-tvos17.0 \
+    --sdk "$(xcrun --sdk appletvos --show-sdk-path)" --target ReactorMedia
+```
 
 ## What's still unverified
 
@@ -354,6 +439,10 @@ before anything this SDK does runs at all.
   this package on a Vision Pro yet, simulator or device. Also tracked in
   REA-5587 — this section will name the visionOS version and what was
   actually observed once it has.
+- **tvOS, past the compiler.** The sources compile for tvOS, and the unit
+  suite passes on a tvOS Simulator against a stub library. Nothing has
+  connected from an Apple TV, so `Speaker`'s audio session there and how fast
+  `ReactorVideoView` keeps up on Apple TV hardware are both unobserved.
 
 ## Layout
 
