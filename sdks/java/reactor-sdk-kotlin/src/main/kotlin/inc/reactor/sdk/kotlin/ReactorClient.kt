@@ -271,8 +271,11 @@ public class ReactorClient(
      *
      * Null goes back to the default (H.264, VP9, AV1, VP8). An empty list for the whole session
      * turns encoding off, so every frame travels raw; with a [track], the list applies to that
-     * track only, and an empty one there goes back to the session's order. A track the two ends
-     * share no codec for stays raw.
+     * track only, and an empty one there goes back to the session's order. The list is an order,
+     * not a limit: the codecs it leaves out follow it, so a runtime without the preferred ones
+     * takes another. Of those, the ones this machine can encode (input tracks) or decode (output
+     * tracks) are offered, and the runtime takes per track the first it shares; a track they share
+     * no codec for stays raw.
      *
      * ```kotlin
      * client.setCodecPreference(listOf(StepCodec.VP9, StepCodec.H264))

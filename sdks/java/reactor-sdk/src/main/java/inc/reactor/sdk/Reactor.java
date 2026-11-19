@@ -549,9 +549,10 @@ public final class Reactor implements AutoCloseable {
      *
      * <p>With a {@code track}, the list applies to that track only, in place of the session's; an
      * empty one there goes back to the session's, since one track cannot turn encoding off alone.
-     * Each list is filtered by what this machine can encode (input tracks) or decode (output
-     * tracks), and the runtime picks per track from what is left; a track they share no codec for
-     * stays raw.
+     * The list is an order, not a limit: the codecs it leaves out follow it, so a runtime without
+     * the preferred ones takes another. Of those, the ones this machine can encode (input tracks)
+     * or decode (output tracks) are offered, and the runtime takes per track the first it shares; a
+     * track they share no codec for stays raw.
      *
      * <p>Whatever the codec, {@link Track#pushFrame} still takes BGRA or RGB and {@link #step}
      * results still carry decoded {@code (height, width, 3)} RGB frames: the encoding is between

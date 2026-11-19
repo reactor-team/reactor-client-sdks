@@ -26,8 +26,8 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /**
- * A stepped echo session whose step frames travel in the codec the client chose: H.264 both ways,
- * or encoding turned off so every frame travels raw. The client pushes and receives RGB either way.
+ * A stepped echo session whose step frames travel in the codec the client chose: VP8 both ways
+ * (libvpx is in every build on either end, unlike H.264), or encoding turned off so every frame travels raw. The client pushes and receives RGB either way.
  *
  * <p>Echo steps from 1.10.0. An older echo, or a runtime that does not step it, refuses the
  * stepped connect — as a mode mismatch, or as a terminal START_REFUSED — and that is accepted, as
@@ -40,7 +40,7 @@ final class LiveStepCodecsTest {
 
     static Stream<Arguments> codecs() {
         return Stream.of(
-                Arguments.of("h264", List.of(StepCodec.H264), "h264"), Arguments.of("encoding-off", List.of(), "raw"));
+                Arguments.of("vp8", List.of(StepCodec.VP8), "vp8"), Arguments.of("encoding-off", List.of(), "raw"));
     }
 
     @ParameterizedTest(name = "{0}")

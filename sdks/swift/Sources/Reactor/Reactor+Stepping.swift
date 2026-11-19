@@ -158,10 +158,12 @@ extension Reactor {
     /// try reactor.setCodecPreference(nil)                      // back to the default
     /// ```
     ///
-    /// Without a preference a session prefers H.264, then VP9, AV1 and VP8. Each
-    /// list is filtered by what this machine can encode (input tracks) or decode
-    /// (output tracks), and the runtime picks per track from what is left; a
-    /// track they share no codec for stays raw.
+    /// Without a preference a session prefers H.264, then VP9, AV1 and VP8. The
+    /// list is an order, not a limit: the codecs it leaves out follow it, so a
+    /// runtime without the preferred ones takes another. Of those, the ones
+    /// this machine can encode (input tracks) or decode (output tracks) are
+    /// offered, and the runtime takes per track the first it shares; a track
+    /// they share no codec for stays raw.
     ///
     /// Whatever the codec, ``Track/pushFrame(_:width:height:userData:captureTimeUs:)``
     /// takes the same raw pixels as before and the video frames

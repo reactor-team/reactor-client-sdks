@@ -71,14 +71,14 @@ internal class LiveSteppedTest {
         }
 
     @Test
-    fun aSteppedSessionCarriesFramesInH264() = carriesFramesInTheCodecItChose(listOf(StepCodec.H264), "h264")
+    fun aSteppedSessionCarriesFramesInVp8() = carriesFramesInTheCodecItChose(listOf(StepCodec.VP8), "vp8")
 
     @Test
     fun aSteppedSessionWithEncodingOffCarriesRawFrames() = carriesFramesInTheCodecItChose(emptyList(), "raw")
 
     /**
-     * The echo round trip with the step frames' codec chosen before connect: H.264 both ways, or
-     * encoding off so every frame travels raw. The client pushes BGRA and receives RGB either way.
+     * The echo round trip with the step frames' codec chosen before connect: VP8 both ways (libvpx
+     * is in every build on either end, unlike H.264), or encoding off so every frame travels raw. The client pushes BGRA and receives RGB either way.
      * An echo or a runtime that does not step is accepted, as in [aSteppedConnectToEchoStepsOrFails].
      */
     private fun carriesFramesInTheCodecItChose(

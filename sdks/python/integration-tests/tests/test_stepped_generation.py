@@ -90,14 +90,15 @@ async def test_a_stepped_connect_to_echo_steps_or_fails() -> None:
 
 @pytest.mark.parametrize(
     ("codecs", "expected"),
-    [(["h264"], "h264"), ([], "raw")],
-    ids=["h264", "encoding-off"],
+    [(["vp8"], "vp8"), ([], "raw")],
+    ids=["vp8", "encoding-off"],
 )
 async def test_a_stepped_session_carries_frames_in_the_codec_it_chose(
     codecs: list[str], expected: str
 ) -> None:
     # The same echo round trip as above, with the step frames' codec chosen:
-    # H.264 both ways, or encoding turned off so every frame travels raw. The
+    # VP8 both ways (libvpx is in every build on either end, unlike H.264), or
+    # encoding turned off so every frame travels raw. The
     # client still pushes and receives RGB arrays either way. An echo or a
     # runtime that does not step is accepted as above.
     client = stepped(MODEL_NAME)

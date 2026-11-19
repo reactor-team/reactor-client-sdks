@@ -813,9 +813,11 @@ void reactor_step(
  * any case), or NULL to go back to the default (H.264, VP9, AV1, VP8).  An
  * empty array with a NULL track turns encoded step frames off: every track
  * carries raw frames.  An empty array for one track goes back to the session's
- * order.  Each list is filtered by what this library can encode (input tracks)
- * or decode (output tracks), and the runtime picks per track; a track they
- * share no codec for stays raw.  Whatever the encoding, step results reach the
+ * order.  The list is an order, not a limit: the codecs it leaves out follow
+ * it, so a runtime without the preferred ones takes another. Of those, the ones
+ * this library can encode (input tracks) or decode (output tracks) are offered,
+ * and the runtime takes per track the first it shares; a track they share no
+ * codec for stays raw.  Whatever the encoding, step results reach the
  * host as decoded RGB frames.
  *
  * Callable before reactor_connect() or during the session; it takes effect on

@@ -120,8 +120,8 @@ void check_inverted(const reactor::StepResult& result, int tolerance) {
   }
 }
 
-/// The same echo round trip with the step frames' codec chosen: H.264 both
-/// ways, or encoding turned off so every frame travels raw. The client pushes
+/// The same echo round trip with the step frames' codec chosen: VP8 both
+/// ways (libvpx is in every build on either end, unlike H.264), or encoding turned off so every frame travels raw. The client pushes
 /// and receives RGB either way.
 void run_codec_round_trip(const std::vector<std::string>& codecs, const std::string& expected) {
   reactor::Reactor client = stepped_reactor();
@@ -196,8 +196,8 @@ TEST_CASE("a stepped connect to echo steps or is refused, never streams", "[step
   check_inverted(client.step({{"effect", "invert"}}).get(), 8);
 }
 
-TEST_CASE("a stepped session carries frames in the codec it chose: h264", "[stepped][codecs]") {
-  run_codec_round_trip({"h264"}, "h264");
+TEST_CASE("a stepped session carries frames in the codec it chose: vp8", "[stepped][codecs]") {
+  run_codec_round_trip({"vp8"}, "vp8");
 }
 
 TEST_CASE("a stepped session carries frames in the codec it chose: encoding off",

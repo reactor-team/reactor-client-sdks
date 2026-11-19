@@ -781,9 +781,10 @@ public class Reactor(
      *   since one track cannot turn encoding off alone.
      * - With [track], the list applies to that track only, in place of the session's.
      *
-     * Each list is filtered by what this device can encode (input tracks) or decode (output
-     * tracks), and the runtime picks per track from what is left; a track they share no codec for
-     * stays raw. [stepFrameEncodings] says what each track got.
+     * The list is an order, not a limit: the codecs it leaves out follow it, so a runtime without
+     * the preferred ones takes another. Of those, the ones this device can encode (input tracks) or
+     * decode (output tracks) are offered, and the runtime takes per track the first it shares; a
+     * track they share no codec for stays raw. [stepFrameEncodings] says what each track got.
      *
      * **The encoding is between this client and the runtime.** Whatever the codec, [step] still
      * answers with RGB frames and [Track.pushFrame] still takes BGRA pixels.

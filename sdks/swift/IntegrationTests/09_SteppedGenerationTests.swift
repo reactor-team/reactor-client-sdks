@@ -58,15 +58,16 @@ struct SteppedGenerationTests {
     }
 
     /// The same echo round trip as above, with the step frames' codec chosen:
-    /// H.264 both ways, or encoding turned off so every frame travels raw. The
+    /// VP8 both ways (libvpx is in every build on either end, unlike H.264), or
+    /// encoding turned off so every frame travels raw. The
     /// client still pushes BGRA and receives RGB either way. An echo or a
     /// runtime that does not step is accepted as above.
     @Test(
         "a stepped session carries frames in the codec it chose",
-        arguments: ["h264", "encoding-off"])
+        arguments: ["vp8", "encoding-off"])
     func steppedSessionCarriesFramesInTheCodecItChose(variant: String) async throws {
-        let codecs: [StepCodec] = variant == "h264" ? [.h264] : []
-        let expected = variant == "h264" ? "h264" : "raw"
+        let codecs: [StepCodec] = variant == "vp8" ? [.vp8] : []
+        let expected = variant == "vp8" ? "vp8" : "raw"
         let tolerance = expected == "raw" ? 0 : 8
 
         let reactor = try await IntegrationConfig.makeReactor(generation: .stepped)
