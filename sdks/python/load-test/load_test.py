@@ -143,6 +143,7 @@ class LoadTest:
                 session.opened_at = utc_now()
                 return
             except RateLimitedError as error:
+                await self.end_server_session(client)
                 if is_no_capacity(error):
                     session.error = "no available capacity"
                     self.no_capacity = True
@@ -155,9 +156,23 @@ class LoadTest:
                 await self.sleep_or_stop(2 * attempt)
             except Exception as error:  # noqa: BLE001 - any open failure is a result to record
                 session.error = f"{type(error).__name__}: {error}"
+                await self.end_server_session(client)
                 break
         print(f"  x could not open session {session.index}: {session.error}", flush=True)
         client.close()
+
+    @staticmethod
+    async def end_server_session(client: Reactor) -> None:
+        """Disconnect a client whose open attempt failed partway, e.g. connect()
+        succeeded but publish_track() did not. close() alone would leave that
+        session holding a backend slot until it times out, which would make the
+        environment's capacity look lower than it is."""
+        if client.status == "disconnected":
+            return
+        try:
+            await asyncio.wait_for(client.disconnect(), timeout=CLOSE_TIMEOUT_S)
+        except Exception:  # noqa: BLE001 - best effort; the attempt already failed
+            pass
 
     async def push_frames(self) -> None:
         period = 1 / FPS
