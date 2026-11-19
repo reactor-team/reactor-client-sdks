@@ -29,6 +29,20 @@ import os
 /// The session is configured to emit `kCVPixelFormatType_32BGRA`, which is what
 /// the FFI wants, so nothing here converts pixels. A device that cannot emit it
 /// is refused rather than silently fed through a conversion nobody asked for.
+///
+/// ## Not on tvOS
+///
+/// An Apple TV has no camera of its own, so this type is unavailable there at
+/// compile time rather than a `notFound` thrown on every TV at run time. tvOS 17
+/// can borrow an iPhone's camera through Continuity Camera, but nothing here has
+/// been tried with one, and the rotation below follows a device orientation that
+/// tvOS does not have. Making this available later is source-compatible; taking
+/// it away after release would not be. A tvOS app can still push frames it made
+/// itself with `Track.pushFrame`.
+@available(
+    tvOS, unavailable,
+    message: "Apple TV has no camera. Push frames the app makes with Track.pushFrame instead."
+)
 public final class Camera: NSObject, @unchecked Sendable {
 
     private let track: Track
@@ -247,6 +261,7 @@ func packRows(
     }
 }
 
+@available(tvOS, unavailable)
 extension Camera {
 
     /// Pack a padded frame into ``packed``, sizing it to fit.
@@ -270,6 +285,7 @@ extension Camera {
     }
 }
 
+@available(tvOS, unavailable)
 extension Camera: AVCaptureVideoDataOutputSampleBufferDelegate {
 
     /// One captured frame, on the capture queue.

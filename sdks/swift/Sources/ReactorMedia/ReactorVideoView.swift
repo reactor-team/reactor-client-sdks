@@ -29,6 +29,10 @@ import os
 /// Converting on the delivery thread rather than on the main one is the point:
 /// the conversion is the expensive part, and doing it there means blocking *that*
 /// thread, which is what backpressure is supposed to feel like.
+///
+/// Nothing here is UIKit's or AppKit's — a `CGImage` in a SwiftUI `Image`, with
+/// no Metal layer and no sample-buffer layer — so it is the same view on macOS,
+/// iOS and tvOS.
 public struct ReactorVideoView: View {
 
     @StateObject private var presenter: FramePresenter
