@@ -605,6 +605,7 @@ mod tests {
             data,
             metadata: Some(b"tag".to_vec()),
             capture_time_us: Some(42),
+            keyframe: false,
         }
     }
 

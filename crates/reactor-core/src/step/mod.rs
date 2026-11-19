@@ -66,6 +66,12 @@
 //! track's first pushed frame on a connection is a keyframe, and so is the
 //! next one after `input_decode_failed` or after frames encoded for it were
 //! not sent.
+//!
+//! A host with codecs of its own (a browser, on WebCodecs) sets
+//! [`crate::reactor::ReactorOptions::pass_encoded_step_frames`] instead: an
+//! output track's encoded frames then come up as they arrived, through a
+//! [`PassThroughFrameDecoder`], and it pushes the frames it encodes itself
+//! with their keyframe mark.
 
 use serde_json::Value;
 
@@ -87,7 +93,8 @@ pub(crate) use decode::step_output;
 #[cfg(feature = "webrtc-codecs")]
 pub use decode::WebrtcTrackDecoder;
 pub use decode::{
-    DecodedFrame, FrameDecoder, FrameDecoders, RawFrameDecoder, TrackDecoder, TrackDecoderFactory,
+    DecodedFrame, FrameDecoder, FrameDecoders, PassThroughFrameDecoder, RawFrameDecoder,
+    TrackDecoder, TrackDecoderFactory,
 };
 pub use inputs::{pushed_frame, StepInputs};
 #[cfg(feature = "webrtc-codecs")]

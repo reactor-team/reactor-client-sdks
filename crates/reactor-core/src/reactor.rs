@@ -141,6 +141,15 @@ pub struct ReactorOptions {
     /// runtime while the session is ready. Each batch's bitrates cover the
     /// interval since the previous one. Set to `Duration::ZERO` to disable it.
     pub client_stats_interval: Duration,
+    /// Stepped mode: hand the frames of an encoded output track up as they
+    /// arrived ([`crate::step::PassThroughFrameDecoder`]: the bitstream, the
+    /// shape it decodes to, its keyframe mark), for each codec of
+    /// [`StepCodec::DEFAULT_ORDER`], rather than decoding them here. For a
+    /// host that decodes the tracks' streams with codecs of its own; it then
+    /// feeds a decoder per track in the order step results arrive, drops it
+    /// when the connection ends, and restarts a track whose decoder lost its
+    /// stream itself ([`Reactor::restart_track_stream`]).
+    pub pass_encoded_step_frames: bool,
 }
 
 impl ReactorOptions {
@@ -163,6 +172,7 @@ impl ReactorOptions {
             local: false,
             heartbeat_interval: Duration::from_secs(10),
             client_stats_interval: Duration::from_secs(5),
+            pass_encoded_step_frames: false,
         }
     }
 }
@@ -396,8 +406,13 @@ impl Reactor {
         #[cfg(feature = "webrtc-codecs")]
         let (frame_decoders, local_step_codecs, input_encoders) = webrtc_step_codecs();
         #[cfg(not(feature = "webrtc-codecs"))]
-        let (frame_decoders, local_step_codecs) =
+        let (mut frame_decoders, local_step_codecs) =
             (FrameDecoders::default(), LocalStepCodecs::default());
+        #[cfg(feature = "webrtc-codecs")]
+        let mut frame_decoders = frame_decoders;
+        if options.pass_encoded_step_frames {
+            frame_decoders.register_pass_through(&StepCodec::DEFAULT_ORDER);
+        }
         Self {
             coordinator,
             http: deps.http,
@@ -1603,6 +1618,14 @@ impl Reactor {
         }
     }
 
+    /// Whether `track`'s next pushed frames must start at a keyframe, because
+    /// the runtime could not decode its frames (`input_decode_failed`) and
+    /// drops them until one. Asking clears the mark: the caller about to
+    /// encode the track's next frame starts it at a keyframe.
+    pub fn take_input_keyframe_request(&self, track: &str) -> bool {
+        self.step_inputs.take_keyframe_request(track)
+    }
+
     /// Drop every input frame buffered for the next step. Frames already sent
     /// to the runtime are not recalled.
     pub fn clear_step_inputs(&self) {
@@ -2097,9 +2120,12 @@ impl Reactor {
     /// [`Reactor::push_video_frame`] does, its bytes as they are. `width` and
     /// `height` are the frame it decodes to; the runtime decodes a track's
     /// encoded frames as one stream, so they go in decode order and start at
-    /// a keyframe. A pushed frame that does not decode is answered with an
-    /// `input_decode_failed` error event whose `track` names the track, and
-    /// the track's next frame must be a keyframe; a
+    /// a keyframe. `Frame.keyframe` is set when `keyframe` says so or the
+    /// bitstream marks one (an H.264 IDR, a VP8 or VP9 key frame), so `false`
+    /// adds nothing rather than unmark it. A pushed frame
+    /// that does not decode is answered with an `input_decode_failed` error
+    /// event whose `track` names the track, and the track's next frame must be
+    /// a keyframe ([`Reactor::take_input_keyframe_request`]); a
     /// step whose buffered frames do not decode is refused. An empty frame, a zero dimension,
     /// a raw `encoding` (push raw pixels with
     /// [`Reactor::push_step_video_frame`]), or a push outside a stepped session
@@ -2114,6 +2140,7 @@ impl Reactor {
         height: u32,
         metadata: Option<&[u8]>,
         capture_time_us: Option<i64>,
+        keyframe: bool,
     ) {
         if !self.is_stepped() {
             log::warn!(
@@ -2130,7 +2157,13 @@ impl Reactor {
                 // it later starts the core's own stream again at a keyframe,
                 // and none encoded here goes out between the restart and this
                 // frame.
-                let push = || self.push_step_input(track_name, WireTrackKind::Video, frame);
+                // A keyframe by the caller's mark or by its bitstream: a host
+                // that cannot tell (the native FFI marks none) still sends an
+                // IDR as the keyframe it is.
+                let keyframe = keyframe || frame.keyframe;
+                let push = || {
+                    self.push_step_input(track_name, WireTrackKind::Video, Frame { keyframe, ..frame })
+                };
                 #[cfg(feature = "webrtc-codecs")]
                 if let Some(encoders) = &self.input_encoders {
                     return encoders.restart(track_name, push);
@@ -2333,38 +2366,51 @@ impl Reactor {
     }
 
     /// Restart the stream of each output track whose decoder lost it since
-    /// the last call: pause and resume the track on the control channel, and
-    /// the runtime starts its next encoded frames at a keyframe. Each loss is
-    /// restarted once (see [`FrameDecoders::take_lost_tracks`]).
+    /// the last call (see [`FrameDecoders::take_lost_tracks`] and
+    /// [`Reactor::restart_track_stream`]). Each loss is restarted once; a
+    /// restart that did not all go out is reported lost again, for the next
+    /// result to retry from the start.
+    fn restart_lost_tracks(&self) {
+        for name in self.frame_decoders.take_lost_tracks() {
+            if let Err(error) = self.restart_track_stream(&name) {
+                log::warn!("restarting the stream of track '{name}' failed: {error}");
+                self.frame_decoders.restore_lost_track(&name);
+            }
+        }
+    }
+
+    /// Restart output track `name`'s encoded step frames on this connection:
+    /// pause and resume it on the control channel, and the runtime starts its
+    /// next frames at a keyframe. For a host that decodes the tracks itself
+    /// ([`ReactorOptions::pass_encoded_step_frames`]) when one of its
+    /// decoders lost a stream; the core does this on its own for the tracks
+    /// it decodes.
     ///
     /// The track keeps the state its caller gave it: a track the caller
     /// paused is resumed and paused again, and neither the transceiver nor
     /// [`Reactor::paused_tracks`] changes. A [`Reactor::pause_track`] or
     /// [`Reactor::resume_track`] waits for the restart, so its own message
-    /// comes last. A restart that did not all go out is reported lost again,
-    /// for the next result to retry from the start.
-    fn restart_lost_tracks(&self) {
+    /// comes last. On an error the runtime may hold the track paused until a
+    /// restart goes out whole.
+    pub fn restart_track_stream(&self, name: &str) -> Result<(), CoreError> {
         let _track_control = self.track_control.lock().unwrap();
-        for name in self.frame_decoders.take_lost_tracks() {
-            let paused = self.state.lock().unwrap().paused_tracks.contains(&name);
-            let pause = ClientPayload::PauseTrack(PauseTrack { name: name.clone() });
-            let resume = ClientPayload::ResumeTrack(ResumeTrack { name: name.clone() });
-            let order = if paused {
-                [resume, pause]
-            } else {
-                [pause, resume]
-            };
-            for payload in order {
-                if let Err(error) = self
-                    .peer
-                    .send_control(&ControlCorrelator::notification(payload))
-                {
-                    log::warn!("restarting the stream of track '{name}' failed: {error}");
-                    self.frame_decoders.restore_lost_track(&name);
-                    break;
-                }
-            }
+        let paused = self.state.lock().unwrap().paused_tracks.contains(name);
+        let pause = ClientPayload::PauseTrack(PauseTrack {
+            name: name.to_string(),
+        });
+        let resume = ClientPayload::ResumeTrack(ResumeTrack {
+            name: name.to_string(),
+        });
+        let order = if paused {
+            [resume, pause]
+        } else {
+            [pause, resume]
+        };
+        for payload in order {
+            self.peer
+                .send_control(&ControlCorrelator::notification(payload))?;
         }
+        Ok(())
     }
 
     pub fn paused_tracks(&self) -> HashSet<String> {

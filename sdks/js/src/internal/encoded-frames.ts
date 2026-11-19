@@ -8,7 +8,7 @@ import type { EncodedVideoCodec } from './reactor-wasm.types';
 import type { EncodedFrame, PushFrame } from '../types';
 
 /** The codecs an encoded step frame can carry. */
-const CODECS: ReadonlySet<string> = new Set<EncodedVideoCodec>(['h264']);
+const CODECS: ReadonlySet<string> = new Set<EncodedVideoCodec>(['h264', 'vp8', 'vp9', 'av1']);
 
 /** An encoded frame's bytes and extras, ready for the binding, read once when
  *  the call is made: a caller changing the frame afterwards changes nothing. */
@@ -19,6 +19,8 @@ export interface EncodedBytes {
   height: number;
   metadata: Uint8Array | null;
   captureTimeUs: number | null;
+  /** The frame's keyframe mark: given, or read from a chunk's `type`. */
+  keyframe: boolean;
 }
 
 /** Whether a `step()` media entry is an `EncodedFrame` rather than a frame
@@ -45,10 +47,13 @@ export function toEncodedBytes(frame: EncodedFrame, operation: string, trackName
   if (typeof frame !== 'object' || frame === null) {
     throw refuse('expected an EncodedFrame, { codec, data, width, height }');
   }
-  const { codec, data, width, height, metadata, captureTimeUs } = frame;
+  const { codec, data, width, height, metadata, captureTimeUs, keyframe } = frame;
 
   if (!CODECS.has(codec)) {
-    throw refuse(`unknown codec ${JSON.stringify(codec)}; expected "h264"`);
+    throw refuse(`unknown codec ${JSON.stringify(codec)}; expected "h264", "vp8", "vp9" or "av1"`);
+  }
+  if (keyframe != null && typeof keyframe !== 'boolean') {
+    throw refuse('keyframe must be a boolean');
   }
   let bytes: Uint8Array;
 
@@ -74,7 +79,15 @@ export function toEncodedBytes(frame: EncodedFrame, operation: string, trackName
   if (captureTimeUs != null && !Number.isFinite(captureTimeUs)) {
     throw refuse('captureTimeUs must be a finite number');
   }
-  return { codec, data: bytes, width, height, metadata: metadata ?? null, captureTimeUs: captureTimeUs ?? null };
+  return {
+    codec,
+    data: bytes,
+    width,
+    height,
+    metadata: metadata ?? null,
+    captureTimeUs: captureTimeUs ?? null,
+    keyframe: keyframe ?? (isChunk(data) && data.type === 'key'),
+  };
 }
 
 function isDimension(value: unknown): value is number {

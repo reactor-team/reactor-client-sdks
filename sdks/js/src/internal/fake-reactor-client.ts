@@ -11,6 +11,7 @@ import type {
   ReactorStatus,
   SessionInfo,
   StepCommand,
+  StepFrameEncoding,
   StepResult,
   TrackCapability,
   TrackMappingEntry,
@@ -314,6 +315,7 @@ export class FakeReactorClient {
     height: number;
     metadata: Uint8Array | null | undefined;
     captureTimeUs: number | null | undefined;
+    keyframe: boolean | null | undefined;
   }> = [];
   // Overridable so a test can simulate the binding refusing a frame — the
   // real one throws synchronously.
@@ -326,11 +328,41 @@ export class FakeReactorClient {
     height: number,
     metadata?: Uint8Array | null,
     captureTimeUs?: number | null,
+    keyframe?: boolean | null,
   ): void {
     if (this.pushEncodedVideoFrameError) {
       throw this.pushEncodedVideoFrameError;
     }
-    this.pushEncodedVideoFrameCalls.push({ name, codec, data, width, height, metadata, captureTimeUs });
+    this.pushEncodedVideoFrameCalls.push({ name, codec, data, width, height, metadata, captureTimeUs, keyframe });
+  }
+
+  /** The tracks whose next encoded frame must be a keyframe, as the core
+   *  marks them; `takeInputKeyframeRequest` clears a track's mark. */
+  inputKeyframeRequests = new Set<string>();
+  takeInputKeyframeRequest(name: string): boolean {
+    return this.inputKeyframeRequests.delete(name);
+  }
+
+  setCodecPreferenceCalls: Array<{ codecs: EncodedVideoCodec[] | null | undefined; track: string | null | undefined }> =
+    [];
+  setCodecPreference(codecs?: EncodedVideoCodec[] | null, track?: string | null): void {
+    this.setCodecPreferenceCalls.push({ codecs, track });
+  }
+
+  setLocalStepCodecsCalls: Array<{ encode: EncodedVideoCodec[]; decode: EncodedVideoCodec[] }> = [];
+  setLocalStepCodecs(encode: EncodedVideoCodec[], decode: EncodedVideoCodec[]): void {
+    this.setLocalStepCodecsCalls.push({ encode, decode });
+  }
+
+  stepFrameEncodingsResult: Record<string, StepFrameEncoding> = {};
+  /** Each `restartTrackStream` call's track, in call order. */
+  restartTrackStreamCalls: string[] = [];
+  restartTrackStream(name: string): void {
+    this.restartTrackStreamCalls.push(name);
+  }
+
+  stepFrameEncodings(): Record<string, StepFrameEncoding> {
+    return this.stepFrameEncodingsResult;
   }
 
   pushAudioFrameCalls: Array<{

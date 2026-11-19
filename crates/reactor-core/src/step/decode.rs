@@ -29,6 +29,10 @@ pub struct DecodedFrame {
     pub metadata: Option<Vec<u8>>,
     /// When the sender says the frame was captured, in microseconds.
     pub capture_time_us: Option<i64>,
+    /// Whether the sender marked the wire frame as a keyframe. Meaningful
+    /// for a frame handed up still encoded ([`PassThroughFrameDecoder`]),
+    /// whose host decodes the track's stream itself.
+    pub keyframe: bool,
 }
 
 /// Turns one wire [`Frame`] of a given encoding into a [`DecodedFrame`].
@@ -74,6 +78,37 @@ impl FrameDecoder for RawFrameDecoder {
             data: frame.data,
             metadata: frame.metadata,
             capture_time_us: frame.capture_time_us,
+            keyframe: frame.keyframe,
+        })
+    }
+}
+
+/// An encoded video frame handed up as it arrived, for a host that decodes
+/// each output track's stream itself (a browser, on WebCodecs): `data` is
+/// the frame's bitstream in its [`FrameEncoding`], `shape` the
+/// `(height, width, 3)` it decodes to, and `keyframe` the sender's mark.
+///
+/// Registered per frame, so the core keeps no per-track state for the
+/// encoding: the host feeds a decoder per track in the order results arrive,
+/// drops it when the data channel closes, and restarts a track whose decoder
+/// lost its stream itself (`Reactor::restart_track_stream`).
+pub struct PassThroughFrameDecoder;
+
+impl FrameDecoder for PassThroughFrameDecoder {
+    fn decode(&self, frame: Frame) -> Result<DecodedFrame, CoreError> {
+        let encoding =
+            FrameEncoding::try_from(frame.encoding).unwrap_or(FrameEncoding::Unspecified);
+        if frame.data.is_empty() {
+            return Err(CoreError::decode(format!("empty {encoding:?} frame")));
+        }
+        Ok(DecodedFrame {
+            encoding,
+            dtype: frame.dtype,
+            shape: frame.shape,
+            data: frame.data,
+            metadata: frame.metadata,
+            capture_time_us: frame.capture_time_us,
+            keyframe: frame.keyframe,
         })
     }
 }
@@ -92,7 +127,7 @@ pub trait TrackDecoder: Send {
 
 /// Makes a fresh [`TrackDecoder`] for a track whose stream starts, or starts
 /// again, at a keyframe. An `Err` (no backend could be created) fails the
-/// frame without asking for a keyframe, which would not help.
+/// frame without restarting the track's stream, which would not help.
 pub type TrackDecoderFactory =
     Box<dyn Fn() -> Result<Box<dyn TrackDecoder>, CoreError> + Send + Sync>;
 
@@ -142,6 +177,7 @@ impl TrackDecoder for WebrtcTrackDecoder {
             data: picture.data,
             metadata: frame.metadata,
             capture_time_us: frame.capture_time_us,
+            keyframe: frame.keyframe,
         })
     }
 }
@@ -240,6 +276,15 @@ impl FrameDecoders {
                     Ok(Box::new(WebrtcTrackDecoder::new(&codecs, codec)?) as Box<dyn TrackDecoder>)
                 }),
             );
+        }
+    }
+
+    /// Hand every codec in `codecs` up still encoded, frame by frame
+    /// ([`PassThroughFrameDecoder`]), for a host that decodes the tracks'
+    /// streams itself.
+    pub fn register_pass_through(&mut self, codecs: &[super::StepCodec]) {
+        for codec in codecs {
+            self.register(codec.frame_encoding(), Box::new(PassThroughFrameDecoder));
         }
     }
 
@@ -876,6 +921,7 @@ mod tests {
                 data: vec![self.id, self.decoded],
                 metadata: frame.metadata,
                 capture_time_us: frame.capture_time_us,
+                keyframe: false,
             };
             self.decoded += 1;
             Ok(decoded)
@@ -1166,6 +1212,7 @@ mod tests {
                     data: frame.data,
                     metadata: None,
                     capture_time_us: None,
+                    keyframe: false,
                 })
             }
         }

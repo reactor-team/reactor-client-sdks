@@ -24,7 +24,9 @@ export type GenerationMode = 'streamed' | 'stepped';
 /** Byte layout of a frame given to `pushVideoFrame`. */
 export type PixelFormat = 'rgba' | 'rgb' | 'bgra';
 /** Codec of an encoded frame given to `pushEncodedVideoFrame`. */
-export type EncodedVideoCodec = 'h264';
+export type EncodedVideoCodec = 'h264' | 'vp8' | 'vp9' | 'av1';
+/** How a track's step frames travel on a connection: raw, or in a codec. */
+export type StepFrameEncoding = 'raw' | EncodedVideoCodec;
 
 export interface ClientOptions {
   modelName: string;
@@ -213,8 +215,11 @@ export interface StepCommand {
 /** One frame a step produced. Hand-built by the binding rather than
  *  serialized, so camelCase, unlike the wire payloads above. */
 export interface StepFrame {
-  /** How the frame travelled: raw, or in the codec it names. */
-  encoding: 'raw' | 'unspecified' | 'h264' | 'vp8' | 'vp9' | 'av1';
+  /** How the frame travelled. From the binding, a frame in a codec comes
+   *  up still encoded (`data` its bitstream, `shape` the (height, width, 3)
+   *  it decodes to), and the SDK decodes it to RGB before `step()` resolves;
+   *  `encoding` still names the codec it travelled in. */
+  encoding: 'raw' | 'unspecified' | EncodedVideoCodec;
   /** Element type, in NumPy notation: "uint8" (video), "int16" (audio). */
   dtype: string;
   /** (height, width, 3) RGB for video, (channels, samples) planar PCM for
@@ -236,6 +241,9 @@ export interface StepFrame {
   metadata?: Uint8Array;
   /** When the model says the frame was captured, in microseconds. */
   captureTimeUs?: number;
+  /** Set on a frame that travelled in a codec: whether the runtime marked
+   *  it as a keyframe. */
+  keyframe?: boolean;
 }
 
 /** The frames one output track produced in a step, in production order. */
@@ -325,7 +333,10 @@ export declare class ReactorClient {
   /** Stepped sessions only. Rejects with the core's code (`step_refused`,
    *  `step_not_ready`, `step_command_failed`, `step_session_ended`,
    *  `step_result_too_large`, `MESSAGE_TOO_LARGE`, ...). */
-  step(state?: Record<string, unknown> | null, commands?: StepCommand[] | null): Promise<StepResult>;
+  step(
+    state?: Record<string, unknown> | null,
+    commands?: StepCommand[] | null,
+  ): Promise<StepResult>;
   /** Stepped sessions only. Sends the frame to the runtime at once, or
    *  buffers it for the next `step()`; throws synchronously on a frame that
    *  does not match its dimensions. */
@@ -350,7 +361,25 @@ export declare class ReactorClient {
     height: number,
     metadata?: Uint8Array | null,
     captureTimeUs?: number | null,
+    keyframe?: boolean | null,
   ): void;
+  /** Whether `name`'s next encoded frame must be a keyframe (the runtime
+   *  could not decode its frames, or frames encoded for it were not sent).
+   *  Asking clears the mark. */
+  takeInputKeyframeRequest(name: string): boolean;
+  /** The codecs the next offer prefers for step frames, for the session or
+   *  one track; `null` goes back to the default, `[]` for the session turns
+   *  encoding off. Throws on an unknown codec name. */
+  setCodecPreference(codecs?: EncodedVideoCodec[] | null, track?: string | null): void;
+  /** The codecs this browser can encode and decode step frames in, read on
+   *  the next offer. Until set, every track is raw. */
+  setLocalStepCodecs(encode: EncodedVideoCodec[], decode: EncodedVideoCodec[]): void;
+  /** How each mapped track's step frames travel on this connection. */
+  stepFrameEncodings(): Record<string, StepFrameEncoding>;
+  /** Restart output track `name`'s encoded step frames: the runtime starts
+   *  its next frames at a keyframe. The track stays paused or resumed as the
+   *  caller left it. */
+  restartTrackStream(name: string): void;
   /** Stepped sessions only. Interleaved PCM, `channels` samples per frame. */
   pushAudioFrame(name: string, samples: Int16Array, sampleRate: number, channels: number): void;
   clearStepInputs(): void;

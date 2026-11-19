@@ -12,6 +12,7 @@ import type {
   StepCommand,
   StepFile,
   StepFrame,
+  StepFrameEncoding,
   StepResult,
   StepTrack,
   TrackCapability,
@@ -32,6 +33,7 @@ export type {
   ReactorStatus,
   StepCommand,
   StepFrame,
+  StepFrameEncoding,
   StepFile,
   StepResult,
   StepTrack,
@@ -58,9 +60,16 @@ export interface StepOptions {
   media?: Record<string, ReadonlyArray<PushFrame | EncodedFrame>>;
 }
 
+/** Options of `Reactor.setCodecPreference()`. */
+export interface CodecPreferenceOptions {
+  /** The one track the list is for, in place of the session's list. */
+  track?: string;
+}
+
 /**
- * An encoded video frame for a step: one H.264 access unit (Annex B), its
- * bytes sent as they are. `width` and `height` are the frame it decodes to.
+ * An encoded video frame for a step, its bytes sent as they are: one H.264
+ * access unit (Annex B), one VP8 or VP9 frame, or one AV1 temporal unit of
+ * OBUs. `width` and `height` are the frame it decodes to.
  *
  * The runtime decodes a track's encoded frames as one stream, as they
  * arrive, and the model reads the RGB frames as if they had been pushed raw.
@@ -83,6 +92,9 @@ export interface EncodedFrame {
   metadata?: Uint8Array;
   /** When the frame was captured, in microseconds. */
   captureTimeUs?: number;
+  /** Whether the frame is one a decoder can start from. Read from an
+   *  `EncodedVideoChunk`'s `type` when not given. */
+  keyframe?: boolean;
 }
 
 /** Raw pixels for `Reactor.pushFrame()`. `ImageData` is one of these as is. */

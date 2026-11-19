@@ -5,7 +5,7 @@ import { InvalidStateError, toReactorError, type ReactorError } from './errors';
 import { Emitter } from './internal/emitter';
 import { toEncodedBytes } from './internal/encoded-frames';
 import { extractFileRefs, rewriteNestedFileRefs, toPublicFileRef } from './internal/file-ref';
-import { holdFrame, isAudioFrame, toPixels } from './internal/push-frames';
+import { holdFrame, isAudioFrame, toPixels, type Pixels } from './internal/push-frames';
 import { toPublicClip } from './internal/recording';
 import {
   checkStepFrame,
@@ -13,7 +13,14 @@ import {
   readStepFrame,
   type ReadyStepFrame,
 } from './internal/step-media';
-import type { ReactorClient } from './internal/reactor-wasm.types';
+import {
+  InputEncoders,
+  OutputDecoders,
+  probeStepCodecs,
+  STEP_CODECS,
+  type LocalStepCodecs,
+} from './internal/step-codecs';
+import type { EncodedVideoCodec, ReactorClient } from './internal/reactor-wasm.types';
 import {
   LOCAL_STATS_INTERVAL_MS,
   RUNTIME_REPORT_INTERVAL_MS,
@@ -30,6 +37,7 @@ import { downloadClipAsFile as downloadClipAsFileFn, type DownloadClipOptions } 
 import type {
   Capabilities,
   Clip,
+  CodecPreferenceOptions,
   ConnectionStats,
   ConnectionTimings,
   ConnectOptions,
@@ -46,6 +54,7 @@ import type {
   ReactorOptions,
   ReactorStatus,
   SessionResponse,
+  StepFrameEncoding,
   StepOptions,
   StepResult,
   TrackCapability,
@@ -93,6 +102,18 @@ export class Reactor implements Disposable {
    *  one's pixels take to read, and `step()` waits for the ones called
    *  before it. */
   private pendingPushes: Promise<void> = Promise.resolve();
+
+  /** Stepped: every `setCodecPreference()` so far, keyed by track (`null`
+   *  for the session's list), replayed into a client created later. */
+  private readonly codecPreferences = new Map<string | null, EncodedVideoCodec[] | null>();
+  /** Stepped: what this browser's WebCodecs can encode and decode, probed
+   *  once, on the first stepped connect. */
+  private localStepCodecs: Promise<LocalStepCodecs> | undefined;
+  /** Stepped: the input tracks' encoders and the output tracks' decoders of
+   *  the current connection, dropped as it ends so the next one's streams
+   *  start at keyframes. */
+  private readonly inputEncoders = new InputEncoders();
+  private readonly outputDecoders = new OutputDecoders();
 
   private readonly emitter = new Emitter<ReactorEventMap>();
   /** Serializes connect()/reconnect()/disconnect() (and the free() inside
@@ -224,6 +245,7 @@ export class Reactor implements Disposable {
           this.withWriterAccess(async () => {
             const client = await this.getOrCreateClient();
 
+            await this.offerStepCodecs(client);
             await client.connect(options);
           }),
         'connect',
@@ -283,6 +305,7 @@ export class Reactor implements Disposable {
           this.withWriterAccess(async () => {
             const client = await this.getOrCreateClient();
 
+            await this.offerStepCodecs(client);
             await client.reconnect(options);
           }),
         'reconnect',
@@ -612,10 +635,10 @@ export class Reactor implements Disposable {
    * Runs one step of a `generation: "stepped"` session and resolves with
    * what it produced, per output track.
    *
-   * The request carries `state`, `commands` and every frame pushed since the
-   * previous step. The runtime applies them in that order — each `state` key
-   * as the model's `set_<key>` command, then `commands`, then the frames —
-   * and then generates. They are separate calls, not a transaction: one that
+   * The request carries `state` and `commands`; the frames pushed before it
+   * have already reached the runtime (see `pushFrame()`). The runtime applies
+   * them in that order — each `state` key as the model's `set_<key>` command,
+   * then `commands` — and then generates. They are separate calls, not a transaction: one that
    * fails does not undo the ones before it. All of it is optional:
    * `step()` with nothing set and nothing pushed runs on the model's current
    * state, which commands sent outside a step (`sendCommand()`) also change.
@@ -660,6 +683,16 @@ export class Reactor implements Disposable {
    * step whose buffered frames do not decode rejects with a
    * `StepRefusedError` (see `pushEncodedFrame()` for frames already sent).
    *
+   * Video step frames travel encoded both ways when this browser and the
+   * runtime share a codec (H.264 first by default; see
+   * `setCodecPreference()`), on WebCodecs: the frames pushed on an input
+   * track are encoded, and an output track's frames are decoded, so a result
+   * still holds RGB frames whose `encoding` names the codec they travelled
+   * in. Each track is one stream for the connection. When one of its
+   * decoders lost its stream, the step rejects with a `DecodeError`, the SDK
+   * pauses and resumes that track so the runtime starts it again at a
+   * keyframe, and the track's frames fail until that keyframe arrives.
+   *
    * ```ts
    * const camera = await reactor.publishTrack('camera');
    * await camera.pushFrame(imageData);
@@ -699,7 +732,23 @@ export class Reactor implements Disposable {
           const client = await this.getOrCreateClient();
 
           try {
-            return client.step(state, commands);
+            const decoders = this.outputDecoders;
+
+            // Decoded as the result arrives, before anything awaits it, so
+            // results that arrive one after another decode in that order. A
+            // step that gives up once its request went out (a timeout, a
+            // result too large) never has its result decoded here, so the
+            // streams lost frames: drop the decoders. Either way, each track
+            // whose stream was lost is restarted.
+            return client.step(state, commands).then(
+              (result) =>
+                decoders.decodeResult(result).finally(() => this.restartLostTracks(client, decoders)),
+              (cause: unknown) => {
+                decoders.abandon();
+                this.restartLostTracks(client, decoders);
+                throw cause;
+              },
+            );
           } finally {
             // The binding has taken the buffer by the time step() returns (or
             // throws), so a push queued behind this goes to the next step.
@@ -738,6 +787,12 @@ export class Reactor implements Disposable {
    * applied, so a 90° frame arrives with its width and height swapped.
    * Audio: `{ samples, sampleRate, channels? }`, interleaved `Int16Array`
    * PCM at the rate the model's track declares.
+   *
+   * A video frame travels encoded when the connection negotiated a codec for
+   * the track (see `setCodecPreference()`): it is encoded here, with
+   * WebCodecs, as the next frame of the track's stream, and the model still
+   * reads RGB. A track's first frame on a connection is a keyframe, and so
+   * is the next one after the runtime could not decode its frames.
    *
    * Pushes keep their call order, and a `step()` waits for every push called
    * before it. A refused push rejects: await it, or `.catch()` it in a frame
@@ -793,14 +848,8 @@ export class Reactor implements Disposable {
         const client = await this.getOrCreateClient();
 
         if (pixels) {
-          client.pushVideoFrame(
-            trackName,
-            pixels.data,
-            pixels.width,
-            pixels.height,
-            pixels.format,
-            options.metadata ?? null,
-            options.captureTimeUs ?? null,
+          await this.pushPixels(client, trackName, pixels, options.metadata ?? null, options.captureTimeUs ?? null, () =>
+            this.checkPushTarget('pushFrame', trackName, publication, epoch),
           );
         } else if (isAudioFrame(frame)) {
           client.pushAudioFrame(trackName, frame.samples, frame.sampleRate, frame.channels ?? 1);
@@ -819,18 +868,20 @@ export class Reactor implements Disposable {
   /**
    * Pushes one encoded video frame, sent or buffered as `pushFrame()` does,
    * on the sendonly video track `trackName`, its bytes as they are: one
-   * H.264 access unit (Annex B), with the `width` and `height` it decodes to.
-   * The `PublishedTrack` that `publishTrack()` resolves with does the same
-   * through `track.pushEncodedFrame(frame)`.
+   * H.264 access unit (Annex B), one VP8 or VP9 frame, or one AV1 temporal
+   * unit, with the `width` and `height` it decodes to. The `PublishedTrack`
+   * that `publishTrack()` resolves with does the same through
+   * `track.pushEncodedFrame(frame)`.
    *
    * The runtime decodes a track's encoded frames as one stream, as they
    * arrive, and the model reads the RGB frames as if they had been pushed
-   * raw. So push them in decode order, starting at a keyframe. A pushed frame
-   * that does not decode raises an `input_decode_failed` error event naming
-   * the track, whose next frame must then be a keyframe; a step whose
-   * buffered frames do not decode rejects with a `StepRefusedError`, as does
-   * a runtime that predates encoded frames. Encoded and raw pushes keep
-   * their call order, and a `step()` waits for every push called before it.
+   * raw. So push them in decode order, starting at a keyframe (`keyframe`, or
+   * a chunk's `type`). A pushed frame that does not decode raises an
+   * `input_decode_failed` error event naming the track, whose next frame
+   * must then be a keyframe; a step whose buffered frames do not decode
+   * rejects with a `StepRefusedError`, as does a runtime that predates
+   * encoded frames. Encoded and raw pushes keep their call order, and a
+   * `step()` waits for every push called before it.
    *
    * ```ts
    * const encoder = new VideoEncoder({
@@ -842,7 +893,7 @@ export class Reactor implements Disposable {
    *
    * Rejects with an `InvalidStateError` outside a stepped session, for a
    * track not published on this connection, for an audio or recvonly track,
-   * for empty data, a zero dimension or a codec other than `"h264"`.
+   * for empty data, a zero dimension or an unknown codec.
    */
   async pushEncodedFrame(trackName: string, frame: EncodedFrame): Promise<void> {
     return this.pushEncodedTo(trackName, undefined, frame);
@@ -896,6 +947,7 @@ export class Reactor implements Disposable {
           encoded.height,
           encoded.metadata,
           encoded.captureTimeUs,
+          encoded.keyframe,
         );
       }),
     );
@@ -932,6 +984,77 @@ export class Reactor implements Disposable {
         { operation },
       );
     }
+  }
+
+  /** Hands `pixels` to the binding for `track`: encoded first, on the
+   *  track's encoder, when the connection negotiated a codec for the track's
+   *  step frames and this browser can encode; raw otherwise, and when the
+   *  encoder fails (its next frame is then a keyframe). Checked by the
+   *  binding before anything is encoded, so a bad frame is refused either
+   *  way. `stillTarget` throws when the push's connection or publication is
+   *  gone: asked again once the encode is awaited, since a reconnect can
+   *  start meanwhile, and neither the encoded frame nor its raw fallback may
+   *  then reach the next session. */
+  private async pushPixels(
+    client: ReactorClient,
+    track: string,
+    pixels: Pixels,
+    metadata: Uint8Array | null,
+    captureTimeUs: number | null,
+    stillTarget: () => void,
+  ): Promise<void> {
+    const { data, width, height, format } = pixels;
+    const encoding = this.inputEncoders.available ? client.stepFrameEncodings()[track] : undefined;
+
+    if (encoding !== undefined && encoding !== 'raw') {
+      client.checkVideoFrame(track, data.byteLength, width, height, format);
+      // A keyframe when the runtime could not decode the track's frames, or
+      // frames encoded for it were not sent; the encoder starts each stream
+      // at one on its own.
+      const keyframe = client.takeInputKeyframeRequest(track);
+      let encoded: Awaited<ReturnType<InputEncoders['encode']>> | undefined;
+
+      try {
+        encoded = await this.inputEncoders.encode(track, encoding, pixels, keyframe);
+      } catch (cause) {
+        console.warn(`[Reactor] pushFrame('${track}'): ${encoding} encoding failed, sending the frame raw:`, cause);
+      }
+      stillTarget();
+      if (encoded !== undefined) {
+        for (const frame of encoded) {
+          client.pushEncodedVideoFrame(track, encoding, frame.data, width, height, metadata, captureTimeUs, frame.keyframe);
+        }
+        return;
+      }
+    }
+    client.pushVideoFrame(track, data, width, height, format, metadata, captureTimeUs);
+  }
+
+  /** Gives the binding the codecs this browser can carry step frames in,
+   *  probed once, so the next offer can negotiate them. A streamed session
+   *  carries no step frames. */
+  /** Restart each output track whose decoder lost its stream: a pause and
+   *  a resume of that track, so the runtime starts it again at a keyframe. A
+   *  restart that cannot be sent is left to the next connection, whose
+   *  streams start at keyframes anyway. */
+  private restartLostTracks(client: ReactorClient, decoders: OutputDecoders): void {
+    for (const track of decoders.takeLostTracks()) {
+      try {
+        client.restartTrackStream(track);
+      } catch (cause) {
+        console.warn(`step(): could not restart track '${track}':`, cause);
+      }
+    }
+  }
+
+  private async offerStepCodecs(client: ReactorClient): Promise<void> {
+    if (!this.isStepped()) {
+      return;
+    }
+    this.localStepCodecs ??= probeStepCodecs();
+    const { encode, decode } = await this.localStepCodecs;
+
+    client.setLocalStepCodecs(encode, decode);
   }
 
   /** Pushes `step()`'s `media`, track by track and in order, each frame as
@@ -983,11 +1106,12 @@ export class Reactor implements Disposable {
               frame.encoded.height,
               frame.encoded.metadata,
               frame.encoded.captureTimeUs,
+              frame.encoded.keyframe,
             );
           } else if (frame.kind === 'video') {
-            const { data, width, height, format } = frame.pixels;
-
-            client.pushVideoFrame(frame.track, data, width, height, format, null, null);
+            await this.pushPixels(client, frame.track, frame.pixels, null, null, () =>
+              this.checkPushTarget(frame.operation, frame.track, undefined, epoch),
+            );
           } else {
             const { samples, sampleRate, channels } = frame.audio;
 
@@ -999,6 +1123,64 @@ export class Reactor implements Disposable {
 
     this.pendingPushes = push.catch(() => undefined);
     await push;
+  }
+
+  /**
+   * Chooses the codecs a stepped session carries its video step frames in,
+   * most preferred first, from `"h264"`, `"vp9"`, `"av1"` and `"vp8"`.
+   * `null` goes back to the default, H.264 first. An empty list for the
+   * session turns encoding off, so every frame travels raw:
+   *
+   * ```ts
+   * reactor.setCodecPreference(['vp9', 'h264']);            // VP9 when both ends have it
+   * reactor.setCodecPreference([]);                         // raw frames
+   * reactor.setCodecPreference(['av1'], { track: 'main_video' });
+   * ```
+   *
+   * With `track`, the list applies to that track only, in place of the
+   * session's; an empty one there goes back to the session's, since one
+   * track cannot turn encoding off alone. The list is an order, not a
+   * limit: the codecs it leaves out follow it, so a runtime without the
+   * preferred ones takes another. Of those, the ones this browser's
+   * WebCodecs can encode (input tracks) or decode (output tracks) are
+   * offered, and the runtime takes per track the first it shares; a track
+   * they share no codec for stays raw.
+   *
+   * Whatever the codec, `step()` results and the frames `pushFrame()` takes
+   * stay RGB: the encoding is between this client and the runtime. Callable
+   * before `connect()` or during a session; it takes effect on the next
+   * connection or reconnect, and the live connection keeps what it
+   * negotiated (see `getStepFrameEncodings()`). A streamed session ignores
+   * it. Throws an `InvalidStateError` on a name that is not a codec.
+   */
+  setCodecPreference(codecs: EncodedVideoCodec[] | null, options: CodecPreferenceOptions = {}): void {
+    this.assertNotDisposed();
+    const operation = 'setCodecPreference';
+    const track = options.track ?? null;
+
+    if (codecs !== null && (!Array.isArray(codecs) || codecs.some((codec) => !STEP_CODECS.includes(codec)))) {
+      throw this.captureError(
+        new InvalidStateError(
+          `${operation}: expected null or an array of "h264", "vp9", "av1" and "vp8", got ${JSON.stringify(codecs)}`,
+          { operation },
+        ),
+      );
+    }
+    if (track !== null && typeof track !== 'string') {
+      throw this.captureError(new InvalidStateError(`${operation}: track must be a string`, { operation }));
+    }
+    const list = codecs === null ? null : [...codecs];
+
+    this.codecPreferences.set(track, list);
+    this.client?.setCodecPreference(list, track);
+  }
+
+  /** How each track's step frames travel on this connection, as its offer
+   *  and answer negotiated them: `"raw"`, or the codec of an encoded video
+   *  track. Empty outside a connected stepped session; a track left out is
+   *  raw. */
+  getStepFrameEncodings(): Record<string, StepFrameEncoding> {
+    return this.client?.stepFrameEncodings() ?? {};
   }
 
   /** Drops every frame still buffered for the next step, pushes called before
@@ -1250,6 +1432,10 @@ export class Reactor implements Disposable {
     }
     const client = new WasmReactorClient(this.clientOptions, this.jwt);
 
+    for (const [track, codecs] of this.codecPreferences) {
+      client.setCodecPreference(codecs, track);
+    }
+
     client.onStatusChanged((status) => {
       this.emitter.emit('statusChanged', status);
       this.handleStatusChanged(client, status);
@@ -1360,6 +1546,13 @@ export class Reactor implements Disposable {
    *  → "ready" status sequence (see `ReactorStatus`), and starts/stops stats
    *  polling around the "ready" window. */
   private handleStatusChanged(client: ReactorClient, status: ReactorStatus): void {
+    if (status === 'connecting' || status === 'disconnected') {
+      this.resetStepStreams();
+      // A publication does not survive the connection: the old handles go
+      // stale, and each track is published again on the new one.
+      this.connectionEpoch += 1;
+      this.publishedInputs.clear();
+    }
     switch (status) {
       case 'connecting':
         this.connectStartTime = performance.now();
@@ -1465,6 +1658,7 @@ export class Reactor implements Disposable {
    *  leave `getCapabilities()` returning the previous session's stale
    *  tracks/commands until a new `capabilitiesReceived` lands. */
   private resetConnectionState(): void {
+    this.resetStepStreams();
     this.connectionEpoch += 1;
     this.publishedInputs.clear();
     this.stopStatsPolling();
@@ -1472,6 +1666,13 @@ export class Reactor implements Disposable {
     this.connectStartTime = undefined;
     this.waitingStartTime = undefined;
     this.capabilities = undefined;
+  }
+
+  /** Drops every step frame encoder and decoder: each track's stream lived
+   *  with the connection that ended, and the next one's start at keyframes. */
+  private resetStepStreams(): void {
+    this.inputEncoders.reset();
+    this.outputDecoders.reset();
   }
 
   /** Wraps `cause` and records it as the most recent failure, for a call
