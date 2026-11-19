@@ -85,6 +85,52 @@ impl StepCodec {
             StepCodec::Av1 => FrameEncoding::Av1,
         }
     }
+
+    /// The codec of a frame in `encoding`; `None` for a raw or unknown one.
+    pub fn from_frame_encoding(encoding: FrameEncoding) -> Option<Self> {
+        Self::DEFAULT_ORDER
+            .into_iter()
+            .find(|codec| codec.frame_encoding() == encoding)
+    }
+
+    /// reactor-webrtc's name for this codec.
+    #[cfg(feature = "webrtc-codecs")]
+    pub fn video_codec(self) -> reactor_webrtc::VideoCodec {
+        use reactor_webrtc::VideoCodec;
+        match self {
+            StepCodec::H264 => VideoCodec::H264,
+            StepCodec::Vp8 => VideoCodec::Vp8,
+            StepCodec::Vp9 => VideoCodec::Vp9,
+            StepCodec::Av1 => VideoCodec::Av1,
+        }
+    }
+
+    /// The step codec reactor-webrtc's `codec` stands for; `None` for one a
+    /// step frame cannot be carried in (H.265).
+    #[cfg(feature = "webrtc-codecs")]
+    pub fn from_video_codec(codec: reactor_webrtc::VideoCodec) -> Option<Self> {
+        Self::DEFAULT_ORDER
+            .into_iter()
+            .find(|step| step.video_codec() == codec)
+    }
+}
+
+impl LocalStepCodecs {
+    /// What reactor-webrtc's standalone codecs can carry step frames in here,
+    /// by its capabilities, each direction in [`StepCodec::DEFAULT_ORDER`].
+    #[cfg(feature = "webrtc-codecs")]
+    pub fn from_capabilities(capabilities: &reactor_webrtc::codec::CodecCapabilities) -> Self {
+        let supported = |can: &dyn Fn(reactor_webrtc::VideoCodec) -> bool| {
+            StepCodec::DEFAULT_ORDER
+                .into_iter()
+                .filter(|codec| can(codec.video_codec()))
+                .collect()
+        };
+        Self {
+            encode: supported(&|codec| capabilities.can_encode(codec)),
+            decode: supported(&|codec| capabilities.can_decode(codec)),
+        }
+    }
 }
 
 /// The codecs a client prefers for its step frames, for the whole connection

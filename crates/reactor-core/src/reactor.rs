@@ -55,8 +55,30 @@ use crate::step::{
     negotiates_encoded_step_frames, push_frames_message, pushed_frame, raw_audio_frame,
     raw_video_frame, runtime_takes_pushed_frames, step_output, stepped_offer, CodecPreferences,
     FrameDecoders, LocalStepCodecs, PixelLayout, StepCodec, StepCommand, StepInputs, StepOutput,
+    INPUT_DECODE_FAILED,
 };
+#[cfg(feature = "webrtc-codecs")]
+use crate::step::{InputEncoders, PushedPicture};
 use crate::{SharedAuth, SharedHttp, SharedPeer, SharedPlatform};
+
+/// The step frame decoders, the codecs to offer and the input encoders of
+/// reactor-webrtc's standalone codecs, as many as this process can run, by
+/// their capabilities. None, and every track raw, when it can run none.
+#[cfg(feature = "webrtc-codecs")]
+fn webrtc_step_codecs() -> (FrameDecoders, LocalStepCodecs, Option<InputEncoders>) {
+    match reactor_webrtc::codec::VideoCodecs::new() {
+        Ok(codecs) => {
+            let local = LocalStepCodecs::from_capabilities(&codecs.capabilities());
+            let mut decoders = FrameDecoders::default();
+            decoders.register_webrtc(&codecs, &local.decode);
+            (decoders, local, Some(InputEncoders::new(codecs)))
+        }
+        Err(error) => {
+            log::warn!("no video codecs for step frames, which stay raw: {error}");
+            (FrameDecoders::default(), LocalStepCodecs::default(), None)
+        }
+    }
+}
 
 /// Host-supplied platform implementations.
 pub struct ReactorDeps {
@@ -312,6 +334,11 @@ pub struct Reactor {
     /// Stepped mode: the codecs this side can encode and decode step frames
     /// in, which filter the preferences. None until the host sets them.
     local_step_codecs: Mutex<LocalStepCodecs>,
+    /// Stepped mode: the encoder of each input video track whose step frames
+    /// a connection negotiated in a codec. `None` when this process has no
+    /// standalone codecs.
+    #[cfg(feature = "webrtc-codecs")]
+    input_encoders: Option<InputEncoders>,
     /// The data-channel stages the SDK times itself, reported likewise.
     message_times: MessageTimes,
 }
@@ -366,6 +393,11 @@ impl Reactor {
         );
         // Capacity 0 plus the one sender's own slot: one pending wake.
         let (ice_flush_tx, ice_flush_rx) = mpsc::channel(0);
+        #[cfg(feature = "webrtc-codecs")]
+        let (frame_decoders, local_step_codecs, input_encoders) = webrtc_step_codecs();
+        #[cfg(not(feature = "webrtc-codecs"))]
+        let (frame_decoders, local_step_codecs) =
+            (FrameDecoders::default(), LocalStepCodecs::default());
         Self {
             coordinator,
             http: deps.http,
@@ -381,10 +413,12 @@ impl Reactor {
             stage_times: Arc::new(StageTimes::new()),
             step_inputs: StepInputs::new(),
             push_lock: Mutex::new(()),
-            frame_decoders: FrameDecoders::default(),
+            frame_decoders,
             track_control: Mutex::new(()),
             codec_preferences: Mutex::new(CodecPreferences::default()),
-            local_step_codecs: Mutex::new(LocalStepCodecs::default()),
+            local_step_codecs: Mutex::new(local_step_codecs),
+            #[cfg(feature = "webrtc-codecs")]
+            input_encoders,
             message_times: MessageTimes::new(),
             state: Mutex::new(State {
                 auto_resume_tracks: options.auto_resume_tracks,
@@ -887,11 +921,37 @@ impl Reactor {
                 state.connection_id = None;
                 state.capabilities = None;
                 state.tracks.clear();
-                // Frames buffered for a session that is gone.
-                self.step_inputs.clear();
                 true
             }
         };
+
+        // The input tracks' streams start over at keyframes too, on fresh
+        // encoders. Encoded frames still buffered continue the streams of
+        // the connection that closed, which decode on none of the next.
+        // Outside `state`: an encoder hands its frame on, which takes
+        // `state`, while it holds the encoders.
+        let reset_inputs = || {
+            let cut = self.step_inputs.drop_encoded();
+            if !cut.is_empty() {
+                log::warn!(
+                    "dropping the buffered encoded step input frames of {cut:?}: their connection closed"
+                );
+            }
+            if session_cleared {
+                // Frames buffered for a session that is gone.
+                self.step_inputs.clear();
+            }
+            // Whatever was dropped, each track's first frame on the next
+            // connection is a keyframe anyway.
+            self.step_inputs.clear_keyframe_requests();
+        };
+        #[cfg(feature = "webrtc-codecs")]
+        match &self.input_encoders {
+            Some(encoders) => encoders.reset(reset_inputs),
+            None => reset_inputs(),
+        }
+        #[cfg(not(feature = "webrtc-codecs"))]
+        reset_inputs();
 
         self.set_status(ReactorStatus::Disconnected);
         if session_cleared && !already_failing {
@@ -1040,6 +1100,14 @@ impl Reactor {
                 // is the only signal callers get that it failed. Its track,
                 // when it names one, goes with it: an `input_decode_failed`
                 // says which input track's next frame must be a keyframe.
+                // The runtime could not decode this track's pushed frames and
+                // drops them up to the next keyframe: the frames the core
+                // encodes for it start at one.
+                if error.code == INPUT_DECODE_FAILED {
+                    if let Some(track) = &error.track {
+                        self.step_inputs.request_keyframe(track);
+                    }
+                }
                 let mut details = ErrorDetails::new(error.code, error.message, true);
                 details.track = error.track;
                 self.emit_error(details);
@@ -1441,16 +1509,24 @@ impl Reactor {
         commands: Vec<StepCommand>,
     ) -> Result<StepRequest, CoreError> {
         let mut request = self.build_step(state, commands)?;
-        let _serialized = self.push_lock.lock().unwrap();
-        request.media_input = self.step_inputs.take()?;
-        // The frames belong to this attempt: a send that fails takes them with
-        // it. What the channel accepts, it delivers; the SDK resends nothing.
-        let pending = self
-            .data
-            .begin(data_client_message::Payload::RequestStep(request));
-        Ok(StepRequest(
-            self.send_pending("step", &pending).map(|()| pending),
-        ))
+        // The encoders first, then the push lock: the order a frame being
+        // encoded takes them in, as it hands itself on.
+        self.holding_input_encoders(|| {
+            let _serialized = self.push_lock.lock().unwrap();
+            request.media_input = self.step_inputs.take()?;
+            // The frames belong to this attempt: a send that fails takes them
+            // with it, and their encoded tracks start again at keyframes. What
+            // the channel accepts, it delivers; the SDK resends nothing.
+            let encoded_tracks = StepInputs::encoded_tracks(&request.media_input);
+            let pending = self
+                .data
+                .begin(data_client_message::Payload::RequestStep(request));
+            let sent = self.send_pending("step", &pending);
+            if sent.is_err() {
+                self.step_inputs.request_keyframes(&encoded_tracks);
+            }
+            Ok(StepRequest(sent.map(|()| pending)))
+        })
     }
 
     /// Every check [`Reactor::begin_step`] makes, with nothing taken: `Ok`
@@ -1530,7 +1606,19 @@ impl Reactor {
     /// Drop every input frame buffered for the next step. Frames already sent
     /// to the runtime are not recalled.
     pub fn clear_step_inputs(&self) {
-        self.step_inputs.clear();
+        self.holding_input_encoders(|| self.step_inputs.clear());
+    }
+
+    /// Run `f` with no pushed frame encoding meanwhile: frames it drops and
+    /// the keyframes it asks for are one step, so no frame is encoded in
+    /// between on the references just dropped. Never call it holding
+    /// `state`, nor from a frame being encoded.
+    fn holding_input_encoders<R>(&self, f: impl FnOnce() -> R) -> R {
+        #[cfg(feature = "webrtc-codecs")]
+        if let Some(encoders) = &self.input_encoders {
+            return encoders.hold(f);
+        }
+        f()
     }
 
     pub fn ping(&self) -> Result<(), CoreError> {
@@ -1906,6 +1994,7 @@ impl Reactor {
     /// raised as an error event.
     fn send_pushed_frames(&self, tracks: Vec<TrackFrames>) {
         let frames: usize = tracks.iter().map(|t| t.frames.len()).sum();
+        let encoded = StepInputs::encoded_tracks(&tracks);
         let payload = prost::Message::encode_to_vec(&push_frames_message(tracks));
         let max_bytes = self.peer.max_message_bytes();
         let sent = if payload.len() > max_bytes {
@@ -1918,6 +2007,8 @@ impl Reactor {
         };
         if let Err(error) = sent {
             log::warn!("dropping {frames} pushed step input frames: {error}");
+            // Frames encoded and not sent leave a gap in their tracks' streams.
+            self.step_inputs.request_keyframes(&encoded);
             self.emit_error(error.details(Some("push_frames")));
         }
     }
@@ -2034,7 +2125,18 @@ impl Reactor {
             return;
         }
         match encoded_video_frame(encoding, data, width, height, metadata, capture_time_us) {
-            Some(frame) => self.push_step_input(track_name, WireTrackKind::Video, frame),
+            Some(frame) => {
+                // The track's stream is now the host's: a raw frame pushed on
+                // it later starts the core's own stream again at a keyframe,
+                // and none encoded here goes out between the restart and this
+                // frame.
+                let push = || self.push_step_input(track_name, WireTrackKind::Video, frame);
+                #[cfg(feature = "webrtc-codecs")]
+                if let Some(encoders) = &self.input_encoders {
+                    return encoders.restart(track_name, push);
+                }
+                push()
+            }
             None => log::warn!(
                 "dropping encoded video frame for '{track_name}': {} bytes of {encoding:?} at {width}x{height} is not a frame",
                 data.len()
@@ -2056,12 +2158,63 @@ impl Reactor {
         if !self.takes_step_input(track_name, SessionTrackKind::Video) {
             return;
         }
+        #[cfg(feature = "webrtc-codecs")]
+        if self.encode_video_frame(
+            track_name,
+            &PushedPicture {
+                pixels: data,
+                width,
+                height,
+                layout,
+                metadata,
+                capture_time_us,
+            },
+        ) {
+            return;
+        }
         match raw_video_frame(data, width, height, layout, metadata, capture_time_us) {
             Some(frame) => self.push_step_input(track_name, WireTrackKind::Video, frame),
             None => log::warn!(
                 "dropping video frame for '{track_name}': {} bytes is not {width}x{height} {layout:?}",
                 data.len()
             ),
+        }
+    }
+
+    /// Stepped: encode `picture` as the next frame of `track_name`'s stream and
+    /// hand it to the runtime, when the connection negotiated a codec for the
+    /// track's step frames and this process can encode it. `false` when the
+    /// track's frames go raw: no codec negotiated, or the encoder failed (its
+    /// next frame is then a keyframe, which a raw frame in between, passed
+    /// through by the runtime, does not disturb).
+    ///
+    /// A keyframe starts the track's stream on each connection, since its
+    /// encoder goes with the channel, and again after the runtime could not
+    /// decode the track's frames or frames encoded for it were not sent.
+    #[cfg(feature = "webrtc-codecs")]
+    fn encode_video_frame(&self, track_name: &str, picture: &PushedPicture<'_>) -> bool {
+        let Some(encoders) = &self.input_encoders else {
+            return false;
+        };
+        // Read with the encoders held: a teardown that clears the codec waits
+        // for this frame, whose encoded copy it then drops, or this frame sees
+        // no codec and goes raw, rather than encode for a connection gone.
+        let encoded = encoders.encode(
+            track_name,
+            || StepCodec::from_frame_encoding(self.step_frame_encoding(track_name)),
+            picture,
+            || self.step_inputs.take_keyframe_request(track_name),
+            |frame| self.push_step_input(track_name, WireTrackKind::Video, frame),
+        );
+        match encoded {
+            Ok(Some(_)) => true,
+            Ok(None) => false,
+            Err(error) => {
+                log::warn!(
+                    "sending a video frame for '{track_name}' raw: encoding failed: {error}"
+                );
+                false
+            }
         }
     }
 

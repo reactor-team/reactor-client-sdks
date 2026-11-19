@@ -12,6 +12,11 @@ default = []
 # Enable this feature in native hosts (FFI, Go, Swift, Kotlin).
 # Keep optional so the core stays portable to WASM and embedded targets.
 tokio-platform = ["dep:tokio", "dep:os_info"]
+# Encodes a stepped session's pushed video frames and decodes its step result
+# frames with reactor-webrtc's standalone codecs, as many as this process can
+# run. Links libwebrtc, so native hosts only (the FFI); without it every step
+# frame stays raw unless the host registers codecs of its own.
+webrtc-codecs = ["dep:reactor-webrtc"]
 
 [dependencies]
 reactor-protocol = { workspace = true }
@@ -25,6 +30,7 @@ prost            = { workspace = true }
 tokio            = { version = "1", features = ["time"], optional = true }
 # The operating system's version for the client stats environment, native only.
 os_info          = { version = "3", default-features = false, optional = true }
+reactor-webrtc   = { workspace = true, optional = true }
 
 # The device model for the client stats environment, read from the system.
 [target.'cfg(any(target_vendor = "apple", target_os = "android"))'.dependencies]

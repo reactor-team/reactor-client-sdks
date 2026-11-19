@@ -466,7 +466,8 @@ use crate::protocol::wire::v1::step::{
 struct DataPeer {
     sent_data: Mutex<Vec<Vec<u8>>>,
     sent_control: Mutex<Vec<Vec<u8>>>,
-    max: usize,
+    /// The message limit, which a test may change mid-session.
+    max: std::sync::atomic::AtomicUsize,
     /// Tracks pushed to as media (the streamed path), in push order.
     pushed: Mutex<Vec<String>>,
     /// Control sends refused, by their index among every control send.
@@ -479,7 +480,7 @@ impl DataPeer {
         Self {
             sent_data: Mutex::new(vec![]),
             sent_control: Mutex::new(vec![]),
-            max,
+            max: max.into(),
             pushed: Mutex::new(vec![]),
             failing_control: Mutex::new(vec![]),
             control_sends: std::sync::atomic::AtomicUsize::new(0),
@@ -555,7 +556,7 @@ impl PeerTransport for DataPeer {
         Ok(())
     }
     fn max_message_bytes(&self) -> usize {
-        self.max
+        self.max.load(std::sync::atomic::Ordering::SeqCst)
     }
     fn push_video_frame(&self, track_name: &str, _: &[u8], _: u32, _: u32) {
         self.pushed.lock().unwrap().push(track_name.to_string());
@@ -1113,7 +1114,7 @@ fn make_decoding_reactor(peer: Arc<DataPeer>) -> Arc<Reactor> {
     );
     reactor.frame_decoders.register_track_decoder(
         FrameEncoding::H264,
-        Box::new(|| Box::new(CountingDecoder(0))),
+        Box::new(|| Ok(Box::new(CountingDecoder(0)))),
     );
     reactor.state.lock().unwrap().status = ReactorStatus::Ready;
     Arc::new(reactor)
@@ -2134,4 +2135,440 @@ fn a_buffered_window_that_cannot_be_sent_is_raised() {
     let sent = peer.sent();
     assert_eq!(sent.len(), 1, "only the new push goes out");
     assert_eq!(pushed(&sent[0]), [("mic".to_string(), 3)]);
+}
+
+// ── Stepped generation: encoded step frames on reactor-webrtc's codecs ──
+
+/// The core's own encoders and decoders, on every codec this process can run
+/// both ways: a pushed frame is encoded and a result frame decoded, each
+/// track one stream for the connection, starting at a keyframe.
+#[cfg(feature = "webrtc-codecs")]
+mod webrtc_codecs {
+    use super::*;
+    use crate::step::{FrameDecoders, StepCodec};
+    use reactor_webrtc::codec::{VideoCodecs, VideoEncoderConfig};
+
+    const WIDTH: u32 = 128;
+    const HEIGHT: u32 = 96;
+
+    /// A smooth RGB picture that shifts with `n`, which every codec keeps
+    /// close at its default bitrate.
+    fn picture(n: u8) -> Vec<u8> {
+        let mut rgb = Vec::with_capacity((WIDTH * HEIGHT * 3) as usize);
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                rgb.push((x * 2) as u8 ^ n);
+                rgb.push((y * 2) as u8);
+                rgb.push(128u8.wrapping_add(n * 8));
+            }
+        }
+        rgb
+    }
+
+    /// The mean absolute difference between two pictures of the same size.
+    fn distance(a: &[u8], b: &[u8]) -> f64 {
+        assert_eq!(a.len(), b.len());
+        let sum: u64 = a
+            .iter()
+            .zip(b)
+            .map(|(x, y)| u64::from(x.abs_diff(*y)))
+            .sum();
+        sum as f64 / a.len() as f64
+    }
+
+    /// The codecs this process both encodes and decodes, as the core offers
+    /// them. H.264 is among them wherever the platform has a codec for it.
+    fn round_trip_codecs(reactor: &Reactor) -> Vec<StepCodec> {
+        let local = reactor.local_step_codecs.lock().unwrap().clone();
+        local
+            .encode
+            .into_iter()
+            .filter(|codec| local.decode.contains(codec))
+            .collect()
+    }
+
+    /// A ready stepped reactor whose connection negotiated `codec` for the
+    /// input track `cam` and the output track `out`, against a runtime that
+    /// takes `PushFrames`.
+    fn encoding_reactor(peer: Arc<DataPeer>, codec: StepCodec) -> Arc<Reactor> {
+        let reactor = make_ready_reactor(peer, GenerationMode::Stepped);
+        report_runtime(&reactor, "3.11.8");
+        negotiate(&reactor, codec);
+        reactor
+    }
+
+    fn negotiate(reactor: &Reactor, codec: StepCodec) {
+        let mut state = reactor.state.lock().unwrap();
+        state.status = ReactorStatus::Ready;
+        state.encoded_step_frames = true;
+        state.step_frame_encodings = [
+            ("cam".to_string(), codec.frame_encoding()),
+            ("out".to_string(), codec.frame_encoding()),
+        ]
+        .into();
+    }
+
+    fn push(reactor: &Reactor, n: u8) {
+        reactor.push_step_video_frame(
+            "cam",
+            &picture(n),
+            WIDTH,
+            HEIGHT,
+            PixelLayout::Rgb,
+            Some(&[n]),
+            None,
+        );
+    }
+
+    /// The frames of every `PushFrames` sent since `from`.
+    fn pushed_frames(peer: &DataPeer, from: usize) -> Vec<Frame> {
+        peer.sent()[from..]
+            .iter()
+            .flat_map(|message| match &message.payload {
+                Some(data_client_message::Payload::PushFrames(push)) => push
+                    .tracks
+                    .iter()
+                    .flat_map(|t| {
+                        assert_eq!(t.track, "cam");
+                        t.frames.clone()
+                    })
+                    .collect::<Vec<_>>(),
+                other => panic!("expected a PushFrames, got {other:?}"),
+            })
+            .collect()
+    }
+
+    fn decoders_for(codec: StepCodec) -> FrameDecoders {
+        let mut decoders = FrameDecoders::default();
+        decoders.register_webrtc(&VideoCodecs::new().unwrap(), &[codec]);
+        decoders
+    }
+
+    /// Each pushed frame goes out encoded in the track's negotiated codec, as
+    /// one stream: a keyframe first, then frames that follow on from it, which
+    /// decode back to the pictures pushed, with their metadata.
+    #[test]
+    fn pushed_frames_go_out_encoded_as_one_stream_per_track() {
+        let probe = make_ready_reactor(
+            Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES)),
+            GenerationMode::Stepped,
+        );
+        let codecs = round_trip_codecs(&probe);
+        assert!(!codecs.is_empty(), "no codec runs both ways here");
+        // VideoToolbox runs H.264 both ways on Apple platforms.
+        #[cfg(target_vendor = "apple")]
+        assert!(codecs.contains(&StepCodec::H264), "{codecs:?}");
+        for codec in codecs {
+            let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+            let reactor = encoding_reactor(peer.clone(), codec);
+            for n in 0..3 {
+                push(&reactor, n);
+            }
+            let frames = pushed_frames(&peer, 0);
+            assert_eq!(frames.len(), 3, "{codec:?}");
+            assert_eq!(
+                frames.iter().map(|f| f.keyframe).collect::<Vec<_>>(),
+                [true, false, false],
+                "{codec:?}"
+            );
+            let decoders = decoders_for(codec);
+            for (n, frame) in frames.into_iter().enumerate() {
+                assert_eq!(frame.encoding, codec.frame_encoding() as i32, "{codec:?}");
+                assert_eq!(frame.shape, [HEIGHT, WIDTH, 3], "{codec:?}");
+                assert!(
+                    frame.data.len() < picture(0).len() / 4,
+                    "{codec:?}: {} bytes",
+                    frame.data.len()
+                );
+                assert_eq!(frame.metadata.as_deref(), Some(&[n as u8][..]));
+                let decoded = decoders.decode_frame("cam", frame).unwrap();
+                assert_eq!(decoded.shape, [HEIGHT, WIDTH, 3], "{codec:?}");
+                let error = distance(&decoded.data, &picture(n as u8));
+                assert!(error < 12.0, "{codec:?} frame {n}: off by {error}");
+            }
+        }
+    }
+
+    /// An `input_decode_failed` for the track makes its next pushed frame a
+    /// keyframe, and only that one.
+    #[tokio::test]
+    async fn input_decode_failed_makes_the_next_push_a_keyframe() {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let probe = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        let codec = round_trip_codecs(&probe)[0];
+        let reactor = encoding_reactor(peer.clone(), codec);
+        push(&reactor, 0);
+        push(&reactor, 1);
+        feed(
+            &reactor,
+            "",
+            MessageKind::Notification,
+            data_server_message::Payload::Error(crate::protocol::wire::v1::common::Error {
+                code: crate::step::INPUT_DECODE_FAILED.into(),
+                message: "cannot decode".into(),
+                track: Some("cam".into()),
+            }),
+        )
+        .await;
+        push(&reactor, 2);
+        push(&reactor, 3);
+        let keyframes: Vec<bool> = pushed_frames(&peer, 0).iter().map(|f| f.keyframe).collect();
+        assert_eq!(keyframes, [true, false, true, false], "{codec:?}");
+    }
+
+    /// Frames encoded and not sent (here, over the channel's limit) leave a
+    /// gap in the stream: the next frame sent is a keyframe.
+    #[test]
+    fn a_push_the_channel_did_not_take_makes_the_next_a_keyframe() {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let probe = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        let codec = round_trip_codecs(&probe)[0];
+        let reactor = encoding_reactor(peer.clone(), codec);
+        push(&reactor, 0);
+        peer.max.store(16, std::sync::atomic::Ordering::SeqCst);
+        push(&reactor, 1);
+        peer.max.store(
+            crate::protocol::DEFAULT_MAX_MESSAGE_BYTES,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        push(&reactor, 2);
+        push(&reactor, 3);
+        let keyframes: Vec<bool> = pushed_frames(&peer, 0).iter().map(|f| f.keyframe).collect();
+        assert_eq!(keyframes, [true, true, false], "{codec:?}");
+    }
+
+    /// A reconnect starts every pushed stream over: the first frame on the
+    /// new connection is a keyframe, from a fresh encoder, and encoded frames
+    /// still buffered for the old one are dropped while raw ones stay.
+    #[tokio::test]
+    async fn a_reconnect_starts_each_pushed_stream_at_a_keyframe() {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let probe = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        let codec = round_trip_codecs(&probe)[0];
+        let reactor = encoding_reactor(peer.clone(), codec);
+        push(&reactor, 0);
+        push(&reactor, 1);
+        // Not ready: these wait in the buffer.
+        reactor.state.lock().unwrap().status = ReactorStatus::Connecting;
+        push(&reactor, 2);
+        reactor.push_audio_frame("mic", &[9], 48_000, 1);
+        assert_eq!(reactor.step_inputs.len(), 2);
+
+        reactor.teardown(true, false).await;
+        assert_eq!(reactor.step_inputs.len(), 1, "the raw frame stays");
+        let sent = peer.sent().len();
+        negotiate(&reactor, codec);
+        push(&reactor, 3);
+        push(&reactor, 4);
+        let after = &peer.sent()[sent..];
+        assert_eq!(after.len(), 3, "the raw frame, then two pushes");
+        let Some(data_client_message::Payload::PushFrames(raw)) = &after[0].payload else {
+            panic!("expected the buffered raw frame first");
+        };
+        assert_eq!(raw.tracks[0].track, "mic");
+        let keyframes: Vec<bool> = pushed_frames(&peer, sent + 1)
+            .iter()
+            .map(|f| f.keyframe)
+            .collect();
+        assert_eq!(keyframes, [true, false], "{codec:?}");
+    }
+
+    /// A frame the host encoded takes the track's stream over: the next raw
+    /// frame pushed on it starts the core's own stream again at a keyframe.
+    #[test]
+    fn a_host_encoded_frame_restarts_the_track_at_a_keyframe() {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let probe = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        let codec = round_trip_codecs(&probe)[0];
+        let reactor = encoding_reactor(peer.clone(), codec);
+        push(&reactor, 0);
+        push(&reactor, 1);
+        reactor.push_step_encoded_video_frame(
+            "cam",
+            codec.frame_encoding(),
+            &[0, 0, 0, 1],
+            WIDTH,
+            HEIGHT,
+            None,
+            None,
+        );
+        push(&reactor, 2);
+        push(&reactor, 3);
+        let frames = pushed_frames(&peer, 0);
+        assert_eq!(frames.len(), 5, "{codec:?}");
+        assert_eq!(frames[2].data, [0, 0, 0, 1], "{codec:?}");
+        let keyframes: Vec<bool> = frames.iter().map(|f| f.keyframe).collect();
+        assert_eq!(keyframes, [true, false, false, true, false], "{codec:?}");
+    }
+
+    /// Frames pushed while the connection tears down, again and again, on
+    /// another thread: neither side waits on the other for good. A push holds
+    /// the encoders while it sends, which takes `state`; the teardown must
+    /// not wait for the encoders while it holds `state`.
+    #[test]
+    fn pushes_racing_teardowns_never_deadlock() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let probe = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        let codec = round_trip_codecs(&probe)[0];
+        let reactor = encoding_reactor(peer, codec);
+        let stop = Arc::new(AtomicBool::new(false));
+        let pusher = std::thread::spawn({
+            let reactor = reactor.clone();
+            let stop = stop.clone();
+            move || {
+                let mut n = 0u8;
+                while !stop.load(Ordering::SeqCst) {
+                    push(&reactor, n);
+                    reactor.clear_step_inputs();
+                    n = n.wrapping_add(1);
+                }
+            }
+        });
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn({
+            let reactor = reactor.clone();
+            move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                for _ in 0..200 {
+                    runtime.block_on(reactor.teardown(true, false));
+                    negotiate(&reactor, codec);
+                }
+                done.send(()).unwrap();
+            }
+        });
+        let result = finished.recv_timeout(std::time::Duration::from_secs(60));
+        stop.store(true, Ordering::SeqCst);
+        result.expect("a push and a teardown deadlocked");
+        pusher.join().unwrap();
+    }
+
+    /// A track the connection carries raw, or a frame the codec cannot take
+    /// (an odd size), goes out raw.
+    #[test]
+    fn raw_tracks_and_frames_the_encoder_refuses_go_raw() {
+        let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+        let probe = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+        let codec = round_trip_codecs(&probe)[0];
+        let reactor = encoding_reactor(peer.clone(), codec);
+        reactor.push_step_video_frame("cam", &[1; 3 * 3 * 3], 3, 3, PixelLayout::Rgb, None, None);
+        reactor
+            .state
+            .lock()
+            .unwrap()
+            .step_frame_encodings
+            .insert("cam".into(), FrameEncoding::Raw);
+        push(&reactor, 0);
+        let frames = pushed_frames(&peer, 0);
+        assert_eq!(frames.len(), 2);
+        for frame in frames {
+            assert_eq!(frame.encoding, FrameEncoding::Raw as i32);
+        }
+    }
+
+    /// Output frames encoded as the runtime encodes them, one stream across
+    /// results starting at a keyframe.
+    struct RuntimeEncoder(reactor_webrtc::codec::VideoEncoder, StepCodec);
+
+    impl RuntimeEncoder {
+        fn new(codec: StepCodec) -> Self {
+            let config = VideoEncoderConfig::new(codec.video_codec(), WIDTH, HEIGHT);
+            Self(VideoCodecs::new().unwrap().encoder(&config).unwrap(), codec)
+        }
+
+        fn result(&mut self, step: u64, n: u8) -> data_server_message::Payload {
+            let encoded = self
+                .0
+                .encode(
+                    &picture(n),
+                    WIDTH,
+                    HEIGHT,
+                    reactor_webrtc::PixelFormat::Rgb24,
+                    i64::from(n) * 33_333,
+                )
+                .unwrap()
+                .unwrap();
+            data_server_message::Payload::StepResult(StepResult {
+                step,
+                tracks: vec![TrackFrames {
+                    track: "out".into(),
+                    kind: WireTrackKind::Video as i32,
+                    frames: vec![Frame {
+                        encoding: self.1.frame_encoding() as i32,
+                        dtype: "uint8".into(),
+                        shape: vec![HEIGHT, WIDTH, 3],
+                        data: encoded.data,
+                        metadata: None,
+                        capture_time_us: None,
+                        keyframe: encoded.key_frame,
+                    }],
+                    rate: 30.0,
+                }],
+                ..Default::default()
+            })
+        }
+    }
+
+    async fn step_with(
+        reactor: &Arc<Reactor>,
+        peer: &DataPeer,
+        result: data_server_message::Payload,
+    ) -> Result<StepOutput, CoreError> {
+        let (stepping, sent) = start_step(reactor, peer, Value::Null, vec![]).await;
+        feed(reactor, &sent.request_id, MessageKind::Response, result).await;
+        stepping.await.unwrap()
+    }
+
+    /// Step results decode on the core's own decoder per output track, across
+    /// results, back to the pictures the runtime encoded. A reconnect drops
+    /// the decoder: the new connection's stream must start at a keyframe, and
+    /// a frame that does not makes the core pause and resume the track.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn step_results_decode_per_track_and_restart_at_a_keyframe_on_reconnect() {
+        let probe = make_ready_reactor(
+            Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES)),
+            GenerationMode::Stepped,
+        );
+        for codec in round_trip_codecs(&probe) {
+            let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+            let reactor = encoding_reactor(peer.clone(), codec);
+            let mut runtime = RuntimeEncoder::new(codec);
+            for n in 0..3u8 {
+                let output = step_with(&reactor, &peer, runtime.result(1 + n as u64, n))
+                    .await
+                    .unwrap();
+                let frame = &output.tracks[0].frames[0];
+                assert_eq!(frame.encoding, codec.frame_encoding(), "{codec:?}");
+                assert_eq!(frame.shape, [HEIGHT, WIDTH, 3], "{codec:?}");
+                let error = distance(&frame.data, &picture(n));
+                assert!(error < 12.0, "{codec:?} step {n}: off by {error}");
+            }
+
+            reactor.teardown(true, false).await;
+            negotiate(&reactor, codec);
+            // The new connection's data channel opens, as the peer reports it.
+            reactor.frame_decoders.open();
+            // The runtime's encoder runs on, as if it had not seen the new
+            // connection: its next frame is no keyframe, and fails here.
+            assert!(peer.track_controls().is_empty(), "{codec:?}");
+            let output = step_with(&reactor, &peer, runtime.result(4, 3)).await;
+            assert!(matches!(output, Err(CoreError::Decode(_))), "{codec:?}");
+            assert_eq!(
+                peer.track_controls(),
+                ["pause:out", "resume:out"],
+                "{codec:?}"
+            );
+
+            // The runtime answers the resume with a keyframe, which starts the
+            // stream again.
+            runtime.0.request_key_frame();
+            let output = step_with(&reactor, &peer, runtime.result(5, 4)).await;
+            let error = distance(&output.unwrap().tracks[0].frames[0].data, &picture(4));
+            assert!(error < 12.0, "{codec:?}: off by {error}");
+        }
+    }
 }
