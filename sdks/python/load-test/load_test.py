@@ -61,6 +61,9 @@ PUBLISH_TRACK = "webcam"
 RECEIVE_TRACK = "main_video"
 OPEN_ATTEMPTS = 5
 CLOSE_TIMEOUT_S = 15
+# A session whose push_frame() keeps failing for this long is no longer
+# producing load: it counts as dropped.
+MAX_PUSH_FAILURE_S = 5
 
 
 def utc_now() -> str:
@@ -81,6 +84,7 @@ class Session:
     closed_at: str = ""
     frames_sent: int = 0
     frames_received: int = 0
+    push_failures_in_a_row: int = 0
     dropped: bool = False
     error: str = ""
     track: Any = None
@@ -188,8 +192,18 @@ class LoadTest:
                 try:
                     session.track.push_frame(self.frame)
                     session.frames_sent += 1
+                    session.push_failures_in_a_row = 0
                 except Exception as error:  # noqa: BLE001
                     session.error = session.error or f"push_frame: {error}"
+                    session.push_failures_in_a_row += 1
+                    if session.push_failures_in_a_row >= MAX_PUSH_FAILURE_S * FPS:
+                        session.dropped = True
+                        session.closed_at = utc_now()
+                        print(
+                            f"  ! session {session.index} ({session.session_id}) dropped: "
+                            f"push_frame failing for {MAX_PUSH_FAILURE_S} s",
+                            flush=True,
+                        )
             next_tick += period
             await asyncio.sleep(max(0.0, next_tick - time.monotonic()))
 
@@ -261,11 +275,22 @@ class LoadTest:
 
         await asyncio.gather(*(close(s) for s in to_close))
 
+    def failure_reasons(self) -> list[str]:
+        """Why the run did not hold the load it was asked for; empty if it did."""
+        reasons = []
+        if len(self.step_results) < len(self.steps) or any(
+            r.reached < r.target for r in self.step_results
+        ):
+            reasons.append("not every step reached its session count")
+        opened = [s for s in self.sessions if s.opened_at]
+        if any(s.dropped for s in opened):
+            reasons.append("a session dropped while open")
+        if any(s.frames_sent == 0 or s.frames_received == 0 for s in opened):
+            reasons.append("a session never sent or never received video")
+        return reasons
+
     def passed(self) -> bool:
-        reached_all = len(self.step_results) == len(self.steps) and all(
-            r.reached >= r.target for r in self.step_results
-        )
-        return reached_all and not any(s.dropped for s in self.sessions)
+        return not self.failure_reasons()
 
     def dashboard_link(self) -> str:
         """DASHBOARD_URL opened on this run, from the first step's start to now."""
@@ -318,11 +343,13 @@ class LoadTest:
                     [r.target, r.reached, r.ramp_started_at, r.hold_started_at, r.ended_at, r.note]
                 )
 
-        opened = [s for s in self.sessions if s.session_id]
+        # Opened = connected AND publishing (opened_at is set only then); a
+        # session that connected but failed to publish counts as failed.
+        opened = [s for s in self.sessions if s.opened_at]
         lines = [
             f"## Load test: {MODEL} at {API_URL}",
             "",
-            f"Result: **{'passed' if self.passed() else 'did not reach every step'}**",
+            f"Result: **{'; '.join(self.failure_reasons()) or 'passed'}**",
             "",
             "| Step | Sessions open | Holding from (UTC) | Until (UTC) | Note |",
             "|---:|---:|---|---|---|",
@@ -337,7 +364,7 @@ class LoadTest:
         lines += [
             "",
             f"- Sessions opened: {len(opened)}",
-            f"- Failed to open: {sum(1 for s in self.sessions if not s.session_id)}",
+            f"- Failed to open: {sum(1 for s in self.sessions if not s.opened_at)}",
             f"- Dropped while open: {sum(1 for s in self.sessions if s.dropped)}",
             f"- Never received video: {sum(1 for s in opened if s.frames_received == 0)}",
             "",
