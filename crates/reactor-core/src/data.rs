@@ -30,6 +30,8 @@ use crate::protocol::wire::v1::common::MessageKind;
 use crate::protocol::wire::v1::data::{
     data_client_message, data_server_message, DataClientMessage, DataServerMessage,
 };
+use crate::protocol::wire::v1::step::TrackFrames;
+use crate::step::TrackOutput;
 
 type DataResult = Result<Option<data_server_message::Payload>, CoreError>;
 
@@ -68,7 +70,18 @@ pub struct DataCorrelator {
     /// resolved its request, by `request_id`, for the awaiting caller to take
     /// with [`DataCorrelator::take_arrival`].
     arrivals: Mutex<HashMap<String, ReplyArrival>>,
+    /// The tracks of each correlated step result, decoded as the result
+    /// arrived, by `request_id`, for the awaiting step to take with
+    /// [`DataCorrelator::take_step_tracks`].
+    step_tracks: Mutex<HashMap<String, DecodedTracks>>,
 }
+
+/// A step result's tracks, decoded, or the first failure decoding them.
+pub type DecodedTracks = Result<Vec<TrackOutput>, CoreError>;
+
+/// Decodes a step result's tracks as it arrives. See
+/// [`DataCorrelator::handle_message_at`].
+pub type StepTrackDecoder<'a> = &'a dyn Fn(Vec<TrackFrames>) -> DecodedTracks;
 
 /// When a correlated reply was read off the channel, and when it resolved its
 /// request after being decoded, on the platform's monotonic clock.
@@ -138,17 +151,27 @@ impl DataCorrelator {
     /// awaited reply is still broadcast as a `message` event for listeners
     /// that prefer that surface.
     pub fn handle_message(&self, raw: &[u8]) -> Option<HandledMessage> {
-        self.handle_message_at(raw, None)
+        self.handle_message_at(raw, None, None)
     }
 
     /// [`DataCorrelator::handle_message`], noting with *clock* when the
     /// message was read and when it resolved its request. The times are kept
     /// for a reply that resolves a request, before the request resolves, so
     /// the awaiting caller always finds them.
+    ///
+    /// With *decode_step*, a step result's tracks are decoded here, as the
+    /// result arrives, before it resolves its step: results are decoded in
+    /// the order they arrive whatever order their steps are awaited in, which
+    /// a stream decoded across results needs. The result then resolves with
+    /// no tracks, and its step takes the decoded ones with
+    /// [`DataCorrelator::take_step_tracks`]. A result no step awaits any more
+    /// (its step gave up) is decoded all the same, so the streams keep up,
+    /// and its tracks are dropped.
     pub fn handle_message_at(
         &self,
         raw: &[u8],
         clock: Option<&dyn Fn() -> f64>,
+        decode_step: Option<StepTrackDecoder<'_>>,
     ) -> Option<HandledMessage> {
         let arrived_ms = clock.map(|now| now());
         let message = match DataServerMessage::decode(raw) {
@@ -162,18 +185,37 @@ impl DataCorrelator {
         // message) carries a matching request_id but leaves the `payload`
         // oneof entirely unset. `None` still resolves the pending
         // correlation below instead of being silently dropped.
-        let payload = message.payload;
+        let mut payload = message.payload;
         let request_id = message.request_id;
+        let waiter = if request_id.is_empty() {
+            None
+        } else {
+            self.pending.lock().unwrap().remove(&request_id)
+        };
+        let mut decoded = None;
+        if let (Some(decode_step), Some(data_server_message::Payload::StepResult(result))) =
+            (decode_step, payload.as_mut())
+        {
+            decoded = Some(decode_step(std::mem::take(&mut result.tracks)));
+        }
         let mut correlated = false;
         if !request_id.is_empty() {
-            match self.pending.lock().unwrap().remove(&request_id) {
+            match waiter {
                 // A step's result goes to its step() call alone, and can carry
                 // megabytes of frames: moved there, not copied for a caller
                 // that has nothing to dispatch for it.
                 Some((_, tx))
                     if matches!(payload, Some(data_server_message::Payload::StepResult(_))) =>
                 {
-                    let _ = tx.send(Ok(payload));
+                    if let Some(decoded) = decoded {
+                        self.step_tracks
+                            .lock()
+                            .unwrap()
+                            .insert(request_id.clone(), decoded);
+                    }
+                    if tx.send(Ok(payload)).is_err() {
+                        self.step_tracks.lock().unwrap().remove(&request_id);
+                    }
                     return Some(HandledMessage {
                         payload: None,
                         correlated: true,
@@ -213,12 +255,20 @@ impl DataCorrelator {
     pub fn cancel(&self, request_id: &str) {
         self.pending.lock().unwrap().remove(request_id);
         self.arrivals.lock().unwrap().remove(request_id);
+        self.step_tracks.lock().unwrap().remove(request_id);
     }
 
     /// When the reply to *request_id* was read and resolved, if it was noted,
     /// and forget it.
     pub fn take_arrival(&self, request_id: &str) -> Option<ReplyArrival> {
         self.arrivals.lock().unwrap().remove(request_id)
+    }
+
+    /// The tracks of the step result that answered *request_id*, decoded as
+    /// it arrived, and forget them. `None` when the result was not decoded
+    /// on arrival: its tracks are still in it.
+    pub fn take_step_tracks(&self, request_id: &str) -> Option<DecodedTracks> {
+        self.step_tracks.lock().unwrap().remove(request_id)
     }
 
     /// Reject every in-flight request (on disconnect).
@@ -410,6 +460,62 @@ mod tests {
         }
     }
 
+    /// With a decoder, a step result's tracks are decoded as it arrives and
+    /// kept for its step to take once; a result no step awaits is decoded
+    /// all the same, and its tracks are not kept.
+    #[test]
+    fn a_step_results_tracks_are_decoded_on_arrival() {
+        use crate::protocol::wire::v1::step::{RequestStep, StepResult};
+        use std::cell::RefCell;
+
+        let c = DataCorrelator::new();
+        let mut pending = c.begin(data_client_message::Payload::RequestStep(
+            RequestStep::default(),
+        ));
+        let result = |track: &str| {
+            data_server_message::Payload::StepResult(StepResult {
+                step: 1,
+                tracks: vec![TrackFrames {
+                    track: track.into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+        };
+        let seen = RefCell::new(vec![]);
+        let decode = |tracks: Vec<TrackFrames>| {
+            seen.borrow_mut()
+                .extend(tracks.into_iter().map(|t| t.track));
+            Ok(vec![])
+        };
+
+        c.handle_message_at(
+            &encode_response("data_99", result("late")),
+            None,
+            Some(&decode),
+        )
+        .unwrap();
+        let handled = c
+            .handle_message_at(
+                &encode_response(&pending.request_id, result("out")),
+                None,
+                Some(&decode),
+            )
+            .unwrap();
+
+        assert!(handled.correlated);
+        assert_eq!(*seen.borrow(), ["late", "out"]);
+        match pending.receiver.try_recv().unwrap().unwrap() {
+            Ok(Some(data_server_message::Payload::StepResult(result))) => {
+                assert!(result.tracks.is_empty(), "the step takes them decoded")
+            }
+            other => panic!("expected the step result, got {other:?}"),
+        }
+        assert!(matches!(c.take_step_tracks(&pending.request_id), Some(Ok(t)) if t.is_empty()));
+        assert!(c.take_step_tracks(&pending.request_id).is_none());
+        assert!(c.take_step_tracks("data_99").is_none());
+    }
+
     #[test]
     fn pushed_frames_go_out_as_a_notification_with_nothing_pending() {
         let c = DataCorrelator::new();
@@ -490,7 +596,7 @@ mod tests {
             ticks.get()
         };
 
-        c.handle_message_at(&bytes, Some(&clock)).unwrap();
+        c.handle_message_at(&bytes, Some(&clock), None).unwrap();
 
         assert_eq!(
             c.take_arrival(&pending.request_id),
@@ -515,7 +621,7 @@ mod tests {
         );
         let clock = || 1.0;
 
-        c.handle_message_at(&bytes, Some(&clock)).unwrap();
+        c.handle_message_at(&bytes, Some(&clock), None).unwrap();
 
         assert_eq!(c.take_arrival("data_99"), None);
     }
@@ -540,7 +646,7 @@ mod tests {
         );
         let clock = || 1.0;
 
-        c.handle_message_at(&bytes, Some(&clock)).unwrap();
+        c.handle_message_at(&bytes, Some(&clock), None).unwrap();
 
         assert!(c.arrivals.lock().unwrap().is_empty());
     }

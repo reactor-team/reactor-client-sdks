@@ -52,7 +52,7 @@ use crate::state::ReactorStatus;
 use crate::stats::{client_connection_stat, ClientStatsReporter, ConnectionStats, StatsSampler};
 use crate::step::{
     build_request_step, encoded_video_frame, may_encode_step_frames, negotiated_encodings,
-    raw_audio_frame, raw_video_frame, stepped_offer, CodecPreferences, FrameDecoders,
+    raw_audio_frame, raw_video_frame, step_output, stepped_offer, CodecPreferences, FrameDecoders,
     LocalStepCodecs, PixelLayout, StepCodec, StepCommand, StepInputs, StepOutput,
 };
 use crate::{SharedAuth, SharedHttp, SharedPeer, SharedPlatform};
@@ -292,6 +292,10 @@ pub struct Reactor {
     step_inputs: StepInputs,
     /// Stepped mode: how a step result's frames are decoded, per encoding.
     frame_decoders: FrameDecoders,
+    /// Held while a pause or resume is sent and recorded in
+    /// `paused_tracks`, and while a lost stream is restarted, so a restart
+    /// reads the state the caller's last message gave the runtime.
+    track_control: Mutex<()>,
     /// Stepped mode: the codecs the next offer prefers for step frames.
     codec_preferences: Mutex<CodecPreferences>,
     /// Stepped mode: the codecs this side can encode and decode step frames
@@ -366,6 +370,7 @@ impl Reactor {
             stage_times: Arc::new(StageTimes::new()),
             step_inputs: StepInputs::new(),
             frame_decoders: FrameDecoders::default(),
+            track_control: Mutex::new(()),
             codec_preferences: Mutex::new(CodecPreferences::default()),
             local_step_codecs: Mutex::new(LocalStepCodecs::default()),
             message_times: MessageTimes::new(),
@@ -839,6 +844,12 @@ impl Reactor {
             }
         }
 
+        // Each output track's decoder state lived with the data channel that
+        // just closed: the next connection's streams start over at their
+        // keyframes. Reset outside the state lock, so no decoder is dropped
+        // under it.
+        self.frame_decoders.reset();
+
         let session_cleared = {
             let mut state = self.state.lock().unwrap();
             state.peer_connected = false;
@@ -883,6 +894,10 @@ impl Reactor {
                 self.on_peer_connection_state(connection_state).await;
             }
             PeerEvent::DataChannelOpen => {
+                // Results from here on are this channel's: they start its
+                // streams. One of the closed channel's, queued before this
+                // event, was refused (see `FrameDecoders::reset`).
+                self.frame_decoders.open();
                 let mut state = self.state.lock().unwrap();
                 state.data_open = true;
                 Self::check_ready_locked(&mut state);
@@ -973,7 +988,14 @@ impl Reactor {
         // send_command(). Taken here, after the host's event queue: the hop
         // from the engine's thread to this loop is not timed.
         let clock = || self.platform.monotonic_ms();
-        let Some(handled) = self.data.handle_message_at(raw, Some(&clock)) else {
+        // A step result is decoded here, in the order results arrive: an
+        // encoded track's stream runs on from one result into the next.
+        let decode_step = |tracks| self.frame_decoders.decode_tracks(tracks);
+        let handled = self
+            .data
+            .handle_message_at(raw, Some(&clock), Some(&decode_step));
+        self.restart_lost_tracks();
+        let Some(handled) = handled else {
             return;
         };
         match handled.payload {
@@ -1004,6 +1026,8 @@ impl Reactor {
             }
             Some(data_server_message::Payload::StepResult(result)) if !handled.correlated => {
                 // Its step() already gave up (timeout) — nobody to hand it to.
+                // Its tracks were decoded all the same, so the streams that
+                // run on into the next result keep up.
                 log::warn!("dropping uncorrelated result of step {}", result.step);
             }
             Some(data_server_message::Payload::StepResult(_)) => {
@@ -1356,6 +1380,12 @@ impl Reactor {
     /// recoverable for the connection, not for the step: retrying it can apply
     /// them twice.
     ///
+    /// Results are decoded in the order they arrive, each encoded output
+    /// track by a decoder it keeps for the connection. When one of those
+    /// decoders lost its stream, the core pauses and resumes that track, and
+    /// the runtime starts its next frames at a keyframe; the track's frames
+    /// fail until then.
+    ///
     /// The step is not checked against the model's command schema here: the
     /// core holds no schema to check it against (the runtime validates it,
     /// and refuses it as `step_refused`).
@@ -1416,6 +1446,12 @@ impl Reactor {
         let pending = self
             .data
             .begin(data_client_message::Payload::RequestStep(request.0));
+        // The result's tracks are decoded as it arrives and kept for this
+        // call; dropped with it if it goes away first.
+        let request = ForgetOnDrop {
+            data: &self.data,
+            request_id: pending.request_id.clone(),
+        };
         self.send_pending("step", &pending)?;
 
         let response = match self
@@ -1432,7 +1468,15 @@ impl Reactor {
         };
         match response {
             Some(data_server_message::Payload::StepResult(result)) => {
-                self.frame_decoders.decode_result(result)
+                match self.data.take_step_tracks(&request.request_id) {
+                    Some(tracks) => step_output(result, tracks),
+                    // Not decoded on arrival: its tracks are still in it.
+                    None => {
+                        let output = self.frame_decoders.decode_result(result);
+                        self.restart_lost_tracks();
+                        output
+                    }
+                }
             }
             // Every outcome of a step, refusals included, is a StepResult; an
             // Error is not a step reply. Should one arrive anyway, its code
@@ -1936,6 +1980,8 @@ impl Reactor {
         let payload = ControlCorrelator::notification(ClientPayload::PauseTrack(PauseTrack {
             name: name.to_string(),
         }));
+        // Sent and recorded as one, against a stream restart in between.
+        let _track_control = self.track_control.lock().unwrap();
         self.peer.send_control(&payload)?;
         self.state
             .lock()
@@ -1953,6 +1999,8 @@ impl Reactor {
         let payload = ControlCorrelator::notification(ClientPayload::ResumeTrack(ResumeTrack {
             name: name.to_string(),
         }));
+        // Sent and recorded as one, against a stream restart in between.
+        let _track_control = self.track_control.lock().unwrap();
         self.peer.send_control(&payload)?;
         self.state.lock().unwrap().paused_tracks.remove(name);
         Ok(())
@@ -2033,6 +2081,41 @@ impl Reactor {
         }
         let raw = self.peer.get_stats().await?;
         Ok(self.stats.sample(&raw, self.platform.now_ms()))
+    }
+
+    /// Restart the stream of each output track whose decoder lost it since
+    /// the last call: pause and resume the track on the control channel, and
+    /// the runtime starts its next encoded frames at a keyframe. Each loss is
+    /// restarted once (see [`FrameDecoders::take_lost_tracks`]).
+    ///
+    /// The track keeps the state its caller gave it: a track the caller
+    /// paused is resumed and paused again, and neither the transceiver nor
+    /// [`Reactor::paused_tracks`] changes. A [`Reactor::pause_track`] or
+    /// [`Reactor::resume_track`] waits for the restart, so its own message
+    /// comes last. A restart that did not all go out is reported lost again,
+    /// for the next result to retry from the start.
+    fn restart_lost_tracks(&self) {
+        let _track_control = self.track_control.lock().unwrap();
+        for name in self.frame_decoders.take_lost_tracks() {
+            let paused = self.state.lock().unwrap().paused_tracks.contains(&name);
+            let pause = ClientPayload::PauseTrack(PauseTrack { name: name.clone() });
+            let resume = ClientPayload::ResumeTrack(ResumeTrack { name: name.clone() });
+            let order = if paused {
+                [resume, pause]
+            } else {
+                [pause, resume]
+            };
+            for payload in order {
+                if let Err(error) = self
+                    .peer
+                    .send_control(&ControlCorrelator::notification(payload))
+                {
+                    log::warn!("restarting the stream of track '{name}' failed: {error}");
+                    self.frame_decoders.restore_lost_track(&name);
+                    break;
+                }
+            }
+        }
     }
 
     pub fn paused_tracks(&self) -> HashSet<String> {
