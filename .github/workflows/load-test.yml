@@ -19,6 +19,8 @@
 #   - load-test-dev:  secret LOAD_TEST_REACTOR_API_KEY, variable LOAD_TEST_API_URL
 #   - load-test-prod: secret LOAD_TEST_REACTOR_API_KEY (variable optional:
 #                     without it the SDK's default, production, is used)
+# Both may also set variable LOAD_TEST_DASHBOARD_URL: a backend dashboard the
+# summary links to, opened on the run's time window.
 # Each environment should allow deployments from `main` only, so a run from
 # a branch with an edited copy of this file cannot read the keys, and
 # load-test-prod should require a reviewer's approval.
@@ -158,6 +160,7 @@ jobs:
           # Empty when the environment sets no URL: the SDK's default is production.
           REACTOR_API_URL: ${{ vars.LOAD_TEST_API_URL }}
           INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.LOAD_TEST_REACTOR_API_KEY }}
+          LOAD_TEST_DASHBOARD_URL: ${{ vars.LOAD_TEST_DASHBOARD_URL }}
           REACTOR_MODEL_NAME: ${{ inputs.model_name }}
           STEPS: ${{ inputs.steps }}
           HOLD_MINUTES: ${{ inputs.hold_minutes }}

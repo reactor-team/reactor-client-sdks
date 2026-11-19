@@ -36,7 +36,7 @@ import signal
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +48,12 @@ from reactor_sdk.errors import RateLimitedError
 API_URL = os.environ.get("REACTOR_API_URL") or DEFAULT_API_URL
 MODEL = os.environ.get("REACTOR_MODEL_NAME") or "reactor/echo"
 API_KEY = os.environ.get("INTEGRATION_TESTS_REACTOR_API_KEY")
+# Optional: a dashboard to link from the summary, opened on this run's time
+# window (a Grafana URL; `from`/`to` are appended).
+DASHBOARD_URL = os.environ.get("LOAD_TEST_DASHBOARD_URL", "")
+# Extra time shown around the run on that dashboard: before the first session
+# opens, and after the last closes so the tail of the data has time to land.
+DASHBOARD_MARGIN = timedelta(minutes=2)
 
 FPS = 15
 WIDTH, HEIGHT = 128, 128
@@ -261,6 +267,17 @@ class LoadTest:
         )
         return reached_all and not any(s.dropped for s in self.sessions)
 
+    def dashboard_link(self) -> str:
+        """DASHBOARD_URL opened on this run, from the first step's start to now."""
+        if not DASHBOARD_URL or not self.step_results:
+            return ""
+        start = datetime.strptime(self.step_results[0].ramp_started_at, "%Y-%m-%dT%H:%M:%SZ")
+        start = start.replace(tzinfo=timezone.utc) - DASHBOARD_MARGIN
+        end = datetime.now(timezone.utc) + DASHBOARD_MARGIN
+        separator = "&" if "?" in DASHBOARD_URL else "?"
+        to_ms = lambda t: int(t.timestamp() * 1000)  # noqa: E731
+        return f"{DASHBOARD_URL}{separator}from={to_ms(start)}&to={to_ms(end)}"
+
     def write_files(self) -> None:
         with open(self.out / "sessions.csv", "w", newline="") as f:
             writer = csv.writer(f)
@@ -326,6 +343,9 @@ class LoadTest:
             "",
             "Session ids are in `sessions.csv` next to this summary (the artifact, in CI).",
         ]
+        link = self.dashboard_link()
+        if link:
+            lines += ["", f"Backend dashboard for this run's time window: {link}"]
         (self.out / "summary.md").write_text("\n".join(lines) + "\n")
         print("\n" + "\n".join(lines), flush=True)
         print(f"\nFiles in {self.out}/", flush=True)
