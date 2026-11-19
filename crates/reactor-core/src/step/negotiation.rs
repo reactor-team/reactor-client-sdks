@@ -13,7 +13,10 @@
 //! travels in data-channel messages. The negotiation holds for the
 //! connection, and a new connection negotiates again.
 //!
-//! A track's codecs are the caller's preference ([`CodecPreferences`])
+//! A track's codecs are the caller's preference ([`CodecPreferences`]) first,
+//! in its order, then every other step codec in [`StepCodec::DEFAULT_ORDER`]:
+//! a preference orders the codecs, it does not limit them, so a runtime that
+//! has none of the preferred ones still answers with another. That list is
 //! filtered twice: by what this side can carry step frames in
 //! ([`LocalStepCodecs`]: encode for an input track, decode for an output
 //! one), and by what the engine listed in the track's section. The client
@@ -23,9 +26,9 @@
 //!
 //! The core rewrites only the offer it sends, never the one the engine
 //! applied locally: it adds the attribute and, on each mapped video section,
-//! moves the kept codecs first in the caller's order and drops the other step
-//! codecs. The answer stays a subset of what the engine offered, so the
-//! engine applies it as it would the unrewritten offer's.
+//! moves the kept codecs first in that order and drops the step codecs this
+//! side cannot handle. The answer stays a subset of what the engine offered,
+//! so the engine applies it as it would the unrewritten offer's.
 
 use std::collections::HashMap;
 
@@ -85,7 +88,9 @@ impl StepCodec {
 }
 
 /// The codecs a client prefers for its step frames, for the whole connection
-/// and per track, read when the next offer is built.
+/// and per track, read when the next offer is built. A preference is an
+/// order, not a limit: the codecs it leaves out follow it, in
+/// [`StepCodec::DEFAULT_ORDER`] ([`CodecPreferences::order_for_track`]).
 ///
 /// The connection-wide order defaults to [`StepCodec::DEFAULT_ORDER`]. An
 /// empty connection-wide order turns encoded step frames off: the offer then
@@ -138,6 +143,20 @@ impl CodecPreferences {
             return codecs;
         }
         self.session.as_deref().unwrap_or(&StepCodec::DEFAULT_ORDER)
+    }
+
+    /// Every step codec, in the order the next offer lists them for `track`:
+    /// [`CodecPreferences::for_track`] first, then the rest in
+    /// [`StepCodec::DEFAULT_ORDER`]. Empty when encoding is off.
+    pub fn order_for_track(&self, track: &str) -> Vec<StepCodec> {
+        let preferred = self.for_track(track);
+        if preferred.is_empty() {
+            return Vec::new();
+        }
+        let rest = StepCodec::DEFAULT_ORDER
+            .iter()
+            .filter(|codec| !preferred.contains(codec));
+        preferred.iter().chain(rest).copied().collect()
     }
 }
 
@@ -252,7 +271,9 @@ impl<'a> Section<'a> {
     }
 
     /// This section with `preference`'s codecs first, in its order, and the
-    /// other step codecs dropped with their retransmission payload types and
+    /// step codecs it does not name (those this side cannot handle; a
+    /// caller's preference only orders the rest) dropped with their
+    /// retransmission payload types and
     /// attributes, and with every RED payload type that carries redundancy
     /// for one of them (an `a=fmtp` list naming a payload type the m-line no
     /// longer has is invalid). Unchanged when it lists none of `preference`, which
@@ -389,9 +410,8 @@ pub fn stepped_offer(
         };
         let listed = section.codecs();
         let codecs: Vec<StepCodec> = preferences
-            .for_track(&entry.name)
-            .iter()
-            .copied()
+            .order_for_track(&entry.name)
+            .into_iter()
             .filter(|codec| local.for_direction(entry.direction).contains(codec))
             .filter(|codec| listed.contains(codec))
             .collect();
@@ -430,7 +450,7 @@ pub fn may_encode_step_frames(
             .filter(|track| track.kind == TrackKind::Video)
             .all(|track| {
                 preferences
-                    .for_track(&track.name)
+                    .order_for_track(&track.name)
                     .iter()
                     .any(|codec| local.for_direction(track.direction).contains(codec))
             })
@@ -593,8 +613,12 @@ a=mid:3\r\n";
         assert!(offer.ends_with("\r\n"));
     }
 
+    /// A preference orders a track's codecs, it does not limit them: the
+    /// ones it leaves out follow, in the default order, with their RTX and
+    /// attributes, so a runtime without the preferred ones answers with
+    /// another.
     #[test]
-    fn a_changed_preference_reorders_the_next_offer_and_drops_the_other_codecs() {
+    fn a_changed_preference_reorders_the_next_offer_and_keeps_the_other_codecs() {
         let mut preferences = CodecPreferences::default();
         let first = stepped_offer(OFFER, &mapping(), &preferences, &every_codec());
         assert!(m_line(&first, "0").ends_with(" 100 98 102 96 97 99 101 103 104"));
@@ -605,31 +629,23 @@ a=mid:3\r\n";
 
         assert_eq!(
             m_line(&next, "0"),
-            "m=video 9 UDP/TLS/RTP/SAVPF 98 100 99 101 104"
+            "m=video 9 UDP/TLS/RTP/SAVPF 98 100 102 96 97 99 101 103 104"
         );
-        // VP8 and AV1 are gone from the input section, with their RTX and
-        // attributes; VP9's and H.264's stay.
         let input = &next[next.find("a=mid:0").unwrap()..next.find("a=mid:1").unwrap()];
-        for gone in [
-            "a=rtpmap:96 ",
-            "a=rtcp-fb:96 ",
-            "a=rtpmap:97 ",
-            "a=fmtp:97 ",
-            "a=rtpmap:102 ",
-            "a=rtpmap:103 ",
-        ] {
-            assert!(!input.contains(gone), "{gone} should be dropped");
-        }
         for kept in [
-            "a=fmtp:98 profile-id=0",
-            "a=fmtp:99 apt=98",
-            "a=fmtp:101 apt=100",
+            "a=rtpmap:96 VP8",
+            "a=fmtp:97 apt=96",
+            "a=rtpmap:102 AV1",
+            "a=fmtp:103 apt=102",
             "a=rtpmap:104 red",
         ] {
             assert!(input.contains(kept), "{kept} should stay");
         }
         // The output track's own preference wins over the session's.
-        assert_eq!(m_line(&next, "1"), "m=video 9 UDP/TLS/RTP/SAVPF 96 97");
+        assert_eq!(
+            m_line(&next, "1"),
+            "m=video 9 UDP/TLS/RTP/SAVPF 96 100 97 101"
+        );
     }
 
     /// A RED payload type that carries redundancy for a dropped codec goes
@@ -650,13 +666,16 @@ a=fmtp:106 100/100\r\n",
                 "UDP/TLS/RTP/SAVPF 96 97 98 99 100 101 102 103 104\r\n",
                 "UDP/TLS/RTP/SAVPF 96 97 98 99 100 101 102 103 104 105 106\r\n",
             );
-        let mut preferences = CodecPreferences::default();
-        preferences.set_session(Some(vec![StepCodec::H264]));
-        let next = stepped_offer(&offer, &mapping(), &preferences, &every_codec());
+        // This side encodes no VP8: the input section drops it.
+        let local = LocalStepCodecs {
+            encode: vec![StepCodec::H264, StepCodec::Vp9, StepCodec::Av1],
+            ..every_codec()
+        };
+        let next = stepped_offer(&offer, &mapping(), &CodecPreferences::default(), &local);
 
         assert_eq!(
             m_line(&next, "0"),
-            "m=video 9 UDP/TLS/RTP/SAVPF 100 101 106"
+            "m=video 9 UDP/TLS/RTP/SAVPF 100 98 102 99 101 103 106"
         );
         let input = &next[next.find("a=mid:0").unwrap()..next.find("a=mid:1").unwrap()];
         for gone in [
@@ -670,25 +689,22 @@ a=fmtp:106 100/100\r\n",
         assert!(input.contains("a=fmtp:106 100/100"));
     }
 
-    /// The output section lists no AV1: the runtime could answer it with a
-    /// codec the caller did not choose, so nothing is declared.
+    /// The output section lists no AV1, the codec preferred: it offers the
+    /// others it lists instead, and the input track takes AV1 first.
     #[test]
-    fn a_track_without_a_preferred_codec_in_its_section_leaves_the_offer_raw() {
+    fn a_preferred_codec_a_section_lacks_falls_back_to_the_others() {
         let mut preferences = CodecPreferences::default();
         preferences.set_session(Some(vec![StepCodec::Av1]));
-        assert_eq!(
-            stepped_offer(OFFER, &mapping(), &preferences, &every_codec()),
-            OFFER
-        );
-
-        // Given one it lists, the output track keeps it and the input AV1.
-        preferences.set_track("main_video", Some(vec![StepCodec::H264]));
         let offer = stepped_offer(OFFER, &mapping(), &preferences, &every_codec());
+        assert!(offer.contains("a=x-reactor-encoded-step-frames\r\n"));
         assert_eq!(
             m_line(&offer, "0"),
-            "m=video 9 UDP/TLS/RTP/SAVPF 102 103 104"
+            "m=video 9 UDP/TLS/RTP/SAVPF 102 100 98 96 97 99 101 103 104"
         );
-        assert_eq!(m_line(&offer, "1"), "m=video 9 UDP/TLS/RTP/SAVPF 100 101");
+        assert_eq!(
+            m_line(&offer, "1"),
+            "m=video 9 UDP/TLS/RTP/SAVPF 100 96 97 101"
+        );
     }
 
     /// Each track keeps only the codecs this side handles in its direction:
@@ -748,6 +764,18 @@ a=fmtp:106 100/100\r\n",
             preferences.for_track("any"),
             &[StepCodec::Vp8, StepCodec::H264]
         );
+        // The codecs it leaves out follow, in the default order.
+        assert_eq!(
+            preferences.order_for_track("any"),
+            [
+                StepCodec::Vp8,
+                StepCodec::H264,
+                StepCodec::Vp9,
+                StepCodec::Av1
+            ]
+        );
+        preferences.set_session(Some(vec![]));
+        assert!(preferences.order_for_track("any").is_empty());
     }
 
     /// A runtime's answer to [`OFFER`], with or without the attribute.
@@ -801,11 +829,12 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:3\r\n"
         assert!(encodings.values().all(|e| *e == FrameEncoding::Raw));
 
         // VP9 for the input and H.264 for the output were dropped from the
-        // offer sent: the input may only be AV1, the output only VP8.
-        let mut preferences = CodecPreferences::default();
-        preferences.set_session(Some(vec![StepCodec::Av1]));
-        preferences.set_track("main_video", Some(vec![StepCodec::Vp8]));
-        let offer = stepped_offer(OFFER, &mapping(), &preferences, &every_codec());
+        // offer sent, as codecs this side cannot handle there.
+        let local = LocalStepCodecs {
+            encode: vec![StepCodec::H264, StepCodec::Av1, StepCodec::Vp8],
+            decode: vec![StepCodec::Vp9, StepCodec::Av1, StepCodec::Vp8],
+        };
+        let offer = stepped_offer(OFFER, &mapping(), &CodecPreferences::default(), &local);
         let encodings = negotiated_encodings(&answer(true), &offer, &mapping());
         assert_eq!(encodings["camera"], FrameEncoding::Raw);
         assert_eq!(encodings["main_video"], FrameEncoding::Raw);
@@ -828,8 +857,8 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:3\r\n"
             &every_codec()
         ));
 
-        // An output this side cannot decode, an input it cannot encode, a
-        // preference with nothing this side handles, or encoding off.
+        // An output this side cannot decode, an input it cannot encode, or
+        // encoding off.
         let encode_only = LocalStepCodecs {
             encode: StepCodec::DEFAULT_ORDER.to_vec(),
             decode: vec![],
@@ -840,13 +869,14 @@ m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:3\r\n"
             decode: StepCodec::DEFAULT_ORDER.to_vec(),
         };
         assert!(!may_encode_step_frames(&tracks, &preferences, &decode_only));
+        // A preference this side has none of falls back to what it has.
         let mut vp8_only = CodecPreferences::default();
         vp8_only.set_track("camera", Some(vec![StepCodec::Vp8]));
         let h264 = LocalStepCodecs {
             encode: vec![StepCodec::H264],
             decode: vec![StepCodec::H264],
         };
-        assert!(!may_encode_step_frames(&tracks, &vp8_only, &h264));
+        assert!(may_encode_step_frames(&tracks, &vp8_only, &h264));
         let mut off = CodecPreferences::default();
         off.set_session(Some(vec![]));
         assert!(!may_encode_step_frames(&tracks, &off, &every_codec()));
