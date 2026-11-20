@@ -8,6 +8,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-11-19
+
 ### Added
 
 - Data with a step's result. `StepResult::data`, a

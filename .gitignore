@@ -28,6 +28,7 @@ node_modules/
 # sdks/swift/EnduranceReporting/Report.swift. Local/CI output, never
 # something to commit.
 /sdks/python/endurance-results/
+/sdks/python/load-test-results/
 /sdks/cpp/endurance-results/
 /sdks/swift/endurance-results/
 /sdks/java/endurance-tests/endurance-results/

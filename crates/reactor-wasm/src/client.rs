@@ -29,10 +29,9 @@ use reactor_core::protocol::upload::FileRef;
 use reactor_core::protocol::wire::v1::platform::{
     ClientConnectionStat, ClientTrackStat, FrameStage, TrackDirection, TrackKind,
 };
-use reactor_core::protocol::wire::v1::step::FrameEncoding;
 use reactor_core::reactor::{ConnectOptions, Reactor, ReactorDeps, ReactorOptions};
 use reactor_core::stats::{bounded_name, client_track_codec};
-use reactor_core::step::{PixelLayout, StepCommand};
+use reactor_core::step::{LocalStepCodecs, PixelLayout, StepCodec, StepCommand};
 
 use crate::auth::WasmAuthProvider;
 use crate::http::WasmHttpClient;
@@ -44,10 +43,10 @@ use crate::step::{output_to_js, StepCommandJson};
 use crate::types::{
     CapabilitiesListener, CapabilitiesOutput, ClientConnectionStatInput, ClientOptionsInput,
     ClientTrackStatsInput, ClipOutput, CommandData, CommandReply, ConnectOptionsInput,
-    EncodedVideoCodecInput, ErrorListener, FileRefOutput, JwtSourceInput, MessageListener,
-    PixelFormatInput, ReactorErrorOutput, SchemaOutput, SessionIdListener, SessionInfoOutput,
-    Status, StatusListener, StepCommandsInput, StepStateInput, StringsOutput, TrackListener,
-    TrackMappingOutput, TracksOutput, UploadsInput,
+    EncodedVideoCodecInput, EncodedVideoCodecsInput, ErrorListener, FileRefOutput, JwtSourceInput,
+    MessageListener, PixelFormatInput, ReactorErrorOutput, SchemaOutput, SessionIdListener,
+    SessionInfoOutput, Status, StatusListener, StepCommandsInput, StepFrameEncodingsOutput,
+    StepStateInput, StringsOutput, TrackListener, TrackMappingOutput, TracksOutput, UploadsInput,
 };
 
 /// Coordinator URL used when none is given.
@@ -176,6 +175,9 @@ impl ClientOptions {
         if let Some(ms) = self.step_timeout_ms {
             options.step_timeout = Duration::from_millis(ms);
         }
+        // The browser decodes encoded step frames itself, on WebCodecs: the
+        // core hands them up as they arrived.
+        options.pass_encoded_step_frames = true;
         Ok(options)
     }
 }
@@ -550,6 +552,17 @@ impl ReactorClient {
             .map_err(|e| error_value(&e.details(Some("resumeTrack"))))
     }
 
+    /// Restart output track `name`'s encoded step frames: the runtime starts
+    /// its next frames at a keyframe. For the SDK, when the decoder it feeds
+    /// for the track lost its stream. The track stays paused or resumed as
+    /// the caller left it.
+    #[wasm_bindgen(js_name = restartTrackStream)]
+    pub fn restart_track_stream(&self, name: String) -> Result<(), JsValue> {
+        self.reactor
+            .restart_track_stream(&name)
+            .map_err(|e| error_value(&e.details(Some("restartTrackStream"))))
+    }
+
     /// Bound what one sender may spend, in bits per second. `undefined` or a
     /// negative value leaves a bound at the browser default.
     ///
@@ -621,6 +634,10 @@ impl ReactorClient {
     /// The step is checked and its frames taken before this returns, so a
     /// frame pushed once it has returned goes to the next step. A step refused
     /// by those checks throws rather than rejecting.
+    ///
+    /// An encoded output frame comes up still encoded (`keyframe` marks one),
+    /// for the SDK to decode; `restartTrackStream()` restarts a track whose
+    /// decoder lost its stream.
     #[wasm_bindgen(unchecked_return_type = "Promise<StepResult>")]
     pub fn step(
         &self,
@@ -722,19 +739,21 @@ impl ReactorClient {
     }
 
     /// Push an encoded video frame on the sendonly video track `name`, its
-    /// bytes as they are, as `pushVideoFrame` pushes a frame.
+    /// bytes as they are, sent or buffered as `pushVideoFrame` does.
     ///
-    /// * `codec` — `"h264"` (the default): `data` is one H.264 access unit,
-    ///   Annex B.
+    /// * `codec` — `"h264"` (the default; one access unit, Annex B), `"vp8"`,
+    ///   `"vp9"` (one frame) or `"av1"` (one temporal unit of OBUs).
     /// * `width`, `height` — the frame it decodes to.
     /// * `metadata`, `captureTimeUs` — as for `pushVideoFrame`, carried with
     ///   the decoded frame.
+    /// * `keyframe` — whether the frame is one a decoder can start from.
     ///
     /// The runtime decodes a track's encoded frames as one stream, as they
     /// arrive, so push them in decode order, starting at a keyframe. A pushed
     /// frame that does not decode raises an `input_decode_failed` error event
-    /// whose `track` names the track, whose next frame must then be a
-    /// keyframe; a step whose buffered frames do not decode is refused
+    /// whose `track` names the track, and the runtime drops the track's frames
+    /// up to the next keyframe: `takeInputKeyframeRequest(name)` is then
+    /// `true` once. A step whose buffered frames do not decode is refused
     /// (`step_refused`). Encoded and raw pushes to one track keep their push
     /// order. Stepped sessions only; throws on empty data or a zero dimension.
     #[wasm_bindgen(js_name = pushEncodedVideoFrame)]
@@ -748,22 +767,89 @@ impl ReactorClient {
         height: u32,
         metadata: Option<Vec<u8>>,
         capture_time_us: Option<f64>,
+        keyframe: Option<bool>,
     ) -> Result<(), JsValue> {
         let (codec, capture_time_us) =
             self.encoded_frame_codec(&name, codec, data.len(), width, height, capture_time_us)?;
-        let encoding = match codec {
-            EncodedCodec::H264 => FrameEncoding::H264,
-        };
         self.reactor.push_step_encoded_video_frame(
             &name,
-            encoding,
+            step_codec(codec).frame_encoding(),
             data,
             width,
             height,
             metadata.as_deref(),
             capture_time_us,
+            keyframe.unwrap_or(false),
         );
         Ok(())
+    }
+
+    /// Whether the sendonly video track `name`'s next encoded frame must be a
+    /// keyframe, because the runtime could not decode its frames
+    /// (`input_decode_failed`) or frames encoded for it were not sent. Asking
+    /// clears the mark: the caller about to encode the track's next frame
+    /// makes it a keyframe.
+    #[wasm_bindgen(js_name = takeInputKeyframeRequest)]
+    pub fn take_input_keyframe_request(&self, name: String) -> bool {
+        self.reactor.take_input_keyframe_request(&name)
+    }
+
+    /// Set the codecs a stepped session prefers for its video step frames,
+    /// most preferred first: for every track with `track` absent, or for one
+    /// track in place of the session's order. `null`/`undefined` goes back to
+    /// the default (H.264, VP9, AV1, VP8 for the session; the session's order
+    /// for a track). An empty list for the session turns encoding off, and
+    /// every frame travels raw; for one track it is taken as `null`.
+    ///
+    /// Callable before `connect()` or during the session: it takes effect on
+    /// the next connection or reconnect. Each list is filtered by
+    /// `setLocalStepCodecs`. Throws on a name that is not a codec.
+    #[wasm_bindgen(js_name = setCodecPreference)]
+    pub fn set_codec_preference(
+        &self,
+        codecs: Option<EncodedVideoCodecsInput>,
+        track: Option<String>,
+    ) -> Result<(), JsValue> {
+        let codecs = parse_codecs(codecs.map(JsValue::from), "setCodecPreference")?;
+        self.reactor.set_codec_preference(track.as_deref(), codecs);
+        Ok(())
+    }
+
+    /// Set the codecs this browser can carry step frames in: `encode`, for
+    /// the frames pushed on input tracks, and `decode`, for the frames step
+    /// results bring on output tracks. Until set, every track is raw. Read on
+    /// the next offer, like `setCodecPreference`. Throws on a name that is
+    /// not a codec.
+    #[wasm_bindgen(js_name = setLocalStepCodecs)]
+    pub fn set_local_step_codecs(
+        &self,
+        encode: EncodedVideoCodecsInput,
+        decode: EncodedVideoCodecsInput,
+    ) -> Result<(), JsValue> {
+        let operation = "setLocalStepCodecs";
+        let encode = parse_codecs(Some(encode.into()), operation)?.unwrap_or_default();
+        let decode = parse_codecs(Some(decode.into()), operation)?.unwrap_or_default();
+        self.reactor
+            .set_local_step_codecs(LocalStepCodecs { encode, decode });
+        Ok(())
+    }
+
+    /// How each mapped track's step frames travel on this connection, as its
+    /// SDP answer negotiated them: `{ [track]: "raw" | codec }`. Empty outside
+    /// a connected stepped session; a track left out is raw.
+    #[wasm_bindgen(js_name = stepFrameEncodings)]
+    pub fn step_frame_encodings(&self) -> Result<StepFrameEncodingsOutput, JsValue> {
+        let encodings: BTreeMap<String, &str> = self
+            .reactor
+            .step_frame_encodings()
+            .into_iter()
+            .map(|(track, encoding)| {
+                let name = StepCodec::from_frame_encoding(encoding)
+                    .map_or("raw", |codec| encoded_codec(codec).name());
+                (track, name)
+            })
+            .collect();
+        cast(&encodings)
     }
 
     /// Whether `pushEncodedVideoFrame` would refuse a frame of `byteLength`
@@ -1223,6 +1309,51 @@ fn to_js<T: serde::Serialize + ?Sized>(value: &T) -> Result<JsValue, JsValue> {
     value
         .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
         .map_err(|e| invalid(&e.to_string()))
+}
+
+/// The core's codec for one JS names.
+fn step_codec(codec: EncodedCodec) -> StepCodec {
+    match codec {
+        EncodedCodec::H264 => StepCodec::H264,
+        EncodedCodec::Vp8 => StepCodec::Vp8,
+        EncodedCodec::Vp9 => StepCodec::Vp9,
+        EncodedCodec::Av1 => StepCodec::Av1,
+    }
+}
+
+/// The JS name of the core's `codec`.
+fn encoded_codec(codec: StepCodec) -> EncodedCodec {
+    match codec {
+        StepCodec::H264 => EncodedCodec::H264,
+        StepCodec::Vp8 => EncodedCodec::Vp8,
+        StepCodec::Vp9 => EncodedCodec::Vp9,
+        StepCodec::Av1 => EncodedCodec::Av1,
+    }
+}
+
+/// A JS array of codec names, in order, or `None` for `null`/`undefined`.
+/// Throws, naming `operation`, on anything else or an unknown name.
+fn parse_codecs(
+    value: Option<JsValue>,
+    operation: &str,
+) -> Result<Option<Vec<StepCodec>>, JsValue> {
+    let Some(value) = value.filter(|v| !v.is_null() && !v.is_undefined()) else {
+        return Ok(None);
+    };
+    let names: Vec<String> = serde_wasm_bindgen::from_value(value).map_err(|e| {
+        invalid(&format!(
+            "{operation}: expected an array of codec names: {e}"
+        ))
+    })?;
+    names
+        .iter()
+        .map(|name| {
+            EncodedCodec::parse(Some(name))
+                .map(step_codec)
+                .map_err(|e| invalid(&format!("{operation}: {e}")))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
 }
 
 /// Serialize a core type into the TypeScript type the signature promises.

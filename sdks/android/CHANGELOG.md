@@ -11,6 +11,8 @@ request as the bump.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-19
+
 ### Added
 
 - Data with a step's result. `StepResult.data` (a `ByteArray?`) is what the

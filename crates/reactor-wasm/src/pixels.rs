@@ -70,13 +70,34 @@ pub(crate) fn check_size(
 pub(crate) enum EncodedCodec {
     /// One H.264 access unit, Annex B.
     H264,
+    /// One VP8 frame.
+    Vp8,
+    /// One VP9 frame.
+    Vp9,
+    /// One AV1 temporal unit of OBUs.
+    Av1,
 }
 
 impl EncodedCodec {
+    pub(crate) const ALL: [EncodedCodec; 4] = [Self::H264, Self::Vp8, Self::Vp9, Self::Av1];
+
     pub(crate) fn parse(name: Option<&str>) -> Result<Self, String> {
-        match name.unwrap_or("h264") {
-            "h264" => Ok(Self::H264),
-            other => Err(format!("unknown codec '{other}' (expected \"h264\")")),
+        let name = name.unwrap_or("h264");
+        Self::ALL
+            .into_iter()
+            .find(|codec| codec.name() == name)
+            .ok_or_else(|| {
+                format!("unknown codec '{name}' (expected \"h264\", \"vp8\", \"vp9\" or \"av1\")")
+            })
+    }
+
+    /// The name JS gives the codec, the one [`EncodedCodec::parse`] reads.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::H264 => "h264",
+            Self::Vp8 => "vp8",
+            Self::Vp9 => "vp9",
+            Self::Av1 => "av1",
         }
     }
 }
@@ -122,10 +143,14 @@ mod tests {
     }
 
     #[test]
-    fn codecs_parse_with_h264_as_the_default() {
+    fn codecs_parse_by_their_lowercase_name_with_h264_as_the_default() {
         assert_eq!(EncodedCodec::parse(None), Ok(EncodedCodec::H264));
-        assert_eq!(EncodedCodec::parse(Some("h264")), Ok(EncodedCodec::H264));
-        assert!(EncodedCodec::parse(Some("vp9")).is_err());
+        for codec in EncodedCodec::ALL {
+            assert_eq!(EncodedCodec::parse(Some(codec.name())), Ok(codec));
+        }
+        assert_eq!(EncodedCodec::parse(Some("vp9")), Ok(EncodedCodec::Vp9));
+        assert!(EncodedCodec::parse(Some("H264")).is_err());
+        assert!(EncodedCodec::parse(Some("h265")).is_err());
     }
 
     #[test]

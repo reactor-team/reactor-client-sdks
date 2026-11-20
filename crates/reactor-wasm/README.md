@@ -48,7 +48,8 @@ rather than `any`:
 | Configuration | `setJwt(jwt)` |
 | Messaging | `sendCommand(command, data?, uploads?)`, `requestSchema()` |
 | Tracks | `publishTrack(name, track?)`, `unpublishTrack(name)`, `pauseTrack(name)`, `resumeTrack(name)`, `tracks()`, `trackMapping()`, `pausedTracks()` |
-| Stepped generation | `step(state?, commands?)`, `pushVideoFrame(name, data, width, height, format?, metadata?, captureTimeUs?)`, `pushEncodedVideoFrame(name, codec, data, width, height, metadata?, captureTimeUs?)`, `pushAudioFrame(name, samples, sampleRate, channels)`, `clearStepInputs()` |
+| Stepped generation | `step(state?, commands?)`, `pushVideoFrame(name, data, width, height, format?, metadata?, captureTimeUs?)`, `pushEncodedVideoFrame(name, codec, data, width, height, metadata?, captureTimeUs?, keyframe?)`, `pushAudioFrame(name, samples, sampleRate, channels)`, `clearStepInputs()`, `takeInputKeyframeRequest(name)` |
+| Step frame codecs | `setCodecPreference(codecs?, track?)`, `setLocalStepCodecs(encode, decode)`, `stepFrameEncodings()`, `restartTrackStream(name)` |
 | Recording | `requestClip(seconds)`, `requestRecording()` |
 | Uploads | `uploadFile(file, name?)` |
 | Introspection | `status()`, `sessionId()`, `sessionInfo()`, `capabilities()`, `lastError()` |
@@ -72,11 +73,24 @@ is ready, or to an older runtime, are buffered in the core and sent ahead of the
 next push once it can go, or inside the next `step()`'s `RequestStep`. Both of
 `step()`'s arguments are optional: an empty step runs on the model's current
 state. Video arrives as RGBA, RGB or BGRA, and the core converts it to the RGB a
-step sends in one pass. `pushEncodedVideoFrame` pushes an H.264 access unit
-(Annex B) as it is, with the size it decodes to; the runtime decodes a track's
+step sends in one pass. `pushEncodedVideoFrame` pushes an encoded frame as it is (`"h264"`: one access
+unit, Annex B; `"vp8"`, `"vp9"`: one frame; `"av1"`: one temporal unit), with
+the size it decodes to and its keyframe mark; the runtime decodes a track's
 encoded frames as one stream, in push order and starting at a keyframe, as they
 arrive. A pushed frame that does not decode raises an `input_decode_failed`
 error event naming the track, whose next frame must then be a keyframe.
+
+The browser has no codecs this crate could use, so the SDK brings WebCodecs:
+`setLocalStepCodecs(encode, decode)` names what it can encode and decode, and
+`setCodecPreference` orders them, both read on the next offer, which
+negotiates each track's codec in the SDP (`stepFrameEncodings()` says what it
+settled). The SDK encodes an input track's frames in its codec and pushes them
+with `pushEncodedVideoFrame`, starting at a keyframe again when
+`takeInputKeyframeRequest` says the runtime could not decode them. An output
+track's encoded frames come up in the result still encoded — `data` the
+bitstream, `shape` the size it decodes to, `keyframe` the runtime's mark — for
+the SDK to decode, and `restartTrackStream(name)` has the runtime start a track
+again at a keyframe when the SDK's decoder for it lost its stream.
 
 The buffer holds at most one data-channel message's worth of frames: pushing
 faster than steps run drops the oldest frames, across tracks, and the next step

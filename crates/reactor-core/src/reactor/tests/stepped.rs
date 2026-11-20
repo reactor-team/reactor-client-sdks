@@ -1094,6 +1094,7 @@ impl crate::step::TrackDecoder for CountingDecoder {
             data: vec![self.0 - 1],
             metadata: None,
             capture_time_us: None,
+            keyframe: false,
         })
     }
 }
@@ -1168,6 +1169,49 @@ async fn step_results_decode_in_arrival_order() {
     assert_eq!(second.tracks[0].frames[0].data, [0]);
     assert_eq!(first.tracks[0].frames[0].data, [1]);
     assert_eq!(first.tracks[0].frames[0].encoding, FrameEncoding::H264);
+}
+
+/// A host that decodes step frames itself gets each encoded frame as it
+/// arrived, keyframe mark included, and no stream state is kept here: a
+/// frame that is not a keyframe passes even with none before it, and the
+/// core restarts no track on its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passed_through_frames_come_up_encoded_with_their_keyframe_mark() {
+    let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+    let mut opts = ReactorOptions::new("http://localhost", "test-model");
+    opts.generation = GenerationMode::Stepped;
+    opts.pass_encoded_step_frames = true;
+    let reactor = Reactor::new(
+        ReactorDeps {
+            http: Arc::new(PendingHttp) as SharedHttp,
+            auth: Arc::new(NoAuth) as SharedAuth,
+            platform: Arc::new(TestPlatform) as SharedPlatform,
+            peer: peer.clone() as SharedPeer,
+        },
+        opts,
+    );
+    reactor.state.lock().unwrap().status = ReactorStatus::Ready;
+    let reactor = Arc::new(reactor);
+
+    for (step, keyframe) in [(1, false), (2, true)] {
+        let (stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+        feed(
+            &reactor,
+            &sent.request_id,
+            MessageKind::Response,
+            h264_result(step, 0x65, keyframe),
+        )
+        .await;
+        let output = stepping.await.unwrap().unwrap();
+        let frame = &output.tracks[0].frames[0];
+        assert_eq!(frame.encoding, FrameEncoding::H264);
+        assert_eq!(frame.data, [0x65]);
+        assert_eq!(frame.keyframe, keyframe);
+    }
+    assert!(
+        peer.track_controls().is_empty(),
+        "the host restarts its own streams"
+    );
 }
 
 /// A result whose step gave up still moves its track's stream on, so the
@@ -1298,6 +1342,26 @@ async fn a_restart_that_failed_to_send_is_retried_on_the_next_result() {
     );
 }
 
+/// A host that decodes its own tracks restarts one with a pause and a
+/// resume of that track alone, and a paused track stays paused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restart_track_stream_pauses_and_resumes_that_track() {
+    let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+    let reactor = make_decoding_reactor(peer.clone());
+    reactor.restart_track_stream("out").unwrap();
+    assert_eq!(peer.track_controls(), ["pause:out", "resume:out"]);
+
+    reactor
+        .state
+        .lock()
+        .unwrap()
+        .paused_tracks
+        .insert("other".into());
+    reactor.restart_track_stream("other").unwrap();
+    assert_eq!(peer.track_controls()[2..], ["resume:other", "pause:other"]);
+    assert!(reactor.paused_tracks().contains("other"));
+}
+
 /// A track the caller paused stays paused: the core resumes it to restart
 /// its stream and pauses it again, and its paused state is unchanged.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1390,6 +1454,48 @@ async fn a_reconnect_resets_every_tracks_decoder() {
 
 // ── Stepped generation: input buffering ─────────────────────────────────
 
+/// A push not marked a keyframe, as the native FFI's always is, keeps the
+/// mark its bitstream gives: an IDR still goes out as a keyframe, a P frame
+/// as none, and a caller's mark is not taken away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_encoded_push_keeps_the_keyframe_its_bitstream_marks() {
+    use crate::protocol::wire::v1::step::FrameEncoding;
+
+    let peer = Arc::new(DataPeer::new(crate::protocol::DEFAULT_MAX_MESSAGE_BYTES));
+    let reactor = make_ready_reactor(peer.clone(), GenerationMode::Stepped);
+    let idr = [0, 0, 0, 1, 0x65, 1, 2];
+    let p_frame = [0, 0, 0, 1, 0x41, 3];
+    for (data, keyframe) in [
+        (&idr[..], false),
+        (&p_frame[..], false),
+        (&p_frame[..], true),
+    ] {
+        reactor.push_step_encoded_video_frame(
+            "cam",
+            FrameEncoding::H264,
+            data,
+            4,
+            2,
+            None,
+            None,
+            keyframe,
+        );
+    }
+
+    let (_stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
+    let Some(data_client_message::Payload::RequestStep(request)) = sent.payload else {
+        panic!("expected a RequestStep");
+    };
+    assert_eq!(
+        request.media_input[0]
+            .frames
+            .iter()
+            .map(|f| f.keyframe)
+            .collect::<Vec<_>>(),
+        [true, false, true]
+    );
+}
+
 /// Encoded frames ride the next step as they were pushed, in push order
 /// beside the raw ones, under their own encoding; outside a stepped session
 /// they are dropped.
@@ -1409,12 +1515,22 @@ async fn encoded_stepped_pushes_ride_the_next_step_as_they_are() {
         2,
         Some(b"k"),
         Some(7),
+        true,
     );
-    reactor.push_step_encoded_video_frame("cam", FrameEncoding::H264, &p_frame, 4, 2, None, None);
+    reactor.push_step_encoded_video_frame(
+        "cam",
+        FrameEncoding::H264,
+        &p_frame,
+        4,
+        2,
+        None,
+        None,
+        false,
+    );
     reactor.push_video_frame("cam", &[1, 2, 3, 255], 1, 1);
     // Not a frame: dropped, not buffered.
-    reactor.push_step_encoded_video_frame("cam", FrameEncoding::H264, &[], 4, 2, None, None);
-    reactor.push_step_encoded_video_frame("cam", FrameEncoding::Raw, &idr, 4, 2, None, None);
+    reactor.push_step_encoded_video_frame("cam", FrameEncoding::H264, &[], 4, 2, None, None, true);
+    reactor.push_step_encoded_video_frame("cam", FrameEncoding::Raw, &idr, 4, 2, None, None, true);
     assert_eq!(reactor.step_inputs.len(), 3);
 
     let (_stepping, sent) = start_step(&reactor, &peer, Value::Null, vec![]).await;
@@ -1435,7 +1551,9 @@ async fn encoded_stepped_pushes_ride_the_next_step_as_they_are() {
     assert_eq!(cam.frames[0].shape, [2, 4, 3]);
     assert_eq!(cam.frames[0].metadata.as_deref(), Some(&b"k"[..]));
     assert_eq!(cam.frames[0].capture_time_us, Some(7));
+    assert!(cam.frames[0].keyframe);
     assert_eq!(cam.frames[1].data, p_frame);
+    assert!(!cam.frames[1].keyframe);
     assert_eq!(cam.frames[2].data, [3, 2, 1]);
     assert_eq!(
         cam.frames.iter().map(|f| f.keyframe).collect::<Vec<_>>(),
@@ -1443,7 +1561,16 @@ async fn encoded_stepped_pushes_ride_the_next_step_as_they_are() {
     );
 
     let streamed = make_ready_reactor(peer.clone(), GenerationMode::Streamed);
-    streamed.push_step_encoded_video_frame("cam", FrameEncoding::H264, &idr, 4, 2, None, None);
+    streamed.push_step_encoded_video_frame(
+        "cam",
+        FrameEncoding::H264,
+        &idr,
+        4,
+        2,
+        None,
+        None,
+        true,
+    );
     assert!(streamed.step_inputs.is_empty());
 }
 
@@ -2110,6 +2237,7 @@ fn a_buffered_window_that_cannot_be_sent_is_raised() {
         2,
         None,
         None,
+        true,
     );
     reactor.push_step_encoded_video_frame(
         "cam",
@@ -2119,6 +2247,7 @@ fn a_buffered_window_that_cannot_be_sent_is_raised() {
         2,
         None,
         None,
+        false,
     );
     while events.try_recv().is_ok() {}
 
@@ -2391,6 +2520,7 @@ mod webrtc_codecs {
             HEIGHT,
             None,
             None,
+            false,
         );
         push(&reactor, 2);
         push(&reactor, 3);

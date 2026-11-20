@@ -1,0 +1,189 @@
+# Manual-only load test: holds N concurrent sessions open against dev or prod,
+# in steps (e.g. 10, then 25, then 50), each session streaming video both ways
+# so the backend keeps receiving its stats for as long as it is open. Runs
+# sdks/python/load-test/load_test.py; see that file for what it measures.
+#
+# The point is the backend under load, not the SDK: the job summary gives
+# each step's time window (UTC) and how many sessions were really open, and
+# the artifact's sessions.csv lists every session id, to line up against the
+# backend's dashboards and data.
+#
+# A step that cannot be reached because the environment has no capacity left
+# ends the run early and marks the job failed: that is the ceiling, reported
+# in the summary.
+#
+# Who can run it: workflow_dispatch already needs write access to this repo,
+# and a fork's run gets none of this repo's secrets. On top of that, the API
+# keys live in two GitHub environments, not in repository secrets, so they
+# are handed out only to runs that pass the environment's rules:
+#   - load-test-dev:  secret LOAD_TEST_REACTOR_API_KEY, variable LOAD_TEST_API_URL
+#   - load-test-prod: secret LOAD_TEST_REACTOR_API_KEY (variable optional:
+#                     without it the SDK's default, production, is used)
+# Both may also set variable LOAD_TEST_DASHBOARD_URL: a backend dashboard the
+# summary links to, opened on the run's time window.
+# Each environment should allow deployments from `main` only, so a run from
+# a branch with an edited copy of this file cannot read the keys, and
+# load-test-prod should require a reviewer's approval.
+name: Load test
+run-name: >-
+  Load test on ${{ inputs.environment }}: ${{ inputs.steps }} sessions, ${{ inputs.hold_minutes }} min per step
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to load"
+        type: choice
+        options:
+          - dev
+          - prod
+        default: dev
+      steps:
+        description: "Concurrent sessions to hold, comma-separated and going up (e.g. 10,25,50)"
+        type: string
+        default: "10,25,50"
+      hold_minutes:
+        description: "Minutes to hold each step"
+        type: string
+        default: "10"
+      model_name:
+        description: "Model to connect to"
+        type: string
+        default: reactor/echo
+
+concurrency:
+  # prod runs count against the same per-model sessions-per-minute quota as
+  # endurance-tests.yml: serialize with it rather than make both noisier.
+  group: ${{ inputs.environment == 'prod' && 'endurance-tests' || 'load-test-dev' }}
+  cancel-in-progress: false
+
+env:
+  MISE_LOCKED: "1"
+  MISE_DISABLE_TOOLS: "rust,rustup,aqua:rust-lang/rustup"
+
+jobs:
+  setup:
+    name: Check inputs
+    # Never in a fork: it would have no keys, and it is not its load to run.
+    if: github.repository == 'reactor-team/reactor-client-sdks'
+    runs-on: ubuntu-latest
+    outputs:
+      timeout_minutes: ${{ steps.plan.outputs.timeout_minutes }}
+    steps:
+      - name: Validate inputs and compute the job timeout
+        id: plan
+        env:
+          STEPS: ${{ inputs.steps }}
+          HOLD_MINUTES: ${{ inputs.hold_minutes }}
+        # Timeout = every step's hold + opening the largest step at ~1 session
+        # per second + 30 minutes for setup and closing. `10#` keeps bash from
+        # reading a leading-zero input as octal. GitHub caps jobs at 360 min.
+        run: |
+          if ! [[ "$STEPS" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+            echo "::error::steps must be comma-separated numbers, e.g. 10,25,50 (got '$STEPS')."
+            exit 1
+          fi
+          if ! [[ "$HOLD_MINUTES" =~ ^[0-9]+$ ]] || (( 10#$HOLD_MINUTES < 1 )); then
+            echo "::error::hold_minutes must be a whole number of minutes, at least 1 (got '$HOLD_MINUTES')."
+            exit 1
+          fi
+          IFS=, read -ra counts <<< "$STEPS"
+          largest=0
+          previous=0
+          for c in "${counts[@]}"; do
+            if (( 10#$c <= previous )); then
+              echo "::error::steps must go up (sessions stay open between steps), got '$STEPS'."
+              exit 1
+            fi
+            previous=$((10#$c))
+            largest=$((10#$c))
+          done
+          timeout_minutes=$(( ${#counts[@]} * 10#$HOLD_MINUTES + largest / 60 + 1 + 30 ))
+          if (( timeout_minutes > 360 )); then
+            echo "::error::This run needs a ${timeout_minutes}-minute job, over GitHub's 360-minute cap. Use fewer steps or a shorter hold_minutes."
+            exit 1
+          fi
+          echo "timeout_minutes=$timeout_minutes" >> "$GITHUB_OUTPUT"
+
+  load:
+    name: Load test on ${{ inputs.environment }} (${{ inputs.steps }})
+    needs: setup
+    runs-on: ubuntu-latest
+    # The keys come from this environment (see the top of the file), which is
+    # what lets its protection rules decide who and which branch gets them.
+    environment: load-test-${{ inputs.environment }}
+    timeout-minutes: ${{ fromJSON(needs.setup.outputs.timeout_minutes) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-on-failure: true
+          cache-key: ${{ hashFiles('mise.lock') }}
+      - name: Read mise pin
+        shell: bash
+        run: bash .github/scripts/mise-pin.sh >> "$GITHUB_ENV"
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.MISE_VERSION }}
+          sha256: ${{ env.MISE_SHA256 }}
+      - name: Install clang for the libwebrtc C++ glue
+        uses: ./.github/actions/setup-libwebrtc-cxx
+      - name: Build reactor-ffi (release)
+        run: cargo build -p reactor-ffi --release
+      # Same reason as endurance-tests.yml: the runner's system CPython 3.12.3
+      # has a native crash that 3.12.9 fixed.
+      - name: Install managed CPython 3.12 via uv
+        run: |
+          uv python install 3.12
+          echo "UV_PYTHON=3.12" >> "$GITHUB_ENV"
+          echo "UV_PYTHON_PREFERENCE=only-managed" >> "$GITHUB_ENV"
+      - name: Prepare the Python environment
+        working-directory: sdks/python
+        run: uv run --group dev --locked python -c "import reactor_sdk"
+      - name: Check the environment's configuration
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          API_URL: ${{ vars.LOAD_TEST_API_URL }}
+          HAS_KEY: ${{ secrets.LOAD_TEST_REACTOR_API_KEY != '' }}
+        run: |
+          if [ "$HAS_KEY" != true ]; then
+            echo "::error::Secret LOAD_TEST_REACTOR_API_KEY is not set in the load-test-$ENVIRONMENT environment."
+            exit 1
+          fi
+          if [ "$ENVIRONMENT" = dev ] && [ -z "$API_URL" ]; then
+            echo "::error::Variable LOAD_TEST_API_URL is not set in the load-test-dev environment."
+            exit 1
+          fi
+      - name: Run the load test
+        working-directory: sdks/python
+        env:
+          # Empty when the environment sets no URL: the SDK's default is production.
+          REACTOR_API_URL: ${{ vars.LOAD_TEST_API_URL }}
+          INTEGRATION_TESTS_REACTOR_API_KEY: ${{ secrets.LOAD_TEST_REACTOR_API_KEY }}
+          LOAD_TEST_DASHBOARD_URL: ${{ vars.LOAD_TEST_DASHBOARD_URL }}
+          REACTOR_MODEL_NAME: ${{ inputs.model_name }}
+          STEPS: ${{ inputs.steps }}
+          HOLD_MINUTES: ${{ inputs.hold_minutes }}
+        run: |
+          .venv/bin/python -u load-test/load_test.py \
+            --steps "$STEPS" --hold-minutes "$HOLD_MINUTES" --out load-test-results
+      - name: Publish the summary
+        if: always()
+        working-directory: sdks/python
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          shopt -s nullglob
+          summaries=(load-test-results/*/summary.md)
+          if [ ${#summaries[@]} -eq 0 ]; then
+            echo "No summary was written: the run failed before the load test started (see the job log)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            { echo "Environment: **$ENVIRONMENT**"; echo ""; cat "${summaries[@]}"; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: load-test-${{ inputs.environment }}-results
+          path: sdks/python/load-test-results/
+          if-no-files-found: ignore

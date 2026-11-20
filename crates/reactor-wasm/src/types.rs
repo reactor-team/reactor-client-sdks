@@ -22,8 +22,13 @@ export type TrackDirection = "recvonly" | "sendonly";
 export type GenerationMode = "streamed" | "stepped";
 /** Byte layout of a frame given to `pushVideoFrame`. */
 export type PixelFormat = "rgba" | "rgb" | "bgra";
-/** Codec of an encoded frame given to `pushEncodedVideoFrame`. */
-export type EncodedVideoCodec = "h264";
+/** Codec of an encoded video step frame: given to `pushEncodedVideoFrame`,
+ *  named by `setCodecPreference` and `setLocalStepCodecs`. "h264" is one
+ *  access unit, Annex B; "vp8" and "vp9" one frame; "av1" one temporal unit
+ *  of OBUs. */
+export type EncodedVideoCodec = "h264" | "vp8" | "vp9" | "av1";
+/** How a track's step frames travel on a connection: raw, or in a codec. */
+export type StepFrameEncoding = "raw" | EncodedVideoCodec;
 
 /** Construction options. Only `modelName` is required. */
 export interface ClientOptions {
@@ -258,8 +263,10 @@ export interface StepCommand {
 /** One frame a step produced. Hand-built by the binding rather than
  *  serialized, so camelCase, unlike the wire payloads above. */
 export interface StepFrame {
-  /** How the frame travelled: raw, or in the codec it names. */
-  encoding: "raw" | "unspecified" | "h264" | "vp8" | "vp9" | "av1";
+  /** How the frame travelled. A frame in a codec comes up still encoded,
+   *  `data` holding its bitstream and `shape` the (height, width, 3) it
+   *  decodes to, for the SDK to decode with its own codecs. */
+  encoding: "raw" | "unspecified" | EncodedVideoCodec;
   /** Element type, in NumPy notation: "uint8" (video), "int16" (audio). */
   dtype: string;
   /** (height, width, 3) RGB for video, (channels, samples) planar PCM for
@@ -281,6 +288,9 @@ export interface StepFrame {
   metadata?: Uint8Array;
   /** When the model says the frame was captured, in microseconds. */
   captureTimeUs?: number;
+  /** Set on a frame still encoded: whether the runtime marked it as a
+   *  keyframe, one a decoder can start from. */
+  keyframe?: boolean;
 }
 
 /** The frames one output track produced in a step, in production order. */
@@ -418,4 +428,10 @@ extern "C" {
 
     #[wasm_bindgen(typescript_type = "EncodedVideoCodec")]
     pub type EncodedVideoCodecInput;
+
+    #[wasm_bindgen(typescript_type = "EncodedVideoCodec[]")]
+    pub type EncodedVideoCodecsInput;
+
+    #[wasm_bindgen(typescript_type = "Record<string, StepFrameEncoding>")]
+    pub type StepFrameEncodingsOutput;
 }
