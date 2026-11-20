@@ -9,6 +9,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.5.0]
+
 ### Added
 
 - Encoded step frames on WebCodecs. A stepped session's video frames travel
