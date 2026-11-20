@@ -7,6 +7,17 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- tvOS 17, experimental and receive-only. The package declares tvOS and the
+  sources compile for it: `Reactor`, `ReactorVideoView` and `Speaker` are
+  available, `Camera` and `Microphone` are marked unavailable on tvOS. The
+  released XCFramework still has no tvOS slice, so an app cannot link the
+  package for an Apple TV from a release yet. `scripts/build-swift-xcframework.sh
+  tvos-only` (or `REACTOR_XCFRAMEWORK_TVOS=1` in a full build) builds an arm64
+  device slice against a tvOS libwebrtc given as `REACTOR_WEBRTC_TVOS_LIB_DIR`,
+  which no reactor-webrtc release publishes yet. There is no simulator slice.
+
 ## [1.8.0] - 2026-11-19
 
 ### Added
