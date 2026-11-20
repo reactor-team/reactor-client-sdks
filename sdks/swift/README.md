@@ -346,9 +346,12 @@ before anything this SDK does runs at all.
 ## tvOS (experimental, unreleased)
 
 tvOS is a port in progress, not a supported platform. The Swift sources compile
-for it, but the XCFramework has no tvOS slice — there is no tvOS build of
-libwebrtc yet — so an app cannot link this package for an Apple TV today, and
-nothing here has run on one.
+for it, but the released XCFramework has no tvOS slice — no reactor-webrtc
+release publishes a tvOS libwebrtc yet — so an app cannot link this package for
+an Apple TV from a release today. A slice built locally with
+`scripts/build-swift-xcframework.sh tvos-only`, against a locally built tvOS
+libwebrtc, has run on one Apple TV; [What's still
+unverified](#whats-still-unverified) says what that run covered.
 
 What tvOS is for is receiving: connect, send commands, show a video track, play
 an audio track.
@@ -439,10 +442,15 @@ REACTOR_SWIFT_DEV=1 swift build --triple arm64-apple-tvos17.0 \
   this package on a Vision Pro yet, simulator or device. Also tracked in
   REA-5587 — this section will name the visionOS version and what was
   actually observed once it has.
-- **tvOS, past the compiler.** The sources compile for tvOS, and the unit
-  suite passes on a tvOS Simulator against a stub library. Nothing has
-  connected from an Apple TV, so `Speaker`'s audio session there and how fast
-  `ReactorVideoView` keeps up on Apple TV hardware are both unobserved.
+- **tvOS, past one receive-only run.** The sources compile for tvOS, and the
+  unit suite passes on a tvOS Simulator against a stub library. With a locally
+  built slice, an app on an Apple TV 4K (1st generation, tvOS 26.6.1) received
+  `reactor/helios` at about 18 fps (1280x768) and `reactor/pika-h3-flex` at
+  24 fps (1344x768) with its audio track. Not covered: whether `Speaker`'s
+  sound was audible (frames arrived and played without drops, but nobody
+  listened), sending anything from the TV with `Track.pushFrame`,
+  `ReactorVideoView` on other models or resolutions, sessions longer than a few
+  minutes, and any other Apple TV model.
 
 ## Layout
 
