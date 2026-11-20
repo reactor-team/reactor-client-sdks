@@ -542,6 +542,14 @@ run = "scripts/build-swift-xcframework.sh"
 description = "[Build] Build ReactorFFI.xcframework with just the iOS Simulator slice"
 run = "scripts/build-swift-xcframework.sh ios-simulator-only"
 
+[tasks."build:xcframework:tvos-only"]
+description = "[Build] Build ReactorFFI.xcframework with just the tvOS device slice (needs REACTOR_WEBRTC_TVOS_LIB_DIR)"
+# No published libwebrtc covers tvOS yet, so this slice is opt-in and depends on
+# a local webrtc-build output: REACTOR_WEBRTC_TVOS_LIB_DIR=<dir with lib/ and
+# include/>. Not a dependency of anything. `build:xcframework` leaves tvOS out
+# unless REACTOR_XCFRAMEWORK_TVOS=1 — see scripts/build-swift-xcframework.sh.
+run = "scripts/build-swift-xcframework.sh tvos-only"
+
 [tasks."test:swift:package"]
 description = "[Testing] Consume the XCFramework from a throwaway package, move it, build again"
 # The relocation proof. Checking an install tree in place cannot see a baked-in

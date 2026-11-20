@@ -76,7 +76,7 @@ public final class Speaker: @unchecked Sendable {
     public func start() throws {
         guard !engine.isRunning else { return }
 
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
             let session = AVAudioSession.sharedInstance()
             // `.voiceChat` is only compatible with `.playAndRecord`. Asked for
             // with `.playback` it throws an incompatible-category error, so
@@ -88,6 +88,11 @@ public final class Speaker: @unchecked Sendable {
             // voice-processing mode it needs, and taking that away here would
             // silently end its capture. So playback-only is requested only when
             // nothing has asked to record.
+            //
+            // tvOS takes the same path. Its default category, `.soloAmbient`,
+            // would play too, but `.playback` is the one a media app on Apple TV
+            // is meant to hold. `Microphone` is unavailable there, so only the
+            // app itself can have chosen `.playAndRecord`, and that is kept.
             if session.category != .playAndRecord {
                 try session.setCategory(.playback, mode: .default)
             }

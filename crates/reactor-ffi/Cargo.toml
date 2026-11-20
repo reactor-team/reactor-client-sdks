@@ -39,8 +39,13 @@ webpki-roots   = { workspace = true }
 # Desktop uses the platform trust store rather than bundled roots, because it is
 # replacing native-tls, which did too: switching to webpki-roots would silently stop
 # trusting enterprise CAs and break anyone behind a MITM proxy.
+#
+# tvOS goes with iOS, and not only for symmetry: rustls-native-certs reads the
+# macOS keychain on macOS and OpenSSL's certificate files on every other Unix,
+# and tvOS has neither. On the desktop arm it would compile, find no roots at
+# runtime, and fail every TLS handshake.
 
-[target.'cfg(target_os = "ios")'.dependencies]
+[target.'cfg(any(target_os = "ios", target_os = "tvos"))'.dependencies]
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
@@ -48,5 +53,5 @@ reqwest = { version = "0.12.28", default-features = false, features = ["json", "
 jni     = "0.21"
 
 # Desktop also gets http2/stream/charset.
-[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+[target.'cfg(not(any(target_os = "android", target_os = "ios", target_os = "tvos")))'.dependencies]
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "stream", "http2", "charset", "rustls-tls-native-roots"] }

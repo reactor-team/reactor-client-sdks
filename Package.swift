@@ -78,9 +78,22 @@ let package = Package(
     // decided here in favour of Intel. (The Intel *simulator* is a different
     // question and is genuinely unsupported — see rust-toolchain.toml.) The
     // platform table in sdks/swift/README.md is the full story.
+    //
+    // tvOS 17, one above iOS's twin, because of libwebrtc: its audio device
+    // uses AVAudioSession and voice-processing APIs that tvOS gained in 17, so
+    // reactor-webrtc builds its tvOS archive for 17.0 and nothing linked against
+    // it can go lower. tvOS 17 runs on every Apple TV that tvOS 16 does, so the
+    // extra version costs no hardware. (The Swift sources alone compile at 16:
+    // `Camera` and `Microphone`, whose capture classes arrived in 17, are
+    // unavailable on tvOS.)
+    //
+    // The XCFramework's tvOS slice is opt-in (scripts/build-swift-xcframework.sh)
+    // until a published libwebrtc covers it, so a released archive may carry no
+    // tvOS slice; this line is what lets SwiftPM resolve the package for tvOS.
     platforms: [
         .macOS(.v13),
         .iOS(.v16),
+        .tvOS(.v17),
     ],
     products: [
         .library(name: "Reactor", targets: ["Reactor"]),
@@ -138,7 +151,12 @@ let package = Package(
             //
             // scripts/build-swift-xcframework.sh links an iOS cdylib against
             // exactly this list, so a framework going missing is a failed build
-            // here rather than a failed build in someone's app.
+            // here rather than a failed build in someone's app — and a tvOS one
+            // too when it builds the tvOS slice.
+            //
+            // tvOS takes the iOS list: libwebrtc is built for it as an iOS
+            // variant (gn's `target_os="ios"`, `target_platform="tvos"`), so it
+            // is the same Objective-C SDK, network monitor and UIKit glue.
             linkerSettings: [
                 .linkedLibrary("c++"),
                 .linkedFramework("AVFoundation"),
@@ -151,8 +169,8 @@ let package = Package(
                 .linkedFramework("Foundation"),
                 .linkedFramework("Metal"),
                 .linkedFramework("VideoToolbox"),
-                .linkedFramework("Network", .when(platforms: [.iOS])),
-                .linkedFramework("UIKit", .when(platforms: [.iOS])),
+                .linkedFramework("Network", .when(platforms: [.iOS, .tvOS])),
+                .linkedFramework("UIKit", .when(platforms: [.iOS, .tvOS])),
                 .linkedFramework("AppKit", .when(platforms: [.macOS])),
                 .linkedFramework("CoreImage", .when(platforms: [.macOS])),
                 .linkedFramework("IOKit", .when(platforms: [.macOS])),
