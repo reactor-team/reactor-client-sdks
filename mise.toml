@@ -501,6 +501,17 @@ description = "[Build] Compile the Swift SDK's libraries for iOS (arm64 device)"
 # one.
 run = "scripts/swift.sh build-ios"
 
+[tasks."build:swift:tvos"]
+description = "[Build] Compile the Swift SDK's libraries for tvOS (arm64 device)"
+# build:swift:ios's twin: it needs the AppleTVOS SDK, compiles the library
+# targets and links nothing, so it wants no Rust toolchain, no tvOS
+# libreactor_ffi and no tvOS libwebrtc.
+#
+# It is the only thing that compiles the SDK for tvOS at all. The XCFramework's
+# tvOS slice is opt-in, so nothing else would notice an `os(tvOS)` branch that
+# stopped compiling, or a `Camera` or `Microphone` use reaching a tvOS build.
+run = "scripts/swift.sh build-tvos"
+
 [tasks."test:swift"]
 description = "[Testing] Swift SDK tests via swift-testing"
 run = "scripts/swift.sh test"

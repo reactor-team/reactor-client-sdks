@@ -177,6 +177,7 @@ predates SPM and is the third-party alternative today; this package ships no
 ```bash
 mise run build:swift       # swift build
 mise run build:swift:ios   # compile the libraries for iOS (arm64 device)
+mise run build:swift:tvos  # compile the libraries for tvOS (arm64 device)
 mise run test:swift        # swift test
 mise run lint:swift        # swift-format lint --strict
 mise run fmt:swift         # swift-format --in-place
@@ -188,6 +189,11 @@ audio session, the interruption handling and the capture rotation all live in
 one. It compiles the library targets only and links nothing, so it needs no Rust
 toolchain and no iOS `libreactor_ffi`; it does need the iPhoneOS SDK, so it skips
 with a reason where there is none, exactly as the other tasks do.
+
+`build:swift:tvos` is the same check against the AppleTVOS SDK, and the only
+one tvOS has: the XCFramework's tvOS slice is opt-in, so nothing else compiles
+an `os(tvOS)` branch or notices `Camera` or `Microphone` reaching a tvOS build.
+CI runs both.
 
 Formatting uses the `swift-format` that ships inside the Xcode toolchain, so the
 version a contributor runs is the one the CI runner's Xcode provides rather than
@@ -423,11 +429,11 @@ on any other platform.
 
 `swift build` on a Mac never compiles a tvOS branch, so check them against the
 AppleTVOS SDK. Like `build:swift:ios`, this compiles the library targets and
-links nothing, so it needs no tvOS `libreactor_ffi`:
+links nothing, so it needs no tvOS `libreactor_ffi`. CI runs it on every
+change to the Swift SDK:
 
 ```bash
-REACTOR_SWIFT_DEV=1 swift build --triple arm64-apple-tvos17.0 \
-    --sdk "$(xcrun --sdk appletvos --show-sdk-path)" --target ReactorMedia
+mise run build:swift:tvos
 ```
 
 ## What's still unverified
