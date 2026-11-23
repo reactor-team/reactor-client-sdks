@@ -501,6 +501,17 @@ description = "[Build] Compile the Swift SDK's libraries for iOS (arm64 device)"
 # one.
 run = "scripts/swift.sh build-ios"
 
+[tasks."build:swift:tvos"]
+description = "[Build] Compile the Swift SDK's libraries for tvOS (arm64 device)"
+# build:swift:ios's twin: it needs the AppleTVOS SDK, compiles the library
+# targets and links nothing, so it wants no Rust toolchain, no tvOS
+# libreactor_ffi and no tvOS libwebrtc.
+#
+# It is the only thing that compiles the SDK for tvOS at all. The XCFramework's
+# tvOS slice is opt-in, so nothing else would notice an `os(tvOS)` branch that
+# stopped compiling, or a `Camera` or `Microphone` use reaching a tvOS build.
+run = "scripts/swift.sh build-tvos"
+
 [tasks."test:swift"]
 description = "[Testing] Swift SDK tests via swift-testing"
 run = "scripts/swift.sh test"
@@ -541,6 +552,14 @@ run = "scripts/build-swift-xcframework.sh"
 [tasks."build:xcframework:ios-simulator-only"]
 description = "[Build] Build ReactorFFI.xcframework with just the iOS Simulator slice"
 run = "scripts/build-swift-xcframework.sh ios-simulator-only"
+
+[tasks."build:xcframework:tvos-only"]
+description = "[Build] Build ReactorFFI.xcframework with just the tvOS device slice (needs REACTOR_WEBRTC_TVOS_LIB_DIR)"
+# No published libwebrtc covers tvOS yet, so this slice is opt-in and depends on
+# a local webrtc-build output: REACTOR_WEBRTC_TVOS_LIB_DIR=<dir with lib/ and
+# include/>. Not a dependency of anything. `build:xcframework` leaves tvOS out
+# unless REACTOR_XCFRAMEWORK_TVOS=1 — see scripts/build-swift-xcframework.sh.
+run = "scripts/build-swift-xcframework.sh tvos-only"
 
 [tasks."test:swift:package"]
 description = "[Testing] Consume the XCFramework from a throwaway package, move it, build again"

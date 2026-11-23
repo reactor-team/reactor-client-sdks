@@ -8,7 +8,9 @@ targets = [
     # this file, so listing it here is what makes `clippy:wasm` runnable.
     "wasm32-unknown-unknown",
     # The Swift SDK's XCFramework slices. reactor-webrtc-sys publishes a
-    # prebuilt libwebrtc for each of these and for no other Apple target.
+    # prebuilt libwebrtc for each of these four and for no other Apple target;
+    # aarch64-apple-tvos, below them, is the one slice built against a
+    # libwebrtc supplied locally.
     #
     # x86_64-apple-darwin is Intel-Mac support, and it is supported: the
     # XCFramework's macOS slice is one archive with both architectures lipo'd
@@ -25,6 +27,16 @@ targets = [
     "x86_64-apple-darwin",
     "aarch64-apple-ios",
     "aarch64-apple-ios-sim",
+    # Apple TV hardware, and only that: the XCFramework's tvOS slice is opt-in
+    # (REACTOR_XCFRAMEWORK_TVOS=1, or `tvos-only`; see
+    # scripts/build-swift-xcframework.sh) because no published libwebrtc
+    # covers tvOS yet. The build reads it from REACTOR_WEBRTC_TVOS_LIB_DIR.
+    #
+    # This channel ships a prebuilt std for it — rustup installs it like any
+    # other target here — so it needs no nightly and no -Zbuild-std. The
+    # simulator triple, aarch64-apple-tvos-sim, is deliberately absent: there is
+    # no simulator libwebrtc to link it against.
+    "aarch64-apple-tvos",
     # The Android SDK's AAR: arm64-v8a for devices, x86_64 for emulators on
     # x86_64 hosts, including the CI runners the live suite runs on.
     "aarch64-linux-android",

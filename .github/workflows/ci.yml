@@ -1139,6 +1139,11 @@ jobs:
       # Libraries only and no link step, so it costs a compile rather than an
       # XCFramework build.
       - run: mise run build:swift:ios
+      # The same for tvOS, and the only tvOS compile in this pipeline: the
+      # XCFramework's tvOS slice is opt-in and no job builds it. Without this
+      # step nothing checks the platform Package.swift declares, its `os(tvOS)`
+      # branches, or the `@available(tvOS, unavailable)` devices.
+      - run: mise run build:swift:tvos
       - run: mise run test:swift
 
   swift-package:

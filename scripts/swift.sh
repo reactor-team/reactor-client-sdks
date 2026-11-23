@@ -28,7 +28,7 @@ export REACTOR_SWIFT_DEV=1
 FORMAT_CONFIG="$REPO_ROOT/sdks/swift/.swift-format"
 
 usage() {
-    echo "usage: ${0##*/} <format|lint|build|build-ios|test|integration-tests|integration-tests-ios-simulator|endurance-tests|run <example> [args...]>" >&2
+    echo "usage: ${0##*/} <format|lint|build|build-ios|build-tvos|test|integration-tests|integration-tests-ios-simulator|endurance-tests|run <example> [args...]>" >&2
     exit 2
 }
 
@@ -72,32 +72,37 @@ resolve_tool() {
     exit 0
 }
 
-# The iPhoneOS SDK, or a decision about its absence. Same shape and same reasons
-# as resolve_tool above, including why it is not a command substitution.
-resolve_ios_sdk() {
-    if IOS_SDK="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)" && [ -d "$IOS_SDK" ]; then
+# A device SDK from Xcode, or a decision about its absence: `iphoneos` (iPhoneOS)
+# or `appletvos` (AppleTVOS), by xcrun's name and then the one a person reads.
+# The path is left in $DEVICE_SDK. Same shape and same reasons as resolve_tool
+# above, including why it is not a command substitution.
+resolve_device_sdk() {
+    local sdk="$1" label="$2"
+    if DEVICE_SDK="$(xcrun --sdk "$sdk" --show-sdk-path 2>/dev/null)" && [ -d "$DEVICE_SDK" ]; then
         return 0
     fi
     if [ -n "${REACTOR_REQUIRE_SWIFT:-}" ]; then
-        echo "swift.sh: no iPhoneOS SDK, and REACTOR_REQUIRE_SWIFT is set." >&2
+        echo "swift.sh: no $label SDK, and REACTOR_REQUIRE_SWIFT is set." >&2
         echo "  Install Xcode — the Command Line Tools alone carry only the macOS SDK." >&2
         exit 1
     fi
-    echo "swift.sh: skipping - no iPhoneOS SDK on this machine (set REACTOR_REQUIRE_SWIFT to make this a failure)"
+    echo "swift.sh: skipping - no $label SDK on this machine (set REACTOR_REQUIRE_SWIFT to make this a failure)"
     exit 0
 }
 
-# The iOS triple to build for, with the floor Package.swift declares rather than
-# a number repeated here — a manifest that raises its floor must not leave this
+# The device triple to build for on one platform (`iOS` or `tvOS`, as the
+# manifest spells it), with the floor Package.swift declares rather than a
+# number repeated here — a manifest that raises its floor must not leave this
 # building against the old one.
-ios_triple() {
-    local major
-    major="$(sed -n 's/.*\.iOS(\.v\([0-9][0-9]*\)).*/\1/p' "$REPO_ROOT/Package.swift" | head -1)"
+device_triple() {
+    local platform="$1" major os
+    major="$(sed -n 's/.*\.'"$platform"'(\.v\([0-9][0-9]*\)).*/\1/p' "$REPO_ROOT/Package.swift" | head -1)"
     if [ -z "$major" ]; then
-        echo "swift.sh: Package.swift declares no .iOS platform, so there is nothing to build." >&2
+        echo "swift.sh: Package.swift declares no .$platform platform, so there is nothing to build." >&2
         exit 1
     fi
-    echo "arm64-apple-ios$major.0"
+    os="$(printf '%s' "$platform" | tr '[:upper:]' '[:lower:]')"
+    echo "arm64-apple-$os$major.0"
 }
 
 # The targets behind this manifest's library products, read from the manifest for
@@ -109,6 +114,21 @@ ios_triple() {
 # no business being built for a phone.
 library_targets() {
     sed -n 's/.*\.library(name: "[^"]*", targets: \["\([^"]*\)"\].*/\1/p' "$REPO_ROOT/Package.swift"
+}
+
+# Compile the library targets for one device triple against its SDK.
+#
+# Compiled, not linked: these are library targets, and an app is what links. So
+# this needs no Rust toolchain and no libreactor_ffi for the device, which is
+# what keeps it a cheap check rather than an XCFramework build.
+build_libraries_for_device() {
+    local swift_bin="$1" triple="$2" sdk="$3" target
+    while IFS= read -r target; do
+        [ -n "$target" ] || continue
+        echo "swift.sh: building $target for $triple"
+        "$swift_bin" build --package-path "$REPO_ROOT" \
+            --triple "$triple" --sdk "$sdk" --target "$target"
+    done < <(library_targets)
 }
 
 # Every tracked or newly added Swift file the SDK owns. --others so a file that
@@ -239,22 +259,26 @@ case "${1:-}" in
     build-ios)
         resolve_tool swift
         swift_bin="$TOOL"
-        resolve_ios_sdk
-        triple="$(ios_triple)"
-        # Compiled, not linked: these are library targets, and an app is what
-        # links. So this needs no Rust toolchain and no iOS libreactor_ffi, which
-        # is what keeps it a cheap check rather than an XCFramework build.
-        #
+        resolve_device_sdk iphoneos iPhoneOS
+        triple="$(device_triple iOS)"
         # It exists because nothing else compiles the `#if os(iOS)` branches at
         # all — the audio session, the interruption handler, the capture
         # rotation. Building only for the host means that code is reviewed and
         # never once seen by a compiler.
-        while IFS= read -r target; do
-            [ -n "$target" ] || continue
-            echo "swift.sh: building $target for $triple"
-            "$swift_bin" build --package-path "$REPO_ROOT" \
-                --triple "$triple" --sdk "$IOS_SDK" --target "$target"
-        done < <(library_targets)
+        build_libraries_for_device "$swift_bin" "$triple" "$DEVICE_SDK"
+        ;;
+    build-tvos)
+        resolve_tool swift
+        swift_bin="$TOOL"
+        resolve_device_sdk appletvos AppleTVOS
+        triple="$(device_triple tvOS)"
+        # build-ios's twin, and for tvOS the only compile there is: the
+        # XCFramework's tvOS slice is opt-in, so no other task builds anything
+        # for an Apple TV. Without this, the `os(tvOS)` branches and the
+        # `@available(tvOS, unavailable)` on `Camera` and `Microphone` are
+        # checked by nobody, and the platform Package.swift declares can stop
+        # compiling without a single gate noticing.
+        build_libraries_for_device "$swift_bin" "$triple" "$DEVICE_SDK"
         ;;
     test)
         resolve_tool swift

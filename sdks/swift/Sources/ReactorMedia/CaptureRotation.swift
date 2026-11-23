@@ -43,6 +43,8 @@ enum CaptureOrientation: Equatable, CaseIterable {
     }
 }
 
+// iOS only. Not tvOS, where UIDevice reports no orientation and `Camera` is
+// unavailable; not macOS, where a Mac's camera is already the right way up.
 #if os(iOS)
     import AVFoundation
     import UIKit

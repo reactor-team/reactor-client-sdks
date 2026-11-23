@@ -14,6 +14,17 @@ import os
 /// converter bridges whatever the hardware actually gives. That conversion is
 /// unavoidable: an input device's native format is its own business, and
 /// `AVAudioEngine` will not resample an input tap for you.
+///
+/// ## Not on tvOS
+///
+/// Unavailable there at compile time, for the same reason as ``Camera``: an
+/// Apple TV has no microphone an app can record from on its own, and the audio
+/// session this configures on iOS asks for `.defaultToSpeaker`, which tvOS does
+/// not have. A Continuity device's microphone has not been tried.
+@available(
+    tvOS, unavailable,
+    message: "Apple TV has no microphone. Push samples the app makes with Track.pushFrame instead."
+)
 public final class Microphone: @unchecked Sendable {
 
     /// What the FFI accepts, and therefore what this pushes.
