@@ -44,7 +44,8 @@ BASE_REF = os.environ.get("BASE_REF", "origin/main")
 # rust_errors().
 RUST_TOOLCHAIN = "rust-toolchain.toml"
 # What the lock records of that request, as `options` of its entry: two lists,
-# each sorted and comma-joined, and one plain value.
+# each written as mise_list() writes it, and one plain value. mise's Rust plugin
+# records nothing else.
 _RUST_LISTS = ("components", "targets")
 _RUST_SCALARS = ("profile",)
 # What this check reads. Unchanged against the merge-base, it is skipped.
@@ -101,16 +102,28 @@ def unchanged_since(base_ref: str) -> bool:
     return all(git_show(f"{base_sha}:{name}") == on_disk(name) for name in _WATCHED)
 
 
+def mise_list(values: list) -> str:
+    """A list as mise records it in the lock.
+
+    Entries trimmed, blanks and duplicates dropped, sorted, comma-joined: what
+    mise's Rust plugin does to `components` and `targets` before it writes them.
+    """
+    return ",".join(sorted({str(v).strip() for v in values} - {""}))
+
+
 def rust_errors(locked: dict) -> list[str]:
     """rust-toolchain.toml against the lock's Rust entries.
 
     mise takes its Rust request from rust-toolchain.toml, so declared_tools()
     never returns it, and it still locks it: beside the version, the entry
-    records the request's components and targets, each list sorted and
-    comma-joined, and its profile when the file sets one. `mise install
-    --locked` refuses a request that no entry matches on all four, as
-    "rust@<version> is not in the lockfile". So a target added to the
-    toolchain file has to be added here too.
+    records the request's components and targets, each as mise_list() writes
+    it, and its profile when the file sets one. Nothing else in the file is
+    recorded. `mise install --locked` refuses a request that no entry matches
+    on all four, as "rust@<version> is not in the lockfile". So a target added
+    to the toolchain file has to be added here too.
+
+    The entry's options are compared as text, because that is how mise compares
+    them: the right targets in another order are not a match for it.
 
     One matching entry is enough, as it is for mise: `mise lock rust` adds the
     new entry and leaves the old one, which nothing then reads.
@@ -120,20 +133,13 @@ def rust_errors(locked: dict) -> list[str]:
         return []
     toolchain = tomllib.loads(path.read_text(encoding="utf-8")).get("toolchain", {})
     version = str(toolchain.get("channel", ""))
-    wanted: dict[str, object] = {
-        key: sorted(str(v) for v in toolchain.get(key, [])) for key in _RUST_LISTS
-    }
+    wanted = {key: mise_list(toolchain.get(key, [])) for key in _RUST_LISTS}
     wanted.update({key: str(toolchain.get(key, "")) for key in _RUST_SCALARS})
 
-    def recorded(entry: dict) -> dict[str, object]:
-        """The same shape as `wanted`, from one entry's options."""
+    def recorded(entry: dict) -> dict[str, str]:
+        """The same shape as `wanted`, from one entry's options, as written."""
         options = entry.get("options", {})
-        have: dict[str, object] = {
-            key: sorted(v for v in str(options.get(key, "")).split(",") if v)
-            for key in _RUST_LISTS
-        }
-        have.update({key: str(options.get(key, "")) for key in _RUST_SCALARS})
-        return have
+        return {key: str(options.get(key, "")) for key in wanted}
 
     entries = locked.get("rust", [])
     same_version = [e for e in entries if str(e.get("version", "")) == version]
@@ -148,12 +154,19 @@ def rust_errors(locked: dict) -> list[str]:
         have = recorded(same_version[-1])
         parts = []
         for key in _RUST_LISTS:
-            missing = [v for v in wanted[key] if v not in have[key]]
-            extra = [v for v in have[key] if v not in wanted[key]]
+            if have[key] == wanted[key]:
+                continue
+            want_items = [v for v in wanted[key].split(",") if v]
+            have_items = [v.strip() for v in have[key].split(",") if v.strip()]
+            missing = [v for v in want_items if v not in have_items]
+            extra = sorted({v for v in have_items if v not in want_items})
             if missing:
                 parts.append(f"{key} not in the lock: {', '.join(missing)}")
             if extra:
                 parts.append(f"{key} only in the lock: {', '.join(extra)}")
+            if not missing and not extra:
+                # The right entries, written another way: order, a duplicate, a space.
+                parts.append(f'{key} in the lock has to read exactly "{wanted[key]}"')
         for key in _RUST_SCALARS:
             if have[key] != wanted[key]:
                 parts.append(

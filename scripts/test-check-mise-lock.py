@@ -69,9 +69,12 @@ class RustToolchainTests(InDirectory):
         super().setUp()
         Path("rust-toolchain.toml").write_text(TOOLCHAIN, encoding="utf-8")
 
+    def _replace_in_toolchain(self, old, new):
+        self.assertEqual(TOOLCHAIN.count(old), 1)
+        Path("rust-toolchain.toml").write_text(TOOLCHAIN.replace(old, new), encoding="utf-8")
+
     def _set_profile(self, profile):
-        text = TOOLCHAIN.replace("[toolchain]\n", f'[toolchain]\nprofile = "{profile}"\n')
-        Path("rust-toolchain.toml").write_text(text, encoding="utf-8")
+        self._replace_in_toolchain("[toolchain]\n", f'[toolchain]\nprofile = "{profile}"\n')
 
     def test_matching_entry_is_accepted(self):
         self.assertEqual(check.rust_errors({"rust": [rust_entry()]}), [])
@@ -95,6 +98,47 @@ class RustToolchainTests(InDirectory):
 
         self.assertEqual(len(errors), 1)
         self.assertIn("rustfmt", errors[0])
+
+    # mise tidies the lists it reads from the toolchain file before it records
+    # them: entries trimmed, blanks and duplicates dropped, then sorted.
+
+    def test_target_listed_twice_in_the_toolchain_file_is_accepted(self):
+        self._replace_in_toolchain(
+            '"aarch64-apple-tvos",', '"aarch64-apple-tvos",\n    "aarch64-apple-tvos",'
+        )
+
+        self.assertEqual(check.rust_errors({"rust": [rust_entry()]}), [])
+
+    def test_spaces_around_a_toolchain_entry_are_ignored(self):
+        self._replace_in_toolchain('"aarch64-apple-tvos"', '" aarch64-apple-tvos "')
+
+        self.assertEqual(check.rust_errors({"rust": [rust_entry()]}), [])
+
+    def test_blank_toolchain_entry_is_ignored(self):
+        self._replace_in_toolchain('"aarch64-apple-tvos",', '"aarch64-apple-tvos",\n    "",')
+
+        self.assertEqual(check.rust_errors({"rust": [rust_entry()]}), [])
+
+    # The lock is compared as text, as mise compares it: the same entries
+    # written any other way are not a match.
+
+    def test_lock_list_out_of_order_is_reported(self):
+        errors = check.rust_errors({"rust": [rust_entry(components="rustfmt,clippy")]})
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn(COMPONENTS, errors[0])
+
+    def test_lock_list_with_a_duplicate_is_reported(self):
+        errors = check.rust_errors({"rust": [rust_entry(components="clippy,clippy,rustfmt")]})
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn(COMPONENTS, errors[0])
+
+    def test_lock_list_with_a_space_is_reported(self):
+        errors = check.rust_errors({"rust": [rust_entry(components="clippy, rustfmt")]})
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn(COMPONENTS, errors[0])
 
     def test_profile_only_in_the_toolchain_file_is_reported(self):
         self._set_profile("minimal")
