@@ -40,7 +40,6 @@ RUST_TOOLCHAIN = "rust-toolchain.toml"
 # The Rust options mise records in the lock: two lists and one plain value.
 _RUST_LISTS = ("components", "targets")
 _RUST_SCALARS = ("profile",)
-_WATCHED = ("mise.toml", "mise.lock", RUST_TOOLCHAIN)
 # Backends with no per-platform binary artifacts (mise emits no platforms.*).
 _NO_PLATFORM_BACKENDS = ("go:", "npm:", "cargo:", "pipx:", "core:")
 
@@ -75,22 +74,6 @@ def run_json(cmd: list[str]) -> object:
 def git_show(spec: str) -> bytes | None:
     r = subprocess.run(["git", "show", spec], capture_output=True, check=False)
     return r.stdout if r.returncode == 0 else None
-
-
-def unchanged_since(base_ref: str) -> bool:
-    """Whether every file this check reads is byte-identical to the merge-base."""
-    base = subprocess.run(
-        ["git", "merge-base", "HEAD", base_ref],
-        capture_output=True, text=True, check=False,
-    )
-    if base.returncode != 0:
-        return False
-    base_sha = base.stdout.strip()
-
-    def on_disk(name: str) -> bytes | None:
-        return Path(name).read_bytes() if Path(name).is_file() else None
-
-    return all(git_show(f"{base_sha}:{name}") == on_disk(name) for name in _WATCHED)
 
 
 def mise_list(values: list) -> str:
@@ -202,11 +185,21 @@ def main() -> int:
         if not Path(f).is_file():
             die(f"{f} not found in {Path.cwd()}")
 
+    toml_bytes = Path("mise.toml").read_bytes()
     lock_bytes = Path("mise.lock").read_bytes()
+    rust_bytes = Path(RUST_TOOLCHAIN).read_bytes() if Path(RUST_TOOLCHAIN).is_file() else None
 
-    if unchanged_since(BASE_REF):
-        print(f"✓ mise.lock check skipped: no changes vs {BASE_REF}")
-        return 0
+    base = subprocess.run(
+        ["git", "merge-base", "HEAD", BASE_REF],
+        capture_output=True, text=True, check=False,
+    )
+    if base.returncode == 0:
+        base_sha = base.stdout.strip()
+        if (git_show(f"{base_sha}:mise.toml") == toml_bytes
+                and git_show(f"{base_sha}:mise.lock") == lock_bytes
+                and git_show(f"{base_sha}:{RUST_TOOLCHAIN}") == rust_bytes):
+            print(f"✓ mise.lock check skipped: no changes vs {BASE_REF}")
+            return 0
 
     declared = declared_tools()
     if not declared:
