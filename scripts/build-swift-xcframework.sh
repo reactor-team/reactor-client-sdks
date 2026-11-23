@@ -261,6 +261,13 @@ tvos_lib_dir() {
         echo "No libwebrtc.a in $dir (nor in $dir/lib) for the tvOS slice." >&2
         exit 1
     fi
+    # Made absolute, because the check above and the build that follows resolve
+    # a relative path from different directories: this script from wherever it
+    # was started, reactor-webrtc-sys's build script from that crate's own
+    # source directory, which is where cargo runs it.
+    if [ -n "$dir" ]; then
+        dir="$(cd "$dir" && pwd -P)"
+    fi
     printf '%s' "$dir"
 }
 
