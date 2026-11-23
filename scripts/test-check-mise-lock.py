@@ -37,13 +37,15 @@ TARGETS = "aarch64-apple-darwin,aarch64-apple-tvos,x86_64-unknown-linux-gnu"
 TARGETS_BEFORE = "aarch64-apple-darwin,x86_64-unknown-linux-gnu"
 
 
-def rust_entry(version="1.97.1", components=COMPONENTS, targets=TARGETS):
-    """One [[tools.rust]] entry, as tomllib parses it out of mise.lock."""
-    return {
-        "version": version,
-        "backend": "core:rust",
-        "options": {"components": components, "targets": targets},
-    }
+def rust_entry(version="1.97.1", components=COMPONENTS, targets=TARGETS, profile=None):
+    """One [[tools.rust]] entry, as tomllib parses it out of mise.lock.
+
+    mise writes `profile` only when the toolchain file sets one.
+    """
+    options = {"components": components, "targets": targets}
+    if profile is not None:
+        options["profile"] = profile
+    return {"version": version, "backend": "core:rust", "options": options}
 
 
 class InDirectory(unittest.TestCase):
@@ -66,6 +68,10 @@ class RustToolchainTests(InDirectory):
     def setUp(self):
         super().setUp()
         Path("rust-toolchain.toml").write_text(TOOLCHAIN, encoding="utf-8")
+
+    def _set_profile(self, profile):
+        text = TOOLCHAIN.replace("[toolchain]\n", f'[toolchain]\nprofile = "{profile}"\n')
+        Path("rust-toolchain.toml").write_text(text, encoding="utf-8")
 
     def test_matching_entry_is_accepted(self):
         self.assertEqual(check.rust_errors({"rust": [rust_entry()]}), [])
@@ -90,6 +96,33 @@ class RustToolchainTests(InDirectory):
         self.assertEqual(len(errors), 1)
         self.assertIn("rustfmt", errors[0])
 
+    def test_profile_only_in_the_toolchain_file_is_reported(self):
+        self._set_profile("minimal")
+
+        errors = check.rust_errors({"rust": [rust_entry()]})
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("minimal", errors[0])
+
+    def test_profile_only_in_the_lock_is_reported(self):
+        errors = check.rust_errors({"rust": [rust_entry(profile="minimal")]})
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("minimal", errors[0])
+
+    def test_other_profile_is_reported(self):
+        self._set_profile("minimal")
+
+        errors = check.rust_errors({"rust": [rust_entry(profile="default")]})
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("default", errors[0])
+
+    def test_matching_profile_is_accepted(self):
+        self._set_profile("minimal")
+
+        self.assertEqual(check.rust_errors({"rust": [rust_entry(profile="minimal")]}), [])
+
     def test_other_version_is_reported(self):
         errors = check.rust_errors({"rust": [rust_entry(version="1.96.0")]})
 
@@ -100,7 +133,8 @@ class RustToolchainTests(InDirectory):
         self.assertEqual(len(check.rust_errors({})), 1)
 
     def test_one_matching_entry_among_several_is_accepted(self):
-        # `mise lock rust` adds the new entry and keeps the one it replaces.
+        # `mise lock rust` adds the new entry and keeps the old one, and mise
+        # installs from a lock like that. Deleting the old entry is tidying.
         entries = [rust_entry(targets=TARGETS_BEFORE), rust_entry()]
 
         self.assertEqual(check.rust_errors({"rust": entries}), [])

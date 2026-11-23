@@ -14,11 +14,11 @@ per-platform binary artifacts (go:, npm:, cargo:, pipx:, core:) get a lock entry
 with no platforms.* sub-tables; their coverage is skipped.
 
 Rust is the exception to "declared": its request is rust-toolchain.toml, not
-mise.toml, and the lock records that file's components and targets beside the
-version. A change to either list without the matching change here fails every
-`mise install --locked` that manages Rust -- the release workflows' build jobs,
-which a pull request that does not touch a release does not run. See
-rust_errors().
+mise.toml, and the lock records that file's components, targets and profile
+beside the version. A change to any of them without the matching change here
+fails every `mise install --locked` that manages Rust -- the release workflows'
+build jobs, which a pull request that does not touch a release does not run.
+See rust_errors().
 
 The check is skipped when mise.toml, mise.lock AND rust-toolchain.toml are
 byte-identical to the merge-base with BASE_REF (default origin/main), so PRs
@@ -43,8 +43,10 @@ BASE_REF = os.environ.get("BASE_REF", "origin/main")
 # mise's Rust request. Not a mise.toml tool, so it is checked on its own: see
 # rust_errors().
 RUST_TOOLCHAIN = "rust-toolchain.toml"
-# The lists of that request which the lock records, as `options` of its entry.
+# What the lock records of that request, as `options` of its entry: two lists,
+# each sorted and comma-joined, and one plain value.
 _RUST_LISTS = ("components", "targets")
+_RUST_SCALARS = ("profile",)
 # What this check reads. Unchanged against the merge-base, it is skipped.
 _WATCHED = ("mise.toml", "mise.lock", RUST_TOOLCHAIN)
 # Backends with no per-platform binary artifacts (mise emits no platforms.*).
@@ -103,26 +105,39 @@ def rust_errors(locked: dict) -> list[str]:
     """rust-toolchain.toml against the lock's Rust entries.
 
     mise takes its Rust request from rust-toolchain.toml, so declared_tools()
-    never returns it, and it still locks it: the entry records the request's
-    components and targets beside the version, each list sorted and
-    comma-joined. `mise install --locked` refuses a request that no entry
-    matches on all three, as "rust@<version> is not in the lockfile". So a
-    target added to the toolchain file has to be added here too.
+    never returns it, and it still locks it: beside the version, the entry
+    records the request's components and targets, each list sorted and
+    comma-joined, and its profile when the file sets one. `mise install
+    --locked` refuses a request that no entry matches on all four, as
+    "rust@<version> is not in the lockfile". So a target added to the
+    toolchain file has to be added here too.
+
+    One matching entry is enough, as it is for mise: `mise lock rust` adds the
+    new entry and leaves the old one, which nothing then reads.
     """
     path = Path(RUST_TOOLCHAIN)
     if not path.is_file():
         return []
     toolchain = tomllib.loads(path.read_text(encoding="utf-8")).get("toolchain", {})
     version = str(toolchain.get("channel", ""))
-    wanted = {key: sorted(str(v) for v in toolchain.get(key, [])) for key in _RUST_LISTS}
+    wanted: dict[str, object] = {
+        key: sorted(str(v) for v in toolchain.get(key, [])) for key in _RUST_LISTS
+    }
+    wanted.update({key: str(toolchain.get(key, "")) for key in _RUST_SCALARS})
 
-    def locked_list(entry: dict, key: str) -> list[str]:
-        value = str(entry.get("options", {}).get(key, ""))
-        return sorted(v for v in value.split(",") if v)
+    def recorded(entry: dict) -> dict[str, object]:
+        """The same shape as `wanted`, from one entry's options."""
+        options = entry.get("options", {})
+        have: dict[str, object] = {
+            key: sorted(v for v in str(options.get(key, "")).split(",") if v)
+            for key in _RUST_LISTS
+        }
+        have.update({key: str(options.get(key, "")) for key in _RUST_SCALARS})
+        return have
 
     entries = locked.get("rust", [])
     same_version = [e for e in entries if str(e.get("version", "")) == version]
-    if any(all(locked_list(e, k) == wanted[k] for k in _RUST_LISTS) for e in same_version):
+    if any(recorded(e) == wanted for e in same_version):
         return []
 
     if not same_version:
@@ -130,20 +145,26 @@ def rust_errors(locked: dict) -> list[str]:
         detail = f"no entry for that version (found: {found})"
     else:
         # Against the newest entry: `mise lock rust` appends, it does not replace.
-        entry = same_version[-1]
+        have = recorded(same_version[-1])
         parts = []
         for key in _RUST_LISTS:
-            have = locked_list(entry, key)
-            missing = [v for v in wanted[key] if v not in have]
-            extra = [v for v in have if v not in wanted[key]]
+            missing = [v for v in wanted[key] if v not in have[key]]
+            extra = [v for v in have[key] if v not in wanted[key]]
             if missing:
                 parts.append(f"{key} not in the lock: {', '.join(missing)}")
             if extra:
                 parts.append(f"{key} only in the lock: {', '.join(extra)}")
+        for key in _RUST_SCALARS:
+            if have[key] != wanted[key]:
+                parts.append(
+                    f"{key} is {wanted[key] or 'not set'} in {RUST_TOOLCHAIN}"
+                    f" and {have[key] or 'not set'} in the lock"
+                )
         detail = "; ".join(parts)
     return [
         f"rust@{version}: mise.lock does not match {RUST_TOOLCHAIN}: {detail}\n"
-        "    Run `mise lock rust`, then delete the [[tools.rust]] entry it replaces."
+        "    Run `mise lock rust`. It adds a matching [[tools.rust]] entry and keeps\n"
+        "    the old one, which is then unused and can be deleted."
     ]
 
 
