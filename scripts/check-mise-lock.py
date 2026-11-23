@@ -13,12 +13,8 @@ concrete version, and platform coverage is still enforced. Backends with no
 per-platform binary artifacts (go:, npm:, cargo:, pipx:, core:) get a lock entry
 with no platforms.* sub-tables; their coverage is skipped.
 
-Rust is the exception to "declared": its request is rust-toolchain.toml, not
-mise.toml, and the lock records that file's components, targets and profile
-beside the version. A change to any of them without the matching change here
-fails every `mise install --locked` that manages Rust -- the release workflows'
-build jobs, which a pull request that does not touch a release does not run.
-See rust_errors().
+Rust is requested by rust-toolchain.toml, not mise.toml, so it is checked
+separately: see rust_errors().
 
 The check is skipped when mise.toml, mise.lock AND rust-toolchain.toml are
 byte-identical to the merge-base with BASE_REF (default origin/main), so PRs
@@ -40,15 +36,10 @@ except ModuleNotFoundError:  # pragma: no cover - py<3.11
     import tomli as tomllib  # type: ignore
 
 BASE_REF = os.environ.get("BASE_REF", "origin/main")
-# mise's Rust request. Not a mise.toml tool, so it is checked on its own: see
-# rust_errors().
 RUST_TOOLCHAIN = "rust-toolchain.toml"
-# What the lock records of that request, as `options` of its entry: two lists,
-# each written as mise_list() writes it, and one plain value. mise's Rust plugin
-# records nothing else.
+# The Rust options mise records in the lock: two lists and one plain value.
 _RUST_LISTS = ("components", "targets")
 _RUST_SCALARS = ("profile",)
-# What this check reads. Unchanged against the merge-base, it is skipped.
 _WATCHED = ("mise.toml", "mise.lock", RUST_TOOLCHAIN)
 # Backends with no per-platform binary artifacts (mise emits no platforms.*).
 _NO_PLATFORM_BACKENDS = ("go:", "npm:", "cargo:", "pipx:", "core:")
@@ -103,30 +94,16 @@ def unchanged_since(base_ref: str) -> bool:
 
 
 def mise_list(values: list) -> str:
-    """A list as mise records it in the lock.
-
-    Entries trimmed, blanks and duplicates dropped, sorted, comma-joined: what
-    mise's Rust plugin does to `components` and `targets` before it writes them.
-    """
+    """A list as mise records it: trimmed, deduplicated, sorted, comma-joined."""
     return ",".join(sorted({str(v).strip() for v in values} - {""}))
 
 
 def rust_errors(locked: dict) -> list[str]:
-    """rust-toolchain.toml against the lock's Rust entries.
+    """Check rust-toolchain.toml against the lock's Rust entries.
 
-    mise takes its Rust request from rust-toolchain.toml, so declared_tools()
-    never returns it, and it still locks it: beside the version, the entry
-    records the request's components and targets, each as mise_list() writes
-    it, and its profile when the file sets one. Nothing else in the file is
-    recorded. `mise install --locked` refuses a request that no entry matches
-    on all four, as "rust@<version> is not in the lockfile". So a target added
-    to the toolchain file has to be added here too.
-
-    The entry's options are compared as text, because that is how mise compares
-    them: the right targets in another order are not a match for it.
-
-    One matching entry is enough, as it is for mise: `mise lock rust` adds the
-    new entry and leaves the old one, which nothing then reads.
+    mise locks the file's version, components, targets and profile, and
+    `mise install --locked` refuses the request unless one entry matches all
+    four as text.
     """
     path = Path(RUST_TOOLCHAIN)
     if not path.is_file():
@@ -137,7 +114,6 @@ def rust_errors(locked: dict) -> list[str]:
     wanted.update({key: str(toolchain.get(key, "")) for key in _RUST_SCALARS})
 
     def recorded(entry: dict) -> dict[str, str]:
-        """The same shape as `wanted`, from one entry's options, as written."""
         options = entry.get("options", {})
         return {key: str(options.get(key, "")) for key in wanted}
 
@@ -150,7 +126,6 @@ def rust_errors(locked: dict) -> list[str]:
         found = ", ".join(str(e.get("version", "?")) for e in entries) or "none"
         detail = f"no entry for that version (found: {found})"
     else:
-        # Against the newest entry: `mise lock rust` appends, it does not replace.
         have = recorded(same_version[-1])
         parts = []
         for key in _RUST_LISTS:
@@ -165,7 +140,6 @@ def rust_errors(locked: dict) -> list[str]:
             if extra:
                 parts.append(f"{key} only in the lock: {', '.join(extra)}")
             if not missing and not extra:
-                # The right entries, written another way: order, a duplicate, a space.
                 parts.append(f'{key} in the lock has to read exactly "{wanted[key]}"')
         for key in _RUST_SCALARS:
             if have[key] != wanted[key]:
@@ -268,8 +242,7 @@ def main() -> int:
                 f"{tool}@{match.get('version')}: missing platforms: {','.join(sorted(missing))}"
             )
 
-    # A Rust mismatch says how to fix itself: a plain `mise lock` re-resolves
-    # every tool, which is more than it needs.
+    # A Rust error carries its own hint; `mise lock` is for the tool errors.
     tool_errors = len(errors)
     errors += rust_errors(locked)
 
