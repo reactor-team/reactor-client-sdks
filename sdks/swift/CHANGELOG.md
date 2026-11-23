@@ -17,6 +17,7 @@ versioning follows [Semantic Versioning](https://semver.org/).
   tvos-only` (or `REACTOR_XCFRAMEWORK_TVOS=1` in a full build) builds an arm64
   device slice against a tvOS libwebrtc given as `REACTOR_WEBRTC_TVOS_LIB_DIR`,
   which no reactor-webrtc release publishes yet. There is no simulator slice.
+  Built on reactor-webrtc 0.32.0, the first release that builds for tvOS.
 
 ## [1.8.0] - 2026-11-19
 
