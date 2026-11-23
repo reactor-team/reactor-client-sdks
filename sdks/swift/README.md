@@ -379,8 +379,8 @@ lifting the attribute later is source-compatible. Pushing frames the app makes
 itself, with `Track.pushFrame`, is available. A tvOS app needs no camera or
 microphone usage description.
 
-A receive-only app is a client, a connection, the model's first commands and a
-view:
+A receive-only app is a client, a connection, the model's first commands, a
+view, and a way to end the session:
 
 ```swift
 import Reactor
@@ -390,15 +390,43 @@ import SwiftUI
 @MainActor
 final class Session: ObservableObject {
     @Published var video: Track?
+    @Published var failure: String?
     private var reactor: Reactor?
 
-    func start(jwt: String) async throws {
-        let reactor = try Reactor(model: "reactor/helios", jwt: jwt)
+    func start(jwt: String) async {
+        failure = nil
+        let reactor: Reactor
+        do {
+            reactor = try Reactor(model: "reactor/helios", jwt: jwt)
+        } catch {
+            failure = "\(error)"
+            return
+        }
         self.reactor = reactor
-        try await reactor.connect()
-        try await reactor.sendCommand("set_prompt", ["prompt": "a forest at dawn"])
-        try await reactor.sendCommand("start")
-        video = try reactor.track("main_video")
+        do {
+            try await reactor.connect()
+            try await reactor.sendCommand("set_prompt", ["prompt": "a forest at dawn"])
+            try await reactor.sendCommand("start")
+            video = try reactor.track("main_video")
+        } catch {
+            // The session may exist by now, so end it. `stop()` may also have
+            // run meanwhile: then this is no longer the current client.
+            if self.reactor === reactor { failure = "\(error)" }
+            await end(reactor)
+        }
+    }
+
+    func stop() async {
+        if let reactor { await end(reactor) }
+    }
+
+    private func end(_ reactor: Reactor) async {
+        if self.reactor === reactor {
+            self.reactor = nil
+            video = nil
+        }
+        try? await reactor.disconnect()  // ends the session on the server
+        reactor.close()  // frees the client; on its own, the session stays open
     }
 }
 
@@ -410,14 +438,25 @@ struct PlayerView: View {
         Group {
             if let track = session.video {
                 ReactorVideoView(track: track)
+            } else if let failure = session.failure {
+                Text(failure)
             } else {
                 ProgressView()
             }
         }
-        .task { try? await session.start(jwt: jwt) }
+        .task { await session.start(jwt: jwt) }
+        .onDisappear { Task { await session.stop() } }
     }
 }
 ```
+
+Letting go of a `Reactor` only closes it, and `close()` does not end the session
+on the server: the session stays open until it expires, and the next one cannot
+start until it clears. So the sample calls `disconnect()` and then `close()` on
+both ways out, when the view goes away and when a step after `connect()` fails.
+On an Apple TV, Menu on an app's first screen sends the app to the background
+without the view going away, so call `stop()` when `scenePhase` becomes
+`.background` as well, and `start` again on `.active`.
 
 The token comes from your own backend: an API key does not belong on a device,
 and a TV has nobody to type one in. `Reactor.fetchJWT(apiKey:options:)` is the
