@@ -64,8 +64,8 @@ hooks {
     }
   }
   // Heavier checks before pushing: clippy compiles, and the lockfile drift
-  // check runs (skipped when mise.toml + mise.lock already match the merge-base
-  // with main).
+  // check runs (skipped when mise.toml, mise.lock and rust-toolchain.toml
+  // already match the merge-base with main).
   ["pre-push"] {
     steps {
       ["clippy"] {

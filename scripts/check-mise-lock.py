@@ -3,7 +3,8 @@
 
 Declared tools + versions come from `mise ls --local -J`, and the expected
 platform set from `mise settings get lockfile_platforms` -- both mise's own view
-of the config -- so the ONLY thing this script parses as TOML is mise.lock.
+of the config -- so this script parses mise.lock as TOML and, for Rust alone,
+rust-toolchain.toml.
 
 For every declared tool it asserts mise.lock has a version-matching
 [[tools.<name>]] entry covering every lockfile platform. A `latest` spec (only
@@ -12,9 +13,17 @@ concrete version, and platform coverage is still enforced. Backends with no
 per-platform binary artifacts (go:, npm:, cargo:, pipx:, core:) get a lock entry
 with no platforms.* sub-tables; their coverage is skipped.
 
-The check is skipped when mise.toml AND mise.lock are byte-identical to the
-merge-base with BASE_REF (default origin/main), so PRs that don't touch the
-toolchain aren't blocked by a pre-existing lock state on main.
+Rust is the exception to "declared": its request is rust-toolchain.toml, not
+mise.toml, and the lock records that file's components and targets beside the
+version. A change to either list without the matching change here fails every
+`mise install --locked` that manages Rust -- the release workflows' build jobs,
+which a pull request that does not touch a release does not run. See
+rust_errors().
+
+The check is skipped when mise.toml, mise.lock AND rust-toolchain.toml are
+byte-identical to the merge-base with BASE_REF (default origin/main), so PRs
+that don't touch the toolchain aren't blocked by a pre-existing lock state on
+main.
 """
 
 from __future__ import annotations
@@ -31,6 +40,13 @@ except ModuleNotFoundError:  # pragma: no cover - py<3.11
     import tomli as tomllib  # type: ignore
 
 BASE_REF = os.environ.get("BASE_REF", "origin/main")
+# mise's Rust request. Not a mise.toml tool, so it is checked on its own: see
+# rust_errors().
+RUST_TOOLCHAIN = "rust-toolchain.toml"
+# The lists of that request which the lock records, as `options` of its entry.
+_RUST_LISTS = ("components", "targets")
+# What this check reads. Unchanged against the merge-base, it is skipped.
+_WATCHED = ("mise.toml", "mise.lock", RUST_TOOLCHAIN)
 # Backends with no per-platform binary artifacts (mise emits no platforms.*).
 _NO_PLATFORM_BACKENDS = ("go:", "npm:", "cargo:", "pipx:", "core:")
 
@@ -65,6 +81,70 @@ def run_json(cmd: list[str]) -> object:
 def git_show(spec: str) -> bytes | None:
     r = subprocess.run(["git", "show", spec], capture_output=True, check=False)
     return r.stdout if r.returncode == 0 else None
+
+
+def unchanged_since(base_ref: str) -> bool:
+    """Whether every file this check reads is byte-identical to the merge-base."""
+    base = subprocess.run(
+        ["git", "merge-base", "HEAD", base_ref],
+        capture_output=True, text=True, check=False,
+    )
+    if base.returncode != 0:
+        return False
+    base_sha = base.stdout.strip()
+
+    def on_disk(name: str) -> bytes | None:
+        return Path(name).read_bytes() if Path(name).is_file() else None
+
+    return all(git_show(f"{base_sha}:{name}") == on_disk(name) for name in _WATCHED)
+
+
+def rust_errors(locked: dict) -> list[str]:
+    """rust-toolchain.toml against the lock's Rust entries.
+
+    mise takes its Rust request from rust-toolchain.toml, so declared_tools()
+    never returns it, and it still locks it: the entry records the request's
+    components and targets beside the version, each list sorted and
+    comma-joined. `mise install --locked` refuses a request that no entry
+    matches on all three, as "rust@<version> is not in the lockfile". So a
+    target added to the toolchain file has to be added here too.
+    """
+    path = Path(RUST_TOOLCHAIN)
+    if not path.is_file():
+        return []
+    toolchain = tomllib.loads(path.read_text(encoding="utf-8")).get("toolchain", {})
+    version = str(toolchain.get("channel", ""))
+    wanted = {key: sorted(str(v) for v in toolchain.get(key, [])) for key in _RUST_LISTS}
+
+    def locked_list(entry: dict, key: str) -> list[str]:
+        value = str(entry.get("options", {}).get(key, ""))
+        return sorted(v for v in value.split(",") if v)
+
+    entries = locked.get("rust", [])
+    same_version = [e for e in entries if str(e.get("version", "")) == version]
+    if any(all(locked_list(e, k) == wanted[k] for k in _RUST_LISTS) for e in same_version):
+        return []
+
+    if not same_version:
+        found = ", ".join(str(e.get("version", "?")) for e in entries) or "none"
+        detail = f"no entry for that version (found: {found})"
+    else:
+        # Against the newest entry: `mise lock rust` appends, it does not replace.
+        entry = same_version[-1]
+        parts = []
+        for key in _RUST_LISTS:
+            have = locked_list(entry, key)
+            missing = [v for v in wanted[key] if v not in have]
+            extra = [v for v in have if v not in wanted[key]]
+            if missing:
+                parts.append(f"{key} not in the lock: {', '.join(missing)}")
+            if extra:
+                parts.append(f"{key} only in the lock: {', '.join(extra)}")
+        detail = "; ".join(parts)
+    return [
+        f"rust@{version}: mise.lock does not match {RUST_TOOLCHAIN}: {detail}\n"
+        "    Run `mise lock rust`, then delete the [[tools.rust]] entry it replaces."
+    ]
 
 
 def declared_tools() -> dict[str, str]:
@@ -114,19 +194,11 @@ def main() -> int:
         if not Path(f).is_file():
             die(f"{f} not found in {Path.cwd()}")
 
-    toml_bytes = Path("mise.toml").read_bytes()
     lock_bytes = Path("mise.lock").read_bytes()
 
-    base = subprocess.run(
-        ["git", "merge-base", "HEAD", BASE_REF],
-        capture_output=True, text=True, check=False,
-    )
-    if base.returncode == 0:
-        base_sha = base.stdout.strip()
-        if (git_show(f"{base_sha}:mise.toml") == toml_bytes
-                and git_show(f"{base_sha}:mise.lock") == lock_bytes):
-            print(f"✓ mise.lock check skipped: no changes vs {BASE_REF}")
-            return 0
+    if unchanged_since(BASE_REF):
+        print(f"✓ mise.lock check skipped: no changes vs {BASE_REF}")
+        return 0
 
     declared = declared_tools()
     if not declared:
@@ -162,11 +234,17 @@ def main() -> int:
                 f"{tool}@{match.get('version')}: missing platforms: {','.join(sorted(missing))}"
             )
 
+    # A Rust mismatch says how to fix itself: a plain `mise lock` re-resolves
+    # every tool, which is more than it needs.
+    tool_errors = len(errors)
+    errors += rust_errors(locked)
+
     if errors:
         print("mise.lock is out of date:", file=sys.stderr)
         for e in errors:
             print(f"  - {e}", file=sys.stderr)
-        print("\nRun: mise lock", file=sys.stderr)
+        if tool_errors:
+            print("\nRun: mise lock", file=sys.stderr)
         return 1
 
     print(f"✓ mise.lock OK: {len(declared)} tool(s), {len(expected)} platform(s)")

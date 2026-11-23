@@ -203,6 +203,8 @@ jobs:
         env:
           MISE_REVIEW_TEST_BINARY: mise
         run: python3 .github/scripts/test-mise-review-bootstrap.py
+      - name: Test mise.lock check
+        run: python3 scripts/test-check-mise-lock.py
       - run: hk validate
       - name: ABI parity (lib.rs / reactor_ffi.h / _ffi.py / sdks/cpp / sdks/swift)
         run: mise run lint:abi
